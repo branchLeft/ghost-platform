@@ -1,0 +1,26 @@
+name: Build image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Build-only. Deliberately does not push anywhere or authenticate to GCP —
+# there is no Workload Identity Federation set up for this repo yet
+# (registry push + provisioning is a later story). This workflow exists to
+# catch a broken Dockerfile / broken image on every PR, nothing more.
+jobs:
+  build:
+    name: docker build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build --tag ghost-platform:ci .
+
+      - name: Smoke test (SQLite, boots and serves HTTP 200)
+        run: ./scripts/smoke-test.sh ghost-platform:ci
