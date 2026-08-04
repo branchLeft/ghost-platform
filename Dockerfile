@@ -22,9 +22,13 @@ FROM ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984
 # `pnpm add` line in this Dockerfile for storage support.
 
 # Cloud Run entrypoint wrapper: translates the platform's $PORT into Ghost's
-# server__port / server__host config before handing off to the upstream
-# entrypoint. See docker-entrypoint.branchleft.sh for why this can't just be
-# a CMD change.
+# server__port / server__host config, and refuses to start (fail closed)
+# if storage__active is unset or points at a local-disk adapter — Ghost's
+# own compiled default is local storage, which is silently lost on every
+# Cloud Run instance recycle. See docker-entrypoint.branchleft.sh for the
+# full guard and its explicit local-dev escape hatch, and
+# scripts/test-storage-guard.sh for the regression test proving both the
+# blocked and permitted paths actually behave as intended.
 COPY docker-entrypoint.branchleft.sh /usr/local/bin/docker-entrypoint.branchleft.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.branchleft.sh
 

@@ -168,6 +168,7 @@ container gets the same image with a different environment.
 |---|---|---|---|
 | `PORT` | Optional | Deploy platform (Cloud Run injects this automatically) | Consumed by `docker-entrypoint.branchleft.sh`, translated into `server__port`/`server__host`. Defaults to `2368` if unset (matching upstream Ghost's own default), bound to `0.0.0.0`. |
 | `SERVER_HOST` | Optional | Deploy config | Escape hatch to override the bind address the wrapper sets; almost never needed — Cloud Run always wants `0.0.0.0`. |
+| `BRANCHLEFT_ALLOW_LOCAL_STORAGE` | Optional, **local development and the smoke tests only** | Never set in a real deploy | The one way past the storage guard described below. Must be `true` exactly, set deliberately — see "Fail-closed storage guard". |
 
 ### Required — site
 
@@ -190,7 +191,7 @@ container gets the same image with a different environment.
 
 | Variable | Required | Origin | Notes |
 |---|---|---|---|
-| `storage__active` | **Required** in production | Deploy config | `S3Storage`. Leaving this unset falls back to Ghost's default `LocalImagesStorage`/`LocalMediaStorage`/`LocalFilesStorage` — **local disk, which is a correctness bug on Cloud Run**, not just a suboptimal default. |
+| `storage__active` | **Required** in production, **enforced at boot** | Deploy config | `S3Storage`. The entrypoint refuses to start Ghost's server process if this is unset or names a `Local*Storage` adapter — see "Fail-closed storage guard" below. This is not just documentation; a misconfigured tenant fails to boot instead of silently serving on local disk. |
 | `storage__S3Storage__bucket` | **Required** | Deploy config | The shared platform bucket (doc 09: one bucket, tenant-prefixed paths — not one bucket per tenant). |
 | `storage__S3Storage__staticFileURLPrefix` | **Required** | Deploy config | Key prefix under the bucket, e.g. `content/images`. |
 | `storage__S3Storage__cdnUrl` | **Required** | Deploy config | Public base URL files are served from, e.g. a CDN in front of the bucket, or `https://storage.googleapis.com/<bucket>` directly. |
@@ -210,6 +211,140 @@ container gets the same image with a different environment.
 | `privacy__useUpdateCheck` | Optional | Deploy config | Recommend `false`. Ghost pings `explore.ghost.org` on boot by default (doc 06 finding #4) — worth a deliberate opt-out given the platform's tenants are public-interest news outlets. Not wired into the image by default, since that's a policy call for the platform team, not something to bake in silently. |
 | `logging__transports` | Optional | Deploy config | The upstream image bakes in `["file", "stdout"]`. File logs are lost on every Cloud Run restart (ephemeral disk) — not a correctness problem (nothing depends on them surviving), but consider overriding to `'["stdout"]'` so Cloud Logging is the only log sink that matters. |
 | `mail__transport`, `mail__options__*` | Not required to boot | Deploy config / Secret Manager (for SMTP credentials) | Needed for staff invites, password resets, and member magic links to actually send. Out of scope for this story (image boots and serves fine with the upstream `Direct` transport default); a real transport is needed before onboarding real tenants. |
+
+## Fail-closed storage guard
+
+Ghost's compiled defaults
+(`ghost/core/core/shared/config/defaults.json`) are
+`storage.active=LocalImagesStorage` (`LocalMediaStorage`/`LocalFilesStorage`
+for the media/files features) — local disk. If a tenant's deploy config
+simply omits `storage__active`, nothing about that fails loudly on its own:
+the container boots cleanly, the site serves, an editor's upload appears to
+succeed, and the file is silently gone the next time the Cloud Run instance
+recycles (autoscale, redeploy, crash) — no error, no log line, no alert.
+That's arguably the platform's most dangerous failure mode precisely
+because it presents as success, so it's enforced in the image, not just
+described here.
+
+`docker-entrypoint.branchleft.sh` refuses to start Ghost's server process
+(`exit 1`, before `docker-entrypoint.sh`/`node` ever runs) when, for the
+actual server-start command:
+
+- `storage__active` is unset, or
+- `storage__active` matches `Local*Storage` (catches
+  `LocalImagesStorage`/`LocalMediaStorage`/`LocalFilesStorage` and stays
+  correct if a future local-disk-shaped adapter shows up under a different
+  name), or
+- `storage__active=S3Storage` but any of the fields a working upload
+  actually needs are missing (`bucket`, `staticFileURLPrefix`, `cdnUrl`,
+  `multipartUploadThresholdBytes`, `multipartChunkSizeBytes`) — a non-local
+  adapter with a missing bucket is only marginally better than a local one,
+  it just moves the silent failure from "lost on recycle" to "never
+  uploaded, or an opaque runtime error the first time someone tries".
+
+**Escape hatch, local development and the smoke tests only:**
+`BRANCHLEFT_ALLOW_LOCAL_STORAGE=true`. Deliberately just an explicit env
+var that has to be set on purpose — never inferred from `NODE_ENV`, and
+never inferred from the presence or absence of Cloud Run's own `K_SERVICE`
+variable. Detecting "not Cloud Run" isn't evidence a deploy is safe; a
+heuristic here would eventually be wrong in the one direction that
+matters — a real tenant let through silently — so the guard would rather
+annoy a developer than trust an inference. `scripts/smoke-test.sh` sets it
+explicitly for exactly this reason.
+
+The guard only runs for the actual server-start command (mirrors the same
+pattern check the upstream entrypoint itself uses before its own
+root-step-down/content-reseed work), so `docker run <image> sh` for
+debugging isn't blocked by it.
+
+### Proof: blocked without config, boots with it
+
+`scripts/test-storage-guard.sh` is the regression test — five scenarios,
+run against a real build, checked both directions (three that must be
+blocked, two that must be allowed to boot):
+
+```sh
+docker build -t ghost-platform:local .
+./scripts/test-storage-guard.sh ghost-platform:local
+```
+
+Actual output from a real run (2026-08-04):
+
+```
+--- no storage__active set, no escape hatch (expect: blocked) ---
+FATAL: storage__active is not set.
+Ghost defaults to local-disk storage (LocalImagesStorage /
+LocalMediaStorage / LocalFilesStorage), which is silently lost on
+every Cloud Run instance recycle -- no error, no warning, just gone
+media. Set storage__active=S3Storage plus the storage__S3Storage__*
+variables documented in README.md for any real deploy.
+
+Local development / smoke tests only: set
+BRANCHLEFT_ALLOW_LOCAL_STORAGE=true to bypass this check.
+PASS: no storage__active set, no escape hatch (exit 1, guard message present)
+
+--- storage__active explicitly set to a local adapter (expect: blocked) ---
+FATAL: storage__active=LocalImagesStorage is a local-disk adapter.
+...
+PASS: storage__active explicitly set to a local adapter (exit 1, guard message present)
+
+--- storage__active=S3Storage with required fields missing (expect: blocked) ---
+FATAL: storage__active=S3Storage but required config is missing:
+  - storage__S3Storage__staticFileURLPrefix
+  - storage__S3Storage__cdnUrl
+  - storage__S3Storage__multipartUploadThresholdBytes
+  - storage__S3Storage__multipartChunkSizeBytes
+See README.md's environment variable table for what each one means.
+PASS: storage__active=S3Storage with required fields missing (exit 1, guard message present)
+
+--- escape hatch set, no storage config (local dev) (expect: boots, HTTP 200) ---
+PASS: escape hatch set, no storage config (local dev) (HTTP 200 on port 4220)
+
+--- fully-configured S3Storage, no escape hatch (production shape) (expect: boots, HTTP 200) ---
+PASS: fully-configured S3Storage, no escape hatch (production shape) (HTTP 200 on port 4221)
+
+All storage-guard checks passed.
+```
+
+The fifth scenario used fake bucket/CDN/credential values (`fake-bucket`,
+`FAKEKEY`, ...) — the guard only validates that the *fields are present*,
+not that they resolve against a real GCS bucket, since `S3Storage`'s own
+`validate()` is a `zod` schema check with no network call, and this story
+has no GCP resources to test against for real. That means the guard cannot
+false-positive on a well-formed-but-wrong credential (a real credential
+issue would surface later, at first upload, not at boot) — but it also
+means a correctly-configured tenant with all five fields present will
+always clear the guard, regardless of whether those values are actually
+valid. Worth being explicit about that boundary: this guard catches
+*missing* config, not *wrong* config.
+
+### New risk introduced by this guard, stated plainly
+
+A guard that blocks a correctly-configured tenant is its own incident — in
+the wrong direction, a false positive here means a legitimate deploy never
+boots. The two ways that could happen with this implementation:
+
+1. **A future non-`S3Storage` non-local adapter.** The specific
+   required-field check only runs for `storage__active=S3Storage`; any
+   other adapter name that doesn't match `Local*Storage` sails through with
+   no field validation at all (silently permissive, not silently
+   blocking — the safer failure direction, but still worth flagging: if the
+   platform ever adopts a second non-local adapter, its required fields
+   need the same explicit check added here, or misconfiguration of *that*
+   adapter goes uncaught).
+2. **The `Local*Storage` glob.** If Ghost ever ships a *non-local* adapter
+   whose class name happens to match `Local*Storage` (unlikely, but not
+   impossible), the guard would incorrectly block it. Given Ghost's own
+   naming convention — every actual local-disk adapter is named exactly
+   this way — this is a low-probability, easy-to-notice-and-fix failure
+   (the FATAL message names the exact adapter class it rejected), not a
+   silent one.
+
+Neither risk is symmetrical with the one this guard fixes: both failure
+modes here are loud (a deploy that doesn't boot, with a clear log message)
+rather than silent (media quietly disappearing weeks later). That
+asymmetry is deliberate — a loud failure that wastes a few minutes of a
+deploy is a much smaller problem than the one being guarded against.
 
 ## What Ghost still writes to local disk (and why it's safe)
 
@@ -238,9 +373,11 @@ above.
 
 - `Dockerfile` — the tenant image.
 - `docker-entrypoint.branchleft.sh` — Cloud Run `$PORT` wrapper around the
-  upstream entrypoint.
+  upstream entrypoint, plus the fail-closed storage guard.
 - `scripts/smoke-test.sh` — local/CI smoke test (see above).
-- `.github/workflows/build.yml` — builds the image and runs the smoke test
+- `scripts/test-storage-guard.sh` — regression test for the storage guard
+  (see "Fail-closed storage guard" above).
+- `.github/workflows/build.yml` — builds the image and runs both scripts
   on every PR. **Does not push anywhere and does not authenticate to
   GCP** — there's no Workload Identity Federation set up for this repo yet;
   registry push and provisioning are later stories.

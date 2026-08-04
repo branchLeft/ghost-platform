@@ -15,6 +15,12 @@
 # Runs the container on a deliberately non-default host port (4200 -> a
 # non-default container $PORT of 4200 too) specifically to demonstrate that
 # the image honours $PORT rather than assuming the upstream default of 2368.
+#
+# Sets BRANCHLEFT_ALLOW_LOCAL_STORAGE=true because this smoke test doesn't
+# configure S3Storage — that's the entrypoint's fail-closed storage guard's
+# explicit, deliberate local-dev escape hatch (see
+# docker-entrypoint.branchleft.sh and scripts/test-storage-guard.sh, which
+# exercises the guard itself, both the blocked and permitted paths).
 set -e
 
 IMAGE="${1:?usage: smoke-test.sh <image-tag>}"
@@ -36,6 +42,7 @@ docker run -d \
     -e database__client="sqlite3" \
     -e database__connection__filename="/var/lib/ghost/content/data/ghost-smoke.db" \
     -e privacy__useUpdateCheck="false" \
+    -e BRANCHLEFT_ALLOW_LOCAL_STORAGE="true" \
     "$IMAGE" >/dev/null
 
 start_ts=$(date +%s)

@@ -24,3 +24,6 @@ jobs:
 
       - name: Smoke test (SQLite, boots and serves HTTP 200)
         run: ./scripts/smoke-test.sh ghost-platform:ci
+
+      - name: Storage guard regression test (blocked vs. permitted configs)
+        run: ./scripts/test-storage-guard.sh ghost-platform:ci
