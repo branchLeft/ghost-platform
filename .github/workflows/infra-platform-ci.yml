@@ -1,0 +1,56 @@
+name: Platform infra CI
+
+# This workflow type-checks the shared platform Pulumi program
+# (infra/platform/). It does not, and must not, apply anything.
+#
+# Copied deliberately from shared-infra's ci.yml reasoning: this program
+# creates the one shared Cloud SQL instance and the one shared media bucket
+# every tenant's data will eventually live on/in. A bad apply here has
+# platform-wide, cross-tenant blast radius -- an unreviewed merge could
+# resize, misconfigure, or (absent the deletion-protection guards in
+# database.ts/mediaBucket.ts) even remove the resource every tenant's
+# database or media sits on.
+#
+# So: no `pulumi up`, no `pulumi preview` against the real stack (which
+# would need credentials this workflow deliberately does not hold), no
+# cloud credentials of any kind, no `id-token: write`. Applies to this
+# stack are run by a human, from a workstation, having read the preview --
+# same as shared-infra, and for the same reason.
+#
+# If that ever changes, it needs its own decision and its own guardrails
+# (environment protection rules and a required reviewer at minimum) -- not
+# a step quietly added to this file.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/platform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/platform/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/platform/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
