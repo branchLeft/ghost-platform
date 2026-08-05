@@ -1,0 +1,5 @@
+secretsprovider: gcpkms://projects/branchleft-prod/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets
+encryptedkey: CiQAefexUkDBUjwI4+KABxtk1UerHlmQzTyfRFWDA7VPERsVJxISSQBxixxQveUGvVz+eXnCxhJBOIbg4+KBRwnU50/dFnj/L2X8UDmp1Su1EI2R3rV2lqYtZSdO1iotEhh4iQZSQj32eOy5Qz7DmCI=
+config:
+  gcp:project: branchleft-prod
+  gcp:region: europe-west1

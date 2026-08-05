@@ -9,15 +9,21 @@ This repo's IaC, split by shape rather than lumped into one program:
   Applied by a human from a workstation, on a cadence closer to "rarely" --
   it doesn't change per tenant.
 
-- **`tenant/`** (not yet created -- lands in the next story) -- a reusable
-  Pulumi **component**, not a stack: the per-tenant resources (a tenant's
-  logical database, DB user, HMAC key, Cloud Run service) that *do* change
-  per tenant, parameterized and instantiated once per tenant by the private
-  `ghost-platform-tenants` repo's stack configs (see
+- **`tenant/`** -- a reusable Pulumi **component** (`GhostTenant`), not a
+  stack: the per-tenant resources (a dedicated service account, logical
+  database + DB user, storage write-isolation, Cloud Run service) that *do*
+  change per tenant. Takes the platform stack's outputs as plain
+  constructor args rather than resolving a `StackReference` itself, so it
+  stays portable and testable independent of any one caller. Not yet
+  instantiated for a real tenant -- that's the private
+  `ghost-platform-tenants` repo's stack configs, a later story (see
   `ghost-platform-docs/03-onboarding-and-repo-strategy.md`'s repo-split
   decision -- this repo is public and stays public, so it can hold the
   reusable component, but never a tenant's actual name, hostname, or
-  config, which live in the private tenants repo instead).
+  config, which live in the private tenants repo instead). `tenant/smoke-test/`
+  is a disposable, preview-only Pulumi program that instantiates the
+  component with placeholder values to sanity-check its resource plan --
+  not itself part of the reusable component.
 
 Why split at all, rather than one program with a `sites`-style array (the
 shape `shared-infra/sites.ts` uses for the edge)? That pattern fits the edge
