@@ -91,6 +91,10 @@ export const mediaBucket = new gcp.storage.Bucket(
   { dependsOn: enabledApis }
 );
 
+// The other binding on this bucket -- CI's own bucket-scoped grant -- lives
+// in serviceAccounts.ts rather than here, so that one file answers "what can
+// the deploy pipeline do". See `deployerMediaBucketAccess` there, including
+// why it is scoped to this bucket and not to the project.
 export const mediaBucketPublicRead = new gcp.storage.BucketIAMMember(
   'ghost-platform-media-public-read',
   {

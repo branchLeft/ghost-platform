@@ -129,30 +129,22 @@ gcloud storage buckets add-iam-policy-binding gs://branchleft-pulumi-state \
   --role="roles/storage.objectAdmin"
 ```
 
-This is the trap `website/infra/KNOWN_ISSUES.md` describes under
-"`github-actions-deployer` SA needs manual IAM on the Pulumi state bucket":
-Pulumi cannot grant itself access to the bucket it must log in to *before* it
-can grant anything, so the binding can never come from the program.
+**Without this the deployer has no access to the state bucket at all**, and
+every CI run fails at `pulumi login` with the 403 quoted in
+`website/infra/KNOWN_ISSUES.md` under "`github-actions-deployer` SA needs
+manual IAM on the Pulumi state bucket". It is the same trap, in the same
+shape: Pulumi cannot grant itself access to the bucket it must log in to
+*before* it can grant anything, so this binding can never come from the
+program.
 
-**One honest correction to that framing, for this stack specifically.** It is
-not strictly irreducible here, and the runbook should not claim otherwise.
-`serviceAccounts.ts` grants the deployer `roles/storage.admin` at *project*
-level (it needs `storage.buckets.setIamPolicy` for the media bucket's
-public-read binding), and `gs://branchleft-pulumi-state` lives in
-`branchleft-prod` — verified, not assumed: the `projectNumber` reported by
-`gcloud storage buckets describe gs://branchleft-pulumi-state --raw` matches
-the one `gcloud projects describe branchleft-prod` reports. So step 1 has, as
-a side effect, already given the deployer everything it needs on the state
-bucket.
-
-Run step 4 anyway. Two reasons:
-
-1. It makes the dependency explicit. Right now CI's ability to reach its own
-   state rests on an incidental consequence of a role granted for an
-   unrelated reason. The day someone narrows `roles/storage.admin` — a
-   sensible thing to want to do — every deploy breaks at `pulumi login`, and
-   nothing in the diff that caused it will look related.
-2. It is idempotent and free.
+This is a bucket-scoped grant on purpose, and `serviceAccounts.ts` gives the
+deployer no project-level storage role that would shortcut it. That is
+deliberate: `gs://branchleft-pulumi-state` is the only bucket in
+`branchleft-prod` and it holds the state for four stacks, two of them owned
+by other repos (`branchleft-website-infra`, `branchleft-shared-infra`), so a
+project-level storage role here would let this repo's CI corrupt the website
+and shared-edge stacks' state. `roles/storage.objectAdmin` on this one bucket
+is exactly what `website/infra`'s deployer holds, and no more.
 
 Verify:
 
@@ -217,6 +209,22 @@ ran and look at its job summary, don't just look for a green tick.
 **Automatic from now on.** Any merge to `main` that changes `database.ts`,
 `registry.ts`, `mediaBucket.ts`, `apis.ts` or `config.ts` is applied by CI.
 No local `pulumi up`. No manual step.
+
+**Two things CI deliberately cannot do, both of which need you.** The
+deployer holds `roles/cloudsql.editor` (not admin) and a bucket-scoped
+`roles/storage.legacyBucketOwner` (not a project storage role), so it has
+neither `cloudsql.instances.{create,delete}` nor `storage.buckets.{create,
+delete}`. A change that *replaces* the database or the media bucket — an
+immutable field like `region`, say — 403s in CI rather than applying. That
+is the intent: replacing either is a data migration, not a merge. Run it
+locally, having read the plan, exactly as in step 1.
+
+**Only `main` can authenticate.** The Workload Identity provider's condition
+requires `assertion.ref == "refs/heads/main"` as well as the repository, so a
+workflow run from any other branch cannot exchange a token at all. If a
+pull-request `pulumi preview` job is added later, it needs its own provider
+in the same pool and its own (read-only) service account — do not widen this
+condition to make a preview job work.
 
 **Still yours, and it will fail loudly rather than silently.** A change to
 `workloadIdentity.ts`, or to the `projectRoles` list in `serviceAccounts.ts`,

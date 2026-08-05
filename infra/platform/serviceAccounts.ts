@@ -2,6 +2,7 @@ import * as pulumi from '@pulumi/pulumi';
 import * as gcp from '@pulumi/gcp';
 import { projectId } from './config';
 import { enabledApis } from './apis';
+import { mediaBucket } from './mediaBucket';
 
 /**
  * The identity GitHub Actions assumes, via Workload Identity Federation
@@ -90,39 +91,27 @@ const projectRoles: Array<[string, string]> = [
   // preview immediately before `pulumi up` in CI.
   ['deployer-artifact-registry-admin', 'roles/artifactregistry.admin'],
 
-  // mediaBucket.ts -- gcp.storage.Bucket and gcp.storage.BucketIAMMember.
-  //
-  // Needs `storage.buckets.update` (versioning, lifecycle rules) and
-  // `storage.buckets.setIamPolicy` (the allUsers reader binding). Verified:
-  // the only GA, non-legacy predefined role containing both is
-  // `roles/storage.admin`.
-  //
-  // `roles/storage.legacyBucketOwner` was evaluated as a narrower
-  // alternative and rejected. It genuinely is narrower on the axis that
-  // matters most -- it has buckets.{get,update,getIamPolicy,setIamPolicy}
-  // but neither buckets.create nor buckets.delete, so CI could not delete
-  // the media bucket -- but it still grants storage.objects.{create,delete,
-  // list} across every bucket in the project, so CI could still delete every
-  // tenant's media object by object. The safety gain is partial while the
-  // cost is real: it is an ACL-compatibility role, and reaching for one as
-  // the primary grant in a new system reads as a mistake to the next person.
-  // Taking storage.admin plus the preview delete-guard instead, and writing
-  // the rejected option down so it is a decision rather than an oversight.
-  //
-  // Second-order consequence, deliberately made explicit: project-level
-  // storage.admin also covers `gs://branchleft-pulumi-state`, so the
-  // deployer SA can read and write this stack's own Pulumi state through
-  // this binding. RUNBOOK-bootstrap.md still grants state-bucket access
-  // separately and explains why relying on this implication is a bad idea.
-  ['deployer-storage-admin', 'roles/storage.admin'],
+  // NOTE: mediaBucket.ts's grant is deliberately NOT in this list. It is
+  // bucket-scoped instead -- see `deployerMediaBucketAccess` below for why
+  // a project-level storage role was the wrong answer.
 
   // apis.ts -- gcp.projects.Service x6.
   //
-  // Verified to hold serviceusage.services.{enable,disable,get,list,use}.
-  // The same role, for the same reason, that website/infra had to add by
-  // hand the first time CI touched a new entry in its own `requiredServices`
+  // The only predefined role that can enable a service, so there is no
+  // narrower choice to make. It is worth being accurate about what that
+  // costs, because the role's name undersells it: alongside
+  // `serviceusage.services.{enable,disable,get,list,use}`, the live
+  // permission list also includes `serviceusage.quotas.update`,
+  // `cloudquotas.quotas.update`, `serviceusage.consumerpolicy.update`,
+  // `serviceusage.contentsecuritypolicy.update` and
+  // `serviceusage.mcppolicy.update` -- i.e. this identity can also change
+  // project quotas and consumer policies, not just turn APIs on. Accepted
+  // (no alternative exists), disclosed rather than implied away.
+  //
+  // Same role, for the same reason, that website/infra had to add by hand
+  // the first time CI touched a new entry in its own `requiredServices`
   // (KNOWN_ISSUES.md). Note it does NOT carry `resourcemanager.projects.get`
-  // -- that comes from the three roles above, all of which include it.
+  // -- that comes from the two roles above, both of which include it.
   ['deployer-service-usage-admin', 'roles/serviceusage.serviceUsageAdmin'],
 ];
 
@@ -133,6 +122,93 @@ for (const [name, role] of projectRoles) {
     member: deployerMember,
   });
 }
+
+/**
+ * Media bucket access -- **bucket-scoped, not project-scoped**, and the
+ * reasoning matters more than the one-line change.
+ *
+ * The first version of this file granted `roles/storage.admin` on the
+ * *project*, on the argument that it is the only GA non-legacy predefined
+ * role holding both `storage.buckets.update` and
+ * `storage.buckets.setIamPolicy`, which the media bucket and its allUsers
+ * reader binding need. That reasoning was right about the role and wrong
+ * about the scope, and the gap it left is not theoretical:
+ *
+ * `gs://branchleft-pulumi-state` is the only bucket in `branchleft-prod`
+ * (verified: `gcloud storage ls --project=branchleft-prod` returns exactly
+ * one bucket), and it holds the Pulumi state for four stacks --
+ * `branchleft-ghost-platform`, `branchleft-shared-infra`,
+ * `branchleft-website-infra` and `ghost-platform-tenant-smoke-test`
+ * (verified: `gcloud storage ls gs://branchleft-pulumi-state/.pulumi/stacks/`).
+ * A project-level storage role therefore hands this repo's CI the ability to
+ * delete or corrupt the *website* and *shared-infra* stacks' state files. A
+ * compromised workflow run here would take out the marketing site's and the
+ * shared edge's ability to deploy, from a repo that owns neither. That is a
+ * strictly wider grant than the precedent it claimed to follow:
+ * website/infra's own deployer only ever received a *bucket-scoped*
+ * `roles/storage.objectAdmin` on this bucket (KNOWN_ISSUES.md).
+ *
+ * So the grant moves to the one bucket this stack actually owns. Two
+ * consequences, both deliberate:
+ *
+ * 1. **CI can no longer reach the Pulumi state bucket via this role**, which
+ *    makes RUNBOOK-bootstrap.md's explicit `gcloud storage buckets
+ *    add-iam-policy-binding` on `gs://branchleft-pulumi-state` genuinely
+ *    load-bearing and genuinely irreducible -- exactly the chicken-and-egg
+ *    KNOWN_ISSUES.md describes, rather than the redundant belt-and-braces
+ *    step the earlier version of that runbook (honestly, but wrongly)
+ *    described it as.
+ * 2. **CI can no longer create a bucket at all.** `storage.buckets.create`
+ *    only exists at project scope. Rob's bootstrap apply creates the media
+ *    bucket under his own credentials; CI only ever updates it. Same shape
+ *    as `roles/cloudsql.editor` above, and the same tradeoff -- a change
+ *    that *replaces* the bucket 403s in CI, which is the correct outcome for
+ *    a resource holding every tenant's media.
+ *
+ * **Why `roles/storage.legacyBucketOwner` and not bucket-scoped
+ * `roles/storage.admin`.** An earlier revision rejected legacyBucketOwner,
+ * on the grounds that it grants `storage.objects.{create,delete,list}` --
+ * true, but that objection was about granting it at *project* level, where
+ * those object permissions spread across every bucket including the state
+ * bucket. At bucket scope the objection largely evaporates, and what is left
+ * is a real gain: verified against the live role definition,
+ * legacyBucketOwner holds `storage.buckets.{get,getIamPolicy,setIamPolicy,
+ * update}` -- everything this program needs -- and **not
+ * `storage.buckets.delete`**, which bucket-scoped `storage.admin` would
+ * carry. The media bucket is the one resource in this stack with no
+ * deletion-protection field of any kind (it is the reason
+ * scripts/assert-no-platform-deletes.py exists), so removing the delete
+ * permission outright is the single most valuable narrowing available here.
+ * It is also this role's intended scope: "Legacy Bucket Owner" is the
+ * bucket-level ACL-equivalent role, so using it at bucket level is idiomatic
+ * rather than the misuse the earlier comment implied.
+ *
+ * **Disclosed residual, not closed.** legacyBucketOwner still lets CI
+ * create, delete and list *objects* in this bucket -- i.e. a compromised
+ * workflow run could delete every tenant's media file by file. No predefined
+ * role separates "manage bucket configuration" from "manage bucket
+ * contents" at bucket scope (checked against the full `roles/storage.*`
+ * list: admin and legacyBucketOwner both carry object permissions;
+ * everything narrower loses `setIamPolicy`). Closing this needs a custom
+ * role, which is itself a project-level IAM resource and so Rob-gated;
+ * deliberately not taken on in this change. Object versioning plus the
+ * 30-day noncurrent lifecycle rule in mediaBucket.ts is the partial
+ * mitigation that already exists.
+ *
+ * **Self-referential, and that is fine.** This binding grants the permission
+ * (`storage.buckets.setIamPolicy`) needed to manage this binding. It is
+ * created once by Rob's bootstrap and then never changes, so CI never
+ * exercises the circularity. If it is ever edited, CI can apply the edit --
+ * bounded, like everything else here, to this one bucket.
+ */
+export const deployerMediaBucketAccess = new gcp.storage.BucketIAMMember(
+  'ghost-platform-media-deployer-manage',
+  {
+    bucket: mediaBucket.name,
+    role: 'roles/storage.legacyBucketOwner',
+    member: deployerMember,
+  }
+);
 
 /**
  * Roles deliberately NOT granted, with the reasoning, so their absence is
@@ -152,6 +228,11 @@ for (const [name, role] of projectRoles) {
  * - `roles/resourcemanager.projectIamAdmin` (or anything else carrying
  *   `resourcemanager.projects.setIamPolicy`). CI cannot grant itself roles.
  *   This is the programme-level rule, not a local preference.
+ *
+ * - Any project-level `roles/storage.*`. See `deployerMediaBucketAccess`
+ *   above: the Pulumi state bucket for four stacks, two of them owned by
+ *   other repos, lives in this project, so a project-level storage grant
+ *   here reaches into `website`'s and `shared-infra`'s state.
  *
  * - `roles/cloudkms.admin`. CI needs to *use* the stack's KMS key to decrypt
  *   `Pulumi.platform.yaml`'s `encryptedkey`, which is

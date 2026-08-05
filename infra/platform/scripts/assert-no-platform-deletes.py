@@ -39,12 +39,27 @@ This one flags any op whose name contains "delete" or "replace", which is
 fail-closed: an op name added or renamed by a future Pulumi version is far
 more likely to be caught than to be silently ignored.
 
-What this cannot prove: the same limit `website/infra`'s gate carries.
-`pulumi preview` compares the program to Pulumi *state*, never to live GCP.
-A resource already deleted out-of-band still shows as unchanged here. This
-gate answers "will this apply destroy something", not "is the platform
-intact". A periodic `pulumi refresh --preview-only` is the control for the
-second question, and this script is not it.
+What this cannot prove — two distinct limits, both real:
+
+1. `pulumi preview` compares the program to Pulumi *state*, never to live
+   GCP, the same limit `website/infra`'s gate carries. A resource already
+   deleted out-of-band still shows as unchanged here. This gate answers
+   "will this apply destroy something", not "is the platform intact". A
+   periodic `pulumi refresh --preview-only` is the control for the second
+   question, and this script is not it.
+
+2. A rename carrying Pulumi's `aliases` resource option produces an in-place
+   update with no destructive step at all, so the plan check below correctly
+   reports clean. That is the right answer for the apply -- nothing is
+   destroyed -- but it silently retires the old logical name, and if
+   `PROTECTED` still holds that name the gate would go on passing while
+   guarding a resource that no longer exists under it. `--verify-coverage`
+   is what closes that: it fails when a `PROTECTED` name is no longer used
+   as a resource's logical id, aliased or not. It is deliberately *not* a
+   substring search over the sources, because that version of the check
+   returned a false "all present" for exactly this case -- the renamed id
+   was still matched by an unrelated occurrence of the same text elsewhere
+   in the program.
 """
 
 import json
@@ -74,7 +89,28 @@ PROTECTED = {
     "ghost-platform-gha-provider",
     "ghost-platform-deployer-sa",
     "ghost-platform-gha-can-impersonate-deployer",
+    # CI's own bucket-scoped grant on the media bucket. Losing it does not
+    # lose data, but CI cannot restore it either -- the permission it would
+    # need to re-grant it is the one it just lost -- so recovery is a manual
+    # gcloud step, same as the impersonation binding above.
+    "ghost-platform-media-deployer-manage",
 }
+
+
+def _declaration_pattern(name: str) -> re.Pattern[str]:
+    """Match `new <Ctor>('<name>'` -- a resource *declaration*, not a mention.
+
+    Anchored to the constructor call because the obvious implementation --
+    searching the sources for the bare name -- reports a false pass. Renaming
+    only the logical id in `database.ts` left the same text present elsewhere
+    in the program (a GCP-side name constant in `config.ts` that happens to
+    share it today), and the check happily reported all names still present
+    while the id it was protecting no longer existed.
+
+    Tolerates the argument on the following line, which is how the longer
+    resource declarations in this program are formatted.
+    """
+    return re.compile(rf"""\bnew\s+[\w.]+\(\s*['"]{re.escape(name)}['"]""")
 
 # Any Pulumi step op whose name contains either of these destroys, or
 # schedules the destruction of, the resource it names. Covers `delete`,
@@ -196,9 +232,62 @@ def self_test() -> int:
             failed = True
             print(f"FAIL: {name} returned clean instead of raising")
 
+    failed |= _coverage_self_test() != 0
+
     if failed:
         print("\nThis gate no longer behaves as written. It would report success")
         print("against a plan that destroys a protected platform resource.")
+    return 1 if failed else 0
+
+
+def _coverage_self_test() -> int:
+    """Prove `--verify-coverage` still distinguishes a declaration from a mention.
+
+    This exists because the substring version of the check did not, and
+    reported a clean pass against a program whose protected resource had been
+    renamed out from under it. A self-test that only exercised the plan
+    matcher would not have caught that.
+    """
+    import tempfile
+
+    declarations = "\n".join(
+        f"export const r{i} = new gcp.some.Type(\n  '{name}',\n  {{}}\n);"
+        for i, name in enumerate(sorted(PROTECTED))
+    )
+    renamed = declarations.replace(
+        "'ghost-platform-media'", "'ghost-platform-media-v2'", 1
+    )
+    # The renamed program still mentions the old name -- as a comment and as
+    # a plain string constant, which is exactly the shape that fooled the
+    # substring check.
+    renamed += (
+        "\n// was ghost-platform-media before the rename\n"
+        "export const mediaBucketName = 'ghost-platform-media';\n"
+    )
+
+    cases = [
+        ("every protected name declared", declarations, 0),
+        ("one renamed, old name still mentioned in a comment/constant", renamed, 1),
+    ]
+
+    failed = False
+    with tempfile.TemporaryDirectory() as root:
+        for name, source, expected in cases:
+            directory = pathlib.Path(root) / name.replace(" ", "_").replace("/", "_")
+            directory.mkdir()
+            (directory / "program.ts").write_text(source, encoding="utf-8")
+            actual = verify_coverage(str(directory))
+            ok = actual == expected
+            failed |= not ok
+            print(f"{'PASS' if ok else 'FAIL'}: coverage, {name} -> exit {actual} (expected {expected})")
+
+        empty = pathlib.Path(root) / "empty"
+        empty.mkdir()
+        actual = verify_coverage(str(empty))
+        ok = actual == 1
+        failed |= not ok
+        print(f"{'PASS' if ok else 'FAIL'}: coverage, no .ts files -> exit {actual} (expected 1)")
+
     return 1 if failed else 0
 
 
@@ -208,7 +297,10 @@ def verify_coverage(program_dir: str) -> int:
     The quiet way this gate dies is not the matcher breaking -- it is someone
     renaming a resource in `database.ts` or `mediaBucket.ts` while PROTECTED
     keeps the old name. Nothing errors: the plan's URNs simply stop matching
-    the set, and the gate passes forever while protecting nothing.
+    the set, and the gate passes forever while protecting nothing. A bare
+    rename is still caught by the plan check (it shows up as a real
+    delete + create); a rename carrying `aliases` is not, and this is the
+    only thing standing between that and a gate that guards nothing.
 
     Checking against the program source rather than against a preview is
     deliberate. A steady-state preview's step list depends on which unchanged
@@ -227,21 +319,19 @@ def verify_coverage(program_dir: str) -> int:
 
     blob = "\n".join(path.read_text(encoding="utf-8") for path in sources)
     missing = [
-        name
-        for name in sorted(PROTECTED)
-        # The Pulumi resource name as it is written in the program: the first
-        # string argument to a resource constructor, in single or double
-        # quotes.
-        if not re.search(rf"""['"]{re.escape(name)}['"]""", blob)
+        name for name in sorted(PROTECTED) if not _declaration_pattern(name).search(blob)
     ]
     if missing:
         print(
             "::error::these protected resource names are in this script's "
-            f"PROTECTED set but appear nowhere in {program_dir}/*.ts: "
-            f"{', '.join(missing)}. Either a resource was renamed and this "
-            "set was not updated -- in which case the gate is now protecting "
-            "nothing -- or a resource was removed on purpose and should be "
-            "removed from PROTECTED in the same change."
+            f"PROTECTED set but are not declared as the logical id of any "
+            f"resource in {program_dir}/*.ts: {', '.join(missing)}. Either a "
+            "resource was renamed and this set was not updated -- in which "
+            "case the gate is now protecting nothing -- or a resource was "
+            "removed on purpose and should be removed from PROTECTED in the "
+            "same change. Note a mention of the name in a comment or a "
+            "string constant does not count; it has to be the first argument "
+            "to a resource constructor."
         )
         return 1
 
