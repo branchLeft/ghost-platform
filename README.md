@@ -1,22 +1,32 @@
 # ghost-platform
 
 Reusable, public-facing pieces of branchLeft's multi-tenant Ghost hosting
-platform: the tenant container image (this repo, today), and eventually
-Pulumi components, the base theme, and shared Handlebars partials.
+platform: the tenant container image, the shared-platform and per-tenant
+Pulumi infrastructure (`infra/`), and eventually the base theme and shared
+Handlebars partials.
 
 This repo is engineered as if it were already public — no secrets, no
 tenant names, no internal-only shorthand — even while it's still private.
 
 ## What's here today
 
-One deliverable: **the tenant Ghost container image** — a `Dockerfile`
-building on the official `ghost` image, pinned to an explicit version and
-digest, with no tenant-specific configuration baked in. Every tenant runs
-the *same* image; everything that differs between tenants (database
-credentials, site URL, storage bucket prefix, ...) is supplied at deploy
-time via environment variables. Provisioning that infrastructure (Pulumi,
-Cloud SQL, GCS, Secret Manager, Artifact Registry) is a later story — this
-repo does not touch GCP.
+**The tenant Ghost container image** — a `Dockerfile` building on the
+official `ghost` image, pinned to an explicit version and digest, with no
+tenant-specific configuration baked in. Every tenant runs the *same* image;
+everything that differs between tenants (database credentials, site URL,
+storage bucket prefix, ...) is supplied at deploy time via environment
+variables (see the table below).
+
+**The infrastructure that provisions it** — see [`infra/README.md`](infra/README.md)
+for the split between the shared platform stack (`infra/platform/`: the
+Cloud SQL instance, the tenant image's Artifact Registry repository, the
+shared media bucket) and the reusable per-tenant component
+(`infra/tenant/`: a tenant's dedicated service account, logical database,
+storage write-isolation, and Cloud Run service). Actually instantiating
+that component for a real tenant — the `ghost-platform-tenants` repo and
+Workload Identity Federation for CI — is still a later story; nothing in
+this repo pushes an image anywhere or applies infrastructure to GCP on its
+own.
 
 Ghost runs one site per process. "Multi-tenant" here means one container
 per tenant on shared compute, not one process serving many sites — see
