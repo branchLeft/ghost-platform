@@ -86,56 +86,57 @@ const PROVISIONING_PASSWORD_SECRET_ID = 'ghost-platform-provisioner-db-password'
  * on every `pulumi preview`, from CI runners with no stable egress IP, into
  * an instance whose `authorizedNetworks` is deliberately empty).
  *
- * So the narrowing is real, it is just not something this file can perform.
- * The intended follow-up, stated here so the gap is legible rather than
- * silently accepted: **the first runbook run that uses this credential should
- * begin by narrowing it**, connecting as this user and issuing
- *
- *     REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'ghost_platform_provisioner'@'%';
- *     GRANT CREATE USER ON *.* TO 'ghost_platform_provisioner'@'%';
- *
- * `CREATE USER` is the single MySQL privilege that authorises
- * `ALTER USER ... WITH MAX_USER_CONNECTIONS`, and it grants no data access
- * whatsoever. That is a genuinely narrow credential -- it just has to be
- * reached by self-revocation *after* creation, because the API hands out the
- * wide version first and offers no alternative.
+ * So the narrowing is real in principle, but a live attempt against the
+ * production instance on 2026-08-05 found it **is not achievable by any
+ * customer-accessible Cloud SQL account** -- this is not a gap in this file,
+ * it is a platform limitation, confirmed the hard way. Full incident and
+ * evidence: RUNBOOK-bootstrap.md, Part 2. Summary: `REVOKE ALL PRIVILEGES,
+ * GRANT OPTION FROM ...` (the form this comment used to recommend) is
+ * blocked by Cloud SQL reserving the `sys` schema even from
+ * `cloudsqlsuperuser`; revoking the role itself succeeds, but the follow-up
+ * `GRANT CREATE USER ON *.* TO ...` then fails, because granting any
+ * privilege in MySQL requires holding it `WITH GRANT OPTION`, and no
+ * customer-facing account -- root included -- has grant option on anything
+ * in Cloud SQL. That sequencing (revoke the wide role, then discover the
+ * narrow grant is impossible) left the account holding no privilege at all,
+ * a real self-lockout, recovered only by deleting and recreating the account
+ * via the Admin API so Google's own provisioning path re-ran.
  *
  * ****************************************************************************
- * THE NARROWING IS PART OF CREATING THIS CREDENTIAL, NOT A LATER IMPROVEMENT.
+ * DECISION: ACCEPTED AT FULL `cloudsqlsuperuser` BREADTH. NOT A LATER FIX.
  *
- * Round-2 review was right that an earlier draft of this comment left the
- * REVOKE as aspirational -- something a future story "should" do, with
- * nothing stopping that story from running the ALTER USER it actually wants,
- * deferring the REVOKE, and leaving a full-privilege password in Secret
- * Manager indefinitely. That is a realistic outcome, so the narrowing has
- * moved into the same mandatory, Rob-gated runbook step as the `pulumi up`
- * that creates the account (RUNBOOK-bootstrap.md, "Applying the provisioning
- * credential"). The apply is not finished until the REVOKE has run.
+ * Narrowing this credential below `cloudsqlsuperuser` is not possible via SQL
+ * from any account a customer can reach -- confirmed live, by two independent
+ * failure modes, not assumed from documentation. Do not re-attempt the
+ * REVOKE/GRANT sequence above; RUNBOOK-bootstrap.md Part 2 documents why it
+ * reproduces the same lockout. The credential is accepted, deliberately, at
+ * full breadth: it can read, write, or drop any tenant's database.
  *
- * **Precondition on every future story: no code, job, runbook or human may
- * treat this credential as safe to reference until the narrowing is verified
- * to have actually run.** Verification is a single read-only query, not a
- * document to trust:
+ * **What makes that acceptable today, and what would make it stop being
+ * acceptable:** nothing consumes this credential yet -- no service account
+ * has `secretAccessor` on it, no Pulumi program imports it, `index.ts`
+ * exports nothing about it. The risk is real but currently unreachable by
+ * any running workload. **The first story that wires a consumer to this
+ * secret must re-open this decision before doing so** -- worth evaluating
+ * then: Cloud SQL IAM database authentication instead of a static
+ * password-holding role account, or limiting *when* the credential is
+ * reachable (e.g. a short-lived, manually-invoked Cloud Run Job rather than
+ * a standing secret a long-running service can read). Do not carry forward
+ * "we already decided this is fine" once a consumer exists -- the acceptance
+ * here is conditioned on zero consumers, not indefinite.
+ *
+ * Verification that the account is at its accepted (not locked-out) state is
+ * a single read-only query, run any time:
  *
  *     SHOW GRANTS FOR 'ghost_platform_provisioner'@'%';
  *
- * Narrowed, that returns exactly one row:
+ * Expected -- exactly two rows:
  *
- *     GRANT CREATE USER ON *.* TO `ghost_platform_provisioner`@`%`
+ *     GRANT USAGE ON *.* TO `ghost_platform_provisioner`@`%`
+ *     GRANT `cloudsqlsuperuser`@`%` TO `ghost_platform_provisioner`@`%`
  *
- * Anything else -- in particular a row containing `ALL PRIVILEGES` or the
- * `cloudsqlsuperuser` role -- means the narrowing has not run and the
- * credential is still root-equivalent over every tenant's data. Stop and run
- * it before going further.
- *
- * **Pulumi cannot enforce this, and pretending otherwise would be worse than
- * saying so.** Grants live behind a SQL connection; no `gcp.*` resource and
- * no CI job in this repo has a path to one (see the paragraph above on why
- * `@pulumi/mysql` was rejected). So the honest control is: the narrowing is
- * in the same runbook step as the creation, and the check above is one query
- * anyone can run in ten seconds. Until it has been run, **this credential
- * sits at full cloudsqlsuperuser breadth** -- weigh it on that basis, not on
- * the narrowed end state.
+ * One row only (bare `USAGE`) means the account is locked out -- see
+ * RUNBOOK-bootstrap.md Part 2 for the recovery command.
  * ****************************************************************************
  *
  * The mitigating facts, none of which change the above: it has no service
@@ -171,13 +172,14 @@ const PROVISIONING_PASSWORD_SECRET_ID = 'ghost-platform-provisioner-db-password'
  *    `maxUserConnectionsStatement` output already produces verbatim, then
  *    `FLUSH PRIVILEGES` is *not* needed (ALTER USER takes effect on the
  *    user's next connection).
- * 4. **Confirm the narrowing already happened** -- `SHOW GRANTS FOR
- *    'ghost_platform_provisioner'@'%';` must return exactly
- *    ``GRANT CREATE USER ON *.* TO `ghost_platform_provisioner`@`%` ``. It is
- *    part of the credential's creation runbook, not this follow-up's job, but
- *    it is this follow-up's job to check rather than assume: if it returns
- *    anything wider, the credential is still root-equivalent and must be
- *    narrowed before anything is wired to it.
+ * 4. **Re-open the acceptance decision before wiring any consumer to this
+ *    credential.** It is accepted at full `cloudsqlsuperuser` breadth (see
+ *    "DECISION" above) precisely because nothing consumes it yet -- that
+ *    condition stops being true the moment this follow-up exists. Confirm
+ *    `SHOW GRANTS FOR 'ghost_platform_provisioner'@'%';` still shows the
+ *    accepted two-row state (not a lockout), and treat "is full-breadth
+ *    acceptable now that something reads it" as an open question this
+ *    follow-up must answer, not inherit unexamined.
  *
  * ----------------------------------------------------------------------------
  * DELETION AND ROTATION POSTURE
