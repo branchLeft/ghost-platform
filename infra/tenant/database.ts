@@ -11,11 +11,11 @@ import { secretWithValue } from './secrets';
  *
  * Reasoning, not a verified live measurement: `infra/platform/database.ts`
  * runs `db-f1-micro`, shared by however many tenants the platform has at any
- * given time -- currently two (branchLeft's own blog, not yet launched;
- * Salamander News, small and low-traffic), per OPEN-QUESTIONS.md #4. This
- * story has no live instance to query `SHOW VARIABLES LIKE
- * 'max_connections'` against, so the instance's actual ceiling is not
- * confirmed here -- flagging that gap rather than asserting a number this
+ * given time -- currently a small number of low-traffic outlets, per
+ * OPEN-QUESTIONS.md #4 (this repo doesn't name tenants -- see this repo's
+ * own README on why). This story has no live instance to query
+ * `SHOW VARIABLES LIKE 'max_connections'` against, so the instance's actual
+ * ceiling is not confirmed here -- flagging that gap rather than asserting a number this
  * story didn't check. 10 is chosen as a value that comfortably covers one
  * Ghost container's own connection pool (including a burst of concurrent
  * cold-start/horizontal-replica connections, per doc 06's confirmation that
@@ -32,9 +32,29 @@ interface DatabaseResult {
   dbUser: gcp.sql.User;
   dbUserNameSecret: gcp.secretmanager.Secret;
   dbUserPasswordSecret: gcp.secretmanager.Secret;
-  /** Unix socket path Cloud Run mounts once the `cloudSqlInstance` volume
-   * below is attached -- the value for `database__connection__host`. */
-  connectionHost: pulumi.Output<string>;
+  /**
+   * Unix socket path Cloud Run mounts once the `cloudSqlInstance` volume is
+   * attached (`cloudRunService.ts`) -- the value for
+   * `database__connection__socketPath`, **not** `database__connection__host`.
+   * An earlier version of this component wired this into `host`, which is
+   * wrong: verified directly against Ghost's own source
+   * (`ghost/core/core/server/data/db/connection.js` passes `dbConfig.connection`
+   * straight into `knex()`/mysql2 with no `socketPath`-from-`host` handling
+   * of any kind, and `ghost/core/core/shared/config/utils.ts`'s
+   * `sanitizeDatabaseProperties` -- the only place Ghost post-processes
+   * `database.connection` -- touches `client`/`filename`/`host`/`user`/
+   * `password`/`database` and never `socketPath`; a repo-wide
+   * `grep -rn socketPath ghost/core` excluding tests returns zero matches).
+   * mysql2 treats `host` as a TCP hostname unless it is literally
+   * `'localhost'`; a Cloud SQL connection-name-shaped path
+   * (`/cloudsql/project:region:instance`) set as `host` resolves as a DNS
+   * lookup and fails with `ENOTFOUND` -- the service would deploy
+   * successfully and then crash-loop, exactly the "applies cleanly, does
+   * nothing" failure shape this programme keeps hitting. `socketPath` is
+   * mysql2's actual, distinct connection option for Unix-socket connections
+   * and is passed through unmodified by the same code path.
+   */
+  connectionSocketPath: pulumi.Output<string>;
   cloudSqlClientBinding: gcp.projects.IAMMember;
   /**
    * The exact statement a platform admin needs to run to actually apply
@@ -182,7 +202,7 @@ export function createTenantDatabase(
     { parent }
   );
 
-  const connectionHost = pulumi.interpolate`/cloudsql/${dbInstanceConnectionName}`;
+  const connectionSocketPath = pulumi.interpolate`/cloudsql/${dbInstanceConnectionName}`;
 
   // **What this component does NOT apply, stated plainly rather than
   // silently skipped.** Doc 02 decides MAX_USER_CONNECTIONS should be set
@@ -224,7 +244,7 @@ export function createTenantDatabase(
     dbUser,
     dbUserNameSecret,
     dbUserPasswordSecret,
-    connectionHost,
+    connectionSocketPath,
     cloudSqlClientBinding,
     maxUserConnectionsStatement,
     maxUserConnections,

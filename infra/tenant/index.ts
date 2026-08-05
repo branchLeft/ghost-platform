@@ -154,7 +154,7 @@ export class GhostTenant extends pulumi.ComponentResource {
       dbInstanceConnectionName: args.platform.dbInstanceConnectionName,
       database: {
         databaseName: db.database.name,
-        connectionHost: db.connectionHost,
+        connectionSocketPath: db.connectionSocketPath,
         dbUserNameSecret: db.dbUserNameSecret,
         dbUserPasswordSecret: db.dbUserPasswordSecret,
       },
@@ -164,7 +164,7 @@ export class GhostTenant extends pulumi.ComponentResource {
         accessKeyIdSecret: storage.accessKeyIdSecret,
         secretAccessKeySecret: storage.secretAccessKeySecret,
       },
-      dependsOn: [db.dbUser, db.cloudSqlClientBinding, storage.managedFolder],
+      dependsOn: [db.dbUser, db.cloudSqlClientBinding, storage.writeBinding],
     });
 
     createPublicInvokerBinding(this, args.tenantName, region, service);

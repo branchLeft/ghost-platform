@@ -35,7 +35,7 @@ export interface CloudRunServiceArgs {
   dbInstanceConnectionName: pulumi.Input<string>;
   database: {
     databaseName: pulumi.Input<string>;
-    connectionHost: pulumi.Output<string>;
+    connectionSocketPath: pulumi.Output<string>;
     dbUserNameSecret: gcp.secretmanager.Secret;
     dbUserPasswordSecret: gcp.secretmanager.Secret;
   };
@@ -124,7 +124,15 @@ export function createCloudRunService(
             envs: [
               plainEnv('url', args.siteUrl),
               plainEnv('database__client', 'mysql'),
-              plainEnv('database__connection__host', args.database.connectionHost),
+              // NOT `database__connection__host` -- this is a Unix socket
+              // path (`/cloudsql/<connection-name>`, matching the
+              // `cloudSqlInstance` volume mount above), and Ghost's mysql2
+              // connection layer only recognises that as `socketPath`,
+              // never derived from `host`. See `database.ts`'s
+              // `connectionSocketPath` comment for how this was verified
+              // against Ghost's own source, and this repo's README for the
+              // corrected env var table entry.
+              plainEnv('database__connection__socketPath', args.database.connectionSocketPath),
               secretEnv('database__connection__user', args.database.dbUserNameSecret),
               secretEnv('database__connection__password', args.database.dbUserPasswordSecret),
               plainEnv('database__connection__database', args.database.databaseName),

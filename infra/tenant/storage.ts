@@ -3,13 +3,13 @@ import * as gcp from '@pulumi/gcp';
 import { secretWithValue } from './secrets';
 
 interface StorageResult {
-  managedFolder: gcp.storage.ManagedFolder;
+  writeBinding: gcp.storage.BucketIAMMember;
   accessKeyIdSecret: gcp.secretmanager.Secret;
   secretAccessKeySecret: gcp.secretmanager.Secret;
   bucketName: pulumi.Output<string>;
-  /** Trailing-slash-free prefix, e.g. `blog` -- used both as the managed
-   * folder name (with a trailing slash appended) and as the
-   * `storage__S3Storage__tenantPrefix` env var value. */
+  /** Trailing-slash-free prefix, e.g. `blog` -- used both to build the IAM
+   * condition's object-name prefix (with a trailing slash appended) and as
+   * the `storage__S3Storage__tenantPrefix` env var value. */
   tenantPrefix: string;
 }
 
@@ -27,8 +27,8 @@ interface StorageResult {
  *
  * ---
  *
- * **Storage write-isolation finding (verified against GCP docs/source, not
- * assumed):**
+ * **Storage write-isolation finding (verified against GCP docs, and
+ * corrected once already in review -- see the note at the bottom):**
  *
  * The story brief's framing is correct: a GCS HMAC key is a credential
  * *for* a service account (confirmed against `@pulumi/gcp`'s own
@@ -37,61 +37,110 @@ interface StorageResult {
  * key carries exactly the IAM permissions its underlying service account
  * has been granted -- nothing more, nothing less. So the real question is
  * whether *IAM* can scope a service account's *write* access to one prefix
- * of a shared bucket, and whether that scoping is actually enforced when
- * the access happens over the S3-compatible XML API (which is how Ghost's
- * `S3Storage` adapter and every HMAC-authenticated request work -- HMAC
- * keys can only be used against the XML API, never the JSON API, confirmed
- * against Google's HMAC keys documentation).
+ * of a shared bucket. HMAC keys can only be used against the XML API, never
+ * the JSON API (confirmed against Google's HMAC keys documentation).
  *
- * **Yes, via GCS Managed Folders, and yes, IAM is API-agnostic.** Two
- * things had to each be true, verified separately:
+ * **Mechanism: IAM Conditions on `resource.name`, matching
+ * `09-backup-restore-and-media-storage.md`'s decided design** ("IAM
+ * conditions scoped to each tenant's prefix provide the per-tenant
+ * isolation boundary") -- not GCS Managed Folders, which an earlier version
+ * of this file used. Managed Folders were switched away from in review: the
+ * citation used to justify API-agnostic enforcement for them (Google's
+ * generic Cloud Storage IAM overview, "users granted IAM permissions can
+ * still use the XML API...") describes ordinary bucket/object role
+ * bindings, not Managed Folders specifically -- a distinct, newer GCS
+ * resource type whose own documentation (fetched directly for this
+ * correction: the Managed Folders overview, the managed-folder IAM
+ * management page, and the interoperability/XML-API pages) never states,
+ * in either direction, whether a Managed Folder's IAM policy is enforced
+ * for XML API requests. That gap matters specifically because XML API is
+ * the *only* API HMAC keys can use -- presenting an extrapolated citation
+ * as confirmation for exactly the property this story most needed proven
+ * was the error, caught on review, not accepted here.
  *
- * 1. Managed folders (`gcp.storage.ManagedFolder`, a real bucket-scoped
- *    resource requiring `uniformBucketLevelAccess` -- already set on the
- *    platform's media bucket, confirmed by reading `mediaBucket.ts`) let an
- *    IAM policy be scoped to only the objects under a given prefix.
- *    Confirmed against Google's Managed Folders documentation and IAM
- *    permissions reference: `storage.objects.create` (needed for
- *    `PutObjectCommand`/multipart uploads), `storage.objects.get` (needed
- *    for `HeadObjectCommand`/`GetObjectCommand`) and `storage.objects.list`
- *    can all be granted at the managed-folder level, and that grant applies
- *    to objects using the folder's path as a name prefix -- including
- *    objects that don't exist yet at upload time. One documented caveat
- *    that matters operationally: **the managed folder must already exist**
- *    before a create request against that prefix will be authorized by its
- *    policy -- this component creates the `ManagedFolder` resource itself,
- *    ahead of granting IAM on it, so that ordering is handled here rather
- *    than left to whoever instantiates this component.
- * 2. IAM enforcement is not JSON-API-only. Google's Cloud Storage IAM
- *    overview states directly: "Although IAM permissions cannot be set
- *    through the XML API, users granted IAM permissions can still use the
- *    XML API, as well as any other tool for accessing Cloud Storage." That
- *    settles the specific risk this story flagged -- an HMAC key used over
- *    the XML API is authorized by the same IAM policy as any other access
- *    path for the same service account, not some broader or bypassed check.
+ * IAM Conditions don't have that gap: a condition is a predicate on an
+ * ordinary IAM role binding (the same `Policy`/`Binding` structure used for
+ * every other grant in this codebase, e.g. `mediaBucket.ts`'s public-read
+ * grant), not a separate resource type or enforcement path -- so the
+ * generic IAM-overview citation actually applies to it, unlike to Managed
+ * Folders. Condition expression format confirmed against two independent
+ * Google sources (the Cloud Storage IAM-conditions guidance and the IAM
+ * conditions attribute reference): `resource.name` for a Cloud Storage
+ * object is `projects/_/buckets/BUCKET_NAME/objects/OBJECT_NAME` --
+ * **`_` is a literal placeholder, not this project's real ID** (verified
+ * from two sources independently after Managed Folders' single-citation
+ * mistake, specifically to not repeat it) -- so
+ * `resource.name.startsWith("projects/_/buckets/<bucket>/objects/<prefix>/")`
+ * is the documented pattern for scoping a role binding to one prefix.
  *
- * **What this actually enforces vs. what it doesn't.** The service account
- * created for this tenant is granted `roles/storage.objectUser`
- * (create/get/list/delete -- deliberately not `objectAdmin`, which also
- * bundles `setIamPolicy`/`update`, permissions Ghost's own adapter never
- * calls; see the `S3Storage.ts` source read for this story, which only ever
- * issues Put/Get/Head/Delete/multipart-upload commands) scoped **only** to
- * this tenant's own managed folder -- never at the bucket level. That
- * means:
- * - This tenant's HMAC key cannot write, overwrite, or delete any object
- *   outside its own prefix -- it has no bucket-level grant to fall back to.
- * - This tenant's HMAC key *can* read and list within its own prefix
- *   (`objectUser` bundles `get`/`list`, and Ghost's adapter uses `get` for
- *   `exists()`/`read()`) -- not write-only in the strictest sense, but
- *   confined to its own prefix either way, so this doesn't reopen the
- *   cross-tenant read/enumeration risk `mediaBucket.ts`'s public-read
- *   finding was about (that finding was specifically about `allUsers`
- *   listing *every* tenant's prefix at the bucket level; this grant is
- *   neither `allUsers` nor bucket-level).
- * - This is a genuinely narrower, resource-scoped grant, not a
- *   convention or a naming pattern that merely looks scoped -- confirmed
- *   against `gcp.storage.ManagedFolderIamMember`'s own binding target
- *   (`bucket` + `managedFolder`, not `bucket` alone).
+ * **What this actually enforces vs. what it doesn't -- including what
+ * remains genuinely unverified, stated plainly rather than glossed over.**
+ * The service account created for this tenant is granted
+ * `roles/storage.objectCreator` (create only) and `roles/storage.legacyObjectReader`
+ * (get only, no list -- the same role `mediaBucket.ts` uses for the
+ * platform's public-read grant, for the same reason) via two separate
+ * conditional bindings, plus `storage.objects.delete` is **not** granted --
+ * see the note below on why that's a real, disclosed functional gap rather
+ * than a silent one. Both conditions are scoped to this tenant's own
+ * prefix, never bucket-level and never `allUsers`.
+ * - `storage.objects.list` is **deliberately not granted at all**, to this
+ *   tenant's SA, in any scope. Ghost's `S3Storage.ts` adapter (read
+ *   directly for this story) never calls `ListObjectsCommand`, so this
+ *   costs nothing functionally. It's also the right call given a real,
+ *   documented ambiguity: Google's own IAM-conditions-for-Cloud-Storage
+ *   guidance says list requests need a *different*, special API attribute
+ *   (`storage.googleapis.com/objectListPrefix`) to be scoped correctly, and
+ *   separately warns that Cloud Storage API attributes "are supported only
+ *   in Credential Access Boundaries; if you use [them] in a conditional
+ *   role binding, Cloud Storage methods will work incorrectly and fail
+ *   unexpectedly." A plain `resource.name.startsWith(...)` condition on
+ *   `storage.objects.list` is therefore not confirmed to scope list at all
+ *   (list's own authorized resource is arguably the bucket, not an object
+ *   name) -- rather than ship an unverified guess in either direction
+ *   (silently over-broad, or silently non-functional), this component just
+ *   doesn't grant it.
+ * - **Not granting `storage.objects.delete` is a real functional gap,
+ *   disclosed rather than hidden.** Ghost's adapter does call
+ *   `DeleteObjectCommand` (its own `delete()` method). There is no
+ *   predefined GCS role bundling exactly create+get+delete without also
+ *   bundling `list` (`roles/storage.objectUser` is the closest, but
+ *   reintroduces the list ambiguity above across the *entire* grant,
+ *   including the permissions that don't have that ambiguity). A precise
+ *   fix is a custom IAM role with exactly those three permissions --
+ *   deliberately not added here, because a custom role is a
+ *   platform-level, created-once resource (the same permission set for
+ *   every tenant, only the condition differing), and defining it from
+ *   *this* per-tenant component would mean every independent tenant stack
+ *   fights to own the same shared role resource -- the identical shape of
+ *   problem this codebase already declined to solve from a per-tenant
+ *   component for a different reason (`database.ts`'s
+ *   `MAX_USER_CONNECTIONS` note). The right fix is a
+ *   `gcp.projects.IAMCustomRole` added to `infra/platform/` in its own
+ *   change, out of scope for this story to make unilaterally. Until then:
+ *   deleting/replacing an existing upload from Ghost's admin will fail for
+ *   any tenant using this component, loudly (a 403 from GCS), not
+ *   silently.
+ * - **Residual, unverified-against-a-live-bucket risk, named rather than
+ *   assumed away**, because `pulumi up` is never run in this story: (1)
+ *   whether `resource.name.startsWith(...)` conditions require the prefix
+ *   to already contain at least one object before a *new* create request
+ *   under that prefix is authorized (one third-party writeup claims yes for
+ *   a similar setup; GCS's own docs don't say either way for the plain
+ *   condition case, as opposed to Managed Folders, where pre-existence is
+ *   explicitly documented as required) -- if true, the very first upload
+ *   for a brand-new tenant could 403 until worked around. (2) Whether GCS
+ *   evaluates `resource.name` conditions identically for XML-API multipart
+ *   upload commands (`CreateMultipartUploadCommand`/`UploadPartCommand`/
+ *   `CompleteMultipartUploadCommand`) as it does for a single `PutObject`
+ *   call -- the generic IAM-is-API-agnostic citation supports this but
+ *   multipart's multi-request shape was not independently confirmed.
+ *   Either failure mode here is fail-closed (uploads 403 loudly) rather
+ *   than fail-open (cross-tenant write), since `uniformBucketLevelAccess`
+ *   is on and this SA has no bucket-level grant to fall back to -- but
+ *   "likely fail-closed" is a severity note, not a substitute for actually
+ *   exercising this against a real bucket before a real tenant depends on
+ *   it, which is exactly what the smoke-test stack in this PR cannot do
+ *   (preview only, nothing applied).
  */
 export function createTenantStorage(
   parent: pulumi.Resource,
@@ -113,28 +162,42 @@ export function createTenantStorage(
 
   const tenantPrefix = tenantName;
 
-  const managedFolder = new gcp.storage.ManagedFolder(
-    `${tenantName}-media-folder`,
-    {
-      bucket: bucketName,
-      // Managed folder names must end with a trailing slash.
-      name: `${tenantPrefix}/`,
-    },
-    { parent }
-  );
+  // Trailing slash is load-bearing: without it, `resource.name.startsWith(...)`
+  // would also match a *different* tenant whose prefix happens to share this
+  // one as a literal string prefix (e.g. tenant "blog" would otherwise also
+  // match objects under "blog-archive/") -- Ghost's own `S3Storage.ts`
+  // (`buildKey`) always inserts a `/` immediately after `tenantPrefix` when
+  // constructing a key, so this matches the real object-key shape, not an
+  // assumption about it.
+  // `_` is a literal placeholder GCP's own attribute-reference docs use for
+  // the project segment of a Cloud Storage resource name in IAM Conditions
+  // -- not this project's real ID. Verified against two independent Google
+  // sources; see the long comment above for why that mattered here
+  // specifically.
+  const conditionResourcePrefix = pulumi.interpolate`projects/_/buckets/${bucketName}/objects/${tenantPrefix}/`;
 
-  new gcp.storage.ManagedFolderIamMember(
-    `${tenantName}-media-write`,
-    {
-      bucket: bucketName,
-      managedFolder: managedFolder.name,
-      // create + get + list + delete, deliberately not objectAdmin -- see
-      // the write-isolation finding above for why this specific role.
-      role: 'roles/storage.objectUser',
-      member: pulumi.interpolate`serviceAccount:${serviceAccount.email}`,
-    },
-    { parent: managedFolder }
-  );
+  function conditionedBinding(name: string, role: string) {
+    return new gcp.storage.BucketIAMMember(
+      name,
+      {
+        bucket: bucketName,
+        role,
+        member: pulumi.interpolate`serviceAccount:${serviceAccount.email}`,
+        condition: {
+          title: `${tenantName}-own-prefix-only`,
+          description: `Restricts ${role} to this tenant's own object-name prefix in the shared media bucket.`,
+          expression: pulumi.interpolate`resource.name.startsWith("${conditionResourcePrefix}")`,
+        },
+      },
+      { parent }
+    );
+  }
+
+  // create + get, each condition-scoped to this tenant's own prefix. See the
+  // long comment above for why `delete` and `list` are deliberately not
+  // granted here.
+  const writeBinding = conditionedBinding(`${tenantName}-media-create`, 'roles/storage.objectCreator');
+  conditionedBinding(`${tenantName}-media-read`, 'roles/storage.legacyObjectReader');
 
   const hmacKey = new gcp.storage.HmacKey(
     `${tenantName}-media-hmac`,
@@ -160,5 +223,5 @@ export function createTenantStorage(
     serviceAccount.email
   ).secret;
 
-  return { managedFolder, accessKeyIdSecret, secretAccessKeySecret, bucketName, tenantPrefix };
+  return { writeBinding, accessKeyIdSecret, secretAccessKeySecret, bucketName, tenantPrefix };
 }
