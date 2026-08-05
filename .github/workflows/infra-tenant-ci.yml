@@ -1,15 +1,21 @@
 name: Tenant infra CI
 
 # Type-checks the reusable per-tenant Pulumi component (infra/tenant/).
-# Mirrors infra-platform-ci.yml's reasoning and structure deliberately --
-# same conclusion applies here: no `pulumi up`, no `pulumi preview` against
-# any real stack (which would need credentials this workflow deliberately
-# does not hold), no cloud credentials of any kind, no `id-token: write`.
-# This component isn't instantiated against a real tenant yet, but the same
-# "no unreviewed apply capability in CI" posture holds regardless -- it's
-# provisioning logic for per-tenant service accounts, DB credentials and
-# storage IAM, not something to loosen the guardrails on just because
-# nothing consumes it yet.
+# No `pulumi up`, no `pulumi preview`, no cloud credentials of any kind, no
+# `id-token: write`.
+#
+# This used to say it mirrored infra-platform-ci.yml's reasoning. It no
+# longer can: that workflow now applies its stack from CI (Rob, 2026-08-05).
+# The conclusion here is unchanged, but for a reason that was always the
+# stronger one and is now the only one -- `infra/tenant/` is a reusable
+# *component*, not a stack. There is nothing here to apply. It is
+# instantiated from the private `ghost-platform-tenants` repo, so the
+# decision about who applies a tenant's resources belongs to that repo's
+# pipeline, not this one, and this workflow could not hold the right
+# credentials for it even if it wanted to.
+#
+# So: do not "bring this in line with the platform workflow" by adding a
+# deploy job. There is no stack for one to select.
 #
 # Deliberately excludes infra/tenant/smoke-test/ -- that's a disposable,
 # manually-run preview harness (see its own README.md), not part of the

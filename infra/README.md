@@ -5,9 +5,15 @@ This repo's IaC, split by shape rather than lumped into one program:
 - **`platform/`** -- one Pulumi program, one stack (`platform`), for the
   handful of GCP resources that exist exactly once for the whole platform
   and are not specific to any tenant: the shared Cloud SQL instance, the
-  tenant image's Artifact Registry repository, the shared media bucket.
-  Applied by a human from a workstation, on a cadence closer to "rarely" --
-  it doesn't change per tenant.
+  tenant image's Artifact Registry repository, the shared media bucket. Also
+  holds this repo's CI identity -- a Workload Identity Federation pool and
+  provider scoped to this repository, and the deployer service account they
+  federate into. Applied by CI on every push to `main`
+  (`.github/workflows/infra-platform-ci.yml`), on a cadence closer to
+  "rarely" -- it doesn't change per tenant. The one exception is the initial
+  bootstrap, which has to run locally because it creates the identity CI
+  needs in order to run at all: see
+  [`platform/RUNBOOK-bootstrap.md`](platform/RUNBOOK-bootstrap.md).
 
 - **`tenant/`** -- a reusable Pulumi **component** (`GhostTenant`), not a
   stack: the per-tenant resources (a dedicated service account, logical
