@@ -1,0 +1,50 @@
+name: Tenant infra CI
+
+# Type-checks the reusable per-tenant Pulumi component (infra/tenant/).
+# Mirrors infra-platform-ci.yml's reasoning and structure deliberately --
+# same conclusion applies here: no `pulumi up`, no `pulumi preview` against
+# any real stack (which would need credentials this workflow deliberately
+# does not hold), no cloud credentials of any kind, no `id-token: write`.
+# This component isn't instantiated against a real tenant yet, but the same
+# "no unreviewed apply capability in CI" posture holds regardless -- it's
+# provisioning logic for per-tenant service accounts, DB credentials and
+# storage IAM, not something to loosen the guardrails on just because
+# nothing consumes it yet.
+#
+# Deliberately excludes infra/tenant/smoke-test/ -- that's a disposable,
+# manually-run preview harness (see its own README.md), not part of the
+# reusable component this workflow exists to protect.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/tenant
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/tenant/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/tenant/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
