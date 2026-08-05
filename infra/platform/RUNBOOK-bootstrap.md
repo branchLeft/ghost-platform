@@ -246,70 +246,117 @@ Once those resources are in state, CI's `pulumi up` runs **without
 against state, not live GCP, and makes no Cloud SQL or Secret Manager API
 call against them. No new deployer role is needed and none is added.
 
-### Part 2 — narrow it (mandatory, this is not a later improvement)
+### Part 2 — narrowing was attempted 2026-08-05 and is not achievable. Read this before trying again.
 
 As created, `ghost_platform_provisioner` holds `cloudsqlsuperuser`: every
 MySQL static privilege except SUPER and FILE, which means read/write/**drop**
-on every tenant's database. The Cloud SQL Admin API has no flag to create it
-narrower (`gcloud sql users create --help` has no privilege or role argument
-at all), so the only route to a narrow credential is to revoke immediately
-after creation. `provisioningUser.ts`'s header has the full analysis.
+on every tenant's database. This part of the runbook originally instructed
+revoking that down to bare `CREATE USER`. A live attempt found that
+unachievable, and produced a real incident (below) — **do not re-attempt
+this without reading the whole section.**
 
-Start the Cloud SQL Auth Proxy in one terminal — **not `gcloud sql connect`**,
-which temporarily adds your IP to `authorizedNetworks` and so shows up as
-drift on the next `pulumi preview`:
+**What actually happened, live, against the production instance:**
+
+1. `REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'ghost_platform_provisioner'@'%';`
+   (the statement this section used to specify) failed with
+   `ERROR 3879 (HY000): Access denied ... to database 'sys'`. Cloud SQL
+   reserves the `sys` schema even from `cloudsqlsuperuser`, and this
+   blanket form of `REVOKE` enumerates it internally.
+2. An explicit `REVOKE ... ON *.* FROM ...` (naming every static privilege
+   except `CREATE USER`/`SUPER`/`FILE`) ran with no error but changed
+   nothing — `SHOW GRANTS` confirmed the account holds those privileges only
+   through membership of the `cloudsqlsuperuser` **role**, not as direct
+   grants, so revoking direct privileges from the account is a no-op.
+3. Revoking the role itself —
+   `REVOKE `cloudsqlsuperuser`@`%` FROM 'ghost_platform_provisioner'@'%';` —
+   **succeeded.** `SHOW GRANTS` dropped to bare `USAGE ON *.*`.
+4. `GRANT CREATE USER ON *.* TO 'ghost_platform_provisioner'@'%';` — run
+   immediately after, from the same still-connected session — failed:
+   `ERROR 1045 (28000): Access denied for user 'ghost_platform_provisioner'@'%'`.
+   Granting a privilege in MySQL requires holding it **with `GRANT OPTION`**.
+   Nothing this account held, even as `cloudsqlsuperuser`, carried grant
+   option on anything. This is not a permissions mistake in the runbook — no
+   customer-facing Cloud SQL account (root included) holds `GRANT OPTION` on
+   any privilege. Google's control plane is the only grantor. Confirmed live,
+   not inferred from docs.
+5. Net effect: step 3 left the account holding **no usable privilege at
+   all**, with no SQL session reachable by a customer able to grant one back.
+   A genuine self-lockout on a production credential, recovered (not
+   designed around) as follows.
+
+**Recovery used, and the only known way back:** recreate the account via the
+Admin API, which re-runs Google's own provisioning path (the thing that
+originally granted `cloudsqlsuperuser` and that no customer session can
+invoke directly):
 
 ```bash
-cloud-sql-proxy branchleft-prod:europe-west1:ghost-platform-db --port 3306
-```
-
-In another, read the password and connect as the new user:
-
-```bash
+gcloud sql users delete ghost_platform_provisioner \
+  --instance=ghost-platform-db --host=% --project=branchleft-prod --quiet
 gcloud secrets versions access latest \
   --secret=ghost-platform-provisioner-db-password --project=branchleft-prod
-mysql -h 127.0.0.1 -P 3306 -u ghost_platform_provisioner -p
+gcloud sql users create ghost_platform_provisioner \
+  --instance=ghost-platform-db --host=% --project=branchleft-prod \
+  --password="<value from the command above>"
 ```
 
-Then, in that MySQL session:
+Same name/host/password as Pulumi's state, so `pulumi preview` still shows
+no drift. Verified restored via `SHOW GRANTS` matching the original two-row
+output (see Part 3).
 
-```sql
-REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'ghost_platform_provisioner'@'%';
-GRANT CREATE USER ON *.* TO 'ghost_platform_provisioner'@'%';
-```
+**Decision: accept this credential at full `cloudsqlsuperuser` breadth.**
+Narrowing it below that is not something any customer-accessible Cloud SQL
+account can do via SQL — confirmed live, twice, by two different failure
+modes. Re-attempting parts 1-4 above will not produce a different result.
+This is a real, understood residual risk (the credential can read, write, or
+drop any tenant's data), not a temporary gap:
 
-`CREATE USER` is the single privilege that authorises
-`ALTER USER ... WITH MAX_USER_CONNECTIONS`, and it carries no data access
-whatsoever. The account can still do its one job and can no longer read a
-single tenant row.
+- It is mitigated today only by **nothing consuming it** — no service
+  account has `secretAccessor` on its Secret Manager entry, so there is no
+  path from any running workload to this credential yet.
+- Before any future story wires a consumer to it (e.g. a provisioning
+  Cloud Function or CI job that runs the `ALTER USER ... WITH
+  MAX_USER_CONNECTIONS` statement), that story must re-open this decision —
+  options worth evaluating then include Cloud SQL IAM database
+  authentication instead of a static password-holding role account, or
+  further isolating *when* the credential is reachable (e.g. a short-lived
+  Cloud Run Job invoked manually per tenant, rather than a standing secret).
+  Do not treat "we already decided this is fine" as settled beyond the
+  current state of zero consumers.
 
-### Part 3 — verify, and record that you did
+**Connecting to it at all — practical gotchas hit live, in case you're doing
+this on Apple Silicon:** the published `cloud-sql-proxy` binary defaults to
+`x86_64`; on an M-series Mac with no Rosetta it is silently `kill`ed with no
+error output — download the `darwin.arm64` build instead. Homebrew's `mysql`
+9.x client dropped the `mysql_native_password` plugin file entirely, which
+this account's auth plugin needs — use `mariadb` (`brew install mariadb`)
+with `--skip-ssl` (the proxy's local `127.0.0.1` hop is deliberately
+plaintext; TLS happens inside the proxy's tunnel, and MariaDB's client
+otherwise insists on it), or Docker's `mysql:8.0` image reaching the proxy
+via `host.docker.internal` — **not** `--network host`, which is a no-op on
+Docker Desktop for Mac and causes a same-container connection-refused error
+that looks unrelated.
+
+### Part 3 — verify current state
 
 ```sql
 SHOW GRANTS FOR 'ghost_platform_provisioner'@'%';
 ```
 
-**Expected — exactly one row:**
+**Expected — exactly two rows (the account's original, accepted, full-breadth
+state):**
 
 ```
-GRANT CREATE USER ON *.* TO `ghost_platform_provisioner`@`%`
+GRANT USAGE ON *.* TO `ghost_platform_provisioner`@`%`
+GRANT `cloudsqlsuperuser`@`%` TO `ghost_platform_provisioner`@`%`
 ```
 
-If you see `ALL PRIVILEGES`, or a `cloudsqlsuperuser` role row, part 2 did not
-take. Re-run it. Do not leave the instance in that state.
-
-This query is the gate, not this document. **No future story, job, script or
-person may treat this credential as safe to reference until `SHOW GRANTS`
-returns that one row.** Pulumi cannot enforce it — grants live behind a SQL
-connection that no `gcp.*` resource and no CI job here can open — so the
-control is that the check is one read-only query anyone can run in ten
-seconds, and that it is the documented precondition for using the credential
-at all.
+If you see only the `USAGE` row, the account is currently locked out — run
+the recovery command block above before doing anything else. Do not attempt
+the narrowing sequence from Part 2 again; it will reproduce the same
+lockout.
 
 Rotation (bumping `rotationTag` in `provisioningUser.ts`) is also a local
-apply: `cloudsql.users.update` is `cloudsql.admin`-only too. The narrowing
-survives rotation — changing a password does not restore grants — so parts 2
-and 3 do not need repeating.
+apply: `cloudsql.users.update` is `cloudsql.admin`-only too.
 
 No service account has `secretAccessor` on the secret. That is deliberate —
 nothing consumes it yet, so the grant would open an access path with no user.
