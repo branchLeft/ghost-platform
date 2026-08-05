@@ -36,6 +36,12 @@ const requiredServices = [
   // distinct API from iam.googleapis.com, and a from-scratch project has
   // neither.
   'iamcredentials.googleapis.com',
+  // The provisioning credential's password (provisioningUser.ts /
+  // secrets.ts). Already enabled on this project by website/infra, which
+  // stores its own secrets here -- declared explicitly anyway, for the same
+  // reason as storage.googleapis.com above: a from-scratch project shouldn't
+  // depend on another repo's stack having turned it on.
+  'secretmanager.googleapis.com',
   // Deliberately NOT declared: `sts.googleapis.com`. It is the obvious
   // fourth entry for a WIF setup and it is not needed -- verified against
   // this project rather than assumed: `gcloud services list --enabled

@@ -4,7 +4,8 @@
   "main": "index.ts",
   "dependencies": {
     "@pulumi/pulumi": "^3.255.0",
-    "@pulumi/gcp": "^9.32.1"
+    "@pulumi/gcp": "^9.32.1",
+    "@pulumi/random": "^4.18.4"
   },
   "devDependencies": {
     "typescript": "^5.9.0",

@@ -204,6 +204,118 @@ ran and look at its job summary, don't just look for a green tick.
 
 ---
 
+## Applying the provisioning credential (one local apply, Rob-only)
+
+`provisioningUser.ts` adds a `gcp.sql.User` and a Secret Manager secret. **CI
+cannot create either**, and this is verified, not assumed:
+
+- `cloudsql.users.create` exists only in `roles/cloudsql.admin`. The deployer
+  holds `roles/cloudsql.editor`, which has `cloudsql.users.{get,list}` and
+  nothing that writes. Granting `cloudsql.admin` to fix that would also hand
+  CI `cloudsql.instances.delete` — the one permission this stack's identity
+  design exists to withhold. Not done.
+- The deployer holds no `secretmanager.*` permission at all.
+
+So the first apply of that file is **yours, locally**. It is a **three-part
+step and all three parts are mandatory** — part 2 is what stops this being a
+root-equivalent credential, and it is not optional or deferrable to a later
+story. Do not walk away between 1 and 3.
+
+### Do this immediately after merging the PR, before anything else lands
+
+CI applies this stack on **every** push to `main`, with no path filter. So
+from the moment the PR merges, the *next* merge to `main` — any merge, even
+one that touches nothing here — triggers a deploy that 403s on
+`cloudsql.users.create` and fails. It is loud, not silent, and nothing is left
+half-applied on the GCP side (the `Secret` `dependsOn` the `sql.User`, so a
+failed user creation means no secret either; only the `RandomPassword`, which
+is generated locally and calls no API, lands in state). But it will block
+unrelated work until you run part 1. Treat "merge PR" and "run part 1" as one
+action.
+
+### Part 1 — create the account and the secret
+
+```bash
+cd infra/platform
+pulumi preview --stack platform        # expect: 5 creates, 0 updates, 0 deletes
+pulumi up --stack platform
+```
+
+Once those resources are in state, CI's `pulumi up` runs **without
+`--refresh`** (see `.github/workflows/infra-platform-ci.yml`), so it diffs
+against state, not live GCP, and makes no Cloud SQL or Secret Manager API
+call against them. No new deployer role is needed and none is added.
+
+### Part 2 — narrow it (mandatory, this is not a later improvement)
+
+As created, `ghost_platform_provisioner` holds `cloudsqlsuperuser`: every
+MySQL static privilege except SUPER and FILE, which means read/write/**drop**
+on every tenant's database. The Cloud SQL Admin API has no flag to create it
+narrower (`gcloud sql users create --help` has no privilege or role argument
+at all), so the only route to a narrow credential is to revoke immediately
+after creation. `provisioningUser.ts`'s header has the full analysis.
+
+Start the Cloud SQL Auth Proxy in one terminal — **not `gcloud sql connect`**,
+which temporarily adds your IP to `authorizedNetworks` and so shows up as
+drift on the next `pulumi preview`:
+
+```bash
+cloud-sql-proxy branchleft-prod:europe-west1:ghost-platform-db --port 3306
+```
+
+In another, read the password and connect as the new user:
+
+```bash
+gcloud secrets versions access latest \
+  --secret=ghost-platform-provisioner-db-password --project=branchleft-prod
+mysql -h 127.0.0.1 -P 3306 -u ghost_platform_provisioner -p
+```
+
+Then, in that MySQL session:
+
+```sql
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'ghost_platform_provisioner'@'%';
+GRANT CREATE USER ON *.* TO 'ghost_platform_provisioner'@'%';
+```
+
+`CREATE USER` is the single privilege that authorises
+`ALTER USER ... WITH MAX_USER_CONNECTIONS`, and it carries no data access
+whatsoever. The account can still do its one job and can no longer read a
+single tenant row.
+
+### Part 3 — verify, and record that you did
+
+```sql
+SHOW GRANTS FOR 'ghost_platform_provisioner'@'%';
+```
+
+**Expected — exactly one row:**
+
+```
+GRANT CREATE USER ON *.* TO `ghost_platform_provisioner`@`%`
+```
+
+If you see `ALL PRIVILEGES`, or a `cloudsqlsuperuser` role row, part 2 did not
+take. Re-run it. Do not leave the instance in that state.
+
+This query is the gate, not this document. **No future story, job, script or
+person may treat this credential as safe to reference until `SHOW GRANTS`
+returns that one row.** Pulumi cannot enforce it — grants live behind a SQL
+connection that no `gcp.*` resource and no CI job here can open — so the
+control is that the check is one read-only query anyone can run in ten
+seconds, and that it is the documented precondition for using the credential
+at all.
+
+Rotation (bumping `rotationTag` in `provisioningUser.ts`) is also a local
+apply: `cloudsql.users.update` is `cloudsql.admin`-only too. The narrowing
+survives rotation — changing a password does not restore grants — so parts 2
+and 3 do not need repeating.
+
+No service account has `secretAccessor` on the secret. That is deliberate —
+nothing consumes it yet, so the grant would open an access path with no user.
+
+---
+
 ## After this: what changes, and what does not
 
 **Automatic from now on.** Any merge to `main` that changes `database.ts`,
