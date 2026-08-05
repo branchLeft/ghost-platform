@@ -243,6 +243,26 @@ export const deployerMediaBucketAccess = new gcp.storage.BucketIAMMember(
  *   `cloudkms.cryptoKeys.getIamPolicy` and that granting admin to fix it
  *   would let the pipeline rewrite who may decrypt its own secrets.
  *
+ * - `roles/cloudsql.admin` and `roles/secretmanager.admin`, which
+ *   `provisioningUser.ts`'s two resources would need CI to hold. **This is a
+ *   live constraint on that file, not a hypothetical.** Verified against the
+ *   live IAM API on 2026-08-05: `roles/cloudsql.editor` above holds
+ *   `cloudsql.users.{get,list}` and *not* `cloudsql.users.{create,update,
+ *   delete}` -- those three exist only in `roles/cloudsql.admin`, which also
+ *   carries `cloudsql.instances.delete`, the single permission this stack's
+ *   whole identity design was built to withhold. Trading the instance-delete
+ *   guarantee for the ability to create one user is a bad trade. Likewise the
+ *   deployer holds no `secretmanager.*` permission at all.
+ *
+ *   The consequence, per this file's governing "CI updates, it does not
+ *   bootstrap" assumption: **`provisioningUser.ts`'s resources must be
+ *   created by Rob's own local `pulumi up`, not by the merge-to-main CI
+ *   apply.** The CI apply will 403 on `cloudsql.users.create` if it gets
+ *   there first. Once they exist in state, CI's `pulumi up` -- which runs
+ *   without `--refresh` (infra-platform-ci.yml) and so diffs against state
+ *   rather than live GCP -- makes no API call against them and needs no new
+ *   role. See RUNBOOK-bootstrap.md's "Applying the provisioning credential".
+ *
  * The practical upshot: a PR that edits `workloadIdentity.ts` or the
  * `projectRoles` list above cannot be applied by CI. It fails loudly, and
  * the fix is Rob applying it locally -- see RUNBOOK-bootstrap.md's

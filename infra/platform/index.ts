@@ -6,6 +6,14 @@ import { region, projectId } from './config';
 import { workloadIdentityProvider } from './workloadIdentity';
 import { deployerServiceAccountEmail } from './serviceAccounts';
 import './apis';
+// Imported for its side effects only, and that is the point: the platform
+// provisioning DB user and its Secret Manager entry must be *created*, but
+// nothing about them -- name, password, secret ID, secret version -- may leave
+// this stack. See provisioningUser.ts's header for the full privilege
+// analysis; the short version is that it is a cross-tenant-privileged
+// credential with no consumer yet, so there is nothing to export it to and
+// every export would only widen where it can be picked up from.
+import './provisioningUser';
 
 // Everything a future tenant-provisioning story needs to point at, without
 // this stack knowing anything about any tenant. No hostname, tenant name,

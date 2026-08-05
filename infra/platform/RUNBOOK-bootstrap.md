@@ -204,6 +204,56 @@ ran and look at its job summary, don't just look for a green tick.
 
 ---
 
+## Applying the provisioning credential (one local apply, Rob-only)
+
+`provisioningUser.ts` adds a `gcp.sql.User` and a Secret Manager secret. **CI
+cannot create either**, and this is verified, not assumed:
+
+- `cloudsql.users.create` exists only in `roles/cloudsql.admin`. The deployer
+  holds `roles/cloudsql.editor`, which has `cloudsql.users.{get,list}` and
+  nothing that writes. Granting `cloudsql.admin` to fix that would also hand
+  CI `cloudsql.instances.delete` — the one permission this stack's identity
+  design exists to withhold. Not done.
+- The deployer holds no `secretmanager.*` permission at all.
+
+So the first apply of that file is **yours, locally**, exactly like step 1:
+
+```bash
+cd infra/platform
+pulumi preview --stack platform        # expect: 5 creates, 0 updates, 0 deletes
+pulumi up --stack platform
+```
+
+Once those resources are in state, CI's `pulumi up` runs **without
+`--refresh`** (see `.github/workflows/infra-platform-ci.yml`), so it diffs
+against state, not live GCP, and makes no Cloud SQL or Secret Manager API call
+against them. No new deployer role is needed and none is added.
+
+**If you merge the PR before running this**, the next CI apply 403s on
+`cloudsql.users.create` and the whole run fails — loudly, and without partial
+damage, since a failed resource aborts the update. Recovery is just: run the
+two commands above, then re-run the workflow.
+
+**What you now own.** `ghost_platform_provisioner` is a MySQL account with
+`cloudsqlsuperuser` (every static privilege except SUPER and FILE) on the
+shared instance — read/write/drop on every tenant's database. Cloud SQL's
+Admin API offers no way to create it narrower; `provisioningUser.ts`'s header
+explains this in full and gives the `REVOKE`/`GRANT CREATE USER` pair that
+narrows it to just its job. Running that narrowing is the follow-up story's
+first step. Until then, treat this password as root.
+
+Reading it, when a runbook eventually needs to:
+
+```bash
+gcloud secrets versions access latest \
+  --secret=ghost-platform-provisioner-db-password --project=branchleft-prod
+```
+
+No service account has `secretAccessor` on it. That is deliberate — nothing
+consumes it yet, so the grant would open an access path with no user.
+
+---
+
 ## After this: what changes, and what does not
 
 **Automatic from now on.** Any merge to `main` that changes `database.ts`,
