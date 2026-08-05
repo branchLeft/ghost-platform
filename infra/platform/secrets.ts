@@ -28,15 +28,25 @@ export function secretWithValue(
   name: string,
   secretId: string,
   value: pulumi.Input<string>,
-  opts: pulumi.CustomResourceOptions = {}
+  dependsOn: pulumi.Resource[] = []
 ): { secret: gcp.secretmanager.Secret; version: gcp.secretmanager.SecretVersion } {
+  // A narrow `dependsOn: Resource[]` parameter rather than a full
+  // `CustomResourceOptions`, because the obvious version of the latter --
+  // `{ dependsOn: enabledApis, ...opts }` -- is a live bug: a caller passing
+  // its own `dependsOn` silently *replaces* the API dependency rather than
+  // adding to it, so the secret can be attempted before
+  // `secretmanager.googleapis.com` is enabled. On this project that would
+  // succeed by coincidence (website/infra enabled the API long ago) and fail
+  // only on a from-scratch one -- the "type-checks cleanly, wrong later,
+  // never visibly today" shape this repo keeps catching in review. This
+  // signature makes the merge the only possible behaviour.
   const secret = new gcp.secretmanager.Secret(
     name,
     {
       secretId,
       replication: { auto: {} },
     },
-    { dependsOn: enabledApis, ...opts }
+    { dependsOn: [...enabledApis, ...dependsOn] }
   );
 
   const version = new gcp.secretmanager.SecretVersion(

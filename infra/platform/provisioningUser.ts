@@ -98,12 +98,45 @@ const PROVISIONING_PASSWORD_SECRET_ID = 'ghost-platform-provisioner-db-password'
  * `ALTER USER ... WITH MAX_USER_CONNECTIONS`, and it grants no data access
  * whatsoever. That is a genuinely narrow credential -- it just has to be
  * reached by self-revocation *after* creation, because the API hands out the
- * wide version first and offers no alternative. That step is deliberately not
- * automated here (it needs a SQL connection; see above); it belongs in the
- * runbook of the follow-up story that actually wires provisioning to this
- * credential, and until that story exists **this credential sits at full
- * cloudsqlsuperuser breadth**. Reviewers should weigh it on that basis, not
- * on the narrowed end state.
+ * wide version first and offers no alternative.
+ *
+ * ****************************************************************************
+ * THE NARROWING IS PART OF CREATING THIS CREDENTIAL, NOT A LATER IMPROVEMENT.
+ *
+ * Round-2 review was right that an earlier draft of this comment left the
+ * REVOKE as aspirational -- something a future story "should" do, with
+ * nothing stopping that story from running the ALTER USER it actually wants,
+ * deferring the REVOKE, and leaving a full-privilege password in Secret
+ * Manager indefinitely. That is a realistic outcome, so the narrowing has
+ * moved into the same mandatory, Rob-gated runbook step as the `pulumi up`
+ * that creates the account (RUNBOOK-bootstrap.md, "Applying the provisioning
+ * credential"). The apply is not finished until the REVOKE has run.
+ *
+ * **Precondition on every future story: no code, job, runbook or human may
+ * treat this credential as safe to reference until the narrowing is verified
+ * to have actually run.** Verification is a single read-only query, not a
+ * document to trust:
+ *
+ *     SHOW GRANTS FOR 'ghost_platform_provisioner'@'%';
+ *
+ * Narrowed, that returns exactly one row:
+ *
+ *     GRANT CREATE USER ON *.* TO `ghost_platform_provisioner`@`%`
+ *
+ * Anything else -- in particular a row containing `ALL PRIVILEGES` or the
+ * `cloudsqlsuperuser` role -- means the narrowing has not run and the
+ * credential is still root-equivalent over every tenant's data. Stop and run
+ * it before going further.
+ *
+ * **Pulumi cannot enforce this, and pretending otherwise would be worse than
+ * saying so.** Grants live behind a SQL connection; no `gcp.*` resource and
+ * no CI job in this repo has a path to one (see the paragraph above on why
+ * `@pulumi/mysql` was rejected). So the honest control is: the narrowing is
+ * in the same runbook step as the creation, and the check above is one query
+ * anyone can run in ten seconds. Until it has been run, **this credential
+ * sits at full cloudsqlsuperuser breadth** -- weigh it on that basis, not on
+ * the narrowed end state.
+ * ****************************************************************************
  *
  * The mitigating facts, none of which change the above: it has no service
  * account consumer and no IAM reader binding (`secrets.ts`), nothing in any
@@ -138,7 +171,13 @@ const PROVISIONING_PASSWORD_SECRET_ID = 'ghost-platform-provisioner-db-password'
  *    `maxUserConnectionsStatement` output already produces verbatim, then
  *    `FLUSH PRIVILEGES` is *not* needed (ALTER USER takes effect on the
  *    user's next connection).
- * 4. **Narrow this credential first**, per the REVOKE/GRANT above.
+ * 4. **Confirm the narrowing already happened** -- `SHOW GRANTS FOR
+ *    'ghost_platform_provisioner'@'%';` must return exactly
+ *    ``GRANT CREATE USER ON *.* TO `ghost_platform_provisioner`@`%` ``. It is
+ *    part of the credential's creation runbook, not this follow-up's job, but
+ *    it is this follow-up's job to check rather than assume: if it returns
+ *    anything wider, the credential is still root-equivalent and must be
+ *    narrowed before anything is wired to it.
  *
  * ----------------------------------------------------------------------------
  * DELETION AND ROTATION POSTURE
@@ -165,6 +204,17 @@ const PROVISIONING_PASSWORD_SECRET_ID = 'ghost-platform-provisioner-db-password'
  * credential yet, rotation today has no coordination cost; once a runbook or
  * job does consume it, rotation means "re-read the secret", because both the
  * MySQL password and the Secret Manager version update in the same apply.
+ *
+ * **Rotation is a Rob-local apply too, for the same reason creation is.**
+ * Changing a Cloud SQL user's password is `cloudsql.users.update`, which --
+ * verified against the live role definitions, same check as
+ * `cloudsql.users.create` -- exists only in `roles/cloudsql.admin` and not in
+ * the `roles/cloudsql.editor` the deployer holds. So a merged `rotationTag`
+ * bump does not rotate anything; it makes the next CI apply 403 until
+ * someone runs `pulumi up` locally. Bump it in the same session you intend to
+ * apply it, not as a drive-by edit. Note the narrowing survives rotation --
+ * `ALTER USER ... IDENTIFIED BY` changes the password, not the grants -- so
+ * rotating does not re-open the privileges the runbook revoked.
  */
 const provisioningUserPassword = new random.RandomPassword('platform-provisioner-db-password', {
   length: 32,
@@ -207,7 +257,14 @@ export const provisioningUserPasswordSecret = secretWithValue(
   'platform-provisioner-db-password-secret',
   PROVISIONING_PASSWORD_SECRET_ID,
   provisioningUserPassword.result,
-  { dependsOn: [provisioningUser] }
+  // Ordering, not decoration. Without this the secret and the MySQL account
+  // are independent leaves of the graph and Pulumi may create the secret
+  // first -- so a 403 on `cloudsql.users.create` (the CI failure mode
+  // serviceAccounts.ts documents) would leave a password in Secret Manager
+  // for an account that does not exist. Harmless but confusing, and the kind
+  // of stray state nobody goes back to clean up. This way the secret only
+  // ever exists if the account it belongs to does.
+  [provisioningUser]
 ).secret;
 
 /**
