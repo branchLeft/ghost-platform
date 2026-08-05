@@ -3,6 +3,8 @@ import { dbInstance } from './database';
 import { tenantImageRepository } from './registry';
 import { mediaBucket } from './mediaBucket';
 import { region, projectId } from './config';
+import { workloadIdentityProvider } from './workloadIdentity';
+import { deployerServiceAccountEmail } from './serviceAccounts';
 import './apis';
 
 // Everything a future tenant-provisioning story needs to point at, without
@@ -27,3 +29,14 @@ export const tenantImageRepositoryDockerPath = pulumi.interpolate`${region}-dock
 
 export const mediaBucketUrl = mediaBucket.url;
 export const mediaBucketSelfLink = mediaBucket.selfLink;
+
+// CI identity, for the `google-github-actions/auth` step in
+// .github/workflows/infra-platform-ci.yml. These two values are the entire
+// contract between this stack and that workflow -- Rob copies them into the
+// repo variables GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_DEPLOYER_SA_EMAIL
+// after the bootstrap apply (RUNBOOK-bootstrap.md), rather than either value
+// being committed here. The provider name embeds the GCP project *number*,
+// which is one more infrastructure identifier than a repo bound for public
+// needs to carry in its source.
+export const githubActionsWorkloadIdentityProvider = workloadIdentityProvider;
+export const githubActionsDeployerServiceAccountEmail = deployerServiceAccountEmail;

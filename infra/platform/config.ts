@@ -17,3 +17,39 @@ export const region = config.get('region') ?? 'europe-west1';
 export const dbInstanceName = 'ghost-platform-db';
 export const tenantImageRepositoryId = 'ghost-platform-tenant';
 export const mediaBucketName = `${projectId}-ghost-platform-media`;
+
+// The one GitHub repository allowed to federate into this project's deployer
+// service account, as the exact `owner/repo` string GitHub puts in the
+// `repository` claim of its OIDC token.
+//
+// Deliberately a hardcoded constant, not `config.require('githubRepo')` the
+// way website/infra does it. This is a security boundary, not a knob: the
+// value is the sole thing standing between "only this repo's Actions runs can
+// assume the deployer SA" and "some other repo's can". A stack-config value
+// can be changed with `pulumi config set` and no code review; a constant here
+// cannot be changed without a diff someone has to approve. It also matches
+// this file's existing pattern -- there is exactly one of these per platform,
+// so it is a fixed identifier, not stack configuration.
+//
+// Casing matters and is not cosmetic. The condition is a CEL string equality
+// against GitHub's claim, which carries the repository's canonical casing --
+// verified against the live API (`gh api repos/branchLeft/ghost-platform
+// --jq .full_name` -> `branchLeft/ghost-platform`), not inferred from the
+// git remote URL, which GitHub serves case-insensitively.
+export const githubRepo = 'branchLeft/ghost-platform';
+
+// Workload Identity Pool ID for this repo's CI identity.
+//
+// **Not `github-actions`**, even though that is the obvious name and the one
+// website/infra uses. Pool IDs are unique per project, and `branchleft-prod`
+// already has a pool with that exact ID -- created by website/infra, verified
+// live with `gcloud iam workload-identity-pools list --location=global
+// --project=branchleft-prod`, which returns one ACTIVE pool whose resource
+// name ends `/workloadIdentityPools/github-actions`. Declaring a second
+// resource with the same ID here would have collided on the very first apply.
+//
+// A separate pool rather than a second provider inside website's pool: a
+// provider added to that pool would live in website's Pulumi state, making
+// this repo's CI credentials a dependency of a different repo's stack. Pools
+// are free, so the coupling buys nothing.
+export const workloadIdentityPoolId = 'ghost-platform-gha';

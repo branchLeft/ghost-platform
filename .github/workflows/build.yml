@@ -6,10 +6,18 @@ on:
   pull_request:
     branches: [main]
 
-# Build-only. Deliberately does not push anywhere or authenticate to GCP —
-# there is no Workload Identity Federation set up for this repo yet
-# (registry push + provisioning is a later story). This workflow exists to
-# catch a broken Dockerfile / broken image on every PR, nothing more.
+# Build-only. Deliberately does not push anywhere or authenticate to GCP.
+#
+# Workload Identity Federation does now exist for this repo
+# (infra/platform/workloadIdentity.ts), so the old reason given here — "there
+# is no WIF set up yet" — is no longer why. The reason now is scope: that
+# federation exists to let CI apply the platform Pulumi stack, the deployer
+# service account holds no push-relevant grant this job would use, and
+# registry push is still its own story. Requesting `id-token: write` here
+# would hand a build job the platform deploy identity for no benefit.
+#
+# This workflow exists to catch a broken Dockerfile / broken image on every
+# PR, nothing more.
 jobs:
   build:
     name: docker build

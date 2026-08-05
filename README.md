@@ -23,10 +23,13 @@ Cloud SQL instance, the tenant image's Artifact Registry repository, the
 shared media bucket) and the reusable per-tenant component
 (`infra/tenant/`: a tenant's dedicated service account, logical database,
 storage write-isolation, and Cloud Run service). Actually instantiating
-that component for a real tenant — the `ghost-platform-tenants` repo and
-Workload Identity Federation for CI — is still a later story; nothing in
-this repo pushes an image anywhere or applies infrastructure to GCP on its
-own.
+that component for a real tenant — the `ghost-platform-tenants` repo — is
+still a later story, and nothing in this repo pushes an image anywhere yet.
+The shared platform stack, however, *is* applied by CI: `infra/platform/`
+declares its own Workload Identity Federation pool and deployer service
+account, and every push to `main` applies it. See
+[`infra/platform/RUNBOOK-bootstrap.md`](infra/platform/RUNBOOK-bootstrap.md)
+for the one-time bootstrap that has to happen first.
 
 Ghost runs one site per process. "Multi-tenant" here means one container
 per tenant on shared compute, not one process serving many sites — see
@@ -389,8 +392,10 @@ above.
   (see "Fail-closed storage guard" above).
 - `.github/workflows/build.yml` — builds the image and runs both scripts
   on every PR. **Does not push anywhere and does not authenticate to
-  GCP** — there's no Workload Identity Federation set up for this repo yet;
-  registry push and provisioning are later stories.
+  GCP.** Workload Identity Federation now exists for this repo, but it is
+  scoped to the platform infrastructure deploy; wiring an image push onto
+  it is a later story, and giving a build job credentials it has no use for
+  today would be a widening for nothing.
 - `LICENSE` — MIT.
 
 ## License
