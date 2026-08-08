@@ -7,5 +7,5 @@
     "rootDir": "."
   },
   "include": ["*.ts"],
-  "exclude": ["node_modules", "dist", "smoke-test"]
+  "exclude": ["node_modules", "dist"]
 }
