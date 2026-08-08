@@ -1,0 +1,164 @@
+name: Push tenant image
+
+# Builds the tenant Ghost image and pushes it to this platform's Artifact
+# Registry repository on every merge to `main`, tagged with the git SHA and
+# `latest`. This is the "registry push is still its own story" story
+# build.yml's header points at (S11) -- a real, pullable image digest for
+# S12's tenant Cloud Run services to reference.
+#
+# Deliberately its own workflow, not a job bolted onto build.yml. build.yml's
+# `build` job runs on every PR, including from forks, and stays completely
+# credential-free by design (its own header explains why). This job runs
+# only on push to `main` and needs `id-token: write` to federate into the
+# deployer service account -- keeping it in a separate workflow means a PR
+# build never sits in the same permissions block as that grant, and a
+# malicious PR workflow change can't ride along to get near it (no
+# `pull_request` trigger exists in this file at all, so there is nothing to
+# gate with an `if:` -- the workflow itself never runs on a PR).
+#
+# Rebuilds the image rather than reusing build.yml's artifact. Passing a
+# multi-hundred-MB image between workflows costs more in upload/download time
+# than a second `docker build` costs in compute, and chaining onto build.yml
+# via `workflow_run` would make this push depend on a separate workflow's run
+# succeeding through an event that is a well-known source of confusion about
+# which commit/ref is actually checked out. A second `docker build` on the
+# same commit is the boring, verifiable choice.
+#
+# Registry path: europe-west1-docker.pkg.dev/branchleft-prod/ghost-platform-tenant
+# -- `region` and `projectId` from infra/platform/config.ts, and
+# `tenantImageRepositoryId` (`ghost-platform-tenant`) from the same file, the
+# same three values infra/platform/index.ts joins into
+# `tenantImageRepositoryDockerPath`. Hardcoded here rather than read from a
+# Pulumi stack output, the same way config.ts hardcodes them: these are fixed
+# platform-level identifiers (doc 02's UK/EU residency decision; one registry
+# for the whole platform), not per-environment config, and this workflow has
+# no other reason to run Pulumi. If they ever change, this file and
+# config.ts change together -- there is no single source of truth to import
+# from a plain GitHub Actions workflow.
+#
+# Image name within the repository: `ghost`. Not decided anywhere upstream --
+# index.ts's comment on `tenantImageRepositoryDockerPath` says explicitly
+# that "which image name the tenant container uses is a later story's
+# decision, not this platform stack's." This is that decision, made here
+# because S12 (tenant provisioning) needs a name to reference. The
+# repository holds nothing but the tenant Ghost image, so `ghost` is
+# unambiguous.
+#
+# Credentials: Workload Identity Federation only, via the same deployer
+# service account and the same three repo variables
+# infra-platform-ci.yml already authenticates with (GCP_PROJECT_ID,
+# GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_DEPLOYER_SA_EMAIL -- set once in
+# infra/platform/RUNBOOK-bootstrap.md step 5, verified live via
+# `gh variable list --repo branchLeft/ghost-platform` on 2026-08-08). No new
+# identity, no service-account key, ever.
+#
+# Permission sufficiency, verified rather than assumed against the live IAM
+# API, not inferred from the role's name (2026-08-08):
+#
+#   gcloud iam roles describe roles/artifactregistry.admin \
+#     --format="value(includedPermissions)"
+#
+# includes `artifactregistry.repositories.uploadArtifacts` and
+# `artifactregistry.files.upload` -- the permissions `docker push` needs --
+# alongside `repositories.get` and `dockerimages.{get,list}`, which
+# `docker-credential-gcloud`'s auth handshake and any later `docker pull`
+# (S12) need too. The deployer SA already holds this role project-wide
+# (infra/platform/serviceAccounts.ts, granted for registry.ts's `update`
+# needs). No new IAM grant required for this story -- see the PR description
+# for the full permission list this was checked against.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Serialise pushes to the one tenant image repository. Two overlapping pushes
+# racing `latest` is a confusing-history problem, not a correctness one, but
+# there is no reason to allow it. `cancel-in-progress: false`: a cancelled
+# push can leave `latest` pointing at whichever tag order the registry
+# happened to receive first.
+concurrency:
+  group: ghost-platform-tenant-image-push
+  cancel-in-progress: false
+
+jobs:
+  push:
+    name: Build and push tenant image
+    runs-on: ubuntu-latest
+
+    # Job-level, not workflow-level: `id-token: write` is what lets this job
+    # request the GitHub OIDC token WIF exchanges. Scoping it here means it
+    # exists only for the one job in the one workflow that ever runs it, on
+    # the one trigger (push to `main`) that ever fires it.
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      IMAGE: europe-west1-docker.pkg.dev/branchleft-prod/ghost-platform-tenant/ghost
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Exchanges this run's GitHub OIDC token for short-lived credentials
+      # for the deployer service account. Same step, same action pin, same
+      # three repo variables as infra-platform-ci.yml's deploy job.
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA_EMAIL }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # Registers gcloud as Docker's credential helper for Artifact Registry
+      # hosts, so a plain `docker push` below picks up the WIF-exchanged
+      # credential with no separate `docker login`. `configure-docker` takes
+      # the registry hostname, not a path -- confirmed against
+      # `gcloud auth configure-docker --help`.
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+
+      # Same build as build.yml's `build` job (plain `docker build`, no
+      # buildx action) -- this story changes where the image goes, not how
+      # it's built. Two tags in one build so there is exactly one image
+      # underneath both: `latest` never points at a different layer set than
+      # the SHA tag pushed alongside it.
+      - name: Build image
+        run: |
+          docker build \
+            --tag "$IMAGE:${{ github.sha }}" \
+            --tag "$IMAGE:latest" \
+            .
+
+      # Same gates build.yml runs on every PR, run again here against the
+      # exact image about to be pushed -- so a broken image can fail before
+      # `docker push`, not be discovered after `latest` already points at it.
+      - name: Smoke test (SQLite, boots and serves HTTP 200)
+        run: ./scripts/smoke-test.sh "$IMAGE:${{ github.sha }}"
+
+      - name: Storage guard regression test (blocked vs. permitted configs)
+        run: ./scripts/test-storage-guard.sh "$IMAGE:${{ github.sha }}"
+
+      # `--all-tags` pushes every locally-tagged reference for this
+      # repository (`docker push --help`: "Push all tags of an image to the
+      # repository") -- both tags built above, in one push, rather than two
+      # separate `docker push` invocations that could observably race.
+      - name: Push
+        run: docker push "$IMAGE" --all-tags
+
+      - name: Write outcome to job summary
+        if: always()
+        run: |
+          {
+            echo '## Tenant image push'
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo "Image: \`$IMAGE:${{ github.sha }}\`"
+            echo 'Also tagged `latest`.'
+          } >> "$GITHUB_STEP_SUMMARY"
