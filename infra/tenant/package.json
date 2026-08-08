@@ -1,7 +1,24 @@
 {
-  "name": "ghost-platform-tenant",
-  "private": true,
-  "main": "index.ts",
+  "name": "@branchleft/ghost-platform-tenant",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/branchLeft/ghost-platform.git",
+    "directory": "infra/tenant"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
   "dependencies": {
     "@pulumi/pulumi": "^3.255.0",
     "@pulumi/gcp": "^9.32.1",
