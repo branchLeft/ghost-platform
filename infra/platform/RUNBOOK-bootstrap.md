@@ -570,20 +570,35 @@ gh workflow run provision-tenant.yml --repo branchLeft/ghost-platform \
 # approve the deployment, then read the "Report the federation claims" step
 ```
 
-Expected, and the value to copy verbatim into P2:
+Measured output, and the values to copy verbatim into P2:
 
 ```text
-sub              = repo:branchLeft/ghost-platform:environment:tenant-provisioning
+sub              = repo:branchLeft@308565869/ghost-platform@1322892070:environment:tenant-provisioning
 event_name       = workflow_dispatch
 workflow_ref     = branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main
 job_workflow_ref = branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main
 repository       = branchLeft/ghost-platform
+ref              = refs/heads/main
 ```
 
-**Write P2's condition from what this step printed, not from what this runbook
-predicts.** If `job_workflow_ref` came back `<<ABSENT>>` the step fails loudly;
-condition on `assertion.workflow_ref` instead, which is documented for all
-workflows, and record the substitution here.
+**`sub` is not the `repo:<org>/<repo>:environment:<name>` form the GitHub
+documentation shows.** GitHub's default subject claim embeds the numeric
+organisation and repository IDs, and
+`GET /repos/branchLeft/ghost-platform/actions/oidc/customization/sub` confirms
+it as the default rather than a setting anyone chose (`use_default: true`,
+`sub_claim_prefix: repo:branchLeft@308565869/ghost-platform@1322892070`). The
+IDs are immutable, so the value survives renaming the org or the repo — but
+`use_default: true` leaves the format itself under GitHub's control, so it is a
+measured value with an expiry, not a constant.
+
+Only P2's second command matches on this claim. The platform deployer in
+`workloadIdentity.ts` binds `principalSet://.../attribute.repository/<repo>`
+and is untouched by the shape of `sub`.
+
+**Write P2 from what this step printed, not from what this runbook predicts.**
+If `job_workflow_ref` came back `<<ABSENT>>` the step fails loudly; condition on
+`assertion.workflow_ref` instead, which is documented for all workflows, and
+record the substitution here.
 
 ### P1 — the service account
 
@@ -844,8 +859,11 @@ gcloud iam service-accounts add-iam-policy-binding \
   ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com \
   --project=branchleft-prod \
   --role="roles/iam.workloadIdentityUser" \
-  --member="principal://iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/ghost-platform-gha/subject/repo:branchLeft/ghost-platform:environment:tenant-provisioning"
+  --member="principal://iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/ghost-platform-gha/subject/repo:branchLeft@308565869/ghost-platform@1322892070:environment:tenant-provisioning"
 ```
+
+The `@<id>` segments are not a typo — see Step V2. Paste the `sub` line that
+step printed rather than retyping this one.
 
 A second provider in the pool `workloadIdentity.ts` already declares. Pools are
 free and a provider does not appear in the pool resource, so this does not
@@ -894,6 +912,17 @@ state: ACTIVE
 `gcloud iam workload-identity-pools providers update-oidc` it to the exact
 string above and read it back again — do not proceed on a provider you have
 not just read.
+
+Read the binding back too, and diff the subject against Step V2's `sub` line
+character by character. A subject that does not match any token is accepted at
+write time and fails only at the next exchange, as a permission error that says
+nothing about the subject:
+
+```bash
+gcloud iam service-accounts get-iam-policy \
+  ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com \
+  --project=branchleft-prod --format=json
+```
 
 ### P8 — repo variables the provisioning workflow reads
 
