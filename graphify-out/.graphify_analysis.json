@@ -286,18 +286,6 @@
       "infra_platform_scripts_assert_no_platform_deletes_verify_coverage"
     ],
     "11": [
-      "gcp_workload_identity_federation",
-      "ghost_platform_deployer",
-      "ghost_platform_provisioner_db",
-      "ghost_tenant_provisioner",
-      "github_workflows_infra_platform_ci",
-      "github_workflows_provision_tenant",
-      "handover_public_flip",
-      "infra_platform_runbook_bootstrap",
-      "infra_provisioning_assert_placeholders_substituted",
-      "pulumi_state_bucket"
-    ],
-    "12": [
       "contributing",
       "ghost_platform_tenant_template",
       "github_dependabot",
@@ -307,11 +295,17 @@
       "infra_tenant",
       "pre_commit_config"
     ],
-    "13": [
+    "12": [
       "docker_entrypoint_branchleft",
       "docker_entrypoint_branchleft_server_host",
       "docker_entrypoint_branchleft_server_port",
       "docker_entrypoint_branchleft_sh__entry"
+    ],
+    "13": [
+      "ghost_platform_deployer",
+      "infra_platform_runbook_bootstrap_step_3",
+      "infra_platform_runbook_bootstrap_step_4",
+      "website_infra_known_issues_md"
     ],
     "14": [
       "scripts_test_storage_guard",
@@ -320,61 +314,95 @@
       "scripts_test_storage_guard_sh__entry"
     ],
     "15": [
+      "ghost_tenant_provisioner",
+      "github_workflows_provision_tenant",
+      "infra_platform_runbook_bootstrap_p7"
+    ],
+    "16": [
       "scripts_smoke_test",
       "scripts_smoke_test_cleanup",
       "scripts_smoke_test_sh__entry"
     ],
-    "16": [
+    "17": [
       "gcp_artifact_registry",
       "github_workflows_registry_push_yml"
     ],
-    "17": [
+    "18": [
+      "gcp_workload_identity_federation",
+      "github_workflows_infra_platform_ci"
+    ],
+    "19": [
+      "ghost_platform_provisioner",
+      "infra_platform_runbook_bootstrap_p4"
+    ],
+    "20": [
       "infra_platform_pulumi_platform_stack_config",
       "infra_platform_pulumi_project"
     ],
-    "18": [
+    "21": [
       "claude_md"
     ],
-    "19": [
+    "22": [
       "eslint_config"
     ],
-    "20": [
+    "23": [
       "gcp_cloud_run"
     ],
-    "21": [
+    "24": [
       "gcp_cloud_sql"
     ],
-    "22": [
+    "25": [
       "gcp_storage_bucket"
     ],
-    "23": [
+    "26": [
       "ghost_official_image"
     ],
-    "24": [
+    "27": [
       "github_workflows_build"
     ],
-    "25": [
+    "28": [
       "github_workflows_codeql"
     ],
-    "26": [
+    "29": [
       "github_workflows_docs_lint"
     ],
-    "27": [
+    "30": [
       "github_workflows_graphify"
     ],
-    "28": [
-      "infra_provisioning_pulumi"
-    ],
-    "29": [
-      "infra_readme"
-    ],
-    "30": [
-      "infra_tenant_smoke_test_readme"
-    ],
     "31": [
-      "pulumi_platform_stack"
+      "handover_public_flip"
     ],
     "32": [
+      "infra_platform_runbook_bootstrap_bootstrap_runbook"
+    ],
+    "33": [
+      "infra_platform_runbook_bootstrap_p0"
+    ],
+    "34": [
+      "infra_platform_runbook_bootstrap_p2"
+    ],
+    "35": [
+      "infra_platform_runbook_bootstrap_provisioning_user"
+    ],
+    "36": [
+      "infra_platform_runbook_bootstrap_step_1"
+    ],
+    "37": [
+      "infra_platform_runbook_bootstrap_tenant_provisioning_identity"
+    ],
+    "38": [
+      "infra_provisioning_pulumi"
+    ],
+    "39": [
+      "infra_readme"
+    ],
+    "40": [
+      "infra_tenant_smoke_test_readme"
+    ],
+    "41": [
+      "pulumi_platform_stack"
+    ],
+    "42": [
       "readme"
     ]
   },
@@ -390,12 +418,12 @@
     "8": 0.125,
     "9": 0.23809523809523808,
     "10": 0.2878787878787879,
-    "11": 0.24444444444444444,
-    "12": 0.32142857142857145,
-    "13": 0.5,
+    "11": 0.32142857142857145,
+    "12": 0.5,
+    "13": 0.6666666666666666,
     "14": 0.8333333333333334,
     "15": 0.6666666666666666,
-    "16": 1.0,
+    "16": 0.6666666666666666,
     "17": 1.0,
     "18": 1.0,
     "19": 1.0,
@@ -411,7 +439,17 @@
     "29": 1.0,
     "30": 1.0,
     "31": 1.0,
-    "32": 1.0
+    "32": 1.0,
+    "33": 1.0,
+    "34": 1.0,
+    "35": 1.0,
+    "36": 1.0,
+    "37": 1.0,
+    "38": 1.0,
+    "39": 1.0,
+    "40": 1.0,
+    "41": 1.0,
+    "42": 1.0
   },
   "gods": [
     {
@@ -432,11 +470,6 @@
     {
       "id": "infra_platform_apis_enabledapis",
       "label": "enabledApis",
-      "degree": 7
-    },
-    {
-      "id": "infra_platform_runbook_bootstrap",
-      "label": "Bootstrap runbook \u2014 platform stack",
       "degree": 7
     },
     {
@@ -463,31 +496,14 @@
       "id": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
       "label": "verify_coverage()",
       "degree": 5
+    },
+    {
+      "id": "infra_tenant_cloudrunservice_createcloudrunservice",
+      "label": "createCloudRunService()",
+      "degree": 5
     }
   ],
   "surprises": [
-    {
-      "source": "Platform infra CI",
-      "target": "Bootstrap runbook \u2014 platform stack",
-      "source_files": [
-        ".github/workflows/infra-platform-ci.yml",
-        "infra/platform/RUNBOOK-bootstrap.md"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories; peripheral node `Platform infra CI` unexpectedly reaches hub `Bootstrap runbook \u2014 platform stack`"
-    },
-    {
-      "source": "Handover \u2014 the public flip",
-      "target": "Bootstrap runbook \u2014 platform stack",
-      "source_files": [
-        "HANDOVER-public-flip.md",
-        "infra/platform/RUNBOOK-bootstrap.md"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories; peripheral node `Handover \u2014 the public flip` unexpectedly reaches hub `Bootstrap runbook \u2014 platform stack`"
-    },
     {
       "source": "Provision tenant workflow",
       "target": "ghost-tenant-provisioner SA",
@@ -500,30 +516,52 @@
       "why": "inferred connection - not explicitly stated in source; connects across different repos/directories"
     },
     {
-      "source": "Provision tenant workflow",
-      "target": "Bootstrap runbook \u2014 platform stack",
+      "source": "platform stack config (Pulumi.platform.yaml)",
+      "target": "branchleft-ghost-platform Pulumi project",
       "source_files": [
-        ".github/workflows/provision-tenant.yml",
-        "infra/platform/RUNBOOK-bootstrap.md"
+        "infra/platform/Pulumi.platform.yaml",
+        "infra/platform/Pulumi.yaml"
       ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories"
+      "confidence": "INFERRED",
+      "relation": "shares_data_with",
+      "why": "inferred connection - not explicitly stated in source"
     },
     {
-      "source": "Provision tenant workflow",
-      "target": "gs://branchleft-pulumi-state",
+      "source": "createTenantDatabase()",
+      "target": "secretWithValue()",
       "source_files": [
-        ".github/workflows/provision-tenant.yml",
-        "infra/platform/RUNBOOK-bootstrap.md"
+        "infra/tenant/database.ts",
+        "infra/tenant/secrets.ts"
       ],
       "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories"
+      "relation": "calls",
+      "why": "cross-file semantic connection"
+    },
+    {
+      "source": "createTenantStorage()",
+      "target": "secretWithValue()",
+      "source_files": [
+        "infra/tenant/storage.ts",
+        "infra/tenant/secrets.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "cross-file semantic connection"
+    },
+    {
+      "source": "include",
+      "target": "*.ts",
+      "source_files": [
+        "infra/provisioning/tsconfig.json",
+        "infra/tenant/tsconfig.build.json"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "extends",
+      "why": "cross-file semantic connection"
     }
   ],
   "tokens": {
-    "input": 20734,
-    "output": 1152
+    "input": 13644,
+    "output": 1450
   }
 }
