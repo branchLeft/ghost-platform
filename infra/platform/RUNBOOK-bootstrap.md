@@ -696,6 +696,11 @@ gcloud kms keys add-iam-policy-binding pulumi-secrets \
   --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
   --role="roles/cloudkms.admin"
 
+gcloud kms keys add-iam-policy-binding pulumi-secrets \
+  --keyring=pulumi --location=europe-west1 --project=branchleft-prod \
+  --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+  --role="roles/cloudkms.cryptoKeyEncrypterDecrypter"
+
 gcloud iam roles create ghostPlatformStateBucketAdmin \
   --project=branchleft-prod \
   --title="Ghost platform state bucket admin" \
@@ -713,6 +718,32 @@ gcloud storage buckets add-iam-policy-binding gs://branchleft-pulumi-state \
 ```
 
 `cloudkms.admin` at key scope, never project scope.
+
+**Both KMS roles are required, and `cloudkms.admin` alone is the trap.** It is a
+management role: it can create, delete and set IAM on the key, but it cannot
+use the key. Its permission list contains
+`cloudkms.cryptoKeyVersions.useToEncryptViaDelegation` and the matching
+`useToDecryptViaDelegation` — near-identical names to, and not substitutes for,
+the plain `useToEncrypt`/`useToDecrypt` that only
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` carries. With `admin` alone, both
+`pulumi stack select --create` and `pulumi stack init` fail at the point of
+creating the stack's secrets manager:
+
+```text
+error: could not create secrets manager for new stack: secrets
+(code=PermissionDenied): Permission 'cloudkms.cryptoKeyVersions.useToEncrypt'
+denied on resource '.../cryptoKeys/pulumi-secrets'
+```
+
+The provisioning program already grants each tenant deployer
+`cryptoKeyEncrypterDecrypter` on the same key, so the pattern was established;
+what was missing is that the provisioning identity needs it too, for its own
+stack and for initialising each tenant's.
+
+Worth narrowing later, untested: `cloudkms.admin` is held only for
+`cryptoKeys.setIamPolicy`, and a custom role carrying `cryptoKeys.get`,
+`getIamPolicy` and `setIamPolicy` would drop this identity's ability to delete
+the key every stack in the workspace depends on.
 
 **`ghostPlatformStateBucketAdmin` is project-scoped, and that is a real
 residual rather than a rounding error.** `storage.buckets.create` exists only
