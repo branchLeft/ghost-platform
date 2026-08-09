@@ -845,23 +845,34 @@ Derived from what a `GhostTenant` instantiation declares, not from role names:
 | `gcp.storage.BucketIAMMember` ×2 on the media bucket | `storage.buckets.setIamPolicy` | bucket-scoped grant |
 | `gcp.cloudrunv2.Service` | `run.services.create` | `roles/run.developer` |
 | `gcp.cloudrunv2.Service` (`template.serviceAccount`) | `iam.serviceAccounts.actAs` **on the runtime SA** | `roles/iam.serviceAccountUser` |
+| `gcp.cloudrunv2.Service` (`template.containers[].image`) | `artifactregistry.repositories.downloadArtifacts` **on the image's repository** | `roles/artifactregistry.reader` |
 | `gcp.cloudrunv2.ServiceIamMember` (public invoker) | `run.services.setIamPolicy` | `roles/run.admin` |
 
-**The `actAs` row is the one this table's own method could not produce, and it
-is worth understanding why.** Every other row comes from a resource the tenant
-program declares. `actAs` is declared by nothing: it is an implicit precondition
-of creating a Cloud Run service whose `template.serviceAccount` names an
-identity, enforced against the *caller*. Deriving required permissions from
-declared resources misses every permission of that shape.
+**The `actAs` and `downloadArtifacts` rows are the ones this table's own method
+could not produce, and it is worth understanding why.** Every other row comes
+from a resource the tenant program declares. Neither of these is declared by
+anything: each is an implicit precondition of creating a Cloud Run service —
+one from `template.serviceAccount` naming an identity, one from
+`template.containers[].image` naming an image — and both are enforced against
+the *caller*. Deriving required permissions from declared resources misses every
+permission of that shape, and it has now missed two.
+
+`downloadArtifacts` is enforced against the caller even though the *pull* is
+done by the Cloud Run service agent, which already holds it via
+`roles/run.serviceAgent`. A healthy service agent is therefore no evidence the
+deploy will succeed.
 
 `iam.serviceAccountAdmin`, which P3 grants, does not carry it — the same
 management-versus-use split as `cloudkms.admin` in P5, and the second time this
 bootstrap has been caught by it.
 
-The tenant program does create a scoped `actAs` binding on the runtime service
-account, but it names the *deployer*, and the first apply runs as the
-*provisioner*. The binding is correct for every CI run after the first and
-insufficient for the first.
+**Both rows need granting twice, to two different identities, and that is the
+part which is easy to get wrong.** The tenant program grants each to the
+*deployer*, and the deployer is who runs every CI apply — but the *first* apply
+runs as the *provisioner*. A grant to the deployer alone is correct from the
+second apply onward and insufficient for the first; a grant to the provisioner
+alone is the reverse. Both 403s look identical and neither names the principal
+it evaluated, so the natural reading of either is that the grant did not take.
 
 ```bash
 for ROLE in roles/secretmanager.admin roles/storage.hmacKeyAdmin roles/run.admin roles/iam.serviceAccountUser; do
@@ -869,6 +880,13 @@ for ROLE in roles/secretmanager.admin roles/storage.hmacKeyAdmin roles/run.admin
     --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
     --role="$ROLE" --condition=None
 done
+
+# Scoped to the tenant image repository: unlike the roles above, this one has a
+# resource to attach to, and the provisioner needs no other repository.
+gcloud artifacts repositories add-iam-policy-binding ghost-platform-tenant \
+  --location=europe-west1 --project=branchleft-prod \
+  --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+  --role=roles/artifactregistry.reader
 ```
 
 `run.admin` rather than `run.developer`: the public invoker binding needs
