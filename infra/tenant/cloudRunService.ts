@@ -1,5 +1,6 @@
 import * as pulumi from '@pulumi/pulumi';
 import * as gcp from '@pulumi/gcp';
+import { cloudRunServiceName } from './naming';
 
 /** Platform-wide constant, not per-tenant -- see README's env var table. */
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = '10485760'; // 10 MiB, README's recommendation.
@@ -67,7 +68,7 @@ export function createCloudRunService(
   return new gcp.cloudrunv2.Service(
     `${args.tenantName}-service`,
     {
-      name: `ghost-tenant-${args.tenantName}`,
+      name: cloudRunServiceName(args.tenantName),
       location: args.region,
       // Not yet a stable, freely-recreatable bootstrap resource by the time
       // this ever gets applied (a live tenant's data), so this defaults to

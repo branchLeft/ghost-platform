@@ -43,3 +43,9 @@ jobs:
 
       - name: Type check
         run: npx tsc --noEmit
+
+      # Kept in this job rather than a new one so the required-status context
+      # stays `Tenant type check`. The suite is pure string derivation with no
+      # Pulumi engine and no credentials, and runs in well under a second.
+      - name: Test
+        run: npm test

@@ -1,5 +1,6 @@
 import * as pulumi from '@pulumi/pulumi';
 import * as gcp from '@pulumi/gcp';
+import { databaseAndUserName, tenantSecretName } from './naming';
 import * as random from '@pulumi/random';
 import { secretWithValue } from './secrets';
 
@@ -106,7 +107,7 @@ export function createTenantDatabase(
   const database = new gcp.sql.Database(
     `${tenantName}-db`,
     {
-      name: `ghost_${sqlIdentifier}`,
+      name: databaseAndUserName(sqlIdentifier),
       instance: instanceShortName,
       // Matches the instance's own deletion posture (database.ts on the
       // platform stack sets deletionProtection on the whole instance) --
@@ -146,7 +147,7 @@ export function createTenantDatabase(
   const dbUser = new gcp.sql.User(
     `${tenantName}-db-user`,
     {
-      name: `ghost_${sqlIdentifier}`,
+      name: databaseAndUserName(sqlIdentifier),
       instance: instanceShortName,
       password: dbUserPassword.result,
     },
@@ -161,7 +162,7 @@ export function createTenantDatabase(
   const dbUserNameSecret = secretWithValue(
     parent,
     `${tenantName}-db-username`,
-    `ghost-tenant-${tenantName}-db-username`,
+    tenantSecretName(tenantName, 'db-username'),
     dbUser.name,
     serviceAccount.email
   ).secret;
@@ -169,7 +170,7 @@ export function createTenantDatabase(
   const dbUserPasswordSecret = secretWithValue(
     parent,
     `${tenantName}-db-password-secret`,
-    `ghost-tenant-${tenantName}-db-password`,
+    tenantSecretName(tenantName, 'db-password'),
     dbUserPassword.result,
     serviceAccount.email
   ).secret;

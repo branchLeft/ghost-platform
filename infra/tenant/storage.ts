@@ -1,6 +1,7 @@
 import * as pulumi from '@pulumi/pulumi';
 import * as gcp from '@pulumi/gcp';
 import { secretWithValue } from './secrets';
+import * as naming from './naming';
 
 interface StorageResult {
   writeBinding: gcp.storage.BucketIAMMember;
@@ -148,33 +149,14 @@ export function createTenantStorage(
   mediaBucketUrl: pulumi.Input<string>,
   serviceAccount: gcp.serviceaccount.Account
 ): StorageResult {
-  const bucketName = pulumi.output(mediaBucketUrl).apply((url) => {
-    // Documented, stable format: `gs://<bucket-name>` (confirmed against
-    // @pulumi/gcp's own field doc for `gcp.storage.Bucket.url`). Recovering
-    // the bare name this way avoids infra/platform needing to export it
-    // separately -- out of scope for this story to add.
-    const prefix = 'gs://';
-    if (!url.startsWith(prefix)) {
-      throw new Error(`GhostTenant: mediaBucketUrl "${url}" doesn't start with "${prefix}".`);
-    }
-    return url.slice(prefix.length);
-  });
+  // Recovering the bare name here avoids infra/platform having to export it
+  // separately. Both derivations live in naming.ts, where the trailing slash
+  // this condition depends on is covered by tests.
+  const bucketName = pulumi.output(mediaBucketUrl).apply(naming.bucketNameFromUrl);
 
-  const tenantPrefix = tenantName;
-
-  // Trailing slash is load-bearing: without it, `resource.name.startsWith(...)`
-  // would also match a *different* tenant whose prefix happens to share this
-  // one as a literal string prefix (e.g. tenant "blog" would otherwise also
-  // match objects under "blog-archive/") -- Ghost's own `S3Storage.ts`
-  // (`buildKey`) always inserts a `/` immediately after `tenantPrefix` when
-  // constructing a key, so this matches the real object-key shape, not an
-  // assumption about it.
-  // `_` is a literal placeholder GCP's own attribute-reference docs use for
-  // the project segment of a Cloud Storage resource name in IAM Conditions
-  // -- not this project's real ID. Verified against two independent Google
-  // sources; see the long comment above for why that mattered here
-  // specifically.
-  const conditionResourcePrefix = pulumi.interpolate`projects/_/buckets/${bucketName}/objects/${tenantPrefix}/`;
+  const conditionResourcePrefix = bucketName.apply((b) =>
+    naming.mediaObjectConditionResource(b, tenantName)
+  );
 
   function conditionedBinding(name: string, role: string) {
     return new gcp.storage.BucketIAMMember(
@@ -213,7 +195,7 @@ export function createTenantStorage(
   const accessKeyIdSecret = secretWithValue(
     parent,
     `${tenantName}-hmac-access-key-id`,
-    `ghost-tenant-${tenantName}-hmac-access-key-id`,
+    naming.tenantSecretName(tenantName, 'hmac-access-key-id'),
     hmacKey.accessId,
     serviceAccount.email
   ).secret;
@@ -221,10 +203,16 @@ export function createTenantStorage(
   const secretAccessKeySecret = secretWithValue(
     parent,
     `${tenantName}-hmac-secret-access-key`,
-    `ghost-tenant-${tenantName}-hmac-secret-access-key`,
+    naming.tenantSecretName(tenantName, 'hmac-secret-access-key'),
     hmacKey.secret,
     serviceAccount.email
   ).secret;
 
-  return { writeBinding, accessKeyIdSecret, secretAccessKeySecret, bucketName, tenantPrefix };
+  return {
+    writeBinding,
+    accessKeyIdSecret,
+    secretAccessKeySecret,
+    bucketName,
+    tenantPrefix: naming.mediaTenantPrefixEnvValue(tenantName),
+  };
 }
