@@ -77,33 +77,6 @@
       "readme_smoke_test_script"
     ],
     "2": [
-      "infra_platform_package",
-      "infra_platform_package_dependencies",
-      "infra_platform_package_dependencies_pulumi_gcp",
-      "infra_platform_package_dependencies_pulumi_pulumi",
-      "infra_platform_package_dependencies_pulumi_random",
-      "infra_platform_package_json_pulumi_pulumi",
-      "infra_platform_package_main",
-      "infra_platform_package_name",
-      "infra_platform_package_private",
-      "infra_tenant_package_dependencies",
-      "infra_tenant_package_dependencies_pulumi_gcp",
-      "infra_tenant_package_dependencies_pulumi_pulumi",
-      "infra_tenant_package_dependencies_pulumi_random",
-      "infra_tenant_smoke_test_package",
-      "infra_tenant_smoke_test_package_dependencies",
-      "infra_tenant_smoke_test_package_dependencies_pulumi_gcp",
-      "infra_tenant_smoke_test_package_dependencies_pulumi_pulumi",
-      "infra_tenant_smoke_test_package_dependencies_pulumi_random",
-      "infra_tenant_smoke_test_package_json_pulumi_pulumi",
-      "infra_tenant_smoke_test_package_main",
-      "infra_tenant_smoke_test_package_name",
-      "infra_tenant_smoke_test_package_private",
-      "pulumi_gcp",
-      "pulumi_pulumi",
-      "pulumi_random"
-    ],
-    "3": [
       "infra_tenant_cloudrunservice",
       "infra_tenant_cloudrunservice_cloudrunserviceargs",
       "infra_tenant_cloudrunservice_createcloudrunservice",
@@ -129,10 +102,33 @@
       "infra_tenant_storage_createtenantstorage",
       "infra_tenant_storage_storageresult"
     ],
+    "3": [
+      "infra_platform_package_dependencies",
+      "infra_platform_package_dependencies_pulumi_gcp",
+      "infra_platform_package_dependencies_pulumi_pulumi",
+      "infra_platform_package_dependencies_pulumi_random",
+      "infra_platform_package_json_pulumi_pulumi",
+      "infra_tenant_package_dependencies",
+      "infra_tenant_package_dependencies_pulumi_gcp",
+      "infra_tenant_package_dependencies_pulumi_pulumi",
+      "infra_tenant_package_dependencies_pulumi_random",
+      "infra_tenant_smoke_test_package",
+      "infra_tenant_smoke_test_package_dependencies",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_gcp",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_pulumi",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_random",
+      "infra_tenant_smoke_test_package_json_pulumi_pulumi",
+      "infra_tenant_smoke_test_package_main",
+      "infra_tenant_smoke_test_package_name",
+      "infra_tenant_smoke_test_package_private",
+      "pulumi_gcp",
+      "pulumi_pulumi",
+      "pulumi_random"
+    ],
     "4": [
       "infra_tenant_package",
       "infra_tenant_package_files",
-      "infra_tenant_package_json_ref_dist",
+      "infra_tenant_package_license",
       "infra_tenant_package_main",
       "infra_tenant_package_name",
       "infra_tenant_package_publishconfig",
@@ -146,7 +142,8 @@
       "infra_tenant_package_scripts_build",
       "infra_tenant_package_scripts_prepublishonly",
       "infra_tenant_package_types",
-      "infra_tenant_package_version"
+      "infra_tenant_package_version",
+      "ref_dist"
     ],
     "5": [
       "infra_platform_tsconfig",
@@ -203,6 +200,23 @@
       "infra_tenant_tsconfig_json_ref_ts"
     ],
     "8": [
+      "infra_platform_package",
+      "infra_platform_package_devdependencies",
+      "infra_platform_package_devdependencies_types_node",
+      "infra_platform_package_devdependencies_typescript",
+      "infra_platform_package_main",
+      "infra_platform_package_name",
+      "infra_platform_package_private",
+      "infra_tenant_package_devdependencies",
+      "infra_tenant_package_devdependencies_types_node",
+      "infra_tenant_package_devdependencies_typescript",
+      "infra_tenant_smoke_test_package_devdependencies",
+      "infra_tenant_smoke_test_package_devdependencies_types_node",
+      "infra_tenant_smoke_test_package_devdependencies_typescript",
+      "types_node",
+      "typescript"
+    ],
+    "9": [
       "infra_platform_scripts_assert_no_platform_deletes",
       "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test",
       "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern",
@@ -217,7 +231,7 @@
       "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
       "pattern"
     ],
-    "9": [
+    "10": [
       "infra_tenant_tsconfig_build",
       "infra_tenant_tsconfig_build_compileroptions",
       "infra_tenant_tsconfig_build_compileroptions_declaration",
@@ -231,19 +245,6 @@
       "ref_node_modules",
       "ref_ts",
       "ref_tsconfig_json"
-    ],
-    "10": [
-      "infra_platform_package_devdependencies",
-      "infra_platform_package_devdependencies_types_node",
-      "infra_platform_package_devdependencies_typescript",
-      "infra_tenant_package_devdependencies",
-      "infra_tenant_package_devdependencies_types_node",
-      "infra_tenant_package_devdependencies_typescript",
-      "infra_tenant_smoke_test_package_devdependencies",
-      "infra_tenant_smoke_test_package_devdependencies_types_node",
-      "infra_tenant_smoke_test_package_devdependencies_typescript",
-      "types_node",
-      "typescript"
     ],
     "11": [
       "_github_workflows_build_storage_guard_test",
@@ -274,15 +275,15 @@
   "cohesion": {
     "0": 0.07955596669750231,
     "1": 0.12,
-    "2": 0.08666666666666667,
-    "3": 0.16304347826086957,
-    "4": 0.11764705882352941,
+    "2": 0.16304347826086957,
+    "3": 0.10476190476190476,
+    "4": 0.1111111111111111,
     "5": 0.125,
     "6": 0.125,
     "7": 0.125,
-    "8": 0.2564102564102564,
-    "9": 0.15384615384615385,
-    "10": 0.21818181818181817,
+    "8": 0.1523809523809524,
+    "9": 0.2564102564102564,
+    "10": 0.15384615384615385,
     "11": 0.3333333333333333,
     "12": 0.5,
     "13": 0.8333333333333334,
