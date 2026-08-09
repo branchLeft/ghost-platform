@@ -4,6 +4,19 @@
   "graph": {
     "hyperedges": [
       {
+        "id": "platform_bootstrap_identities",
+        "label": "Platform Bootstrap Identities",
+        "nodes": [
+          "ghost_platform_deployer",
+          "ghost_tenant_provisioner",
+          "ghost_platform_provisioner_db"
+        ],
+        "relation": "form",
+        "confidence": "INFERRED",
+        "confidence_score": 0.8,
+        "source_file": "infra/platform/RUNBOOK-bootstrap.md"
+      },
+      {
         "id": "npm_projects",
         "label": "Independent NPM Projects",
         "nodes": [
@@ -1241,9 +1254,9 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "id": "pulumi_pulumi",
       "community": 1,
-      "norm_label": "@pulumi/pulumi"
+      "norm_label": "@pulumi/pulumi",
+      "id": "pulumi_pulumi"
     },
     {
       "label": "@pulumi/gcp",
@@ -1261,9 +1274,9 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "id": "pulumi_gcp",
       "community": 1,
-      "norm_label": "@pulumi/gcp"
+      "norm_label": "@pulumi/gcp",
+      "id": "pulumi_gcp"
     },
     {
       "label": "@pulumi/random",
@@ -1311,9 +1324,9 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "id": "typescript",
       "community": 1,
-      "norm_label": "typescript"
+      "norm_label": "typescript",
+      "id": "typescript"
     },
     {
       "label": "@types/node",
@@ -1331,9 +1344,9 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "id": "types_node",
       "community": 1,
-      "norm_label": "@types/node"
+      "norm_label": "@types/node",
+      "id": "types_node"
     },
     {
       "label": "Build image workflow",
@@ -1357,7 +1370,7 @@
       "label": "Publish tenant package workflow",
       "file_type": "code",
       "source_file": ".github/workflows/publish-tenant-package.yml",
-      "community": 11,
+      "community": 12,
       "norm_label": "publish tenant package workflow",
       "_origin": "semantic",
       "id": "github_workflows_publish_tenant_package"
@@ -1709,7 +1722,7 @@
       "label": "GhostTenant Smoke Test README",
       "file_type": "document",
       "source_type": "infra/tenant/smoke-test/README.md",
-      "community": 29,
+      "community": 30,
       "norm_label": "ghosttenant smoke test readme",
       "_origin": "semantic",
       "id": "infra_tenant_smoke_test_readme"
@@ -1727,7 +1740,7 @@
       "label": "Infrastructure README",
       "file_type": "document",
       "source_file": "infra/README.md",
-      "community": 28,
+      "community": 29,
       "norm_label": "infrastructure readme",
       "_origin": "semantic",
       "id": "infra_readme"
@@ -1736,7 +1749,7 @@
       "label": "Tenant Infra CI Workflow",
       "file_type": "code",
       "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "community": 11,
+      "community": 12,
       "norm_label": "tenant infra ci workflow",
       "_origin": "semantic",
       "id": "github_workflows_infra_tenant_ci_yml"
@@ -1745,7 +1758,7 @@
       "label": "Ghost Tenant Template Repo",
       "file_type": "concept",
       "source_file": "infra/README.md",
-      "community": 11,
+      "community": 12,
       "norm_label": "ghost tenant template repo",
       "_origin": "semantic",
       "id": "ghost_platform_tenant_template"
@@ -1924,7 +1937,7 @@
       "label": "README.md",
       "file_type": "document",
       "source_file": "README.md",
-      "community": 30,
+      "community": 32,
       "norm_label": "readme.md",
       "_origin": "semantic",
       "id": "readme"
@@ -2374,20 +2387,6 @@
       "id": "typescript_eslint"
     },
     {
-      "label": ".pre-commit-config.yaml",
-      "file_type": "code",
-      "source_file": ".pre-commit-config.yaml",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "community": 11,
-      "norm_label": ".pre-commit-config.yaml",
-      "_origin": "semantic",
-      "id": "pre_commit_config"
-    },
-    {
       "label": "CONTRIBUTING.md",
       "file_type": "document",
       "source_file": "CONTRIBUTING.md",
@@ -2396,7 +2395,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 11,
+      "community": 12,
       "norm_label": "contributing.md",
       "_origin": "semantic",
       "id": "contributing"
@@ -2410,7 +2409,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 11,
+      "community": 12,
       "norm_label": ".github/dependabot.yml",
       "_origin": "semantic",
       "id": "github_dependabot"
@@ -2452,7 +2451,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 11,
+      "community": 12,
       "norm_label": "infra/tenant",
       "_origin": "semantic",
       "id": "infra_tenant"
@@ -2466,7 +2465,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 11,
+      "community": 12,
       "norm_label": "infra/platform",
       "_origin": "semantic",
       "id": "infra_platform"
@@ -2477,9 +2476,9 @@
       "source_file": "infra/platform/apis.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "infra_platform_apis",
       "community": 0,
-      "norm_label": "apis.ts"
+      "norm_label": "apis.ts",
+      "id": "infra_platform_apis"
     },
     {
       "label": "requiredServices",
@@ -2487,9 +2486,9 @@
       "source_file": "infra/platform/apis.ts",
       "source_location": "L18",
       "_origin": "ast",
-      "id": "infra_platform_apis_requiredservices",
       "community": 0,
-      "norm_label": "requiredservices"
+      "norm_label": "requiredservices",
+      "id": "infra_platform_apis_requiredservices"
     },
     {
       "label": "enabledApis",
@@ -2497,9 +2496,592 @@
       "source_file": "infra/platform/apis.ts",
       "source_location": "L62",
       "_origin": "ast",
-      "id": "infra_platform_apis_enabledapis",
       "community": 0,
-      "norm_label": "enabledapis"
+      "norm_label": "enabledapis",
+      "id": "infra_platform_apis_enabledapis"
+    },
+    {
+      "label": "provisioning/index.ts",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L1",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "provisioning/index.ts",
+      "id": "infra_provisioning_index"
+    },
+    {
+      "label": "stateBucket",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L41",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "statebucket",
+      "id": "infra_provisioning_index_statebucket"
+    },
+    {
+      "label": "deployerSa",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L50",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "deployersa",
+      "id": "infra_provisioning_index_deployersa"
+    },
+    {
+      "label": "deployerMember",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L55",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "deployermember",
+      "id": "infra_provisioning_index_deployermember"
+    },
+    {
+      "label": "pool",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L57",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "pool",
+      "id": "infra_provisioning_index_pool"
+    },
+    {
+      "label": "provider",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L63",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "provider",
+      "id": "infra_provisioning_index_provider"
+    },
+    {
+      "label": "deployerImpersonation",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L79",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "deployerimpersonation",
+      "id": "infra_provisioning_index_deployerimpersonation"
+    },
+    {
+      "label": "deployerProjectRoles",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L105",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "deployerprojectroles",
+      "id": "infra_provisioning_index_deployerprojectroles"
+    },
+    {
+      "label": "deployerStateBucketAccess",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L119",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "deployerstatebucketaccess",
+      "id": "infra_provisioning_index_deployerstatebucketaccess"
+    },
+    {
+      "label": "provisionerStateBucketAccess",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L134",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "provisionerstatebucketaccess",
+      "id": "infra_provisioning_index_provisionerstatebucketaccess"
+    },
+    {
+      "label": "deployerKmsAccess",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L154",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "deployerkmsaccess",
+      "id": "infra_provisioning_index_deployerkmsaccess"
+    },
+    {
+      "label": "githubActionsWorkloadIdentityProvider",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L165",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "githubactionsworkloadidentityprovider",
+      "id": "infra_provisioning_index_githubactionsworkloadidentityprovider"
+    },
+    {
+      "label": "githubActionsDeployerServiceAccountEmail",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L166",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "githubactionsdeployerserviceaccountemail",
+      "id": "infra_provisioning_index_githubactionsdeployerserviceaccountemail"
+    },
+    {
+      "label": "pulumiStateBucket",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L167",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "pulumistatebucket",
+      "id": "infra_provisioning_index_pulumistatebucket"
+    },
+    {
+      "label": "tenantStackConfig",
+      "file_type": "code",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L168",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "tenantstackconfig",
+      "id": "infra_provisioning_index_tenantstackconfig"
+    },
+    {
+      "label": "provisioning/package.json",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L1",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "provisioning/package.json",
+      "id": "infra_provisioning_package"
+    },
+    {
+      "label": "name",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L2",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "name",
+      "id": "infra_provisioning_package_name"
+    },
+    {
+      "label": "private",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L3",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "private",
+      "id": "infra_provisioning_package_private"
+    },
+    {
+      "label": "main",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L4",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "main",
+      "id": "infra_provisioning_package_main"
+    },
+    {
+      "label": "dependencies",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L5",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "dependencies",
+      "id": "infra_provisioning_package_dependencies"
+    },
+    {
+      "label": "@pulumi/pulumi",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L6",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "@pulumi/pulumi",
+      "id": "infra_provisioning_package_dependencies_pulumi_pulumi"
+    },
+    {
+      "label": "@pulumi/gcp",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L7",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "@pulumi/gcp",
+      "id": "infra_provisioning_package_dependencies_pulumi_gcp"
+    },
+    {
+      "label": "devDependencies",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L9",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "devdependencies",
+      "id": "infra_provisioning_package_devdependencies"
+    },
+    {
+      "label": "typescript",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L10",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "typescript",
+      "id": "infra_provisioning_package_devdependencies_typescript"
+    },
+    {
+      "label": "@types/node",
+      "file_type": "code",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L11",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "@types/node",
+      "id": "infra_provisioning_package_devdependencies_types_node"
+    },
+    {
+      "label": "assert-no-provisioning-deletes.py",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L1",
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "assert-no-provisioning-deletes.py",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes"
+    },
+    {
+      "label": "protected_names()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L78",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "protected_names()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_protected_names"
+    },
+    {
+      "label": "destructive_steps()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L82",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "destructive_steps()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps"
+    },
+    {
+      "label": "_declaration_pattern_literal()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L110",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "_declaration_pattern_literal()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal"
+    },
+    {
+      "label": "_declaration_pattern_suffix()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L120",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "_declaration_pattern_suffix()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix"
+    },
+    {
+      "label": "_plan()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L144",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "_plan()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_plan"
+    },
+    {
+      "label": "self_test()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L148",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "self_test()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test"
+    },
+    {
+      "label": "_coverage_self_test()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L217",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "_coverage_self_test()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test"
+    },
+    {
+      "label": "verify_coverage()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L265",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "verify_coverage()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage"
+    },
+    {
+      "label": "main()",
+      "file_type": "code",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L325",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "main()",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_main"
+    },
+    {
+      "label": "Return (name, op) for every protected resource this plan would destroy. Raises\u2026",
+      "file_type": "rationale",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L83",
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "return (name, op) for every protected resource this plan would destroy. raises...",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_83"
+    },
+    {
+      "label": "Match `new <Ctor>('<name>'` -- a declaration, not a mention. Anchored to the\u2026",
+      "file_type": "rationale",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L111",
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "match `new <ctor>('<name>'` -- a declaration, not a mention. anchored to the...",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_111"
+    },
+    {
+      "label": "Match ``new <Ctor>(`${tenantName}<suffix>` `` in this program.",
+      "file_type": "rationale",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L121",
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "match ``new <ctor>(`${tenantname}<suffix>` `` in this program.",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_121"
+    },
+    {
+      "label": "Fail if a protected name is no longer declared in the tree that owns it. The\u2026",
+      "file_type": "rationale",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L266",
+      "_origin": "ast",
+      "community": 9,
+      "norm_label": "fail if a protected name is no longer declared in the tree that owns it. the...",
+      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_266"
+    },
+    {
+      "label": "provisioning/tsconfig.json",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L1",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "provisioning/tsconfig.json",
+      "id": "infra_provisioning_tsconfig"
+    },
+    {
+      "label": "compilerOptions",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L2",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "compileroptions",
+      "id": "infra_provisioning_tsconfig_compileroptions"
+    },
+    {
+      "label": "target",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L3",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "target",
+      "id": "infra_provisioning_tsconfig_compileroptions_target"
+    },
+    {
+      "label": "module",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L4",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "module",
+      "id": "infra_provisioning_tsconfig_compileroptions_module"
+    },
+    {
+      "label": "moduleResolution",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L5",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "moduleresolution",
+      "id": "infra_provisioning_tsconfig_compileroptions_moduleresolution"
+    },
+    {
+      "label": "lib",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L6",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "lib",
+      "id": "infra_provisioning_tsconfig_compileroptions_lib"
+    },
+    {
+      "label": "ES2022",
+      "file_type": "concept",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L6",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "es2022",
+      "id": "ref_es2022"
+    },
+    {
+      "label": "strict",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L7",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "strict",
+      "id": "infra_provisioning_tsconfig_compileroptions_strict"
+    },
+    {
+      "label": "outDir",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L8",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "outdir",
+      "id": "infra_provisioning_tsconfig_compileroptions_outdir"
+    },
+    {
+      "label": "sourceMap",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L9",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "sourcemap",
+      "id": "infra_provisioning_tsconfig_compileroptions_sourcemap"
+    },
+    {
+      "label": "experimentalDecorators",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L10",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "experimentaldecorators",
+      "id": "infra_provisioning_tsconfig_compileroptions_experimentaldecorators"
+    },
+    {
+      "label": "pretty",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L11",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "pretty",
+      "id": "infra_provisioning_tsconfig_compileroptions_pretty"
+    },
+    {
+      "label": "noFallthroughCasesInSwitch",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L12",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "nofallthroughcasesinswitch",
+      "id": "infra_provisioning_tsconfig_compileroptions_nofallthroughcasesinswitch"
+    },
+    {
+      "label": "skipLibCheck",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L13",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "skiplibcheck",
+      "id": "infra_provisioning_tsconfig_compileroptions_skiplibcheck"
+    },
+    {
+      "label": "include",
+      "file_type": "code",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L15",
+      "_origin": "ast",
+      "community": 3,
+      "norm_label": "include",
+      "id": "infra_provisioning_tsconfig_include"
+    },
+    {
+      "label": "Platform infra CI",
+      "file_type": "code",
+      "source_file": ".github/workflows/infra-platform-ci.yml",
+      "community": 11,
+      "norm_label": "platform infra ci",
+      "_origin": "semantic",
+      "id": "github_workflows_infra_platform_ci"
+    },
+    {
+      "label": "branchleft-ghost-provisioning",
+      "file_type": "code",
+      "source_file": "infra/provisioning/Pulumi.yaml",
+      "community": 28,
+      "norm_label": "branchleft-ghost-provisioning",
+      "_origin": "semantic",
+      "id": "infra_provisioning_pulumi"
+    },
+    {
+      "label": "Workload Identity Federation",
+      "file_type": "concept",
+      "community": 11,
+      "norm_label": "workload identity federation",
+      "_origin": "semantic",
+      "id": "gcp_workload_identity_federation"
+    },
+    {
+      "label": "Pulumi Platform Stack",
+      "file_type": "concept",
+      "community": 31,
+      "norm_label": "pulumi platform stack",
+      "_origin": "semantic",
+      "id": "pulumi_platform_stack"
     },
     {
       "label": "provisioning/config.ts",
@@ -2645,606 +3227,83 @@
       "label": "secretsKmsKeyId",
       "file_type": "code",
       "source_file": "infra/provisioning/config.ts",
-      "source_location": "L53",
+      "source_location": "L54",
       "_origin": "ast",
       "id": "infra_provisioning_config_secretskmskeyid",
       "community": 2,
       "norm_label": "secretskmskeyid"
     },
     {
-      "label": "provisioning/index.ts",
+      "label": ".pre-commit-config.yaml",
       "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L1",
-      "_origin": "ast",
-      "id": "infra_provisioning_index",
-      "community": 2,
-      "norm_label": "provisioning/index.ts"
-    },
-    {
-      "label": "stateBucket",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L41",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_statebucket",
-      "community": 2,
-      "norm_label": "statebucket"
-    },
-    {
-      "label": "deployerSa",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L50",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_deployersa",
-      "community": 2,
-      "norm_label": "deployersa"
-    },
-    {
-      "label": "deployerMember",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L55",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_deployermember",
-      "community": 2,
-      "norm_label": "deployermember"
-    },
-    {
-      "label": "pool",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L57",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_pool",
-      "community": 2,
-      "norm_label": "pool"
-    },
-    {
-      "label": "provider",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L63",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_provider",
-      "community": 2,
-      "norm_label": "provider"
-    },
-    {
-      "label": "deployerImpersonation",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L79",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_deployerimpersonation",
-      "community": 2,
-      "norm_label": "deployerimpersonation"
-    },
-    {
-      "label": "deployerProjectRoles",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L105",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_deployerprojectroles",
-      "community": 2,
-      "norm_label": "deployerprojectroles"
-    },
-    {
-      "label": "deployerStateBucketAccess",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L119",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_deployerstatebucketaccess",
-      "community": 2,
-      "norm_label": "deployerstatebucketaccess"
-    },
-    {
-      "label": "provisionerStateBucketAccess",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L134",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_provisionerstatebucketaccess",
-      "community": 2,
-      "norm_label": "provisionerstatebucketaccess"
-    },
-    {
-      "label": "deployerKmsAccess",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L154",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_deployerkmsaccess",
-      "community": 2,
-      "norm_label": "deployerkmsaccess"
-    },
-    {
-      "label": "githubActionsWorkloadIdentityProvider",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L165",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_githubactionsworkloadidentityprovider",
-      "community": 2,
-      "norm_label": "githubactionsworkloadidentityprovider"
-    },
-    {
-      "label": "githubActionsDeployerServiceAccountEmail",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L166",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_githubactionsdeployerserviceaccountemail",
-      "community": 2,
-      "norm_label": "githubactionsdeployerserviceaccountemail"
-    },
-    {
-      "label": "pulumiStateBucket",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L167",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_pulumistatebucket",
-      "community": 2,
-      "norm_label": "pulumistatebucket"
-    },
-    {
-      "label": "tenantStackConfig",
-      "file_type": "code",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L168",
-      "_origin": "ast",
-      "id": "infra_provisioning_index_tenantstackconfig",
-      "community": 2,
-      "norm_label": "tenantstackconfig"
-    },
-    {
-      "label": "provisioning/package.json",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L1",
-      "_origin": "ast",
-      "id": "infra_provisioning_package",
-      "community": 1,
-      "norm_label": "provisioning/package.json"
-    },
-    {
-      "label": "name",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L2",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_name",
-      "community": 1,
-      "norm_label": "name"
-    },
-    {
-      "label": "private",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L3",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_private",
-      "community": 1,
-      "norm_label": "private"
-    },
-    {
-      "label": "main",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L4",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_main",
-      "community": 1,
-      "norm_label": "main"
-    },
-    {
-      "label": "dependencies",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L5",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_dependencies",
-      "community": 1,
-      "norm_label": "dependencies"
-    },
-    {
-      "label": "@pulumi/pulumi",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L6",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_dependencies_pulumi_pulumi",
-      "community": 1,
-      "norm_label": "@pulumi/pulumi"
-    },
-    {
-      "label": "@pulumi/gcp",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L7",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_dependencies_pulumi_gcp",
-      "community": 1,
-      "norm_label": "@pulumi/gcp"
-    },
-    {
-      "label": "devDependencies",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L9",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_devdependencies",
-      "community": 1,
-      "norm_label": "devdependencies"
-    },
-    {
-      "label": "typescript",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L10",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_devdependencies_typescript",
-      "community": 1,
-      "norm_label": "typescript"
-    },
-    {
-      "label": "@types/node",
-      "file_type": "code",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L11",
-      "_origin": "ast",
-      "id": "infra_provisioning_package_devdependencies_types_node",
-      "community": 1,
-      "norm_label": "@types/node"
-    },
-    {
-      "label": "assert-no-provisioning-deletes.py",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L1",
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "community": 9,
-      "norm_label": "assert-no-provisioning-deletes.py"
-    },
-    {
-      "label": "protected_names()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L78",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_protected_names",
-      "community": 9,
-      "norm_label": "protected_names()"
-    },
-    {
-      "label": "destructive_steps()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L82",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
-      "community": 9,
-      "norm_label": "destructive_steps()"
-    },
-    {
-      "label": "_declaration_pattern_literal()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L110",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
-      "community": 9,
-      "norm_label": "_declaration_pattern_literal()"
-    },
-    {
-      "label": "_declaration_pattern_suffix()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L120",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix",
-      "community": 9,
-      "norm_label": "_declaration_pattern_suffix()"
-    },
-    {
-      "label": "_plan()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L144",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_plan",
-      "community": 9,
-      "norm_label": "_plan()"
-    },
-    {
-      "label": "self_test()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L148",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
-      "community": 9,
-      "norm_label": "self_test()"
-    },
-    {
-      "label": "_coverage_self_test()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L217",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
-      "community": 9,
-      "norm_label": "_coverage_self_test()"
-    },
-    {
-      "label": "verify_coverage()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L265",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "community": 9,
-      "norm_label": "verify_coverage()"
-    },
-    {
-      "label": "main()",
-      "file_type": "code",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L325",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
-      "community": 9,
-      "norm_label": "main()"
-    },
-    {
-      "label": "Return (name, op) for every protected resource this plan would destroy. Raises\u2026",
-      "file_type": "rationale",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L83",
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_83",
-      "community": 9,
-      "norm_label": "return (name, op) for every protected resource this plan would destroy. raises..."
-    },
-    {
-      "label": "Match `new <Ctor>('<name>'` -- a declaration, not a mention. Anchored to the\u2026",
-      "file_type": "rationale",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L111",
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_111",
-      "community": 9,
-      "norm_label": "match `new <ctor>('<name>'` -- a declaration, not a mention. anchored to the..."
-    },
-    {
-      "label": "Match ``new <Ctor>(`${tenantName}<suffix>` `` in this program.",
-      "file_type": "rationale",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L121",
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_121",
-      "community": 9,
-      "norm_label": "match ``new <ctor>(`${tenantname}<suffix>` `` in this program."
-    },
-    {
-      "label": "Fail if a protected name is no longer declared in the tree that owns it. The\u2026",
-      "file_type": "rationale",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L266",
-      "_origin": "ast",
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_266",
-      "community": 9,
-      "norm_label": "fail if a protected name is no longer declared in the tree that owns it. the..."
-    },
-    {
-      "label": "provisioning/tsconfig.json",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L1",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig",
-      "community": 3,
-      "norm_label": "provisioning/tsconfig.json"
-    },
-    {
-      "label": "compilerOptions",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L2",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions",
-      "community": 3,
-      "norm_label": "compileroptions"
-    },
-    {
-      "label": "target",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L3",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_target",
-      "community": 3,
-      "norm_label": "target"
-    },
-    {
-      "label": "module",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L4",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_module",
-      "community": 3,
-      "norm_label": "module"
-    },
-    {
-      "label": "moduleResolution",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L5",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_moduleresolution",
-      "community": 3,
-      "norm_label": "moduleresolution"
-    },
-    {
-      "label": "lib",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L6",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_lib",
-      "community": 3,
-      "norm_label": "lib"
-    },
-    {
-      "label": "ES2022",
-      "file_type": "concept",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L6",
-      "_origin": "ast",
-      "id": "ref_es2022",
-      "community": 3,
-      "norm_label": "es2022"
-    },
-    {
-      "label": "strict",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L7",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_strict",
-      "community": 3,
-      "norm_label": "strict"
-    },
-    {
-      "label": "outDir",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L8",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_outdir",
-      "community": 3,
-      "norm_label": "outdir"
-    },
-    {
-      "label": "sourceMap",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L9",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_sourcemap",
-      "community": 3,
-      "norm_label": "sourcemap"
-    },
-    {
-      "label": "experimentalDecorators",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L10",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_experimentaldecorators",
-      "community": 3,
-      "norm_label": "experimentaldecorators"
-    },
-    {
-      "label": "pretty",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L11",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_pretty",
-      "community": 3,
-      "norm_label": "pretty"
-    },
-    {
-      "label": "noFallthroughCasesInSwitch",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L12",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_nofallthroughcasesinswitch",
-      "community": 3,
-      "norm_label": "nofallthroughcasesinswitch"
-    },
-    {
-      "label": "skipLibCheck",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L13",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_compileroptions_skiplibcheck",
-      "community": 3,
-      "norm_label": "skiplibcheck"
-    },
-    {
-      "label": "include",
-      "file_type": "code",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L15",
-      "_origin": "ast",
-      "id": "infra_provisioning_tsconfig_include",
-      "community": 3,
-      "norm_label": "include"
-    },
-    {
-      "label": "Platform infra CI",
-      "file_type": "code",
-      "source_file": ".github/workflows/infra-platform-ci.yml",
-      "id": "github_workflows_infra_platform_ci",
+      "source_file": ".pre-commit-config.yaml",
+      "id": "pre_commit_config",
       "community": 12,
-      "norm_label": "platform infra ci"
+      "norm_label": ".pre-commit-config.yaml"
     },
     {
-      "label": "Provision tenant",
+      "label": "Handover \u2014 the public flip",
+      "file_type": "document",
+      "source_file": "HANDOVER-public-flip.md",
+      "id": "handover_public_flip",
+      "community": 11,
+      "norm_label": "handover \u2014 the public flip"
+    },
+    {
+      "label": "Provision tenant workflow",
       "file_type": "code",
       "source_file": ".github/workflows/provision-tenant.yml",
       "id": "github_workflows_provision_tenant",
-      "community": 12,
-      "norm_label": "provision tenant"
+      "community": 11,
+      "norm_label": "provision tenant workflow"
     },
     {
-      "label": "Bootstrap runbook",
+      "label": "Bootstrap runbook \u2014 platform stack",
       "file_type": "document",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
       "id": "infra_platform_runbook_bootstrap",
-      "community": 12,
-      "norm_label": "bootstrap runbook"
+      "community": 11,
+      "norm_label": "bootstrap runbook \u2014 platform stack"
     },
     {
-      "label": "branchleft-ghost-provisioning",
+      "label": "assert-placeholders-substituted.py",
       "file_type": "code",
-      "source_file": "infra/provisioning/Pulumi.yaml",
-      "id": "infra_provisioning_pulumi",
-      "community": 12,
-      "norm_label": "branchleft-ghost-provisioning"
+      "source_file": "infra/provisioning/scripts/assert-placeholders-substituted.py",
+      "id": "infra_provisioning_assert_placeholders_substituted",
+      "community": 11,
+      "norm_label": "assert-placeholders-substituted.py"
     },
     {
-      "label": "Workload Identity Federation",
+      "label": "ghost-platform-deployer SA",
       "file_type": "concept",
-      "id": "gcp_workload_identity_federation",
-      "community": 12,
-      "norm_label": "workload identity federation"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "ghost_platform_deployer",
+      "community": 11,
+      "norm_label": "ghost-platform-deployer sa"
     },
     {
-      "label": "Pulumi Platform Stack",
+      "label": "ghost-tenant-provisioner SA",
       "file_type": "concept",
-      "id": "pulumi_platform_stack",
-      "community": 12,
-      "norm_label": "pulumi platform stack"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "ghost_tenant_provisioner",
+      "community": 11,
+      "norm_label": "ghost-tenant-provisioner sa"
+    },
+    {
+      "label": "ghost_platform_provisioner DB User",
+      "file_type": "concept",
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "ghost_platform_provisioner_db",
+      "community": 11,
+      "norm_label": "ghost_platform_provisioner db user"
+    },
+    {
+      "label": "gs://branchleft-pulumi-state",
+      "file_type": "concept",
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "pulumi_state_bucket",
+      "community": 11,
+      "norm_label": "gs://branchleft-pulumi-state"
     }
   ],
   "links": [
@@ -3696,9 +3755,9 @@
       "source_location": "L110",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
-      "target": "pattern",
-      "confidence_score": 1.0
+      "target": "pattern"
     },
     {
       "relation": "references",
@@ -3708,9 +3767,9 @@
       "source_location": "L120",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix",
-      "target": "pattern",
-      "confidence_score": 1.0
+      "target": "pattern"
     },
     {
       "relation": "imports_from",
@@ -4561,9 +4620,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_provisioning_tsconfig_include",
-      "target": "ref_ts",
-      "confidence_score": 1.0
+      "target": "ref_ts"
     },
     {
       "relation": "extends",
@@ -4852,9 +4911,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_provisioning_package_dependencies_pulumi_pulumi",
-      "target": "pulumi_pulumi",
-      "confidence_score": 1.0
+      "target": "pulumi_pulumi"
     },
     {
       "relation": "imports",
@@ -4876,9 +4935,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_provisioning_package_dependencies_pulumi_gcp",
-      "target": "pulumi_gcp",
-      "confidence_score": 1.0
+      "target": "pulumi_gcp"
     },
     {
       "relation": "imports",
@@ -4934,9 +4993,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_provisioning_package_devdependencies_typescript",
-      "target": "typescript",
-      "confidence_score": 1.0
+      "target": "typescript"
     },
     {
       "relation": "imports",
@@ -4958,9 +5017,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_provisioning_package_devdependencies_types_node",
-      "target": "types_node",
-      "confidence_score": 1.0
+      "target": "types_node"
     },
     {
       "relation": "references",
@@ -6425,17 +6484,6 @@
       "weight": 1.0,
       "_origin": "semantic",
       "source": "contributing",
-      "target": "pre_commit_config"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "CONTRIBUTING.md",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "contributing",
       "target": "infra_platform"
     },
     {
@@ -6448,6 +6496,17 @@
       "_origin": "semantic",
       "source": "contributing",
       "target": "infra_tenant"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "CONTRIBUTING.md",
+      "source_location": null,
+      "weight": 1.0,
+      "_origin": "semantic",
+      "source": "contributing",
+      "target": "pre_commit_config"
     },
     {
       "relation": "references",
@@ -6498,9 +6557,9 @@
       "source_location": "L62",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_platform_apis",
-      "target": "infra_platform_apis_enabledapis",
-      "confidence_score": 1.0
+      "target": "infra_platform_apis_enabledapis"
     },
     {
       "relation": "contains",
@@ -6509,9 +6568,854 @@
       "source_location": "L18",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_platform_apis",
-      "target": "infra_platform_apis_requiredservices",
-      "confidence_score": 1.0
+      "target": "infra_platform_apis_requiredservices"
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_deployerserviceaccountid"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_platformdbinstanceconnectionname"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_platformmediabucketurl"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_platformtenantimagerepositorydockerpath"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_projectid"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_provisioningserviceaccountemail"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_region"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_secretskmskeyid"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_statebucketname"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_tenantgithubrepo"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_tenantname"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_config_workloadidentitypoolid"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L79",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_deployerimpersonation"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L154",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_deployerkmsaccess"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L55",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_deployermember"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L105",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_deployerprojectroles"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L50",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_deployersa"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L119",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_deployerstatebucketaccess"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L166",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_githubactionsdeployerserviceaccountemail"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L165",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_githubactionsworkloadidentityprovider"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L57",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_pool"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L63",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_provider"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L134",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_provisionerstatebucketaccess"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L167",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_pulumistatebucket"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L41",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_statebucket"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/index.ts",
+      "source_location": "L168",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_index",
+      "target": "infra_provisioning_index_tenantstackconfig"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package",
+      "target": "infra_provisioning_package_dependencies"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package",
+      "target": "infra_provisioning_package_devdependencies"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package",
+      "target": "infra_provisioning_package_main"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package",
+      "target": "infra_provisioning_package_name"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package",
+      "target": "infra_provisioning_package_private"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package_dependencies",
+      "target": "infra_provisioning_package_dependencies_pulumi_gcp"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package_dependencies",
+      "target": "infra_provisioning_package_dependencies_pulumi_pulumi"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L11",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package_devdependencies",
+      "target": "infra_provisioning_package_devdependencies_types_node"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/package.json",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_package_devdependencies",
+      "target": "infra_provisioning_package_devdependencies_typescript"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L217",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L110",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L120",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L82",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L325",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_main"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L144",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_plan"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L78",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_protected_names"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L148",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L265",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L93",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_protected_names"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L344",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps"
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L83",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_83",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L184",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps"
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L111",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_111",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L294",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal"
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L121",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_121",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L297",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L150",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_plan"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L327",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L209",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L250",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L329",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage"
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
+      "source_location": "L266",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_266",
+      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig",
+      "target": "infra_provisioning_tsconfig_compileroptions"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L15",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig",
+      "target": "infra_provisioning_tsconfig_include"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_experimentaldecorators"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_lib"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_module"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_moduleresolution"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L12",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_nofallthroughcasesinswitch"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L8",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_outdir"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L11",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_pretty"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_skiplibcheck"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_sourcemap"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_strict"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions",
+      "target": "infra_provisioning_tsconfig_compileroptions_target"
+    },
+    {
+      "relation": "extends",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/provisioning/tsconfig.json",
+      "source_location": "L6",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_provisioning_tsconfig_compileroptions_lib",
+      "target": "ref_es2022"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/infra-platform-ci.yml",
+      "_origin": "semantic",
+      "source": "github_workflows_infra_platform_ci",
+      "target": "gcp_workload_identity_federation"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/infra-platform-ci.yml",
+      "_origin": "semantic",
+      "source": "github_workflows_infra_platform_ci",
+      "target": "infra_platform_runbook_bootstrap"
     },
     {
       "relation": "contains",
@@ -6616,7 +7520,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/provisioning/config.ts",
-      "source_location": "L53",
+      "source_location": "L54",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_provisioning_config",
@@ -6668,871 +7572,44 @@
       "confidence_score": 1.0
     },
     {
-      "relation": "imports_from",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_projectid",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_region",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_tenantname",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_tenantgithubrepo",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_statebucketname",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_deployerserviceaccountid",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_workloadidentitypoolid",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_platformdbinstanceconnectionname",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_platformtenantimagerepositorydockerpath",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_platformmediabucketurl",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_provisioningserviceaccountemail",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_config_secretskmskeyid",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L79",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_deployerimpersonation",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L154",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_deployerkmsaccess",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L55",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_deployermember",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L105",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_deployerprojectroles",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L50",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_deployersa",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L119",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_deployerstatebucketaccess",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L166",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_githubactionsdeployerserviceaccountemail",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L165",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_githubactionsworkloadidentityprovider",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L57",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_pool",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L63",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_provider",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L134",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_provisionerstatebucketaccess",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L167",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_pulumistatebucket",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L41",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_statebucket",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/index.ts",
-      "source_location": "L168",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_index",
-      "target": "infra_provisioning_index_tenantstackconfig",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L5",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package",
-      "target": "infra_provisioning_package_dependencies",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L9",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package",
-      "target": "infra_provisioning_package_devdependencies",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L4",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package",
-      "target": "infra_provisioning_package_main",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L2",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package",
-      "target": "infra_provisioning_package_name",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package",
-      "target": "infra_provisioning_package_private",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L7",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package_dependencies",
-      "target": "infra_provisioning_package_dependencies_pulumi_gcp",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L6",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package_dependencies",
-      "target": "infra_provisioning_package_dependencies_pulumi_pulumi",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L11",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package_devdependencies",
-      "target": "infra_provisioning_package_devdependencies_types_node",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/package.json",
-      "source_location": "L10",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_package_devdependencies",
-      "target": "infra_provisioning_package_devdependencies_typescript",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L217",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L110",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L120",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L82",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L325",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L144",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_plan",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L78",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_protected_names",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L148",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L265",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L93",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_protected_names",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L344",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "rationale_for",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L83",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_83",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L184",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "rationale_for",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L111",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_111",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L294",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "rationale_for",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L121",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_121",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L297",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L150",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_plan",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L327",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L209",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L250",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L329",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "rationale_for",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/scripts/assert-no-provisioning-deletes.py",
-      "source_location": "L266",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_266",
-      "target": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L2",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig",
-      "target": "infra_provisioning_tsconfig_compileroptions",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L15",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig",
-      "target": "infra_provisioning_tsconfig_include",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L10",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_experimentaldecorators",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L6",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_lib",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L4",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_module",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L5",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_moduleresolution",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L12",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_nofallthroughcasesinswitch",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L8",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_outdir",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L11",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_pretty",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L13",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_skiplibcheck",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L9",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_sourcemap",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L7",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_strict",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions",
-      "target": "infra_provisioning_tsconfig_compileroptions_target",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "extends",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/provisioning/tsconfig.json",
-      "source_location": "L6",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_provisioning_tsconfig_compileroptions_lib",
-      "target": "ref_es2022",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/infra-platform-ci.yml",
-      "source": "github_workflows_infra_platform_ci",
-      "target": "gcp_workload_identity_federation"
-    },
-    {
       "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": ".github/workflows/infra-platform-ci.yml",
-      "source": "github_workflows_infra_platform_ci",
+      "source_file": "HANDOVER-public-flip.md",
+      "source": "handover_public_flip",
       "target": "infra_platform_runbook_bootstrap"
     },
     {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/provision-tenant.yml",
-      "source": "github_workflows_provision_tenant",
-      "target": "gcp_workload_identity_federation"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/provision-tenant.yml",
-      "source": "github_workflows_provision_tenant",
-      "target": "infra_platform_runbook_bootstrap"
-    },
-    {
-      "relation": "calls",
+      "relation": "implements",
       "confidence": "INFERRED",
       "confidence_score": 0.9,
       "source_file": ".github/workflows/provision-tenant.yml",
       "source": "github_workflows_provision_tenant",
-      "target": "infra_provisioning_pulumi"
+      "target": "ghost_tenant_provisioner"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "infra_platform_runbook_bootstrap"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "infra_provisioning_assert_placeholders_substituted"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "pulumi_state_bucket"
     },
     {
       "relation": "references",
@@ -7540,10 +7617,47 @@
       "confidence_score": 1.0,
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
       "source": "infra_platform_runbook_bootstrap",
-      "target": "pulumi_platform_stack"
+      "target": "ghost_platform_deployer"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "ghost_platform_provisioner_db"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "ghost_tenant_provisioner"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "pulumi_state_bucket"
     }
   ],
   "hyperedges": [
+    {
+      "id": "platform_bootstrap_identities",
+      "label": "Platform Bootstrap Identities",
+      "nodes": [
+        "ghost_platform_deployer",
+        "ghost_tenant_provisioner",
+        "ghost_platform_provisioner_db"
+      ],
+      "relation": "form",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md"
+    },
     {
       "id": "npm_projects",
       "label": "Independent NPM Projects",
@@ -7571,5 +7685,5 @@
       "source_file": "infra/README.md"
     }
   ],
-  "built_at_commit": "f134cff53a965b4e655444c670ebe37bd477d000"
+  "built_at_commit": "a8d95541b0e44fd8f5d65827fd33aa4ff1e6b048"
 }
