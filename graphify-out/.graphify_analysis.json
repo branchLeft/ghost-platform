@@ -296,117 +296,104 @@
       "pre_commit_config"
     ],
     "12": [
-      "gcp_provisioning_identity",
-      "github_workflows_provision_tenant",
-      "pulumi_cli",
-      "tenant_github_workflows_infra_ci",
-      "tenant_pulumi_yaml",
-      "tenant_scripts_assert_no_tenant_deletes",
-      "tenant_scripts_assert_placeholders_substituted"
-    ],
-    "13": [
       "docker_entrypoint_branchleft",
       "docker_entrypoint_branchleft_server_host",
       "docker_entrypoint_branchleft_server_port",
       "docker_entrypoint_branchleft_sh__entry"
     ],
-    "14": [
+    "13": [
       "scripts_test_storage_guard",
       "scripts_test_storage_guard_assert_blocked",
       "scripts_test_storage_guard_assert_boots",
       "scripts_test_storage_guard_sh__entry"
     ],
+    "14": [
+      "gcp_kms_pulumi_secrets",
+      "gcp_storage_pulumi_state",
+      "ghost_platform_deployer"
+    ],
     "15": [
-      "ghost_platform_deployer",
-      "infra_platform_runbook_bootstrap_step_3",
-      "infra_platform_runbook_bootstrap_step_4"
+      "gcp_provisioning_identity",
+      "github_workflows_provision_tenant",
+      "pulumi_cli"
     ],
     "16": [
+      "ghost_tenant_provisioner",
+      "role_ghost_platform_state_bucket_admin",
+      "role_ghost_platform_tenant_sql_provisioner"
+    ],
+    "17": [
+      "infra_platform_known_issues",
+      "infra_platform_pulumi_up",
+      "infra_platform_runbook_bootstrap"
+    ],
+    "18": [
       "scripts_smoke_test",
       "scripts_smoke_test_cleanup",
       "scripts_smoke_test_sh__entry"
     ],
-    "17": [
+    "19": [
       "gcp_artifact_registry",
       "github_workflows_registry_push_yml"
     ],
-    "18": [
+    "20": [
       "gcp_workload_identity_federation",
       "github_workflows_infra_platform_ci"
     ],
-    "19": [
-      "ghost_platform_provisioner",
-      "infra_platform_runbook_bootstrap_p4"
-    ],
-    "20": [
-      "ghost_tenant_provisioner",
-      "infra_platform_runbook_bootstrap_p7"
-    ],
     "21": [
+      "ghost_platform_provisioner",
+      "role_cloudsqlsuperuser"
+    ],
+    "22": [
       "infra_platform_pulumi_platform_stack_config",
       "infra_platform_pulumi_project"
     ],
-    "22": [
+    "23": [
       "claude_md"
     ],
-    "23": [
+    "24": [
       "eslint_config"
     ],
-    "24": [
+    "25": [
       "gcp_cloud_run"
     ],
-    "25": [
+    "26": [
       "gcp_cloud_sql"
     ],
-    "26": [
-      "gcp_storage_bucket"
-    ],
     "27": [
-      "ghost_official_image"
+      "gcp_sql_instance"
     ],
     "28": [
-      "github_workflows_build"
+      "gcp_storage_bucket"
     ],
     "29": [
-      "github_workflows_codeql"
+      "ghost_official_image"
     ],
     "30": [
-      "github_workflows_docs_lint"
+      "github_workflows_build"
     ],
     "31": [
-      "github_workflows_graphify_workflow"
+      "github_workflows_codeql"
     ],
     "32": [
-      "infra_platform_runbook_bootstrap_bootstrap_runbook"
+      "github_workflows_docs_lint"
     ],
     "33": [
-      "infra_platform_runbook_bootstrap_p0"
+      "github_workflows_graphify_workflow"
     ],
     "34": [
-      "infra_platform_runbook_bootstrap_p2"
-    ],
-    "35": [
-      "infra_platform_runbook_bootstrap_provisioning_user"
-    ],
-    "36": [
-      "infra_platform_runbook_bootstrap_step_1"
-    ],
-    "37": [
-      "infra_platform_runbook_bootstrap_tenant_provisioning_identity"
-    ],
-    "38": [
       "infra_provisioning_pulumi"
     ],
-    "39": [
+    "35": [
       "infra_readme"
     ],
-    "40": [
+    "36": [
       "infra_tenant_smoke_test_readme"
     ],
-    "41": [
+    "37": [
       "pulumi_platform_stack"
     ],
-    "42": [
+    "38": [
       "readme"
     ]
   },
@@ -423,13 +410,13 @@
     "9": 0.23809523809523808,
     "10": 0.2878787878787879,
     "11": 0.32142857142857145,
-    "12": 0.2857142857142857,
-    "13": 0.5,
-    "14": 0.8333333333333334,
+    "12": 0.5,
+    "13": 0.8333333333333334,
+    "14": 0.6666666666666666,
     "15": 0.6666666666666666,
     "16": 0.6666666666666666,
-    "17": 1.0,
-    "18": 1.0,
+    "17": 0.6666666666666666,
+    "18": 0.6666666666666666,
     "19": 1.0,
     "20": 1.0,
     "21": 1.0,
@@ -449,11 +436,7 @@
     "35": 1.0,
     "36": 1.0,
     "37": 1.0,
-    "38": 1.0,
-    "39": 1.0,
-    "40": 1.0,
-    "41": 1.0,
-    "42": 1.0
+    "38": 1.0
   },
   "gods": [
     {
@@ -482,11 +465,6 @@
       "degree": 6
     },
     {
-      "id": "github_workflows_provision_tenant",
-      "label": "Provision tenant",
-      "degree": 6
-    },
-    {
       "id": "infra_tenant_secrets_secretwithvalue",
       "label": "secretWithValue()",
       "degree": 5
@@ -504,6 +482,11 @@
     {
       "id": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
       "label": "verify_coverage()",
+      "degree": 5
+    },
+    {
+      "id": "infra_tenant_cloudrunservice_createcloudrunservice",
+      "label": "createCloudRunService()",
       "degree": 5
     }
   ],
@@ -554,7 +537,7 @@
     }
   ],
   "tokens": {
-    "input": 5831,
-    "output": 1039
+    "input": 14068,
+    "output": 2431
   }
 }
