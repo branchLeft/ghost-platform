@@ -218,7 +218,6 @@
     "6": [
       "infra_tenant_package",
       "infra_tenant_package_files",
-      "infra_tenant_package_json_ref_dist",
       "infra_tenant_package_license",
       "infra_tenant_package_main",
       "infra_tenant_package_name",
@@ -234,7 +233,8 @@
       "infra_tenant_package_scripts_prepublishonly",
       "infra_tenant_package_scripts_test",
       "infra_tenant_package_types",
-      "infra_tenant_package_version"
+      "infra_tenant_package_version",
+      "ref_dist"
     ],
     "7": [
       "infra_platform_tsconfig",
@@ -561,7 +561,7 @@
     }
   ],
   "tokens": {
-    "input": 14582,
-    "output": 2276
+    "input": 0,
+    "output": 0
   }
 }
