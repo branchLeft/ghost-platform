@@ -192,7 +192,13 @@ jobs:
           set -euo pipefail
           npm ci
           pulumi login gs://branchleft-pulumi-state
-          pulumi stack select "$TENANT" --create
+          # A new stack on a filestate backend needs a secrets manager named at
+          # creation. The default is the passphrase provider, which then
+          # demands PULUMI_CONFIG_PASSPHRASE and fails closed in CI. Same key
+          # the tenant stack below initialises with; the provisioning identity
+          # holds cloudkms.admin on it and on nothing else.
+          pulumi stack select "$TENANT" --create \
+            --secrets-provider="gcpkms://projects/${GCP_PROJECT}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
           pulumi config set gcp:project "$GCP_PROJECT"
           pulumi config set tenantName "$TENANT"
           pulumi config set tenantGithubRepo "$TENANT_REPO"
@@ -255,9 +261,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
         run: |
+          set -euo pipefail
           gh repo create "$TENANT_REPO" --private \
             --template branchLeft/ghost-platform-tenant-template \
             --description "Tenant infrastructure stack"
+
+          # GitHub copies template content asynchronously and `gh repo create`
+          # returns before it lands. Cloning inside that window succeeds
+          # against an empty repository -- git calls it a warning, not an
+          # error -- so the first thing to fail is `sed` two steps later,
+          # naming a missing Pulumi.yaml rather than the race that caused it.
+          # Poll for the file the substitution step actually needs.
+          for _ in $(seq 1 30); do
+            if gh api "repos/${TENANT_REPO}/contents/Pulumi.yaml" --silent 2>/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::${TENANT_REPO} was created but the template content did not appear within 60s. Nothing further has run; recover per the runbook, starting with deleting the repo."
+          exit 1
 
       - name: Write the repo variables and the package-read secret
         env:
