@@ -50,6 +50,45 @@
       "infra_platform_workloadidentity_workloadidentityprovider"
     ],
     "1": [
+      "infra_tenant_cloudrunservice",
+      "infra_tenant_cloudrunservice_cloudrunserviceargs",
+      "infra_tenant_cloudrunservice_createcloudrunservice",
+      "infra_tenant_cloudrunservice_createpublicinvokerbinding",
+      "infra_tenant_cloudrunservice_plainenv",
+      "infra_tenant_cloudrunservice_secretenv",
+      "infra_tenant_database",
+      "infra_tenant_database_createtenantdatabase",
+      "infra_tenant_database_databaseresult",
+      "infra_tenant_database_default_max_user_connections",
+      "infra_tenant_index",
+      "infra_tenant_index_ghosttenant",
+      "infra_tenant_index_ghosttenant_constructor",
+      "infra_tenant_index_ghosttenantargs",
+      "infra_tenant_index_ghosttenantplatformargs",
+      "infra_tenant_naming",
+      "infra_tenant_naming_bucketnamefromurl",
+      "infra_tenant_naming_cloudrunservicename",
+      "infra_tenant_naming_databaseandusername",
+      "infra_tenant_naming_max_tenant_name_length",
+      "infra_tenant_naming_mediaobjectconditionresource",
+      "infra_tenant_naming_mediaobjectprefix",
+      "infra_tenant_naming_mediatenantprefixenvvalue",
+      "infra_tenant_naming_serviceaccountid",
+      "infra_tenant_naming_sqlidentifier",
+      "infra_tenant_naming_tenant_resource_prefix",
+      "infra_tenant_naming_tenantimageref",
+      "infra_tenant_naming_tenantsecretname",
+      "infra_tenant_naming_test",
+      "infra_tenant_naming_validatetenantname",
+      "infra_tenant_secrets",
+      "infra_tenant_secrets_secretwithvalue",
+      "infra_tenant_serviceaccount",
+      "infra_tenant_serviceaccount_createserviceaccount",
+      "infra_tenant_storage",
+      "infra_tenant_storage_createtenantstorage",
+      "infra_tenant_storage_storageresult"
+    ],
+    "2": [
       "infra_platform_package",
       "infra_platform_package_dependencies",
       "infra_platform_package_dependencies_pulumi_gcp",
@@ -86,44 +125,6 @@
       "types_node",
       "typescript",
       "vitest"
-    ],
-    "2": [
-      "infra_tenant_cloudrunservice",
-      "infra_tenant_cloudrunservice_cloudrunserviceargs",
-      "infra_tenant_cloudrunservice_createcloudrunservice",
-      "infra_tenant_cloudrunservice_createpublicinvokerbinding",
-      "infra_tenant_cloudrunservice_plainenv",
-      "infra_tenant_cloudrunservice_secretenv",
-      "infra_tenant_database",
-      "infra_tenant_database_createtenantdatabase",
-      "infra_tenant_database_databaseresult",
-      "infra_tenant_database_default_max_user_connections",
-      "infra_tenant_index",
-      "infra_tenant_index_ghosttenant",
-      "infra_tenant_index_ghosttenant_constructor",
-      "infra_tenant_index_ghosttenantargs",
-      "infra_tenant_index_ghosttenantplatformargs",
-      "infra_tenant_naming",
-      "infra_tenant_naming_bucketnamefromurl",
-      "infra_tenant_naming_cloudrunservicename",
-      "infra_tenant_naming_databaseandusername",
-      "infra_tenant_naming_max_tenant_name_length",
-      "infra_tenant_naming_mediaobjectconditionresource",
-      "infra_tenant_naming_mediaobjectprefix",
-      "infra_tenant_naming_mediatenantprefixenvvalue",
-      "infra_tenant_naming_serviceaccountid",
-      "infra_tenant_naming_sqlidentifier",
-      "infra_tenant_naming_tenant_resource_prefix",
-      "infra_tenant_naming_tenantsecretname",
-      "infra_tenant_naming_test",
-      "infra_tenant_naming_validatetenantname",
-      "infra_tenant_secrets",
-      "infra_tenant_secrets_secretwithvalue",
-      "infra_tenant_serviceaccount",
-      "infra_tenant_serviceaccount_createserviceaccount",
-      "infra_tenant_storage",
-      "infra_tenant_storage_createtenantstorage",
-      "infra_tenant_storage_storageresult"
     ],
     "3": [
       "infra_provisioning_config",
@@ -304,10 +305,15 @@
     ],
     "11": [
       "gcp_kms_pulumi_secrets",
+      "gcp_sql_instance",
       "gcp_storage_pulumi_state",
       "gcp_wif_provider",
       "ghost_platform_deployer",
-      "github_workflows_provision_tenant"
+      "ghost_platform_provisioner",
+      "ghost_tenant_provisioner",
+      "github_workflows_provision_tenant",
+      "infra_platform_pulumi_up",
+      "infra_platform_runbook_bootstrap"
     ],
     "12": [
       "actions_checkout",
@@ -334,94 +340,81 @@
       "scripts_test_storage_guard_sh__entry"
     ],
     "16": [
-      "ghost_tenant_provisioner",
-      "role_ghost_platform_state_bucket_admin",
-      "role_ghost_platform_tenant_sql_provisioner"
-    ],
-    "17": [
       "scripts_smoke_test",
       "scripts_smoke_test_cleanup",
       "scripts_smoke_test_sh__entry"
     ],
-    "18": [
+    "17": [
       "gcp_artifact_registry",
       "github_workflows_registry_push_yml"
     ],
-    "19": [
+    "18": [
       "gcp_workload_identity_federation",
       "github_workflows_infra_platform_ci"
     ],
-    "20": [
-      "ghost_platform_provisioner",
-      "role_cloudsqlsuperuser"
-    ],
-    "21": [
+    "19": [
       "infra_platform_pulumi_platform_stack_config",
       "infra_platform_pulumi_project"
     ],
-    "22": [
-      "infra_platform_pulumi_up",
-      "infra_platform_runbook_bootstrap"
-    ],
-    "23": [
+    "20": [
       "claude_md"
     ],
-    "24": [
+    "21": [
       "eslint_config"
     ],
-    "25": [
+    "22": [
       "gcp_cloud_run"
     ],
-    "26": [
+    "23": [
       "gcp_cloud_sql"
     ],
-    "27": [
-      "gcp_sql_instance"
-    ],
-    "28": [
+    "24": [
       "gcp_storage_bucket"
     ],
-    "29": [
+    "25": [
       "ghost_official_image"
     ],
-    "30": [
+    "26": [
       "ghost_platform_tenant_template"
     ],
-    "31": [
+    "27": [
+      "github_environment_tenant_provisioning"
+    ],
+    "28": [
       "github_workflows_build"
     ],
-    "32": [
+    "29": [
       "github_workflows_codeql"
     ],
-    "33": [
+    "30": [
       "github_workflows_docs_lint"
     ],
-    "34": [
+    "31": [
       "github_workflows_graphify_workflow"
     ],
-    "35": [
+    "32": [
       "github_workflows_publish_tenant_package"
     ],
-    "36": [
+    "33": [
       "infra_provisioning_pulumi"
     ],
-    "37": [
+    "34": [
       "infra_readme"
     ],
-    "38": [
+    "35": [
       "infra_tenant_smoke_test_readme"
     ],
-    "39": [
+    "36": [
       "pulumi_platform_stack"
     ],
-    "40": [
+    "37": [
       "readme"
     ]
   },
   "cohesion": {
     "0": 0.07955596669750231,
-    "1": 0.06349206349206349,
-    "2": 0.13174603174603175,
+    "1": 0.13063063063063063,
+    "2": 0.06349206349206349,
     "3": 0.09425287356321839,
     "4": 0.06896551724137931,
     "5": 0.08333333333333333,
@@ -430,13 +423,13 @@
     "8": 0.125,
     "9": 0.23809523809523808,
     "10": 0.2878787878787879,
-    "11": 0.4,
+    "11": 0.2,
     "12": 0.5,
     "13": 0.5,
     "14": 0.5,
     "15": 0.8333333333333334,
     "16": 0.6666666666666666,
-    "17": 0.6666666666666666,
+    "17": 1.0,
     "18": 1.0,
     "19": 1.0,
     "20": 1.0,
@@ -456,10 +449,7 @@
     "34": 1.0,
     "35": 1.0,
     "36": 1.0,
-    "37": 1.0,
-    "38": 1.0,
-    "39": 1.0,
-    "40": 1.0
+    "37": 1.0
   },
   "gods": [
     {
@@ -516,7 +506,7 @@
   "surprises": [
     {
       "source": "Provision tenant",
-      "target": "KMS Key: pulumi-secrets",
+      "target": "Cloud KMS: pulumi-secrets",
       "source_files": [
         ".github/workflows/provision-tenant.yml",
         "infra/platform/RUNBOOK-bootstrap.md"
@@ -571,7 +561,7 @@
     }
   ],
   "tokens": {
-    "input": 1314,
-    "output": 852
+    "input": 14582,
+    "output": 2276
   }
 }

@@ -14,7 +14,7 @@
         ],
         "relation": "participate_in",
         "confidence": "EXTRACTED",
-        "confidence_score": 1.0,
+        "confidence_score": 0.9,
         "source_file": "infra/platform/RUNBOOK-bootstrap.md"
       },
       {
@@ -158,7 +158,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "platform/package.json",
       "id": "infra_platform_package"
@@ -169,7 +169,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "name",
       "id": "infra_platform_package_name"
@@ -180,7 +180,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "private",
       "id": "infra_platform_package_private"
@@ -191,7 +191,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "main",
       "id": "infra_platform_package_main"
@@ -202,7 +202,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "dependencies",
       "id": "infra_platform_package_dependencies"
@@ -213,7 +213,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@pulumi/pulumi",
       "id": "infra_platform_package_dependencies_pulumi_pulumi"
@@ -224,7 +224,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@pulumi/pulumi",
       "id": "infra_platform_package_json_pulumi_pulumi"
@@ -235,7 +235,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@pulumi/gcp",
       "id": "infra_platform_package_dependencies_pulumi_gcp"
@@ -246,7 +246,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@pulumi/random",
       "id": "infra_platform_package_dependencies_pulumi_random"
@@ -257,7 +257,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "devdependencies",
       "id": "infra_platform_package_devdependencies"
@@ -268,7 +268,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "typescript",
       "id": "infra_platform_package_devdependencies_typescript"
@@ -279,7 +279,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@types/node",
       "id": "infra_platform_package_devdependencies_types_node"
@@ -522,7 +522,7 @@
       "source_file": "infra/tenant/secrets.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 1,
       "community_name": "Tenant Cloud Run Service",
       "norm_label": "tenant/secrets.ts",
       "id": "infra_tenant_secrets"
@@ -534,7 +534,7 @@
       "source_location": "L21",
       "_callable": true,
       "_origin": "ast",
-      "community": 2,
+      "community": 1,
       "community_name": "Tenant Cloud Run Service",
       "norm_label": "secretwithvalue()",
       "id": "infra_tenant_secrets_secretwithvalue"
@@ -725,7 +725,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 17,
+      "community": 16,
       "community_name": "Smoke Test Script",
       "norm_label": "smoke-test.sh",
       "id": "scripts_smoke_test"
@@ -740,7 +740,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 17,
+      "community": 16,
       "community_name": "Smoke Test Script",
       "norm_label": "smoke-test.sh script",
       "id": "scripts_smoke_test_sh__entry"
@@ -755,7 +755,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 17,
+      "community": 16,
       "community_name": "Smoke Test Script",
       "norm_label": "cleanup()",
       "id": "scripts_smoke_test_cleanup"
@@ -829,7 +829,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 21,
+      "community": 19,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "platform stack config (pulumi.platform.yaml)",
       "_origin": "semantic",
@@ -844,7 +844,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 21,
+      "community": 19,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "branchleft-ghost-platform pulumi project",
       "_origin": "semantic",
@@ -856,7 +856,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/pulumi",
       "id": "pulumi_pulumi"
     },
@@ -866,7 +866,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/gcp",
       "id": "pulumi_gcp"
     },
@@ -876,7 +876,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "typescript",
       "id": "typescript"
     },
@@ -886,7 +886,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@types/node",
       "id": "types_node"
     },
@@ -894,7 +894,7 @@
       "label": "Build image workflow",
       "file_type": "code",
       "source_file": ".github/workflows/build.yml",
-      "community": 31,
+      "community": 28,
       "norm_label": "build image workflow",
       "_origin": "semantic",
       "id": "github_workflows_build"
@@ -903,7 +903,7 @@
       "label": "docs-lint workflow",
       "file_type": "code",
       "source_file": ".github/workflows/docs-lint.yml",
-      "community": 33,
+      "community": 30,
       "norm_label": "docs-lint workflow",
       "_origin": "semantic",
       "id": "github_workflows_docs_lint"
@@ -912,7 +912,7 @@
       "label": "Publish tenant package workflow",
       "file_type": "code",
       "source_file": ".github/workflows/publish-tenant-package.yml",
-      "community": 35,
+      "community": 32,
       "norm_label": "publish tenant package workflow",
       "_origin": "semantic",
       "id": "github_workflows_publish_tenant_package"
@@ -1198,7 +1198,7 @@
       "label": "GhostTenant Smoke Test README",
       "file_type": "document",
       "source_type": "infra/tenant/smoke-test/README.md",
-      "community": 38,
+      "community": 35,
       "norm_label": "ghosttenant smoke test readme",
       "_origin": "semantic",
       "id": "infra_tenant_smoke_test_readme"
@@ -1207,7 +1207,7 @@
       "label": "CLAUDE.md",
       "file_type": "document",
       "source_file": "CLAUDE.md",
-      "community": 23,
+      "community": 20,
       "norm_label": "claude.md",
       "_origin": "semantic",
       "id": "claude_md"
@@ -1216,7 +1216,7 @@
       "label": "Infrastructure README",
       "file_type": "document",
       "source_file": "infra/README.md",
-      "community": 37,
+      "community": 34,
       "norm_label": "infrastructure readme",
       "_origin": "semantic",
       "id": "infra_readme"
@@ -1225,7 +1225,7 @@
       "label": "Ghost Tenant Template Repo",
       "file_type": "concept",
       "source_file": "infra/README.md",
-      "community": 30,
+      "community": 26,
       "norm_label": "ghost tenant template repo",
       "_origin": "semantic",
       "id": "ghost_platform_tenant_template"
@@ -1404,7 +1404,7 @@
       "label": "README.md",
       "file_type": "document",
       "source_file": "README.md",
-      "community": 40,
+      "community": 37,
       "norm_label": "readme.md",
       "_origin": "semantic",
       "id": "readme"
@@ -1413,7 +1413,7 @@
       "label": "Push tenant image workflow",
       "file_type": "code",
       "source_file": ".github/workflows/registry-push.yml",
-      "community": 18,
+      "community": 17,
       "norm_label": "push tenant image workflow",
       "_origin": "semantic",
       "id": "github_workflows_registry_push_yml"
@@ -1422,7 +1422,7 @@
       "label": "Official Ghost Image",
       "file_type": "image",
       "source_file": null,
-      "community": 29,
+      "community": 25,
       "norm_label": "official ghost image",
       "_origin": "semantic",
       "id": "ghost_official_image"
@@ -1431,7 +1431,7 @@
       "label": "GCP Artifact Registry",
       "file_type": "concept",
       "source_file": null,
-      "community": 18,
+      "community": 17,
       "norm_label": "gcp artifact registry",
       "_origin": "semantic",
       "id": "gcp_artifact_registry"
@@ -1440,7 +1440,7 @@
       "label": "GCP Cloud Run",
       "file_type": "concept",
       "source_file": null,
-      "community": 25,
+      "community": 22,
       "norm_label": "gcp cloud run",
       "_origin": "semantic",
       "id": "gcp_cloud_run"
@@ -1449,7 +1449,7 @@
       "label": "GCP Cloud SQL",
       "file_type": "concept",
       "source_file": null,
-      "community": 26,
+      "community": 23,
       "norm_label": "gcp cloud sql",
       "_origin": "semantic",
       "id": "gcp_cloud_sql"
@@ -1458,7 +1458,7 @@
       "label": "GCP Media Bucket",
       "file_type": "concept",
       "source_file": null,
-      "community": 28,
+      "community": 24,
       "norm_label": "gcp media bucket",
       "_origin": "semantic",
       "id": "gcp_storage_bucket"
@@ -1469,7 +1469,7 @@
       "source_file": "eslint.config.js",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 24,
+      "community": 21,
       "norm_label": "eslint.config.js",
       "id": "eslint_config"
     },
@@ -1800,7 +1800,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 32,
+      "community": 29,
       "norm_label": ".github/workflows/codeql.yml",
       "_origin": "semantic",
       "id": "github_workflows_codeql"
@@ -2005,7 +2005,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "provisioning/package.json",
       "id": "infra_provisioning_package"
     },
@@ -2015,7 +2015,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "name",
       "id": "infra_provisioning_package_name"
     },
@@ -2025,7 +2025,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "private",
       "id": "infra_provisioning_package_private"
     },
@@ -2035,7 +2035,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "main",
       "id": "infra_provisioning_package_main"
     },
@@ -2045,7 +2045,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "dependencies",
       "id": "infra_provisioning_package_dependencies"
     },
@@ -2055,7 +2055,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/pulumi",
       "id": "infra_provisioning_package_dependencies_pulumi_pulumi"
     },
@@ -2065,7 +2065,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/gcp",
       "id": "infra_provisioning_package_dependencies_pulumi_gcp"
     },
@@ -2075,7 +2075,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "devdependencies",
       "id": "infra_provisioning_package_devdependencies"
     },
@@ -2085,7 +2085,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "typescript",
       "id": "infra_provisioning_package_devdependencies_typescript"
     },
@@ -2095,7 +2095,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@types/node",
       "id": "infra_provisioning_package_devdependencies_types_node"
     },
@@ -2402,7 +2402,7 @@
       "label": "Platform infra CI",
       "file_type": "code",
       "source_file": ".github/workflows/infra-platform-ci.yml",
-      "community": 19,
+      "community": 18,
       "norm_label": "platform infra ci",
       "_origin": "semantic",
       "id": "github_workflows_infra_platform_ci"
@@ -2411,7 +2411,7 @@
       "label": "branchleft-ghost-provisioning",
       "file_type": "code",
       "source_file": "infra/provisioning/Pulumi.yaml",
-      "community": 36,
+      "community": 33,
       "norm_label": "branchleft-ghost-provisioning",
       "_origin": "semantic",
       "id": "infra_provisioning_pulumi"
@@ -2419,7 +2419,7 @@
     {
       "label": "Workload Identity Federation",
       "file_type": "concept",
-      "community": 19,
+      "community": 18,
       "norm_label": "workload identity federation",
       "_origin": "semantic",
       "id": "gcp_workload_identity_federation"
@@ -2427,7 +2427,7 @@
     {
       "label": "Pulumi Platform Stack",
       "file_type": "concept",
-      "community": 39,
+      "community": 36,
       "norm_label": "pulumi platform stack",
       "_origin": "semantic",
       "id": "pulumi_platform_stack"
@@ -2600,109 +2600,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 34,
+      "community": 31,
       "norm_label": "graphify workflow",
       "_origin": "semantic",
       "id": "github_workflows_graphify_workflow"
-    },
-    {
-      "label": "Bootstrap Runbook \u2014 Platform Stack",
-      "file_type": "document",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 22,
-      "norm_label": "bootstrap runbook \u2014 platform stack",
-      "_origin": "semantic",
-      "id": "infra_platform_runbook_bootstrap"
-    },
-    {
-      "label": "pulumi up --stack platform",
-      "file_type": "code",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 22,
-      "norm_label": "pulumi up --stack platform",
-      "_origin": "semantic",
-      "id": "infra_platform_pulumi_up"
-    },
-    {
-      "label": "ghost-platform-deployer (Service Account)",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "ghost-platform-deployer (service account)",
-      "_origin": "semantic",
-      "id": "ghost_platform_deployer"
-    },
-    {
-      "label": "ghost_platform_provisioner (MySQL User)",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 20,
-      "norm_label": "ghost_platform_provisioner (mysql user)",
-      "_origin": "semantic",
-      "id": "ghost_platform_provisioner"
-    },
-    {
-      "label": "ghost-tenant-provisioner (Service Account)",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 16,
-      "norm_label": "ghost-tenant-provisioner (service account)",
-      "_origin": "semantic",
-      "id": "ghost_tenant_provisioner"
-    },
-    {
-      "label": "KMS Key: pulumi-secrets",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "kms key: pulumi-secrets",
-      "_origin": "semantic",
-      "id": "gcp_kms_pulumi_secrets"
-    },
-    {
-      "label": "GCS Bucket: branchleft-pulumi-state",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "gcs bucket: branchleft-pulumi-state",
-      "_origin": "semantic",
-      "id": "gcp_storage_pulumi_state"
-    },
-    {
-      "label": "Cloud SQL Instance: ghost-platform-db",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 27,
-      "norm_label": "cloud sql instance: ghost-platform-db",
-      "_origin": "semantic",
-      "id": "gcp_sql_instance"
-    },
-    {
-      "label": "MySQL Role: cloudsqlsuperuser",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 20,
-      "norm_label": "mysql role: cloudsqlsuperuser",
-      "_origin": "semantic",
-      "id": "role_cloudsqlsuperuser"
-    },
-    {
-      "label": "Custom Role: ghostPlatformTenantSqlProvisioner",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 16,
-      "norm_label": "custom role: ghostplatformtenantsqlprovisioner",
-      "_origin": "semantic",
-      "id": "role_ghost_platform_tenant_sql_provisioner"
-    },
-    {
-      "label": "Custom Role: ghostPlatformStateBucketAdmin",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 16,
-      "norm_label": "custom role: ghostplatformstatebucketadmin",
-      "_origin": "semantic",
-      "id": "role_ghost_platform_state_bucket_admin"
     },
     {
       "label": "Provision tenant",
@@ -2728,9 +2629,9 @@
       "source_file": "infra/tenant/cloudRunService.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "infra_tenant_cloudrunservice",
-      "community": 2,
-      "norm_label": "cloudrunservice.ts"
+      "community": 1,
+      "norm_label": "cloudrunservice.ts",
+      "id": "infra_tenant_cloudrunservice"
     },
     {
       "label": "plainEnv()",
@@ -2739,9 +2640,9 @@
       "source_location": "L16",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_tenant_cloudrunservice_plainenv",
-      "community": 2,
-      "norm_label": "plainenv()"
+      "community": 1,
+      "norm_label": "plainenv()",
+      "id": "infra_tenant_cloudrunservice_plainenv"
     },
     {
       "label": "secretEnv()",
@@ -2750,9 +2651,9 @@
       "source_location": "L20",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_tenant_cloudrunservice_secretenv",
-      "community": 2,
-      "norm_label": "secretenv()"
+      "community": 1,
+      "norm_label": "secretenv()",
+      "id": "infra_tenant_cloudrunservice_secretenv"
     },
     {
       "label": "CloudRunServiceArgs",
@@ -2762,9 +2663,9 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "id": "infra_tenant_cloudrunservice_cloudrunserviceargs",
-      "community": 2,
-      "norm_label": "cloudrunserviceargs"
+      "community": 1,
+      "norm_label": "cloudrunserviceargs",
+      "id": "infra_tenant_cloudrunservice_cloudrunserviceargs"
     },
     {
       "label": "createCloudRunService()",
@@ -2773,9 +2674,9 @@
       "source_location": "L64",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_tenant_cloudrunservice_createcloudrunservice",
-      "community": 2,
-      "norm_label": "createcloudrunservice()"
+      "community": 1,
+      "norm_label": "createcloudrunservice()",
+      "id": "infra_tenant_cloudrunservice_createcloudrunservice"
     },
     {
       "label": "createPublicInvokerBinding()",
@@ -2784,9 +2685,9 @@
       "source_location": "L213",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_tenant_cloudrunservice_createpublicinvokerbinding",
-      "community": 2,
-      "norm_label": "createpublicinvokerbinding()"
+      "community": 1,
+      "norm_label": "createpublicinvokerbinding()",
+      "id": "infra_tenant_cloudrunservice_createpublicinvokerbinding"
     },
     {
       "label": "tenant/database.ts",
@@ -2794,9 +2695,9 @@
       "source_file": "infra/tenant/database.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "infra_tenant_database",
-      "community": 2,
-      "norm_label": "tenant/database.ts"
+      "community": 1,
+      "norm_label": "tenant/database.ts",
+      "id": "infra_tenant_database"
     },
     {
       "label": "DEFAULT_MAX_USER_CONNECTIONS",
@@ -2804,9 +2705,9 @@
       "source_file": "infra/tenant/database.ts",
       "source_location": "L29",
       "_origin": "ast",
-      "id": "infra_tenant_database_default_max_user_connections",
-      "community": 2,
-      "norm_label": "default_max_user_connections"
+      "community": 1,
+      "norm_label": "default_max_user_connections",
+      "id": "infra_tenant_database_default_max_user_connections"
     },
     {
       "label": "DatabaseResult",
@@ -2816,9 +2717,9 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "id": "infra_tenant_database_databaseresult",
-      "community": 2,
-      "norm_label": "databaseresult"
+      "community": 1,
+      "norm_label": "databaseresult",
+      "id": "infra_tenant_database_databaseresult"
     },
     {
       "label": "createTenantDatabase()",
@@ -2827,9 +2728,549 @@
       "source_location": "L78",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_tenant_database_createtenantdatabase",
+      "community": 1,
+      "norm_label": "createtenantdatabase()",
+      "id": "infra_tenant_database_createtenantdatabase"
+    },
+    {
+      "label": "tenant/package.json",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L1",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "tenant/package.json",
+      "id": "infra_tenant_package"
+    },
+    {
+      "label": "name",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L2",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "name",
+      "id": "infra_tenant_package_name"
+    },
+    {
+      "label": "version",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L3",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "version",
+      "id": "infra_tenant_package_version"
+    },
+    {
+      "label": "license",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L4",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "license",
+      "id": "infra_tenant_package_license"
+    },
+    {
+      "label": "main",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L5",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "main",
+      "id": "infra_tenant_package_main"
+    },
+    {
+      "label": "types",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L6",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "types",
+      "id": "infra_tenant_package_types"
+    },
+    {
+      "label": "files",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L7",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "files",
+      "id": "infra_tenant_package_files"
+    },
+    {
+      "label": "dist",
+      "file_type": "concept",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L7",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "dist",
+      "id": "infra_tenant_package_json_ref_dist"
+    },
+    {
+      "label": "repository",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L10",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "repository",
+      "id": "infra_tenant_package_repository"
+    },
+    {
+      "label": "type",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L11",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "type",
+      "id": "infra_tenant_package_repository_type"
+    },
+    {
+      "label": "url",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L12",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "url",
+      "id": "infra_tenant_package_repository_url"
+    },
+    {
+      "label": "directory",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L13",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "directory",
+      "id": "infra_tenant_package_repository_directory"
+    },
+    {
+      "label": "publishConfig",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L15",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "publishconfig",
+      "id": "infra_tenant_package_publishconfig"
+    },
+    {
+      "label": "registry",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L16",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "registry",
+      "id": "infra_tenant_package_publishconfig_registry"
+    },
+    {
+      "label": "access",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L17",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "access",
+      "id": "infra_tenant_package_publishconfig_access"
+    },
+    {
+      "label": "scripts",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L19",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "scripts",
+      "id": "infra_tenant_package_scripts"
+    },
+    {
+      "label": "build",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L20",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "build",
+      "id": "infra_tenant_package_scripts_build"
+    },
+    {
+      "label": "prepublishOnly",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L21",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "prepublishonly",
+      "id": "infra_tenant_package_scripts_prepublishonly"
+    },
+    {
+      "label": "test",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L22",
+      "_origin": "ast",
+      "community": 6,
+      "norm_label": "test",
+      "id": "infra_tenant_package_scripts_test"
+    },
+    {
+      "label": "dependencies",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L24",
+      "_origin": "ast",
       "community": 2,
-      "norm_label": "createtenantdatabase()"
+      "norm_label": "dependencies",
+      "id": "infra_tenant_package_dependencies"
+    },
+    {
+      "label": "@pulumi/gcp",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L25",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "@pulumi/gcp",
+      "id": "infra_tenant_package_dependencies_pulumi_gcp"
+    },
+    {
+      "label": "@pulumi/pulumi",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L26",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "@pulumi/pulumi",
+      "id": "infra_tenant_package_dependencies_pulumi_pulumi"
+    },
+    {
+      "label": "@pulumi/random",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L27",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "@pulumi/random",
+      "id": "infra_tenant_package_dependencies_pulumi_random"
+    },
+    {
+      "label": "@pulumi/random",
+      "file_type": "concept",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L27",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "@pulumi/random",
+      "id": "pulumi_random"
+    },
+    {
+      "label": "devDependencies",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L29",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "devdependencies",
+      "id": "infra_tenant_package_devdependencies"
+    },
+    {
+      "label": "@types/node",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L30",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "@types/node",
+      "id": "infra_tenant_package_devdependencies_types_node"
+    },
+    {
+      "label": "typescript",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L31",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "typescript",
+      "id": "infra_tenant_package_devdependencies_typescript"
+    },
+    {
+      "label": "vitest",
+      "file_type": "code",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L32",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "vitest",
+      "id": "infra_tenant_package_devdependencies_vitest"
+    },
+    {
+      "label": "vitest",
+      "file_type": "concept",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L32",
+      "_origin": "ast",
+      "community": 2,
+      "norm_label": "vitest",
+      "id": "vitest"
+    },
+    {
+      "label": "serviceAccount.ts",
+      "file_type": "code",
+      "source_file": "infra/tenant/serviceAccount.ts",
+      "source_location": "L1",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "serviceaccount.ts",
+      "id": "infra_tenant_serviceaccount"
+    },
+    {
+      "label": "createServiceAccount()",
+      "file_type": "code",
+      "source_file": "infra/tenant/serviceAccount.ts",
+      "source_location": "L18",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "createserviceaccount()",
+      "id": "infra_tenant_serviceaccount_createserviceaccount"
+    },
+    {
+      "label": "storage.ts",
+      "file_type": "code",
+      "source_file": "infra/tenant/storage.ts",
+      "source_location": "L1",
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "storage.ts",
+      "id": "infra_tenant_storage"
+    },
+    {
+      "label": "StorageResult",
+      "file_type": "code",
+      "source_file": "infra/tenant/storage.ts",
+      "source_location": "L6",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "storageresult",
+      "id": "infra_tenant_storage_storageresult"
+    },
+    {
+      "label": "createTenantStorage()",
+      "file_type": "code",
+      "source_file": "infra/tenant/storage.ts",
+      "source_location": "L146",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 1,
+      "norm_label": "createtenantstorage()",
+      "id": "infra_tenant_storage_createtenantstorage"
+    },
+    {
+      "label": "tsconfig.build.json",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L1",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "tsconfig.build.json",
+      "id": "infra_tenant_tsconfig_build"
+    },
+    {
+      "label": "extends",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L2",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "extends",
+      "id": "infra_tenant_tsconfig_build_extends"
+    },
+    {
+      "label": "./tsconfig.json",
+      "file_type": "concept",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L2",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "./tsconfig.json",
+      "id": "ref_tsconfig_json"
+    },
+    {
+      "label": "compilerOptions",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L3",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "compileroptions",
+      "id": "infra_tenant_tsconfig_build_compileroptions"
+    },
+    {
+      "label": "noEmit",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L4",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "noemit",
+      "id": "infra_tenant_tsconfig_build_compileroptions_noemit"
+    },
+    {
+      "label": "declaration",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L5",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "declaration",
+      "id": "infra_tenant_tsconfig_build_compileroptions_declaration"
+    },
+    {
+      "label": "outDir",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L6",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "outdir",
+      "id": "infra_tenant_tsconfig_build_compileroptions_outdir"
+    },
+    {
+      "label": "rootDir",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L7",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "rootdir",
+      "id": "infra_tenant_tsconfig_build_compileroptions_rootdir"
+    },
+    {
+      "label": "include",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L9",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "include",
+      "id": "infra_tenant_tsconfig_build_include"
+    },
+    {
+      "label": "*.ts",
+      "file_type": "concept",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L9",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "*.ts",
+      "id": "ref_ts"
+    },
+    {
+      "label": "exclude",
+      "file_type": "code",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L10",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "exclude",
+      "id": "infra_tenant_tsconfig_build_exclude"
+    },
+    {
+      "label": "node_modules",
+      "file_type": "concept",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L10",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "node_modules",
+      "id": "ref_node_modules"
+    },
+    {
+      "label": "dist",
+      "file_type": "concept",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L10",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "dist",
+      "id": "infra_tenant_tsconfig_build_json_ref_dist"
+    },
+    {
+      "label": "*.test.ts",
+      "file_type": "concept",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L10",
+      "_origin": "ast",
+      "community": 4,
+      "norm_label": "*.test.ts",
+      "id": "ref_test_ts"
+    },
+    {
+      "label": "Tenant infra CI Workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/infra-tenant-ci.yml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "community": 12,
+      "norm_label": "tenant infra ci workflow",
+      "_origin": "semantic",
+      "id": "github_workflows_infra_tenant_ci_yml_workflow"
+    },
+    {
+      "label": "Tenant Pulumi Component",
+      "file_type": "code",
+      "source_file": "infra/tenant",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "community": 12,
+      "norm_label": "tenant pulumi component",
+      "_origin": "semantic",
+      "id": "infra_tenant_component"
+    },
+    {
+      "label": "actions/checkout",
+      "file_type": "code",
+      "source_file": ".github/workflows/infra-tenant-ci.yml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "community": 12,
+      "norm_label": "actions/checkout",
+      "_origin": "semantic",
+      "id": "actions_checkout"
+    },
+    {
+      "label": "actions/setup-node",
+      "file_type": "code",
+      "source_file": ".github/workflows/infra-tenant-ci.yml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "community": 12,
+      "norm_label": "actions/setup-node",
+      "_origin": "semantic",
+      "id": "actions_setup_node"
     },
     {
       "label": "tenant/index.ts",
@@ -2838,7 +3279,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "infra_tenant_index",
-      "community": 2,
+      "community": 1,
       "norm_label": "tenant/index.ts"
     },
     {
@@ -2850,7 +3291,7 @@
       "_callable_class": true,
       "_origin": "ast",
       "id": "infra_tenant_index_ghosttenantplatformargs",
-      "community": 2,
+      "community": 1,
       "norm_label": "ghosttenantplatformargs"
     },
     {
@@ -2862,30 +3303,30 @@
       "_callable_class": true,
       "_origin": "ast",
       "id": "infra_tenant_index_ghosttenantargs",
-      "community": 2,
+      "community": 1,
       "norm_label": "ghosttenantargs"
     },
     {
       "label": "GhostTenant",
       "file_type": "code",
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L106",
+      "source_location": "L103",
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
       "id": "infra_tenant_index_ghosttenant",
-      "community": 2,
+      "community": 1,
       "norm_label": "ghosttenant"
     },
     {
       "label": ".constructor()",
       "file_type": "code",
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L118",
+      "source_location": "L115",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_index_ghosttenant_constructor",
-      "community": 2,
+      "community": 1,
       "norm_label": ".constructor()"
     },
     {
@@ -2895,7 +3336,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "infra_tenant_naming_test",
-      "community": 2,
+      "community": 1,
       "norm_label": "naming.test.ts"
     },
     {
@@ -2905,7 +3346,7 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "infra_tenant_naming",
-      "community": 2,
+      "community": 1,
       "norm_label": "naming.ts"
     },
     {
@@ -2915,7 +3356,7 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "infra_tenant_naming_tenant_resource_prefix",
-      "community": 2,
+      "community": 1,
       "norm_label": "tenant_resource_prefix"
     },
     {
@@ -2925,654 +3366,201 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "infra_tenant_naming_max_tenant_name_length",
-      "community": 2,
+      "community": 1,
       "norm_label": "max_tenant_name_length"
     },
     {
       "label": "validateTenantName()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L28",
+      "source_location": "L37",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_validatetenantname",
-      "community": 2,
+      "community": 1,
       "norm_label": "validatetenantname()"
     },
     {
       "label": "serviceAccountId()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L45",
+      "source_location": "L54",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_serviceaccountid",
-      "community": 2,
+      "community": 1,
       "norm_label": "serviceaccountid()"
     },
     {
       "label": "cloudRunServiceName()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L50",
+      "source_location": "L59",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_cloudrunservicename",
-      "community": 2,
+      "community": 1,
       "norm_label": "cloudrunservicename()"
     },
     {
       "label": "sqlIdentifier()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L55",
+      "source_location": "L64",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_sqlidentifier",
-      "community": 2,
+      "community": 1,
       "norm_label": "sqlidentifier()"
     },
     {
       "label": "databaseAndUserName()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L60",
+      "source_location": "L69",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_databaseandusername",
-      "community": 2,
+      "community": 1,
       "norm_label": "databaseandusername()"
     },
     {
       "label": "bucketNameFromUrl()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L68",
+      "source_location": "L77",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_bucketnamefromurl",
-      "community": 2,
+      "community": 1,
       "norm_label": "bucketnamefromurl()"
     },
     {
       "label": "mediaObjectPrefix()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L86",
+      "source_location": "L95",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_mediaobjectprefix",
-      "community": 2,
+      "community": 1,
       "norm_label": "mediaobjectprefix()"
     },
     {
       "label": "mediaTenantPrefixEnvValue()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L99",
+      "source_location": "L108",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_mediatenantprefixenvvalue",
-      "community": 2,
+      "community": 1,
       "norm_label": "mediatenantprefixenvvalue()"
+    },
+    {
+      "label": "tenantImageRef()",
+      "file_type": "code",
+      "source_file": "infra/tenant/naming.ts",
+      "source_location": "L120",
+      "_callable": true,
+      "_origin": "ast",
+      "id": "infra_tenant_naming_tenantimageref",
+      "community": 1,
+      "norm_label": "tenantimageref()"
     },
     {
       "label": "tenantSecretName()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L104",
+      "source_location": "L126",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_tenantsecretname",
-      "community": 2,
+      "community": 1,
       "norm_label": "tenantsecretname()"
     },
     {
       "label": "mediaObjectConditionResource()",
       "file_type": "code",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L115",
+      "source_location": "L137",
       "_callable": true,
       "_origin": "ast",
       "id": "infra_tenant_naming_mediaobjectconditionresource",
-      "community": 2,
+      "community": 1,
       "norm_label": "mediaobjectconditionresource()"
     },
     {
-      "label": "tenant/package.json",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L1",
-      "_origin": "ast",
-      "id": "infra_tenant_package",
-      "community": 6,
-      "norm_label": "tenant/package.json"
+      "label": "Bootstrap Runbook - Platform Stack",
+      "file_type": "document",
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "infra_platform_runbook_bootstrap",
+      "community": 11,
+      "norm_label": "bootstrap runbook - platform stack"
     },
     {
-      "label": "name",
+      "label": "Pulumi Up (Platform)",
       "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L2",
-      "_origin": "ast",
-      "id": "infra_tenant_package_name",
-      "community": 6,
-      "norm_label": "name"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "infra_platform_pulumi_up",
+      "community": 11,
+      "norm_label": "pulumi up (platform)"
     },
     {
-      "label": "version",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L3",
-      "_origin": "ast",
-      "id": "infra_tenant_package_version",
-      "community": 6,
-      "norm_label": "version"
-    },
-    {
-      "label": "license",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L4",
-      "_origin": "ast",
-      "id": "infra_tenant_package_license",
-      "community": 6,
-      "norm_label": "license"
-    },
-    {
-      "label": "main",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L5",
-      "_origin": "ast",
-      "id": "infra_tenant_package_main",
-      "community": 6,
-      "norm_label": "main"
-    },
-    {
-      "label": "types",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L6",
-      "_origin": "ast",
-      "id": "infra_tenant_package_types",
-      "community": 6,
-      "norm_label": "types"
-    },
-    {
-      "label": "files",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L7",
-      "_origin": "ast",
-      "id": "infra_tenant_package_files",
-      "community": 6,
-      "norm_label": "files"
-    },
-    {
-      "label": "dist",
+      "label": "Ghost Platform Deployer Service Account",
       "file_type": "concept",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L7",
-      "_origin": "ast",
-      "id": "infra_tenant_package_json_ref_dist",
-      "community": 6,
-      "norm_label": "dist"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "ghost_platform_deployer",
+      "community": 11,
+      "norm_label": "ghost platform deployer service account"
     },
     {
-      "label": "repository",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L10",
-      "_origin": "ast",
-      "id": "infra_tenant_package_repository",
-      "community": 6,
-      "norm_label": "repository"
-    },
-    {
-      "label": "type",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L11",
-      "_origin": "ast",
-      "id": "infra_tenant_package_repository_type",
-      "community": 6,
-      "norm_label": "type"
-    },
-    {
-      "label": "url",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L12",
-      "_origin": "ast",
-      "id": "infra_tenant_package_repository_url",
-      "community": 6,
-      "norm_label": "url"
-    },
-    {
-      "label": "directory",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L13",
-      "_origin": "ast",
-      "id": "infra_tenant_package_repository_directory",
-      "community": 6,
-      "norm_label": "directory"
-    },
-    {
-      "label": "publishConfig",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L15",
-      "_origin": "ast",
-      "id": "infra_tenant_package_publishconfig",
-      "community": 6,
-      "norm_label": "publishconfig"
-    },
-    {
-      "label": "registry",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L16",
-      "_origin": "ast",
-      "id": "infra_tenant_package_publishconfig_registry",
-      "community": 6,
-      "norm_label": "registry"
-    },
-    {
-      "label": "access",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L17",
-      "_origin": "ast",
-      "id": "infra_tenant_package_publishconfig_access",
-      "community": 6,
-      "norm_label": "access"
-    },
-    {
-      "label": "scripts",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L19",
-      "_origin": "ast",
-      "id": "infra_tenant_package_scripts",
-      "community": 6,
-      "norm_label": "scripts"
-    },
-    {
-      "label": "build",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L20",
-      "_origin": "ast",
-      "id": "infra_tenant_package_scripts_build",
-      "community": 6,
-      "norm_label": "build"
-    },
-    {
-      "label": "prepublishOnly",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L21",
-      "_origin": "ast",
-      "id": "infra_tenant_package_scripts_prepublishonly",
-      "community": 6,
-      "norm_label": "prepublishonly"
-    },
-    {
-      "label": "test",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L22",
-      "_origin": "ast",
-      "id": "infra_tenant_package_scripts_test",
-      "community": 6,
-      "norm_label": "test"
-    },
-    {
-      "label": "dependencies",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L24",
-      "_origin": "ast",
-      "id": "infra_tenant_package_dependencies",
-      "community": 1,
-      "norm_label": "dependencies"
-    },
-    {
-      "label": "@pulumi/gcp",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L25",
-      "_origin": "ast",
-      "id": "infra_tenant_package_dependencies_pulumi_gcp",
-      "community": 1,
-      "norm_label": "@pulumi/gcp"
-    },
-    {
-      "label": "@pulumi/pulumi",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L26",
-      "_origin": "ast",
-      "id": "infra_tenant_package_dependencies_pulumi_pulumi",
-      "community": 1,
-      "norm_label": "@pulumi/pulumi"
-    },
-    {
-      "label": "@pulumi/random",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L27",
-      "_origin": "ast",
-      "id": "infra_tenant_package_dependencies_pulumi_random",
-      "community": 1,
-      "norm_label": "@pulumi/random"
-    },
-    {
-      "label": "@pulumi/random",
+      "label": "Ghost Tenant Provisioner Service Account",
       "file_type": "concept",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L27",
-      "_origin": "ast",
-      "id": "pulumi_random",
-      "community": 1,
-      "norm_label": "@pulumi/random"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "ghost_tenant_provisioner",
+      "community": 11,
+      "norm_label": "ghost tenant provisioner service account"
     },
     {
-      "label": "devDependencies",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L29",
-      "_origin": "ast",
-      "id": "infra_tenant_package_devdependencies",
-      "community": 1,
-      "norm_label": "devdependencies"
-    },
-    {
-      "label": "@types/node",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L30",
-      "_origin": "ast",
-      "id": "infra_tenant_package_devdependencies_types_node",
-      "community": 1,
-      "norm_label": "@types/node"
-    },
-    {
-      "label": "typescript",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L31",
-      "_origin": "ast",
-      "id": "infra_tenant_package_devdependencies_typescript",
-      "community": 1,
-      "norm_label": "typescript"
-    },
-    {
-      "label": "vitest",
-      "file_type": "code",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L32",
-      "_origin": "ast",
-      "id": "infra_tenant_package_devdependencies_vitest",
-      "community": 1,
-      "norm_label": "vitest"
-    },
-    {
-      "label": "vitest",
+      "label": "Ghost Platform Provisioner (MySQL Account)",
       "file_type": "concept",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L32",
-      "_origin": "ast",
-      "id": "vitest",
-      "community": 1,
-      "norm_label": "vitest"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "ghost_platform_provisioner",
+      "community": 11,
+      "norm_label": "ghost platform provisioner (mysql account)"
     },
     {
-      "label": "serviceAccount.ts",
-      "file_type": "code",
-      "source_file": "infra/tenant/serviceAccount.ts",
-      "source_location": "L1",
-      "_origin": "ast",
-      "id": "infra_tenant_serviceaccount",
-      "community": 2,
-      "norm_label": "serviceaccount.ts"
-    },
-    {
-      "label": "createServiceAccount()",
-      "file_type": "code",
-      "source_file": "infra/tenant/serviceAccount.ts",
-      "source_location": "L18",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_tenant_serviceaccount_createserviceaccount",
-      "community": 2,
-      "norm_label": "createserviceaccount()"
-    },
-    {
-      "label": "storage.ts",
-      "file_type": "code",
-      "source_file": "infra/tenant/storage.ts",
-      "source_location": "L1",
-      "_origin": "ast",
-      "id": "infra_tenant_storage",
-      "community": 2,
-      "norm_label": "storage.ts"
-    },
-    {
-      "label": "StorageResult",
-      "file_type": "code",
-      "source_file": "infra/tenant/storage.ts",
-      "source_location": "L6",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "id": "infra_tenant_storage_storageresult",
-      "community": 2,
-      "norm_label": "storageresult"
-    },
-    {
-      "label": "createTenantStorage()",
-      "file_type": "code",
-      "source_file": "infra/tenant/storage.ts",
-      "source_location": "L146",
-      "_callable": true,
-      "_origin": "ast",
-      "id": "infra_tenant_storage_createtenantstorage",
-      "community": 2,
-      "norm_label": "createtenantstorage()"
-    },
-    {
-      "label": "tsconfig.build.json",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L1",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build",
-      "community": 4,
-      "norm_label": "tsconfig.build.json"
-    },
-    {
-      "label": "extends",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L2",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_extends",
-      "community": 4,
-      "norm_label": "extends"
-    },
-    {
-      "label": "./tsconfig.json",
+      "label": "Cloud KMS: pulumi-secrets",
       "file_type": "concept",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L2",
-      "_origin": "ast",
-      "id": "ref_tsconfig_json",
-      "community": 4,
-      "norm_label": "./tsconfig.json"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "gcp_kms_pulumi_secrets",
+      "community": 11,
+      "norm_label": "cloud kms: pulumi-secrets"
     },
     {
-      "label": "compilerOptions",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L3",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_compileroptions",
-      "community": 4,
-      "norm_label": "compileroptions"
-    },
-    {
-      "label": "noEmit",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L4",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_compileroptions_noemit",
-      "community": 4,
-      "norm_label": "noemit"
-    },
-    {
-      "label": "declaration",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L5",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_compileroptions_declaration",
-      "community": 4,
-      "norm_label": "declaration"
-    },
-    {
-      "label": "outDir",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L6",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_compileroptions_outdir",
-      "community": 4,
-      "norm_label": "outdir"
-    },
-    {
-      "label": "rootDir",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L7",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_compileroptions_rootdir",
-      "community": 4,
-      "norm_label": "rootdir"
-    },
-    {
-      "label": "include",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L9",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_include",
-      "community": 4,
-      "norm_label": "include"
-    },
-    {
-      "label": "*.ts",
+      "label": "GCS: branchleft-pulumi-state",
       "file_type": "concept",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L9",
-      "_origin": "ast",
-      "id": "ref_ts",
-      "community": 4,
-      "norm_label": "*.ts"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "gcp_storage_pulumi_state",
+      "community": 11,
+      "norm_label": "gcs: branchleft-pulumi-state"
     },
     {
-      "label": "exclude",
-      "file_type": "code",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L10",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_exclude",
-      "community": 4,
-      "norm_label": "exclude"
-    },
-    {
-      "label": "node_modules",
+      "label": "Cloud SQL Instance",
       "file_type": "concept",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L10",
-      "_origin": "ast",
-      "id": "ref_node_modules",
-      "community": 4,
-      "norm_label": "node_modules"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "gcp_sql_instance",
+      "community": 11,
+      "norm_label": "cloud sql instance"
     },
     {
-      "label": "dist",
+      "label": "GitHub Environment: tenant-provisioning",
       "file_type": "concept",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L10",
-      "_origin": "ast",
-      "id": "infra_tenant_tsconfig_build_json_ref_dist",
-      "community": 4,
-      "norm_label": "dist"
-    },
-    {
-      "label": "*.test.ts",
-      "file_type": "concept",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L10",
-      "_origin": "ast",
-      "id": "ref_test_ts",
-      "community": 4,
-      "norm_label": "*.test.ts"
-    },
-    {
-      "label": "Tenant infra CI Workflow",
-      "file_type": "code",
-      "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "github_workflows_infra_tenant_ci_yml_workflow",
-      "community": 12,
-      "norm_label": "tenant infra ci workflow"
-    },
-    {
-      "label": "Tenant Pulumi Component",
-      "file_type": "code",
-      "source_file": "infra/tenant",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "infra_tenant_component",
-      "community": 12,
-      "norm_label": "tenant pulumi component"
-    },
-    {
-      "label": "actions/checkout",
-      "file_type": "code",
-      "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "actions_checkout",
-      "community": 12,
-      "norm_label": "actions/checkout"
-    },
-    {
-      "label": "actions/setup-node",
-      "file_type": "code",
-      "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "actions_setup_node",
-      "community": 12,
-      "norm_label": "actions/setup-node"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "github_environment_tenant_provisioning",
+      "community": 27,
+      "norm_label": "github environment: tenant-provisioning"
     }
   ],
   "links": [
@@ -4274,9 +4262,9 @@
       "source_location": "L5",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_database",
-      "target": "infra_tenant_secrets",
-      "confidence_score": 1.0
+      "target": "infra_tenant_secrets"
     },
     {
       "relation": "contains",
@@ -4297,9 +4285,9 @@
       "source_location": "L3",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_storage",
-      "target": "infra_tenant_secrets",
-      "confidence_score": 1.0
+      "target": "infra_tenant_secrets"
     },
     {
       "relation": "imports",
@@ -4309,9 +4297,9 @@
       "source_location": "L5",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_database",
-      "target": "infra_tenant_secrets_secretwithvalue",
-      "confidence_score": 1.0
+      "target": "infra_tenant_secrets_secretwithvalue"
     },
     {
       "relation": "calls",
@@ -4333,9 +4321,9 @@
       "source_location": "L3",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_storage",
-      "target": "infra_tenant_secrets_secretwithvalue",
-      "confidence_score": 1.0
+      "target": "infra_tenant_secrets_secretwithvalue"
     },
     {
       "relation": "calls",
@@ -4626,9 +4614,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_dependencies_pulumi_pulumi",
-      "target": "pulumi_pulumi",
-      "confidence_score": 1.0
+      "target": "pulumi_pulumi"
     },
     {
       "relation": "imports",
@@ -4650,9 +4638,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_dependencies_pulumi_gcp",
-      "target": "pulumi_gcp",
-      "confidence_score": 1.0
+      "target": "pulumi_gcp"
     },
     {
       "relation": "imports",
@@ -4674,9 +4662,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies_typescript",
-      "target": "typescript",
-      "confidence_score": 1.0
+      "target": "typescript"
     },
     {
       "relation": "imports",
@@ -4698,9 +4686,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies_types_node",
-      "target": "types_node",
-      "confidence_score": 1.0
+      "target": "types_node"
     },
     {
       "relation": "imports_from",
@@ -6934,60 +6922,6 @@
       "target": "infra_provisioning_config_workloadidentitypoolid"
     },
     {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "infra_platform_runbook_bootstrap",
-      "target": "infra_platform_pulumi_up"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "ghost_platform_deployer",
-      "target": "gcp_kms_pulumi_secrets"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "ghost_platform_deployer",
-      "target": "gcp_storage_pulumi_state"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "ghost_platform_provisioner",
-      "target": "role_cloudsqlsuperuser"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "ghost_tenant_provisioner",
-      "target": "role_ghost_platform_state_bucket_admin"
-    },
-    {
-      "relation": "implements",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "ghost_tenant_provisioner",
-      "target": "role_ghost_platform_tenant_sql_provisioner"
-    },
-    {
       "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
@@ -7012,9 +6946,9 @@
       "source_location": "L29",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice",
-      "target": "infra_tenant_cloudrunservice_cloudrunserviceargs",
-      "confidence_score": 1.0
+      "target": "infra_tenant_cloudrunservice_cloudrunserviceargs"
     },
     {
       "relation": "contains",
@@ -7023,9 +6957,9 @@
       "source_location": "L64",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice",
-      "target": "infra_tenant_cloudrunservice_createcloudrunservice",
-      "confidence_score": 1.0
+      "target": "infra_tenant_cloudrunservice_createcloudrunservice"
     },
     {
       "relation": "contains",
@@ -7034,9 +6968,9 @@
       "source_location": "L213",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice",
-      "target": "infra_tenant_cloudrunservice_createpublicinvokerbinding",
-      "confidence_score": 1.0
+      "target": "infra_tenant_cloudrunservice_createpublicinvokerbinding"
     },
     {
       "relation": "contains",
@@ -7045,9 +6979,9 @@
       "source_location": "L16",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice",
-      "target": "infra_tenant_cloudrunservice_plainenv",
-      "confidence_score": 1.0
+      "target": "infra_tenant_cloudrunservice_plainenv"
     },
     {
       "relation": "contains",
@@ -7056,9 +6990,9 @@
       "source_location": "L20",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice",
-      "target": "infra_tenant_cloudrunservice_secretenv",
-      "confidence_score": 1.0
+      "target": "infra_tenant_cloudrunservice_secretenv"
     },
     {
       "relation": "imports_from",
@@ -7068,9 +7002,9 @@
       "source_location": "L3",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice",
-      "target": "infra_tenant_naming",
-      "confidence_score": 1.0
+      "target": "infra_tenant_naming"
     },
     {
       "relation": "imports",
@@ -7080,16 +7014,16 @@
       "source_location": "L3",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice",
-      "target": "infra_tenant_naming_cloudrunservicename",
-      "confidence_score": 1.0
+      "target": "infra_tenant_naming_cloudrunservicename"
     },
     {
       "relation": "re_exports",
       "context": "export",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L191",
+      "source_location": "L192",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index",
@@ -7104,9 +7038,9 @@
       "source_location": "L126",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice_createcloudrunservice",
-      "target": "infra_tenant_cloudrunservice_plainenv",
-      "confidence_score": 1.0
+      "target": "infra_tenant_cloudrunservice_plainenv"
     },
     {
       "relation": "calls",
@@ -7116,16 +7050,16 @@
       "source_location": "L137",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_cloudrunservice_createcloudrunservice",
-      "target": "infra_tenant_cloudrunservice_secretenv",
-      "confidence_score": 1.0
+      "target": "infra_tenant_cloudrunservice_secretenv"
     },
     {
       "relation": "re_exports",
       "context": "re-export",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L191",
+      "source_location": "L192",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index",
@@ -7162,7 +7096,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L147",
+      "source_location": "L148",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index_ghosttenant_constructor",
@@ -7186,7 +7120,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L170",
+      "source_location": "L171",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index_ghosttenant_constructor",
@@ -7199,9 +7133,9 @@
       "source_location": "L78",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_database",
-      "target": "infra_tenant_database_createtenantdatabase",
-      "confidence_score": 1.0
+      "target": "infra_tenant_database_createtenantdatabase"
     },
     {
       "relation": "contains",
@@ -7210,9 +7144,9 @@
       "source_location": "L31",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_database",
-      "target": "infra_tenant_database_databaseresult",
-      "confidence_score": 1.0
+      "target": "infra_tenant_database_databaseresult"
     },
     {
       "relation": "contains",
@@ -7221,9 +7155,9 @@
       "source_location": "L29",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_database",
-      "target": "infra_tenant_database_default_max_user_connections",
-      "confidence_score": 1.0
+      "target": "infra_tenant_database_default_max_user_connections"
     },
     {
       "relation": "imports_from",
@@ -7233,9 +7167,9 @@
       "source_location": "L3",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_database",
-      "target": "infra_tenant_naming",
-      "confidence_score": 1.0
+      "target": "infra_tenant_naming"
     },
     {
       "relation": "imports",
@@ -7245,9 +7179,9 @@
       "source_location": "L3",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_database",
-      "target": "infra_tenant_naming_databaseandusername",
-      "confidence_score": 1.0
+      "target": "infra_tenant_naming_databaseandusername"
     },
     {
       "relation": "imports",
@@ -7257,16 +7191,16 @@
       "source_location": "L3",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_database",
-      "target": "infra_tenant_naming_tenantsecretname",
-      "confidence_score": 1.0
+      "target": "infra_tenant_naming_tenantsecretname"
     },
     {
       "relation": "re_exports",
       "context": "export",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L190",
+      "source_location": "L191",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index",
@@ -7278,7 +7212,7 @@
       "context": "re-export",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L190",
+      "source_location": "L191",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index",
@@ -7327,7 +7261,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L129",
+      "source_location": "L126",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index_ghosttenant_constructor",
@@ -7336,8 +7270,665 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_dependencies"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L29",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_devdependencies"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_files"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_license"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_main"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_name"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L15",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_publishconfig"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_repository"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L19",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_scripts"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_types"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package",
+      "target": "infra_tenant_package_version"
+    },
+    {
+      "relation": "extends",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L7",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_files",
+      "target": "infra_tenant_package_json_ref_dist"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_repository",
+      "target": "infra_tenant_package_repository_directory"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L11",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_repository",
+      "target": "infra_tenant_package_repository_type"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L12",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_repository",
+      "target": "infra_tenant_package_repository_url"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L17",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_publishconfig",
+      "target": "infra_tenant_package_publishconfig_access"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L16",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_publishconfig",
+      "target": "infra_tenant_package_publishconfig_registry"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L20",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_scripts",
+      "target": "infra_tenant_package_scripts_build"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L21",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_scripts",
+      "target": "infra_tenant_package_scripts_prepublishonly"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L22",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_scripts",
+      "target": "infra_tenant_package_scripts_test"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L25",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_dependencies",
+      "target": "infra_tenant_package_dependencies_pulumi_gcp"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L26",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_dependencies",
+      "target": "infra_tenant_package_dependencies_pulumi_pulumi"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L27",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_dependencies",
+      "target": "infra_tenant_package_dependencies_pulumi_random"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L27",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_dependencies_pulumi_random",
+      "target": "pulumi_random"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L30",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_devdependencies",
+      "target": "infra_tenant_package_devdependencies_types_node"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L31",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_devdependencies",
+      "target": "infra_tenant_package_devdependencies_typescript"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L32",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_devdependencies",
+      "target": "infra_tenant_package_devdependencies_vitest"
+    },
+    {
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/package.json",
+      "source_location": "L32",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_package_devdependencies_vitest",
+      "target": "vitest"
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L106",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_index",
+      "target": "infra_tenant_serviceaccount",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "re_exports",
+      "context": "export",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/serviceAccount.ts",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_serviceaccount",
+      "target": "infra_tenant_naming"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/serviceAccount.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_serviceaccount",
+      "target": "infra_tenant_naming_serviceaccountid"
+    },
+    {
+      "relation": "re_exports",
+      "context": "re-export",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/serviceAccount.ts",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_serviceaccount",
+      "target": "infra_tenant_naming_validatetenantname"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/serviceAccount.ts",
+      "source_location": "L18",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_serviceaccount",
+      "target": "infra_tenant_serviceaccount_createserviceaccount"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/index.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_index",
+      "target": "infra_tenant_serviceaccount_createserviceaccount",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/tenant/index.ts",
+      "source_location": "L124",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_index_ghosttenant_constructor",
+      "target": "infra_tenant_serviceaccount_createserviceaccount"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/tenant/serviceAccount.ts",
+      "source_location": "L25",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_serviceaccount_createserviceaccount",
+      "target": "infra_tenant_naming_serviceaccountid"
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/index.ts",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_index",
+      "target": "infra_tenant_storage",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/storage.ts",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_storage",
+      "target": "infra_tenant_naming"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/storage.ts",
+      "source_location": "L146",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_storage",
+      "target": "infra_tenant_storage_createtenantstorage"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/storage.ts",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_storage",
+      "target": "infra_tenant_storage_storageresult"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/index.ts",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_index",
+      "target": "infra_tenant_storage_createtenantstorage",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/tenant/index.ts",
+      "source_location": "L135",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_index_ghosttenant_constructor",
+      "target": "infra_tenant_storage_createtenantstorage"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build",
+      "target": "infra_tenant_tsconfig_build_compileroptions"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build",
+      "target": "infra_tenant_tsconfig_build_exclude"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build",
+      "target": "infra_tenant_tsconfig_build_extends"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build",
+      "target": "infra_tenant_tsconfig_build_include"
+    },
+    {
+      "relation": "extends",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L2",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build",
+      "target": "ref_tsconfig_json"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build_compileroptions",
+      "target": "infra_tenant_tsconfig_build_compileroptions_declaration"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build_compileroptions",
+      "target": "infra_tenant_tsconfig_build_compileroptions_noemit"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L6",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build_compileroptions",
+      "target": "infra_tenant_tsconfig_build_compileroptions_outdir"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build_compileroptions",
+      "target": "infra_tenant_tsconfig_build_compileroptions_rootdir"
+    },
+    {
+      "relation": "extends",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L9",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build_include",
+      "target": "ref_ts"
+    },
+    {
+      "relation": "extends",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L10",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build_exclude",
+      "target": "infra_tenant_tsconfig_build_json_ref_dist"
+    },
+    {
+      "relation": "extends",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L10",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build_exclude",
+      "target": "ref_node_modules"
+    },
+    {
+      "relation": "extends",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/tsconfig.build.json",
+      "source_location": "L10",
+      "weight": 1.0,
+      "context": "import",
+      "_origin": "ast",
+      "confidence_score": 1.0,
+      "source": "infra_tenant_tsconfig_build_exclude",
+      "target": "ref_test_ts"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/infra-tenant-ci.yml",
+      "source_location": null,
+      "weight": 1.0,
+      "_origin": "semantic",
+      "source": "github_workflows_infra_tenant_ci_yml_workflow",
+      "target": "actions_checkout"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/infra-tenant-ci.yml",
+      "source_location": null,
+      "weight": 1.0,
+      "_origin": "semantic",
+      "source": "github_workflows_infra_tenant_ci_yml_workflow",
+      "target": "actions_setup_node"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/infra-tenant-ci.yml",
+      "source_location": null,
+      "weight": 1.0,
+      "_origin": "semantic",
+      "source": "github_workflows_infra_tenant_ci_yml_workflow",
+      "target": "infra_tenant_component"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/index.ts",
+      "source_location": "L103",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index",
@@ -7399,62 +7990,26 @@
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index",
+      "target": "infra_tenant_naming_tenantimageref",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/index.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_index",
       "target": "infra_tenant_naming_validatetenantname",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/index.ts",
-      "source_location": "L2",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_index",
-      "target": "infra_tenant_serviceaccount",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/index.ts",
-      "source_location": "L2",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_index",
-      "target": "infra_tenant_serviceaccount_createserviceaccount",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/index.ts",
-      "source_location": "L5",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_index",
-      "target": "infra_tenant_storage",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/index.ts",
-      "source_location": "L5",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_index",
-      "target": "infra_tenant_storage_createtenantstorage",
       "confidence_score": 1.0
     },
     {
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L118",
+      "source_location": "L115",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index_ghosttenant",
@@ -7467,7 +8022,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L122",
+      "source_location": "L119",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index_ghosttenant_constructor",
@@ -7479,35 +8034,23 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/tenant/index.ts",
-      "source_location": "L121",
+      "source_location": "L145",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_index_ghosttenant_constructor",
+      "target": "infra_tenant_naming_tenantimageref"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/tenant/index.ts",
+      "source_location": "L118",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_index_ghosttenant_constructor",
       "target": "infra_tenant_naming_validatetenantname"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/tenant/index.ts",
-      "source_location": "L127",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_index_ghosttenant_constructor",
-      "target": "infra_tenant_serviceaccount_createserviceaccount"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/tenant/index.ts",
-      "source_location": "L138",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_index_ghosttenant_constructor",
-      "target": "infra_tenant_storage_createtenantstorage"
     },
     {
       "relation": "imports_from",
@@ -7638,6 +8181,18 @@
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming_test",
+      "target": "infra_tenant_naming_tenantimageref",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/naming.test.ts",
+      "source_location": "L2",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_naming_test",
       "target": "infra_tenant_naming_tenantsecretname",
       "confidence_score": 1.0
     },
@@ -7657,7 +8212,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L68",
+      "source_location": "L77",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7668,7 +8223,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L50",
+      "source_location": "L59",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7679,7 +8234,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L60",
+      "source_location": "L69",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7701,7 +8256,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L115",
+      "source_location": "L137",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7712,7 +8267,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L86",
+      "source_location": "L95",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7723,7 +8278,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L99",
+      "source_location": "L108",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7734,7 +8289,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L45",
+      "source_location": "L54",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7745,7 +8300,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L55",
+      "source_location": "L64",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7767,7 +8322,18 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L104",
+      "source_location": "L120",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "infra_tenant_naming",
+      "target": "infra_tenant_naming_tenantimageref",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "infra/tenant/naming.ts",
+      "source_location": "L126",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7778,7 +8344,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L28",
+      "source_location": "L37",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming",
@@ -7786,71 +8352,11 @@
       "confidence_score": 1.0
     },
     {
-      "relation": "re_exports",
-      "context": "export",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/serviceAccount.ts",
-      "source_location": "L5",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_serviceaccount",
-      "target": "infra_tenant_naming",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/storage.ts",
-      "source_location": "L4",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_storage",
-      "target": "infra_tenant_naming",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "re_exports",
-      "context": "re-export",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/serviceAccount.ts",
-      "source_location": "L5",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_serviceaccount",
-      "target": "infra_tenant_naming_validatetenantname",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/serviceAccount.ts",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_serviceaccount",
-      "target": "infra_tenant_naming_serviceaccountid",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/tenant/serviceAccount.ts",
-      "source_location": "L25",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_serviceaccount_createserviceaccount",
-      "target": "infra_tenant_naming_serviceaccountid"
-    },
-    {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/naming.ts",
-      "source_location": "L116",
+      "source_location": "L138",
       "weight": 1.0,
       "_origin": "ast",
       "source": "infra_tenant_naming_mediaobjectconditionresource",
@@ -7858,526 +8364,61 @@
       "confidence_score": 1.0
     },
     {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L24",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_dependencies",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L29",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_devdependencies",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L7",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_files",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L4",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_license",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L5",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_main",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L2",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_name",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L15",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_publishconfig",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L10",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_repository",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L19",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_scripts",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L6",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_types",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package",
-      "target": "infra_tenant_package_version",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "extends",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L7",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_tenant_package_files",
-      "target": "infra_tenant_package_json_ref_dist",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L13",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_repository",
-      "target": "infra_tenant_package_repository_directory",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L11",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_repository",
-      "target": "infra_tenant_package_repository_type",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L12",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_repository",
-      "target": "infra_tenant_package_repository_url",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L17",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_publishconfig",
-      "target": "infra_tenant_package_publishconfig_access",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L16",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_publishconfig",
-      "target": "infra_tenant_package_publishconfig_registry",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L20",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_scripts",
-      "target": "infra_tenant_package_scripts_build",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L21",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_scripts",
-      "target": "infra_tenant_package_scripts_prepublishonly",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L22",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_scripts",
-      "target": "infra_tenant_package_scripts_test",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L25",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_dependencies",
-      "target": "infra_tenant_package_dependencies_pulumi_gcp",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L26",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_dependencies",
-      "target": "infra_tenant_package_dependencies_pulumi_pulumi",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L27",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_dependencies",
-      "target": "infra_tenant_package_dependencies_pulumi_random",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L27",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_tenant_package_dependencies_pulumi_random",
-      "target": "pulumi_random",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L30",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_devdependencies",
-      "target": "infra_tenant_package_devdependencies_types_node",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L31",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_devdependencies",
-      "target": "infra_tenant_package_devdependencies_typescript",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L32",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_package_devdependencies",
-      "target": "infra_tenant_package_devdependencies_vitest",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/package.json",
-      "source_location": "L32",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_tenant_package_devdependencies_vitest",
-      "target": "vitest",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/serviceAccount.ts",
-      "source_location": "L18",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_serviceaccount",
-      "target": "infra_tenant_serviceaccount_createserviceaccount",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/storage.ts",
-      "source_location": "L146",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_storage",
-      "target": "infra_tenant_storage_createtenantstorage",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/storage.ts",
-      "source_location": "L6",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_storage",
-      "target": "infra_tenant_storage_storageresult",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L3",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build",
-      "target": "infra_tenant_tsconfig_build_compileroptions",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L10",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build",
-      "target": "infra_tenant_tsconfig_build_exclude",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L2",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build",
-      "target": "infra_tenant_tsconfig_build_extends",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L9",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build",
-      "target": "infra_tenant_tsconfig_build_include",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "extends",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L2",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build",
-      "target": "ref_tsconfig_json",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L5",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build_compileroptions",
-      "target": "infra_tenant_tsconfig_build_compileroptions_declaration",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L4",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build_compileroptions",
-      "target": "infra_tenant_tsconfig_build_compileroptions_noemit",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L6",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build_compileroptions",
-      "target": "infra_tenant_tsconfig_build_compileroptions_outdir",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L7",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build_compileroptions",
-      "target": "infra_tenant_tsconfig_build_compileroptions_rootdir",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "extends",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L9",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build_include",
-      "target": "ref_ts",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "extends",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L10",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build_exclude",
-      "target": "infra_tenant_tsconfig_build_json_ref_dist",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "extends",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L10",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build_exclude",
-      "target": "ref_node_modules",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "extends",
-      "confidence": "EXTRACTED",
-      "source_file": "infra/tenant/tsconfig.build.json",
-      "source_location": "L10",
-      "weight": 1.0,
-      "context": "import",
-      "_origin": "ast",
-      "source": "infra_tenant_tsconfig_build_exclude",
-      "target": "ref_test_ts",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
+      "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "github_workflows_infra_tenant_ci_yml_workflow",
-      "target": "actions_checkout"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "github_workflows_infra_tenant_ci_yml_workflow",
-      "target": "actions_setup_node"
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "ghost_platform_deployer"
     },
     {
       "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "source_location": null,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "ghost_platform_provisioner"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "ghost_tenant_provisioner"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "infra_platform_pulumi_up"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
       "weight": 1.0,
-      "source": "github_workflows_infra_tenant_ci_yml_workflow",
-      "target": "infra_tenant_component"
+      "source": "ghost_platform_deployer",
+      "target": "gcp_kms_pulumi_secrets"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "ghost_platform_deployer",
+      "target": "gcp_storage_pulumi_state"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "ghost_tenant_provisioner",
+      "target": "gcp_sql_instance"
     }
   ],
   "hyperedges": [
@@ -8392,7 +8433,7 @@
       ],
       "relation": "participate_in",
       "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
+      "confidence_score": 0.9,
       "source_file": "infra/platform/RUNBOOK-bootstrap.md"
     },
     {
@@ -8435,5 +8476,5 @@
       "source_file": "infra/README.md"
     }
   ],
-  "built_at_commit": "fb0e96e23bcd9743f191586f9e43e8d932a09e07"
+  "built_at_commit": "3ab92b035ed9f3a173345b1c7b5c19e070a29fe5"
 }
