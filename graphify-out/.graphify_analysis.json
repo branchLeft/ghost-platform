@@ -50,31 +50,31 @@
       "infra_platform_workloadidentity_workloadidentityprovider"
     ],
     "1": [
-      "_github_workflows_build_build_only_ci",
-      "_github_workflows_build_smoke_test",
-      "_github_workflows_infra_platform_ci_assert_no_platform_deletes",
-      "_github_workflows_infra_platform_ci_ci_owns_applies_decision",
-      "_github_workflows_infra_platform_ci_deploy_job",
-      "_github_workflows_infra_platform_ci_deployer_service_account",
-      "_github_workflows_infra_platform_ci_typecheck_job",
-      "_github_workflows_infra_platform_ci_workload_identity_federation",
-      "_github_workflows_infra_tenant_ci_reusable_component_scope",
-      "_github_workflows_infra_tenant_ci_typecheck_job",
-      "infra_platform_pulumi_platform_stack_config",
-      "infra_platform_pulumi_project",
-      "infra_platform_runbook_bootstrap_bootstrap_process",
-      "infra_platform_runbook_bootstrap_kms_binding",
-      "infra_platform_runbook_bootstrap_provisioning_user_incident",
-      "infra_platform_runbook_bootstrap_pulumi_state_bucket",
-      "infra_platform_runbook_bootstrap_state_bucket_binding",
-      "infra_readme_platform_stack",
-      "infra_readme_split_by_shape_rationale",
-      "infra_readme_tenant_component",
-      "infra_tenant_smoke_test_pulumi_scratch_s8_smoke_test_project",
-      "infra_tenant_smoke_test_pulumi_stack_config",
-      "infra_tenant_smoke_test_readme_smoke_test_harness",
-      "readme_ghost_platform_repo",
-      "readme_smoke_test_script"
+      "infra_platform_package",
+      "infra_platform_package_dependencies",
+      "infra_platform_package_dependencies_pulumi_gcp",
+      "infra_platform_package_dependencies_pulumi_pulumi",
+      "infra_platform_package_dependencies_pulumi_random",
+      "infra_platform_package_json_pulumi_pulumi",
+      "infra_platform_package_main",
+      "infra_platform_package_name",
+      "infra_platform_package_private",
+      "infra_tenant_package_dependencies",
+      "infra_tenant_package_dependencies_pulumi_gcp",
+      "infra_tenant_package_dependencies_pulumi_pulumi",
+      "infra_tenant_package_dependencies_pulumi_random",
+      "infra_tenant_smoke_test_package",
+      "infra_tenant_smoke_test_package_dependencies",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_gcp",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_pulumi",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_random",
+      "infra_tenant_smoke_test_package_json_pulumi_pulumi",
+      "infra_tenant_smoke_test_package_main",
+      "infra_tenant_smoke_test_package_name",
+      "infra_tenant_smoke_test_package_private",
+      "pulumi_gcp",
+      "pulumi_pulumi",
+      "pulumi_random"
     ],
     "2": [
       "infra_tenant_cloudrunservice",
@@ -103,27 +103,28 @@
       "infra_tenant_storage_storageresult"
     ],
     "3": [
-      "infra_platform_package_dependencies",
-      "infra_platform_package_dependencies_pulumi_gcp",
-      "infra_platform_package_dependencies_pulumi_pulumi",
-      "infra_platform_package_dependencies_pulumi_random",
-      "infra_platform_package_json_pulumi_pulumi",
-      "infra_tenant_package_dependencies",
-      "infra_tenant_package_dependencies_pulumi_gcp",
-      "infra_tenant_package_dependencies_pulumi_pulumi",
-      "infra_tenant_package_dependencies_pulumi_random",
-      "infra_tenant_smoke_test_package",
-      "infra_tenant_smoke_test_package_dependencies",
-      "infra_tenant_smoke_test_package_dependencies_pulumi_gcp",
-      "infra_tenant_smoke_test_package_dependencies_pulumi_pulumi",
-      "infra_tenant_smoke_test_package_dependencies_pulumi_random",
-      "infra_tenant_smoke_test_package_json_pulumi_pulumi",
-      "infra_tenant_smoke_test_package_main",
-      "infra_tenant_smoke_test_package_name",
-      "infra_tenant_smoke_test_package_private",
-      "pulumi_gcp",
-      "pulumi_pulumi",
-      "pulumi_random"
+      "_github_workflows_infra_platform_ci_assert_no_platform_deletes",
+      "_github_workflows_infra_platform_ci_ci_owns_applies_decision",
+      "_github_workflows_infra_platform_ci_deploy_job",
+      "_github_workflows_infra_platform_ci_deployer_service_account",
+      "_github_workflows_infra_platform_ci_typecheck_job",
+      "_github_workflows_infra_platform_ci_workload_identity_federation",
+      "_github_workflows_infra_tenant_ci_reusable_component_scope",
+      "_github_workflows_infra_tenant_ci_typecheck_job",
+      "infra_platform_pulumi_platform_stack_config",
+      "infra_platform_pulumi_project",
+      "infra_platform_runbook_bootstrap_bootstrap_process",
+      "infra_platform_runbook_bootstrap_kms_binding",
+      "infra_platform_runbook_bootstrap_provisioning_user_incident",
+      "infra_platform_runbook_bootstrap_pulumi_state_bucket",
+      "infra_platform_runbook_bootstrap_state_bucket_binding",
+      "infra_readme_platform_stack",
+      "infra_readme_split_by_shape_rationale",
+      "infra_readme_tenant_component",
+      "infra_tenant_smoke_test_pulumi_scratch_s8_smoke_test_project",
+      "infra_tenant_smoke_test_pulumi_stack_config",
+      "infra_tenant_smoke_test_readme_smoke_test_harness",
+      "readme_ghost_platform_repo"
     ],
     "4": [
       "infra_tenant_package",
@@ -200,23 +201,6 @@
       "infra_tenant_tsconfig_json_ref_ts"
     ],
     "8": [
-      "infra_platform_package",
-      "infra_platform_package_devdependencies",
-      "infra_platform_package_devdependencies_types_node",
-      "infra_platform_package_devdependencies_typescript",
-      "infra_platform_package_main",
-      "infra_platform_package_name",
-      "infra_platform_package_private",
-      "infra_tenant_package_devdependencies",
-      "infra_tenant_package_devdependencies_types_node",
-      "infra_tenant_package_devdependencies_typescript",
-      "infra_tenant_smoke_test_package_devdependencies",
-      "infra_tenant_smoke_test_package_devdependencies_types_node",
-      "infra_tenant_smoke_test_package_devdependencies_typescript",
-      "types_node",
-      "typescript"
-    ],
-    "9": [
       "infra_platform_scripts_assert_no_platform_deletes",
       "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test",
       "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern",
@@ -231,7 +215,7 @@
       "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
       "pattern"
     ],
-    "10": [
+    "9": [
       "infra_tenant_tsconfig_build",
       "infra_tenant_tsconfig_build_compileroptions",
       "infra_tenant_tsconfig_build_compileroptions_declaration",
@@ -246,8 +230,20 @@
       "ref_ts",
       "ref_tsconfig_json"
     ],
+    "10": [
+      "infra_platform_package_devdependencies",
+      "infra_platform_package_devdependencies_types_node",
+      "infra_platform_package_devdependencies_typescript",
+      "infra_tenant_package_devdependencies",
+      "infra_tenant_package_devdependencies_types_node",
+      "infra_tenant_package_devdependencies_typescript",
+      "infra_tenant_smoke_test_package_devdependencies",
+      "infra_tenant_smoke_test_package_devdependencies_types_node",
+      "infra_tenant_smoke_test_package_devdependencies_typescript",
+      "types_node",
+      "typescript"
+    ],
     "11": [
-      "_github_workflows_build_storage_guard_test",
       "readme_env_var_convention_correction",
       "readme_fail_closed_storage_guard",
       "readme_s3storage_adapter",
@@ -255,39 +251,66 @@
       "readme_tenant_container_image"
     ],
     "12": [
+      "claudemd",
+      "ghost_platform_tenant_package",
+      "github_workflows_publish_tenant_package",
+      "infra_tenant"
+    ],
+    "13": [
       "docker_entrypoint_branchleft",
       "docker_entrypoint_branchleft_server_host",
       "docker_entrypoint_branchleft_server_port",
       "docker_entrypoint_branchleft_sh__entry"
     ],
-    "13": [
+    "14": [
       "scripts_test_storage_guard",
       "scripts_test_storage_guard_assert_blocked",
       "scripts_test_storage_guard_assert_boots",
       "scripts_test_storage_guard_sh__entry"
     ],
-    "14": [
+    "15": [
       "scripts_smoke_test",
       "scripts_smoke_test_cleanup",
       "scripts_smoke_test_sh__entry"
+    ],
+    "16": [
+      "github_workflows_build"
+    ],
+    "17": [
+      "github_workflows_docs_lint"
+    ],
+    "18": [
+      "github_workflows_graphify"
+    ],
+    "19": [
+      "github_workflows_registry_push"
+    ],
+    "20": [
+      "readme_smoke_test_script"
     ]
   },
   "cohesion": {
     "0": 0.07955596669750231,
-    "1": 0.12,
+    "1": 0.08666666666666667,
     "2": 0.16304347826086957,
-    "3": 0.10476190476190476,
+    "3": 0.13852813852813853,
     "4": 0.1111111111111111,
     "5": 0.125,
     "6": 0.125,
     "7": 0.125,
-    "8": 0.1523809523809524,
-    "9": 0.2564102564102564,
-    "10": 0.15384615384615385,
-    "11": 0.3333333333333333,
+    "8": 0.2564102564102564,
+    "9": 0.15384615384615385,
+    "10": 0.21818181818181817,
+    "11": 0.4,
     "12": 0.5,
-    "13": 0.8333333333333334,
-    "14": 0.6666666666666666
+    "13": 0.5,
+    "14": 0.8333333333333334,
+    "15": 0.6666666666666666,
+    "16": 1.0,
+    "17": 1.0,
+    "18": 1.0,
+    "19": 1.0,
+    "20": 1.0
   },
   "gods": [
     {
@@ -354,39 +377,6 @@
       "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
     },
     {
-      "source": "ghost-platform repository",
-      "target": "Build-only CI workflow (build.yml)",
-      "source_files": [
-        "README.md",
-        ".github/workflows/build.yml"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories"
-    },
-    {
-      "source": "Smoke test step (scripts/smoke-test.sh)",
-      "target": "scripts/smoke-test.sh",
-      "source_files": [
-        ".github/workflows/build.yml",
-        "README.md"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories"
-    },
-    {
-      "source": "Storage guard regression test step (scripts/test-storage-guard.sh)",
-      "target": "scripts/test-storage-guard.sh",
-      "source_files": [
-        ".github/workflows/build.yml",
-        "README.md"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories"
-    },
-    {
       "source": "Platform stack (infra/platform/)",
       "target": "Deploy (pulumi up) job",
       "source_files": [
@@ -396,10 +386,43 @@
       "confidence": "EXTRACTED",
       "relation": "references",
       "why": "connects across different repos/directories"
+    },
+    {
+      "source": "Platform stack bootstrap runbook",
+      "target": "Workload Identity Federation (GitHub OIDC to GCP)",
+      "source_files": [
+        "infra/platform/RUNBOOK-bootstrap.md",
+        ".github/workflows/infra-platform-ci.yml"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
+    },
+    {
+      "source": "ghost-platform repository",
+      "target": "Workload Identity Federation (GitHub OIDC to GCP)",
+      "source_files": [
+        "README.md",
+        ".github/workflows/infra-platform-ci.yml"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
+    },
+    {
+      "source": "KMS decrypt binding for deployer SA (pulumi-secrets key)",
+      "target": "ghost-platform-deployer service account",
+      "source_files": [
+        "infra/platform/RUNBOOK-bootstrap.md",
+        ".github/workflows/infra-platform-ci.yml"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
     }
   ],
   "tokens": {
-    "input": 0,
-    "output": 0
+    "input": 4991,
+    "output": 1707
   }
 }

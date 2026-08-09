@@ -4,6 +4,35 @@
   "graph": {
     "hyperedges": [
       {
+        "id": "ci_cd_pipeline",
+        "label": "CI/CD Pipeline",
+        "nodes": [
+          "github_workflows_build",
+          "github_workflows_registry_push",
+          "github_workflows_publish_tenant_package",
+          "github_workflows_graphify",
+          "github_workflows_docs_lint"
+        ],
+        "relation": "participate_in",
+        "confidence": "INFERRED",
+        "confidence_score": 0.9,
+        "source_file": "CLAUDE.md"
+      },
+      {
+        "id": "tenant_artifact_delivery",
+        "label": "Tenant Artifact Delivery",
+        "nodes": [
+          "infra_tenant",
+          "ghost_platform_tenant_package",
+          "github_workflows_publish_tenant_package",
+          "github_workflows_registry_push"
+        ],
+        "relation": "form",
+        "confidence": "INFERRED",
+        "confidence_score": 0.85,
+        "source_file": "CLAUDE.md"
+      },
+      {
         "id": "platform_ci_deploy_guardrail_pattern",
         "label": "CI-driven platform deploy guardrail system",
         "nodes": [
@@ -58,7 +87,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 12,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "docker-entrypoint.branchleft.sh",
       "id": "docker_entrypoint_branchleft"
@@ -73,7 +102,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 12,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "docker-entrypoint.branchleft.sh script",
       "id": "docker_entrypoint_branchleft_sh__entry"
@@ -88,7 +117,7 @@
         "kind": "code"
       },
       "_origin": "ast",
-      "community": 12,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "server__port",
       "id": "docker_entrypoint_branchleft_server_port"
@@ -103,7 +132,7 @@
         "kind": "code"
       },
       "_origin": "ast",
-      "community": 12,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "server__host",
       "id": "docker_entrypoint_branchleft_server_host"
@@ -400,7 +429,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 8,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "platform/package.json",
       "id": "infra_platform_package"
@@ -411,7 +440,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 8,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "name",
       "id": "infra_platform_package_name"
@@ -422,7 +451,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 8,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "private",
       "id": "infra_platform_package_private"
@@ -433,7 +462,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 8,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "main",
       "id": "infra_platform_package_main"
@@ -444,7 +473,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "dependencies",
       "id": "infra_platform_package_dependencies"
@@ -455,7 +484,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@pulumi/pulumi",
       "id": "infra_platform_package_dependencies_pulumi_pulumi"
@@ -466,7 +495,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@pulumi/pulumi",
       "id": "infra_platform_package_json_pulumi_pulumi"
@@ -477,7 +506,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@pulumi/gcp",
       "id": "infra_platform_package_dependencies_pulumi_gcp"
@@ -488,7 +517,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@pulumi/random",
       "id": "infra_platform_package_dependencies_pulumi_random"
@@ -499,7 +528,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "community_name": "Platform Package Dependencies",
       "norm_label": "devdependencies",
       "id": "infra_platform_package_devdependencies"
@@ -510,7 +539,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "community_name": "Platform Package Dependencies",
       "norm_label": "typescript",
       "id": "infra_platform_package_devdependencies_typescript"
@@ -521,7 +550,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "community_name": "Platform Package Dependencies",
       "norm_label": "@types/node",
       "id": "infra_platform_package_devdependencies_types_node"
@@ -609,7 +638,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "assert-no-platform-deletes.py",
       "id": "infra_platform_scripts_assert_no_platform_deletes"
@@ -621,7 +650,7 @@
       "source_location": "L100",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "_declaration_pattern()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern"
@@ -632,7 +661,7 @@
       "source_file": "",
       "source_location": "",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "pattern",
       "id": "pattern"
@@ -644,7 +673,7 @@
       "source_location": "L124",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "destructive_steps()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_destructive_steps"
@@ -656,7 +685,7 @@
       "source_location": "L175",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "_plan()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_plan"
@@ -668,7 +697,7 @@
       "source_location": "L179",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "self_test()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_self_test"
@@ -680,7 +709,7 @@
       "source_location": "L243",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "_coverage_self_test()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test"
@@ -692,7 +721,7 @@
       "source_location": "L294",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "verify_coverage()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage"
@@ -704,7 +733,7 @@
       "source_location": "L345",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "main()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_main"
@@ -715,7 +744,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L101",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "match `new <ctor>('<name>'` -- a resource *declaration*, not a mention....",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_101"
@@ -726,7 +755,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L125",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "return (name, op) for every protected resource this plan would destroy. raises...",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_125"
@@ -737,7 +766,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L244",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "prove `--verify-coverage` still distinguishes a declaration from a mention....",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_244"
@@ -748,7 +777,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L295",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "community_name": "Delete-Guard Script",
       "norm_label": "fail if a protected name no longer appears in the pulumi program. the quiet way...",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_295"
@@ -1340,7 +1369,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "smoke-test/package.json",
       "id": "infra_tenant_smoke_test_package"
@@ -1351,7 +1380,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "name",
       "id": "infra_tenant_smoke_test_package_name"
@@ -1362,7 +1391,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "private",
       "id": "infra_tenant_smoke_test_package_private"
@@ -1373,7 +1402,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "main",
       "id": "infra_tenant_smoke_test_package_main"
@@ -1384,7 +1413,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "dependencies",
       "id": "infra_tenant_smoke_test_package_dependencies"
@@ -1395,7 +1424,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "@pulumi/pulumi",
       "id": "infra_tenant_smoke_test_package_dependencies_pulumi_pulumi"
@@ -1406,7 +1435,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "@pulumi/pulumi",
       "id": "infra_tenant_smoke_test_package_json_pulumi_pulumi"
@@ -1417,7 +1446,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "@pulumi/gcp",
       "id": "infra_tenant_smoke_test_package_dependencies_pulumi_gcp"
@@ -1428,7 +1457,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "@pulumi/random",
       "id": "infra_tenant_smoke_test_package_dependencies_pulumi_random"
@@ -1439,7 +1468,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "devdependencies",
       "id": "infra_tenant_smoke_test_package_devdependencies"
@@ -1450,7 +1479,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "typescript",
       "id": "infra_tenant_smoke_test_package_devdependencies_typescript"
@@ -1461,7 +1490,7 @@
       "source_file": "infra/tenant/smoke-test/package.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "community_name": "Tenant Smoke-Test Dependencies",
       "norm_label": "@types/node",
       "id": "infra_tenant_smoke_test_package_devdependencies_types_node"
@@ -1864,7 +1893,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 15,
       "community_name": "Smoke Test Script",
       "norm_label": "smoke-test.sh",
       "id": "scripts_smoke_test"
@@ -1879,7 +1908,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 15,
       "community_name": "Smoke Test Script",
       "norm_label": "smoke-test.sh script",
       "id": "scripts_smoke_test_sh__entry"
@@ -1894,7 +1923,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 15,
       "community_name": "Smoke Test Script",
       "norm_label": "cleanup()",
       "id": "scripts_smoke_test_cleanup"
@@ -1909,7 +1938,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 13,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh",
       "id": "scripts_test_storage_guard"
@@ -1924,7 +1953,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 13,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh script",
       "id": "scripts_test_storage_guard_sh__entry"
@@ -1939,7 +1968,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 13,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_blocked()",
       "id": "scripts_test_storage_guard_assert_blocked"
@@ -1954,56 +1983,10 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 13,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_boots()",
       "id": "scripts_test_storage_guard_assert_boots"
-    },
-    {
-      "label": "Build-only CI workflow (build.yml)",
-      "file_type": "document",
-      "source_file": ".github/workflows/build.yml",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "rationale": "Build-only, no push/no GCP auth: Workload Identity Federation exists for this repo (infra/platform/workloadIdentity.ts) but is scoped to the platform Pulumi deploy identity, not this build job; requesting id-token: write here would hand a build job the platform deploy identity for no benefit. Registry push is still its own future story.",
-      "community": 1,
-      "community_name": "CI/CD Workflows & Guardrails",
-      "norm_label": "build-only ci workflow (build.yml)",
-      "_origin": "semantic",
-      "id": "_github_workflows_build_build_only_ci"
-    },
-    {
-      "label": "Smoke test step (scripts/smoke-test.sh)",
-      "file_type": "document",
-      "source_file": ".github/workflows/build.yml",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "community": 1,
-      "community_name": "CI/CD Workflows & Guardrails",
-      "norm_label": "smoke test step (scripts/smoke-test.sh)",
-      "_origin": "semantic",
-      "id": "_github_workflows_build_smoke_test"
-    },
-    {
-      "label": "Storage guard regression test step (scripts/test-storage-guard.sh)",
-      "file_type": "document",
-      "source_file": ".github/workflows/build.yml",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "community": 11,
-      "community_name": "Storage Guard & Container Image",
-      "norm_label": "storage guard regression test step (scripts/test-storage-guard.sh)",
-      "_origin": "semantic",
-      "id": "_github_workflows_build_storage_guard_test"
     },
     {
       "label": "Type check job (infra/platform CI)",
@@ -2014,7 +1997,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "type check job (infra/platform ci)",
       "_origin": "semantic",
@@ -2030,7 +2013,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Runs only on push to main (reviewed/merged commits, no PR credentials); job-level permissions grant id-token: write only here so no other job reaches the deployer identity; concurrency group serialises applies (cancel-in-progress: false, since a cancelled apply leaves the stack locked/half-applied); declares environment: platform as the attachment point for an optional required reviewer; deliberately no path filter, because a silently-wrong filter would skip the deploy and still report green.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "deploy (pulumi up) job",
       "_origin": "semantic",
@@ -2046,7 +2029,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Exchanges the run's GitHub OIDC token for short-lived credentials for the deployer service account, scoped by attributeCondition to this repository and to refs/heads/main; no service-account key exists anywhere. Writes an external-account credential file so no setup-gcloud step is needed.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "workload identity federation (github oidc to gcp)",
       "_origin": "semantic",
@@ -2062,7 +2045,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Parses the real `pulumi preview --json` plan for the exact run and aborts before `pulumi up` if it would destroy the database, media bucket, image repository, or the CI identity itself. Runs --self-test and --verify-coverage first in both the typecheck and deploy jobs, because a matcher that quietly stopped matching would pass everything, and a resource renamed in the Pulumi program while the PROTECTED list keeps the old name would still preview, apply, and report green while guarding nothing.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "assert-no-platform-deletes.py preflight guard",
       "_origin": "semantic",
@@ -2077,7 +2060,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "ghost-platform-deployer service account",
       "_origin": "semantic",
@@ -2093,7 +2076,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Reverses a prior 'humans only apply this stack' stance. The blast-radius argument (one shared Cloud SQL instance and media bucket, cross-tenant impact) was never an argument for humans over CI -- a human running `pulumi up` from a laptop is judged the less controlled path (ambient owner-level credential, no audit trail beyond shell history, nothing stopping an apply of uncommitted local edits). What it actually demanded was guardrails: branch restriction, short-lived scoped WIF credentials, minimal deployer grants, a delete-preflight, and an optional required-reviewer environment. Matches the pattern website/infra has run in production since 2026-08-01.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "decision: ci owns platform stack applies (rob, 2026-08-05)",
       "_origin": "semantic",
@@ -2108,7 +2091,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "type check job (infra/tenant ci)",
       "_origin": "semantic",
@@ -2124,7 +2107,7 @@
       "author": null,
       "contributor": null,
       "rationale": "infra/tenant/ has no stack of its own to apply -- it is instantiated from the private ghost-platform-tenants repo, so the decision about who applies a tenant's resources belongs to that repo's pipeline, and this workflow could not hold the right credentials for it even if it wanted to. Deliberately excludes infra/tenant/smoke-test/, a disposable, manually-run preview harness, not part of the reusable component this workflow protects.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "rationale: infra/tenant is a reusable component, not a stack",
       "_origin": "semantic",
@@ -2139,7 +2122,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "ghost-platform repository",
       "_origin": "semantic",
@@ -2216,7 +2199,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 20,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "scripts/smoke-test.sh",
       "_origin": "semantic",
@@ -2246,7 +2229,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "platform stack (infra/platform/)",
       "_origin": "semantic",
@@ -2261,7 +2244,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "ghosttenant reusable component (infra/tenant/)",
       "_origin": "semantic",
@@ -2277,7 +2260,7 @@
       "author": null,
       "contributor": null,
       "rationale": "platform/'s resources exist exactly once, full stop, while a tenant's resources are a repeated unit instantiated per tenant from a different (private) repo entirely. The sites-style array shared-infra/sites.ts uses for the edge fits there because every site shares one load balancer; it doesn't fit here -- a shared array in this repo would either force tenant identity into a public repo or force the reusable component to import a stack it has no business depending on.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "rationale: split infra by shape (stack vs. component)",
       "_origin": "semantic",
@@ -2292,7 +2275,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "platform stack config (pulumi.platform.yaml)",
       "_origin": "semantic",
@@ -2307,7 +2290,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "branchleft-ghost-platform pulumi project",
       "_origin": "semantic",
@@ -2322,7 +2305,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "platform stack bootstrap runbook",
       "_origin": "semantic",
@@ -2338,7 +2321,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Must be a gcloud grant (roles/cloudkms.cryptoKeyEncrypterDecrypter on the pulumi-secrets key), never a Pulumi gcp.kms.CryptoKeyIAMMember resource: declaring it in Pulumi fails with 'cloudkms.cryptoKeys.getIamPolicy denied', and the only role that would fix that (roles/cloudkms.admin) would let the deploy pipeline rewrite who is allowed to decrypt its own secrets -- the exact control the key exists to provide. Without it, CI fails at the very first `pulumi preview` with a KMS permission error.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "kms decrypt binding for deployer sa (pulumi-secrets key)",
       "_origin": "semantic",
@@ -2354,7 +2337,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Bucket-scoped roles/storage.objectAdmin grant, deliberately not a project-level storage role: the bucket holds state for four stacks, two owned by other repos (branchleft-website-infra, branchleft-shared-infra), so a project-level role here would let this repo's CI corrupt their state too. Without it every CI run fails at `pulumi login` with a 403, since Pulumi cannot grant itself access to the bucket it must log in to before it can grant anything.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "pulumi state bucket iam binding (gs://branchleft-pulumi-state)",
       "_origin": "semantic",
@@ -2370,7 +2353,7 @@
       "author": null,
       "contributor": null,
       "rationale": "A live attempt to narrow ghost_platform_provisioner from cloudsqlsuperuser down to bare CREATE USER caused a real self-lockout: revoking the cloudsqlsuperuser role left the account with USAGE ON *.* only, and re-granting CREATE USER failed because no customer-accessible Cloud SQL account -- not even root -- holds GRANT OPTION on anything; only Google's own control plane can grant. Recovery required recreating the account via the Admin API (gcloud sql users delete/create) to re-run Google's provisioning path. Decision: accept the credential at full cloudsqlsuperuser breadth permanently; mitigated today only by zero consumers holding secretAccessor on its Secret Manager entry, a decision that must be re-opened before any future story wires a consumer to it.",
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "ghost_platform_provisioner privilege-narrowing incident (2026-08-05)",
       "_origin": "semantic",
@@ -2385,7 +2368,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "pulumi state backend (gs://branchleft-pulumi-state)",
       "_origin": "semantic",
@@ -2400,7 +2383,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "ghost-platform-tenant-smoke-test pulumi project descriptor",
       "_origin": "semantic",
@@ -2415,7 +2398,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "scratch-s8-smoke-test stack config",
       "_origin": "semantic",
@@ -2430,7 +2413,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 1,
+      "community": 3,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "ghosttenant smoke-test harness",
       "_origin": "semantic",
@@ -2442,7 +2425,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "tsconfig.build.json",
       "id": "infra_tenant_tsconfig_build"
     },
@@ -2452,7 +2435,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "extends",
       "id": "infra_tenant_tsconfig_build_extends"
     },
@@ -2462,7 +2445,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "./tsconfig.json",
       "id": "ref_tsconfig_json"
     },
@@ -2472,7 +2455,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "compileroptions",
       "id": "infra_tenant_tsconfig_build_compileroptions"
     },
@@ -2482,7 +2465,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "noemit",
       "id": "infra_tenant_tsconfig_build_compileroptions_noemit"
     },
@@ -2492,7 +2475,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "declaration",
       "id": "infra_tenant_tsconfig_build_compileroptions_declaration"
     },
@@ -2502,7 +2485,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "outdir",
       "id": "infra_tenant_tsconfig_build_compileroptions_outdir"
     },
@@ -2512,7 +2495,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "rootdir",
       "id": "infra_tenant_tsconfig_build_compileroptions_rootdir"
     },
@@ -2522,7 +2505,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "include",
       "id": "infra_tenant_tsconfig_build_include"
     },
@@ -2532,7 +2515,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "*.ts",
       "id": "ref_ts"
     },
@@ -2542,7 +2525,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "exclude",
       "id": "infra_tenant_tsconfig_build_exclude"
     },
@@ -2552,7 +2535,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "node_modules",
       "id": "ref_node_modules"
     },
@@ -2562,7 +2545,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 10,
+      "community": 9,
       "norm_label": "dist",
       "id": "infra_tenant_tsconfig_build_json_ref_dist"
     },
@@ -2752,7 +2735,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L23",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "norm_label": "dependencies",
       "id": "infra_tenant_package_dependencies"
     },
@@ -2762,7 +2745,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L24",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "norm_label": "@pulumi/pulumi",
       "id": "infra_tenant_package_dependencies_pulumi_pulumi"
     },
@@ -2772,7 +2755,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L24",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "norm_label": "@pulumi/pulumi",
       "id": "pulumi_pulumi"
     },
@@ -2782,7 +2765,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L25",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "norm_label": "@pulumi/gcp",
       "id": "infra_tenant_package_dependencies_pulumi_gcp"
     },
@@ -2792,7 +2775,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L25",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "norm_label": "@pulumi/gcp",
       "id": "pulumi_gcp"
     },
@@ -2802,7 +2785,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L26",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "norm_label": "@pulumi/random",
       "id": "infra_tenant_package_dependencies_pulumi_random"
     },
@@ -2812,7 +2795,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L26",
       "_origin": "ast",
-      "community": 3,
+      "community": 1,
       "norm_label": "@pulumi/random",
       "id": "pulumi_random"
     },
@@ -2822,7 +2805,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L28",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "norm_label": "devdependencies",
       "id": "infra_tenant_package_devdependencies"
     },
@@ -2832,7 +2815,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L29",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "norm_label": "typescript",
       "id": "infra_tenant_package_devdependencies_typescript"
     },
@@ -2842,7 +2825,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L29",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "norm_label": "typescript",
       "id": "typescript"
     },
@@ -2852,7 +2835,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L30",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "norm_label": "@types/node",
       "id": "infra_tenant_package_devdependencies_types_node"
     },
@@ -2862,9 +2845,73 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L30",
       "_origin": "ast",
-      "community": 8,
+      "community": 10,
       "norm_label": "@types/node",
       "id": "types_node"
+    },
+    {
+      "label": "CLAUDE.md",
+      "file_type": "document",
+      "source_file": "CLAUDE.md",
+      "id": "claudemd",
+      "community": 12,
+      "norm_label": "claude.md"
+    },
+    {
+      "label": "infra/tenant",
+      "file_type": "code",
+      "source_file": "infra/tenant",
+      "id": "infra_tenant",
+      "community": 12,
+      "norm_label": "infra/tenant"
+    },
+    {
+      "label": "@branchleft/ghost-platform-tenant",
+      "file_type": "concept",
+      "source_file": "CLAUDE.md",
+      "id": "ghost_platform_tenant_package",
+      "community": 12,
+      "norm_label": "@branchleft/ghost-platform-tenant"
+    },
+    {
+      "label": "Build image workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/build.yml",
+      "id": "github_workflows_build",
+      "community": 16,
+      "norm_label": "build image workflow"
+    },
+    {
+      "label": "docs-lint workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/docs-lint.yml",
+      "id": "github_workflows_docs_lint",
+      "community": 17,
+      "norm_label": "docs-lint workflow"
+    },
+    {
+      "label": "graphify workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/graphify.yml",
+      "id": "github_workflows_graphify",
+      "community": 18,
+      "norm_label": "graphify workflow"
+    },
+    {
+      "label": "Publish tenant package workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/publish-tenant-package.yml",
+      "id": "github_workflows_publish_tenant_package",
+      "community": 12,
+      "norm_label": "publish tenant package workflow"
+    },
+    {
+      "label": "Push tenant image workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/registry-push.yml",
+      "id": "github_workflows_registry_push",
+      "community": 19,
+      "norm_label": "push tenant image workflow"
     }
   ],
   "links": [
@@ -5572,72 +5619,6 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": ".github/workflows/build.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "_github_workflows_build_build_only_ci",
-      "target": "_github_workflows_build_smoke_test"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/build.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "_github_workflows_build_build_only_ci",
-      "target": "_github_workflows_build_storage_guard_test"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/build.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "_github_workflows_build_build_only_ci",
-      "target": "_github_workflows_infra_platform_ci_workload_identity_federation"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "README.md",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "readme_ghost_platform_repo",
-      "target": "_github_workflows_build_build_only_ci"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/build.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "_github_workflows_build_smoke_test",
-      "target": "readme_smoke_test_script"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/build.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "_github_workflows_build_storage_guard_test",
-      "target": "readme_storage_guard_test_script"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
       "source_file": ".github/workflows/infra-platform-ci.yml",
       "source_location": null,
       "weight": 1.0,
@@ -6490,9 +6471,62 @@
       "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies_types_node",
       "target": "types_node"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "CLAUDE.md",
+      "source": "claudemd",
+      "target": "infra_tenant"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/publish-tenant-package.yml",
+      "source": "github_workflows_publish_tenant_package",
+      "target": "infra_tenant"
+    },
+    {
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "CLAUDE.md",
+      "source": "infra_tenant",
+      "target": "ghost_platform_tenant_package"
     }
   ],
   "hyperedges": [
+    {
+      "id": "ci_cd_pipeline",
+      "label": "CI/CD Pipeline",
+      "nodes": [
+        "github_workflows_build",
+        "github_workflows_registry_push",
+        "github_workflows_publish_tenant_package",
+        "github_workflows_graphify",
+        "github_workflows_docs_lint"
+      ],
+      "relation": "participate_in",
+      "confidence": "INFERRED",
+      "confidence_score": 0.9,
+      "source_file": "CLAUDE.md"
+    },
+    {
+      "id": "tenant_artifact_delivery",
+      "label": "Tenant Artifact Delivery",
+      "nodes": [
+        "infra_tenant",
+        "ghost_platform_tenant_package",
+        "github_workflows_publish_tenant_package",
+        "github_workflows_registry_push"
+      ],
+      "relation": "form",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "source_file": "CLAUDE.md"
+    },
     {
       "id": "platform_ci_deploy_guardrail_pattern",
       "label": "CI-driven platform deploy guardrail system",
@@ -6536,5 +6570,5 @@
       "source_file": "infra/platform/RUNBOOK-bootstrap.md"
     }
   ],
-  "built_at_commit": "f1fdbaf000e2f659d9c414ef31a43502a1929374"
+  "built_at_commit": "bed406ea336915bfb1c17aafdb42a22de006a6b1"
 }
