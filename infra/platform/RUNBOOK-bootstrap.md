@@ -637,6 +637,62 @@ repo's CI has passed on the new one.
 The whole step disappears when this repo goes public — a public package needs
 no token.
 
+### P7 — the roles the tenant's first apply needs
+
+P1–P6 cover creating a tenant's *identity*. They do not cover running that
+tenant's first apply, which is the other half of what this identity is for —
+the posture is that CI updates and never bootstraps, so a tenant deployer
+holds `cloudsql.editor` and cannot create its own database user, and the
+bootstrapper becomes this identity instead of a person.
+
+Derived from what a `GhostTenant` instantiation actually declares, not from
+role names:
+
+| Resource | Permission | Covered by |
+|---|---|---|
+| `gcp.serviceaccount.Account` (runtime SA) | `iam.serviceAccounts.create` | P3 |
+| `deployer-can-act-as-<tenant>-sa` | `iam.serviceAccounts.setIamPolicy` | P3 |
+| `gcp.projects.IAMMember` (conditional `cloudsql.client`) | `resourcemanager.projects.setIamPolicy` | P3 |
+| `gcp.sql.Database`, `gcp.sql.User` | `cloudsql.{databases,users}.create` | **P4, withheld** |
+| `gcp.secretmanager.Secret` / `SecretVersion` / `SecretIamMember` ×4 | `secretmanager.secrets.create`, `.versions.add`, `.setIamPolicy` | `roles/secretmanager.admin` |
+| `gcp.storage.HmacKey` | `storage.hmacKeys.create` | `roles/storage.hmacKeyAdmin` |
+| `gcp.storage.BucketIAMMember` ×2 on the media bucket | `storage.buckets.setIamPolicy` | bucket-scoped grant on the media bucket |
+| `gcp.cloudrunv2.Service` | `run.services.create` | `roles/run.developer` |
+| `gcp.cloudrunv2.ServiceIamMember` (public invoker) | `run.services.setIamPolicy` | `roles/run.admin` |
+
+```bash
+for ROLE in roles/secretmanager.admin roles/storage.hmacKeyAdmin roles/run.admin; do
+  gcloud projects add-iam-policy-binding branchleft-prod \
+    --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+    --role="$ROLE" --condition=None
+done
+
+gcloud storage buckets add-iam-policy-binding gs://branchleft-prod-ghost-platform-media \
+  --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+  --role="roles/storage.legacyBucketOwner"
+```
+
+`run.admin` rather than `run.developer`: the public invoker binding needs
+`run.services.setIamPolicy`, which developer does not hold. The media bucket
+grant is bucket-scoped for the same reason the platform deployer's is — a
+project-level storage role would reach the Pulumi state buckets.
+
+**This list is derived, not measured.** Confirm it with a `pulumi preview`
+under this identity against a scratch tenant stack before treating it as
+complete; a missing role surfaces as a 403 partway through an apply, which on
+a first apply leaves a half-created tenant. Add whatever the preview turns up
+here rather than granting a wider role to make the error go away.
+
+Stated plainly, because the total is easy to lose across seven headings: this
+identity ends up holding service-account administration, project IAM
+administration, workload-identity-pool administration, Secret Manager
+administration, Cloud Run administration, HMAC key administration, KMS
+administration on the stack key, and — once P4 lands — full Cloud SQL
+administration on the instance every tenant's data sits on. It is
+project-admin in all but name. What makes that acceptable is not its size but
+its reachability: nothing on a routine code path can assume it. If that stops
+being true, this bootstrap needs redoing, not patching.
+
 ### Verifying the environment gate — this is the blocker
 
 The design puts the provisioning workflow behind a GitHub environment with a
