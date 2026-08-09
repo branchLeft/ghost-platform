@@ -55,7 +55,7 @@ permissions:
 
 jobs:
   typecheck:
-    name: Type check
+    name: Platform type check
     runs-on: ubuntu-latest
     defaults:
       run:

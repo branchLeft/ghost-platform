@@ -1,5 +1,4 @@
 import * as pulumi from '@pulumi/pulumi';
-import * as gcp from '@pulumi/gcp';
 import { validateTenantName, createServiceAccount } from './serviceAccount';
 import { createTenantDatabase, DEFAULT_MAX_USER_CONNECTIONS } from './database';
 import { createTenantStorage } from './storage';
@@ -30,7 +29,7 @@ export interface GhostTenantPlatformArgs {
 
 export interface GhostTenantArgs {
   /**
-   * Short tenant identifier, e.g. `blog`, `salamander-news`. Must start
+   * Short tenant identifier, e.g. `blog`, `example-news`. Must start
    * with a lowercase letter and contain only lowercase letters, digits and
    * hyphens; validated against GCP service-account-ID length limits at
    * construction time (see `serviceAccount.ts`). Derives the service

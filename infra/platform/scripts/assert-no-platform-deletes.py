@@ -371,7 +371,7 @@ def main(argv: list[str]) -> int:
         print(
             "::error::this apply would DESTROY protected platform "
             f"infrastructure: {detail}. Nothing has been applied. If this is "
-            "genuinely intended it is a Rob-gated migration, not a merge -- "
+            "genuinely intended it is a platform-owner-gated migration, not a merge -- "
             "see infra/platform/RUNBOOK-bootstrap.md."
         )
         return 1
