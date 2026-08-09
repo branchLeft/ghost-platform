@@ -35,9 +35,9 @@ name: Platform infra CI
 #      and aborts before `pulumi up` if it would destroy the database, the
 #      media bucket, the image repository, or the CI identity itself
 #      (infra/platform/scripts/assert-no-platform-deletes.py).
-#   5. The deploy job declares an `environment`. On this plan that is a
-#      deployment record and nothing more -- see the `environment:` key below
-#      and infra/platform/RUNBOOK-bootstrap.md.
+#   5. The deploy job declares an `environment`. Whether that gates anything
+#      depends on repo visibility -- see the `environment:` key below and
+#      infra/platform/RUNBOOK-bootstrap.md.
 #
 # There is deliberately no `pulumi preview` job on pull requests yet. It is
 # the obvious next step, and website/infra has one, but it means handing GCP
@@ -89,18 +89,53 @@ jobs:
           python3 scripts/assert-no-platform-deletes.py --self-test
           python3 scripts/assert-no-platform-deletes.py --verify-coverage .
 
+  provisioning-typecheck:
+    name: Type check (provisioning)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/provisioning
+
+    # No deploy job. This program is applied only by the reviewer-gated
+    # provision-tenant.yml, under the provisioning identity, never on merge.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/provisioning/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/provisioning/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # The coverage half reads ../platform, so a resource renamed there
+      # fails this job rather than silently emptying the provisioning gate.
+      - name: Verify the provisioning delete-guard still covers everything
+        run: |
+          python3 scripts/assert-no-provisioning-deletes.py --self-test
+          python3 scripts/assert-no-provisioning-deletes.py --verify-coverage ../platform .
+
   deploy:
     name: Deploy (pulumi up)
     runs-on: ubuntu-latest
     needs: [typecheck]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-    # A deployment record, and on this plan nothing more. Required reviewers
-    # and wait timers are documented as public-repository-only for GitHub
-    # Free, Pro and Team alike, and this repo is private -- so no rule
-    # attached here would gate anything. Kept as the attachment point for the
-    # day the repo is public or the plan changes; do not read it as a gate in
-    # the meantime. RUNBOOK-bootstrap.md carries the live test.
+    # Required reviewers and wait timers are public-repository-only for
+    # GitHub Free, Pro and Team alike, so this gates nothing while the repo is
+    # private and no rule is attached to it today either way. An environment
+    # carrying no protection rule does not pause a run and does not say so --
+    # read `protection_rules`, never the presence of this key.
+    # RUNBOOK-bootstrap.md carries the live test.
     environment: platform
 
     # Job-level permissions replace the workflow-level block entirely, so

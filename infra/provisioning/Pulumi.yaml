@@ -1,0 +1,6 @@
+name: branchleft-ghost-provisioning
+runtime: nodejs
+description: >-
+  Per-tenant identity and Pulumi state bucket for the branchLeft Ghost hosting
+  platform. One stack per tenant. Applied only by the provisioning identity,
+  only from the reviewer-gated provisioning workflow.

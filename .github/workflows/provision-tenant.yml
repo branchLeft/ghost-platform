@@ -1,0 +1,288 @@
+name: Provision tenant
+
+# Onboards one tenant end to end: its identity, its Pulumi state bucket, its
+# repo, its first apply, and the pull request that hands it over.
+#
+# THE GATE IS TWO INDEPENDENT HALVES, AND BOTH ARE LOAD-BEARING.
+#
+#   1. GitHub. This workflow is `workflow_dispatch` only -- no push, no
+#      schedule, no merge can start it -- and the job below declares
+#      `environment: tenant-provisioning`, which carries a required reviewer.
+#      A required reviewer only exists on a public repository for this plan
+#      tier; the environment must already carry the rule before this workflow
+#      can gate anything, because an environment with no protection rules runs
+#      straight through without pausing. Ordering is in
+#      infra/platform/RUNBOOK-bootstrap.md and it is load-bearing.
+#
+#   2. GCP. The provisioning identity's Workload Identity provider pins
+#      `job_workflow_ref` to this file at `main` and `event_name` to
+#      `workflow_dispatch`. That is enforced by Google regardless of any
+#      GitHub plan or repo setting, so it still holds during any window where
+#      the environment rule is missing, removed, or bypassed by an admin.
+#      Renaming this file breaks provisioning until the provider condition is
+#      updated -- that is the accepted cost of pinning it.
+#
+# Neither half is redundant. The first is what makes onboarding a reviewed
+# act; the second is what stops a routine deploy job minting identities
+# however the workflow files are edited.
+#
+# `GH_PAT_TENANT_PROVISIONING` is the credential this workflow writes to
+# generated repositories with. The default GITHUB_TOKEN is scoped to this
+# repository and can neither create a repo in the org nor set another repo's
+# variables. `GH_PAT_GHOST_PLATFORM_READ` is the package-read token copied
+# into each generated repo -- one platform-held classic PAT, because the
+# registry accepts no other type and no API mints one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_name:
+        description: 'Pulumi stack name and resource prefix (lowercase, hyphenated)'
+        required: true
+      tenant_repo:
+        description: 'Repository to generate, without the org prefix'
+        required: true
+      state_bucket:
+        description: 'Globally unique GCS bucket for this tenant Pulumi state'
+        required: true
+      deployer_sa_id:
+        description: 'Deployer service account id (6-30 chars, unique in the project)'
+        required: true
+      wif_pool_id:
+        description: 'Workload Identity Pool id (unique in the project)'
+        required: true
+      site_url:
+        description: 'https://<hostname> this tenant serves'
+        required: true
+      image_digest_or_tag:
+        description: 'Tenant image, digest preferred (include the sha256: prefix)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: Provision
+    runs-on: ubuntu-latest
+
+    # The reviewer gate. Do not remove without reading the header: this is
+    # half the control, and the run does not pause if the environment carries
+    # no protection rule.
+    environment: tenant-provisioning
+
+    permissions:
+      contents: read
+      id-token: write
+
+    # Two provisioning runs at once would race on the shared provisioning
+    # state. Never cancel one in flight -- a half-applied identity is worse
+    # than a queued run.
+    concurrency:
+      group: provision-tenant
+      cancel-in-progress: false
+
+    env:
+      TENANT: ${{ inputs.tenant_name }}
+      TENANT_REPO: branchLeft/${{ inputs.tenant_repo }}
+      STATE_BUCKET: ${{ inputs.state_bucket }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Cheap, credential-free, and ahead of everything that costs money or
+      # mutates: a tenant name that is not a valid Pulumi stack and GCP prefix
+      # fails much later and much more expensively.
+      - name: Validate inputs
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [[ "$TENANT" =~ ^[a-z][a-z0-9-]{1,28}[a-z0-9]$ ]] \
+            || fail "tenant_name must be lowercase alphanumeric-hyphen, 3-30 chars"
+          [[ "${{ inputs.deployer_sa_id }}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
+            || fail "deployer_sa_id must satisfy GCP service account id grammar"
+          [[ "$STATE_BUCKET" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]] \
+            || fail "state_bucket must satisfy GCS bucket naming"
+          [[ "${{ inputs.site_url }}" =~ ^https:// ]] || fail "site_url must be https"
+          if gh repo view "$TENANT_REPO" >/dev/null 2>&1; then
+            fail "$TENANT_REPO already exists -- onboarding is create-only"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/provisioning/.nvmrc
+
+      - name: Authenticate to GCP as the provisioning identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_PROVISIONING_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PROVISIONING_SA_EMAIL }}
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      # ---- identity and state bucket -------------------------------------
+
+      - name: Configure the provisioning stack
+        working-directory: infra/provisioning
+        run: |
+          npm ci
+          pulumi login gs://branchleft-pulumi-state
+          pulumi stack select "$TENANT" --create
+          pulumi config set gcp:project "${{ vars.GCP_PROJECT_ID }}"
+          pulumi config set tenantName "$TENANT"
+          pulumi config set tenantGithubRepo "$TENANT_REPO"
+          pulumi config set stateBucketName "$STATE_BUCKET"
+          pulumi config set deployerServiceAccountId "${{ inputs.deployer_sa_id }}"
+          pulumi config set workloadIdentityPoolId "${{ inputs.wif_pool_id }}"
+          pulumi config set platformDbInstanceConnectionName "${{ vars.PLATFORM_DB_INSTANCE_CONNECTION_NAME }}"
+          pulumi config set platformTenantImageRepositoryDockerPath "${{ vars.PLATFORM_TENANT_IMAGE_REPOSITORY_PATH }}"
+          pulumi config set platformMediaBucketUrl "${{ vars.PLATFORM_MEDIA_BUCKET_URL }}"
+
+      - name: Refuse a provisioning plan that destroys anything
+        working-directory: infra/provisioning
+        run: |
+          pulumi preview --stack "$TENANT" --json > preview.json
+          python3 scripts/assert-no-provisioning-deletes.py --self-test
+          python3 scripts/assert-no-provisioning-deletes.py --verify-coverage ../platform .
+          if ! python3 scripts/assert-no-provisioning-deletes.py --tenant "$TENANT" preview.json; then
+            echo "--- full plan follows ---"
+            python3 -m json.tool preview.json
+            exit 1
+          fi
+
+      - name: Apply the tenant identity and state bucket
+        working-directory: infra/provisioning
+        run: pulumi up --stack "$TENANT" --yes
+
+      - name: Read the identity outputs
+        id: identity
+        working-directory: infra/provisioning
+        run: |
+          {
+            echo "provider=$(pulumi stack output githubActionsWorkloadIdentityProvider --stack "$TENANT")"
+            echo "sa_email=$(pulumi stack output githubActionsDeployerServiceAccountEmail --stack "$TENANT")"
+          } >> "$GITHUB_OUTPUT"
+
+      # ---- the tenant repo ------------------------------------------------
+
+      - name: Generate the tenant repo from the template
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+        run: |
+          gh repo create "$TENANT_REPO" --private \
+            --template branchLeft/ghost-platform-tenant-template \
+            --description "Tenant infrastructure stack"
+
+      - name: Write the repo variables and the package-read secret
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+        run: |
+          gh variable set GCP_PROJECT_ID --repo "$TENANT_REPO" --body "${{ vars.GCP_PROJECT_ID }}"
+          gh variable set GCP_DEPLOYER_SA_EMAIL --repo "$TENANT_REPO" --body "${{ steps.identity.outputs.sa_email }}"
+          gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$TENANT_REPO" --body "${{ steps.identity.outputs.provider }}"
+          gh variable set PULUMI_STATE_BUCKET --repo "$TENANT_REPO" --body "$STATE_BUCKET"
+          # Repo-level, never org-level: an org secret is invisible to a
+          # private repo on this plan and resolves to an empty string with no
+          # error, which would surface as an npm ci auth failure days later.
+          gh secret set GH_PAT_GHOST_PLATFORM_READ --repo "$TENANT_REPO" \
+            --body "${{ secrets.GH_PAT_GHOST_PLATFORM_READ }}"
+
+      # ---- the tenant's first apply ---------------------------------------
+
+      - name: Substitute placeholders and initialise the tenant stack
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
+          cd tenant
+          # Only the files the template's placeholder table names.
+          for f in Pulumi.yaml .github/workflows/infra-ci.yml scripts/assert-no-tenant-deletes.py; do
+            sed -i "s/__TENANT_PULUMI_PROJECT__/${TENANT}-infra/g; s/__TENANT_NAME__/${TENANT}/g" "$f"
+          done
+          python3 scripts/assert-placeholders-substituted.py
+
+          npm ci
+          # This tenant's own backend, not the shared bucket -- a stack
+          # reference cannot cross backends, which is why the platform values
+          # below are plain config rather than a StackReference.
+          pulumi login "gs://${STATE_BUCKET}"
+          pulumi stack init "$TENANT" \
+            --secrets-provider="gcpkms://projects/${{ vars.GCP_PROJECT_ID }}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
+          pulumi config set gcp:project "${{ vars.GCP_PROJECT_ID }}" --stack "$TENANT"
+          pulumi config set tenantName "$TENANT" --stack "$TENANT"
+          pulumi config set siteUrl "${{ inputs.site_url }}" --stack "$TENANT"
+          pulumi config set imageDigestOrTag "${{ inputs.image_digest_or_tag }}" --stack "$TENANT"
+          pulumi config set deployerServiceAccountEmail "${{ steps.identity.outputs.sa_email }}" --stack "$TENANT"
+          pulumi config set platformDbInstanceConnectionName "${{ vars.PLATFORM_DB_INSTANCE_CONNECTION_NAME }}" --stack "$TENANT"
+          pulumi config set platformTenantImageRepositoryDockerPath "${{ vars.PLATFORM_TENANT_IMAGE_REPOSITORY_PATH }}" --stack "$TENANT"
+          pulumi config set platformMediaBucketUrl "${{ vars.PLATFORM_MEDIA_BUCKET_URL }}" --stack "$TENANT"
+
+      # The platform guard, not the tenant one. This apply runs as the
+      # provisioning identity against a program that could in principle be
+      # edited to name a shared resource; the tenant-side guard's protected
+      # set is tenant-derived and would not catch that.
+      - name: Refuse a first apply that touches platform infrastructure
+        working-directory: tenant
+        run: |
+          pulumi preview --stack "$TENANT" --json > preview.json
+          python3 "$GITHUB_WORKSPACE/infra/provisioning/scripts/assert-no-provisioning-deletes.py" \
+            --tenant "$TENANT" preview.json
+          python3 scripts/assert-no-tenant-deletes.py --self-test
+          python3 scripts/assert-no-tenant-deletes.py --verify-coverage node_modules/@branchleft/ghost-platform-tenant/dist
+
+      - name: Tenant first apply
+        working-directory: tenant
+        run: pulumi up --stack "$TENANT" --yes
+
+      # ---- handover --------------------------------------------------------
+
+      - name: Open the handover pull request
+        working-directory: tenant
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+        run: |
+          git config user.name "branchLeft provisioning"
+          git config user.email "noreply@branchleft.co.uk"
+          git checkout -b provisioning/handover
+          git add -A
+          git commit -m "Substitute template placeholders and commit the stack config"
+          git push -u origin provisioning/handover
+          gh pr create --repo "$TENANT_REPO" --base main --head provisioning/handover \
+            --title "Provisioning handover" \
+            --body "$(cat <<'BODY'
+          Generated by the platform's provisioning workflow. Contains the
+          substituted template placeholders and the stack config file the
+          first apply produced.
+
+          Merging is the confirmation test: the push to `main` runs the deploy
+          job, and a healthy first run reports `unchanged` because the
+          infrastructure already exists.
+
+          Nothing here is a value that can be entered wrongly. `imageDigestOrTag`
+          is the only field worth a second look before merging.
+          BODY
+          )"
+
+      # Deliberately never pushes to the generated repo's default branch. The
+      # file being committed carries that tenant's encrypted data key and the
+      # image it will actually run; a generated repo must not be the one place
+      # in the programme where code reaches main unreviewed.
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Provisioning: ${TENANT}"
+            echo
+            echo "- repo: \`${TENANT_REPO}\`"
+            echo "- state bucket: \`${STATE_BUCKET}\`"
+            echo "- deployer: \`${{ steps.identity.outputs.sa_email }}\`"
+            echo
+            echo "Onboarding completes when the handover pull request is merged."
+          } >> "$GITHUB_STEP_SUMMARY"
