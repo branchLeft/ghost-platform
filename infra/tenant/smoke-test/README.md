@@ -6,8 +6,8 @@ component's resource plan can be inspected with `pulumi preview` before any
 real tenant repo exists to instantiate it for real.
 
 **Preview only. Never run `pulumi up` from here** -- see the root story's
-Rob-gated-steps note. This program was used to produce the preview output
-quoted in the PR that introduced it.
+platform-owner-gated-steps note. This program was used to produce the preview
+output quoted in the PR that introduced it.
 
 ## Stack
 
@@ -18,7 +18,7 @@ meaning `pulumi stack init` registers real (tiny, metadata-only) state there
 even though nothing in this program is ever applied.
 
 **This stack is not self-cleaning.** `pulumi stack rm` is a state-mutating
-operation reserved for Rob in this programme (see
+operation reserved for the platform owner in this programme (see
 `ghost-platform-docs`' implementation-loop conventions) -- whoever reads
 this after the PR that added it should run:
 

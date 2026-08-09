@@ -207,7 +207,7 @@ const PROVISIONING_PASSWORD_SECRET_ID = 'ghost-platform-provisioner-db-password'
  * job does consume it, rotation means "re-read the secret", because both the
  * MySQL password and the Secret Manager version update in the same apply.
  *
- * **Rotation is a Rob-local apply too, for the same reason creation is.**
+ * **Rotation is a platform-owner-local apply too, for the same reason creation is.**
  * Changing a Cloud SQL user's password is `cloudsql.users.update`, which --
  * verified against the live role definitions, same check as
  * `cloudsql.users.create` -- exists only in `roles/cloudsql.admin` and not in

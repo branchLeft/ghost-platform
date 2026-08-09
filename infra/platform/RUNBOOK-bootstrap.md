@@ -30,7 +30,7 @@ that this account can grant IAM that the deployer service account never will
 be able to:
 
 ```bash
-gcloud config get-value account   # expect rob@branchleft.co.uk
+gcloud config get-value account   # expect the platform owner's own account
 ```
 
 ---

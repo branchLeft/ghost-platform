@@ -40,7 +40,7 @@ export const mediaBucketSelfLink = mediaBucket.selfLink;
 
 // CI identity, for the `google-github-actions/auth` step in
 // .github/workflows/infra-platform-ci.yml. These two values are the entire
-// contract between this stack and that workflow -- Rob copies them into the
+// contract between this stack and that workflow -- the platform owner copies them into the
 // repo variables GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_DEPLOYER_SA_EMAIL
 // after the bootstrap apply (RUNBOOK-bootstrap.md), rather than either value
 // being committed here. The provider name embeds the GCP project *number*,

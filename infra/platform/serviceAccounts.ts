@@ -39,14 +39,14 @@ export const deployerMember = pulumi.interpolate`serviceAccount:${deployerSa.ema
  * on 2026-08-05, rather than inferred from the role's name. The permission
  * claims in the comments are quoting that output.
  *
- * **The governing assumption: CI updates, it does not bootstrap.** Rob's
+ * **The governing assumption: CI updates, it does not bootstrap.** The platform owner's
  * one-time local `pulumi up` (RUNBOOK-bootstrap.md) creates every resource
- * here under his own credentials. From then on CI only ever reads and
+ * here under their own credentials. From then on CI only ever reads and
  * updates them. That lets several of these roles be strictly weaker than the
  * "admin" role the resource type suggests -- see `cloudsql.editor` below,
  * which cannot create *or delete* a Cloud SQL instance at all.
  *
- * **These bindings are Rob-only to create or change.** The deployer SA has
+ * **These bindings are platform-owner-only to create or change.** The deployer SA has
  * no `resourcemanager.projects.setIamPolicy`, so it cannot grant itself
  * anything; a CI `pulumi up` that encounters a *new* project-level
  * `IAMMember` here 403s, and because a failed resource aborts the whole
@@ -65,7 +65,7 @@ const projectRoles: Array<[string, string]> = [
   // and the listServerCas/listServerCertificates reads the provider needs to
   // populate the instance's outputs, but holds neither
   // `cloudsql.instances.create` nor `cloudsql.instances.delete` -- both are
-  // present only in admin. Since the instance is created by Rob's bootstrap
+  // present only in admin. Since the instance is created by the platform owner's bootstrap
   // apply, CI never needs create, and *cannot* delete the one instance every
   // tenant's data lives on even if a future diff asks it to. That is a
   // stronger guarantee than the two deletion-protection flags in
@@ -74,7 +74,7 @@ const projectRoles: Array<[string, string]> = [
   //
   // Known consequence, stated rather than discovered later: a change that
   // *replaces* the instance (an immutable field like `region`) will 403 in
-  // CI. That is intended -- replacing the shared instance is a Rob-gated
+  // CI. That is intended -- replacing the shared instance is a platform-owner-gated
   // migration, not a merge.
   ['deployer-cloudsql-editor', 'roles/cloudsql.editor'],
 
@@ -159,8 +159,8 @@ for (const [name, role] of projectRoles) {
  *    step the earlier version of that runbook (honestly, but wrongly)
  *    described it as.
  * 2. **CI can no longer create a bucket at all.** `storage.buckets.create`
- *    only exists at project scope. Rob's bootstrap apply creates the media
- *    bucket under his own credentials; CI only ever updates it. Same shape
+ *    only exists at project scope. The platform owner's bootstrap apply creates the media
+ *    bucket under their own credentials; CI only ever updates it. Same shape
  *    as `roles/cloudsql.editor` above, and the same tradeoff -- a change
  *    that *replaces* the bucket 403s in CI, which is the correct outcome for
  *    a resource holding every tenant's media.
@@ -190,14 +190,14 @@ for (const [name, role] of projectRoles) {
  * contents" at bucket scope (checked against the full `roles/storage.*`
  * list: admin and legacyBucketOwner both carry object permissions;
  * everything narrower loses `setIamPolicy`). Closing this needs a custom
- * role, which is itself a project-level IAM resource and so Rob-gated;
+ * role, which is itself a project-level IAM resource and so platform-owner-gated;
  * deliberately not taken on in this change. Object versioning plus the
  * 30-day noncurrent lifecycle rule in mediaBucket.ts is the partial
  * mitigation that already exists.
  *
  * **Self-referential, and that is fine.** This binding grants the permission
  * (`storage.buckets.setIamPolicy`) needed to manage this binding. It is
- * created once by Rob's bootstrap and then never changes, so CI never
+ * created once by the platform owner's bootstrap and then never changes, so CI never
  * exercises the circularity. If it is ever edited, CI can apply the edit --
  * bounded, like everything else here, to this one bucket.
  */
@@ -256,7 +256,7 @@ export const deployerMediaBucketAccess = new gcp.storage.BucketIAMMember(
  *
  *   The consequence, per this file's governing "CI updates, it does not
  *   bootstrap" assumption: **`provisioningUser.ts`'s resources must be
- *   created by Rob's own local `pulumi up`, not by the merge-to-main CI
+ *   created by the platform owner's own local `pulumi up`, not by the merge-to-main CI
  *   apply.** The CI apply will 403 on `cloudsql.users.create` if it gets
  *   there first. Once they exist in state, CI's `pulumi up` -- which runs
  *   without `--refresh` (infra-platform-ci.yml) and so diffs against state
@@ -265,7 +265,7 @@ export const deployerMediaBucketAccess = new gcp.storage.BucketIAMMember(
  *
  * The practical upshot: a PR that edits `workloadIdentity.ts` or the
  * `projectRoles` list above cannot be applied by CI. It fails loudly, and
- * the fix is Rob applying it locally -- see RUNBOOK-bootstrap.md's
+ * the fix is the platform owner applying it locally -- see RUNBOOK-bootstrap.md's
  * "Changing the identity resources later" section.
  */
 export const deployerServiceAccountEmail = deployerSa.email;
