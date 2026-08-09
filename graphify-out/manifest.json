@@ -1,121 +1,121 @@
 {
   "docker-entrypoint.branchleft.sh": {
-    "mtime": 1786307203.4450665,
+    "mtime": 1786309777.502096,
     "ast_hash": "641aa7d926844e1299e1a4462d4efe31",
     "semantic_hash": "641aa7d926844e1299e1a4462d4efe31"
   },
   "infra/platform/apis.ts": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.506096,
     "ast_hash": "5ce38ece5afcdc7444e90f63a52c0458",
     "semantic_hash": "5ce38ece5afcdc7444e90f63a52c0458"
   },
   "infra/platform/config.ts": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.506096,
     "ast_hash": "c424836a9cfe4141d6bb379d87d9fb0a",
     "semantic_hash": "c424836a9cfe4141d6bb379d87d9fb0a"
   },
   "infra/platform/database.ts": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.506096,
     "ast_hash": "c378c766308ffc368604bf27a5271669",
     "semantic_hash": "c378c766308ffc368604bf27a5271669"
   },
   "infra/platform/index.ts": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.506096,
     "ast_hash": "fb745af642fa8afd32568071058785a8",
     "semantic_hash": "fb745af642fa8afd32568071058785a8"
   },
   "infra/platform/mediaBucket.ts": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.506096,
     "ast_hash": "b77ca34494a34c2eebac14459de8e7cd",
     "semantic_hash": "b77ca34494a34c2eebac14459de8e7cd"
   },
   "infra/platform/package.json": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.506096,
     "ast_hash": "9264d0c618fe4bb33752e2cfd6c1edd0",
     "semantic_hash": "9264d0c618fe4bb33752e2cfd6c1edd0"
   },
   "infra/platform/provisioningUser.ts": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.5070958,
     "ast_hash": "fc90be01ec47c0879f71026488ca46c8",
     "semantic_hash": "fc90be01ec47c0879f71026488ca46c8"
   },
   "infra/platform/registry.ts": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.5070958,
     "ast_hash": "8011a61df43b9ec3c57d164073aea5d6",
     "semantic_hash": "8011a61df43b9ec3c57d164073aea5d6"
   },
   "infra/platform/scripts/assert-no-platform-deletes.py": {
-    "mtime": 1786307203.449185,
+    "mtime": 1786309777.5070958,
     "ast_hash": "72bbb6e476b3199541862bc759712b85",
     "semantic_hash": "72bbb6e476b3199541862bc759712b85"
   },
   "infra/platform/secrets.ts": {
-    "mtime": 1786307203.4498198,
+    "mtime": 1786309777.5070958,
     "ast_hash": "78075fa9d0116aa628d9fbc18d77ea30",
     "semantic_hash": "78075fa9d0116aa628d9fbc18d77ea30"
   },
   "infra/platform/serviceAccounts.ts": {
-    "mtime": 1786307203.4498198,
+    "mtime": 1786309777.5070958,
     "ast_hash": "df7ff6735d84997bd397bf4c1e16a806",
     "semantic_hash": "df7ff6735d84997bd397bf4c1e16a806"
   },
   "infra/platform/tsconfig.json": {
-    "mtime": 1786307203.4498198,
+    "mtime": 1786309777.5070958,
     "ast_hash": "4838403920e51f930b3d21407f5364c4",
     "semantic_hash": "4838403920e51f930b3d21407f5364c4"
   },
   "infra/platform/workloadIdentity.ts": {
-    "mtime": 1786307203.4498198,
+    "mtime": 1786309777.5070958,
     "ast_hash": "5988e8255f93ef74c3ab73b2049cf420",
     "semantic_hash": "5988e8255f93ef74c3ab73b2049cf420"
   },
   "infra/tenant/cloudRunService.ts": {
-    "mtime": 1786307203.4515464,
-    "ast_hash": "91e1b171ebc609e0bcd801947c2cf030",
-    "semantic_hash": "91e1b171ebc609e0bcd801947c2cf030"
+    "mtime": 1786309777.508391,
+    "ast_hash": "cdec9ed542b89185fb7b7a63381f1e19",
+    "semantic_hash": "cdec9ed542b89185fb7b7a63381f1e19"
   },
   "infra/tenant/database.ts": {
-    "mtime": 1786307203.4515464,
-    "ast_hash": "8eec9aa976f46ee8f4f0cc0cfb6d9bfc",
-    "semantic_hash": "8eec9aa976f46ee8f4f0cc0cfb6d9bfc"
+    "mtime": 1786309777.508391,
+    "ast_hash": "67565dec3da7f807b301c0c9d90331ea",
+    "semantic_hash": "67565dec3da7f807b301c0c9d90331ea"
   },
   "infra/tenant/index.ts": {
-    "mtime": 1786307203.4515464,
-    "ast_hash": "ba6376f5779aa79d77994243795f868d",
-    "semantic_hash": "ba6376f5779aa79d77994243795f868d"
+    "mtime": 1786309777.508391,
+    "ast_hash": "4ac97c7acd61967bc49d79a87ea396ae",
+    "semantic_hash": "4ac97c7acd61967bc49d79a87ea396ae"
   },
   "infra/tenant/package.json": {
-    "mtime": 1786307203.4515464,
-    "ast_hash": "02503fdd1f60d9b32304fb206dc5ea13",
-    "semantic_hash": "02503fdd1f60d9b32304fb206dc5ea13"
+    "mtime": 1786309777.508391,
+    "ast_hash": "c85e9ae04a662c76806bbf0edfbe9d89",
+    "semantic_hash": "c85e9ae04a662c76806bbf0edfbe9d89"
   },
   "infra/tenant/secrets.ts": {
-    "mtime": 1786307203.4515464,
+    "mtime": 1786309777.508391,
     "ast_hash": "88c03a62400520c3f47062fd64a3a5bf",
     "semantic_hash": "88c03a62400520c3f47062fd64a3a5bf"
   },
   "infra/tenant/serviceAccount.ts": {
-    "mtime": 1786307203.4515464,
-    "ast_hash": "74391714a952db5303392b867f766afc",
-    "semantic_hash": "74391714a952db5303392b867f766afc"
+    "mtime": 1786309777.508391,
+    "ast_hash": "ff4011bd66c091e0d2a7188b50963431",
+    "semantic_hash": "ff4011bd66c091e0d2a7188b50963431"
   },
   "infra/tenant/storage.ts": {
-    "mtime": 1786307203.4515464,
-    "ast_hash": "e854d9f28cef81dcee2e18a14a739543",
-    "semantic_hash": "e854d9f28cef81dcee2e18a14a739543"
+    "mtime": 1786309777.508391,
+    "ast_hash": "fdd11bdbbc38a1e204440c87cb5b2274",
+    "semantic_hash": "fdd11bdbbc38a1e204440c87cb5b2274"
   },
   "infra/tenant/tsconfig.json": {
-    "mtime": 1786307203.4515464,
+    "mtime": 1786309777.508391,
     "ast_hash": "4838403920e51f930b3d21407f5364c4",
     "semantic_hash": "4838403920e51f930b3d21407f5364c4"
   },
   "scripts/smoke-test.sh": {
-    "mtime": 1786307203.4515464,
+    "mtime": 1786309777.509096,
     "ast_hash": "d539e8a929c72cea2b7f2e4c0cd58d18",
     "semantic_hash": "d539e8a929c72cea2b7f2e4c0cd58d18"
   },
   "scripts/test-storage-guard.sh": {
-    "mtime": 1786307203.4525414,
+    "mtime": 1786309777.509495,
     "ast_hash": "a1d5ef0ea9b5baa56184017face670e8",
     "semantic_hash": "a1d5ef0ea9b5baa56184017face670e8"
   },
@@ -130,9 +130,9 @@
     "semantic_hash": "f44a2f9f8dfb57445c013118695436f3"
   },
   ".github/workflows/infra-tenant-ci.yml": {
-    "mtime": 1786296982.6250117,
-    "ast_hash": "1f77004bf71935c084e88a8b527e5785",
-    "semantic_hash": "1f77004bf71935c084e88a8b527e5785"
+    "mtime": 1786309777.502096,
+    "ast_hash": "ad9b8b756009c7b22cc843e2dcca3d54",
+    "semantic_hash": "ad9b8b756009c7b22cc843e2dcca3d54"
   },
   "README.md": {
     "mtime": 1786297146.1902893,
@@ -160,9 +160,9 @@
     "semantic_hash": "16a9db53d3c14787c38d665be8b3e482"
   },
   "infra/tenant/tsconfig.build.json": {
-    "mtime": 1786307203.4515464,
-    "ast_hash": "ff19192625d6044abcff4e28ff1aa970",
-    "semantic_hash": "ff19192625d6044abcff4e28ff1aa970"
+    "mtime": 1786309777.508391,
+    "ast_hash": "d8005fa06428215573f5904bced44946",
+    "semantic_hash": "d8005fa06428215573f5904bced44946"
   },
   ".github/workflows/docs-lint.yml": {
     "mtime": 1786275517.5210211,
@@ -190,12 +190,12 @@
     "semantic_hash": "a545af9825aa4445c5f9f24cdeb75d41"
   },
   "eslint.config.js": {
-    "mtime": 1786307203.4450665,
+    "mtime": 1786309777.502096,
     "ast_hash": "8cadde4a763468f14ebd26af014de438",
     "semantic_hash": "8cadde4a763468f14ebd26af014de438"
   },
   "package.json": {
-    "mtime": 1786307203.4515464,
+    "mtime": 1786309777.509096,
     "ast_hash": "81764bbe0bab0e850710ccac2b41790e",
     "semantic_hash": "81764bbe0bab0e850710ccac2b41790e"
   },
@@ -220,27 +220,27 @@
     "semantic_hash": "e1fc5b9b8916496285c118b9bfc2c379"
   },
   "infra/provisioning/config.ts": {
-    "mtime": 1786307203.4510305,
+    "mtime": 1786309777.5077665,
     "ast_hash": "5aa0f816a6317d719b74cf2de84eeeaf",
     "semantic_hash": "5aa0f816a6317d719b74cf2de84eeeaf"
   },
   "infra/provisioning/index.ts": {
-    "mtime": 1786307203.4510305,
+    "mtime": 1786309777.5077665,
     "ast_hash": "5a80e1339cc704b815c143306cafa89b",
     "semantic_hash": "5a80e1339cc704b815c143306cafa89b"
   },
   "infra/provisioning/package.json": {
-    "mtime": 1786307203.4510305,
+    "mtime": 1786309777.5077665,
     "ast_hash": "e6f61f035f0e1264c68e54aac14dc9e8",
     "semantic_hash": "e6f61f035f0e1264c68e54aac14dc9e8"
   },
   "infra/provisioning/scripts/assert-no-provisioning-deletes.py": {
-    "mtime": 1786307203.4510305,
+    "mtime": 1786309777.5080957,
     "ast_hash": "7504ddc3fa27ca4894e998203330bce9",
     "semantic_hash": "7504ddc3fa27ca4894e998203330bce9"
   },
   "infra/provisioning/tsconfig.json": {
-    "mtime": 1786307203.4510305,
+    "mtime": 1786309777.5080957,
     "ast_hash": "4838403920e51f930b3d21407f5364c4",
     "semantic_hash": "4838403920e51f930b3d21407f5364c4"
   },
@@ -253,5 +253,15 @@
     "mtime": 1786299364.196297,
     "ast_hash": "e5d82f96f3cb563298d28a2451caa201",
     "semantic_hash": "e5d82f96f3cb563298d28a2451caa201"
+  },
+  "infra/tenant/naming.test.ts": {
+    "mtime": 1786309777.508391,
+    "ast_hash": "ac352c86f23694c16db9f0e1585b7f71",
+    "semantic_hash": "ac352c86f23694c16db9f0e1585b7f71"
+  },
+  "infra/tenant/naming.ts": {
+    "mtime": 1786309777.508391,
+    "ast_hash": "168779668512d5732364a5dc2d0209d6",
+    "semantic_hash": "168779668512d5732364a5dc2d0209d6"
   }
 }
