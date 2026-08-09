@@ -193,13 +193,29 @@ jobs:
           set -euo pipefail
           npm ci
           pulumi login gs://branchleft-pulumi-state
-          # A new stack on a filestate backend needs a secrets manager named at
-          # creation. The default is the passphrase provider, which then
-          # demands PULUMI_CONFIG_PASSPHRASE and fails closed in CI. Same key
-          # the tenant stack below initialises with; the provisioning identity
-          # holds cloudkms.admin on it and on nothing else.
-          pulumi stack select "$TENANT" --create \
-            --secrets-provider="gcpkms://projects/${GCP_PROJECT}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
+          # `--secrets-provider` applies only when this call creates the stack,
+          # and `Pulumi.<stack>.yaml` never leaves the runner. So a retry
+          # against a stack that already exists gets no secrets provider in its
+          # configuration at all, falls back to the passphrase provider, and
+          # fails on a stack whose state says `gcpkms`.
+          #
+          # The deployment records the provider and its wrapped data key, and
+          # exporting it needs no secrets manager. Restore the configuration
+          # from there rather than naming the key again: that state holds
+          # encrypted values, and a fresh data key cannot decrypt them.
+          if pulumi stack select "$TENANT" 2>/dev/null; then
+            pulumi stack export --stack "$TENANT" > deployment.json
+            python3 scripts/restore-stack-secrets-config.py "$TENANT" deployment.json
+            rm deployment.json
+          else
+            # A new stack on a filestate backend needs a secrets manager named at
+            # creation. The default is the passphrase provider, which then
+            # demands PULUMI_CONFIG_PASSPHRASE and fails closed in CI. Same key
+            # the tenant stack below initialises with; the provisioning identity
+            # holds cloudkms.admin on it and on nothing else.
+            pulumi stack select "$TENANT" --create \
+              --secrets-provider="gcpkms://projects/${GCP_PROJECT}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
+          fi
           pulumi config set gcp:project "$GCP_PROJECT"
           pulumi config set tenantName "$TENANT"
           pulumi config set tenantGithubRepo "$TENANT_REPO"
@@ -319,8 +335,20 @@ jobs:
           # reference cannot cross backends, which is why the platform values
           # below are plain config rather than a StackReference.
           pulumi login "gs://${STATE_BUCKET}"
-          pulumi stack init "$TENANT" \
-            --secrets-provider="gcpkms://projects/${GCP_PROJECT}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
+          # `stack init` fails outright on a stack that already exists, and a
+          # retry after a failed first apply reaches here with one -- holding
+          # the resources that apply did create. Resume onto it rather than
+          # demanding it be torn down first, restoring the secrets
+          # configuration the same way the provisioning stack does above.
+          if pulumi stack select "$TENANT" 2>/dev/null; then
+            pulumi stack export --stack "$TENANT" > deployment.json
+            python3 "$GITHUB_WORKSPACE/infra/provisioning/scripts/restore-stack-secrets-config.py" \
+              "$TENANT" deployment.json
+            rm deployment.json
+          else
+            pulumi stack init "$TENANT" \
+              --secrets-provider="gcpkms://projects/${GCP_PROJECT}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
+          fi
           pulumi config set gcp:project "$GCP_PROJECT" --stack "$TENANT"
           pulumi config set tenantName "$TENANT" --stack "$TENANT"
           pulumi config set siteUrl "$SITE_URL" --stack "$TENANT"
