@@ -43,6 +43,58 @@
       "infra_platform_workloadidentity_workloadidentityprovider"
     ],
     "1": [
+      "eslint",
+      "eslint_config_prettier",
+      "eslint_js",
+      "globals",
+      "package",
+      "package_description",
+      "package_devdependencies",
+      "package_devdependencies_eslint",
+      "package_devdependencies_eslint_config_prettier",
+      "package_devdependencies_eslint_js",
+      "package_devdependencies_globals",
+      "package_devdependencies_prettier",
+      "package_devdependencies_typescript_eslint",
+      "package_name",
+      "package_private",
+      "package_scripts",
+      "package_scripts_format",
+      "package_scripts_format_check",
+      "package_scripts_lint",
+      "package_scripts_prepare",
+      "package_type",
+      "package_version",
+      "prettier",
+      "typescript_eslint"
+    ],
+    "2": [
+      "infra_platform_package",
+      "infra_platform_package_dependencies",
+      "infra_platform_package_dependencies_pulumi_gcp",
+      "infra_platform_package_dependencies_pulumi_pulumi",
+      "infra_platform_package_dependencies_pulumi_random",
+      "infra_platform_package_devdependencies",
+      "infra_platform_package_devdependencies_types_node",
+      "infra_platform_package_devdependencies_typescript",
+      "infra_platform_package_json_pulumi_pulumi",
+      "infra_platform_package_main",
+      "infra_platform_package_name",
+      "infra_platform_package_private",
+      "infra_tenant_package_dependencies",
+      "infra_tenant_package_dependencies_pulumi_gcp",
+      "infra_tenant_package_dependencies_pulumi_pulumi",
+      "infra_tenant_package_dependencies_pulumi_random",
+      "infra_tenant_package_devdependencies",
+      "infra_tenant_package_devdependencies_types_node",
+      "infra_tenant_package_devdependencies_typescript",
+      "pulumi_gcp",
+      "pulumi_pulumi",
+      "pulumi_random",
+      "types_node",
+      "typescript"
+    ],
+    "3": [
       "infra_tenant_cloudrunservice",
       "infra_tenant_cloudrunservice_cloudrunserviceargs",
       "infra_tenant_cloudrunservice_createcloudrunservice",
@@ -67,7 +119,7 @@
       "infra_tenant_storage_createtenantstorage",
       "infra_tenant_storage_storageresult"
     ],
-    "2": [
+    "4": [
       "infra_tenant_package",
       "infra_tenant_package_files",
       "infra_tenant_package_license",
@@ -87,25 +139,7 @@
       "infra_tenant_package_version",
       "ref_dist"
     ],
-    "3": [
-      "infra_platform_package",
-      "infra_platform_package_dependencies",
-      "infra_platform_package_dependencies_pulumi_gcp",
-      "infra_platform_package_dependencies_pulumi_pulumi",
-      "infra_platform_package_dependencies_pulumi_random",
-      "infra_platform_package_json_pulumi_pulumi",
-      "infra_platform_package_main",
-      "infra_platform_package_name",
-      "infra_platform_package_private",
-      "infra_tenant_package_dependencies",
-      "infra_tenant_package_dependencies_pulumi_gcp",
-      "infra_tenant_package_dependencies_pulumi_pulumi",
-      "infra_tenant_package_dependencies_pulumi_random",
-      "pulumi_gcp",
-      "pulumi_pulumi",
-      "pulumi_random"
-    ],
-    "4": [
+    "5": [
       "infra_platform_tsconfig",
       "infra_platform_tsconfig_compileroptions",
       "infra_platform_tsconfig_compileroptions_experimentaldecorators",
@@ -123,7 +157,7 @@
       "infra_platform_tsconfig_json_ref_es2022",
       "infra_platform_tsconfig_json_ref_ts"
     ],
-    "5": [
+    "6": [
       "infra_tenant_tsconfig",
       "infra_tenant_tsconfig_compileroptions",
       "infra_tenant_tsconfig_compileroptions_experimentaldecorators",
@@ -141,7 +175,7 @@
       "infra_tenant_tsconfig_json_ref_es2022",
       "infra_tenant_tsconfig_json_ref_ts"
     ],
-    "6": [
+    "7": [
       "infra_platform_scripts_assert_no_platform_deletes",
       "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test",
       "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern",
@@ -156,7 +190,7 @@
       "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
       "pattern"
     ],
-    "7": [
+    "8": [
       "infra_tenant_tsconfig_build",
       "infra_tenant_tsconfig_build_compileroptions",
       "infra_tenant_tsconfig_build_compileroptions_declaration",
@@ -171,17 +205,18 @@
       "ref_ts",
       "ref_tsconfig_json"
     ],
-    "8": [
-      "infra_platform_package_devdependencies",
-      "infra_platform_package_devdependencies_types_node",
-      "infra_platform_package_devdependencies_typescript",
-      "infra_tenant_package_devdependencies",
-      "infra_tenant_package_devdependencies_types_node",
-      "infra_tenant_package_devdependencies_typescript",
-      "types_node",
-      "typescript"
-    ],
     "9": [
+      "contributing",
+      "ghost_platform_tenant_template",
+      "github_dependabot",
+      "github_workflows_infra_platform_ci_yml",
+      "github_workflows_infra_tenant_ci_yml",
+      "github_workflows_publish_tenant_package",
+      "infra_platform",
+      "infra_tenant",
+      "pre_commit_config"
+    ],
+    "10": [
       "infra_platform_provisioninguser",
       "infra_platform_provisioninguser_provisioninguser",
       "infra_platform_provisioninguser_provisioningusername",
@@ -189,14 +224,6 @@
       "infra_platform_provisioninguser_provisioninguserpasswordsecret",
       "infra_platform_secrets",
       "infra_platform_secrets_secretwithvalue"
-    ],
-    "10": [
-      "ghost_platform_tenant_template",
-      "github_workflows_infra_platform_ci_yml",
-      "github_workflows_infra_tenant_ci_yml",
-      "github_workflows_publish_tenant_package",
-      "infra_platform",
-      "infra_tenant"
     ],
     "11": [
       "docker_entrypoint_branchleft",
@@ -233,50 +260,53 @@
       "claude_md"
     ],
     "18": [
-      "gcp_cloud_run"
+      "eslint_config"
     ],
     "19": [
-      "gcp_cloud_sql"
+      "gcp_cloud_run"
     ],
     "20": [
-      "gcp_storage_bucket"
+      "gcp_cloud_sql"
     ],
     "21": [
-      "ghost_official_image"
+      "gcp_storage_bucket"
     ],
     "22": [
-      "ghost_tenant_component"
+      "ghost_official_image"
     ],
     "23": [
       "github_workflows_build"
     ],
     "24": [
-      "github_workflows_docs_lint"
+      "github_workflows_codeql"
     ],
     "25": [
-      "github_workflows_graphify"
+      "github_workflows_docs_lint"
     ],
     "26": [
-      "infra_readme"
+      "github_workflows_graphify"
     ],
     "27": [
-      "infra_tenant_smoke_test_readme"
+      "infra_readme"
     ],
     "28": [
+      "infra_tenant_smoke_test_readme"
+    ],
+    "29": [
       "readme"
     ]
   },
   "cohesion": {
     "0": 0.09487179487179487,
-    "1": 0.16996047430830039,
-    "2": 0.1111111111111111,
-    "3": 0.13333333333333333,
-    "4": 0.125,
+    "1": 0.08333333333333333,
+    "2": 0.09057971014492754,
+    "3": 0.16996047430830039,
+    "4": 0.1111111111111111,
     "5": 0.125,
-    "6": 0.2564102564102564,
-    "7": 0.15384615384615385,
-    "8": 0.2857142857142857,
-    "9": 0.3333333333333333,
+    "6": 0.125,
+    "7": 0.2564102564102564,
+    "8": 0.15384615384615385,
+    "9": 0.2777777777777778,
     "10": 0.3333333333333333,
     "11": 0.5,
     "12": 0.5,
@@ -295,7 +325,8 @@
     "25": 1.0,
     "26": 1.0,
     "27": 1.0,
-    "28": 1.0
+    "28": 1.0,
+    "29": 1.0
   },
   "gods": [
     {
@@ -344,9 +375,9 @@
       "degree": 5
     },
     {
-      "id": "infra_tenant_database_createtenantdatabase",
-      "label": "createTenantDatabase()",
-      "degree": 4
+      "id": "package_scripts",
+      "label": "scripts",
+      "degree": 5
     }
   ],
   "surprises": [
@@ -385,7 +416,7 @@
     }
   ],
   "tokens": {
-    "input": 6290,
-    "output": 1842
+    "input": 3371,
+    "output": 1439
   }
 }
