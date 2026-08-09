@@ -100,6 +100,41 @@ jobs:
       PLATFORM_MEDIA_URL: ${{ vars.PLATFORM_MEDIA_BUCKET_URL }}
 
     steps:
+      # First, before checkout and before anything that could create or
+      # validate: the federation condition in the runbook's P2 pins
+      # `job_workflow_ref`, which GitHub documents principally for
+      # reusable-workflow jobs. This job is standalone. Absence would fail
+      # closed -- a string-equality condition on a missing claim can only deny
+      # -- so this is a correctness guard rather than a security one, and it
+      # earns its place by turning an opaque token-exchange failure into a
+      # named one at step 1. It also prints the values P2's condition must be
+      # written from, rather than predicted from.
+      #
+      # The token itself is never echoed and never reaches argv; only these
+      # six non-secret claims are printed.
+      - name: Report the federation claims this run presents
+        run: |
+          set -euo pipefail
+          curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://iam.googleapis.com/" \
+            | python3 -c '
+          import base64, json, sys
+          token = json.load(sys.stdin)["value"]
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          for key in ("sub", "event_name", "workflow_ref", "job_workflow_ref",
+                      "repository", "ref"):
+              value = claims.get(key, "<<ABSENT>>")
+              print(f"{key:17}= {value}")
+          if "job_workflow_ref" not in claims:
+              sys.exit("::error::job_workflow_ref is absent from this token. "
+                       "The provisioning provider condition pins it, so no "
+                       "token exchange can succeed. Re-point the condition at "
+                       "workflow_ref and record the substitution in "
+                       "infra/platform/RUNBOOK-bootstrap.md P2.")
+          '
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -144,6 +179,7 @@ jobs:
       - name: Configure the provisioning stack
         working-directory: infra/provisioning
         run: |
+          set -euo pipefail
           npm ci
           pulumi login gs://branchleft-pulumi-state
           pulumi stack select "$TENANT" --create
@@ -160,6 +196,7 @@ jobs:
       - name: Refuse a provisioning plan that destroys anything
         working-directory: infra/provisioning
         run: |
+          set -euo pipefail
           pulumi preview --stack "$TENANT" --json > preview.json
           python3 scripts/assert-no-provisioning-deletes.py --self-test
           python3 scripts/assert-no-provisioning-deletes.py --verify-coverage ../platform .
@@ -173,17 +210,37 @@ jobs:
         working-directory: infra/provisioning
         run: pulumi up --stack "$TENANT" --yes
 
+      # Captured into variables and checked before use. A failing command
+      # substitution inside `echo`'s arguments does not trip errexit, so the
+      # obvious spelling of this step writes empty outputs on failure -- which
+      # then flow into the generated repo's variables and surface much later,
+      # after that repo exists holding a live copy of the platform PAT.
       - name: Read the identity outputs
         id: identity
         working-directory: infra/provisioning
         run: |
+          set -euo pipefail
+          provider=$(pulumi stack output githubActionsWorkloadIdentityProvider --stack "$TENANT")
+          sa_email=$(pulumi stack output githubActionsDeployerServiceAccountEmail --stack "$TENANT")
+          bucket=$(pulumi stack output pulumiStateBucket --stack "$TENANT")
+          for pair in "provider=$provider" "sa_email=$sa_email" "bucket=$bucket"; do
+            if [ -z "${pair#*=}" ]; then
+              echo "::error::stack output ${pair%%=*} is empty; refusing to continue before the tenant repo is created"
+              exit 1
+            fi
+          done
           {
-            echo "provider=$(pulumi stack output githubActionsWorkloadIdentityProvider --stack "$TENANT")"
-            echo "sa_email=$(pulumi stack output githubActionsDeployerServiceAccountEmail --stack "$TENANT")"
+            echo "provider=$provider"
+            echo "sa_email=$sa_email"
+            echo "bucket=$bucket"
           } >> "$GITHUB_OUTPUT"
 
       # ---- the tenant repo ------------------------------------------------
 
+      # Everything from here leaves artefacts a failure does not clean up.
+      # There is no automatic rollback -- see "Recovering a failed provisioning
+      # run" in infra/platform/RUNBOOK-bootstrap.md for the order to undo in,
+      # and why deleting the repo is the step that revokes the PAT copy.
       - name: Generate the tenant repo from the template
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
@@ -199,6 +256,7 @@ jobs:
           WIF_PROVIDER: ${{ steps.identity.outputs.provider }}
           PACKAGE_READ_PAT: ${{ secrets.GH_PAT_GHOST_PLATFORM_READ }}
         run: |
+          set -euo pipefail
           gh variable set GCP_PROJECT_ID --repo "$TENANT_REPO" --body "$GCP_PROJECT"
           gh variable set GCP_DEPLOYER_SA_EMAIL --repo "$TENANT_REPO" --body "$DEPLOYER_SA_EMAIL"
           gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$TENANT_REPO" --body "$WIF_PROVIDER"
@@ -216,6 +274,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
           DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
         run: |
+          set -euo pipefail
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
           cd tenant
           # Only the files the template's placeholder table names.

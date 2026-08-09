@@ -514,6 +514,49 @@ not authenticate even if approved, which is the interlock the ordering buys.
 **If the run does not wait, stop.** The gate does not exist, and
 `provision-tenant.yml` must not be dispatched again until it does.
 
+### Step V2 — read the federation claims before granting anything
+
+P2's condition pins `assertion.job_workflow_ref`. GitHub documents that claim
+principally for reusable-workflow jobs, and the job here is standalone, so
+whether it is populated at all is a question about GitHub's behaviour rather
+than about this repo — and the rest of the bootstrap is built on measurement,
+not on documentation that has already been wrong once in this programme.
+
+Absence would fail closed: the condition is a string equality, so an absent or
+unexpected claim can only *deny* a token exchange, never widen one. That makes
+this a correctness check rather than a security one. It is still worth doing
+before P3, because P3 grants project-admin-equivalent roles to an identity that
+would then be unreachable, and the failure would surface much later as an
+opaque token-exchange error.
+
+Dispatch again with throwaway inputs and **approve** this time. The workflow's
+first step prints the claims it presents and asserts `job_workflow_ref` is
+present; the run then fails at input validation or at authentication, because
+P1—P8 do not exist yet. That is the expected outcome.
+
+```bash
+gh workflow run provision-tenant.yml --repo branchLeft/ghost-platform \
+  -f tenant_name=gate-test -f tenant_repo=gate-test -f state_bucket=gate-test \
+  -f deployer_sa_id=gate-test -f wif_pool_id=gate-test \
+  -f site_url=https://example.invalid -f image_digest_or_tag=none
+# approve the deployment, then read the "Report the federation claims" step
+```
+
+Expected, and the value to copy verbatim into P2:
+
+```text
+sub              = repo:branchLeft/ghost-platform:environment:tenant-provisioning
+event_name       = workflow_dispatch
+workflow_ref     = branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main
+job_workflow_ref = branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main
+repository       = branchLeft/ghost-platform
+```
+
+**Write P2's condition from what this step printed, not from what this runbook
+predicts.** If `job_workflow_ref` came back `<<ABSENT>>` the step fails loudly;
+condition on `assertion.workflow_ref` instead, which is documented for all
+workflows, and record the substitution here.
+
 ### P1 — the service account
 
 ```bash
@@ -565,6 +608,37 @@ provisioning until this condition is updated.
 the repo. Read `<project-number>` from
 `gcloud projects describe branchleft-prod --format='value(projectNumber)'`.
 
+**Read the provider back. This is not optional.** `create-oidc` fails with
+"already exists" if a partial earlier bootstrap left a provider of the same
+name — and a failed create is easy to read as idempotence, leaving a looser
+condition in place that nothing afterwards inspects.
+
+```bash
+gcloud iam workload-identity-pools providers describe tenant-provisioning \
+  --project=branchleft-prod --location=global \
+  --workload-identity-pool=ghost-platform-gha \
+  --format="yaml(attributeCondition,attributeMapping,state,disabled,oidc.issuerUri)"
+```
+
+Every field must match, exactly:
+
+```yaml
+attributeCondition: assertion.repository == "branchLeft/ghost-platform" && assertion.job_workflow_ref
+  == "branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main"
+  && assertion.event_name == "workflow_dispatch"
+attributeMapping:
+  attribute.repository: assertion.repository
+  google.subject: assertion.sub
+oidc:
+  issuerUri: https://token.actions.githubusercontent.com
+state: ACTIVE
+```
+
+`disabled` must be absent or `false`. If the condition differs in any way,
+`gcloud iam workload-identity-pools providers update-oidc` it to the exact
+string above and read it back again — do not proceed on a provider you have
+not just read.
+
 ### P3 — identity administration
 
 ```bash
@@ -586,8 +660,8 @@ create, and creating tenant deployers is the whole job.
 gcloud iam roles create ghostPlatformTenantSqlProvisioner \
   --project=branchleft-prod \
   --title="Ghost tenant SQL provisioner" \
-  --description="Create a tenant logical database and DB user on the shared instance. Cannot create, update or delete an instance, and cannot drop a database or user." \
-  --permissions=cloudsql.databases.create,cloudsql.databases.get,cloudsql.databases.list,cloudsql.databases.update,cloudsql.users.create,cloudsql.users.get,cloudsql.users.list,cloudsql.users.update,cloudsql.instances.get,cloudsql.instances.list \
+  --description="Create a tenant logical database and DB user on the shared instance. Create and read only: no instance writes, no update, no delete." \
+  --permissions=cloudsql.databases.create,cloudsql.databases.get,cloudsql.databases.list,cloudsql.users.create,cloudsql.users.get,cloudsql.users.list,cloudsql.instances.get,cloudsql.instances.list \
   --stage=GA
 
 gcloud projects add-iam-policy-binding branchleft-prod \
@@ -630,12 +704,16 @@ What that changes, stated precisely so the controls are not miscounted:
   this identity retains project-wide service-account, project-IAM,
   workload-identity-pool, Secret Manager and Cloud Run administration, and
   destroying any of those is still an incident.
-- **Tenant data is not fully out of reach.** The role deliberately omits
-  `databases.delete` and `users.delete`, so it cannot drop a tenant's database
-  — the cost is that a first apply which fails partway and needs its DB user
-  replaced is a cleanup for the platform owner rather than a retry. Offboarding
-  a tenant is a deliberate act, not something onboarding should be able to do
-  by accident.
+- **The role is create-and-read only.** No `databases.delete`, no
+  `users.delete`, and no `update` of either. Onboarding only ever creates, so
+  nothing in the first-apply path needs more; offboarding a tenant should be a
+  deliberate act rather than something an onboarding run can do by accident;
+  and rotating a tenant's DB password stays a platform-owner action under
+  their own credentials, exactly as it was before this change.
+- **The cost, stated because it is real:** a first apply that fails partway and
+  would need to *update* rather than create a database or DB user cannot be
+  retried by re-running the workflow. It is a platform-owner cleanup — see
+  "Recovering a failed provisioning run" below.
 
 ### P5 — key and bucket access
 
@@ -661,13 +739,32 @@ gcloud storage buckets add-iam-policy-binding gs://branchleft-pulumi-state \
   --role="roles/storage.objectAdmin"
 ```
 
-`cloudkms.admin` at key scope, never project scope. The custom role instead of
-a predefined storage role because every predefined one carrying
-`buckets.setIamPolicy` also reaches object contents; `storage.buckets.create`
-exists only at project scope, so it cannot be narrowed further. The last
-binding is for the provisioning stack's own state in the shared bucket — object
-access to each tenant's bucket is granted by the provisioning program as it
-creates that bucket.
+`cloudkms.admin` at key scope, never project scope.
+
+**`ghostPlatformStateBucketAdmin` is project-scoped, and that is a real
+residual rather than a rounding error.** `storage.buckets.create` exists only
+at project scope, and the bucket whose IAM must be set does not exist until the
+same apply creates it, so `setIamPolicy` cannot be granted per-bucket either.
+The consequence: this identity can change the IAM policy of *every* bucket in
+the project, including `gs://branchleft-pulumi-state` and the shared media
+bucket.
+
+What bounds it is that the role carries **no object permission of any kind**.
+It cannot read, write, list or delete a single object in any bucket. Every
+predefined `roles/storage.*` role holding `buckets.setIamPolicy` also reaches
+object contents, which is the trade this custom role exists to avoid — and the
+mistake an earlier version of P7 made on the media bucket.
+
+Worth measuring later, untested: whether a `resource.name` condition can narrow
+`setIamPolicy` to a bucket-name prefix on one binding while `buckets.create`
+stays unconditioned on a second. Cloud Storage enforces object-name prefix
+conditions exactly, so bucket-name conditions are plausible — but creation
+authorises against the project, and none of this is measured. Do not assume it
+works.
+
+The last binding is for the provisioning stack's own state in the shared
+bucket — object access to each tenant's bucket is granted by the provisioning
+program as it creates that bucket.
 
 ### P6 — the two platform-held tokens
 
@@ -743,14 +840,19 @@ for ROLE in roles/secretmanager.admin roles/storage.hmacKeyAdmin roles/run.admin
     --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
     --role="$ROLE" --condition=None
 done
-
-gcloud storage buckets add-iam-policy-binding gs://branchleft-prod-ghost-platform-media \
-  --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
-  --role="roles/storage.legacyBucketOwner"
 ```
 
 `run.admin` rather than `run.developer`: the public invoker binding needs
 `run.services.setIamPolicy`, which developer does not hold.
+
+**No grant on the media bucket.** An earlier version of this runbook granted
+`roles/storage.legacyBucketOwner` there, which was wrong twice over. That role
+carries `storage.objects.{create,delete,list}`, so a compromised or merely
+buggy provisioning run could have deleted every tenant's live media. And the
+tenant program never touches an object in that bucket: it declares two
+`BucketIAMMember` bindings and an HMAC key, so the only bucket permission
+involved is `storage.buckets.setIamPolicy`, which P5's project-level custom
+role already carries. The grant was redundant as well as over-wide.
 
 **This list is derived, not measured.** Confirm it with the first real
 provisioning run against a throwaway tenant; a missing role surfaces as a 403
@@ -778,6 +880,49 @@ gh variable set PLATFORM_MEDIA_BUCKET_URL --repo branchLeft/ghost-platform \
 These three are what replaced the tenant program's `StackReference`. Written
 as variables rather than read live so a provisioning run does not depend on
 the platform stack being applied first.
+
+### Recovering a failed provisioning run
+
+A provisioning run creates things in an order chosen so that the most sensitive
+artefact is last, but a mid-run failure can still leave a partial tenant. There
+is no automatic rollback, deliberately: unwinding identity and state under the
+same credentials that just failed is how a bad situation becomes a worse one.
+
+Undo in reverse order of creation. Stop at the first step that has nothing to
+undo — anything earlier than that never ran.
+
+1. **The handover pull request**, if one was opened. Close it. Nothing else
+   depends on it.
+2. **The generated repo**, if it exists. `gh repo delete branchLeft/<repo>`.
+   **Do this before anything else that takes time**: from the moment the
+   variables step ran, that repo holds a live copy of the platform's
+   package-read PAT as a repo secret. Deleting the repo is what revokes the
+   copy. If the repo cannot be deleted immediately, rotate
+   `GH_PAT_GHOST_PLATFORM_READ` per P6 instead and treat the old token as
+   burned.
+3. **The tenant's own stack**, if its first apply started. Its state is in the
+   tenant's bucket:
+   `pulumi login gs://<state-bucket> && pulumi destroy --stack <tenant>`.
+   Read the plan before confirming.
+4. **The tenant's DB user and logical database**, if the apply reached them.
+   **The provisioning identity cannot remove these** — P4's custom role is
+   create-and-read only. Delete them under your own credentials:
+   `gcloud sql users delete <user> --instance=ghost-platform-db --host=%` and
+   `gcloud sql databases delete <db> --instance=ghost-platform-db`. This is the
+   accepted cost of withholding delete from the provisioning identity.
+5. **The identity and state bucket**:
+   `cd infra/provisioning && pulumi login gs://branchleft-pulumi-state && pulumi destroy --stack <tenant>`.
+   Note the Workload Identity pool is soft-deleted and its id is unusable for
+   30 days, so a retry must use a different `wif_pool_id`.
+
+**What is safe to retry without any of the above:** a failure at input
+validation, at the claims step, or at authentication. None of those has created
+anything.
+
+**What is never safe to retry blind:** a failure after "Generate the tenant
+repo". The workflow refuses to run against an existing repo by design, so a
+blind retry fails fast rather than half-provisioning a second time — but the
+first attempt's leftovers are still there and still hold the PAT.
 
 ### What this identity ends up holding
 

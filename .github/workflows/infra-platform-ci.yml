@@ -241,11 +241,17 @@ jobs:
 
       - name: Write outcome to job summary
         if: always()
+        # Bound rather than interpolated. `github.sha` is not attacker-shaped,
+        # but a `${{ }}` inside `run` is substituted before the shell parses
+        # the script, and that property is worth being able to state without
+        # exceptions.
+        env:
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           {
             echo '## Platform stack deploy'
             echo
-            echo "Commit: \`${{ github.sha }}\`"
+            echo "Commit: \`${COMMIT_SHA}\`"
             echo
             echo '### Plan this run applied'
             echo
