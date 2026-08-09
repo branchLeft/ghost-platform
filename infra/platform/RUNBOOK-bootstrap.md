@@ -866,10 +866,13 @@ deploy will succeed.
 management-versus-use split as `cloudkms.admin` in P5, and the second time this
 bootstrap has been caught by it.
 
-The tenant program does create a scoped `actAs` binding on the runtime service
-account, but it names the *deployer*, and the first apply runs as the
-*provisioner*. The binding is correct for every CI run after the first and
-insufficient for the first.
+**Both rows need granting twice, to two different identities, and that is the
+part which is easy to get wrong.** The tenant program grants each to the
+*deployer*, and the deployer is who runs every CI apply — but the *first* apply
+runs as the *provisioner*. A grant to the deployer alone is correct from the
+second apply onward and insufficient for the first; a grant to the provisioner
+alone is the reverse. Both 403s look identical and neither names the principal
+it evaluated, so the natural reading of either is that the grant did not take.
 
 ```bash
 for ROLE in roles/secretmanager.admin roles/storage.hmacKeyAdmin roles/run.admin roles/iam.serviceAccountUser; do
@@ -877,6 +880,13 @@ for ROLE in roles/secretmanager.admin roles/storage.hmacKeyAdmin roles/run.admin
     --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
     --role="$ROLE" --condition=None
 done
+
+# Scoped to the tenant image repository: unlike the roles above, this one has a
+# resource to attach to, and the provisioner needs no other repository.
+gcloud artifacts repositories add-iam-policy-binding ghost-platform-tenant \
+  --location=europe-west1 --project=branchleft-prod \
+  --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+  --role=roles/artifactregistry.reader
 ```
 
 `run.admin` rather than `run.developer`: the public invoker binding needs
