@@ -103,30 +103,6 @@
       "infra_tenant_storage_storageresult"
     ],
     "3": [
-      "_github_workflows_infra_platform_ci_assert_no_platform_deletes",
-      "_github_workflows_infra_platform_ci_ci_owns_applies_decision",
-      "_github_workflows_infra_platform_ci_deploy_job",
-      "_github_workflows_infra_platform_ci_deployer_service_account",
-      "_github_workflows_infra_platform_ci_typecheck_job",
-      "_github_workflows_infra_platform_ci_workload_identity_federation",
-      "_github_workflows_infra_tenant_ci_reusable_component_scope",
-      "_github_workflows_infra_tenant_ci_typecheck_job",
-      "infra_platform_pulumi_platform_stack_config",
-      "infra_platform_pulumi_project",
-      "infra_platform_runbook_bootstrap_bootstrap_process",
-      "infra_platform_runbook_bootstrap_kms_binding",
-      "infra_platform_runbook_bootstrap_provisioning_user_incident",
-      "infra_platform_runbook_bootstrap_pulumi_state_bucket",
-      "infra_platform_runbook_bootstrap_state_bucket_binding",
-      "infra_readme_platform_stack",
-      "infra_readme_split_by_shape_rationale",
-      "infra_readme_tenant_component",
-      "infra_tenant_smoke_test_pulumi_scratch_s8_smoke_test_project",
-      "infra_tenant_smoke_test_pulumi_stack_config",
-      "infra_tenant_smoke_test_readme_smoke_test_harness",
-      "readme_ghost_platform_repo"
-    ],
-    "4": [
       "infra_tenant_package",
       "infra_tenant_package_files",
       "infra_tenant_package_license",
@@ -145,6 +121,25 @@
       "infra_tenant_package_types",
       "infra_tenant_package_version",
       "ref_dist"
+    ],
+    "4": [
+      "_github_workflows_infra_platform_ci_assert_no_platform_deletes",
+      "_github_workflows_infra_platform_ci_ci_owns_applies_decision",
+      "_github_workflows_infra_platform_ci_deploy_job",
+      "_github_workflows_infra_platform_ci_typecheck_job",
+      "_github_workflows_infra_platform_ci_workload_identity_federation",
+      "ghost_platform_deployer",
+      "ghost_platform_provisioner",
+      "infra_platform_runbook_bootstrap",
+      "infra_readme_platform_stack",
+      "infra_readme_split_by_shape_rationale",
+      "infra_readme_tenant_component",
+      "infra_tenant_smoke_test_pulumi_scratch_s8_smoke_test_project",
+      "infra_tenant_smoke_test_pulumi_stack_config",
+      "infra_tenant_smoke_test_readme_smoke_test_harness",
+      "pulumi_state_bucket",
+      "readme_ghost_platform_repo",
+      "scripts_assert_no_platform_deletes"
     ],
     "5": [
       "infra_platform_tsconfig",
@@ -274,18 +269,28 @@
       "scripts_smoke_test_sh__entry"
     ],
     "16": [
-      "github_workflows_build"
+      "infra_platform_pulumi_platform_stack_config",
+      "infra_platform_pulumi_project"
     ],
     "17": [
-      "github_workflows_docs_lint"
+      "github_workflows_build"
     ],
     "18": [
-      "github_workflows_graphify"
+      "github_workflows_docs_lint"
     ],
     "19": [
-      "github_workflows_registry_push"
+      "github_workflows_graphify"
     ],
     "20": [
+      "github_workflows_infra_tenant_ci"
+    ],
+    "21": [
+      "github_workflows_registry_push"
+    ],
+    "22": [
+      "infra_tenant_smoke_test_readme"
+    ],
+    "23": [
       "readme_smoke_test_script"
     ]
   },
@@ -293,8 +298,8 @@
     "0": 0.07955596669750231,
     "1": 0.08666666666666667,
     "2": 0.16304347826086957,
-    "3": 0.13852813852813853,
-    "4": 0.1111111111111111,
+    "3": 0.1111111111111111,
+    "4": 0.1323529411764706,
     "5": 0.125,
     "6": 0.125,
     "7": 0.125,
@@ -310,7 +315,10 @@
     "17": 1.0,
     "18": 1.0,
     "19": 1.0,
-    "20": 1.0
+    "20": 1.0,
+    "21": 1.0,
+    "22": 1.0,
+    "23": 1.0
   },
   "gods": [
     {
@@ -334,13 +342,23 @@
       "degree": 7
     },
     {
-      "id": "infra_platform_runbook_bootstrap_bootstrap_process",
-      "label": "Platform stack bootstrap runbook",
-      "degree": 6
-    },
-    {
       "id": "infra_platform_config_region",
       "label": "region",
+      "degree": 5
+    },
+    {
+      "id": "infra_tenant_secrets_secretwithvalue",
+      "label": "secretWithValue()",
+      "degree": 5
+    },
+    {
+      "id": "_github_workflows_infra_platform_ci_deploy_job",
+      "label": "Deploy (pulumi up) job",
+      "degree": 5
+    },
+    {
+      "id": "infra_tenant_tsconfig_build_compileroptions",
+      "label": "compilerOptions",
       "degree": 5
     },
     {
@@ -352,29 +370,30 @@
       "id": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
       "label": "verify_coverage()",
       "degree": 5
-    },
-    {
-      "id": "infra_tenant_cloudrunservice_createcloudrunservice",
-      "label": "createCloudRunService()",
-      "degree": 5
-    },
-    {
-      "id": "infra_tenant_secrets_secretwithvalue",
-      "label": "secretWithValue()",
-      "degree": 5
     }
   ],
   "surprises": [
     {
-      "source": "ghost_platform_provisioner privilege-narrowing incident (2026-08-05)",
-      "target": "assert-no-platform-deletes.py preflight guard",
+      "source": "Bootstrap Runbook",
+      "target": "Assert No Platform Deletes Script",
       "source_files": [
         "infra/platform/RUNBOOK-bootstrap.md",
-        ".github/workflows/infra-platform-ci.yml"
+        "scripts/assert-no-platform-deletes.py"
       ],
-      "confidence": "INFERRED",
-      "relation": "semantically_similar_to",
-      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "crosses file types (doc \u2194 code); connects across different repos/directories"
+    },
+    {
+      "source": "Deploy (pulumi up) job",
+      "target": "Ghost Platform Deployer Service Account",
+      "source_files": [
+        ".github/workflows/infra-platform-ci.yml",
+        "infra/platform/RUNBOOK-bootstrap.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
     },
     {
       "source": "Platform stack (infra/platform/)",
@@ -388,11 +407,11 @@
       "why": "connects across different repos/directories"
     },
     {
-      "source": "Platform stack bootstrap runbook",
-      "target": "Workload Identity Federation (GitHub OIDC to GCP)",
+      "source": "Workload Identity Federation (GitHub OIDC to GCP)",
+      "target": "Ghost Platform Deployer Service Account",
       "source_files": [
-        "infra/platform/RUNBOOK-bootstrap.md",
-        ".github/workflows/infra-platform-ci.yml"
+        ".github/workflows/infra-platform-ci.yml",
+        "infra/platform/RUNBOOK-bootstrap.md"
       ],
       "confidence": "EXTRACTED",
       "relation": "references",
@@ -408,21 +427,10 @@
       "confidence": "EXTRACTED",
       "relation": "references",
       "why": "connects across different repos/directories"
-    },
-    {
-      "source": "KMS decrypt binding for deployer SA (pulumi-secrets key)",
-      "target": "ghost-platform-deployer service account",
-      "source_files": [
-        "infra/platform/RUNBOOK-bootstrap.md",
-        ".github/workflows/infra-platform-ci.yml"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories"
     }
   ],
   "tokens": {
-    "input": 4991,
-    "output": 1707
+    "input": 7255,
+    "output": 2483
   }
 }
