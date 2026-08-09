@@ -159,10 +159,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
 
+      # `registry-url` is for the generated repo's `npm ci` further down, not
+      # for this repo's -- the tenant program depends on the private
+      # `@branchleft/ghost-platform-tenant` package, and GitHub Packages
+      # answers 401 unauthenticated even for a public package. Against
+      # `npm.pkg.github.com` with no `scope` input, the action scopes the
+      # registry line to the repository owner rather than setting a default
+      # registry, so `infra/provisioning`'s public dependencies still resolve
+      # from npmjs. The file it writes lives in `RUNNER_TEMP`, which is what
+      # keeps the token out of the tree that gets committed below.
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: infra/provisioning/.nvmrc
+          registry-url: https://npm.pkg.github.com
 
       - name: Authenticate to GCP as the provisioning identity
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -273,6 +283,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
           DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
+          NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_GHOST_PLATFORM_READ }}
         run: |
           set -euo pipefail
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant

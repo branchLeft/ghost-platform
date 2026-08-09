@@ -743,8 +743,18 @@ gate story; it does not change this.
 **`GH_PAT_TENANT_PROVISIONING`** — the credential the provisioning workflow
 writes to generated repositories with. The default `GITHUB_TOKEN` is scoped to
 this repository and can neither create a repo in the org nor set another
-repo's variables. Scope: `repo` (classic), or a fine-grained token with
-Administration + Contents + Secrets + Variables write on the org.
+repo's variables. Scope: `repo` **and `workflow`** (classic), or a fine-grained
+token with Administration + Contents + Secrets + Variables + Workflows write on
+the org.
+
+`workflow` is not optional and is easy to omit, because nothing needs it until
+the very last step. The handover branch carries the `__TENANT_NAME__`
+substitution into `.github/workflows/infra-ci.yml`, and GitHub refuses a push
+that changes a workflow file from a token without that scope. A token missing it
+provisions the identity, the state bucket, the repo and the first apply
+successfully, then fails on `git push` — leaving every artefact in place and a
+generated repo already holding a copy of `GH_PAT_GHOST_PLATFORM_READ`. Re-check
+the scope at every rotation, not just at first mint.
 
 Both repo-level, never org-level — an org secret is invisible to a private repo
 on this plan and resolves to an empty string with no error.
