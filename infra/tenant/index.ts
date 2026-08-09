@@ -1,5 +1,4 @@
 import * as pulumi from '@pulumi/pulumi';
-import * as gcp from '@pulumi/gcp';
 import { validateTenantName, createServiceAccount } from './serviceAccount';
 import { createTenantDatabase, DEFAULT_MAX_USER_CONNECTIONS } from './database';
 import { createTenantStorage } from './storage';

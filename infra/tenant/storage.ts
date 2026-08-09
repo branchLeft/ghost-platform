@@ -196,7 +196,10 @@ export function createTenantStorage(
   // create + get, each condition-scoped to this tenant's own prefix. See the
   // long comment above for why `delete` and `list` are deliberately not
   // granted here.
-  const writeBinding = conditionedBinding(`${tenantName}-media-create`, 'roles/storage.objectCreator');
+  const writeBinding = conditionedBinding(
+    `${tenantName}-media-create`,
+    'roles/storage.objectCreator'
+  );
   conditionedBinding(`${tenantName}-media-read`, 'roles/storage.legacyObjectReader');
 
   const hmacKey = new gcp.storage.HmacKey(
