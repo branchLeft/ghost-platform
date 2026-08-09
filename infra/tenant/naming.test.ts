@@ -139,10 +139,13 @@ describe('SQL identifiers', () => {
 });
 
 describe('resource names', () => {
-  it('gives the service account and the Cloud Run service the same derived name', () => {
-    // They were separate string literals before this module existed; the
-    // Cloud Run service name is what a tenant's URL is derived from, so the
-    // two drifting apart would be visible only in production.
+  it('derives the service account and the Cloud Run service alike, for now', () => {
+    // Two separate string literals before this module existed, and kept as two
+    // functions deliberately: these are different resource types with
+    // different grammars, and the service-account id is the one bounded to 30
+    // characters. They coincide today, and this case exists so that changing
+    // that is a deliberate edit here rather than a drift noticed in
+    // production, where a tenant's URL comes from the Cloud Run name.
     expect(cloudRunServiceName('blog')).toBe(serviceAccountId('blog'));
   });
 
