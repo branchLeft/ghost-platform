@@ -1,5 +1,6 @@
 import * as pulumi from '@pulumi/pulumi';
-import { validateTenantName, createServiceAccount } from './serviceAccount';
+import { createServiceAccount } from './serviceAccount';
+import { validateTenantName, sqlIdentifier } from './naming';
 import { createTenantDatabase, DEFAULT_MAX_USER_CONNECTIONS } from './database';
 import { createTenantStorage } from './storage';
 import { createCloudRunService, createPublicInvokerBinding } from './cloudRunService';
@@ -118,7 +119,7 @@ export class GhostTenant extends pulumi.ComponentResource {
     super('ghostPlatform:tenant:GhostTenant', name, {}, opts);
 
     validateTenantName(args.tenantName);
-    const sqlIdentifier = args.tenantName.replace(/-/g, '_');
+    const sqlId = sqlIdentifier(args.tenantName);
     const region = args.region ?? DEFAULT_REGION;
     const maxInstanceCount = args.maxInstanceCount ?? DEFAULT_MAX_INSTANCE_COUNT;
     const maxUserConnections = args.maxUserConnections ?? DEFAULT_MAX_USER_CONNECTIONS;
@@ -128,7 +129,7 @@ export class GhostTenant extends pulumi.ComponentResource {
     const db = createTenantDatabase(
       this,
       args.tenantName,
-      sqlIdentifier,
+      sqlId,
       args.platform.dbInstanceConnectionName,
       serviceAccount,
       maxUserConnections

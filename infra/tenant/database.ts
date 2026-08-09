@@ -1,5 +1,6 @@
 import * as pulumi from '@pulumi/pulumi';
 import * as gcp from '@pulumi/gcp';
+import { databaseAndUserName, tenantSecretName } from './naming';
 import * as random from '@pulumi/random';
 import { secretWithValue } from './secrets';
 
@@ -9,14 +10,14 @@ import { secretWithValue } from './secrets';
  * limits... A per-tenant DB user... bounds *what* a tenant can reach but not
  * *how much* of the shared instance they can consume").
  *
- * Reasoning, not a verified live measurement: `infra/platform/database.ts`
- * runs `db-f1-micro`, shared by however many tenants the platform has at any
- * given time -- currently a small number of low-traffic outlets, per
- * OPEN-QUESTIONS.md #4 (this repo doesn't name tenants -- see this repo's
- * own README on why). This story has no live instance to query
- * `SHOW VARIABLES LIKE 'max_connections'` against, so the instance's actual
- * ceiling is not confirmed here -- flagging that gap rather than asserting a number this
- * story didn't check. 10 is chosen as a value that comfortably covers one
+ * Derived from sizing, not measured against a running instance:
+ * `infra/platform/database.ts` runs `db-f1-micro`, shared by however many
+ * tenants the platform has at any given time -- currently a small number of
+ * low-traffic outlets, per OPEN-QUESTIONS.md #4 (this repo doesn't name
+ * tenants -- see this repo's own README on why). Nothing here queries
+ * `SHOW VARIABLES LIKE 'max_connections'` against a live instance, so the
+ * actual ceiling is an open question, not an asserted number. 10 is chosen
+ * as a value that comfortably covers one
  * Ghost container's own connection pool (including a burst of concurrent
  * cold-start/horizontal-replica connections, per doc 06's confirmation that
  * concurrent replicas against one DB are a supported deployment shape) while
@@ -106,7 +107,7 @@ export function createTenantDatabase(
   const database = new gcp.sql.Database(
     `${tenantName}-db`,
     {
-      name: `ghost_${sqlIdentifier}`,
+      name: databaseAndUserName(sqlIdentifier),
       instance: instanceShortName,
       // Matches the instance's own deletion posture (database.ts on the
       // platform stack sets deletionProtection on the whole instance) --
@@ -146,7 +147,7 @@ export function createTenantDatabase(
   const dbUser = new gcp.sql.User(
     `${tenantName}-db-user`,
     {
-      name: `ghost_${sqlIdentifier}`,
+      name: databaseAndUserName(sqlIdentifier),
       instance: instanceShortName,
       password: dbUserPassword.result,
     },
@@ -161,7 +162,7 @@ export function createTenantDatabase(
   const dbUserNameSecret = secretWithValue(
     parent,
     `${tenantName}-db-username`,
-    `ghost-tenant-${tenantName}-db-username`,
+    tenantSecretName(tenantName, 'db-username'),
     dbUser.name,
     serviceAccount.email
   ).secret;
@@ -169,7 +170,7 @@ export function createTenantDatabase(
   const dbUserPasswordSecret = secretWithValue(
     parent,
     `${tenantName}-db-password-secret`,
-    `ghost-tenant-${tenantName}-db-password`,
+    tenantSecretName(tenantName, 'db-password'),
     dbUserPassword.result,
     serviceAccount.email
   ).secret;
