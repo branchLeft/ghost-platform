@@ -30,8 +30,24 @@ that this account can grant IAM that the deployer service account never will
 be able to:
 
 ```bash
-gcloud config get-value account   # expect the platform owner's own account
+gcloud config get-value account
 ```
+
+That has to match the account holding `roles/owner` on the project — not just
+"whoever is running this", which every operator trivially satisfies for
+themselves. Cross-check against the authoritative source rather than a name
+in this file:
+
+```bash
+gcloud projects get-iam-policy branchleft-prod \
+  --flatten="bindings[].members" \
+  --filter="bindings.role:roles/owner" \
+  --format="value(bindings.members)"
+```
+
+If the two commands don't name the same account, stop — this step grants IAM
+that only an owner-level identity can grant, and will fail partway through
+(or silently grant less than intended) under any other account.
 
 ---
 
