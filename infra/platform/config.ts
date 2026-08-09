@@ -32,10 +32,10 @@ export const mediaBucketName = `${projectId}-ghost-platform-media`;
 // so it is a fixed identifier, not stack configuration.
 //
 // Casing matters and is not cosmetic. The condition is a CEL string equality
-// against GitHub's claim, which carries the repository's canonical casing --
-// verified against the live API (`gh api repos/branchLeft/ghost-platform
-// --jq .full_name` -> `branchLeft/ghost-platform`), not inferred from the
-// git remote URL, which GitHub serves case-insensitively.
+// against GitHub's claim, which carries the repository's canonical casing.
+// Take that casing from the API (`gh api repos/<owner>/<repo> --jq
+// .full_name`), never from the git remote URL, which GitHub serves
+// case-insensitively.
 export const githubRepo = 'branchLeft/ghost-platform';
 
 // Workload Identity Pool ID for this repo's CI identity.
