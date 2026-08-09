@@ -23,13 +23,13 @@ import './provisioningUser';
 export const dbInstanceConnectionName = dbInstance.connectionName;
 export const dbInstanceSelfLink = dbInstance.selfLink;
 
-// Adversarial review (round 2) caught this: `tenantImageRepository.name` is
-// the bare repository ID (`ghost-platform-tenant`), *not* a pushable
-// registry URL -- confirmed against @pulumi/gcp's own field docs ("The name
-// of the repository, for example: repo1"). Exporting that under a `...Url`
-// name type-checked cleanly and would have failed silently later, only when
-// a future story tried to build a docker push target out of it. Constructed
-// properly here instead, mirroring website/infra/config.ts's
+// `tenantImageRepository.name` is the bare repository ID
+// (`ghost-platform-tenant`), *not* a pushable registry URL -- per
+// @pulumi/gcp's own field docs ("The name of the repository, for example:
+// repo1"). Exporting that under a `...Url` name type-checks cleanly and
+// would fail silently later, only when a future story tried to build a
+// docker push target out of it. Constructed properly here instead,
+// mirroring website/infra/config.ts's
 // `dockerPushTarget` pattern -- this is the repository path only (no image
 // name), since which image name the tenant container uses is a later
 // story's decision, not this platform stack's.

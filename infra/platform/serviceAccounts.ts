@@ -171,8 +171,7 @@ for (const [name, role] of projectRoles) {
  * true, but that objection was about granting it at *project* level, where
  * those object permissions spread across every bucket including the state
  * bucket. At bucket scope the objection largely evaporates, and what is left
- * is a real gain: verified against the live role definition,
- * legacyBucketOwner holds `storage.buckets.{get,getIamPolicy,setIamPolicy,
+ * is a real gain: legacyBucketOwner holds `storage.buckets.{get,getIamPolicy,setIamPolicy,
  * update}` -- everything this program needs -- and **not
  * `storage.buckets.delete`**, which bucket-scoped `storage.admin` would
  * carry. The media bucket is the one resource in this stack with no

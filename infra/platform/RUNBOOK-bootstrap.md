@@ -4,7 +4,8 @@ This stack has never been applied. Everything in it is a `create`.
 
 Almost all of it is CI's job from now on, but CI cannot create the identity
 it would need in order to run — so exactly one apply has to happen from a
-workstation, under Rob's own credentials, and three grants have to be made
+workstation, under the platform owner's own credentials, and three grants
+have to be made
 by hand after it. That is what this runbook is. **It is run once.** After the
 last step, every push to `main` applies this stack automatically and no local
 `pulumi up` is ever needed again.
@@ -12,9 +13,11 @@ last step, every push to `main` applies this stack automatically and no local
 Run the steps in order. Steps 3 and 4 cannot be done before step 1, because
 the service account they grant to does not exist until step 1 creates it.
 
-Everything here is Rob's to run — §6 of the implementation-loop skill puts the
+Everything here is the platform owner's to run — §6 of the implementation-loop
+skill puts the
 first `pulumi up` for a stack, every project-level IAM binding, and every repo
-settings change on Rob regardless of what rights the executing identity holds.
+settings change on the platform owner regardless of what rights the executing
+identity holds.
 
 ---
 
@@ -171,7 +174,7 @@ gcloud storage buckets get-iam-policy gs://branchleft-pulumi-state \
 
 ---
 
-## Step 5 — point the workflow at the identity (Rob-gated: repo settings)
+## Step 5 — point the workflow at the identity (repo settings)
 
 ```bash
 gh variable set GCP_PROJECT_ID \
@@ -220,7 +223,7 @@ ran and look at its job summary, don't just look for a green tick.
 
 ---
 
-## Applying the provisioning credential (one local apply, Rob-only)
+## Applying the provisioning credential (one local apply, platform owner only)
 
 `provisioningUser.ts` adds a `gcp.sql.User` and a Secret Manager secret. **CI
 cannot create either**, and this is verified, not assumed:
