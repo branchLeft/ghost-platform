@@ -9,6 +9,10 @@ by hand after it. That is what this runbook is. **It is run once.** After the
 last step, every push to `main` applies this stack automatically and no local
 `pulumi up` is ever needed again.
 
+Two later sections are one-time bootstraps of the same kind and are numbered
+separately: "Applying the provisioning credential" and "One-time bootstrap of
+the tenant-provisioning identity". Neither recurs per tenant.
+
 Run the steps in order. Steps 3 and 4 cannot be done before step 1, because
 the service account they grant to does not exist until step 1 creates it.
 
@@ -419,17 +423,255 @@ your own credentials with the plan read line by line, not a PR.
 
 ---
 
-## Optional: add a human gate on top
+## A human gate on top is not available on this plan
 
-The `deploy` job declares `environment: platform`. Attaching a required
-reviewer to that environment in repo settings would make every apply wait for
-an approval click.
+The `deploy` job declares `environment: platform`, and an earlier version of
+this runbook said a required reviewer could be attached to it in repo
+settings. **That is not true while this repo is private on the current plan,
+and it should not be relied on.** GitHub documents required reviewers and wait
+timers as public-repository-only for GitHub Free, Pro and Team alike; only
+Enterprise offers them on a private repository. The org is on Free and this
+repo is private, so the environment is a deployment-history label and nothing
+more.
 
-Not configured, because it partly undoes the thing being asked for — "CI owns
-this, no more manual applies". The four guardrails listed at the top of
-`.github/workflows/infra-platform-ci.yml` are what replaced the manual step,
-and a reviewer prompt on a stack that changes a few times a year mostly
-trains people to click through it. Worth reconsidering if this stack starts
-changing often, or once real tenant data is on the instance.
+The same plan gap is already load-bearing elsewhere here and is confirmed
+against the live API rather than inferred:
 
-If wanted: repo Settings → Environments → `platform` → Required reviewers.
+```bash
+gh api /repos/branchLeft/ghost-platform/branches/main/protection
+# 403 Upgrade to GitHub Pro or make this repository public to enable this feature.
+```
+
+Branch protection returns that. Environment protection has no equivalent
+read-only probe — the environment object returns `protection_rules: []`
+whether the rules are unsupported or merely unset — so the enforcement
+question can only be settled by attempting to set one, which is a repo
+settings change and therefore Rob's. The test is under "Verifying the
+environment gate" below.
+
+What actually gates this stack is the Workload Identity provider's
+`attributeCondition` and the roles the deployer does not hold, both of which
+are enforced by GCP and unaffected by any GitHub plan.
+
+---
+
+## One-time bootstrap of the tenant-provisioning identity (Rob-only)
+
+Prepared, not applied, and **blocked on one decision** — see "Verifying the
+environment gate" at the end. Nothing below recurs per tenant.
+
+The identity this creates is the most privileged thing in the project. It can
+re-permission every principal in `branchleft-prod`, and once it holds
+`roles/cloudsql.admin` it can clear the shared instance's deletion-protection
+flag and delete the instance in the same session. Both halves are real and
+neither is contained by any IAM Condition that can also create: a resource-name
+condition in `projects/-/serviceAccounts/<unique-id>` form scopes administration
+of an account that already exists and refuses to create one, and no attribute
+describes *which role* a project-level policy write hands out.
+
+### P1 — the service account
+
+```bash
+gcloud iam service-accounts create ghost-tenant-provisioner \
+  --project=branchleft-prod \
+  --display-name="Ghost platform - tenant provisioning identity"
+```
+
+Named apart from `ghost_platform_provisioner`, the MySQL account
+`provisioningUser.ts` creates. Different things, different blast radii; they
+should not read alike in a listing.
+
+### P2 — federation, pinned to one workflow file rather than one environment
+
+```bash
+gcloud iam workload-identity-pools providers create-oidc tenant-provisioning \
+  --project=branchleft-prod \
+  --location=global \
+  --workload-identity-pool=ghost-platform-gha \
+  --display-name="Tenant provisioning" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition='assertion.repository == "branchLeft/ghost-platform" && assertion.job_workflow_ref == "branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main" && assertion.event_name == "workflow_dispatch"'
+```
+
+A second provider in the pool `workloadIdentity.ts` already declares. Pools are
+free and a provider does not appear in the pool resource, so this does not
+collide with that stack's state.
+
+`job_workflow_ref` rather than the environment name alone: the `sub` claim
+carries `environment:<name>` only because a job declared that environment, and
+on this plan any job may declare any environment. Pinning the workflow file at
+`main` plus `workflow_dispatch` is what a routine push cannot satisfy, and it
+is enforced by GCP rather than by GitHub. The cost is that renaming that
+workflow file silently breaks provisioning.
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding \
+  ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com \
+  --project=branchleft-prod \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principal://iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/ghost-platform-gha/subject/repo:branchLeft/ghost-platform:environment:tenant-provisioning"
+```
+
+`principal://.../subject/...` — the exact subject, not
+`principalSet://.../attribute.repository/...`, which would admit every job in
+the repo. Read `<project-number>` from
+`gcloud projects describe branchleft-prod --format='value(projectNumber)'`.
+
+### P3 — identity administration
+
+```bash
+for ROLE in roles/iam.serviceAccountAdmin \
+            roles/iam.workloadIdentityPoolAdmin \
+            roles/resourcemanager.projectIamAdmin; do
+  gcloud projects add-iam-policy-binding branchleft-prod \
+    --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+    --role="$ROLE" --condition=None
+done
+```
+
+Unconditioned, deliberately. A conditioned `serviceAccountAdmin` grant cannot
+create, and creating tenant deployers is the whole job.
+
+### P4 — `roles/cloudsql.admin`, withheld
+
+**Do not run this until the provisioning plan guard is merged.**
+
+```bash
+# gcloud projects add-iam-policy-binding branchleft-prod \
+#   --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+#   --role="roles/cloudsql.admin" --condition=None
+```
+
+`cloudsql.users.create` exists only in this role, and the role also carries
+`cloudsql.instances.{update,delete}` on the one instance every tenant's data
+sits on. `database.ts`'s two deletion-protection flags do not stop it: the same
+role can clear the API-level flag first. The compensating control is a plan
+guard on every apply this identity makes, built from
+`scripts/assert-no-platform-deletes.py`'s protected set rather than the
+tenant-side one — `ghost-platform-db` appears nowhere in
+`assert-no-tenant-deletes.py`, correctly, because a tenant program never
+declares the instance. The guard must key on replacements as well as deletes;
+the platform script already does.
+
+Worth measuring before accepting the grant unconditioned: whether
+`cloudsql.users.create` authorises against the instance resource rather than
+the project, which would make an instance-scoped condition possible. Untested.
+Test it on a fresh principal holding one binding, with a second fresh principal
+on `expression=true` as a positive control in the same window — a revocation
+propagates more slowly than a grant, so a reused principal reports the
+condition before it.
+
+### P5 — key and bucket access
+
+```bash
+gcloud kms keys add-iam-policy-binding pulumi-secrets \
+  --keyring=pulumi --location=europe-west1 --project=branchleft-prod \
+  --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+  --role="roles/cloudkms.admin"
+
+gcloud iam roles create ghostPlatformStateBucketAdmin \
+  --project=branchleft-prod \
+  --title="Ghost platform state bucket admin" \
+  --description="Create per-tenant Pulumi state buckets and manage their IAM. No object access." \
+  --permissions=storage.buckets.create,storage.buckets.get,storage.buckets.getIamPolicy,storage.buckets.setIamPolicy \
+  --stage=GA
+
+gcloud projects add-iam-policy-binding branchleft-prod \
+  --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+  --role="projects/branchleft-prod/roles/ghostPlatformStateBucketAdmin" --condition=None
+
+gcloud storage buckets add-iam-policy-binding gs://branchleft-pulumi-state \
+  --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+```
+
+`cloudkms.admin` at key scope, never project scope. The custom role instead of
+a predefined storage role because every predefined one that carries
+`buckets.setIamPolicy` also reaches object contents; `storage.buckets.create`
+exists only at project scope, so it cannot be narrowed further.
+
+The last binding is for the provisioning stack's *own* state in the shared
+bucket. Object access to each tenant's bucket is granted by the provisioning
+program as it creates that bucket, not here.
+
+### P6 — the package-read token
+
+One platform-held classic PAT with `read:packages`, copied by the provisioning
+workflow into every generated repo. Not one per tenant: GitHub Packages accepts
+only classic PATs and no API mints one, so a per-tenant token is unavoidably a
+per-tenant manual step — the exact thing this design exists to remove.
+
+The cost, accepted knowingly: a classic PAT cannot be scoped to one repository,
+so this token reads every package the creating account can reach, and its
+compromise reaches every tenant repo at once.
+
+Create it at Settings → Developer settings → Personal access tokens → Tokens
+(classic), scope `read:packages`, **90-day expiry — not "no expiration"**, then:
+
+```bash
+gh secret set GH_PAT_GHOST_PLATFORM_READ --repo branchLeft/ghost-platform --body "<the PAT>"
+```
+
+Repo-level, not org-level: org secrets are invisible to private repos on this
+plan and resolve to an empty string with no error.
+
+**Rotation, every 90 days.** Mint the replacement before revoking the old one,
+then fan it out:
+
+```bash
+gh secret set GH_PAT_GHOST_PLATFORM_READ --repo branchLeft/ghost-platform --body "<new PAT>"
+for REPO in $(gh repo list branchLeft --limit 100 --json name --jq '.[].name'); do
+  if gh secret list --repo "branchLeft/$REPO" 2>/dev/null | grep -q GH_PAT_GHOST_PLATFORM_READ; then
+    gh secret set GH_PAT_GHOST_PLATFORM_READ --repo "branchLeft/$REPO" --body "<new PAT>"
+  fi
+done
+```
+
+Discovering the fan-out set by reading which repos hold the secret, rather than
+from a list someone maintains, is deliberate: a tenant repo missed by a stale
+list fails at `npm ci` on its next run, loudly but well after the rotation
+looked done. Revoke the old token only once the loop has run and one tenant
+repo's CI has passed on the new one.
+
+The whole step disappears when this repo goes public — a public package needs
+no token.
+
+### Verifying the environment gate — this is the blocker
+
+The design puts the provisioning workflow behind a GitHub environment with a
+required reviewer. **On GitHub Free with a private repository that protection
+is documented as unavailable**, and this org has already been caught twice by
+the same class of gap (org secrets invisible to private repos; branch
+protection 403). It has not been verified live, because doing so is a repo
+settings change.
+
+Settle it before building the workflow:
+
+```bash
+ROB_ID=$(gh api /users/Rob-branchLeft --jq .id)
+printf '{"reviewers":[{"type":"User","id":%s}]}' "$ROB_ID" \
+  | gh api -X PUT /repos/branchLeft/ghost-platform/environments/tenant-provisioning --input -
+```
+
+The nested array will not survive `gh api -f`/`-F`, hence `--input`. This
+creates the environment if it does not exist, so it is the setup step and the
+test in one.
+
+- **Rejected (422/403 naming the plan)** — the gate does not exist. The
+  workflow must not be written as though it does; the options are making this
+  repo public, GitHub Enterprise (Team and Pro do not carry it either), or
+  accepting `workflow_dispatch` on a write-access-only repo as the gate, which
+  is what P2's `attributeCondition` is already shaped for.
+- **Accepted** — read it back and then prove it enforces, rather than trusting
+  the write:
+
+  ```bash
+  gh api /repos/branchLeft/ghost-platform/environments/tenant-provisioning \
+    --jq '.protection_rules'
+  ```
+
+  A `required_reviewers` entry must be present. Then run any workflow job that
+  declares `environment: tenant-provisioning` and confirm the run *waits*. A
+  configured rule that does not pause the run is the failure mode worth
+  catching — it looks like a gate in every listing and gates nothing.

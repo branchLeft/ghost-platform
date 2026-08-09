@@ -42,6 +42,14 @@ const requiredServices = [
   // reason as storage.googleapis.com above: a from-scratch project shouldn't
   // depend on another repo's stack having turned it on.
   'secretmanager.googleapis.com',
+  // No resource in *this* program needs it. It is here because a tenant
+  // program's Cloud Run service does, and tenant programs no longer enable
+  // their own APIs -- doing so was the whole reason each tenant deployer held
+  // `roles/serviceusage.serviceUsageAdmin`, which also permits changing
+  // project quotas and consumer policies. Enabling it once here removes that
+  // role from every tenant deployer. This is the only service in a tenant
+  // program's list that was not already covered above.
+  'run.googleapis.com',
   // Deliberately NOT declared: `sts.googleapis.com`. It is the obvious
   // fourth entry for a WIF setup and it is not needed -- verified against
   // this project rather than assumed: `gcloud services list --enabled
