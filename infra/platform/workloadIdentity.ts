@@ -9,10 +9,9 @@ import { enabledApis } from './apis';
  * apply this stack with a short-lived, exchanged token and no long-lived
  * service-account key ever exists.
  *
- * Same construction as website/infra/workloadIdentity.ts, which has been
- * running this project's production deploys since 2026-08-01 -- but with its
- * own pool (see config.ts: `github-actions` is already taken in
- * `branchleft-prod`) and its own repository condition.
+ * Same construction the marketing site's stack uses, but with its own pool
+ * (see config.ts: the obvious pool ID is already taken in this project) and
+ * its own repository condition.
  */
 export const pool = new gcp.iam.WorkloadIdentityPool(
   'ghost-platform-gha-pool',

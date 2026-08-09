@@ -124,57 +124,38 @@ for (const [name, role] of projectRoles) {
 }
 
 /**
- * Media bucket access -- **bucket-scoped, not project-scoped**, and the
- * reasoning matters more than the one-line change.
+ * Media bucket access -- **bucket-scoped, not project-scoped**.
  *
- * The first version of this file granted `roles/storage.admin` on the
- * *project*, on the argument that it is the only GA non-legacy predefined
- * role holding both `storage.buckets.update` and
- * `storage.buckets.setIamPolicy`, which the media bucket and its allUsers
- * reader binding need. That reasoning was right about the role and wrong
- * about the scope, and the gap it left is not theoretical:
+ * `roles/storage.admin` is the only GA non-legacy predefined role holding
+ * both `storage.buckets.update` and `storage.buckets.setIamPolicy`, which
+ * the media bucket and its allUsers reader binding need. Granting it at
+ * *project* scope would be far wider than that: every stack in this project
+ * keeps its Pulumi state in one shared bucket, so a project-level storage
+ * role would let a compromised workflow run here delete or corrupt the
+ * marketing site's and the shared edge's state files -- from a repo that
+ * owns neither.
  *
- * `gs://branchleft-pulumi-state` is the only bucket in `branchleft-prod`
- * (verified: `gcloud storage ls --project=branchleft-prod` returns exactly
- * one bucket), and it holds the Pulumi state for four stacks --
- * `branchleft-ghost-platform`, `branchleft-shared-infra`,
- * `branchleft-website-infra` and `ghost-platform-tenant-smoke-test`
- * (verified: `gcloud storage ls gs://branchleft-pulumi-state/.pulumi/stacks/`).
- * A project-level storage role therefore hands this repo's CI the ability to
- * delete or corrupt the *website* and *shared-infra* stacks' state files. A
- * compromised workflow run here would take out the marketing site's and the
- * shared edge's ability to deploy, from a repo that owns neither. That is a
- * strictly wider grant than the precedent it claimed to follow:
- * website/infra's own deployer only ever received a *bucket-scoped*
- * `roles/storage.objectAdmin` on this bucket (KNOWN_ISSUES.md).
- *
- * So the grant moves to the one bucket this stack actually owns. Two
+ * So the grant is scoped to the one bucket this stack owns. Two
  * consequences, both deliberate:
  *
- * 1. **CI can no longer reach the Pulumi state bucket via this role**, which
- *    makes RUNBOOK-bootstrap.md's explicit `gcloud storage buckets
- *    add-iam-policy-binding` on `gs://branchleft-pulumi-state` genuinely
- *    load-bearing and genuinely irreducible -- exactly the chicken-and-egg
- *    KNOWN_ISSUES.md describes, rather than the redundant belt-and-braces
- *    step the earlier version of that runbook (honestly, but wrongly)
- *    described it as.
+ * 1. **CI can no longer reach the Pulumi state bucket via this role.** The
+ *    explicit state-bucket binding in RUNBOOK-bootstrap.md is therefore
+ *    load-bearing and irreducible, not belt-and-braces.
  * 2. **CI can no longer create a bucket at all.** `storage.buckets.create`
- *    only exists at project scope. The platform owner's bootstrap apply creates the media
- *    bucket under their own credentials; CI only ever updates it. Same shape
- *    as `roles/cloudsql.editor` above, and the same tradeoff -- a change
- *    that *replaces* the bucket 403s in CI, which is the correct outcome for
- *    a resource holding every tenant's media.
+ *    only exists at project scope. The bootstrap apply creates the media
+ *    bucket under the platform owner's own credentials; CI only ever updates
+ *    it. Same shape as `roles/cloudsql.editor` above, and the same tradeoff
+ *    -- a change that *replaces* the bucket 403s in CI, which is the correct
+ *    outcome for a resource holding every tenant's media.
  *
  * **Why `roles/storage.legacyBucketOwner` and not bucket-scoped
- * `roles/storage.admin`.** An earlier revision rejected legacyBucketOwner,
- * on the grounds that it grants `storage.objects.{create,delete,list}` --
- * true, but that objection was about granting it at *project* level, where
- * those object permissions spread across every bucket including the state
- * bucket. At bucket scope the objection largely evaporates, and what is left
- * is a real gain: legacyBucketOwner holds `storage.buckets.{get,getIamPolicy,setIamPolicy,
- * update}` -- everything this program needs -- and **not
- * `storage.buckets.delete`**, which bucket-scoped `storage.admin` would
- * carry. The media bucket is the one resource in this stack with no
+ * `roles/storage.admin`.** legacyBucketOwner holds
+ * `storage.buckets.{get,getIamPolicy,setIamPolicy,update}` -- everything
+ * this program needs -- and **not `storage.buckets.delete`**, which
+ * bucket-scoped `storage.admin` would carry. Its `storage.objects.*`
+ * permissions are not a concern at bucket scope, only at project scope where
+ * they would spread across every bucket including the state bucket. The
+ * media bucket is the one resource in this stack with no
  * deletion-protection field of any kind (it is the reason
  * scripts/assert-no-platform-deletes.py exists), so removing the delete
  * permission outright is the single most valuable narrowing available here.

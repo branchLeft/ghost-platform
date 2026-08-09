@@ -2,9 +2,8 @@ name: Push tenant image
 
 # Builds the tenant Ghost image and pushes it to this platform's Artifact
 # Registry repository on every merge to `main`, tagged with the git SHA and
-# `latest`. This is the "registry push is still its own story" story
-# build.yml's header points at (S11) -- a real, pullable image digest for
-# S12's tenant Cloud Run services to reference.
+# `latest`, so a tenant's Cloud Run service has a real, pullable image
+# digest to reference.
 #
 # Deliberately its own workflow, not a job bolted onto build.yml. build.yml's
 # `build` job runs on every PR, including from forks, and stays completely
@@ -24,35 +23,26 @@ name: Push tenant image
 # which commit/ref is actually checked out. A second `docker build` on the
 # same commit is the boring, verifiable choice.
 #
-# Registry path: europe-west1-docker.pkg.dev/branchleft-prod/ghost-platform-tenant
-# -- `region` and `projectId` from infra/platform/config.ts, and
-# `tenantImageRepositoryId` (`ghost-platform-tenant`) from the same file, the
-# same three values infra/platform/index.ts joins into
-# `tenantImageRepositoryDockerPath`. Hardcoded here rather than read from a
-# Pulumi stack output, the same way config.ts hardcodes them: these are fixed
-# platform-level identifiers (doc 02's UK/EU residency decision; one registry
-# for the whole platform), not per-environment config, and this workflow has
-# no other reason to run Pulumi. If they ever change, this file and
-# config.ts change together -- there is no single source of truth to import
-# from a plain GitHub Actions workflow.
+# The registry path mirrors the `region`, `projectId` and
+# `tenantImageRepositoryId` that infra/platform/index.ts joins into
+# `tenantImageRepositoryDockerPath`. It is composed here rather than read
+# from a Pulumi stack output because a plain Actions workflow has no way to
+# import that value and no other reason to run Pulumi -- so if the region or
+# repository ID ever changes, this file and config.ts change together. The
+# region is pinned to europe-west1 by the platform's UK/EU data-residency
+# requirement.
 #
-# Image name within the repository: `ghost`. Not decided anywhere upstream --
-# index.ts's comment on `tenantImageRepositoryDockerPath` says explicitly
-# that "which image name the tenant container uses is a later story's
-# decision, not this platform stack's." This is that decision, made here
-# because S12 (tenant provisioning) needs a name to reference. The
-# repository holds nothing but the tenant Ghost image, so `ghost` is
+# Image name within the repository: `ghost`. The
 # unambiguous.
 #
 # Credentials: Workload Identity Federation only, via the same deployer
 # service account and the same three repo variables
 # infra-platform-ci.yml already authenticates with (GCP_PROJECT_ID,
 # GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_DEPLOYER_SA_EMAIL -- set once in
-# infra/platform/RUNBOOK-bootstrap.md step 5, verified live via
-# `gh variable list --repo branchLeft/ghost-platform` on 2026-08-08). No new
-# identity, no service-account key, ever.
+# infra/platform/RUNBOOK-bootstrap.md step 5). No new identity, no
+# service-account key, ever.
 #
-# Permission sufficiency, verified rather than assumed against the live IAM
+# Permission sufficiency, against the live IAM
 # API, not inferred from the role's name (2026-08-08):
 #
 #   gcloud iam roles describe roles/artifactregistry.admin \
@@ -61,11 +51,10 @@ name: Push tenant image
 # includes `artifactregistry.repositories.uploadArtifacts` and
 # `artifactregistry.files.upload` -- the permissions `docker push` needs --
 # alongside `repositories.get` and `dockerimages.{get,list}`, which
-# `docker-credential-gcloud`'s auth handshake and any later `docker pull`
-# (S12) need too. The deployer SA already holds this role project-wide
-# (infra/platform/serviceAccounts.ts, granted for registry.ts's `update`
-# needs). No new IAM grant required for this story -- see the PR description
-# for the full permission list this was checked against.
+# `docker-credential-gcloud`'s auth handshake and a tenant's later
+# `docker pull` need too. The deployer SA already holds this role
+# project-wide (infra/platform/serviceAccounts.ts, granted for registry.ts's
+# `update` needs), so this workflow requires no new IAM grant.
 
 on:
   push:
@@ -97,7 +86,7 @@ jobs:
       id-token: write
 
     env:
-      IMAGE: europe-west1-docker.pkg.dev/branchleft-prod/ghost-platform-tenant/ghost
+      IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ghost-platform-tenant/ghost
 
     steps:
       - name: Checkout
