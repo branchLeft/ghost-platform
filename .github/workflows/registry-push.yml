@@ -24,24 +24,16 @@ name: Push tenant image
 # which commit/ref is actually checked out. A second `docker build` on the
 # same commit is the boring, verifiable choice.
 #
-# Registry path: europe-west1-docker.pkg.dev/branchleft-prod/ghost-platform-tenant
-# -- `region` and `projectId` from infra/platform/config.ts, and
-# `tenantImageRepositoryId` (`ghost-platform-tenant`) from the same file, the
-# same three values infra/platform/index.ts joins into
-# `tenantImageRepositoryDockerPath`. Hardcoded here rather than read from a
-# Pulumi stack output, the same way config.ts hardcodes them: these are fixed
-# platform-level identifiers (doc 02's UK/EU residency decision; one registry
-# for the whole platform), not per-environment config, and this workflow has
-# no other reason to run Pulumi. If they ever change, this file and
-# config.ts change together -- there is no single source of truth to import
-# from a plain GitHub Actions workflow.
+# The registry path mirrors the `region`, `projectId` and
+# `tenantImageRepositoryId` that infra/platform/index.ts joins into
+# `tenantImageRepositoryDockerPath`. It is composed here rather than read
+# from a Pulumi stack output because a plain Actions workflow has no way to
+# import that value and no other reason to run Pulumi -- so if the region or
+# repository ID ever changes, this file and config.ts change together. The
+# region is pinned to europe-west1 by the platform's UK/EU data-residency
+# requirement.
 #
-# Image name within the repository: `ghost`. Not decided anywhere upstream --
-# index.ts's comment on `tenantImageRepositoryDockerPath` says explicitly
-# that "which image name the tenant container uses is a later story's
-# decision, not this platform stack's." This is that decision, made here
-# because S12 (tenant provisioning) needs a name to reference. The
-# repository holds nothing but the tenant Ghost image, so `ghost` is
+# Image name within the repository: `ghost`. The
 # unambiguous.
 #
 # Credentials: Workload Identity Federation only, via the same deployer
@@ -97,7 +89,7 @@ jobs:
       id-token: write
 
     env:
-      IMAGE: europe-west1-docker.pkg.dev/branchleft-prod/ghost-platform-tenant/ghost
+      IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ghost-platform-tenant/ghost
 
     steps:
       - name: Checkout

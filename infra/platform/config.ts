@@ -40,16 +40,13 @@ export const githubRepo = 'branchLeft/ghost-platform';
 
 // Workload Identity Pool ID for this repo's CI identity.
 //
-// **Not `github-actions`**, even though that is the obvious name and the one
-// website/infra uses. Pool IDs are unique per project, and `branchleft-prod`
-// already has a pool with that exact ID -- created by website/infra, verified
-// live with `gcloud iam workload-identity-pools list --location=global
-// --project=branchleft-prod`, which returns one ACTIVE pool whose resource
-// name ends `/workloadIdentityPools/github-actions`. Declaring a second
-// resource with the same ID here would have collided on the very first apply.
+// **Not `github-actions`**, even though that is the obvious name: pool IDs
+// are unique per project, and the marketing site's stack already holds a
+// pool with that exact ID. Declaring a second resource with the same ID
+// here would collide on the first apply.
 //
-// A separate pool rather than a second provider inside website's pool: a
-// provider added to that pool would live in website's Pulumi state, making
-// this repo's CI credentials a dependency of a different repo's stack. Pools
-// are free, so the coupling buys nothing.
+// A separate pool rather than a second provider inside that pool: a provider
+// added to it would live in the other stack's Pulumi state, making this
+// repo's CI credentials a dependency of a different repo's stack. Pools are
+// free, so the coupling buys nothing.
 export const workloadIdentityPoolId = 'ghost-platform-gha';
