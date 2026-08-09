@@ -192,7 +192,13 @@ jobs:
           set -euo pipefail
           npm ci
           pulumi login gs://branchleft-pulumi-state
-          pulumi stack select "$TENANT" --create
+          # A new stack on a filestate backend needs a secrets manager named at
+          # creation. The default is the passphrase provider, which then
+          # demands PULUMI_CONFIG_PASSPHRASE and fails closed in CI. Same key
+          # the tenant stack below initialises with; the provisioning identity
+          # holds cloudkms.admin on it and on nothing else.
+          pulumi stack select "$TENANT" --create \
+            --secrets-provider="gcpkms://projects/${GCP_PROJECT}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
           pulumi config set gcp:project "$GCP_PROJECT"
           pulumi config set tenantName "$TENANT"
           pulumi config set tenantGithubRepo "$TENANT_REPO"
