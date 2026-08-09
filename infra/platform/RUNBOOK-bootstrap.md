@@ -846,10 +846,27 @@ Derived from what a `GhostTenant` instantiation declares, not from role names:
 | `gcp.storage.HmacKey` | `storage.hmacKeys.create` | `roles/storage.hmacKeyAdmin` |
 | `gcp.storage.BucketIAMMember` ×2 on the media bucket | `storage.buckets.setIamPolicy` | bucket-scoped grant |
 | `gcp.cloudrunv2.Service` | `run.services.create` | `roles/run.developer` |
+| `gcp.cloudrunv2.Service` (`template.serviceAccount`) | `iam.serviceAccounts.actAs` **on the runtime SA** | `roles/iam.serviceAccountUser` |
 | `gcp.cloudrunv2.ServiceIamMember` (public invoker) | `run.services.setIamPolicy` | `roles/run.admin` |
 
+**The `actAs` row is the one this table's own method could not produce, and it
+is worth understanding why.** Every other row comes from a resource the tenant
+program declares. `actAs` is declared by nothing: it is an implicit precondition
+of creating a Cloud Run service whose `template.serviceAccount` names an
+identity, enforced against the *caller*. Deriving required permissions from
+declared resources misses every permission of that shape.
+
+`iam.serviceAccountAdmin`, which P3 grants, does not carry it — the same
+management-versus-use split as `cloudkms.admin` in P5, and the second time this
+bootstrap has been caught by it.
+
+The tenant program does create a scoped `actAs` binding on the runtime service
+account, but it names the *deployer*, and the first apply runs as the
+*provisioner*. The binding is correct for every CI run after the first and
+insufficient for the first.
+
 ```bash
-for ROLE in roles/secretmanager.admin roles/storage.hmacKeyAdmin roles/run.admin; do
+for ROLE in roles/secretmanager.admin roles/storage.hmacKeyAdmin roles/run.admin roles/iam.serviceAccountUser; do
   gcloud projects add-iam-policy-binding branchleft-prod \
     --member="serviceAccount:ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com" \
     --role="$ROLE" --condition=None
@@ -858,6 +875,26 @@ done
 
 `run.admin` rather than `run.developer`: the public invoker binding needs
 `run.services.setIamPolicy`, which developer does not hold.
+
+**`iam.serviceAccountUser` is granted at project scope, and that is a real
+residual rather than an oversight.** It confers `actAs` on every service
+account in the project, including the platform deployer and every other
+tenant's. It is not confinable: a resource-name condition on a service account
+must use the `projects/-/serviceAccounts/<numeric-unique-id>` form, and the id
+of an account this grant exists to create does not exist when the binding is
+written.
+
+What makes it acceptable is that it adds no capability. This identity already
+holds `resourcemanager.projectIamAdmin` and can grant itself this role — or any
+other — at any moment. The bound on it is reachability, not role list: one
+workflow, dispatch-only, behind a required reviewer, behind a federation
+condition pinned to that workflow file.
+
+The narrower fix is for the tenant component to declare the provisioner as a
+second member of the runtime service account's own `actAs` binding, ordered
+ahead of the Cloud Run service. That requires the binding to move inside the
+published component, so it belongs with the next package release rather than
+mid-bootstrap.
 
 **No grant on the media bucket.** An earlier version of this runbook granted
 `roles/storage.legacyBucketOwner` there, which was wrong twice over. That role
