@@ -12,10 +12,17 @@ name: Publish tenant package
 # never runs `tsc --noEmit` on its own, so the two can't race or duplicate
 # each other's failure modes.
 
+# `workflow_dispatch` is the escape hatch for a tag push that produced no run
+# at all. GitHub honours `[skip ci]` in the head commit's message for tag
+# pushes as well as branch pushes, and `main`'s head is usually the graphify
+# bot's `[skip ci]` commit -- so a tag cut from `origin/main` normally lands on
+# it and is silently skipped. There is no failed run to notice: the only
+# symptom is the version never appearing in the registry.
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -40,6 +47,19 @@ jobs:
           scope: '@branchleft'
           cache: npm
           cache-dependency-path: infra/tenant/package-lock.json
+
+      # `npm publish` takes the version from package.json and ignores the tag,
+      # so the two can disagree. A tag behind package.json fails closed on the
+      # duplicate-version check, but a tag *ahead* of it would quietly publish
+      # something other than what the tag names.
+      - name: Refuse a tag that disagrees with package.json
+        if: github.event_name == 'push'
+        run: |
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_NAME}" != "v${PACKAGE_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} names a different version than package.json (${PACKAGE_VERSION}). Nothing published."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm ci
