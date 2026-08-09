@@ -845,14 +845,22 @@ Derived from what a `GhostTenant` instantiation declares, not from role names:
 | `gcp.storage.BucketIAMMember` ×2 on the media bucket | `storage.buckets.setIamPolicy` | bucket-scoped grant |
 | `gcp.cloudrunv2.Service` | `run.services.create` | `roles/run.developer` |
 | `gcp.cloudrunv2.Service` (`template.serviceAccount`) | `iam.serviceAccounts.actAs` **on the runtime SA** | `roles/iam.serviceAccountUser` |
+| `gcp.cloudrunv2.Service` (`template.containers[].image`) | `artifactregistry.repositories.downloadArtifacts` **on the image's repository** | `roles/artifactregistry.reader` |
 | `gcp.cloudrunv2.ServiceIamMember` (public invoker) | `run.services.setIamPolicy` | `roles/run.admin` |
 
-**The `actAs` row is the one this table's own method could not produce, and it
-is worth understanding why.** Every other row comes from a resource the tenant
-program declares. `actAs` is declared by nothing: it is an implicit precondition
-of creating a Cloud Run service whose `template.serviceAccount` names an
-identity, enforced against the *caller*. Deriving required permissions from
-declared resources misses every permission of that shape.
+**The `actAs` and `downloadArtifacts` rows are the ones this table's own method
+could not produce, and it is worth understanding why.** Every other row comes
+from a resource the tenant program declares. Neither of these is declared by
+anything: each is an implicit precondition of creating a Cloud Run service —
+one from `template.serviceAccount` naming an identity, one from
+`template.containers[].image` naming an image — and both are enforced against
+the *caller*. Deriving required permissions from declared resources misses every
+permission of that shape, and it has now missed two.
+
+`downloadArtifacts` is enforced against the caller even though the *pull* is
+done by the Cloud Run service agent, which already holds it via
+`roles/run.serviceAgent`. A healthy service agent is therefore no evidence the
+deploy will succeed.
 
 `iam.serviceAccountAdmin`, which P3 grants, does not carry it — the same
 management-versus-use split as `cloudkms.admin` in P5, and the second time this

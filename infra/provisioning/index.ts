@@ -101,10 +101,24 @@ export const deployerImpersonation = new gcp.serviceaccount.IAMMember(
  * `roles/serviceusage.serviceUsageAdmin` is deliberately absent — the tenant
  * program no longer enables APIs, which is the whole reason it used to be
  * here. That role also permits changing project quotas and consumer policies.
+ *
+ * `roles/artifactregistry.reader` is not derivable that way, and its absence
+ * cost a failed first apply: Cloud Run checks at deploy time that the *caller*
+ * can read the image, so the deployer needs it even though nothing in the
+ * tenant program declares an Artifact Registry resource. Deriving roles from
+ * declared resources cannot see a caller-side permission — the same blind spot
+ * that hid `iam.serviceAccounts.actAs` (RUNBOOK-bootstrap.md P7).
+ *
+ * Project-level rather than scoped to the one repository: granting at the
+ * repository would need `artifactregistry.repositories.setIamPolicy`, which
+ * this provisioning identity deliberately does not hold. The scope this gives
+ * up is small — every tenant runs the same image, so there is nothing in this
+ * registry one tenant may read and another may not.
  */
 const deployerProjectRoles: Array<[string, string]> = [
   ['cloudsql-editor', 'roles/cloudsql.editor'],
   ['run-developer', 'roles/run.developer'],
+  ['artifactregistry-reader', 'roles/artifactregistry.reader'],
 ];
 
 for (const [suffix, role] of deployerProjectRoles) {
