@@ -306,14 +306,14 @@
     "11": [
       "gcp_kms_pulumi_secrets",
       "ghost_platform_deployer_sa",
-      "ghost_platform_tenant_template",
       "ghost_tenant_provisioner_sa",
       "github_workflows_provision_tenant",
-      "github_workflows_publish_tenant_package",
       "infra_platform_runbook_bootstrap",
-      "infra_provisioning",
-      "infra_tenant",
-      "pulumi_state_bucket"
+      "infra_provisioning_pulumi",
+      "pulumi_state_bucket_shared",
+      "tenant_repo_template",
+      "tenant_scripts_assert_no_tenant_deletes",
+      "tenant_scripts_assert_placeholders_substituted"
     ],
     "12": [
       "contributing",
@@ -328,76 +328,89 @@
       "docker_entrypoint_branchleft_sh__entry"
     ],
     "14": [
+      "infra_provisioning_scripts_restore_stack_secrets_config",
+      "infra_provisioning_scripts_restore_stack_secrets_config_main",
+      "infra_provisioning_scripts_restore_stack_secrets_config_restore",
+      "path"
+    ],
+    "15": [
       "scripts_test_storage_guard",
       "scripts_test_storage_guard_assert_blocked",
       "scripts_test_storage_guard_assert_boots",
       "scripts_test_storage_guard_sh__entry"
     ],
-    "15": [
+    "16": [
       "actions_checkout",
       "actions_setup_node",
       "github_workflows_infra_tenant_ci_yml_workflow"
     ],
-    "16": [
+    "17": [
       "scripts_smoke_test",
       "scripts_smoke_test_cleanup",
       "scripts_smoke_test_sh__entry"
     ],
-    "17": [
+    "18": [
       "gcp_artifact_registry",
       "github_workflows_registry_push_yml"
     ],
-    "18": [
+    "19": [
       "gcp_workload_identity_federation",
       "github_workflows_infra_platform_ci"
     ],
-    "19": [
+    "20": [
+      "github_workflows_publish_tenant_package",
+      "infra_tenant"
+    ],
+    "21": [
       "infra_platform_pulumi_platform_stack_config",
       "infra_platform_pulumi_project"
     ],
-    "20": [
+    "22": [
       "claude_md"
     ],
-    "21": [
+    "23": [
       "eslint_config"
     ],
-    "22": [
+    "24": [
       "gcp_cloud_run"
     ],
-    "23": [
+    "25": [
       "gcp_cloud_sql"
     ],
-    "24": [
+    "26": [
       "gcp_storage_bucket"
     ],
-    "25": [
+    "27": [
       "ghost_official_image"
     ],
-    "26": [
-      "github_workflows_build"
-    ],
-    "27": [
-      "github_workflows_codeql"
-    ],
     "28": [
-      "github_workflows_docs_lint"
+      "ghost_platform_tenant_template"
     ],
     "29": [
-      "github_workflows_graphify_workflow"
+      "github_workflows_build"
     ],
     "30": [
-      "infra_provisioning_pulumi"
+      "github_workflows_codeql"
     ],
     "31": [
-      "infra_readme"
+      "github_workflows_docs_lint"
     ],
     "32": [
-      "infra_tenant_smoke_test_readme"
+      "github_workflows_graphify_workflow"
     ],
     "33": [
-      "pulumi_platform_stack"
+      "infra_readme"
     ],
     "34": [
+      "infra_tenant_smoke_test_readme"
+    ],
+    "35": [
+      "pulumi_platform_stack"
+    ],
+    "36": [
+      "pulumi_state_bucket"
+    ],
+    "37": [
       "readme"
     ]
   },
@@ -416,10 +429,10 @@
     "11": 0.2222222222222222,
     "12": 0.5,
     "13": 0.5,
-    "14": 0.8333333333333334,
-    "15": 0.6666666666666666,
+    "14": 0.6666666666666666,
+    "15": 0.8333333333333334,
     "16": 0.6666666666666666,
-    "17": 1.0,
+    "17": 0.6666666666666666,
     "18": 1.0,
     "19": 1.0,
     "20": 1.0,
@@ -436,7 +449,10 @@
     "31": 1.0,
     "32": 1.0,
     "33": 1.0,
-    "34": 1.0
+    "34": 1.0,
+    "35": 1.0,
+    "36": 1.0,
+    "37": 1.0
   },
   "gods": [
     {
@@ -457,6 +473,11 @@
     {
       "id": "infra_platform_apis_enabledapis",
       "label": "enabledApis",
+      "degree": 7
+    },
+    {
+      "id": "github_workflows_provision_tenant",
+      "label": "Provision tenant",
       "degree": 7
     },
     {
@@ -483,39 +504,23 @@
       "id": "infra_platform_scripts_assert_no_platform_deletes_self_test",
       "label": "self_test()",
       "degree": 5
-    },
-    {
-      "id": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
-      "label": "verify_coverage()",
-      "degree": 5
     }
   ],
   "surprises": [
     {
-      "source": "Provision tenant workflow",
-      "target": "Ghost Tenant Provisioner Service Account",
+      "source": "Provision tenant",
+      "target": "Pulumi Secrets KMS Key",
       "source_files": [
         ".github/workflows/provision-tenant.yml",
         "infra/platform/RUNBOOK-bootstrap.md"
       ],
-      "confidence": "INFERRED",
-      "relation": "references",
-      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; peripheral node `Ghost Tenant Provisioner Service Account` unexpectedly reaches hub `Provision tenant workflow`"
-    },
-    {
-      "source": "Provision tenant workflow",
-      "target": "Ghost Tenant Template Repo",
-      "source_files": [
-        ".github/workflows/provision-tenant.yml",
-        "infra/README.md"
-      ],
       "confidence": "EXTRACTED",
       "relation": "references",
-      "why": "connects across different repos/directories; peripheral node `Ghost Tenant Template Repo` unexpectedly reaches hub `Provision tenant workflow`"
+      "why": "connects across different repos/directories; peripheral node `Pulumi Secrets KMS Key` unexpectedly reaches hub `Provision tenant`"
     },
     {
       "source": "Bootstrap Runbook",
-      "target": "Provision tenant workflow",
+      "target": "Provision tenant",
       "source_files": [
         "infra/platform/RUNBOOK-bootstrap.md",
         ".github/workflows/provision-tenant.yml"
@@ -545,10 +550,21 @@
       "confidence": "EXTRACTED",
       "relation": "calls",
       "why": "cross-file semantic connection"
+    },
+    {
+      "source": "createTenantStorage()",
+      "target": "secretWithValue()",
+      "source_files": [
+        "infra/tenant/storage.ts",
+        "infra/tenant/secrets.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "cross-file semantic connection"
     }
   ],
   "tokens": {
-    "input": 20610,
-    "output": 1734
+    "input": 6001,
+    "output": 1094
   }
 }
