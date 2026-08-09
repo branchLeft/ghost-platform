@@ -770,21 +770,29 @@ The last binding is for the provisioning stack's own state in the shared
 bucket — object access to each tenant's bucket is granted by the provisioning
 program as it creates that bucket.
 
-### P6 — the two platform-held tokens
+### P6 — the platform-held token
 
-**`GH_PAT_GHOST_PLATFORM_READ`** — classic PAT, `read:packages`, copied into
-every generated repo. Not one per tenant: GitHub Packages accepts only classic
-PATs and no API mints one, so a per-tenant token is unavoidably a per-tenant
-manual step.
+There is one. `GH_PAT_GHOST_PLATFORM_READ` is gone, and nothing is copied into
+a generated repo: `@branchleft/ghost-platform-tenant` is a **public** package,
+and a workflow's own `GITHUB_TOKEN` can read a public package from any
+repository. Tenants install with `NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`
+and hold no long-lived credential.
 
-**This does not go away when the repo becomes public, and an earlier version of
-this runbook said it would.** Measured against `@branchleft/components`, which
-is published from a public repo: an unauthenticated `npm install` fails with
-`401 Unauthorized ... authentication token not provided`, and a direct
-unauthenticated fetch of the tarball returns 401. GitHub's own npm-registry
-documentation agrees — *"You need an access token to publish, install, and
-delete private, internal, and public packages."* Public visibility changes the
-gate story; it does not change this.
+An earlier version of this section argued the read PAT was unavoidable, from a
+measurement that an *unauthenticated* install returns 401. That much is true and
+still is — the registry rejects anonymous requests for public packages, which is
+why a token is named at all. What it did not test was the case in between:
+authenticated, but not a PAT. That case works, and it is the one that matters,
+because it is the difference between every tenant repo holding a copy of a
+platform credential and none of them holding anything.
+
+Two consequences worth keeping:
+
+- A half-provisioned tenant repo is no longer itself a live credential. It is
+  still worth deleting, but deleting it is no longer urgent.
+- If the package is ever made private again, this breaks everywhere at once,
+  and only on a cold npm cache — a warm cache serves the tarball without
+  contacting the registry, so the failure can appear days after the change.
 
 **`GH_PAT_TENANT_PROVISIONING`** — the credential the provisioning workflow
 writes to generated repositories with. The default `GITHUB_TOKEN` is scoped to
@@ -798,30 +806,20 @@ the very last step. The handover branch carries the `__TENANT_NAME__`
 substitution into `.github/workflows/infra-ci.yml`, and GitHub refuses a push
 that changes a workflow file from a token without that scope. A token missing it
 provisions the identity, the state bucket, the repo and the first apply
-successfully, then fails on `git push` — leaving every artefact in place and a
-generated repo already holding a copy of `GH_PAT_GHOST_PLATFORM_READ`. Re-check
+successfully, then fails on `git push` — leaving every artefact in place. Re-check
 the scope at every rotation, not just at first mint.
 
-Both repo-level, never org-level — an org secret is invisible to a private repo
-on this plan and resolves to an empty string with no error.
+Repo-level, never org-level — an org secret is invisible to a private repo on
+this plan and resolves to an empty string with no error.
 
 ```bash
-gh secret set GH_PAT_GHOST_PLATFORM_READ --repo branchLeft/ghost-platform --body "<the PAT>"
 gh secret set GH_PAT_TENANT_PROVISIONING --repo branchLeft/ghost-platform --body "<the PAT>"
 ```
 
-**90-day expiry on both — not "no expiration".** Rotation, for the read token,
-mints the replacement before revoking the old one and discovers its fan-out set
-by reading which repos hold it rather than from a list someone maintains:
-
-```bash
-gh secret set GH_PAT_GHOST_PLATFORM_READ --repo branchLeft/ghost-platform --body "<new PAT>"
-for REPO in $(gh repo list branchLeft --limit 100 --json name --jq '.[].name'); do
-  if gh secret list --repo "branchLeft/$REPO" 2>/dev/null | grep -q GH_PAT_GHOST_PLATFORM_READ; then
-    gh secret set GH_PAT_GHOST_PLATFORM_READ --repo "branchLeft/$REPO" --body "<new PAT>"
-  fi
-done
-```
+**90-day expiry, not "no expiration".** Expiry is silent: nothing warns, and the
+first symptom is a step that has worked for weeks returning 401. Rotation is a
+single `gh secret set` — there is no fan-out set to chase now that no token is
+copied into tenant repos.
 
 A tenant repo missed by a stale list fails at `npm ci` on its next run, loudly
 but well after the rotation looked done. Revoke the old token only once the
@@ -1036,12 +1034,10 @@ undo — anything earlier than that never ran.
 1. **The handover pull request**, if one was opened. Close it. Nothing else
    depends on it.
 2. **The generated repo**, if it exists. `gh repo delete branchLeft/<repo>`.
-   **Do this before anything else that takes time**: from the moment the
-   variables step ran, that repo holds a live copy of the platform's
-   package-read PAT as a repo secret. Deleting the repo is what revokes the
-   copy. If the repo cannot be deleted immediately, rotate
-   `GH_PAT_GHOST_PLATFORM_READ` per P6 instead and treat the old token as
-   burned.
+   No longer urgent — the repo holds repo variables only, no secret, since a
+   tenant reads the package with its own `GITHUB_TOKEN` (P6). Delete it before
+   retrying regardless: onboarding is create-only and refuses a name that
+   already exists.
 3. **The tenant's own stack**, if its first apply started. Its state is in the
    tenant's bucket:
    `pulumi login gs://<state-bucket> && pulumi destroy --stack <tenant>`.

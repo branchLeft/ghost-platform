@@ -29,9 +29,9 @@ name: Provision tenant
 # `GH_PAT_TENANT_PROVISIONING` is the credential this workflow writes to
 # generated repositories with. The default GITHUB_TOKEN is scoped to this
 # repository and can neither create a repo in the org nor set another repo's
-# variables. `GH_PAT_GHOST_PLATFORM_READ` is the package-read token copied
-# into each generated repo -- one platform-held classic PAT, because the
-# registry accepts no other type and no API mints one.
+# variables. No package-read credential is copied into a generated repo:
+# @branchleft/ghost-platform-tenant is public, and a run's own GITHUB_TOKEN
+# can read a public package.
 
 on:
   workflow_dispatch:
@@ -74,6 +74,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      packages: read
 
     # Two provisioning runs at once would race on the shared provisioning
     # state. Never cancel one in flight -- a half-applied identity is worse
@@ -281,23 +282,20 @@ jobs:
           echo "::error::${TENANT_REPO} was created but the template content did not appear within 60s. Nothing further has run; recover per the runbook, starting with deleting the repo."
           exit 1
 
-      - name: Write the repo variables and the package-read secret
+      # No secret is written here. A tenant reads @branchleft/ghost-platform-tenant
+      # with its own run's GITHUB_TOKEN, so it holds no long-lived credential
+      # and a half-provisioned repo is not itself a live credential to revoke.
+      - name: Write the repo variables
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
           DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
           WIF_PROVIDER: ${{ steps.identity.outputs.provider }}
-          PACKAGE_READ_PAT: ${{ secrets.GH_PAT_GHOST_PLATFORM_READ }}
         run: |
           set -euo pipefail
           gh variable set GCP_PROJECT_ID --repo "$TENANT_REPO" --body "$GCP_PROJECT"
           gh variable set GCP_DEPLOYER_SA_EMAIL --repo "$TENANT_REPO" --body "$DEPLOYER_SA_EMAIL"
           gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$TENANT_REPO" --body "$WIF_PROVIDER"
           gh variable set PULUMI_STATE_BUCKET --repo "$TENANT_REPO" --body "$STATE_BUCKET"
-          # Repo-level, never org-level: an org secret is invisible to a
-          # private repo on this plan and resolves to an empty string with no
-          # error, which would surface as an npm ci auth failure days later.
-          gh secret set GH_PAT_GHOST_PLATFORM_READ --repo "$TENANT_REPO" \
-            --body "$PACKAGE_READ_PAT"
 
       # ---- the tenant's first apply ---------------------------------------
 
@@ -305,7 +303,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
           DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
-          NODE_AUTH_TOKEN: ${{ secrets.GH_PAT_GHOST_PLATFORM_READ }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
