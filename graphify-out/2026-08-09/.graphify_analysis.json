@@ -1,0 +1,404 @@
+{
+  "communities": {
+    "0": [
+      "infra_platform_apis",
+      "infra_platform_apis_enabledapis",
+      "infra_platform_apis_requiredservices",
+      "infra_platform_config",
+      "infra_platform_config_config",
+      "infra_platform_config_dbinstancename",
+      "infra_platform_config_gcpconfig",
+      "infra_platform_config_githubrepo",
+      "infra_platform_config_mediabucketname",
+      "infra_platform_config_projectid",
+      "infra_platform_config_region",
+      "infra_platform_config_tenantimagerepositoryid",
+      "infra_platform_config_workloadidentitypoolid",
+      "infra_platform_database",
+      "infra_platform_database_dbinstance",
+      "infra_platform_index",
+      "infra_platform_index_dbinstanceconnectionname",
+      "infra_platform_index_dbinstanceselflink",
+      "infra_platform_index_githubactionsdeployerserviceaccountemail",
+      "infra_platform_index_githubactionsworkloadidentityprovider",
+      "infra_platform_index_mediabucketselflink",
+      "infra_platform_index_mediabucketurl",
+      "infra_platform_index_tenantimagerepositorydockerpath",
+      "infra_platform_mediabucket",
+      "infra_platform_mediabucket_mediabucket",
+      "infra_platform_mediabucket_mediabucketpublicread",
+      "infra_platform_provisioninguser",
+      "infra_platform_provisioninguser_provisioninguser",
+      "infra_platform_provisioninguser_provisioningusername",
+      "infra_platform_provisioninguser_provisioninguserpassword",
+      "infra_platform_provisioninguser_provisioninguserpasswordsecret",
+      "infra_platform_registry",
+      "infra_platform_registry_tenantimagerepository",
+      "infra_platform_secrets",
+      "infra_platform_secrets_secretwithvalue",
+      "infra_platform_serviceaccounts",
+      "infra_platform_serviceaccounts_deployermediabucketaccess",
+      "infra_platform_serviceaccounts_deployermember",
+      "infra_platform_serviceaccounts_deployersa",
+      "infra_platform_serviceaccounts_deployerserviceaccountemail",
+      "infra_platform_serviceaccounts_projectroles",
+      "infra_platform_serviceaccounts_rationale_94",
+      "infra_platform_workloadidentity",
+      "infra_platform_workloadidentity_deployerimpersonation",
+      "infra_platform_workloadidentity_pool",
+      "infra_platform_workloadidentity_provider",
+      "infra_platform_workloadidentity_workloadidentityprovider"
+    ],
+    "1": [
+      "_github_workflows_build_build_only_ci",
+      "_github_workflows_build_smoke_test",
+      "_github_workflows_infra_platform_ci_assert_no_platform_deletes",
+      "_github_workflows_infra_platform_ci_ci_owns_applies_decision",
+      "_github_workflows_infra_platform_ci_deploy_job",
+      "_github_workflows_infra_platform_ci_deployer_service_account",
+      "_github_workflows_infra_platform_ci_typecheck_job",
+      "_github_workflows_infra_platform_ci_workload_identity_federation",
+      "_github_workflows_infra_tenant_ci_reusable_component_scope",
+      "_github_workflows_infra_tenant_ci_typecheck_job",
+      "infra_platform_pulumi_platform_stack_config",
+      "infra_platform_pulumi_project",
+      "infra_platform_runbook_bootstrap_bootstrap_process",
+      "infra_platform_runbook_bootstrap_kms_binding",
+      "infra_platform_runbook_bootstrap_provisioning_user_incident",
+      "infra_platform_runbook_bootstrap_pulumi_state_bucket",
+      "infra_platform_runbook_bootstrap_state_bucket_binding",
+      "infra_readme_platform_stack",
+      "infra_readme_split_by_shape_rationale",
+      "infra_readme_tenant_component",
+      "infra_tenant_smoke_test_pulumi_scratch_s8_smoke_test_project",
+      "infra_tenant_smoke_test_pulumi_stack_config",
+      "infra_tenant_smoke_test_readme_smoke_test_harness",
+      "readme_ghost_platform_repo",
+      "readme_smoke_test_script"
+    ],
+    "2": [
+      "infra_platform_package",
+      "infra_platform_package_dependencies",
+      "infra_platform_package_dependencies_pulumi_gcp",
+      "infra_platform_package_dependencies_pulumi_pulumi",
+      "infra_platform_package_dependencies_pulumi_random",
+      "infra_platform_package_json_pulumi_pulumi",
+      "infra_platform_package_main",
+      "infra_platform_package_name",
+      "infra_platform_package_private",
+      "infra_tenant_package_dependencies",
+      "infra_tenant_package_dependencies_pulumi_gcp",
+      "infra_tenant_package_dependencies_pulumi_pulumi",
+      "infra_tenant_package_dependencies_pulumi_random",
+      "infra_tenant_smoke_test_package",
+      "infra_tenant_smoke_test_package_dependencies",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_gcp",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_pulumi",
+      "infra_tenant_smoke_test_package_dependencies_pulumi_random",
+      "infra_tenant_smoke_test_package_json_pulumi_pulumi",
+      "infra_tenant_smoke_test_package_main",
+      "infra_tenant_smoke_test_package_name",
+      "infra_tenant_smoke_test_package_private",
+      "pulumi_gcp",
+      "pulumi_pulumi",
+      "pulumi_random"
+    ],
+    "3": [
+      "infra_tenant_cloudrunservice",
+      "infra_tenant_cloudrunservice_cloudrunserviceargs",
+      "infra_tenant_cloudrunservice_createcloudrunservice",
+      "infra_tenant_cloudrunservice_createpublicinvokerbinding",
+      "infra_tenant_cloudrunservice_plainenv",
+      "infra_tenant_cloudrunservice_secretenv",
+      "infra_tenant_database",
+      "infra_tenant_database_createtenantdatabase",
+      "infra_tenant_database_databaseresult",
+      "infra_tenant_database_default_max_user_connections",
+      "infra_tenant_index",
+      "infra_tenant_index_ghosttenant",
+      "infra_tenant_index_ghosttenant_constructor",
+      "infra_tenant_index_ghosttenantargs",
+      "infra_tenant_index_ghosttenantplatformargs",
+      "infra_tenant_secrets",
+      "infra_tenant_secrets_secretwithvalue",
+      "infra_tenant_serviceaccount",
+      "infra_tenant_serviceaccount_createserviceaccount",
+      "infra_tenant_serviceaccount_validatetenantname",
+      "infra_tenant_smoke_test_index",
+      "infra_tenant_storage",
+      "infra_tenant_storage_createtenantstorage",
+      "infra_tenant_storage_storageresult"
+    ],
+    "4": [
+      "infra_tenant_package",
+      "infra_tenant_package_files",
+      "infra_tenant_package_json_ref_dist",
+      "infra_tenant_package_main",
+      "infra_tenant_package_name",
+      "infra_tenant_package_publishconfig",
+      "infra_tenant_package_publishconfig_access",
+      "infra_tenant_package_publishconfig_registry",
+      "infra_tenant_package_repository",
+      "infra_tenant_package_repository_directory",
+      "infra_tenant_package_repository_type",
+      "infra_tenant_package_repository_url",
+      "infra_tenant_package_scripts",
+      "infra_tenant_package_scripts_build",
+      "infra_tenant_package_scripts_prepublishonly",
+      "infra_tenant_package_types",
+      "infra_tenant_package_version"
+    ],
+    "5": [
+      "infra_platform_tsconfig",
+      "infra_platform_tsconfig_compileroptions",
+      "infra_platform_tsconfig_compileroptions_experimentaldecorators",
+      "infra_platform_tsconfig_compileroptions_lib",
+      "infra_platform_tsconfig_compileroptions_module",
+      "infra_platform_tsconfig_compileroptions_moduleresolution",
+      "infra_platform_tsconfig_compileroptions_nofallthroughcasesinswitch",
+      "infra_platform_tsconfig_compileroptions_outdir",
+      "infra_platform_tsconfig_compileroptions_pretty",
+      "infra_platform_tsconfig_compileroptions_skiplibcheck",
+      "infra_platform_tsconfig_compileroptions_sourcemap",
+      "infra_platform_tsconfig_compileroptions_strict",
+      "infra_platform_tsconfig_compileroptions_target",
+      "infra_platform_tsconfig_include",
+      "infra_platform_tsconfig_json_ref_es2022",
+      "infra_platform_tsconfig_json_ref_ts"
+    ],
+    "6": [
+      "infra_tenant_smoke_test_tsconfig",
+      "infra_tenant_smoke_test_tsconfig_compileroptions",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_experimentaldecorators",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_lib",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_module",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_moduleresolution",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_nofallthroughcasesinswitch",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_outdir",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_pretty",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_skiplibcheck",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_sourcemap",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_strict",
+      "infra_tenant_smoke_test_tsconfig_compileroptions_target",
+      "infra_tenant_smoke_test_tsconfig_include",
+      "infra_tenant_smoke_test_tsconfig_json_ref_es2022",
+      "infra_tenant_smoke_test_tsconfig_json_ref_ts"
+    ],
+    "7": [
+      "infra_tenant_tsconfig",
+      "infra_tenant_tsconfig_compileroptions",
+      "infra_tenant_tsconfig_compileroptions_experimentaldecorators",
+      "infra_tenant_tsconfig_compileroptions_lib",
+      "infra_tenant_tsconfig_compileroptions_module",
+      "infra_tenant_tsconfig_compileroptions_moduleresolution",
+      "infra_tenant_tsconfig_compileroptions_nofallthroughcasesinswitch",
+      "infra_tenant_tsconfig_compileroptions_outdir",
+      "infra_tenant_tsconfig_compileroptions_pretty",
+      "infra_tenant_tsconfig_compileroptions_skiplibcheck",
+      "infra_tenant_tsconfig_compileroptions_sourcemap",
+      "infra_tenant_tsconfig_compileroptions_strict",
+      "infra_tenant_tsconfig_compileroptions_target",
+      "infra_tenant_tsconfig_include",
+      "infra_tenant_tsconfig_json_ref_es2022",
+      "infra_tenant_tsconfig_json_ref_ts"
+    ],
+    "8": [
+      "infra_platform_scripts_assert_no_platform_deletes",
+      "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test",
+      "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern",
+      "infra_platform_scripts_assert_no_platform_deletes_destructive_steps",
+      "infra_platform_scripts_assert_no_platform_deletes_main",
+      "infra_platform_scripts_assert_no_platform_deletes_plan",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_101",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_125",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_244",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_295",
+      "infra_platform_scripts_assert_no_platform_deletes_self_test",
+      "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
+      "pattern"
+    ],
+    "9": [
+      "infra_tenant_tsconfig_build",
+      "infra_tenant_tsconfig_build_compileroptions",
+      "infra_tenant_tsconfig_build_compileroptions_declaration",
+      "infra_tenant_tsconfig_build_compileroptions_noemit",
+      "infra_tenant_tsconfig_build_compileroptions_outdir",
+      "infra_tenant_tsconfig_build_compileroptions_rootdir",
+      "infra_tenant_tsconfig_build_exclude",
+      "infra_tenant_tsconfig_build_extends",
+      "infra_tenant_tsconfig_build_include",
+      "infra_tenant_tsconfig_build_json_ref_dist",
+      "ref_node_modules",
+      "ref_ts",
+      "ref_tsconfig_json"
+    ],
+    "10": [
+      "infra_platform_package_devdependencies",
+      "infra_platform_package_devdependencies_types_node",
+      "infra_platform_package_devdependencies_typescript",
+      "infra_tenant_package_devdependencies",
+      "infra_tenant_package_devdependencies_types_node",
+      "infra_tenant_package_devdependencies_typescript",
+      "infra_tenant_smoke_test_package_devdependencies",
+      "infra_tenant_smoke_test_package_devdependencies_types_node",
+      "infra_tenant_smoke_test_package_devdependencies_typescript",
+      "types_node",
+      "typescript"
+    ],
+    "11": [
+      "_github_workflows_build_storage_guard_test",
+      "readme_env_var_convention_correction",
+      "readme_fail_closed_storage_guard",
+      "readme_s3storage_adapter",
+      "readme_storage_guard_test_script",
+      "readme_tenant_container_image"
+    ],
+    "12": [
+      "docker_entrypoint_branchleft",
+      "docker_entrypoint_branchleft_server_host",
+      "docker_entrypoint_branchleft_server_port",
+      "docker_entrypoint_branchleft_sh__entry"
+    ],
+    "13": [
+      "scripts_test_storage_guard",
+      "scripts_test_storage_guard_assert_blocked",
+      "scripts_test_storage_guard_assert_boots",
+      "scripts_test_storage_guard_sh__entry"
+    ],
+    "14": [
+      "scripts_smoke_test",
+      "scripts_smoke_test_cleanup",
+      "scripts_smoke_test_sh__entry"
+    ]
+  },
+  "cohesion": {
+    "0": 0.07955596669750231,
+    "1": 0.12,
+    "2": 0.08666666666666667,
+    "3": 0.16304347826086957,
+    "4": 0.11764705882352941,
+    "5": 0.125,
+    "6": 0.125,
+    "7": 0.125,
+    "8": 0.2564102564102564,
+    "9": 0.15384615384615385,
+    "10": 0.21818181818181817,
+    "11": 0.3333333333333333,
+    "12": 0.5,
+    "13": 0.8333333333333334,
+    "14": 0.6666666666666666
+  },
+  "gods": [
+    {
+      "id": "infra_platform_tsconfig_compileroptions",
+      "label": "compilerOptions",
+      "degree": 12
+    },
+    {
+      "id": "infra_tenant_smoke_test_tsconfig_compileroptions",
+      "label": "compilerOptions",
+      "degree": 12
+    },
+    {
+      "id": "infra_tenant_tsconfig_compileroptions",
+      "label": "compilerOptions",
+      "degree": 12
+    },
+    {
+      "id": "infra_platform_apis_enabledapis",
+      "label": "enabledApis",
+      "degree": 7
+    },
+    {
+      "id": "infra_platform_runbook_bootstrap_bootstrap_process",
+      "label": "Platform stack bootstrap runbook",
+      "degree": 6
+    },
+    {
+      "id": "infra_platform_config_region",
+      "label": "region",
+      "degree": 5
+    },
+    {
+      "id": "infra_platform_scripts_assert_no_platform_deletes_self_test",
+      "label": "self_test()",
+      "degree": 5
+    },
+    {
+      "id": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
+      "label": "verify_coverage()",
+      "degree": 5
+    },
+    {
+      "id": "infra_tenant_cloudrunservice_createcloudrunservice",
+      "label": "createCloudRunService()",
+      "degree": 5
+    },
+    {
+      "id": "infra_tenant_secrets_secretwithvalue",
+      "label": "secretWithValue()",
+      "degree": 5
+    }
+  ],
+  "surprises": [
+    {
+      "source": "ghost_platform_provisioner privilege-narrowing incident (2026-08-05)",
+      "target": "assert-no-platform-deletes.py preflight guard",
+      "source_files": [
+        "infra/platform/RUNBOOK-bootstrap.md",
+        ".github/workflows/infra-platform-ci.yml"
+      ],
+      "confidence": "INFERRED",
+      "relation": "semantically_similar_to",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; semantically similar concepts with no structural link"
+    },
+    {
+      "source": "ghost-platform repository",
+      "target": "Build-only CI workflow (build.yml)",
+      "source_files": [
+        "README.md",
+        ".github/workflows/build.yml"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
+    },
+    {
+      "source": "Smoke test step (scripts/smoke-test.sh)",
+      "target": "scripts/smoke-test.sh",
+      "source_files": [
+        ".github/workflows/build.yml",
+        "README.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
+    },
+    {
+      "source": "Storage guard regression test step (scripts/test-storage-guard.sh)",
+      "target": "scripts/test-storage-guard.sh",
+      "source_files": [
+        ".github/workflows/build.yml",
+        "README.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
+    },
+    {
+      "source": "Platform stack (infra/platform/)",
+      "target": "Deploy (pulumi up) job",
+      "source_files": [
+        "infra/README.md",
+        ".github/workflows/infra-platform-ci.yml"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
+    }
+  ],
+  "tokens": {
+    "input": 0,
+    "output": 0
+  }
+}
