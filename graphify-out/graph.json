@@ -850,7 +850,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh",
       "id": "scripts_test_storage_guard"
@@ -865,7 +865,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh script",
       "id": "scripts_test_storage_guard_sh__entry"
@@ -880,7 +880,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_blocked()",
       "id": "scripts_test_storage_guard_assert_blocked"
@@ -895,7 +895,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_boots()",
       "id": "scripts_test_storage_guard_assert_boots"
@@ -909,7 +909,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 21,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "platform stack config (pulumi.platform.yaml)",
       "_origin": "semantic",
@@ -924,7 +924,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 21,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "branchleft-ghost-platform pulumi project",
       "_origin": "semantic",
@@ -1364,7 +1364,7 @@
       "label": "Build image workflow",
       "file_type": "code",
       "source_file": ".github/workflows/build.yml",
-      "community": 27,
+      "community": 28,
       "norm_label": "build image workflow",
       "_origin": "semantic",
       "id": "github_workflows_build"
@@ -1373,7 +1373,7 @@
       "label": "docs-lint workflow",
       "file_type": "code",
       "source_file": ".github/workflows/docs-lint.yml",
-      "community": 29,
+      "community": 30,
       "norm_label": "docs-lint workflow",
       "_origin": "semantic",
       "id": "github_workflows_docs_lint"
@@ -1734,7 +1734,7 @@
       "label": "GhostTenant Smoke Test README",
       "file_type": "document",
       "source_type": "infra/tenant/smoke-test/README.md",
-      "community": 40,
+      "community": 39,
       "norm_label": "ghosttenant smoke test readme",
       "_origin": "semantic",
       "id": "infra_tenant_smoke_test_readme"
@@ -1743,7 +1743,7 @@
       "label": "CLAUDE.md",
       "file_type": "document",
       "source_file": "CLAUDE.md",
-      "community": 21,
+      "community": 22,
       "norm_label": "claude.md",
       "_origin": "semantic",
       "id": "claude_md"
@@ -1752,7 +1752,7 @@
       "label": "Infrastructure README",
       "file_type": "document",
       "source_file": "infra/README.md",
-      "community": 39,
+      "community": 38,
       "norm_label": "infrastructure readme",
       "_origin": "semantic",
       "id": "infra_readme"
@@ -1949,7 +1949,7 @@
       "label": "README.md",
       "file_type": "document",
       "source_file": "README.md",
-      "community": 42,
+      "community": 41,
       "norm_label": "readme.md",
       "_origin": "semantic",
       "id": "readme"
@@ -1958,7 +1958,7 @@
       "label": "Push tenant image workflow",
       "file_type": "code",
       "source_file": ".github/workflows/registry-push.yml",
-      "community": 17,
+      "community": 18,
       "norm_label": "push tenant image workflow",
       "_origin": "semantic",
       "id": "github_workflows_registry_push_yml"
@@ -1967,7 +1967,7 @@
       "label": "Official Ghost Image",
       "file_type": "image",
       "source_file": null,
-      "community": 26,
+      "community": 27,
       "norm_label": "official ghost image",
       "_origin": "semantic",
       "id": "ghost_official_image"
@@ -1976,7 +1976,7 @@
       "label": "GCP Artifact Registry",
       "file_type": "concept",
       "source_file": null,
-      "community": 17,
+      "community": 18,
       "norm_label": "gcp artifact registry",
       "_origin": "semantic",
       "id": "gcp_artifact_registry"
@@ -1985,7 +1985,7 @@
       "label": "GCP Cloud Run",
       "file_type": "concept",
       "source_file": null,
-      "community": 23,
+      "community": 24,
       "norm_label": "gcp cloud run",
       "_origin": "semantic",
       "id": "gcp_cloud_run"
@@ -1994,7 +1994,7 @@
       "label": "GCP Cloud SQL",
       "file_type": "concept",
       "source_file": null,
-      "community": 24,
+      "community": 25,
       "norm_label": "gcp cloud sql",
       "_origin": "semantic",
       "id": "gcp_cloud_sql"
@@ -2003,7 +2003,7 @@
       "label": "GCP Media Bucket",
       "file_type": "concept",
       "source_file": null,
-      "community": 25,
+      "community": 26,
       "norm_label": "gcp media bucket",
       "_origin": "semantic",
       "id": "gcp_storage_bucket"
@@ -2014,7 +2014,7 @@
       "source_file": "eslint.config.js",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 22,
+      "community": 23,
       "norm_label": "eslint.config.js",
       "id": "eslint_config"
     },
@@ -2435,24 +2435,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 28,
+      "community": 29,
       "norm_label": ".github/workflows/codeql.yml",
       "_origin": "semantic",
       "id": "github_workflows_codeql"
-    },
-    {
-      "label": ".github/workflows/graphify.yml",
-      "file_type": "code",
-      "source_file": ".github/workflows/graphify.yml",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "community": 30,
-      "norm_label": ".github/workflows/graphify.yml",
-      "_origin": "semantic",
-      "id": "github_workflows_graphify"
     },
     {
       "label": "infra/tenant",
@@ -3065,7 +3051,7 @@
       "label": "Platform infra CI",
       "file_type": "code",
       "source_file": ".github/workflows/infra-platform-ci.yml",
-      "community": 18,
+      "community": 19,
       "norm_label": "platform infra ci",
       "_origin": "semantic",
       "id": "github_workflows_infra_platform_ci"
@@ -3074,7 +3060,7 @@
       "label": "branchleft-ghost-provisioning",
       "file_type": "code",
       "source_file": "infra/provisioning/Pulumi.yaml",
-      "community": 38,
+      "community": 37,
       "norm_label": "branchleft-ghost-provisioning",
       "_origin": "semantic",
       "id": "infra_provisioning_pulumi"
@@ -3082,7 +3068,7 @@
     {
       "label": "Workload Identity Federation",
       "file_type": "concept",
-      "community": 18,
+      "community": 19,
       "norm_label": "workload identity federation",
       "_origin": "semantic",
       "id": "gcp_workload_identity_federation"
@@ -3090,7 +3076,7 @@
     {
       "label": "Pulumi Platform Stack",
       "file_type": "concept",
-      "community": 41,
+      "community": 40,
       "norm_label": "pulumi platform stack",
       "_origin": "semantic",
       "id": "pulumi_platform_stack"
@@ -3255,15 +3241,6 @@
       "id": "pre_commit_config"
     },
     {
-      "label": "Handover \u2014 the public flip",
-      "file_type": "document",
-      "source_file": "HANDOVER-public-flip.md",
-      "community": 31,
-      "norm_label": "handover \u2014 the public flip",
-      "_origin": "semantic",
-      "id": "handover_public_flip"
-    },
-    {
       "label": "Provision tenant workflow",
       "file_type": "code",
       "source_file": ".github/workflows/provision-tenant.yml",
@@ -3276,113 +3253,144 @@
       "label": "Bootstrap Runbook",
       "file_type": "document",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_bootstrap_runbook",
-      "community": 32,
-      "norm_label": "bootstrap runbook"
+      "community": 31,
+      "norm_label": "bootstrap runbook",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_bootstrap_runbook"
     },
     {
       "label": "Step 1: Local Apply",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_step_1",
-      "community": 36,
-      "norm_label": "step 1: local apply"
+      "community": 35,
+      "norm_label": "step 1: local apply",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_step_1"
     },
     {
       "label": "Step 3: KMS Grant",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_step_3",
-      "community": 13,
-      "norm_label": "step 3: kms grant"
+      "community": 14,
+      "norm_label": "step 3: kms grant",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_step_3"
     },
     {
       "label": "Step 4: State Bucket Grant",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_step_4",
-      "community": 13,
-      "norm_label": "step 4: state bucket grant"
+      "community": 14,
+      "norm_label": "step 4: state bucket grant",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_step_4"
     },
     {
       "label": "Provisioning User Setup",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_provisioning_user",
-      "community": 35,
-      "norm_label": "provisioning user setup"
+      "community": 34,
+      "norm_label": "provisioning user setup",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_provisioning_user"
     },
     {
       "label": "Tenant Provisioning Identity Bootstrap",
       "file_type": "document",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_tenant_provisioning_identity",
-      "community": 37,
-      "norm_label": "tenant provisioning identity bootstrap"
+      "community": 36,
+      "norm_label": "tenant provisioning identity bootstrap",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_tenant_provisioning_identity"
     },
     {
       "label": "P0: Public Repo & Gated Environment",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_p0",
-      "community": 33,
-      "norm_label": "p0: public repo & gated environment"
+      "community": 32,
+      "norm_label": "p0: public repo & gated environment",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_p0"
     },
     {
       "label": "P2: Federation Setup",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_p2",
-      "community": 34,
-      "norm_label": "p2: federation setup"
+      "community": 33,
+      "norm_label": "p2: federation setup",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_p2"
     },
     {
       "label": "P4: Custom SQL Role",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_p4",
-      "community": 19,
-      "norm_label": "p4: custom sql role"
+      "community": 20,
+      "norm_label": "p4: custom sql role",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_p4"
     },
     {
       "label": "P7: Tenant Apply Roles",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "infra_platform_runbook_bootstrap_p7",
       "community": 15,
-      "norm_label": "p7: tenant apply roles"
-    },
-    {
-      "label": "KNOWN_ISSUES.md",
-      "file_type": "document",
-      "source_file": "website/infra/KNOWN_ISSUES.md",
-      "id": "website_infra_known_issues_md",
-      "community": 13,
-      "norm_label": "known_issues.md"
+      "norm_label": "p7: tenant apply roles",
+      "_origin": "semantic",
+      "id": "infra_platform_runbook_bootstrap_p7"
     },
     {
       "label": "ghost-platform-deployer SA",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "ghost_platform_deployer",
-      "community": 13,
-      "norm_label": "ghost-platform-deployer sa"
+      "community": 14,
+      "norm_label": "ghost-platform-deployer sa",
+      "_origin": "semantic",
+      "id": "ghost_platform_deployer"
     },
     {
       "label": "ghost-tenant-provisioner SA",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "ghost_tenant_provisioner",
       "community": 15,
-      "norm_label": "ghost-tenant-provisioner sa"
+      "norm_label": "ghost-tenant-provisioner sa",
+      "_origin": "semantic",
+      "id": "ghost_tenant_provisioner"
     },
     {
       "label": "ghost_platform_provisioner (SQL)",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "id": "ghost_platform_provisioner",
-      "community": 19,
-      "norm_label": "ghost_platform_provisioner (sql)"
+      "community": 20,
+      "norm_label": "ghost_platform_provisioner (sql)",
+      "_origin": "semantic",
+      "id": "ghost_platform_provisioner"
+    },
+    {
+      "label": "Graphify Workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/graphify.yml",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "github_workflows_graphify_workflow",
+      "community": 17,
+      "norm_label": "graphify workflow"
+    },
+    {
+      "label": "Reusable Graphify Workflow",
+      "file_type": "code",
+      "source_file": "branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.3",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null,
+      "id": "branchleft_github_workflows_graphify",
+      "community": 17,
+      "norm_label": "reusable graphify workflow"
     }
   ],
   "links": [
@@ -6610,17 +6618,6 @@
       "target": "infra_tenant"
     },
     {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/graphify.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "github_workflows_graphify",
-      "target": "github_workflows_graphify"
-    },
-    {
       "relation": "shares_data_with",
       "confidence": "INFERRED",
       "confidence_score": 0.9,
@@ -7655,38 +7652,25 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "_origin": "semantic",
       "source": "infra_platform_runbook_bootstrap_step_3",
       "target": "ghost_platform_deployer"
-    },
-    {
-      "relation": "cites",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "source": "infra_platform_runbook_bootstrap_step_3",
-      "target": "website_infra_known_issues_md"
     },
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "_origin": "semantic",
       "source": "infra_platform_runbook_bootstrap_step_4",
       "target": "ghost_platform_deployer"
-    },
-    {
-      "relation": "cites",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "source": "infra_platform_runbook_bootstrap_step_4",
-      "target": "website_infra_known_issues_md"
     },
     {
       "relation": "conceptually_related_to",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "_origin": "semantic",
       "source": "infra_platform_runbook_bootstrap_p4",
       "target": "ghost_platform_provisioner"
     },
@@ -7695,8 +7679,19 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "_origin": "semantic",
       "source": "infra_platform_runbook_bootstrap_p7",
       "target": "ghost_tenant_provisioner"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/graphify.yml",
+      "source_location": null,
+      "weight": 1.0,
+      "source": "github_workflows_graphify_workflow",
+      "target": "branchleft_github_workflows_graphify"
     }
   ],
   "hyperedges": [
@@ -7752,5 +7747,5 @@
       "source_file": "infra/README.md"
     }
   ],
-  "built_at_commit": "3af8af0416ac3a8143eba5df966bd5db58149509"
+  "built_at_commit": "3b1f66bb43eb53c1388710bc9b3f955dff39c60c"
 }
