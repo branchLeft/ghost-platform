@@ -4,8 +4,8 @@ import * as gcp from '@pulumi/gcp';
 /** Platform-wide constant, not per-tenant -- see README's env var table. */
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = '10485760'; // 10 MiB, README's recommendation.
 /** README: "Must be ≥ 5 MiB (5242880) -- S3Storage enforces this floor
- * itself." Using the floor, matching Rob's 2026-08-04 minimum-size-everything
- * decision. */
+ * itself." Using the floor, matching the platform owner's 2026-08-04
+ * minimum-size-everything decision. */
 const MULTIPART_CHUNK_SIZE_BYTES = '5242880';
 /** Key prefix under the bucket -- README's own example value, adopted as
  * the platform-wide constant (not per-tenant; per-tenant separation is
@@ -78,7 +78,7 @@ export function createCloudRunService(
       template: {
         serviceAccount: args.serviceAccount.email,
         scaling: {
-          // Rob's 2026-08-04 decision: minimum-size everything to start.
+          // The platform owner's 2026-08-04 decision: minimum-size everything to start.
           // Scale-to-zero for a tenant specifically (unlike the always-on
           // marketing site) -- doc 06's runtime research measured ~1s cold
           // start against a warm image with an already-migrated DB, an

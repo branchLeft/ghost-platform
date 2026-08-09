@@ -5,7 +5,7 @@ name: Tenant infra CI
 # `id-token: write`.
 #
 # This used to say it mirrored infra-platform-ci.yml's reasoning. It no
-# longer can: that workflow now applies its stack from CI (Rob, 2026-08-05).
+# longer can: that workflow now applies its stack from CI (the platform owner, 2026-08-05).
 # The conclusion here is unchanged, but for a reason that was always the
 # stronger one and is now the only one -- `infra/tenant/` is a reusable
 # *component*, not a stack. There is nothing here to apply. It is

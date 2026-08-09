@@ -71,7 +71,7 @@ export const provider = new gcp.iam.WorkloadIdentityPoolProvider(
     // checked rather than assumed -- referencing an environment rewrites the
     // `sub` claim to `repo:OWNER/REPO:environment:NAME`, which could
     // plausibly have displaced the branch information entirely and broken
-    // the very first CI run after Rob's bootstrap. GitHub's own worked
+    // the very first CI run after the platform owner's bootstrap. GitHub's own worked
     // example of a token from an environment-referencing job shows `sub`
     // and `ref` side by side, with `ref: "refs/heads/main"` still present.
     // Conditioning on `assertion.ref` rather than on `sub` is what makes
@@ -126,7 +126,7 @@ export const deployerImpersonation = new gcp.serviceaccount.IAMMember(
 
 /**
  * Consumed by the `google-github-actions/auth` step in
- * `.github/workflows/infra-platform-ci.yml`, via the repo variables Rob sets
+ * `.github/workflows/infra-platform-ci.yml`, via the repo variables the platform owner sets
  * from `pulumi stack output` (RUNBOOK-bootstrap.md). Not committed to this
  * repo: the provider's resource name embeds the GCP project *number*, which
  * is one more infrastructure identifier than this public-bound repo needs to

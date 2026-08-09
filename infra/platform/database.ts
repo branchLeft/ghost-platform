@@ -8,7 +8,7 @@ import { enabledApis } from './apis';
  * tenant's logical database and dedicated DB user are provisioned by the
  * *tenant* Pulumi component (next story), against this instance.
  *
- * Sized per Rob's 2026-08-04 decision (minimum size everything to start, for
+ * Sized per the platform owner's 2026-08-04 decision (minimum size everything to start, for
  * two known tiny tenants) and doc 07 §0's corrected right-sizing note:
  * `db-f1-micro`, single zone, smallest workable storage. Revisit only on a
  * real capacity signal (doc 08), not pre-emptively.
@@ -62,7 +62,7 @@ export const dbInstance = new gcp.sql.DatabaseInstance(
       tier: 'db-f1-micro',
       // Required for shared-core tiers -- see the verification note above.
       edition: 'ENTERPRISE',
-      // Single zone per Rob's minimum-size decision. Note this does not
+      // Single zone per the platform owner's minimum-size decision. Note this does not
       // trade away an SLA that was otherwise available: doc 07 §0 already
       // established the Cloud SQL SLA requires HA *with dedicated CPU*, so
       // no affordable Tier 1-2 configuration carries one, `REGIONAL`
