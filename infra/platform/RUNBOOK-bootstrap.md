@@ -455,13 +455,25 @@ ordering in the next section is load-bearing rather than tidy.
 
 ## One-time bootstrap of the tenant-provisioning identity (platform owner only)
 
-Nothing here recurs per tenant. **Run the steps in the order given.** The
-ordering is a control, not a convention: the WIF provider in P2 is the last
-thing that can authenticate a provisioning run, so creating it last means
+Nothing here recurs per tenant. **Run the sections in the order they appear,
+which is not numerical order.** P2 sits between P7 and P8 on purpose: the
+ordering is a control, not a convention. The WIF provider it creates is the
+only thing that can authenticate a provisioning run, so creating it last means
 there is no window in which `provision-tenant.yml` can execute against an
-unprotected environment. Creating it before the environment carries its
-reviewer would open exactly that window, and nothing would report it — the run
-would simply not pause.
+environment that is missing its reviewer. Creating it earlier opens exactly
+that window, and nothing would report it — the run would simply not pause.
+
+    P0  flip public, create the gated environment
+    V   confirm a dispatched run waits, then reject it
+    V2  approve a run, read the federation claims it presents
+    P1  the service account
+    P3  identity administration
+    P4  Cloud SQL, by custom role
+    P5  key and bucket access
+    P6  the two platform-held tokens
+    P7  the roles the tenant's first apply needs
+    P2  federation — last, and read back before trusting it
+    P8  repo variables
 
 The identity this creates can re-permission every principal in
 `branchleft-prod`. That is not containable by any IAM Condition: a
@@ -568,76 +580,6 @@ gcloud iam service-accounts create ghost-tenant-provisioner \
 Named apart from `ghost_platform_provisioner`, the MySQL account
 `provisioningUser.ts` creates. Different things, different blast radii; they
 should not read alike in a listing.
-
-### P2 — federation, pinned to this one workflow file
-
-**Last of the GCP steps.** Until this exists no provisioning run can
-authenticate at all.
-
-```bash
-gcloud iam workload-identity-pools providers create-oidc tenant-provisioning \
-  --project=branchleft-prod \
-  --location=global \
-  --workload-identity-pool=ghost-platform-gha \
-  --display-name="Tenant provisioning" \
-  --issuer-uri="https://token.actions.githubusercontent.com" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
-  --attribute-condition='assertion.repository == "branchLeft/ghost-platform" && assertion.job_workflow_ref == "branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main" && assertion.event_name == "workflow_dispatch"'
-
-gcloud iam service-accounts add-iam-policy-binding \
-  ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com \
-  --project=branchleft-prod \
-  --role="roles/iam.workloadIdentityUser" \
-  --member="principal://iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/ghost-platform-gha/subject/repo:branchLeft/ghost-platform:environment:tenant-provisioning"
-```
-
-A second provider in the pool `workloadIdentity.ts` already declares. Pools are
-free and a provider does not appear in the pool resource, so this does not
-collide with that stack's state.
-
-`job_workflow_ref` rather than the environment name alone: the `sub` claim
-carries `environment:<name>` only because a job declared that environment, and
-any job may declare any environment. Pinning the workflow file at `main` plus
-`workflow_dispatch` is what a routine push cannot satisfy, and Google enforces
-it whatever GitHub's settings say — so it still holds if the environment rule
-is ever removed. The cost is that renaming the workflow file breaks
-provisioning until this condition is updated.
-
-`principal://.../subject/...` — the exact subject, not
-`principalSet://.../attribute.repository/...`, which would admit every job in
-the repo. Read `<project-number>` from
-`gcloud projects describe branchleft-prod --format='value(projectNumber)'`.
-
-**Read the provider back. This is not optional.** `create-oidc` fails with
-"already exists" if a partial earlier bootstrap left a provider of the same
-name — and a failed create is easy to read as idempotence, leaving a looser
-condition in place that nothing afterwards inspects.
-
-```bash
-gcloud iam workload-identity-pools providers describe tenant-provisioning \
-  --project=branchleft-prod --location=global \
-  --workload-identity-pool=ghost-platform-gha \
-  --format="yaml(attributeCondition,attributeMapping,state,disabled,oidc.issuerUri)"
-```
-
-Every field must match, exactly:
-
-```yaml
-attributeCondition: assertion.repository == "branchLeft/ghost-platform" && assertion.job_workflow_ref
-  == "branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main"
-  && assertion.event_name == "workflow_dispatch"
-attributeMapping:
-  attribute.repository: assertion.repository
-  google.subject: assertion.sub
-oidc:
-  issuerUri: https://token.actions.githubusercontent.com
-state: ACTIVE
-```
-
-`disabled` must be absent or `false`. If the condition differs in any way,
-`gcloud iam workload-identity-pools providers update-oidc` it to the exact
-string above and read it back again — do not proceed on a provider you have
-not just read.
 
 ### P3 — identity administration
 
@@ -859,6 +801,83 @@ provisioning run against a throwaway tenant; a missing role surfaces as a 403
 partway through an apply, which on a first apply leaves a half-created tenant.
 Add whatever it turns up here rather than granting a wider role to silence the
 error.
+
+### P2 — federation, pinned to this one workflow file
+
+**Deliberately last, and deliberately out of numerical order.** This section
+sits here rather than after P1 because a runbook is read top to bottom, and the
+ordering is a control rather than a convention: until this provider exists no
+provisioning run can authenticate at all, so there is no window in which the
+workflow could execute against an environment that has lost its reviewer. Doing
+it earlier opens exactly that window and nothing reports it.
+
+Write the condition from the `job_workflow_ref` value **Step V2 printed**, not
+from the string below, which is only what it is expected to be.
+
+```bash
+gcloud iam workload-identity-pools providers create-oidc tenant-provisioning \
+  --project=branchleft-prod \
+  --location=global \
+  --workload-identity-pool=ghost-platform-gha \
+  --display-name="Tenant provisioning" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition='assertion.repository == "branchLeft/ghost-platform" && assertion.job_workflow_ref == "branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main" && assertion.event_name == "workflow_dispatch"'
+
+gcloud iam service-accounts add-iam-policy-binding \
+  ghost-tenant-provisioner@branchleft-prod.iam.gserviceaccount.com \
+  --project=branchleft-prod \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principal://iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/ghost-platform-gha/subject/repo:branchLeft/ghost-platform:environment:tenant-provisioning"
+```
+
+A second provider in the pool `workloadIdentity.ts` already declares. Pools are
+free and a provider does not appear in the pool resource, so this does not
+collide with that stack's state.
+
+`job_workflow_ref` rather than the environment name alone: the `sub` claim
+carries `environment:<name>` only because a job declared that environment, and
+any job may declare any environment. Pinning the workflow file at `main` plus
+`workflow_dispatch` is what a routine push cannot satisfy, and Google enforces
+it whatever GitHub's settings say — so it still holds if the environment rule
+is ever removed. The cost is that renaming the workflow file breaks
+provisioning until this condition is updated.
+
+`principal://.../subject/...` — the exact subject, not
+`principalSet://.../attribute.repository/...`, which would admit every job in
+the repo. Read `<project-number>` from
+`gcloud projects describe branchleft-prod --format='value(projectNumber)'`.
+
+**Read the provider back. This is not optional.** `create-oidc` fails with
+"already exists" if a partial earlier bootstrap left a provider of the same
+name — and a failed create is easy to read as idempotence, leaving a looser
+condition in place that nothing afterwards inspects.
+
+```bash
+gcloud iam workload-identity-pools providers describe tenant-provisioning \
+  --project=branchleft-prod --location=global \
+  --workload-identity-pool=ghost-platform-gha \
+  --format="yaml(attributeCondition,attributeMapping,state,disabled,oidc.issuerUri)"
+```
+
+Every field must match, exactly:
+
+```yaml
+attributeCondition: assertion.repository == "branchLeft/ghost-platform" && assertion.job_workflow_ref
+  == "branchLeft/ghost-platform/.github/workflows/provision-tenant.yml@refs/heads/main"
+  && assertion.event_name == "workflow_dispatch"
+attributeMapping:
+  attribute.repository: assertion.repository
+  google.subject: assertion.sub
+oidc:
+  issuerUri: https://token.actions.githubusercontent.com
+state: ACTIVE
+```
+
+`disabled` must be absent or `false`. If the condition differs in any way,
+`gcloud iam workload-identity-pools providers update-oidc` it to the exact
+string above and read it back again — do not proceed on a provider you have
+not just read.
 
 ### P8 — repo variables the provisioning workflow reads
 
