@@ -67,7 +67,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 12,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "docker-entrypoint.branchleft.sh",
       "id": "docker_entrypoint_branchleft"
@@ -82,7 +82,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 12,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "docker-entrypoint.branchleft.sh script",
       "id": "docker_entrypoint_branchleft_sh__entry"
@@ -97,7 +97,7 @@
         "kind": "code"
       },
       "_origin": "ast",
-      "community": 12,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "server__port",
       "id": "docker_entrypoint_branchleft_server_port"
@@ -112,7 +112,7 @@
         "kind": "code"
       },
       "_origin": "ast",
-      "community": 12,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "server__host",
       "id": "docker_entrypoint_branchleft_server_host"
@@ -850,7 +850,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 13,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh",
       "id": "scripts_test_storage_guard"
@@ -865,7 +865,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 13,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh script",
       "id": "scripts_test_storage_guard_sh__entry"
@@ -880,7 +880,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 13,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_blocked()",
       "id": "scripts_test_storage_guard_assert_blocked"
@@ -895,7 +895,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 13,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_boots()",
       "id": "scripts_test_storage_guard_assert_boots"
@@ -1734,7 +1734,7 @@
       "label": "GhostTenant Smoke Test README",
       "file_type": "document",
       "source_type": "infra/tenant/smoke-test/README.md",
-      "community": 39,
+      "community": 40,
       "norm_label": "ghosttenant smoke test readme",
       "_origin": "semantic",
       "id": "infra_tenant_smoke_test_readme"
@@ -1752,7 +1752,7 @@
       "label": "Infrastructure README",
       "file_type": "document",
       "source_file": "infra/README.md",
-      "community": 38,
+      "community": 39,
       "norm_label": "infrastructure readme",
       "_origin": "semantic",
       "id": "infra_readme"
@@ -1949,7 +1949,7 @@
       "label": "README.md",
       "file_type": "document",
       "source_file": "README.md",
-      "community": 41,
+      "community": 42,
       "norm_label": "readme.md",
       "_origin": "semantic",
       "id": "readme"
@@ -1958,7 +1958,7 @@
       "label": "Push tenant image workflow",
       "file_type": "code",
       "source_file": ".github/workflows/registry-push.yml",
-      "community": 18,
+      "community": 17,
       "norm_label": "push tenant image workflow",
       "_origin": "semantic",
       "id": "github_workflows_registry_push_yml"
@@ -1976,7 +1976,7 @@
       "label": "GCP Artifact Registry",
       "file_type": "concept",
       "source_file": null,
-      "community": 18,
+      "community": 17,
       "norm_label": "gcp artifact registry",
       "_origin": "semantic",
       "id": "gcp_artifact_registry"
@@ -3051,7 +3051,7 @@
       "label": "Platform infra CI",
       "file_type": "code",
       "source_file": ".github/workflows/infra-platform-ci.yml",
-      "community": 19,
+      "community": 18,
       "norm_label": "platform infra ci",
       "_origin": "semantic",
       "id": "github_workflows_infra_platform_ci"
@@ -3060,7 +3060,7 @@
       "label": "branchleft-ghost-provisioning",
       "file_type": "code",
       "source_file": "infra/provisioning/Pulumi.yaml",
-      "community": 37,
+      "community": 38,
       "norm_label": "branchleft-ghost-provisioning",
       "_origin": "semantic",
       "id": "infra_provisioning_pulumi"
@@ -3068,7 +3068,7 @@
     {
       "label": "Workload Identity Federation",
       "file_type": "concept",
-      "community": 19,
+      "community": 18,
       "norm_label": "workload identity federation",
       "_origin": "semantic",
       "id": "gcp_workload_identity_federation"
@@ -3076,7 +3076,7 @@
     {
       "label": "Pulumi Platform Stack",
       "file_type": "concept",
-      "community": 40,
+      "community": 41,
       "norm_label": "pulumi platform stack",
       "_origin": "semantic",
       "id": "pulumi_platform_stack"
@@ -3241,19 +3241,10 @@
       "id": "pre_commit_config"
     },
     {
-      "label": "Provision tenant workflow",
-      "file_type": "code",
-      "source_file": ".github/workflows/provision-tenant.yml",
-      "community": 15,
-      "norm_label": "provision tenant workflow",
-      "_origin": "semantic",
-      "id": "github_workflows_provision_tenant"
-    },
-    {
       "label": "Bootstrap Runbook",
       "file_type": "document",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 31,
+      "community": 32,
       "norm_label": "bootstrap runbook",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_bootstrap_runbook"
@@ -3262,7 +3253,7 @@
       "label": "Step 1: Local Apply",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 35,
+      "community": 36,
       "norm_label": "step 1: local apply",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_step_1"
@@ -3271,7 +3262,7 @@
       "label": "Step 3: KMS Grant",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 14,
+      "community": 15,
       "norm_label": "step 3: kms grant",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_step_3"
@@ -3280,7 +3271,7 @@
       "label": "Step 4: State Bucket Grant",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 14,
+      "community": 15,
       "norm_label": "step 4: state bucket grant",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_step_4"
@@ -3289,7 +3280,7 @@
       "label": "Provisioning User Setup",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 34,
+      "community": 35,
       "norm_label": "provisioning user setup",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_provisioning_user"
@@ -3298,7 +3289,7 @@
       "label": "Tenant Provisioning Identity Bootstrap",
       "file_type": "document",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 36,
+      "community": 37,
       "norm_label": "tenant provisioning identity bootstrap",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_tenant_provisioning_identity"
@@ -3307,7 +3298,7 @@
       "label": "P0: Public Repo & Gated Environment",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 32,
+      "community": 33,
       "norm_label": "p0: public repo & gated environment",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_p0"
@@ -3316,7 +3307,7 @@
       "label": "P2: Federation Setup",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 33,
+      "community": 34,
       "norm_label": "p2: federation setup",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_p2"
@@ -3325,7 +3316,7 @@
       "label": "P4: Custom SQL Role",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 20,
+      "community": 19,
       "norm_label": "p4: custom sql role",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_p4"
@@ -3334,7 +3325,7 @@
       "label": "P7: Tenant Apply Roles",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 15,
+      "community": 20,
       "norm_label": "p7: tenant apply roles",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_p7"
@@ -3343,7 +3334,7 @@
       "label": "ghost-platform-deployer SA",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 14,
+      "community": 15,
       "norm_label": "ghost-platform-deployer sa",
       "_origin": "semantic",
       "id": "ghost_platform_deployer"
@@ -3352,7 +3343,7 @@
       "label": "ghost-tenant-provisioner SA",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 15,
+      "community": 20,
       "norm_label": "ghost-tenant-provisioner sa",
       "_origin": "semantic",
       "id": "ghost_tenant_provisioner"
@@ -3361,7 +3352,7 @@
       "label": "ghost_platform_provisioner (SQL)",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 20,
+      "community": 19,
       "norm_label": "ghost_platform_provisioner (sql)",
       "_origin": "semantic",
       "id": "ghost_platform_provisioner"
@@ -3375,22 +3366,66 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "github_workflows_graphify_workflow",
-      "community": 17,
-      "norm_label": "graphify workflow"
+      "community": 31,
+      "norm_label": "graphify workflow",
+      "_origin": "semantic",
+      "id": "github_workflows_graphify_workflow"
     },
     {
-      "label": "Reusable Graphify Workflow",
+      "label": "Provision tenant",
       "file_type": "code",
-      "source_file": "branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.3",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "id": "branchleft_github_workflows_graphify",
-      "community": 17,
-      "norm_label": "reusable graphify workflow"
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "id": "github_workflows_provision_tenant",
+      "community": 12,
+      "norm_label": "provision tenant"
+    },
+    {
+      "label": "assert-no-tenant-deletes.py",
+      "file_type": "code",
+      "source_file": "tenant/scripts/assert-no-tenant-deletes.py",
+      "id": "tenant_scripts_assert_no_tenant_deletes",
+      "community": 12,
+      "norm_label": "assert-no-tenant-deletes.py"
+    },
+    {
+      "label": "assert-placeholders-substituted.py",
+      "file_type": "code",
+      "source_file": "tenant/scripts/assert-placeholders-substituted.py",
+      "id": "tenant_scripts_assert_placeholders_substituted",
+      "community": 12,
+      "norm_label": "assert-placeholders-substituted.py"
+    },
+    {
+      "label": "Pulumi.yaml",
+      "file_type": "code",
+      "source_file": "tenant/Pulumi.yaml",
+      "id": "tenant_pulumi_yaml",
+      "community": 12,
+      "norm_label": "pulumi.yaml"
+    },
+    {
+      "label": "infra-ci.yml",
+      "file_type": "code",
+      "source_file": "tenant/.github/workflows/infra-ci.yml",
+      "id": "tenant_github_workflows_infra_ci",
+      "community": 12,
+      "norm_label": "infra-ci.yml"
+    },
+    {
+      "label": "GCP Provisioning Identity",
+      "file_type": "concept",
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "id": "gcp_provisioning_identity",
+      "community": 12,
+      "norm_label": "gcp provisioning identity"
+    },
+    {
+      "label": "Pulumi CLI",
+      "file_type": "concept",
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "id": "pulumi_cli",
+      "community": 12,
+      "norm_label": "pulumi cli"
     }
   ],
   "links": [
@@ -7639,15 +7674,6 @@
       "target": "infra_provisioning_config_workloadidentitypoolid"
     },
     {
-      "relation": "implements",
-      "confidence": "INFERRED",
-      "confidence_score": 0.9,
-      "source_file": ".github/workflows/provision-tenant.yml",
-      "_origin": "semantic",
-      "source": "github_workflows_provision_tenant",
-      "target": "ghost_tenant_provisioner"
-    },
-    {
       "relation": "calls",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
@@ -7684,14 +7710,52 @@
       "target": "ghost_tenant_provisioner"
     },
     {
+      "relation": "references",
+      "confidence": "INFERRED",
+      "confidence_score": 0.9,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "gcp_provisioning_identity"
+    },
+    {
       "relation": "calls",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
-      "source_file": ".github/workflows/graphify.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "source": "github_workflows_graphify_workflow",
-      "target": "branchleft_github_workflows_graphify"
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "pulumi_cli"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "tenant_github_workflows_infra_ci"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "tenant_pulumi_yaml"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "tenant_scripts_assert_no_tenant_deletes"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "tenant_scripts_assert_placeholders_substituted"
     }
   ],
   "hyperedges": [
@@ -7747,5 +7811,5 @@
       "source_file": "infra/README.md"
     }
   ],
-  "built_at_commit": "3b1f66bb43eb53c1388710bc9b3f955dff39c60c"
+  "built_at_commit": "ec2094581b3e1af77ef3af4882054b2ce7fb6661"
 }
