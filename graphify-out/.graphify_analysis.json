@@ -27,15 +27,8 @@
       "infra_platform_mediabucket",
       "infra_platform_mediabucket_mediabucket",
       "infra_platform_mediabucket_mediabucketpublicread",
-      "infra_platform_provisioninguser",
-      "infra_platform_provisioninguser_provisioninguser",
-      "infra_platform_provisioninguser_provisioningusername",
-      "infra_platform_provisioninguser_provisioninguserpassword",
-      "infra_platform_provisioninguser_provisioninguserpasswordsecret",
       "infra_platform_registry",
       "infra_platform_registry_tenantimagerepository",
-      "infra_platform_secrets",
-      "infra_platform_secrets_secretwithvalue",
       "infra_platform_serviceaccounts",
       "infra_platform_serviceaccounts_deployermediabucketaccess",
       "infra_platform_serviceaccounts_deployermember",
@@ -189,19 +182,21 @@
       "typescript"
     ],
     "9": [
+      "infra_platform_provisioninguser",
+      "infra_platform_provisioninguser_provisioninguser",
+      "infra_platform_provisioninguser_provisioningusername",
+      "infra_platform_provisioninguser_provisioninguserpassword",
+      "infra_platform_provisioninguser_provisioninguserpasswordsecret",
+      "infra_platform_secrets",
+      "infra_platform_secrets_secretwithvalue"
+    ],
+    "10": [
       "ghost_platform_tenant_template",
       "github_workflows_infra_platform_ci_yml",
       "github_workflows_infra_tenant_ci_yml",
       "github_workflows_publish_tenant_package",
       "infra_platform",
       "infra_tenant"
-    ],
-    "10": [
-      "readme_env_var_convention_correction",
-      "readme_fail_closed_storage_guard",
-      "readme_s3storage_adapter",
-      "readme_storage_guard_test_script",
-      "readme_tenant_container_image"
     ],
     "11": [
       "docker_entrypoint_branchleft",
@@ -227,42 +222,52 @@
       "scripts_smoke_test_sh__entry"
     ],
     "15": [
+      "gcp_artifact_registry",
+      "github_workflows_registry_push_yml"
+    ],
+    "16": [
       "infra_platform_pulumi_platform_stack_config",
       "infra_platform_pulumi_project"
     ],
-    "16": [
+    "17": [
       "claude_md"
     ],
-    "17": [
-      "ghost_tenant_component"
-    ],
     "18": [
-      "github_workflows_build"
+      "gcp_cloud_run"
     ],
     "19": [
-      "github_workflows_docs_lint"
+      "gcp_cloud_sql"
     ],
     "20": [
-      "github_workflows_graphify"
+      "gcp_storage_bucket"
     ],
     "21": [
-      "github_workflows_registry_push"
+      "ghost_official_image"
     ],
     "22": [
-      "infra_readme"
+      "ghost_tenant_component"
     ],
     "23": [
-      "infra_tenant_smoke_test_readme"
+      "github_workflows_build"
     ],
     "24": [
-      "readme_ghost_platform_repo"
+      "github_workflows_docs_lint"
     ],
     "25": [
-      "readme_smoke_test_script"
+      "github_workflows_graphify"
+    ],
+    "26": [
+      "infra_readme"
+    ],
+    "27": [
+      "infra_tenant_smoke_test_readme"
+    ],
+    "28": [
+      "readme"
     ]
   },
   "cohesion": {
-    "0": 0.07955596669750231,
+    "0": 0.09487179487179487,
     "1": 0.16996047430830039,
     "2": 0.1111111111111111,
     "3": 0.13333333333333333,
@@ -272,7 +277,7 @@
     "7": 0.15384615384615385,
     "8": 0.2857142857142857,
     "9": 0.3333333333333333,
-    "10": 0.4,
+    "10": 0.3333333333333333,
     "11": 0.5,
     "12": 0.5,
     "13": 0.8333333333333334,
@@ -287,7 +292,10 @@
     "22": 1.0,
     "23": 1.0,
     "24": 1.0,
-    "25": 1.0
+    "25": 1.0,
+    "26": 1.0,
+    "27": 1.0,
+    "28": 1.0
   },
   "gods": [
     {
@@ -304,11 +312,6 @@
       "id": "infra_platform_apis_enabledapis",
       "label": "enabledApis",
       "degree": 7
-    },
-    {
-      "id": "infra_platform_config_region",
-      "label": "region",
-      "degree": 5
     },
     {
       "id": "infra_tenant_secrets_secretwithvalue",
@@ -333,6 +336,11 @@
     {
       "id": "infra_tenant_cloudrunservice_createcloudrunservice",
       "label": "createCloudRunService()",
+      "degree": 5
+    },
+    {
+      "id": "infra_platform_config_region",
+      "label": "region",
       "degree": 5
     },
     {
@@ -377,7 +385,7 @@
     }
   ],
   "tokens": {
-    "input": 5249,
-    "output": 1521
+    "input": 6290,
+    "output": 1842
   }
 }
