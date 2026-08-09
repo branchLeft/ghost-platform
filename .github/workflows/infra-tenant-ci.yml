@@ -4,22 +4,11 @@ name: Tenant infra CI
 # No `pulumi up`, no `pulumi preview`, no cloud credentials of any kind, no
 # `id-token: write`.
 #
-# This used to say it mirrored infra-platform-ci.yml's reasoning. It no
-# longer can: that workflow now applies its stack from CI (the platform owner, 2026-08-05).
-# The conclusion here is unchanged, but for a reason that was always the
-# stronger one and is now the only one -- `infra/tenant/` is a reusable
-# *component*, not a stack. There is nothing here to apply. It is
-# instantiated from the private `ghost-platform-tenants` repo, so the
-# decision about who applies a tenant's resources belongs to that repo's
-# pipeline, not this one, and this workflow could not hold the right
-# credentials for it even if it wanted to.
-#
-# So: do not "bring this in line with the platform workflow" by adding a
-# deploy job. There is no stack for one to select.
-#
-# Deliberately excludes infra/tenant/smoke-test/ -- that's a disposable,
-# manually-run preview harness (see its own README.md), not part of the
-# reusable component this workflow exists to protect.
+# Do not add a deploy job here: `infra/tenant/` is a reusable *component*,
+# not a stack, so there is no stack for one to select. It is instantiated
+# from a tenant's own private repo, and who applies a tenant's resources is
+# that repo's pipeline's decision -- this workflow could not hold the right
+# credentials for it in any case.
 
 on:
   push:

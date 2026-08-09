@@ -1,5 +1,0 @@
-name: ghost-platform-tenant-smoke-test
-runtime: nodejs
-description: >-
-  Disposable preview-only harness for the GhostTenant component -- not a
-  real tenant, not part of the reusable component itself. See README.md.
