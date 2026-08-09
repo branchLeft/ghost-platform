@@ -9,6 +9,14 @@ on:
 
 jobs:
   graphify:
+    # Now that this repo is public and therefore forkable. A fork inherits this
+    # file, and the job commits a regenerated graph back to `main` -- in a fork
+    # that is a push nobody asked for, against a graph nobody consumes, after a
+    # full Gemini extraction has already been billed to whichever key the fork
+    # resolves. Guard on the repository rather than on `fork`, so a rename of
+    # this repo fails visibly instead of silently disabling the graph.
+    if: github.repository == 'branchLeft/ghost-platform'
+
     # The org default caps a reusable workflow at contents: read, and it cannot
     # grant itself more than the caller allows.
     permissions:
