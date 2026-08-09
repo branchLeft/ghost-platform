@@ -9,6 +9,7 @@ import {
   mediaTenantPrefixEnvValue,
   serviceAccountId,
   sqlIdentifier,
+  tenantImageRef,
   tenantSecretName,
   validateTenantName,
 } from './naming';
@@ -58,6 +59,31 @@ describe('media object isolation', () => {
       expect(mediaObjectPrefix(tenant)).toBe(`${mediaTenantPrefixEnvValue(tenant)}/`);
       expect(mediaTenantPrefixEnvValue(tenant).endsWith('/')).toBe(false);
     }
+  });
+});
+
+describe('tenantImageRef', () => {
+  const REPO = 'europe-west1-docker.pkg.dev/branchleft-prod/ghost-platform-tenant';
+  const DIGEST = `sha256:${'a'.repeat(64)}`;
+
+  it('joins a digest with @', () => {
+    expect(tenantImageRef(REPO, DIGEST)).toBe(`${REPO}/ghost@${DIGEST}`);
+  });
+
+  it('joins a tag with :', () => {
+    expect(tenantImageRef(REPO, '1.2.3')).toBe(`${REPO}/ghost:1.2.3`);
+  });
+
+  it('never emits the two-colon form Cloud Run rejects', () => {
+    // The original defect: `.../ghost:sha256:<hex>` is a 400 at create time,
+    // so a digest-pinned tenant could not be deployed at all.
+    expect(tenantImageRef(REPO, DIGEST)).not.toContain('ghost:sha256:');
+  });
+
+  it('treats only a leading sha256: as a digest', () => {
+    // A tag is free to contain "sha256" anywhere but the start; `@` there
+    // would produce a reference to a digest that does not exist.
+    expect(tenantImageRef(REPO, 'build-sha256-1')).toBe(`${REPO}/ghost:build-sha256-1`);
   });
 });
 

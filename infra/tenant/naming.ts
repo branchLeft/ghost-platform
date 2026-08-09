@@ -21,6 +21,15 @@ const TENANT_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 const BUCKET_URL_PREFIX = 'gs://';
 
 /**
+ * This component's own choice of image name within the shared tenant
+ * repository. Every tenant runs the same image, so there is one name here, not
+ * one per tenant.
+ */
+const TENANT_IMAGE_NAME = 'ghost';
+
+const IMAGE_DIGEST_PREFIX = 'sha256:';
+
+/**
  * Validates `tenantName` against both GCP's service-account-ID constraints and
  * MySQL identifier safety — the same string is reused, with hyphens folded to
  * underscores, for the logical database name and DB username.
@@ -98,6 +107,19 @@ export function mediaObjectPrefix(tenantName: string): string {
  */
 export function mediaTenantPrefixEnvValue(tenantName: string): string {
   return tenantName;
+}
+
+/**
+ * The container image reference to deploy.
+ *
+ * A digest joins with `@` and a tag with `:`. Getting this wrong is not a
+ * cosmetic difference: `repo/ghost:sha256:<hex>` is rejected outright by the
+ * Cloud Run API as a malformed image path, so a digest-pinned deploy fails at
+ * create time rather than running the wrong revision.
+ */
+export function tenantImageRef(repositoryDockerPath: string, digestOrTag: string): string {
+  const separator = digestOrTag.startsWith(IMAGE_DIGEST_PREFIX) ? '@' : ':';
+  return `${repositoryDockerPath}/${TENANT_IMAGE_NAME}${separator}${digestOrTag}`;
 }
 
 /** Secret Manager ids for this tenant, sharing the resource prefix. */

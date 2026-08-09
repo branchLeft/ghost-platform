@@ -1,6 +1,6 @@
 import * as pulumi from '@pulumi/pulumi';
 import { createServiceAccount } from './serviceAccount';
-import { validateTenantName, sqlIdentifier } from './naming';
+import { validateTenantName, sqlIdentifier, tenantImageRef } from './naming';
 import { createTenantDatabase, DEFAULT_MAX_USER_CONNECTIONS } from './database';
 import { createTenantStorage } from './storage';
 import { createCloudRunService, createPublicInvokerBinding } from './cloudRunService';
@@ -53,11 +53,8 @@ export interface GhostTenantArgs {
    * deliberately not defaulted or hardcoded**: no image has been pushed to
    * `tenantImageRepositoryDockerPath` yet (pushing one is a separate,
    * not-yet-started story), so this component has nothing sane to default
-   * to. Combined with `platform.tenantImageRepositoryDockerPath` as
-   * `{tenantImageRepositoryDockerPath}/ghost:{imageDigestOrTag}` -- `ghost`
-   * is this component's own choice of image name within the shared
-   * repository (every tenant runs the same image, per this repo's README,
-   * so there is exactly one image name, not one per tenant).
+   * to. Combined with `platform.tenantImageRepositoryDockerPath` by
+   * `tenantImageRef`, which picks the separator the form requires.
    */
   imageDigestOrTag: pulumi.Input<string>;
 
@@ -142,7 +139,11 @@ export class GhostTenant extends pulumi.ComponentResource {
       serviceAccount
     );
 
-    const image = pulumi.interpolate`${args.platform.tenantImageRepositoryDockerPath}/ghost:${args.imageDigestOrTag}`;
+    const image = pulumi
+      .all([args.platform.tenantImageRepositoryDockerPath, args.imageDigestOrTag])
+      .apply(([repositoryDockerPath, digestOrTag]) =>
+        tenantImageRef(repositoryDockerPath, digestOrTag)
+      );
 
     const service = createCloudRunService(this, {
       tenantName: args.tenantName,
