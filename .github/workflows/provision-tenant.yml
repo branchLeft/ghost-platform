@@ -82,10 +82,22 @@ jobs:
       group: provision-tenant
       cancel-in-progress: false
 
+    # Every input and variable a `run` block needs is bound here rather than
+    # interpolated into the script. A `${{ }}` inside `run` is expanded before
+    # the shell sees it, so a value containing shell syntax becomes shell
+    # source -- in a job holding project-admin-equivalent GCP credentials.
     env:
       TENANT: ${{ inputs.tenant_name }}
       TENANT_REPO: branchLeft/${{ inputs.tenant_repo }}
       STATE_BUCKET: ${{ inputs.state_bucket }}
+      DEPLOYER_SA_ID: ${{ inputs.deployer_sa_id }}
+      WIF_POOL_ID: ${{ inputs.wif_pool_id }}
+      SITE_URL: ${{ inputs.site_url }}
+      IMAGE_REF: ${{ inputs.image_digest_or_tag }}
+      GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      PLATFORM_DB_CONN: ${{ vars.PLATFORM_DB_INSTANCE_CONNECTION_NAME }}
+      PLATFORM_IMAGE_PATH: ${{ vars.PLATFORM_TENANT_IMAGE_REPOSITORY_PATH }}
+      PLATFORM_MEDIA_URL: ${{ vars.PLATFORM_MEDIA_BUCKET_URL }}
 
     steps:
       - name: Checkout
@@ -101,11 +113,11 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           [[ "$TENANT" =~ ^[a-z][a-z0-9-]{1,28}[a-z0-9]$ ]] \
             || fail "tenant_name must be lowercase alphanumeric-hyphen, 3-30 chars"
-          [[ "${{ inputs.deployer_sa_id }}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
+          [[ "$DEPLOYER_SA_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
             || fail "deployer_sa_id must satisfy GCP service account id grammar"
           [[ "$STATE_BUCKET" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]] \
             || fail "state_bucket must satisfy GCS bucket naming"
-          [[ "${{ inputs.site_url }}" =~ ^https:// ]] || fail "site_url must be https"
+          [[ "$SITE_URL" =~ ^https:// ]] || fail "site_url must be https"
           if gh repo view "$TENANT_REPO" >/dev/null 2>&1; then
             fail "$TENANT_REPO already exists -- onboarding is create-only"
           fi
@@ -135,15 +147,15 @@ jobs:
           npm ci
           pulumi login gs://branchleft-pulumi-state
           pulumi stack select "$TENANT" --create
-          pulumi config set gcp:project "${{ vars.GCP_PROJECT_ID }}"
+          pulumi config set gcp:project "$GCP_PROJECT"
           pulumi config set tenantName "$TENANT"
           pulumi config set tenantGithubRepo "$TENANT_REPO"
           pulumi config set stateBucketName "$STATE_BUCKET"
-          pulumi config set deployerServiceAccountId "${{ inputs.deployer_sa_id }}"
-          pulumi config set workloadIdentityPoolId "${{ inputs.wif_pool_id }}"
-          pulumi config set platformDbInstanceConnectionName "${{ vars.PLATFORM_DB_INSTANCE_CONNECTION_NAME }}"
-          pulumi config set platformTenantImageRepositoryDockerPath "${{ vars.PLATFORM_TENANT_IMAGE_REPOSITORY_PATH }}"
-          pulumi config set platformMediaBucketUrl "${{ vars.PLATFORM_MEDIA_BUCKET_URL }}"
+          pulumi config set deployerServiceAccountId "$DEPLOYER_SA_ID"
+          pulumi config set workloadIdentityPoolId "$WIF_POOL_ID"
+          pulumi config set platformDbInstanceConnectionName "$PLATFORM_DB_CONN"
+          pulumi config set platformTenantImageRepositoryDockerPath "$PLATFORM_IMAGE_PATH"
+          pulumi config set platformMediaBucketUrl "$PLATFORM_MEDIA_URL"
 
       - name: Refuse a provisioning plan that destroys anything
         working-directory: infra/provisioning
@@ -183,22 +195,26 @@ jobs:
       - name: Write the repo variables and the package-read secret
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
+          WIF_PROVIDER: ${{ steps.identity.outputs.provider }}
+          PACKAGE_READ_PAT: ${{ secrets.GH_PAT_GHOST_PLATFORM_READ }}
         run: |
-          gh variable set GCP_PROJECT_ID --repo "$TENANT_REPO" --body "${{ vars.GCP_PROJECT_ID }}"
-          gh variable set GCP_DEPLOYER_SA_EMAIL --repo "$TENANT_REPO" --body "${{ steps.identity.outputs.sa_email }}"
-          gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$TENANT_REPO" --body "${{ steps.identity.outputs.provider }}"
+          gh variable set GCP_PROJECT_ID --repo "$TENANT_REPO" --body "$GCP_PROJECT"
+          gh variable set GCP_DEPLOYER_SA_EMAIL --repo "$TENANT_REPO" --body "$DEPLOYER_SA_EMAIL"
+          gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$TENANT_REPO" --body "$WIF_PROVIDER"
           gh variable set PULUMI_STATE_BUCKET --repo "$TENANT_REPO" --body "$STATE_BUCKET"
           # Repo-level, never org-level: an org secret is invisible to a
           # private repo on this plan and resolves to an empty string with no
           # error, which would surface as an npm ci auth failure days later.
           gh secret set GH_PAT_GHOST_PLATFORM_READ --repo "$TENANT_REPO" \
-            --body "${{ secrets.GH_PAT_GHOST_PLATFORM_READ }}"
+            --body "$PACKAGE_READ_PAT"
 
       # ---- the tenant's first apply ---------------------------------------
 
       - name: Substitute placeholders and initialise the tenant stack
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
         run: |
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
           cd tenant
@@ -214,15 +230,15 @@ jobs:
           # below are plain config rather than a StackReference.
           pulumi login "gs://${STATE_BUCKET}"
           pulumi stack init "$TENANT" \
-            --secrets-provider="gcpkms://projects/${{ vars.GCP_PROJECT_ID }}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
-          pulumi config set gcp:project "${{ vars.GCP_PROJECT_ID }}" --stack "$TENANT"
+            --secrets-provider="gcpkms://projects/${GCP_PROJECT}/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets"
+          pulumi config set gcp:project "$GCP_PROJECT" --stack "$TENANT"
           pulumi config set tenantName "$TENANT" --stack "$TENANT"
-          pulumi config set siteUrl "${{ inputs.site_url }}" --stack "$TENANT"
-          pulumi config set imageDigestOrTag "${{ inputs.image_digest_or_tag }}" --stack "$TENANT"
-          pulumi config set deployerServiceAccountEmail "${{ steps.identity.outputs.sa_email }}" --stack "$TENANT"
-          pulumi config set platformDbInstanceConnectionName "${{ vars.PLATFORM_DB_INSTANCE_CONNECTION_NAME }}" --stack "$TENANT"
-          pulumi config set platformTenantImageRepositoryDockerPath "${{ vars.PLATFORM_TENANT_IMAGE_REPOSITORY_PATH }}" --stack "$TENANT"
-          pulumi config set platformMediaBucketUrl "${{ vars.PLATFORM_MEDIA_BUCKET_URL }}" --stack "$TENANT"
+          pulumi config set siteUrl "$SITE_URL" --stack "$TENANT"
+          pulumi config set imageDigestOrTag "$IMAGE_REF" --stack "$TENANT"
+          pulumi config set deployerServiceAccountEmail "$DEPLOYER_SA_EMAIL" --stack "$TENANT"
+          pulumi config set platformDbInstanceConnectionName "$PLATFORM_DB_CONN" --stack "$TENANT"
+          pulumi config set platformTenantImageRepositoryDockerPath "$PLATFORM_IMAGE_PATH" --stack "$TENANT"
+          pulumi config set platformMediaBucketUrl "$PLATFORM_MEDIA_URL" --stack "$TENANT"
 
       # The platform guard, not the tenant one. This apply runs as the
       # provisioning identity against a program that could in principle be
@@ -276,13 +292,15 @@ jobs:
       # in the programme where code reaches main unreviewed.
       - name: Summary
         if: always()
+        env:
+          DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
         run: |
           {
             echo "## Provisioning: ${TENANT}"
             echo
             echo "- repo: \`${TENANT_REPO}\`"
             echo "- state bucket: \`${STATE_BUCKET}\`"
-            echo "- deployer: \`${{ steps.identity.outputs.sa_email }}\`"
+            echo "- deployer: \`${DEPLOYER_SA_EMAIL:-unknown}\`"
             echo
             echo "Onboarding completes when the handover pull request is merged."
           } >> "$GITHUB_STEP_SUMMARY"
