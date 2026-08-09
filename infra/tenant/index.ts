@@ -30,7 +30,7 @@ export interface GhostTenantPlatformArgs {
 
 export interface GhostTenantArgs {
   /**
-   * Short tenant identifier, e.g. `blog`, `salamander-news`. Must start
+   * Short tenant identifier, e.g. `blog`, `example-news`. Must start
    * with a lowercase letter and contain only lowercase letters, digits and
    * hyphens; validated against GCP service-account-ID length limits at
    * construction time (see `serviceAccount.ts`). Derives the service

@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   typecheck:
-    name: Type check
+    name: Tenant type check
     runs-on: ubuntu-latest
     defaults:
       run:
