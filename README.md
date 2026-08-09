@@ -382,22 +382,6 @@ Nothing else Ghost writes locally is safe to lose — which is exactly why
 the database and media adapters are both externalized via the env vars
 above.
 
-## Repo scaffold
-
-- `Dockerfile` — the tenant image.
-- `docker-entrypoint.branchleft.sh` — Cloud Run `$PORT` wrapper around the
-  upstream entrypoint, plus the fail-closed storage guard.
-- `scripts/smoke-test.sh` — local/CI smoke test (see above).
-- `scripts/test-storage-guard.sh` — regression test for the storage guard
-  (see "Fail-closed storage guard" above).
-- `.github/workflows/build.yml` — builds the image and runs both scripts
-  on every PR. **Does not push anywhere and does not authenticate to
-  GCP.** Workload Identity Federation now exists for this repo, but it is
-  scoped to the platform infrastructure deploy; wiring an image push onto
-  it is a later story, and giving a build job credentials it has no use for
-  today would be a widening for nothing.
-- `LICENSE` — MIT.
-
 ## License
 
 MIT — see [`LICENSE`](./LICENSE).

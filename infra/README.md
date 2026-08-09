@@ -20,16 +20,13 @@ This repo's IaC, split by shape rather than lumped into one program:
   database + DB user, storage write-isolation, Cloud Run service) that *do*
   change per tenant. Takes the platform stack's outputs as plain
   constructor args rather than resolving a `StackReference` itself, so it
-  stays portable and testable independent of any one caller. Not yet
-  instantiated for a real tenant -- that's the private
-  `ghost-platform-tenants` repo's stack configs, a later story (see
-  `ghost-platform-docs/03-onboarding-and-repo-strategy.md`'s repo-split
-  decision -- this repo is public and stays public, so it can hold the
-  reusable component, but never a tenant's actual name, hostname, or
-  config, which live in the private tenants repo instead). `tenant/smoke-test/`
-  is a disposable, preview-only Pulumi program that instantiates the
-  component with placeholder values to sanity-check its resource plan --
-  not itself part of the reusable component.
+  stays portable and testable independent of any one caller. Published to
+  GitHub Packages as `@branchleft/ghost-platform-tenant` and instantiated
+  from one private repo per tenant, generated from
+  `ghost-platform-tenant-template`. This repo is public, so it holds the
+  reusable component but never a tenant's name, hostname or config -- a
+  hostname and Cloud Run service name together are a tenant's identity, and
+  a file listing them would be a client roster.
 
 Why split at all, rather than one program with a `sites`-style array (the
 shape `shared-infra/sites.ts` uses for the edge)? That pattern fits the edge
@@ -37,7 +34,7 @@ because every site there shares one load balancer -- the array *is* the
 resource graph. It doesn't fit here: `platform/`'s resources exist once,
 full stop, while a tenant's resources are a repeated unit instantiated per
 tenant from a different repo entirely. A shared array in this repo would
-either force tenant identity into a public repo (the thing doc 03's repo
-split exists to prevent) or force the reusable component to import a stack
-it has no business depending on. Two directories, two different Pulumi
+either force tenant identity into a public repo -- the thing the per-tenant
+repo split exists to prevent -- or force the reusable component to import a
+stack it has no business depending on. Two directories, two different Pulumi
 artifact shapes (stack vs. component), keeps that boundary honest.
