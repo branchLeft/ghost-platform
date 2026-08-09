@@ -12,7 +12,7 @@ name: Platform infra CI
 # protection rules and a required reviewer at minimum) -- not a step quietly
 # added to this file."
 #
-# That decision has now been taken deliberately (Rob, 2026-08-05): CI owns
+# That decision has since been taken deliberately by the platform owner: CI owns
 # applies for this stack, matching the pattern website/infra has run in
 # production since 2026-08-01. The blast-radius argument was never an
 # argument for humans over CI -- a human running `pulumi up` from a laptop is
@@ -56,7 +56,7 @@ permissions:
 
 jobs:
   typecheck:
-    name: Type check
+    name: Platform type check
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -151,8 +151,8 @@ jobs:
       # runs no gcloud commands.
       #
       # All three values come from repo variables rather than being committed:
-      # the provider's resource name embeds the GCP project number. Rob sets
-      # them from `pulumi stack output` after the bootstrap apply -- see
+      # the provider's resource name embeds the GCP project number. They are
+      # set from `pulumi stack output` after the bootstrap apply -- see
       # infra/platform/RUNBOOK-bootstrap.md.
       - name: Authenticate to GCP (Workload Identity Federation)
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
