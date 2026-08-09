@@ -305,39 +305,38 @@
     ],
     "11": [
       "gcp_kms_pulumi_secrets",
-      "gcp_sql_instance",
-      "gcp_storage_pulumi_state",
-      "gcp_wif_provider",
-      "ghost_platform_deployer",
-      "ghost_platform_provisioner",
-      "ghost_tenant_provisioner",
+      "ghost_platform_deployer_sa",
+      "ghost_platform_tenant_template",
+      "ghost_tenant_provisioner_sa",
       "github_workflows_provision_tenant",
-      "infra_platform_pulumi_up",
-      "infra_platform_runbook_bootstrap"
+      "github_workflows_publish_tenant_package",
+      "infra_platform_runbook_bootstrap",
+      "infra_provisioning",
+      "infra_tenant",
+      "pulumi_state_bucket"
     ],
     "12": [
-      "actions_checkout",
-      "actions_setup_node",
-      "github_workflows_infra_tenant_ci_yml_workflow",
-      "infra_tenant_component"
-    ],
-    "13": [
       "contributing",
       "github_dependabot",
       "infra_platform",
       "pre_commit_config"
     ],
-    "14": [
+    "13": [
       "docker_entrypoint_branchleft",
       "docker_entrypoint_branchleft_server_host",
       "docker_entrypoint_branchleft_server_port",
       "docker_entrypoint_branchleft_sh__entry"
     ],
-    "15": [
+    "14": [
       "scripts_test_storage_guard",
       "scripts_test_storage_guard_assert_blocked",
       "scripts_test_storage_guard_assert_boots",
       "scripts_test_storage_guard_sh__entry"
+    ],
+    "15": [
+      "actions_checkout",
+      "actions_setup_node",
+      "github_workflows_infra_tenant_ci_yml_workflow"
     ],
     "16": [
       "scripts_smoke_test",
@@ -375,39 +374,30 @@
       "ghost_official_image"
     ],
     "26": [
-      "ghost_platform_tenant_template"
-    ],
-    "27": [
-      "github_environment_tenant_provisioning"
-    ],
-    "28": [
       "github_workflows_build"
     ],
-    "29": [
+    "27": [
       "github_workflows_codeql"
     ],
-    "30": [
+    "28": [
       "github_workflows_docs_lint"
     ],
-    "31": [
+    "29": [
       "github_workflows_graphify_workflow"
     ],
-    "32": [
-      "github_workflows_publish_tenant_package"
-    ],
-    "33": [
+    "30": [
       "infra_provisioning_pulumi"
     ],
-    "34": [
+    "31": [
       "infra_readme"
     ],
-    "35": [
+    "32": [
       "infra_tenant_smoke_test_readme"
     ],
-    "36": [
+    "33": [
       "pulumi_platform_stack"
     ],
-    "37": [
+    "34": [
       "readme"
     ]
   },
@@ -423,11 +413,11 @@
     "8": 0.125,
     "9": 0.23809523809523808,
     "10": 0.2878787878787879,
-    "11": 0.2,
+    "11": 0.2222222222222222,
     "12": 0.5,
     "13": 0.5,
-    "14": 0.5,
-    "15": 0.8333333333333334,
+    "14": 0.8333333333333334,
+    "15": 0.6666666666666666,
     "16": 0.6666666666666666,
     "17": 1.0,
     "18": 1.0,
@@ -446,10 +436,7 @@
     "31": 1.0,
     "32": 1.0,
     "33": 1.0,
-    "34": 1.0,
-    "35": 1.0,
-    "36": 1.0,
-    "37": 1.0
+    "34": 1.0
   },
   "gods": [
     {
@@ -505,11 +492,33 @@
   ],
   "surprises": [
     {
-      "source": "Provision tenant",
-      "target": "Cloud KMS: pulumi-secrets",
+      "source": "Provision tenant workflow",
+      "target": "Ghost Tenant Provisioner Service Account",
       "source_files": [
         ".github/workflows/provision-tenant.yml",
         "infra/platform/RUNBOOK-bootstrap.md"
+      ],
+      "confidence": "INFERRED",
+      "relation": "references",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; peripheral node `Ghost Tenant Provisioner Service Account` unexpectedly reaches hub `Provision tenant workflow`"
+    },
+    {
+      "source": "Provision tenant workflow",
+      "target": "Ghost Tenant Template Repo",
+      "source_files": [
+        ".github/workflows/provision-tenant.yml",
+        "infra/README.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories; peripheral node `Ghost Tenant Template Repo` unexpectedly reaches hub `Provision tenant workflow`"
+    },
+    {
+      "source": "Bootstrap Runbook",
+      "target": "Provision tenant workflow",
+      "source_files": [
+        "infra/platform/RUNBOOK-bootstrap.md",
+        ".github/workflows/provision-tenant.yml"
       ],
       "confidence": "EXTRACTED",
       "relation": "references",
@@ -536,32 +545,10 @@
       "confidence": "EXTRACTED",
       "relation": "calls",
       "why": "cross-file semantic connection"
-    },
-    {
-      "source": "createTenantStorage()",
-      "target": "secretWithValue()",
-      "source_files": [
-        "infra/tenant/storage.ts",
-        "infra/tenant/secrets.ts"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "calls",
-      "why": "cross-file semantic connection"
-    },
-    {
-      "source": "include",
-      "target": "*.ts",
-      "source_files": [
-        "infra/provisioning/tsconfig.json",
-        "infra/tenant/tsconfig.build.json"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "extends",
-      "why": "cross-file semantic connection"
     }
   ],
   "tokens": {
-    "input": 0,
-    "output": 0
+    "input": 20610,
+    "output": 1734
   }
 }

@@ -4,17 +4,31 @@
   "graph": {
     "hyperedges": [
       {
-        "id": "platform_bootstrap_flow",
-        "label": "Platform Bootstrap Flow",
+        "id": "tenant_onboarding_flow",
+        "label": "Tenant Onboarding Flow",
         "nodes": [
-          "infra_platform_runbook_bootstrap",
-          "ghost_platform_deployer",
-          "gcp_kms_pulumi_secrets",
-          "gcp_storage_pulumi_state"
+          "github_workflows_provision_tenant",
+          "infra_provisioning",
+          "ghost_platform_tenant_template",
+          "ghost_tenant_provisioner_sa"
         ],
         "relation": "participate_in",
         "confidence": "EXTRACTED",
-        "confidence_score": 0.9,
+        "confidence_score": 1.0,
+        "source_file": ".github/workflows/provision-tenant.yml"
+      },
+      {
+        "id": "platform_identity_governance",
+        "label": "Platform Identity & Governance",
+        "nodes": [
+          "infra_platform_runbook_bootstrap",
+          "ghost_platform_deployer_sa",
+          "ghost_tenant_provisioner_sa",
+          "gcp_kms_pulumi_secrets"
+        ],
+        "relation": "form",
+        "confidence": "EXTRACTED",
+        "confidence_score": 0.95,
         "source_file": "infra/platform/RUNBOOK-bootstrap.md"
       },
       {
@@ -69,7 +83,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "docker-entrypoint.branchleft.sh",
       "id": "docker_entrypoint_branchleft"
@@ -84,7 +98,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "docker-entrypoint.branchleft.sh script",
       "id": "docker_entrypoint_branchleft_sh__entry"
@@ -99,7 +113,7 @@
         "kind": "code"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "server__port",
       "id": "docker_entrypoint_branchleft_server_port"
@@ -114,7 +128,7 @@
         "kind": "code"
       },
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "community_name": "Docker Entrypoint",
       "norm_label": "server__host",
       "id": "docker_entrypoint_branchleft_server_host"
@@ -770,7 +784,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 15,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh",
       "id": "scripts_test_storage_guard"
@@ -785,7 +799,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 15,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh script",
       "id": "scripts_test_storage_guard_sh__entry"
@@ -800,7 +814,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 15,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_blocked()",
       "id": "scripts_test_storage_guard_assert_blocked"
@@ -815,7 +829,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 15,
+      "community": 14,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_boots()",
       "id": "scripts_test_storage_guard_assert_boots"
@@ -894,7 +908,7 @@
       "label": "Build image workflow",
       "file_type": "code",
       "source_file": ".github/workflows/build.yml",
-      "community": 28,
+      "community": 26,
       "norm_label": "build image workflow",
       "_origin": "semantic",
       "id": "github_workflows_build"
@@ -903,19 +917,10 @@
       "label": "docs-lint workflow",
       "file_type": "code",
       "source_file": ".github/workflows/docs-lint.yml",
-      "community": 30,
+      "community": 28,
       "norm_label": "docs-lint workflow",
       "_origin": "semantic",
       "id": "github_workflows_docs_lint"
-    },
-    {
-      "label": "Publish tenant package workflow",
-      "file_type": "code",
-      "source_file": ".github/workflows/publish-tenant-package.yml",
-      "community": 32,
-      "norm_label": "publish tenant package workflow",
-      "_origin": "semantic",
-      "id": "github_workflows_publish_tenant_package"
     },
     {
       "label": "platform/database.ts",
@@ -1198,7 +1203,7 @@
       "label": "GhostTenant Smoke Test README",
       "file_type": "document",
       "source_type": "infra/tenant/smoke-test/README.md",
-      "community": 35,
+      "community": 32,
       "norm_label": "ghosttenant smoke test readme",
       "_origin": "semantic",
       "id": "infra_tenant_smoke_test_readme"
@@ -1216,7 +1221,7 @@
       "label": "Infrastructure README",
       "file_type": "document",
       "source_file": "infra/README.md",
-      "community": 34,
+      "community": 31,
       "norm_label": "infrastructure readme",
       "_origin": "semantic",
       "id": "infra_readme"
@@ -1225,7 +1230,7 @@
       "label": "Ghost Tenant Template Repo",
       "file_type": "concept",
       "source_file": "infra/README.md",
-      "community": 26,
+      "community": 11,
       "norm_label": "ghost tenant template repo",
       "_origin": "semantic",
       "id": "ghost_platform_tenant_template"
@@ -1404,7 +1409,7 @@
       "label": "README.md",
       "file_type": "document",
       "source_file": "README.md",
-      "community": 37,
+      "community": 34,
       "norm_label": "readme.md",
       "_origin": "semantic",
       "id": "readme"
@@ -1772,7 +1777,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 13,
+      "community": 12,
       "norm_label": "contributing.md",
       "_origin": "semantic",
       "id": "contributing"
@@ -1786,7 +1791,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 13,
+      "community": 12,
       "norm_label": ".github/dependabot.yml",
       "_origin": "semantic",
       "id": "github_dependabot"
@@ -1800,7 +1805,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 29,
+      "community": 27,
       "norm_label": ".github/workflows/codeql.yml",
       "_origin": "semantic",
       "id": "github_workflows_codeql"
@@ -1814,7 +1819,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 13,
+      "community": 12,
       "norm_label": "infra/platform",
       "_origin": "semantic",
       "id": "infra_platform"
@@ -2411,7 +2416,7 @@
       "label": "branchleft-ghost-provisioning",
       "file_type": "code",
       "source_file": "infra/provisioning/Pulumi.yaml",
-      "community": 33,
+      "community": 30,
       "norm_label": "branchleft-ghost-provisioning",
       "_origin": "semantic",
       "id": "infra_provisioning_pulumi"
@@ -2427,7 +2432,7 @@
     {
       "label": "Pulumi Platform Stack",
       "file_type": "concept",
-      "community": 36,
+      "community": 33,
       "norm_label": "pulumi platform stack",
       "_origin": "semantic",
       "id": "pulumi_platform_stack"
@@ -2586,7 +2591,7 @@
       "label": ".pre-commit-config.yaml",
       "file_type": "code",
       "source_file": ".pre-commit-config.yaml",
-      "community": 13,
+      "community": 12,
       "norm_label": ".pre-commit-config.yaml",
       "_origin": "semantic",
       "id": "pre_commit_config"
@@ -2600,28 +2605,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 31,
+      "community": 29,
       "norm_label": "graphify workflow",
       "_origin": "semantic",
       "id": "github_workflows_graphify_workflow"
-    },
-    {
-      "label": "Provision tenant",
-      "file_type": "code",
-      "source_file": ".github/workflows/provision-tenant.yml",
-      "community": 11,
-      "norm_label": "provision tenant",
-      "_origin": "semantic",
-      "id": "github_workflows_provision_tenant"
-    },
-    {
-      "label": "GCP Workload Identity Provider",
-      "file_type": "concept",
-      "source_file": ".github/workflows/provision-tenant.yml",
-      "community": 11,
-      "norm_label": "gcp workload identity provider",
-      "_origin": "semantic",
-      "id": "gcp_wif_provider"
     },
     {
       "label": "cloudRunService.ts",
@@ -2935,24 +2922,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 12,
+      "community": 15,
       "norm_label": "tenant infra ci workflow",
       "_origin": "semantic",
       "id": "github_workflows_infra_tenant_ci_yml_workflow"
-    },
-    {
-      "label": "Tenant Pulumi Component",
-      "file_type": "code",
-      "source_file": "infra/tenant",
-      "source_location": null,
-      "source_url": null,
-      "captured_at": null,
-      "author": null,
-      "contributor": null,
-      "community": 12,
-      "norm_label": "tenant pulumi component",
-      "_origin": "semantic",
-      "id": "infra_tenant_component"
     },
     {
       "label": "actions/checkout",
@@ -2963,7 +2936,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 12,
+      "community": 15,
       "norm_label": "actions/checkout",
       "_origin": "semantic",
       "id": "actions_checkout"
@@ -2977,7 +2950,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 12,
+      "community": 15,
       "norm_label": "actions/setup-node",
       "_origin": "semantic",
       "id": "actions_setup_node"
@@ -3201,95 +3174,14 @@
       "id": "infra_tenant_naming_mediaobjectconditionresource"
     },
     {
-      "label": "Bootstrap Runbook - Platform Stack",
-      "file_type": "document",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "bootstrap runbook - platform stack",
-      "_origin": "semantic",
-      "id": "infra_platform_runbook_bootstrap"
-    },
-    {
-      "label": "Pulumi Up (Platform)",
-      "file_type": "code",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "pulumi up (platform)",
-      "_origin": "semantic",
-      "id": "infra_platform_pulumi_up"
-    },
-    {
-      "label": "Ghost Platform Deployer Service Account",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "ghost platform deployer service account",
-      "_origin": "semantic",
-      "id": "ghost_platform_deployer"
-    },
-    {
-      "label": "Ghost Tenant Provisioner Service Account",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "ghost tenant provisioner service account",
-      "_origin": "semantic",
-      "id": "ghost_tenant_provisioner"
-    },
-    {
-      "label": "Ghost Platform Provisioner (MySQL Account)",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "ghost platform provisioner (mysql account)",
-      "_origin": "semantic",
-      "id": "ghost_platform_provisioner"
-    },
-    {
-      "label": "Cloud KMS: pulumi-secrets",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "cloud kms: pulumi-secrets",
-      "_origin": "semantic",
-      "id": "gcp_kms_pulumi_secrets"
-    },
-    {
-      "label": "GCS: branchleft-pulumi-state",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "gcs: branchleft-pulumi-state",
-      "_origin": "semantic",
-      "id": "gcp_storage_pulumi_state"
-    },
-    {
-      "label": "Cloud SQL Instance",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 11,
-      "norm_label": "cloud sql instance",
-      "_origin": "semantic",
-      "id": "gcp_sql_instance"
-    },
-    {
-      "label": "GitHub Environment: tenant-provisioning",
-      "file_type": "concept",
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 27,
-      "norm_label": "github environment: tenant-provisioning",
-      "_origin": "semantic",
-      "id": "github_environment_tenant_provisioning"
-    },
-    {
       "label": "tenant/package.json",
       "file_type": "code",
       "source_file": "infra/tenant/package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "infra_tenant_package",
       "community": 6,
-      "norm_label": "tenant/package.json"
+      "norm_label": "tenant/package.json",
+      "id": "infra_tenant_package"
     },
     {
       "label": "name",
@@ -3297,9 +3189,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "id": "infra_tenant_package_name",
       "community": 6,
-      "norm_label": "name"
+      "norm_label": "name",
+      "id": "infra_tenant_package_name"
     },
     {
       "label": "version",
@@ -3307,9 +3199,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "id": "infra_tenant_package_version",
       "community": 6,
-      "norm_label": "version"
+      "norm_label": "version",
+      "id": "infra_tenant_package_version"
     },
     {
       "label": "license",
@@ -3317,9 +3209,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "id": "infra_tenant_package_license",
       "community": 6,
-      "norm_label": "license"
+      "norm_label": "license",
+      "id": "infra_tenant_package_license"
     },
     {
       "label": "main",
@@ -3327,9 +3219,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "id": "infra_tenant_package_main",
       "community": 6,
-      "norm_label": "main"
+      "norm_label": "main",
+      "id": "infra_tenant_package_main"
     },
     {
       "label": "types",
@@ -3337,9 +3229,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "id": "infra_tenant_package_types",
       "community": 6,
-      "norm_label": "types"
+      "norm_label": "types",
+      "id": "infra_tenant_package_types"
     },
     {
       "label": "files",
@@ -3347,9 +3239,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "id": "infra_tenant_package_files",
       "community": 6,
-      "norm_label": "files"
+      "norm_label": "files",
+      "id": "infra_tenant_package_files"
     },
     {
       "label": "dist",
@@ -3357,9 +3249,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "id": "ref_dist",
       "community": 6,
-      "norm_label": "dist"
+      "norm_label": "dist",
+      "id": "ref_dist"
     },
     {
       "label": "repository",
@@ -3367,9 +3259,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "id": "infra_tenant_package_repository",
       "community": 6,
-      "norm_label": "repository"
+      "norm_label": "repository",
+      "id": "infra_tenant_package_repository"
     },
     {
       "label": "type",
@@ -3377,9 +3269,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "id": "infra_tenant_package_repository_type",
       "community": 6,
-      "norm_label": "type"
+      "norm_label": "type",
+      "id": "infra_tenant_package_repository_type"
     },
     {
       "label": "url",
@@ -3387,9 +3279,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L12",
       "_origin": "ast",
-      "id": "infra_tenant_package_repository_url",
       "community": 6,
-      "norm_label": "url"
+      "norm_label": "url",
+      "id": "infra_tenant_package_repository_url"
     },
     {
       "label": "directory",
@@ -3397,9 +3289,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L13",
       "_origin": "ast",
-      "id": "infra_tenant_package_repository_directory",
       "community": 6,
-      "norm_label": "directory"
+      "norm_label": "directory",
+      "id": "infra_tenant_package_repository_directory"
     },
     {
       "label": "publishConfig",
@@ -3407,9 +3299,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L15",
       "_origin": "ast",
-      "id": "infra_tenant_package_publishconfig",
       "community": 6,
-      "norm_label": "publishconfig"
+      "norm_label": "publishconfig",
+      "id": "infra_tenant_package_publishconfig"
     },
     {
       "label": "registry",
@@ -3417,9 +3309,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L16",
       "_origin": "ast",
-      "id": "infra_tenant_package_publishconfig_registry",
       "community": 6,
-      "norm_label": "registry"
+      "norm_label": "registry",
+      "id": "infra_tenant_package_publishconfig_registry"
     },
     {
       "label": "access",
@@ -3427,9 +3319,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L17",
       "_origin": "ast",
-      "id": "infra_tenant_package_publishconfig_access",
       "community": 6,
-      "norm_label": "access"
+      "norm_label": "access",
+      "id": "infra_tenant_package_publishconfig_access"
     },
     {
       "label": "scripts",
@@ -3437,9 +3329,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L19",
       "_origin": "ast",
-      "id": "infra_tenant_package_scripts",
       "community": 6,
-      "norm_label": "scripts"
+      "norm_label": "scripts",
+      "id": "infra_tenant_package_scripts"
     },
     {
       "label": "build",
@@ -3447,9 +3339,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L20",
       "_origin": "ast",
-      "id": "infra_tenant_package_scripts_build",
       "community": 6,
-      "norm_label": "build"
+      "norm_label": "build",
+      "id": "infra_tenant_package_scripts_build"
     },
     {
       "label": "prepublishOnly",
@@ -3457,9 +3349,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L21",
       "_origin": "ast",
-      "id": "infra_tenant_package_scripts_prepublishonly",
       "community": 6,
-      "norm_label": "prepublishonly"
+      "norm_label": "prepublishonly",
+      "id": "infra_tenant_package_scripts_prepublishonly"
     },
     {
       "label": "test",
@@ -3467,9 +3359,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L22",
       "_origin": "ast",
-      "id": "infra_tenant_package_scripts_test",
       "community": 6,
-      "norm_label": "test"
+      "norm_label": "test",
+      "id": "infra_tenant_package_scripts_test"
     },
     {
       "label": "dependencies",
@@ -3477,9 +3369,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L24",
       "_origin": "ast",
-      "id": "infra_tenant_package_dependencies",
       "community": 2,
-      "norm_label": "dependencies"
+      "norm_label": "dependencies",
+      "id": "infra_tenant_package_dependencies"
     },
     {
       "label": "@pulumi/gcp",
@@ -3487,9 +3379,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L25",
       "_origin": "ast",
-      "id": "infra_tenant_package_dependencies_pulumi_gcp",
       "community": 2,
-      "norm_label": "@pulumi/gcp"
+      "norm_label": "@pulumi/gcp",
+      "id": "infra_tenant_package_dependencies_pulumi_gcp"
     },
     {
       "label": "@pulumi/pulumi",
@@ -3497,9 +3389,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L26",
       "_origin": "ast",
-      "id": "infra_tenant_package_dependencies_pulumi_pulumi",
       "community": 2,
-      "norm_label": "@pulumi/pulumi"
+      "norm_label": "@pulumi/pulumi",
+      "id": "infra_tenant_package_dependencies_pulumi_pulumi"
     },
     {
       "label": "@pulumi/random",
@@ -3507,9 +3399,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L27",
       "_origin": "ast",
-      "id": "infra_tenant_package_dependencies_pulumi_random",
       "community": 2,
-      "norm_label": "@pulumi/random"
+      "norm_label": "@pulumi/random",
+      "id": "infra_tenant_package_dependencies_pulumi_random"
     },
     {
       "label": "@pulumi/random",
@@ -3517,9 +3409,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L27",
       "_origin": "ast",
-      "id": "pulumi_random",
       "community": 2,
-      "norm_label": "@pulumi/random"
+      "norm_label": "@pulumi/random",
+      "id": "pulumi_random"
     },
     {
       "label": "devDependencies",
@@ -3527,9 +3419,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L29",
       "_origin": "ast",
-      "id": "infra_tenant_package_devdependencies",
       "community": 2,
-      "norm_label": "devdependencies"
+      "norm_label": "devdependencies",
+      "id": "infra_tenant_package_devdependencies"
     },
     {
       "label": "@types/node",
@@ -3537,9 +3429,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L30",
       "_origin": "ast",
-      "id": "infra_tenant_package_devdependencies_types_node",
       "community": 2,
-      "norm_label": "@types/node"
+      "norm_label": "@types/node",
+      "id": "infra_tenant_package_devdependencies_types_node"
     },
     {
       "label": "typescript",
@@ -3547,9 +3439,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L31",
       "_origin": "ast",
-      "id": "infra_tenant_package_devdependencies_typescript",
       "community": 2,
-      "norm_label": "typescript"
+      "norm_label": "typescript",
+      "id": "infra_tenant_package_devdependencies_typescript"
     },
     {
       "label": "vitest",
@@ -3557,9 +3449,9 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L32",
       "_origin": "ast",
-      "id": "infra_tenant_package_devdependencies_vitest",
       "community": 2,
-      "norm_label": "vitest"
+      "norm_label": "vitest",
+      "id": "infra_tenant_package_devdependencies_vitest"
     },
     {
       "label": "vitest",
@@ -3567,9 +3459,81 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L32",
       "_origin": "ast",
-      "id": "vitest",
       "community": 2,
-      "norm_label": "vitest"
+      "norm_label": "vitest",
+      "id": "vitest"
+    },
+    {
+      "label": "Provision tenant workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "id": "github_workflows_provision_tenant",
+      "community": 11,
+      "norm_label": "provision tenant workflow"
+    },
+    {
+      "label": "Publish tenant package workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/publish-tenant-package.yml",
+      "id": "github_workflows_publish_tenant_package",
+      "community": 11,
+      "norm_label": "publish tenant package workflow"
+    },
+    {
+      "label": "Bootstrap Runbook",
+      "file_type": "document",
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "infra_platform_runbook_bootstrap",
+      "community": 11,
+      "norm_label": "bootstrap runbook"
+    },
+    {
+      "label": "Provisioning Pulumi Program",
+      "file_type": "code",
+      "source_file": "infra/provisioning",
+      "id": "infra_provisioning",
+      "community": 11,
+      "norm_label": "provisioning pulumi program"
+    },
+    {
+      "label": "Tenant Pulumi Component",
+      "file_type": "code",
+      "source_file": "infra/tenant",
+      "id": "infra_tenant",
+      "community": 11,
+      "norm_label": "tenant pulumi component"
+    },
+    {
+      "label": "Ghost Platform Deployer Service Account",
+      "file_type": "concept",
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "ghost_platform_deployer_sa",
+      "community": 11,
+      "norm_label": "ghost platform deployer service account"
+    },
+    {
+      "label": "Ghost Tenant Provisioner Service Account",
+      "file_type": "concept",
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "ghost_tenant_provisioner_sa",
+      "community": 11,
+      "norm_label": "ghost tenant provisioner service account"
+    },
+    {
+      "label": "Pulumi State Bucket (GCS)",
+      "file_type": "concept",
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "pulumi_state_bucket",
+      "community": 11,
+      "norm_label": "pulumi state bucket (gcs)"
+    },
+    {
+      "label": "Pulumi Secrets KMS Key",
+      "file_type": "concept",
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "id": "gcp_kms_pulumi_secrets",
+      "community": 11,
+      "norm_label": "pulumi secrets kms key"
     }
   ],
   "links": [
@@ -4623,9 +4587,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_dependencies_pulumi_pulumi",
-      "target": "pulumi_pulumi",
-      "confidence_score": 1.0
+      "target": "pulumi_pulumi"
     },
     {
       "relation": "imports",
@@ -4647,9 +4611,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_dependencies_pulumi_gcp",
-      "target": "pulumi_gcp",
-      "confidence_score": 1.0
+      "target": "pulumi_gcp"
     },
     {
       "relation": "imports",
@@ -4671,9 +4635,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies_typescript",
-      "target": "typescript",
-      "confidence_score": 1.0
+      "target": "typescript"
     },
     {
       "relation": "imports",
@@ -4695,9 +4659,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies_types_node",
-      "target": "types_node",
-      "confidence_score": 1.0
+      "target": "types_node"
     },
     {
       "relation": "imports_from",
@@ -5263,6 +5227,14 @@
       "confidence_score": 1.0,
       "source": "infra_platform_scripts_assert_no_platform_deletes_rationale_295",
       "target": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "ghost_platform_tenant_template"
     },
     {
       "relation": "contains",
@@ -6931,24 +6903,6 @@
       "target": "infra_provisioning_config_workloadidentitypoolid"
     },
     {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/provision-tenant.yml",
-      "_origin": "semantic",
-      "source": "github_workflows_provision_tenant",
-      "target": "gcp_kms_pulumi_secrets"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/provision-tenant.yml",
-      "_origin": "semantic",
-      "source": "github_workflows_provision_tenant",
-      "target": "gcp_wif_provider"
-    },
-    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/cloudRunService.ts",
@@ -7612,17 +7566,6 @@
       "target": "actions_setup_node"
     },
     {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "source_location": null,
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "github_workflows_infra_tenant_ci_yml_workflow",
-      "target": "infra_tenant_component"
-    },
-    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/index.ts",
@@ -8062,79 +8005,15 @@
       "target": "infra_tenant_naming_mediaobjectprefix"
     },
     {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "infra_platform_runbook_bootstrap",
-      "target": "ghost_platform_deployer"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "infra_platform_runbook_bootstrap",
-      "target": "ghost_platform_provisioner"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "infra_platform_runbook_bootstrap",
-      "target": "ghost_tenant_provisioner"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "infra_platform_runbook_bootstrap",
-      "target": "infra_platform_pulumi_up"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "weight": 1.0,
-      "_origin": "semantic",
-      "source": "ghost_platform_deployer",
-      "target": "gcp_kms_pulumi_secrets"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "ghost_platform_deployer",
-      "target": "gcp_storage_pulumi_state"
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "_origin": "semantic",
-      "source": "ghost_tenant_provisioner",
-      "target": "gcp_sql_instance"
-    },
-    {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "infra/tenant/package.json",
       "source_location": "L24",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_dependencies",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_dependencies"
     },
     {
       "relation": "contains",
@@ -8143,9 +8022,9 @@
       "source_location": "L29",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_devdependencies",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_devdependencies"
     },
     {
       "relation": "contains",
@@ -8154,9 +8033,9 @@
       "source_location": "L7",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_files",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_files"
     },
     {
       "relation": "contains",
@@ -8165,9 +8044,9 @@
       "source_location": "L4",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_license",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_license"
     },
     {
       "relation": "contains",
@@ -8176,9 +8055,9 @@
       "source_location": "L5",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_main",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_main"
     },
     {
       "relation": "contains",
@@ -8187,9 +8066,9 @@
       "source_location": "L2",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_name",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_name"
     },
     {
       "relation": "contains",
@@ -8198,9 +8077,9 @@
       "source_location": "L15",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_publishconfig",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_publishconfig"
     },
     {
       "relation": "contains",
@@ -8209,9 +8088,9 @@
       "source_location": "L10",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_repository",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_repository"
     },
     {
       "relation": "contains",
@@ -8220,9 +8099,9 @@
       "source_location": "L19",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_scripts",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_scripts"
     },
     {
       "relation": "contains",
@@ -8231,9 +8110,9 @@
       "source_location": "L6",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_types",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_types"
     },
     {
       "relation": "contains",
@@ -8242,9 +8121,9 @@
       "source_location": "L3",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package",
-      "target": "infra_tenant_package_version",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_version"
     },
     {
       "relation": "extends",
@@ -8254,9 +8133,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_files",
-      "target": "ref_dist",
-      "confidence_score": 1.0
+      "target": "ref_dist"
     },
     {
       "relation": "contains",
@@ -8265,9 +8144,9 @@
       "source_location": "L13",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_repository",
-      "target": "infra_tenant_package_repository_directory",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_repository_directory"
     },
     {
       "relation": "contains",
@@ -8276,9 +8155,9 @@
       "source_location": "L11",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_repository",
-      "target": "infra_tenant_package_repository_type",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_repository_type"
     },
     {
       "relation": "contains",
@@ -8287,9 +8166,9 @@
       "source_location": "L12",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_repository",
-      "target": "infra_tenant_package_repository_url",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_repository_url"
     },
     {
       "relation": "contains",
@@ -8298,9 +8177,9 @@
       "source_location": "L17",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_publishconfig",
-      "target": "infra_tenant_package_publishconfig_access",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_publishconfig_access"
     },
     {
       "relation": "contains",
@@ -8309,9 +8188,9 @@
       "source_location": "L16",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_publishconfig",
-      "target": "infra_tenant_package_publishconfig_registry",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_publishconfig_registry"
     },
     {
       "relation": "contains",
@@ -8320,9 +8199,9 @@
       "source_location": "L20",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_scripts",
-      "target": "infra_tenant_package_scripts_build",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_scripts_build"
     },
     {
       "relation": "contains",
@@ -8331,9 +8210,9 @@
       "source_location": "L21",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_scripts",
-      "target": "infra_tenant_package_scripts_prepublishonly",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_scripts_prepublishonly"
     },
     {
       "relation": "contains",
@@ -8342,9 +8221,9 @@
       "source_location": "L22",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_scripts",
-      "target": "infra_tenant_package_scripts_test",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_scripts_test"
     },
     {
       "relation": "contains",
@@ -8353,9 +8232,9 @@
       "source_location": "L25",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_dependencies",
-      "target": "infra_tenant_package_dependencies_pulumi_gcp",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_dependencies_pulumi_gcp"
     },
     {
       "relation": "contains",
@@ -8364,9 +8243,9 @@
       "source_location": "L26",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_dependencies",
-      "target": "infra_tenant_package_dependencies_pulumi_pulumi",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_dependencies_pulumi_pulumi"
     },
     {
       "relation": "contains",
@@ -8375,9 +8254,9 @@
       "source_location": "L27",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_dependencies",
-      "target": "infra_tenant_package_dependencies_pulumi_random",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_dependencies_pulumi_random"
     },
     {
       "relation": "imports",
@@ -8387,9 +8266,9 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_dependencies_pulumi_random",
-      "target": "pulumi_random",
-      "confidence_score": 1.0
+      "target": "pulumi_random"
     },
     {
       "relation": "contains",
@@ -8398,9 +8277,9 @@
       "source_location": "L30",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies",
-      "target": "infra_tenant_package_devdependencies_types_node",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_devdependencies_types_node"
     },
     {
       "relation": "contains",
@@ -8409,9 +8288,9 @@
       "source_location": "L31",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies",
-      "target": "infra_tenant_package_devdependencies_typescript",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_devdependencies_typescript"
     },
     {
       "relation": "contains",
@@ -8420,9 +8299,9 @@
       "source_location": "L32",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies",
-      "target": "infra_tenant_package_devdependencies_vitest",
-      "confidence_score": 1.0
+      "target": "infra_tenant_package_devdependencies_vitest"
     },
     {
       "relation": "imports",
@@ -8432,24 +8311,110 @@
       "weight": 1.0,
       "context": "import",
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_tenant_package_devdependencies_vitest",
-      "target": "vitest",
-      "confidence_score": 1.0
+      "target": "vitest"
+    },
+    {
+      "relation": "references",
+      "confidence": "INFERRED",
+      "confidence_score": 0.9,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "ghost_tenant_provisioner_sa"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "infra_provisioning"
+    },
+    {
+      "relation": "references",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": ".github/workflows/provision-tenant.yml",
+      "source": "github_workflows_provision_tenant",
+      "target": "infra_tenant"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "github_workflows_provision_tenant"
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/publish-tenant-package.yml",
+      "source": "github_workflows_publish_tenant_package",
+      "target": "infra_tenant"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "ghost_platform_deployer_sa"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_platform_runbook_bootstrap",
+      "target": "ghost_tenant_provisioner_sa"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_provisioning",
+      "target": "gcp_kms_pulumi_secrets"
+    },
+    {
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "infra/platform/RUNBOOK-bootstrap.md",
+      "source": "infra_provisioning",
+      "target": "pulumi_state_bucket"
     }
   ],
   "hyperedges": [
     {
-      "id": "platform_bootstrap_flow",
-      "label": "Platform Bootstrap Flow",
+      "id": "tenant_onboarding_flow",
+      "label": "Tenant Onboarding Flow",
       "nodes": [
-        "infra_platform_runbook_bootstrap",
-        "ghost_platform_deployer",
-        "gcp_kms_pulumi_secrets",
-        "gcp_storage_pulumi_state"
+        "github_workflows_provision_tenant",
+        "infra_provisioning",
+        "ghost_platform_tenant_template",
+        "ghost_tenant_provisioner_sa"
       ],
       "relation": "participate_in",
       "confidence": "EXTRACTED",
-      "confidence_score": 0.9,
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/provision-tenant.yml"
+    },
+    {
+      "id": "platform_identity_governance",
+      "label": "Platform Identity & Governance",
+      "nodes": [
+        "infra_platform_runbook_bootstrap",
+        "ghost_platform_deployer_sa",
+        "ghost_tenant_provisioner_sa",
+        "gcp_kms_pulumi_secrets"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 0.95,
       "source_file": "infra/platform/RUNBOOK-bootstrap.md"
     },
     {
@@ -8492,5 +8457,5 @@
       "source_file": "infra/README.md"
     }
   ],
-  "built_at_commit": "d113318ad75d63ac1ed704e485cb772869cc7830"
+  "built_at_commit": "360eaf17e267374d1a6819e29ee219267d2a3c4d"
 }
