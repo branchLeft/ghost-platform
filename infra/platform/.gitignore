@@ -1,0 +1,5 @@
+/bin/
+/node_modules/
+Pulumi.*.yaml.bak
+/preview.json
+/cloud-sql-proxy

@@ -1,0 +1,50 @@
+name: Publish tenant package
+
+# Builds and publishes infra/tenant/ as @branchleft/ghost-platform-tenant to
+# GitHub Packages whenever a stable semver tag is pushed. Mirrors
+# branchLeft/components' publish.yml, adapted for this repo's package
+# manager (npm, not pnpm) and for a plain `tsc` build (no bundler -- this is
+# a server-side Pulumi component, not a browser library).
+#
+# Deliberately excludes infra-tenant-ci.yml's job from this file and vice
+# versa: that workflow type-checks every push/PR touching this repo and
+# never emits or publishes anything; this one only runs on a version tag and
+# never runs `tsc --noEmit` on its own, so the two can't race or duplicate
+# each other's failure modes.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  publish:
+    name: Build & Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: infra/tenant
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/tenant/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: infra/tenant/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Publish
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

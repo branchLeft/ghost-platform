@@ -1,0 +1,42 @@
+name: Build image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Build-only. Deliberately does not push anywhere or authenticate to GCP.
+#
+# Workload Identity Federation does now exist for this repo
+# (infra/platform/workloadIdentity.ts), so the old reason given here — "there
+# is no WIF set up yet" — was never why. Registry push now exists too, as its
+# own workflow (.github/workflows/registry-push.yml, S11) rather than a job
+# here: that workflow runs only on push to `main` and requests
+# `id-token: write` only for its one push job. This workflow runs on every
+# PR, including from forks, and stays deliberately credential-free —
+# widening this job to request `id-token: write` would hand a build job that
+# runs on unreviewed PR code the platform deploy identity, for no benefit
+# this job needs.
+#
+# This workflow exists to catch a broken Dockerfile / broken image on every
+# PR (and on every push to `main`, redundantly with registry-push.yml's own
+# build — see that file's header for why the rebuild there is accepted
+# rather than shared), nothing more.
+jobs:
+  build:
+    name: docker build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build --tag ghost-platform:ci .
+
+      - name: Smoke test (SQLite, boots and serves HTTP 200)
+        run: ./scripts/smoke-test.sh ghost-platform:ci
+
+      - name: Storage guard regression test (blocked vs. permitted configs)
+        run: ./scripts/test-storage-guard.sh ghost-platform:ci

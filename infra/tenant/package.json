@@ -1,0 +1,32 @@
+{
+  "name": "@branchleft/ghost-platform-tenant",
+  "version": "0.1.1",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/branchLeft/ghost-platform.git",
+    "directory": "infra/tenant"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@pulumi/pulumi": "^3.255.0",
+    "@pulumi/gcp": "^9.32.1",
+    "@pulumi/random": "^4.18.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^26"
+  }
+}

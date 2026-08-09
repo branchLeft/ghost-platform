@@ -1,0 +1,1 @@
+{"nodes": [{"id": "infra_provisioning_pulumi", "label": "branchleft-ghost-provisioning", "file_type": "code", "source_file": "infra/provisioning/Pulumi.yaml"}], "edges": [], "hyperedges": []}

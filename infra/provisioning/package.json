@@ -1,0 +1,13 @@
+{
+  "name": "ghost-provisioning-infra",
+  "private": true,
+  "main": "index.ts",
+  "dependencies": {
+    "@pulumi/pulumi": "^3.255.0",
+    "@pulumi/gcp": "^9.32.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^26"
+  }
+}

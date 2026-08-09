@@ -1,0 +1,17 @@
+# Generated knowledge graph, rebuilt and committed by CI.
+graphify-out/
+
+# Markdown belongs to docs-lint, which already gates every .md file in this
+# repo. Prettier's markdown pass only rewrites emphasis markers and re-wraps
+# prose, which is churn against a linter that owns the same files.
+*.md
+
+
+# Lockfiles are npm's format, not ours.
+package-lock.json
+**/package-lock.json
+
+node_modules/
+**/node_modules/
+**/dist/
+**/bin/

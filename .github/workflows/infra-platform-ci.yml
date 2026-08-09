@@ -1,0 +1,265 @@
+name: Platform infra CI
+
+# Type-checks the shared platform Pulumi program (infra/platform/) on every
+# PR, and applies it on every push to `main`.
+#
+# **This file used to say the opposite**, and the reasoning it gave was
+# sound: this program declares the one shared Cloud SQL instance and the one
+# shared media bucket every tenant's data lives on, so a bad apply has
+# platform-wide, cross-tenant blast radius. It concluded that applies should
+# be run by a human, from a workstation, and closed with "if that ever
+# changes, it needs its own decision and its own guardrails (environment
+# protection rules and a required reviewer at minimum) -- not a step quietly
+# added to this file."
+#
+# That decision has since been taken deliberately by the platform owner: CI owns
+# applies for this stack, matching the pattern website/infra has run in
+# production since 2026-08-01. The blast-radius argument was never an
+# argument for humans over CI -- a human running `pulumi up` from a laptop is
+# the *less* controlled path: an ambient owner-level credential, no audit
+# trail beyond shell history, and nothing stopping an apply of uncommitted
+# local edits. What that argument actually demanded was guardrails. They are:
+#
+#   1. The apply runs only on `push` to `main`, i.e. only on a reviewed,
+#      merged commit. Pull requests still get type-check only, and no
+#      credentials of any kind.
+#   2. Credentials are short-lived, exchanged via Workload Identity
+#      Federation and scoped by `attributeCondition` to this repository
+#      alone. No service-account key exists anywhere.
+#   3. The deployer identity holds only what this program actually needs, and
+#      deliberately *cannot* create or delete the Cloud SQL instance, grant
+#      itself any role, or alter its own federation config
+#      (infra/platform/serviceAccounts.ts explains each grant and, more
+#      importantly, each omission).
+#   4. A preflight parses the real `pulumi preview` plan for this exact run
+#      and aborts before `pulumi up` if it would destroy the database, the
+#      media bucket, the image repository, or the CI identity itself
+#      (infra/platform/scripts/assert-no-platform-deletes.py).
+#   5. The deploy job declares an `environment`. Whether that gates anything
+#      depends on repo visibility -- see the `environment:` key below and
+#      infra/platform/RUNBOOK-bootstrap.md.
+#
+# There is deliberately no `pulumi preview` job on pull requests yet. It is
+# the obvious next step, and website/infra has one, but it means handing GCP
+# credentials to a job running unmerged code, which needs its own fork-PR
+# guard. Out of scope here rather than bolted on.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    name: Platform type check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/platform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/platform/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/platform/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # Cheap, credential-free, and catches the way the deploy job's safety
+      # gate dies quietly: a resource renamed in the Pulumi program while the
+      # gate's PROTECTED list keeps the old name still previews, still
+      # applies, and still reports a green preflight -- while guarding
+      # nothing. Runs here as well as in `deploy` so the PR that introduces
+      # the drift fails, rather than the merge that ships it.
+      - name: Verify the delete-guard still covers every protected resource
+        run: |
+          python3 scripts/assert-no-platform-deletes.py --self-test
+          python3 scripts/assert-no-platform-deletes.py --verify-coverage .
+
+  provisioning-typecheck:
+    name: Type check (provisioning)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/provisioning
+
+    # No deploy job. This program is applied only by the reviewer-gated
+    # provision-tenant.yml, under the provisioning identity, never on merge.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/provisioning/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/provisioning/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # The coverage half reads ../platform, so a resource renamed there
+      # fails this job rather than silently emptying the provisioning gate.
+      - name: Verify the provisioning delete-guard still covers everything
+        run: |
+          python3 scripts/assert-no-provisioning-deletes.py --self-test
+          python3 scripts/assert-no-provisioning-deletes.py --verify-coverage ../platform .
+
+  deploy:
+    name: Deploy (pulumi up)
+    runs-on: ubuntu-latest
+    needs: [typecheck]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    # Required reviewers and wait timers are public-repository-only for
+    # GitHub Free, Pro and Team alike, so this gates nothing while the repo is
+    # private and no rule is attached to it today either way. An environment
+    # carrying no protection rule does not pause a run and does not say so --
+    # read `protection_rules`, never the presence of this key.
+    # RUNBOOK-bootstrap.md carries the live test.
+    environment: platform
+
+    # Job-level permissions replace the workflow-level block entirely, so
+    # `contents: read` has to be restated here alongside the scope actually
+    # being added. `id-token: write` is what lets the runner request the
+    # GitHub OIDC token that Workload Identity Federation exchanges; it is
+    # granted on this job only, so no other job in this workflow can reach
+    # the deployer identity.
+    permissions:
+      contents: read
+      id-token: write
+
+    # Serialise applies. Two overlapping `pulumi up` runs against one stack
+    # is a state-lock failure at best. `cancel-in-progress: false`
+    # deliberately: cancelling an apply mid-flight leaves the stack locked
+    # and half-applied, which is worse than waiting.
+    concurrency:
+      group: pulumi-platform-deploy
+      cancel-in-progress: false
+
+    defaults:
+      run:
+        working-directory: infra/platform
+
+    # No path filter, on purpose. Gating this job on "did infra/platform/**
+    # change" would skip most runs -- but a path filter that is subtly wrong
+    # skips the deploy *and reports green*, the exact silent-success shape
+    # that has produced every serious defect on this programme so far. A
+    # `pulumi up` with nothing to do is a no-op costing about a minute; a
+    # silently skipped deploy costs however long it takes someone to notice.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/platform/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/platform/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Exchanges this run's GitHub OIDC token for short-lived credentials
+      # for the deployer service account. Writes an external-account
+      # credential file and points GOOGLE_APPLICATION_CREDENTIALS at it,
+      # which is what both the Pulumi GCP provider and `pulumi login
+      # gs://...` pick up -- no `setup-gcloud` step needed, since this job
+      # runs no gcloud commands.
+      #
+      # All three values come from repo variables rather than being committed:
+      # the provider's resource name embeds the GCP project number. They are
+      # set from `pulumi stack output` after the bootstrap apply -- see
+      # infra/platform/RUNBOOK-bootstrap.md.
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA_EMAIL }}
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      # `pulumi login` writes ~/.pulumi/credentials.json, which persists for
+      # the rest of the job. Stack selection is *not* relied on the same way:
+      # every command below passes `--stack platform` explicitly, so no step
+      # can silently operate on whichever stack happened to be selected.
+      - name: Log in to the Pulumi state backend
+        run: pulumi login gs://branchleft-pulumi-state
+
+      # Machine-readable plan for the guard below. `--json` rather than
+      # parsing rendered text: the equivalent gate in website/infra parses
+      # human output, and its own docstring records the version of it that
+      # matched nothing, exited 0, and would have allowed the destruction it
+      # existed to prevent.
+      #
+      # This preview runs against the same state `pulumi up` is about to act
+      # on, seconds earlier, with the same credentials -- so a pass is a real
+      # statement about this run. It is still only a statement about program
+      # vs. *state*: preview never compares against live GCP, so it cannot
+      # detect a resource already deleted out of band.
+      - name: Preview the plan
+        run: pulumi preview --stack platform --json > preview.json
+
+      - name: Refuse to apply a plan that destroys platform infrastructure
+        run: |
+          # Self-test first. A gate whose matcher has quietly stopped
+          # matching passes everything, so prove it still works before
+          # trusting a pass from it.
+          python3 scripts/assert-no-platform-deletes.py --self-test
+          python3 scripts/assert-no-platform-deletes.py --verify-coverage .
+
+          if ! python3 scripts/assert-no-platform-deletes.py preview.json; then
+            echo "--- full plan follows ---"
+            python3 -m json.tool preview.json
+            exit 1
+          fi
+
+      - name: Apply
+        run: pulumi up --stack platform --yes
+
+      - name: Write outcome to job summary
+        if: always()
+        # Bound rather than interpolated. `github.sha` is not attacker-shaped,
+        # but a `${{ }}` inside `run` is substituted before the shell parses
+        # the script, and that property is worth being able to state without
+        # exceptions.
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo '## Platform stack deploy'
+            echo
+            echo "Commit: \`${COMMIT_SHA}\`"
+            echo
+            echo '### Plan this run applied'
+            echo
+            echo '```json'
+            # The preview plan holds resource URNs, step ops and this stack's
+            # non-secret config (`gcp:project` only). Safe to publish here.
+            # If a secret config value is ever added to this stack, revisit.
+            python3 -m json.tool preview.json 2>/dev/null \
+              || echo '(no plan captured -- the run failed before preview)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
