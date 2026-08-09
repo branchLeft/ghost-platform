@@ -1,0 +1,21 @@
+{
+  "name": "ghost-platform",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Repo-root tooling only. The publishable package is infra/tenant.",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint infra --ext .ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "[ \"$CI\" = \"true\" ] || pre-commit install"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "typescript-eslint": "^8.46.4"
+  }
+}
