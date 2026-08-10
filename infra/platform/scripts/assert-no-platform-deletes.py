@@ -62,6 +62,8 @@ What this cannot prove — two distinct limits, both real:
    in the program.
 """
 
+import contextlib
+import io
 import json
 import pathlib
 import re
@@ -240,6 +242,37 @@ def self_test() -> int:
     return 1 if failed else 0
 
 
+def _quarantine(fn, *args):
+    """Run fn with stdout captured, then return its result plus what it printed.
+
+    `verify_coverage` emits `::error::`-prefixed lines on the failure fixtures
+    below by design -- that prefix is a GitHub Actions annotation trigger, so
+    letting it through unprefixed would flag a fully passing self-test run as
+    an error in the Actions UI, indistinguishable from a real one.
+    """
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = fn(*args)
+    return result, buf.getvalue()
+
+
+def _print_quarantined(output: str, ok: bool) -> None:
+    """Print captured output labelled by whether its case passed.
+
+    Labelling it "expected" unconditionally would sit directly under a FAIL
+    line on the one run where that's false -- exactly when someone is reading
+    this output to find out what broke.
+    """
+    label = "fixture output, expected -- not a gate failure" if ok else "fixture output -- this case FAILED, inspect"
+    lines = output.rstrip("\n").splitlines()
+    if not lines:
+        if not ok:
+            print(f"    ({label}, but nothing was captured -- inspect verify_coverage directly)")
+        return
+    for line in lines:
+        print(f"    {label}: {line}")
+
+
 def _coverage_self_test() -> int:
     """Prove `--verify-coverage` still distinguishes a declaration from a mention.
 
@@ -276,17 +309,19 @@ def _coverage_self_test() -> int:
             directory = pathlib.Path(root) / name.replace(" ", "_").replace("/", "_")
             directory.mkdir()
             (directory / "program.ts").write_text(source, encoding="utf-8")
-            actual = verify_coverage(str(directory))
+            actual, output = _quarantine(verify_coverage, str(directory))
             ok = actual == expected
             failed |= not ok
             print(f"{'PASS' if ok else 'FAIL'}: coverage, {name} -> exit {actual} (expected {expected})")
+            _print_quarantined(output, ok)
 
         empty = pathlib.Path(root) / "empty"
         empty.mkdir()
-        actual = verify_coverage(str(empty))
+        actual, output = _quarantine(verify_coverage, str(empty))
         ok = actual == 1
         failed |= not ok
         print(f"{'PASS' if ok else 'FAIL'}: coverage, no .ts files -> exit {actual} (expected 1)")
+        _print_quarantined(output, ok)
 
     return 1 if failed else 0
 
