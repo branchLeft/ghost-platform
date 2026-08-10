@@ -41,6 +41,8 @@ Exit 0 clean, 1 if a protected resource would be destroyed or any input could
 not be read, 2 on usage error.
 """
 
+import contextlib
+import io
 import json
 import pathlib
 import re
@@ -214,6 +216,25 @@ def self_test() -> int:
     return 1 if failed else 0
 
 
+def _quarantine(fn, *args):
+    """Run fn with stdout captured, then return its result plus what it printed.
+
+    `verify_coverage` emits `::error::`-prefixed lines on the failure fixtures
+    below by design -- that prefix is a GitHub Actions annotation trigger, so
+    letting it through unprefixed would flag a fully passing self-test run as
+    an error in the Actions UI, indistinguishable from a real one.
+    """
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = fn(*args)
+    return result, buf.getvalue()
+
+
+def _print_quarantined(output: str) -> None:
+    for line in output.rstrip("\n").splitlines():
+        print(f"    fixture output, expected -- not a gate failure: {line}")
+
+
 def _coverage_self_test() -> int:
     import tempfile
 
@@ -247,17 +268,19 @@ def _coverage_self_test() -> int:
         for name, p_src, v_src, expected in cases:
             (plat / "program.ts").write_text(p_src, encoding="utf-8")
             (prov / "index.ts").write_text(v_src, encoding="utf-8")
-            actual = verify_coverage(str(plat), str(prov))
+            actual, output = _quarantine(verify_coverage, str(plat), str(prov))
             ok = actual == expected
             failed |= not ok
             print(f"{'PASS' if ok else 'FAIL'}: coverage, {name} -> exit {actual} (expected {expected})")
+            _print_quarantined(output)
 
         empty = pathlib.Path(root) / "empty"
         empty.mkdir()
-        actual = verify_coverage(str(empty), str(prov))
+        actual, output = _quarantine(verify_coverage, str(empty), str(prov))
         ok = actual == 1
         failed |= not ok
         print(f"{'PASS' if ok else 'FAIL'}: coverage, empty platform dir -> exit {actual} (expected 1)")
+        _print_quarantined(output)
 
     return 1 if failed else 0
 
