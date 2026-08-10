@@ -256,9 +256,21 @@ def _quarantine(fn, *args):
     return result, buf.getvalue()
 
 
-def _print_quarantined(output: str) -> None:
-    for line in output.rstrip("\n").splitlines():
-        print(f"    fixture output, expected -- not a gate failure: {line}")
+def _print_quarantined(output: str, ok: bool) -> None:
+    """Print captured output labelled by whether its case passed.
+
+    Labelling it "expected" unconditionally would sit directly under a FAIL
+    line on the one run where that's false -- exactly when someone is reading
+    this output to find out what broke.
+    """
+    label = "fixture output, expected -- not a gate failure" if ok else "fixture output -- this case FAILED, inspect"
+    lines = output.rstrip("\n").splitlines()
+    if not lines:
+        if not ok:
+            print(f"    ({label}, but nothing was captured -- inspect verify_coverage directly)")
+        return
+    for line in lines:
+        print(f"    {label}: {line}")
 
 
 def _coverage_self_test() -> int:
@@ -301,7 +313,7 @@ def _coverage_self_test() -> int:
             ok = actual == expected
             failed |= not ok
             print(f"{'PASS' if ok else 'FAIL'}: coverage, {name} -> exit {actual} (expected {expected})")
-            _print_quarantined(output)
+            _print_quarantined(output, ok)
 
         empty = pathlib.Path(root) / "empty"
         empty.mkdir()
@@ -309,7 +321,7 @@ def _coverage_self_test() -> int:
         ok = actual == 1
         failed |= not ok
         print(f"{'PASS' if ok else 'FAIL'}: coverage, no .ts files -> exit {actual} (expected 1)")
-        _print_quarantined(output)
+        _print_quarantined(output, ok)
 
     return 1 if failed else 0
 
