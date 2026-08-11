@@ -1,6 +1,81 @@
 {
   "communities": {
     "0": [
+      "services_mailgun_shim_src_app",
+      "services_mailgun_shim_src_app_createapp",
+      "services_mailgun_shim_src_auth",
+      "services_mailgun_shim_src_auth_express_serve_static_core",
+      "services_mailgun_shim_src_auth_locals",
+      "services_mailgun_shim_src_auth_parsebasicauth",
+      "services_mailgun_shim_src_auth_requiretenantfordomain",
+      "services_mailgun_shim_src_concurrency",
+      "services_mailgun_shim_src_concurrency_mapwithconcurrency",
+      "services_mailgun_shim_src_crypto",
+      "services_mailgun_shim_src_crypto_hashapikey",
+      "services_mailgun_shim_src_crypto_hashedapikey",
+      "services_mailgun_shim_src_crypto_verifyapikey",
+      "services_mailgun_shim_src_mailgunfields",
+      "services_mailgun_shim_src_mailgunfields_accumulate",
+      "services_mailgun_shim_src_mailgunfields_asarray",
+      "services_mailgun_shim_src_mailgunfields_asstring",
+      "services_mailgun_shim_src_mailgunfields_parsedmessagefields",
+      "services_mailgun_shim_src_mailgunfields_parsemailgunmessagefields",
+      "services_mailgun_shim_src_mailgunfields_resolverecipienttokens",
+      "services_mailgun_shim_src_ratelimit",
+      "services_mailgun_shim_src_ratelimit_tenantratelimiter",
+      "services_mailgun_shim_src_routes_events",
+      "services_mailgun_shim_src_routes_events_createeventsrouter",
+      "services_mailgun_shim_src_routes_events_parseeventtypefilter",
+      "services_mailgun_shim_src_routes_events_towireevent",
+      "services_mailgun_shim_src_routes_messages",
+      "services_mailgun_shim_src_routes_messages_createmessagesrouter",
+      "services_mailgun_shim_src_routes_messages_delivermessageasync",
+      "services_mailgun_shim_src_routes_messages_isyes",
+      "services_mailgun_shim_src_routes_suppressions",
+      "services_mailgun_shim_src_routes_suppressions_createsuppressionsrouter",
+      "services_mailgun_shim_src_routes_suppressions_issuppressiontype",
+      "services_mailgun_shim_src_server",
+      "services_mailgun_shim_src_server_app",
+      "services_mailgun_shim_src_server_requireenv",
+      "services_mailgun_shim_src_server_store",
+      "services_mailgun_shim_src_server_transport",
+      "services_mailgun_shim_src_smtp_createdeliverytransport",
+      "services_mailgun_shim_src_store",
+      "services_mailgun_shim_src_store_assertsuppressiontype",
+      "services_mailgun_shim_src_store_createsqlitestore",
+      "services_mailgun_shim_src_store_listeventsoptions",
+      "services_mailgun_shim_src_store_listeventsresult",
+      "services_mailgun_shim_src_store_shimstore",
+      "services_mailgun_shim_src_store_shimstore_addsuppression",
+      "services_mailgun_shim_src_store_shimstore_close",
+      "services_mailgun_shim_src_store_shimstore_issuppressed",
+      "services_mailgun_shim_src_store_shimstore_listevents",
+      "services_mailgun_shim_src_store_shimstore_recordevent",
+      "services_mailgun_shim_src_store_shimstore_registertenant",
+      "services_mailgun_shim_src_store_shimstore_removesuppression",
+      "services_mailgun_shim_src_store_shimstore_verifytenant",
+      "services_mailgun_shim_src_store_suppression_types",
+      "services_mailgun_shim_src_store_suppressiontype",
+      "services_mailgun_shim_src_store_tenant",
+      "services_mailgun_shim_test_helpers_testserver",
+      "services_mailgun_shim_test_helpers_testserver_starttestshim",
+      "services_mailgun_shim_test_helpers_testserver_testshim",
+      "services_mailgun_shim_test_helpers_testserver_testshim_close",
+      "services_mailgun_shim_test_unit_auth_test",
+      "services_mailgun_shim_test_unit_auth_test_basicauthheader",
+      "services_mailgun_shim_test_unit_auth_test_fakereq",
+      "services_mailgun_shim_test_unit_auth_test_fakeres",
+      "services_mailgun_shim_test_unit_crypto_test",
+      "services_mailgun_shim_test_unit_mailgunfields_test",
+      "services_mailgun_shim_test_unit_mailgunfields_test_multipartrequest",
+      "services_mailgun_shim_test_unit_ratelimit_test",
+      "services_mailgun_shim_test_unit_ratelimit_test_fakereqres",
+      "services_mailgun_shim_test_unit_ratelimit_test_runmiddleware",
+      "services_mailgun_shim_test_unit_ratelimit_test_startlimitedapp",
+      "services_mailgun_shim_test_unit_store_test",
+      "services_mailgun_shim_test_unit_store_test_makeevent"
+    ],
+    "1": [
       "infra_platform_apis",
       "infra_platform_apis_enabledapis",
       "infra_platform_apis_requiredservices",
@@ -49,7 +124,54 @@
       "infra_platform_workloadidentity_provider",
       "infra_platform_workloadidentity_workloadidentityprovider"
     ],
-    "1": [
+    "2": [
+      "form_data",
+      "infra_platform_package",
+      "infra_platform_package_devdependencies",
+      "infra_platform_package_devdependencies_types_node",
+      "infra_platform_package_devdependencies_typescript",
+      "infra_platform_package_main",
+      "infra_platform_package_name",
+      "infra_platform_package_private",
+      "infra_provisioning_package",
+      "infra_provisioning_package_devdependencies",
+      "infra_provisioning_package_devdependencies_types_node",
+      "infra_provisioning_package_devdependencies_typescript",
+      "infra_provisioning_package_main",
+      "infra_provisioning_package_name",
+      "infra_provisioning_package_private",
+      "infra_tenant_package_devdependencies",
+      "infra_tenant_package_devdependencies_types_node",
+      "infra_tenant_package_devdependencies_typescript",
+      "infra_tenant_package_devdependencies_vitest",
+      "mailgun_js",
+      "mailparser",
+      "services_mailgun_shim_package_devdependencies",
+      "services_mailgun_shim_package_devdependencies_form_data",
+      "services_mailgun_shim_package_devdependencies_mailgun_js",
+      "services_mailgun_shim_package_devdependencies_mailparser",
+      "services_mailgun_shim_package_devdependencies_smtp_server",
+      "services_mailgun_shim_package_devdependencies_types_busboy",
+      "services_mailgun_shim_package_devdependencies_types_express",
+      "services_mailgun_shim_package_devdependencies_types_mailparser",
+      "services_mailgun_shim_package_devdependencies_types_node",
+      "services_mailgun_shim_package_devdependencies_types_nodemailer",
+      "services_mailgun_shim_package_devdependencies_types_smtp_server",
+      "services_mailgun_shim_package_devdependencies_typescript",
+      "services_mailgun_shim_package_devdependencies_vitest",
+      "services_mailgun_shim_package_devdependencies_vitest_coverage_v8",
+      "smtp_server",
+      "types_busboy",
+      "types_express",
+      "types_mailparser",
+      "types_node",
+      "types_nodemailer",
+      "types_smtp_server",
+      "typescript",
+      "vitest",
+      "vitest_coverage_v8"
+    ],
+    "3": [
       "infra_tenant_cloudrunservice",
       "infra_tenant_cloudrunservice_cloudrunserviceargs",
       "infra_tenant_cloudrunservice_createcloudrunservice",
@@ -88,45 +210,80 @@
       "infra_tenant_storage_createtenantstorage",
       "infra_tenant_storage_storageresult"
     ],
-    "2": [
-      "infra_platform_package",
+    "4": [
+      "infra_provisioning_tsconfig",
+      "infra_provisioning_tsconfig_compileroptions",
+      "infra_provisioning_tsconfig_compileroptions_experimentaldecorators",
+      "infra_provisioning_tsconfig_compileroptions_lib",
+      "infra_provisioning_tsconfig_compileroptions_module",
+      "infra_provisioning_tsconfig_compileroptions_moduleresolution",
+      "infra_provisioning_tsconfig_compileroptions_nofallthroughcasesinswitch",
+      "infra_provisioning_tsconfig_compileroptions_outdir",
+      "infra_provisioning_tsconfig_compileroptions_pretty",
+      "infra_provisioning_tsconfig_compileroptions_skiplibcheck",
+      "infra_provisioning_tsconfig_compileroptions_sourcemap",
+      "infra_provisioning_tsconfig_compileroptions_strict",
+      "infra_provisioning_tsconfig_compileroptions_target",
+      "infra_provisioning_tsconfig_include",
+      "infra_tenant_tsconfig_build",
+      "infra_tenant_tsconfig_build_compileroptions",
+      "infra_tenant_tsconfig_build_compileroptions_declaration",
+      "infra_tenant_tsconfig_build_compileroptions_noemit",
+      "infra_tenant_tsconfig_build_compileroptions_outdir",
+      "infra_tenant_tsconfig_build_compileroptions_rootdir",
+      "infra_tenant_tsconfig_build_exclude",
+      "infra_tenant_tsconfig_build_extends",
+      "infra_tenant_tsconfig_build_include",
+      "infra_tenant_tsconfig_build_json_ref_dist",
+      "ref_es2022",
+      "ref_node_modules",
+      "ref_test_ts",
+      "ref_ts",
+      "ref_tsconfig_json",
+      "services_mailgun_shim_tsconfig_build",
+      "services_mailgun_shim_tsconfig_build_exclude",
+      "services_mailgun_shim_tsconfig_build_extends",
+      "services_mailgun_shim_tsconfig_build_include",
+      "services_mailgun_shim_tsconfig_build_json_ref_src_ts",
+      "services_mailgun_shim_tsconfig_build_json_ref_test_ts"
+    ],
+    "5": [
       "infra_platform_package_dependencies",
       "infra_platform_package_dependencies_pulumi_gcp",
       "infra_platform_package_dependencies_pulumi_pulumi",
       "infra_platform_package_dependencies_pulumi_random",
-      "infra_platform_package_devdependencies",
-      "infra_platform_package_devdependencies_types_node",
-      "infra_platform_package_devdependencies_typescript",
       "infra_platform_package_json_pulumi_pulumi",
-      "infra_platform_package_main",
-      "infra_platform_package_name",
-      "infra_platform_package_private",
-      "infra_provisioning_package",
       "infra_provisioning_package_dependencies",
       "infra_provisioning_package_dependencies_pulumi_gcp",
       "infra_provisioning_package_dependencies_pulumi_pulumi",
-      "infra_provisioning_package_devdependencies",
-      "infra_provisioning_package_devdependencies_types_node",
-      "infra_provisioning_package_devdependencies_typescript",
-      "infra_provisioning_package_main",
-      "infra_provisioning_package_name",
-      "infra_provisioning_package_private",
+      "infra_tenant_package",
       "infra_tenant_package_dependencies",
       "infra_tenant_package_dependencies_pulumi_gcp",
       "infra_tenant_package_dependencies_pulumi_pulumi",
       "infra_tenant_package_dependencies_pulumi_random",
-      "infra_tenant_package_devdependencies",
-      "infra_tenant_package_devdependencies_types_node",
-      "infra_tenant_package_devdependencies_typescript",
-      "infra_tenant_package_devdependencies_vitest",
+      "infra_tenant_package_files",
+      "infra_tenant_package_license",
+      "infra_tenant_package_main",
+      "infra_tenant_package_name",
+      "infra_tenant_package_publishconfig",
+      "infra_tenant_package_publishconfig_access",
+      "infra_tenant_package_publishconfig_registry",
+      "infra_tenant_package_repository",
+      "infra_tenant_package_repository_directory",
+      "infra_tenant_package_repository_type",
+      "infra_tenant_package_repository_url",
+      "infra_tenant_package_scripts",
+      "infra_tenant_package_scripts_build",
+      "infra_tenant_package_scripts_prepublishonly",
+      "infra_tenant_package_scripts_test",
+      "infra_tenant_package_types",
+      "infra_tenant_package_version",
       "pulumi_gcp",
       "pulumi_pulumi",
       "pulumi_random",
-      "types_node",
-      "typescript",
-      "vitest"
+      "ref_dist"
     ],
-    "3": [
+    "6": [
       "infra_provisioning_config",
       "infra_provisioning_config_config",
       "infra_provisioning_config_deployerserviceaccountid",
@@ -158,38 +315,7 @@
       "infra_provisioning_index_statebucket",
       "infra_provisioning_index_tenantstackconfig"
     ],
-    "4": [
-      "infra_provisioning_tsconfig",
-      "infra_provisioning_tsconfig_compileroptions",
-      "infra_provisioning_tsconfig_compileroptions_experimentaldecorators",
-      "infra_provisioning_tsconfig_compileroptions_lib",
-      "infra_provisioning_tsconfig_compileroptions_module",
-      "infra_provisioning_tsconfig_compileroptions_moduleresolution",
-      "infra_provisioning_tsconfig_compileroptions_nofallthroughcasesinswitch",
-      "infra_provisioning_tsconfig_compileroptions_outdir",
-      "infra_provisioning_tsconfig_compileroptions_pretty",
-      "infra_provisioning_tsconfig_compileroptions_skiplibcheck",
-      "infra_provisioning_tsconfig_compileroptions_sourcemap",
-      "infra_provisioning_tsconfig_compileroptions_strict",
-      "infra_provisioning_tsconfig_compileroptions_target",
-      "infra_provisioning_tsconfig_include",
-      "infra_tenant_tsconfig_build",
-      "infra_tenant_tsconfig_build_compileroptions",
-      "infra_tenant_tsconfig_build_compileroptions_declaration",
-      "infra_tenant_tsconfig_build_compileroptions_noemit",
-      "infra_tenant_tsconfig_build_compileroptions_outdir",
-      "infra_tenant_tsconfig_build_compileroptions_rootdir",
-      "infra_tenant_tsconfig_build_exclude",
-      "infra_tenant_tsconfig_build_extends",
-      "infra_tenant_tsconfig_build_include",
-      "infra_tenant_tsconfig_build_json_ref_dist",
-      "ref_es2022",
-      "ref_node_modules",
-      "ref_test_ts",
-      "ref_ts",
-      "ref_tsconfig_json"
-    ],
-    "5": [
+    "7": [
       "eslint",
       "eslint_config_prettier",
       "eslint_js",
@@ -215,28 +341,114 @@
       "prettier",
       "typescript_eslint"
     ],
-    "6": [
-      "infra_tenant_package",
-      "infra_tenant_package_files",
-      "infra_tenant_package_license",
-      "infra_tenant_package_main",
-      "infra_tenant_package_name",
-      "infra_tenant_package_publishconfig",
-      "infra_tenant_package_publishconfig_access",
-      "infra_tenant_package_publishconfig_registry",
-      "infra_tenant_package_repository",
-      "infra_tenant_package_repository_directory",
-      "infra_tenant_package_repository_type",
-      "infra_tenant_package_repository_url",
-      "infra_tenant_package_scripts",
-      "infra_tenant_package_scripts_build",
-      "infra_tenant_package_scripts_prepublishonly",
-      "infra_tenant_package_scripts_test",
-      "infra_tenant_package_types",
-      "infra_tenant_package_version",
-      "ref_dist"
+    "8": [
+      "busboy",
+      "express",
+      "express_rate_limit",
+      "nodemailer",
+      "services_mailgun_shim_package",
+      "services_mailgun_shim_package_dependencies",
+      "services_mailgun_shim_package_dependencies_busboy",
+      "services_mailgun_shim_package_dependencies_express",
+      "services_mailgun_shim_package_dependencies_express_rate_limit",
+      "services_mailgun_shim_package_dependencies_nodemailer",
+      "services_mailgun_shim_package_description",
+      "services_mailgun_shim_package_main",
+      "services_mailgun_shim_package_name",
+      "services_mailgun_shim_package_private",
+      "services_mailgun_shim_package_scripts",
+      "services_mailgun_shim_package_scripts_build",
+      "services_mailgun_shim_package_scripts_coverage",
+      "services_mailgun_shim_package_scripts_start",
+      "services_mailgun_shim_package_scripts_test",
+      "services_mailgun_shim_package_scripts_typecheck",
+      "services_mailgun_shim_package_type",
+      "services_mailgun_shim_package_version"
     ],
-    "7": [
+    "9": [
+      "services_mailgun_shim_src_store_storedevent",
+      "services_mailgun_shim_test_unit_app_test",
+      "services_mailgun_shim_test_unit_app_test_listenapp",
+      "services_mailgun_shim_test_unit_helpers_fakestore",
+      "services_mailgun_shim_test_unit_helpers_fakestore_createfakestore",
+      "services_mailgun_shim_test_unit_helpers_fakestore_fakeshimstore",
+      "services_mailgun_shim_test_unit_helpers_fakestore_suppressionkey",
+      "services_mailgun_shim_test_unit_helpers_startrouter",
+      "services_mailgun_shim_test_unit_helpers_startrouter_basicauthheader",
+      "services_mailgun_shim_test_unit_helpers_startrouter_startedrouter",
+      "services_mailgun_shim_test_unit_helpers_startrouter_startedrouter_close",
+      "services_mailgun_shim_test_unit_helpers_startrouter_startrouter",
+      "services_mailgun_shim_test_unit_helpers_startrouter_wait",
+      "services_mailgun_shim_test_unit_routes_events_test",
+      "services_mailgun_shim_test_unit_routes_events_test_get",
+      "services_mailgun_shim_test_unit_routes_events_test_wireevent",
+      "services_mailgun_shim_test_unit_routes_events_test_wireeventsresponse",
+      "services_mailgun_shim_test_unit_routes_messages_test",
+      "services_mailgun_shim_test_unit_routes_messages_test_multipartbody",
+      "services_mailgun_shim_test_unit_routes_messages_test_post",
+      "services_mailgun_shim_test_unit_routes_suppressions_test",
+      "services_mailgun_shim_test_unit_routes_suppressions_test_del"
+    ],
+    "10": [
+      "infra_provisioning_scripts_assert_no_provisioning_deletes",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_plan",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_print_quarantined",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_protected_names",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_py_pattern",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_quarantine",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_113",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_123",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_220",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_234",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_301",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_85",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage"
+    ],
+    "11": [
+      "infra_platform_scripts_assert_no_platform_deletes",
+      "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test",
+      "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern",
+      "infra_platform_scripts_assert_no_platform_deletes_destructive_steps",
+      "infra_platform_scripts_assert_no_platform_deletes_main",
+      "infra_platform_scripts_assert_no_platform_deletes_plan",
+      "infra_platform_scripts_assert_no_platform_deletes_print_quarantined",
+      "infra_platform_scripts_assert_no_platform_deletes_py_pattern",
+      "infra_platform_scripts_assert_no_platform_deletes_quarantine",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_103",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_127",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_246",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_260",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_277",
+      "infra_platform_scripts_assert_no_platform_deletes_rationale_330",
+      "infra_platform_scripts_assert_no_platform_deletes_self_test",
+      "infra_platform_scripts_assert_no_platform_deletes_verify_coverage"
+    ],
+    "12": [
+      "ref_es2023",
+      "services_mailgun_shim_tsconfig",
+      "services_mailgun_shim_tsconfig_compileroptions",
+      "services_mailgun_shim_tsconfig_compileroptions_esmoduleinterop",
+      "services_mailgun_shim_tsconfig_compileroptions_forceconsistentcasinginfilenames",
+      "services_mailgun_shim_tsconfig_compileroptions_lib",
+      "services_mailgun_shim_tsconfig_compileroptions_module",
+      "services_mailgun_shim_tsconfig_compileroptions_moduleresolution",
+      "services_mailgun_shim_tsconfig_compileroptions_nouncheckedindexedaccess",
+      "services_mailgun_shim_tsconfig_compileroptions_outdir",
+      "services_mailgun_shim_tsconfig_compileroptions_resolvejsonmodule",
+      "services_mailgun_shim_tsconfig_compileroptions_skiplibcheck",
+      "services_mailgun_shim_tsconfig_compileroptions_strict",
+      "services_mailgun_shim_tsconfig_compileroptions_target",
+      "services_mailgun_shim_tsconfig_include",
+      "services_mailgun_shim_tsconfig_json_ref_src_ts",
+      "services_mailgun_shim_tsconfig_json_ref_test_ts"
+    ],
+    "13": [
       "infra_platform_tsconfig",
       "infra_platform_tsconfig_compileroptions",
       "infra_platform_tsconfig_compileroptions_experimentaldecorators",
@@ -254,7 +466,7 @@
       "infra_platform_tsconfig_json_ref_es2022",
       "infra_platform_tsconfig_json_ref_ts"
     ],
-    "8": [
+    "14": [
       "infra_tenant_tsconfig",
       "infra_tenant_tsconfig_compileroptions",
       "infra_tenant_tsconfig_compileroptions_experimentaldecorators",
@@ -272,177 +484,188 @@
       "infra_tenant_tsconfig_json_ref_es2022",
       "infra_tenant_tsconfig_json_ref_ts"
     ],
-    "9": [
-      "infra_provisioning_scripts_assert_no_provisioning_deletes",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_suffix",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_destructive_steps",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_main",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_plan",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_protected_names",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_111",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_121",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_266",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_rationale_83",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "pattern"
+    "15": [
+      "docref_rfc_2822",
+      "docref_rfc_822",
+      "services_mailgun_shim_src_smtp",
+      "services_mailgun_shim_src_smtp_deliveryhostconfig",
+      "services_mailgun_shim_src_smtp_issaferecipientaddress",
+      "services_mailgun_shim_src_smtp_recipientsendparams",
+      "services_mailgun_shim_src_smtp_recipientsendresult",
+      "services_mailgun_shim_src_smtp_sendtorecipient",
+      "services_mailgun_shim_test_unit_smtp_test",
+      "services_mailgun_shim_test_unit_smtp_test_base_params",
+      "services_mailgun_shim_test_unit_smtp_test_capturingrealtransport",
+      "services_mailgun_shim_test_unit_smtp_test_mocktransport"
     ],
-    "10": [
-      "infra_platform_scripts_assert_no_platform_deletes",
-      "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test",
-      "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern",
-      "infra_platform_scripts_assert_no_platform_deletes_destructive_steps",
-      "infra_platform_scripts_assert_no_platform_deletes_main",
-      "infra_platform_scripts_assert_no_platform_deletes_plan",
-      "infra_platform_scripts_assert_no_platform_deletes_rationale_101",
-      "infra_platform_scripts_assert_no_platform_deletes_rationale_125",
-      "infra_platform_scripts_assert_no_platform_deletes_rationale_244",
-      "infra_platform_scripts_assert_no_platform_deletes_rationale_295",
-      "infra_platform_scripts_assert_no_platform_deletes_self_test",
-      "infra_platform_scripts_assert_no_platform_deletes_verify_coverage"
+    "16": [
+      "services_mailgun_shim_test_helpers_mailgunclient",
+      "services_mailgun_shim_test_helpers_mailgunclient_createmailgunclient",
+      "services_mailgun_shim_test_helpers_mailgunclient_mailgunconstructor",
+      "services_mailgun_shim_test_helpers_mailgunclient_mailgunctor",
+      "services_mailgun_shim_test_helpers_smtpsink",
+      "services_mailgun_shim_test_helpers_smtpsink_receivedmessage",
+      "services_mailgun_shim_test_helpers_smtpsink_smtpsink",
+      "services_mailgun_shim_test_helpers_smtpsink_smtpsink_close",
+      "services_mailgun_shim_test_helpers_smtpsink_smtpsink_waitforcount",
+      "services_mailgun_shim_test_helpers_smtpsink_startsmtpsink",
+      "services_mailgun_shim_test_shim_integration_test"
     ],
-    "11": [
+    "17": [
       "contributing",
       "github_dependabot",
       "infra_platform",
       "pre_commit_config"
     ],
-    "12": [
+    "18": [
       "docker_entrypoint_branchleft",
       "docker_entrypoint_branchleft_server_host",
       "docker_entrypoint_branchleft_server_port",
       "docker_entrypoint_branchleft_sh__entry"
     ],
-    "13": [
+    "19": [
       "ghost_platform_provisioner",
       "ghost_tenant_provisioner",
       "infra_platform_runbook_bootstrap_provisioning_credential",
       "infra_platform_runbook_bootstrap_tenant_provisioning_identity"
     ],
-    "14": [
+    "20": [
       "infra_provisioning_scripts_restore_stack_secrets_config",
       "infra_provisioning_scripts_restore_stack_secrets_config_main",
       "infra_provisioning_scripts_restore_stack_secrets_config_restore",
       "path"
     ],
-    "15": [
+    "21": [
       "scripts_test_storage_guard",
       "scripts_test_storage_guard_assert_blocked",
       "scripts_test_storage_guard_assert_boots",
       "scripts_test_storage_guard_sh__entry"
     ],
-    "16": [
+    "22": [
       "actions_checkout",
       "actions_setup_node",
       "github_workflows_infra_tenant_ci_yml_workflow"
     ],
-    "17": [
+    "23": [
       "ghost_platform_deployer",
       "infra_platform_runbook_bootstrap_platform_stack",
       "pulumi_state_bucket"
     ],
-    "18": [
+    "24": [
       "github_workflows_provision_tenant",
       "infra_provisioning_pulumi",
       "pulumi_state_bucket_shared"
     ],
-    "19": [
+    "25": [
       "scripts_smoke_test",
       "scripts_smoke_test_cleanup",
       "scripts_smoke_test_sh__entry"
     ],
-    "20": [
+    "26": [
+      "services_mailgun_shim_test_unit_auth_test_fakeresponse",
+      "services_mailgun_shim_test_unit_auth_test_fakeresponse_json",
+      "services_mailgun_shim_test_unit_auth_test_fakeresponse_status"
+    ],
+    "27": [
       "gcp_artifact_registry",
       "github_workflows_registry_push_yml"
     ],
-    "21": [
+    "28": [
       "gcp_workload_identity_federation",
       "github_workflows_infra_platform_ci"
     ],
-    "22": [
+    "29": [
+      "github_repository_ghost_platform",
+      "github_workflows_graphify_workflow"
+    ],
+    "30": [
       "github_workflows_publish_tenant_package",
       "infra_tenant"
     ],
-    "23": [
+    "31": [
       "infra_platform_pulumi_platform_stack_config",
       "infra_platform_pulumi_project"
     ],
-    "24": [
+    "32": [
       "claude_md"
     ],
-    "25": [
+    "33": [
       "eslint_config"
     ],
-    "26": [
+    "34": [
       "gcp_cloud_run"
     ],
-    "27": [
+    "35": [
       "gcp_cloud_sql"
     ],
-    "28": [
+    "36": [
       "gcp_storage_bucket"
     ],
-    "29": [
+    "37": [
       "ghost_official_image"
     ],
-    "30": [
+    "38": [
       "ghost_platform_tenant_template"
     ],
-    "31": [
+    "39": [
       "github_workflows_build"
     ],
-    "32": [
+    "40": [
       "github_workflows_codeql"
     ],
-    "33": [
+    "41": [
       "github_workflows_docs_lint"
     ],
-    "34": [
-      "github_workflows_graphify_workflow"
+    "42": [
+      "github_workflows_mailgun_shim_ci_yml_mailgun_shim_ci"
     ],
-    "35": [
+    "43": [
       "infra_readme"
     ],
-    "36": [
+    "44": [
       "infra_tenant_smoke_test_readme"
     ],
-    "37": [
+    "45": [
+      "pattern"
+    ],
+    "46": [
       "pulumi_platform_stack"
     ],
-    "38": [
+    "47": [
       "readme"
+    ],
+    "48": [
+      "services_mailgun_shim_vitest_config"
     ]
   },
   "cohesion": {
-    "0": 0.07955596669750231,
-    "1": 0.13063063063063063,
-    "2": 0.06349206349206349,
-    "3": 0.09425287356321839,
-    "4": 0.06896551724137931,
-    "5": 0.08333333333333333,
-    "6": 0.10526315789473684,
-    "7": 0.125,
-    "8": 0.125,
-    "9": 0.23809523809523808,
-    "10": 0.2878787878787879,
-    "11": 0.5,
-    "12": 0.5,
-    "13": 0.5,
-    "14": 0.6666666666666666,
-    "15": 0.8333333333333334,
-    "16": 0.6666666666666666,
-    "17": 0.6666666666666666,
-    "18": 1.0,
-    "19": 0.6666666666666666,
-    "20": 1.0,
-    "21": 1.0,
-    "22": 1.0,
-    "23": 1.0,
+    "0": 0.05974124809741248,
+    "1": 0.07955596669750231,
+    "2": 0.048484848484848485,
+    "3": 0.13063063063063063,
+    "4": 0.05714285714285714,
+    "5": 0.062388591800356503,
+    "6": 0.09425287356321839,
+    "7": 0.08333333333333333,
+    "8": 0.09090909090909091,
+    "9": 0.2077922077922078,
+    "10": 0.18128654970760233,
+    "11": 0.19117647058823528,
+    "12": 0.11764705882352941,
+    "13": 0.125,
+    "14": 0.125,
+    "15": 0.21212121212121213,
+    "16": 0.23636363636363636,
+    "17": 0.5,
+    "18": 0.5,
+    "19": 0.5,
+    "20": 0.6666666666666666,
+    "21": 0.8333333333333334,
+    "22": 0.6666666666666666,
+    "23": 0.6666666666666666,
     "24": 1.0,
-    "25": 1.0,
-    "26": 1.0,
+    "25": 0.6666666666666666,
+    "26": 0.6666666666666666,
     "27": 1.0,
     "28": 1.0,
     "29": 1.0,
@@ -454,9 +677,24 @@
     "35": 1.0,
     "36": 1.0,
     "37": 1.0,
-    "38": 1.0
+    "38": 1.0,
+    "39": 1.0,
+    "40": 1.0,
+    "41": 1.0,
+    "42": 1.0,
+    "43": 1.0,
+    "44": 1.0,
+    "45": 1.0,
+    "46": 1.0,
+    "47": 1.0,
+    "48": 1.0
   },
   "gods": [
+    {
+      "id": "services_mailgun_shim_src_store_shimstore",
+      "label": "ShimStore",
+      "degree": 20
+    },
     {
       "id": "infra_platform_tsconfig_compileroptions",
       "label": "compilerOptions",
@@ -473,39 +711,34 @@
       "degree": 12
     },
     {
-      "id": "infra_platform_apis_enabledapis",
-      "label": "enabledApis",
-      "degree": 7
+      "id": "services_mailgun_shim_tsconfig_compileroptions",
+      "label": "compilerOptions",
+      "degree": 12
     },
     {
-      "id": "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage",
-      "label": "verify_coverage()",
-      "degree": 6
+      "id": "services_mailgun_shim_src_auth_requiretenantfordomain",
+      "label": "requireTenantForDomain()",
+      "degree": 10
     },
     {
-      "id": "infra_tenant_cloudrunservice_createcloudrunservice",
-      "label": "createCloudRunService()",
-      "degree": 6
+      "id": "services_mailgun_shim_src_ratelimit_tenantratelimiter",
+      "label": "tenantRateLimiter()",
+      "degree": 9
     },
     {
-      "id": "infra_tenant_database_createtenantdatabase",
-      "label": "createTenantDatabase()",
-      "degree": 6
+      "id": "services_mailgun_shim_src_routes_events_createeventsrouter",
+      "label": "createEventsRouter()",
+      "degree": 9
     },
     {
-      "id": "infra_tenant_secrets_secretwithvalue",
-      "label": "secretWithValue()",
-      "degree": 5
+      "id": "services_mailgun_shim_src_routes_messages_createmessagesrouter",
+      "label": "createMessagesRouter()",
+      "degree": 9
     },
     {
-      "id": "infra_platform_scripts_assert_no_platform_deletes_self_test",
-      "label": "self_test()",
-      "degree": 5
-    },
-    {
-      "id": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage",
-      "label": "verify_coverage()",
-      "degree": 5
+      "id": "services_mailgun_shim_src_app_createapp",
+      "label": "createApp()",
+      "degree": 8
     }
   ],
   "surprises": [
@@ -521,52 +754,52 @@
       "why": "inferred connection - not explicitly stated in source"
     },
     {
-      "source": "createTenantDatabase()",
-      "target": "secretWithValue()",
+      "source": "startLimitedApp()",
+      "target": "tenantRateLimiter()",
       "source_files": [
-        "infra/tenant/database.ts",
-        "infra/tenant/secrets.ts"
+        "services/mailgun-shim/test/unit/rateLimit.test.ts",
+        "services/mailgun-shim/src/rateLimit.ts"
       ],
       "confidence": "EXTRACTED",
       "relation": "calls",
-      "why": "cross-file semantic connection"
+      "why": "peripheral node `startLimitedApp()` unexpectedly reaches hub `tenantRateLimiter()`"
     },
     {
-      "source": "createTenantStorage()",
-      "target": "secretWithValue()",
+      "source": "deliverMessageAsync()",
+      "target": "sendToRecipient()",
       "source_files": [
-        "infra/tenant/storage.ts",
-        "infra/tenant/secrets.ts"
+        "services/mailgun-shim/src/routes/messages.ts",
+        "services/mailgun-shim/src/smtp.ts"
       ],
       "confidence": "EXTRACTED",
       "relation": "calls",
-      "why": "cross-file semantic connection"
+      "why": "bridges separate communities"
     },
     {
-      "source": "include",
-      "target": "*.ts",
+      "source": "FakeShimStore",
+      "target": "ShimStore",
       "source_files": [
-        "infra/provisioning/tsconfig.json",
-        "infra/tenant/tsconfig.build.json"
+        "services/mailgun-shim/test/unit/helpers/fakeStore.ts",
+        "services/mailgun-shim/src/store.ts"
       ],
       "confidence": "EXTRACTED",
-      "relation": "extends",
-      "why": "cross-file semantic connection"
+      "relation": "inherits",
+      "why": "bridges separate communities"
     },
     {
-      "source": "createCloudRunService()",
-      "target": "cloudRunServiceName()",
+      "source": "get()",
+      "target": "basicAuthHeader()",
       "source_files": [
-        "infra/tenant/cloudRunService.ts",
-        "infra/tenant/naming.ts"
+        "services/mailgun-shim/test/unit/routes/events.test.ts",
+        "services/mailgun-shim/test/unit/helpers/startRouter.ts"
       ],
       "confidence": "EXTRACTED",
       "relation": "calls",
-      "why": "cross-file semantic connection"
+      "why": "peripheral node `get()` unexpectedly reaches hub `basicAuthHeader()`"
     }
   ],
   "tokens": {
-    "input": 14794,
-    "output": 1846
+    "input": 1214,
+    "output": 564
   }
 }
