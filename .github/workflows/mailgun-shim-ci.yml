@@ -1,0 +1,43 @@
+name: Mailgun shim CI
+
+# Type-checks and tests the Mailgun-shaped shim (services/mailgun-shim/).
+# No deploy job here: this story doesn't deploy anywhere (no Cloud Run
+# service, no Pulumi resources) — that's a later story once the shim has a
+# store and a delivery host worth pointing at in a real environment.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Shim type check and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/mailgun-shim
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/mailgun-shim/.nvmrc
+          cache: npm
+          cache-dependency-path: services/mailgun-shim/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
