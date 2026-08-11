@@ -1,6 +1,7 @@
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 import { requireTenantForDomain } from '../auth.js';
+import { tenantRateLimiter } from '../rateLimit.js';
 import { SUPPRESSION_TYPES, type ShimStore, type SuppressionType } from '../store.js';
 
 function isSuppressionType(value: string): value is SuppressionType {
@@ -30,6 +31,7 @@ export function createSuppressionsRouter(store: ShimStore): Router {
       }
       next();
     },
+    tenantRateLimiter(60),
     requireTenantForDomain(store),
     (req: Request, res: Response) => {
       const domain = req.params.domain as string;

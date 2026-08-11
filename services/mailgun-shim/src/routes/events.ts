@@ -1,6 +1,7 @@
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 import { requireTenantForDomain } from '../auth.js';
+import { tenantRateLimiter } from '../rateLimit.js';
 import type { ShimStore, StoredEvent } from '../store.js';
 
 const DEFAULT_LIMIT = 300;
@@ -79,8 +80,9 @@ export function createEventsRouter(store: ShimStore): Router {
     });
   };
 
-  router.get('/v3/:domain/events', requireTenantForDomain(store), handler);
-  router.get('/v3/:domain/events/:cursor', requireTenantForDomain(store), handler);
+  const limiter = tenantRateLimiter(120);
+  router.get('/v3/:domain/events', limiter, requireTenantForDomain(store), handler);
+  router.get('/v3/:domain/events/:cursor', limiter, requireTenantForDomain(store), handler);
 
   return router;
 }

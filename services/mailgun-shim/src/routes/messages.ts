@@ -4,6 +4,7 @@ import { Router as createRouter } from 'express';
 import { requireTenantForDomain } from '../auth.js';
 import { mapWithConcurrency } from '../concurrency.js';
 import { parseMailgunMessageFields, resolveRecipientTokens } from '../mailgunFields.js';
+import { tenantRateLimiter } from '../rateLimit.js';
 import { sendToRecipient, type Transporter } from '../smtp.js';
 import type { ShimStore, SuppressionType } from '../store.js';
 import { SUPPRESSION_TYPES } from '../store.js';
@@ -86,6 +87,7 @@ export function createMessagesRouter(store: ShimStore, transport: Transporter): 
 
   router.post(
     '/v3/:domain/messages',
+    tenantRateLimiter(60),
     requireTenantForDomain(store),
     async (req: Request, res: Response) => {
       const domain = req.params.domain as string;

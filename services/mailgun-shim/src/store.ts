@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { hashApiKey } from './crypto.js';
+import { hashApiKey, verifyApiKey } from './crypto.js';
 
 export type SuppressionType = 'bounces' | 'complaints' | 'unsubscribes';
 
@@ -51,7 +51,14 @@ export interface ListEventsResult {
  */
 export interface ShimStore {
   registerTenant(domain: string, apiKey: string): void;
-  getTenantByApiKeyHash(apiKeyHash: string): Tenant | null;
+  /**
+   * Looks up the tenant by domain (always present in the URL path — see
+   * doc 13 §2.6) and verifies the presented key against that tenant's
+   * salted hash. Collapses "unknown domain" and "wrong key for a domain
+   * that exists" into a single check, since both get the same 401 (see
+   * requireTenantForDomain in auth.ts).
+   */
+  verifyTenant(domain: string, apiKey: string): Tenant | null;
 
   recordEvent(event: Omit<StoredEvent, 'id'>): void;
   listEvents(domain: string, options: ListEventsOptions): ListEventsResult;
@@ -69,7 +76,8 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
   db.exec(`
     CREATE TABLE IF NOT EXISTS tenants (
       domain TEXT PRIMARY KEY,
-      api_key_hash TEXT NOT NULL UNIQUE
+      api_key_salt TEXT NOT NULL,
+      api_key_hash TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS events (
@@ -97,9 +105,11 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
   `);
 
   const insertTenant = db.prepare(
-    'INSERT OR REPLACE INTO tenants (domain, api_key_hash) VALUES (?, ?)'
+    'INSERT OR REPLACE INTO tenants (domain, api_key_salt, api_key_hash) VALUES (?, ?, ?)'
   );
-  const selectTenantByHash = db.prepare('SELECT domain FROM tenants WHERE api_key_hash = ?');
+  const selectTenantByDomain = db.prepare(
+    'SELECT domain, api_key_salt, api_key_hash FROM tenants WHERE domain = ?'
+  );
   const insertEvent = db.prepare(`
     INSERT INTO events
       (id, domain, type, severity, recipient, email_id, provider_message_id, timestamp, error_code, error_message)
@@ -117,12 +127,18 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
 
   return {
     registerTenant(domain, apiKey) {
-      insertTenant.run(domain, hashApiKey(apiKey));
+      const { salt, hash } = hashApiKey(apiKey);
+      insertTenant.run(domain, salt, hash);
     },
 
-    getTenantByApiKeyHash(apiKeyHash) {
-      const row = selectTenantByHash.get(apiKeyHash) as { domain: string } | undefined;
-      return row ? { domain: row.domain } : null;
+    verifyTenant(domain, apiKey) {
+      const row = selectTenantByDomain.get(domain) as
+        { domain: string; api_key_salt: string; api_key_hash: string } | undefined;
+      if (!row) {
+        return null;
+      }
+      const ok = verifyApiKey(apiKey, { salt: row.api_key_salt, hash: row.api_key_hash });
+      return ok ? { domain: row.domain } : null;
     },
 
     recordEvent(event) {

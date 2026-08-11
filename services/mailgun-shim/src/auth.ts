@@ -1,5 +1,4 @@
 import type { NextFunction, Request, Response } from 'express';
-import { hashApiKey } from './crypto.js';
 import type { ShimStore, Tenant } from './store.js';
 
 declare module 'express-serve-static-core' {
@@ -39,8 +38,8 @@ export function requireTenantForDomain(store: ShimStore) {
       return;
     }
 
-    const tenant = store.getTenantByApiKeyHash(hashApiKey(credentials.password));
-    if (!tenant || tenant.domain !== req.params.domain) {
+    const tenant = store.verifyTenant(req.params.domain as string, credentials.password);
+    if (!tenant) {
       res.status(401).json({ message: 'Unauthorized' });
       return;
     }
