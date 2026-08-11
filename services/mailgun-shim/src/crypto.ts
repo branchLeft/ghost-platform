@@ -23,7 +23,15 @@ export function hashApiKey(apiKey: string): HashedApiKey {
 }
 
 export function verifyApiKey(apiKey: string, stored: HashedApiKey): boolean {
-  const candidate = scryptSync(apiKey, stored.salt, KEY_LENGTH);
-  const expected = Buffer.from(stored.hash, 'hex');
-  return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+  // A corrupted stored record (missing/non-string salt or hash) must fail
+  // closed rather than throw — scryptSync and Buffer.from both throw on
+  // those inputs, and an auth check that can crash on bad data is itself a
+  // denial-of-service surface for that one tenant's row.
+  try {
+    const candidate = scryptSync(apiKey, stored.salt, KEY_LENGTH);
+    const expected = Buffer.from(stored.hash, 'hex');
+    return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+  } catch {
+    return false;
+  }
 }

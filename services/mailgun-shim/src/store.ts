@@ -70,6 +70,17 @@ export interface ShimStore {
   close(): void;
 }
 
+// SuppressionType is compile-time only — the suppressions route already
+// filters to known types before it reaches the store (routes/suppressions.ts),
+// but that guard doesn't cover other callers of this interface, and a
+// typo'd type string stored under a real-looking column would silently
+// never match a real isSuppressed lookup rather than failing loudly.
+function assertSuppressionType(type: SuppressionType): void {
+  if (!(SUPPRESSION_TYPES as readonly string[]).includes(type)) {
+    throw new TypeError(`Unknown suppression type: ${String(type)}`);
+  }
+}
+
 export function createSqliteStore(filename = ':memory:'): ShimStore {
   const db = new DatabaseSync(filename);
 
@@ -196,14 +207,17 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     },
 
     addSuppression(domain, type, email) {
+      assertSuppressionType(type);
       insertSuppression.run(domain, type, email);
     },
 
     removeSuppression(domain, type, email) {
+      assertSuppressionType(type);
       deleteSuppression.run(domain, type, email);
     },
 
     isSuppressed(domain, type, email) {
+      assertSuppressionType(type);
       return selectSuppression.get(domain, type, email) !== undefined;
     },
 

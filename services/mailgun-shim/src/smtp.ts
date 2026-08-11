@@ -43,11 +43,38 @@ export interface RecipientSendResult {
   errorMessage?: string;
 }
 
+// nodemailer hands a bare `to` string through its RFC 2822 address-list
+// parser: a colon or semicolon opens group syntax and a comma separates
+// addresses, so any of those characters let the envelope recipient nodemailer
+// actually sends to differ from the address this shim intended — e.g.
+// "grp:attacker@evil.com;" resolves to the envelope recipient
+// "attacker@evil.com" (verified via nodemailer's streamTransport). A plain
+// email address never contains them, so reject anything that does rather
+// than let the address grammar reinterpret it.
+const UNSAFE_RECIPIENT_CHARS = /[\r\n\t,;:<>"]/;
+
+export function isSafeRecipientAddress(address: string): boolean {
+  if (!address || UNSAFE_RECIPIENT_CHARS.test(address)) {
+    return false;
+  }
+  const at = address.indexOf('@');
+  return at > 0 && at === address.lastIndexOf('@') && at < address.length - 1;
+}
+
 export async function sendToRecipient(
   transport: Transporter,
   params: RecipientSendParams
 ): Promise<RecipientSendResult> {
   const providerMessageId = `<${Date.now()}.${randomUUID()}@${params.domain}>`;
+
+  if (!isSafeRecipientAddress(params.to)) {
+    return {
+      recipient: params.to,
+      providerMessageId,
+      ok: false,
+      errorMessage: 'Invalid recipient address',
+    };
+  }
 
   const headers: Record<string, string> = { ...params.extraHeaders };
   if (params.emailId) {

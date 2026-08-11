@@ -4,3 +4,4 @@ node_modules
 infra/tenant/dist
 infra/tenant/*.tgz
 services/*/dist
+services/*/coverage
