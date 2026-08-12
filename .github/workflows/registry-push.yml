@@ -87,6 +87,7 @@ jobs:
 
     env:
       IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ghost-platform-tenant/ghost
+      IMAGE_TAG: ${{ github.sha }}
 
     steps:
       - name: Checkout
@@ -121,7 +122,7 @@ jobs:
       - name: Build image
         run: |
           docker build \
-            --tag "$IMAGE:${{ github.sha }}" \
+            --tag "$IMAGE:$IMAGE_TAG" \
             --tag "$IMAGE:latest" \
             .
 
@@ -129,10 +130,10 @@ jobs:
       # exact image about to be pushed -- so a broken image can fail before
       # `docker push`, not be discovered after `latest` already points at it.
       - name: Smoke test (SQLite, boots and serves HTTP 200)
-        run: ./scripts/smoke-test.sh "$IMAGE:${{ github.sha }}"
+        run: ./scripts/smoke-test.sh "$IMAGE:$IMAGE_TAG"
 
       - name: Storage guard regression test (blocked vs. permitted configs)
-        run: ./scripts/test-storage-guard.sh "$IMAGE:${{ github.sha }}"
+        run: ./scripts/test-storage-guard.sh "$IMAGE:$IMAGE_TAG"
 
       # `--all-tags` pushes every locally-tagged reference for this
       # repository (`docker push --help`: "Push all tags of an image to the
@@ -147,7 +148,7 @@ jobs:
           {
             echo '## Tenant image push'
             echo
-            echo "Commit: \`${{ github.sha }}\`"
-            echo "Image: \`$IMAGE:${{ github.sha }}\`"
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Image: \`$IMAGE:$IMAGE_TAG\`"
             echo 'Also tagged `latest`.'
           } >> "$GITHUB_STEP_SUMMARY"
