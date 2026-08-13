@@ -154,6 +154,9 @@ image with a different environment.
 | `privacy__useUpdateCheck` | Optional | Deploy config | Recommend `false`. Ghost pings `explore.ghost.org` on boot by default — worth a deliberate opt-out given the platform's tenants are public-interest news outlets. Not baked into the image, since that is a policy call for the platform operator. |
 | `logging__transports` | Optional | Deploy config | The upstream image bakes in `["file", "stdout"]`. File logs are lost on every Cloud Run restart (ephemeral disk) — not a correctness problem, but consider overriding to `'["stdout"]'` so Cloud Logging is the only sink that matters. |
 | `mail__transport`, `mail__options__*`, `mail__from` | Optional | Deploy config, except `mail__options__auth__pass` (**Secret Manager**) | Wired by `GhostTenant`'s optional `mail` arg -- SMTP host/port/user/from as deploy config, the password via a per-tenant Secret Manager secret, mirroring `database__connection__password`. Omitted entirely (not even `mail__transport`) when `mail` isn't passed; the image boots and serves fine with the upstream `Direct` transport default in that case. |
+| `bulkEmail__mailgun__baseUrl` | Optional | Deploy config | Wired by `GhostTenant`'s optional `bulkEmail` arg -- the platform's Mailgun-shim base URL. **All-or-nothing with the other two `bulkEmail__mailgun__*` vars below**: Ghost treats the mere presence of the `bulkEmail.mailgun` config object as "configured" and crashes with `new URL(undefined)` on a partial set, so `GhostTenant` emits all three or none. |
+| `bulkEmail__mailgun__domain` | Optional (all-or-nothing, see above) | Deploy config | The shim-side tenant identifier -- not necessarily this tenant's site hostname. |
+| `bulkEmail__mailgun__apiKey` | Optional (all-or-nothing, see above) | **Secret Manager** | Per-tenant shim API key, mirroring `mail__options__auth__pass`. Never a plain env value. |
 
 ## Fail-closed storage guard
 

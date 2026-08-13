@@ -55,6 +55,13 @@ export interface CloudRunServiceArgs {
     from: pulumi.Input<string>;
     passwordSecret: gcp.secretmanager.Secret;
   };
+  /** Omit entirely for a tenant with no bulk-email (newsletter) transport
+   * configured -- `bulkEmailEnvs` then emits nothing. */
+  bulkEmail?: {
+    baseUrl: pulumi.Input<string>;
+    domain: pulumi.Input<string>;
+    apiKeySecret: gcp.secretmanager.Secret;
+  };
   dependsOn: pulumi.Resource[];
 }
 
@@ -78,6 +85,27 @@ export function mailEnvs(mail: CloudRunServiceArgs['mail']) {
 }
 
 /**
+ * `bulkEmail__mailgun__*` envs -- Ghost's Mailgun-compatible bulk-email
+ * config, pointed at the platform's mail shim rather than real Mailgun.
+ * Returns `[]` when `bulkEmail` is absent. Unlike `mailEnvs`, this set is
+ * all-or-nothing at the Ghost end: Ghost treats the mere presence of the
+ * `bulkEmail.mailgun` config object as "configured" and crashes with
+ * `new URL(undefined)` on a partial set, so the three envs are emitted from
+ * one optional object arg rather than three independently-optional fields --
+ * there is no code path that can produce one or two of them. The API key is
+ * never a plain env -- `secretEnv` sources it from Secret Manager, mirroring
+ * `mail__options__auth__pass` above.
+ */
+export function bulkEmailEnvs(bulkEmail: CloudRunServiceArgs['bulkEmail']) {
+  if (!bulkEmail) return [];
+  return [
+    plainEnv('bulkEmail__mailgun__baseUrl', bulkEmail.baseUrl),
+    plainEnv('bulkEmail__mailgun__domain', bulkEmail.domain),
+    secretEnv('bulkEmail__mailgun__apiKey', bulkEmail.apiKeySecret),
+  ];
+}
+
+/**
  * The tenant's Cloud Run service. Every environment variable set here is
  * cross-checked against this repo's own README env var table by name,
  * casing and `__` separator -- not copied from memory of an earlier draft
@@ -86,7 +114,8 @@ export function mailEnvs(mail: CloudRunServiceArgs['mail']) {
  * README's own recommended values, since this component -- not the
  * Dockerfile -- is exactly the "deploy config" layer the README says those
  * two belong to; `mail__*` is added only when `args.mail` is supplied (see
- * `mailEnvs`).
+ * `mailEnvs`), and `bulkEmail__mailgun__*` only when `args.bulkEmail` is
+ * supplied (see `bulkEmailEnvs`).
  */
 export function createCloudRunService(
   parent: pulumi.Resource,
@@ -197,6 +226,7 @@ export function createCloudRunService(
               plainEnv('privacy__useUpdateCheck', 'false'),
               plainEnv('logging__transports', '["stdout"]'),
               ...mailEnvs(args.mail),
+              ...bulkEmailEnvs(args.bulkEmail),
             ],
             startupProbe: {
               httpGet: { path: '/' },
