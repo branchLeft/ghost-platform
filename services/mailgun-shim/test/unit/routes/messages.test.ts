@@ -1,8 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMessagesRouter } from '../../../src/routes/messages.js';
 import type { Transporter } from '../../../src/smtp.js';
+import type { WorkerHandle } from '../../../src/worker.js';
+import { createTestLogger, type TestLogger } from '../../helpers/testLogger.js';
+import { createTestWorker } from '../../helpers/testWorker.js';
 import { createFakeStore, type FakeShimStore } from '../helpers/fakeStore.js';
-import { basicAuthHeader, startRouter, wait, type StartedRouter } from '../helpers/startRouter.js';
+import { basicAuthHeader, startRouter, type StartedRouter } from '../helpers/startRouter.js';
+import { vi } from 'vitest';
 
 const DOMAIN = 'tenant1.example.com';
 const API_KEY = 'tenant1-api-key';
@@ -19,6 +23,8 @@ describe('POST /v3/:domain/messages', () => {
   let store: FakeShimStore;
   let sendMail: ReturnType<typeof vi.fn>;
   let transport: Transporter;
+  let worker: WorkerHandle;
+  let testLogger: TestLogger;
   let server: StartedRouter;
 
   beforeEach(async () => {
@@ -26,10 +32,13 @@ describe('POST /v3/:domain/messages', () => {
     store.registerTenant(DOMAIN, API_KEY);
     sendMail = vi.fn(async () => ({}));
     transport = { sendMail } as unknown as Transporter;
-    server = await startRouter(createMessagesRouter(store, transport));
+    testLogger = createTestLogger();
+    worker = createTestWorker(store, transport, { log: testLogger.logger });
+    server = await startRouter(createMessagesRouter(store, worker, testLogger.logger));
   });
 
   afterEach(async () => {
+    await worker.stop();
     await server.close();
   });
 
@@ -59,8 +68,7 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-
-    await wait(100);
+    await worker.whenIdle();
 
     expect(sendMail).toHaveBeenCalledTimes(1);
     const sentTo = sendMail.mock.calls[0]![0].to;
@@ -89,7 +97,7 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-    await wait(100);
+    await worker.whenIdle();
     expect(sendMail).not.toHaveBeenCalled();
   });
 
@@ -110,7 +118,7 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-    await wait(100);
+    await worker.whenIdle();
 
     expect(sendMail).toHaveBeenCalledTimes(2);
     const byRecipient = new Map(
@@ -133,7 +141,7 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-    await wait(100);
+    await worker.whenIdle();
 
     const event = store.events.find((e) => e.recipient === 'member@example.com');
     expect(event?.emailId).toBe('email-record-42');
@@ -152,7 +160,7 @@ describe('POST /v3/:domain/messages', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { message: string };
     expect(body.message).toBe('No recipients');
-    await wait(20);
+    await worker.whenIdle();
     expect(sendMail).not.toHaveBeenCalled();
   });
 
@@ -171,9 +179,8 @@ describe('POST /v3/:domain/messages', () => {
     expect(res.status).toBe(400);
   });
 
-  it('a downstream failure in the fire-and-forget delivery path is logged, not thrown into the request handler', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const recordEventSpy = vi.spyOn(store, 'recordEvent').mockImplementation(() => {
+  it('a downstream failure while the worker is sending is logged, not thrown into the request handler', async () => {
+    const recordSentSpy = vi.spyOn(store, 'recordRecipientSent').mockImplementation(() => {
       throw new Error('storage unavailable');
     });
 
@@ -187,15 +194,18 @@ describe('POST /v3/:domain/messages', () => {
         ['recipient-variables', '{}'],
       ])
     );
-    // The response already went out before the async delivery path ran —
-    // a downstream failure in that path must not turn into a 500 here.
+    // The response already went out before the worker processed the row —
+    // a downstream failure there must not turn into a 500 here.
     expect(res.status).toBe(200);
 
-    await wait(50);
-    expect(errorSpy).toHaveBeenCalledWith('mailgun-shim: async delivery failed', expect.any(Error));
+    await worker.whenIdle();
+    expect(
+      testLogger.lines.some(
+        (line) => line.event === 'worker_lifecycle' && line.fields.event === 'tick_failed'
+      )
+    ).toBe(true);
 
-    recordEventSpy.mockRestore();
-    errorSpy.mockRestore();
+    recordSentSpy.mockRestore();
   });
 
   it('401s without valid tenant credentials, and never attempts delivery', async () => {
@@ -212,7 +222,100 @@ describe('POST /v3/:domain/messages', () => {
       ]),
     });
     expect(res.status).toBe(401);
-    await wait(20);
+    await worker.whenIdle();
     expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates a recipient listed twice in the same send to one queued row, and the server keeps serving requests afterwards', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+    await worker.whenIdle();
+
+    // One send, not two — and no crash from the (batch_id, recipient)
+    // primary key that a duplicate row would otherwise violate.
+    expect(sendMail).toHaveBeenCalledTimes(1);
+
+    // The server is still alive and answering further requests — this is
+    // the regression this test exists to catch: an unhandled rejection
+    // from the duplicate would have crashed the whole process.
+    const followUp = await post(
+      multipartBody([
+        ['to', 'someone-else@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Still alive'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(followUp.status).toBe(200);
+    await worker.whenIdle();
+    expect(sendMail).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats differently-cased local parts as distinct recipients — dedup is exact-string, not case-insensitive', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'Member@example.com'],
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+    await worker.whenIdle();
+    expect(sendMail).toHaveBeenCalledTimes(2);
+  });
+
+  it('a store throw during enqueue yields a 500 JSON response, not a crash — and the server keeps serving requests afterwards', async () => {
+    const enqueueSpy = vi.spyOn(store, 'enqueueBatch').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toBeTruthy();
+    expect(
+      testLogger.lines.some(
+        (line) => line.event === 'request_failed' && line.fields.error === 'disk full'
+      )
+    ).toBe(true);
+
+    enqueueSpy.mockRestore();
+
+    const followUp = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(followUp.status).toBe(200);
   });
 });

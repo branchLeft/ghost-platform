@@ -1,29 +1,42 @@
 import { createApp } from './app.js';
+import { loadConfig } from './config.js';
+import { createLogger } from './log.js';
 import { createDeliveryTransport } from './smtp.js';
 import { createSqliteStore } from './store.js';
+import { createThrottle } from './throttle.js';
+import { createWorker } from './worker.js';
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable ${name}`);
-  }
-  return value;
+const config = loadConfig();
+const log = createLogger();
+const store = createSqliteStore(config.dbPath);
+const transport = createDeliveryTransport(config.smtp);
+const throttle = createThrottle({
+  configPath: config.throttlePath,
+  envMessagesPerHour: config.messagesPerHour,
+  log,
+});
+
+// Constructing the worker starts its startup drain immediately — this is
+// deliberately before app.listen() below, not after: a batch left pending
+// by a crashed previous process should not wait for the first HTTP request
+// to be picked back up.
+const worker = createWorker({ store, transport, throttle, log });
+
+const app = createApp(store, worker, log);
+
+const server = app.listen(config.port, () => {
+  log.info('worker_lifecycle', { event: 'listening', port: config.port });
+});
+
+function shutdown(signal: string): void {
+  log.info('worker_lifecycle', { event: 'shutdown_start', signal });
+  server.close(() => {
+    void worker.stop().then(() => {
+      store.close();
+      log.info('worker_lifecycle', { event: 'shutdown_complete' });
+      process.exit(0);
+    });
+  });
 }
 
-const port = Number(process.env.PORT) || 8080;
-const store = createSqliteStore(process.env.SHIM_DB_PATH ?? ':memory:');
-const transport = createDeliveryTransport({
-  host: requireEnv('SMTP_HOST'),
-  port: Number(process.env.SMTP_PORT) || 587,
-  secure: process.env.SMTP_SECURE === 'true',
-  auth:
-    process.env.SMTP_USER && process.env.SMTP_PASS
-      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-      : undefined,
-});
-
-const app = createApp(store, transport);
-
-app.listen(port, () => {
-  console.log(`mailgun-shim listening on :${port}`);
-});
+process.on('SIGTERM', () => shutdown('SIGTERM'));

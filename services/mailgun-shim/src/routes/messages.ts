@@ -1,15 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
+import { asyncHandler } from '../asyncHandler.js';
 import { requireTenantForDomain } from '../auth.js';
-import { mapWithConcurrency } from '../concurrency.js';
-import { parseMailgunMessageFields, resolveRecipientTokens } from '../mailgunFields.js';
+import type { Logger } from '../log.js';
+import { parseMailgunMessageFields } from '../mailgunFields.js';
 import { tenantRateLimiter } from '../rateLimit.js';
-import { sendToRecipient, type Transporter } from '../smtp.js';
-import type { ShimStore, SuppressionType } from '../store.js';
-import { SUPPRESSION_TYPES } from '../store.js';
-
-const RECIPIENT_SEND_CONCURRENCY = 5;
+import type { ShimStore } from '../store.js';
+import type { WorkerHandle } from '../worker.js';
 
 /**
  * Options fields ('o:*') map to Mailgun boolean-shaped values of "yes"/"no"
@@ -21,75 +19,34 @@ function isYes(value: string | string[] | undefined): boolean {
   return (Array.isArray(value) ? value[0] : value) === 'yes';
 }
 
-async function deliverMessageAsync(
-  store: ShimStore,
-  transport: Transporter,
-  domain: string,
-  fields: Awaited<ReturnType<typeof parseMailgunMessageFields>>,
-  emailId: string | undefined
-): Promise<void> {
-  const suppressedByRecipient = new Map<string, SuppressionType>();
-  for (const recipient of fields.to) {
-    for (const type of SUPPRESSION_TYPES) {
-      if (store.isSuppressed(domain, type, recipient)) {
-        suppressedByRecipient.set(recipient, type);
-        break;
-      }
+/**
+ * Real Mailgun tolerates a recipient listed twice in one send. Dedup is
+ * exact-string (case-sensitive): the local part of an address is
+ * case-sensitive per RFC 5321, so "A@x.com" and "a@x.com" are kept as
+ * distinct recipients rather than silently merged. This also protects the
+ * queue's (batch_id, recipient) primary key — without it, a duplicate
+ * recipient reaches store.enqueueBatch and throws.
+ */
+function dedupeRecipients(recipients: string[]): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const recipient of recipients) {
+    if (!seen.has(recipient)) {
+      seen.add(recipient);
+      deduped.push(recipient);
     }
   }
-
-  const deliverable = fields.to.filter((recipient) => !suppressedByRecipient.has(recipient));
-
-  await mapWithConcurrency(deliverable, RECIPIENT_SEND_CONCURRENCY, async (recipient) => {
-    const vars = fields.recipientVariables[recipient] ?? {};
-    const resolvedHeaders: Record<string, string> = {};
-    for (const [name, value] of Object.entries(fields.headers)) {
-      if (name === 'Reply-To' || name === 'Sender') {
-        continue;
-      }
-      resolvedHeaders[name] = resolveRecipientTokens(value, vars);
-    }
-
-    const result = await sendToRecipient(transport, {
-      from: fields.from,
-      to: recipient,
-      toName: vars.name,
-      subject: resolveRecipientTokens(fields.subject, vars),
-      html: resolveRecipientTokens(fields.html, vars),
-      text: resolveRecipientTokens(fields.text, vars),
-      replyTo: fields.headers['Reply-To'],
-      emailId,
-      domain,
-      extraHeaders: resolvedHeaders,
-    });
-
-    // This records SMTP-accepted-for-relay as "delivered", which is a
-    // thinner signal than a real bounce/complaint — doc 13 §2.4 point 3
-    // names this trade-off explicitly rather than pretending it isn't
-    // there. Real delivery/bounce signal is the DSN-ingestion follow-up
-    // this interface deliberately doesn't preclude.
-    store.recordEvent({
-      domain,
-      type: result.ok ? 'delivered' : 'failed',
-      severity: result.ok ? null : 'permanent',
-      recipient,
-      emailId: emailId ?? null,
-      providerMessageId: result.providerMessageId,
-      timestamp: Date.now() / 1000,
-      errorCode: result.errorCode ?? null,
-      errorMessage: result.errorMessage ?? null,
-    });
-  });
+  return deduped;
 }
 
-export function createMessagesRouter(store: ShimStore, transport: Transporter): Router {
+export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log: Logger): Router {
   const router = createRouter();
 
   router.post(
     '/v3/:domain/messages',
     tenantRateLimiter(60),
     requireTenantForDomain(store),
-    async (req: Request, res: Response) => {
+    asyncHandler(log, async (req: Request, res: Response) => {
       const domain = req.params.domain as string;
 
       let fields;
@@ -105,25 +62,40 @@ export function createMessagesRouter(store: ShimStore, transport: Transporter): 
         return;
       }
 
-      const emailId = fields.customVars['email-id'];
+      const recipients = dedupeRecipients(fields.to);
+
+      const emailId = fields.customVars['email-id'] ?? null;
       const trackOpens = isYes(fields.options['tracking-opens']);
       void trackOpens; // open tracking has no receiving pixel in this skeleton; accepted but not yet acted on.
 
       const batchId = `<${Date.now()}.${randomUUID()}@${domain}>`;
 
-      // Enqueue and return immediately — Ghost's request must not stay open
-      // for a 1,000-recipient SMTP fan-out (doc 13 §2.4 point 1). Fire-and
-      // forget here is a walking-skeleton simplification: a container
-      // recycle mid-send loses whatever hasn't been submitted yet. A real
-      // deployment needs a durable queue (Cloud Tasks, or a DB-backed retry
-      // table) so an in-flight batch survives that — this shim's interface
-      // doesn't preclude adding one, but it isn't one yet.
-      deliverMessageAsync(store, transport, domain, fields, emailId).catch((err: unknown) => {
-        console.error('mailgun-shim: async delivery failed', err);
+      // Enqueue durably and return immediately — Ghost's request must not
+      // stay open for a 1,000-recipient SMTP fan-out (doc 13 §2.4 point 1).
+      // Every recipient row is written in the same transaction as the
+      // batch row, so a crash right after this responds 200 leaves nothing
+      // half-written for the worker's startup drain to pick up incorrectly.
+      store.enqueueBatch({
+        batchId,
+        domain,
+        emailId,
+        payload: {
+          from: fields.from,
+          subject: fields.subject,
+          html: fields.html,
+          text: fields.text,
+          headers: fields.headers,
+          recipientVariables: fields.recipientVariables,
+        },
+        recipients,
+        now: Date.now() / 1000,
       });
 
+      log.info('enqueue', { domain, batchId, recipientCount: recipients.length });
+      worker.kick();
+
       res.status(200).json({ id: batchId, message: 'Queued. Thank you.' });
-    }
+    })
   );
 
   return router;

@@ -208,4 +208,40 @@ describe('mailgun-shaped shim', () => {
       })
     ).rejects.toMatchObject({ status: 401 });
   });
+
+  it('a recipient listed twice in one send (well-formed — real Mailgun tolerates this) delivers exactly once and the shim stays up for the next request', async () => {
+    // mailgun.js serialises each array entry as its own repeated multipart
+    // field (see mailgunFields.ts's own docstring on this) — sending the
+    // same address twice here exercises the real wire format the shim's
+    // route parses, backed by a real sqlite queue with a
+    // (batch_id, recipient) primary key, not the in-memory fake used by
+    // the unit-level route tests.
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['dup@example.com', 'dup@example.com'],
+      from: 'noreply@tenant1.example.com',
+      subject: 'Duplicate recipient',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    const received = await sink.waitForCount(1);
+    expect(received).toHaveLength(1);
+
+    // The process is still alive and serving requests — this is the
+    // regression the test exists to catch: an unwrapped async handler
+    // throwing on the duplicate's UNIQUE constraint violation used to
+    // crash the whole process before this fix.
+    const followUp = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['someone-else@example.com'],
+      from: 'noreply@tenant1.example.com',
+      subject: 'Still alive',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(followUp.id).toBeTruthy();
+    await sink.waitForCount(2);
+  });
 });
