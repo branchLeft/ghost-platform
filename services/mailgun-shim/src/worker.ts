@@ -25,6 +25,12 @@ export interface WorkerOptions {
   claimBatchSize?: number;
 }
 
+export interface WorkerStatus {
+  /** Epoch seconds the last tick completed, or null before the startup drain has finished once. */
+  lastTickAt: number | null;
+  stopped: boolean;
+}
+
 export interface WorkerHandle {
   /** Fire-and-forget nudge — safe to call without awaiting. */
   kick(): void;
@@ -32,6 +38,8 @@ export interface WorkerHandle {
   whenIdle(): Promise<void>;
   /** Stops claiming new work, finishes whatever send is in flight, then resolves. Does not close the store. */
   stop(): Promise<void>;
+  /** Cheap liveness signal for /healthz — a store that answers pings but a worker that stopped ticking is a real degraded state neither store.ping() nor pending-count alone would show. */
+  status(): WorkerStatus;
 }
 
 export function recipientDomain(address: string): string {
@@ -59,6 +67,14 @@ function isTransientFailure(
  * write of the "sent" row will re-send that one recipient on the next
  * startup drain. Bounded to one recipient per crash, accepted for a
  * single-instance relay.
+ *
+ * Sends strictly serially (one `await processRow` at a time), by design,
+ * not oversight: every send is already throttle-gated immediately before
+ * dispatch, so concurrency could never increase throughput past what the
+ * throttle allows — it would only shrink wall-clock latency on a rare
+ * catch-up burst. What it would cost is real: N concurrent in-flight sends
+ * widens the at-least-once crash window from one possible duplicate to N.
+ * Serial keeps that window at its documented minimum.
  */
 export function createWorker(opts: WorkerOptions): WorkerHandle {
   const { store, transport, throttle, log } = opts;
@@ -69,6 +85,7 @@ export function createWorker(opts: WorkerOptions): WorkerHandle {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastCleanupAt = 0;
+  let lastTickAt: number | null = null;
   let runChain: Promise<void> = Promise.resolve();
 
   async function processRow(row: DueRecipient): Promise<void> {
@@ -217,6 +234,8 @@ export function createWorker(opts: WorkerOptions): WorkerHandle {
         break;
       }
     }
+
+    lastTickAt = now();
   }
 
   function scheduleNextTick(): void {
@@ -268,6 +287,9 @@ export function createWorker(opts: WorkerOptions): WorkerHandle {
       }
       await runChain;
       log.info('worker_lifecycle', { event: 'stopped' });
+    },
+    status(): WorkerStatus {
+      return { lastTickAt, stopped };
     },
   };
 }

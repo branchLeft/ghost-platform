@@ -140,6 +140,22 @@ function assertSuppressionType(type: SuppressionType): void {
   }
 }
 
+/**
+ * Exported so the branch that's unreachable through the real sqlite driver
+ * in a test (a file-backed PRAGMA that reports something other than "wal")
+ * can still be exercised directly.
+ */
+export function assertWalEnabled(filename: string, journalMode: string | undefined): void {
+  if (filename === ':memory:') {
+    return;
+  }
+  if (journalMode !== 'wal') {
+    throw new Error(
+      `Failed to enable WAL journal mode for ${filename} (got "${String(journalMode)}")`
+    );
+  }
+}
+
 function withTransaction<T>(db: DatabaseSync, fn: () => T): T {
   db.exec('BEGIN');
   try {
@@ -158,8 +174,23 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
   // WAL + a busy timeout rather than SQLite's default DELETE journal mode:
   // the CLI (register/list/events) opens this same file directly while the
   // service is running, and a snapshot-consistent backup needs to read the
-  // file without blocking on the service's writes.
-  db.exec('PRAGMA journal_mode = WAL');
+  // file without blocking on the service's writes. `PRAGMA journal_mode`
+  // returns the mode it actually ended up in (it can silently fall back,
+  // e.g. on some network filesystems) — read that back and fail startup
+  // rather than run every write path unprotected without saying so.
+  const journalModeRow = db.prepare('PRAGMA journal_mode = WAL').get() as
+    { journal_mode: string } | undefined;
+  try {
+    assertWalEnabled(filename, journalModeRow?.journal_mode);
+  } catch (err) {
+    // assertWalEnabled's own throw is unit-tested directly; forcing
+    // node:sqlite itself to report a non-wal mode for a file-backed DB
+    // isn't practical without mocking the built-in module.
+    /* v8 ignore start */
+    db.close();
+    throw err;
+    /* v8 ignore stop */
+  }
   db.exec('PRAGMA busy_timeout = 5000');
 
   db.exec(`

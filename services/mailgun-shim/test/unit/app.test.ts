@@ -81,11 +81,21 @@ describe('createApp — wires all three Mailgun-shaped routers plus healthz at t
     expect(res.status).toBe(404);
   });
 
-  it('serves an unauthenticated healthz with the pending queue count', async () => {
+  it('serves an unauthenticated healthz with the pending queue count and worker liveness', async () => {
     const res = await fetch(`${server.baseUrl}/healthz`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; pending: number };
-    expect(body).toEqual({ status: 'ok', pending: 0 });
+    const body = (await res.json()) as {
+      status: string;
+      pending: number;
+      workerLastTickAt: number | null;
+      workerStopped: boolean;
+    };
+    expect(body.status).toBe('ok');
+    expect(body.pending).toBe(0);
+    // The startup drain has already completed by the time this request
+    // lands — a null here would mean the worker never ticked at all.
+    expect(body.workerLastTickAt).toEqual(expect.any(Number));
+    expect(body.workerStopped).toBe(false);
   });
 
   it("healthz 500s if the store can't be reached", async () => {

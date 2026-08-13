@@ -29,7 +29,13 @@ export function createApp(
   app.get('/healthz', (req, res) => {
     try {
       store.ping();
-      res.status(200).json({ status: 'ok', pending: store.countPendingRecipients() });
+      const workerStatus = worker.status();
+      res.status(200).json({
+        status: 'ok',
+        pending: store.countPendingRecipients(),
+        workerLastTickAt: workerStatus.lastTickAt,
+        workerStopped: workerStatus.stopped,
+      });
     } catch {
       res.status(500).json({ status: 'error' });
     }

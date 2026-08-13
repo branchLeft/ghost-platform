@@ -105,6 +105,16 @@ export function createFakeStore(): FakeShimStore {
     enqueueBatch({ batchId, domain, emailId, payload, recipients, now }) {
       const recipientMap = new Map<string, RecipientRow>();
       for (const recipient of recipients) {
+        if (recipientMap.has(recipient)) {
+          // Mirrors createSqliteStore's PRIMARY KEY (batch_id, recipient)
+          // constraint — a Map.set with a repeated key would otherwise
+          // silently overwrite instead of surfacing the same conflict a
+          // real duplicate-recipient request produces against sqlite. A
+          // caller (the messages route) must dedupe before this is called.
+          throw new Error(
+            `UNIQUE constraint failed: queue_recipients.batch_id, queue_recipients.recipient (duplicate recipient "${recipient}" in batch "${batchId}")`
+          );
+        }
         recipientMap.set(recipient, {
           status: 'pending',
           attempts: 0,

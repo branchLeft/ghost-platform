@@ -225,4 +225,97 @@ describe('POST /v3/:domain/messages', () => {
     await worker.whenIdle();
     expect(sendMail).not.toHaveBeenCalled();
   });
+
+  it('deduplicates a recipient listed twice in the same send to one queued row, and the server keeps serving requests afterwards', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+    await worker.whenIdle();
+
+    // One send, not two — and no crash from the (batch_id, recipient)
+    // primary key that a duplicate row would otherwise violate.
+    expect(sendMail).toHaveBeenCalledTimes(1);
+
+    // The server is still alive and answering further requests — this is
+    // the regression this test exists to catch: an unhandled rejection
+    // from the duplicate would have crashed the whole process.
+    const followUp = await post(
+      multipartBody([
+        ['to', 'someone-else@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Still alive'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(followUp.status).toBe(200);
+    await worker.whenIdle();
+    expect(sendMail).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats differently-cased local parts as distinct recipients — dedup is exact-string, not case-insensitive', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'Member@example.com'],
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+    await worker.whenIdle();
+    expect(sendMail).toHaveBeenCalledTimes(2);
+  });
+
+  it('a store throw during enqueue yields a 500 JSON response, not a crash — and the server keeps serving requests afterwards', async () => {
+    const enqueueSpy = vi.spyOn(store, 'enqueueBatch').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toBeTruthy();
+    expect(
+      testLogger.lines.some(
+        (line) => line.event === 'request_failed' && line.fields.error === 'disk full'
+      )
+    ).toBe(true);
+
+    enqueueSpy.mockRestore();
+
+    const followUp = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(followUp.status).toBe(200);
+  });
 });

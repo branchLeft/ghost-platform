@@ -463,3 +463,30 @@ describe('worker — stop()', () => {
     store.close();
   });
 });
+
+describe('worker — status()', () => {
+  it('reports lastTickAt null before the startup drain, a timestamp after it, and stopped after stop()', async () => {
+    const store = createSqliteStore(':memory:');
+    const sendMail = vi.fn(async () => ({}));
+    const transport = { sendMail } as unknown as Transporter;
+    const worker = createWorker({
+      store,
+      transport,
+      throttle: createUnlimitedThrottle(),
+      log: createTestLogger().logger,
+    });
+
+    // The startup drain is scheduled but hasn't run a microtask yet.
+    expect(worker.status()).toEqual({ lastTickAt: null, stopped: false });
+
+    await worker.whenIdle();
+    const afterStartup = worker.status();
+    expect(afterStartup.lastTickAt).toEqual(expect.any(Number));
+    expect(afterStartup.stopped).toBe(false);
+
+    await worker.stop();
+    expect(worker.status().stopped).toBe(true);
+
+    store.close();
+  });
+});

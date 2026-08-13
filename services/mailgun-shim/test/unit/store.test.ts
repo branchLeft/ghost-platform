@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  assertWalEnabled,
   createSqliteStore,
   type QueueBatchPayload,
   type ShimStore,
@@ -590,6 +591,52 @@ describe('createSqliteStore — durable queue', () => {
           .sort()
       ).toEqual(['pending@example.com', 'retry@example.com']);
       reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('enqueueBatch throws (and enqueues nothing at all for the batch) when the same recipient is listed twice in one call', () => {
+    expect(() =>
+      store.enqueueBatch({
+        batchId: 'batch-dup-recipient',
+        domain: DOMAIN,
+        emailId: null,
+        payload: payload(),
+        recipients: ['dup@example.com', 'dup@example.com'],
+        now: 0,
+      })
+    ).toThrow(/UNIQUE constraint/);
+    expect(store.countPendingRecipients()).toBe(0);
+  });
+});
+
+describe('assertWalEnabled', () => {
+  it('is a no-op for :memory: regardless of the reported mode', () => {
+    expect(() => assertWalEnabled(':memory:', 'memory')).not.toThrow();
+    expect(() => assertWalEnabled(':memory:', undefined)).not.toThrow();
+  });
+
+  it('passes for a file-backed database that reports wal', () => {
+    expect(() => assertWalEnabled('/data/shim.sqlite', 'wal')).not.toThrow();
+  });
+
+  it('throws for a file-backed database that failed to actually enable wal', () => {
+    expect(() => assertWalEnabled('/data/shim.sqlite', 'delete')).toThrow(/WAL/);
+    expect(() => assertWalEnabled('/data/shim.sqlite', undefined)).toThrow(/WAL/);
+  });
+});
+
+describe('createSqliteStore — WAL is genuinely enabled for a file-backed database', () => {
+  it('opens a file-backed store without throwing (a WAL failure on this filesystem would throw at construction)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-wal-test-'));
+    const dbPath = join(dir, 'shim.sqlite');
+    try {
+      let store: ShimStore | undefined;
+      expect(() => {
+        store = createSqliteStore(dbPath);
+      }).not.toThrow();
+      store?.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
