@@ -47,6 +47,26 @@ export interface GhostTenantMailArgs {
   from: pulumi.Input<string>;
 }
 
+/**
+ * Bulk-email (newsletter) transport, pointed at the platform's Mailgun-shim
+ * (doc 13's mail surface, `services/mailgun-shim/`). Optional: a tenant with
+ * no `bulkEmail` block gets no `bulkEmail__mailgun__*` envs at all, matching
+ * `mail`'s own optionality above. All three fields travel together --
+ * `createCloudRunService` emits the full set or none, never a partial one,
+ * because Ghost treats the mere presence of the `bulkEmail.mailgun` object
+ * as "configured" and crashes with `new URL(undefined)` on a partial set.
+ */
+export interface GhostTenantBulkEmailArgs {
+  /** `bulkEmail__mailgun__baseUrl` -- the shim's own base URL. */
+  baseUrl: pulumi.Input<string>;
+  /** `bulkEmail__mailgun__domain` -- the shim-side tenant identifier, not
+   * necessarily this tenant's site hostname. */
+  domain: pulumi.Input<string>;
+  /** Stored in Secret Manager, never a plain env value -- see
+   * `bulkEmail__mailgun__apiKey` in the README's env var table. */
+  apiKey: pulumi.Input<string>;
+}
+
 export interface GhostTenantArgs {
   /**
    * Short tenant identifier, e.g. `blog`, `example-news`. Must start
@@ -104,6 +124,11 @@ export interface GhostTenantArgs {
   /** Transactional-mail transport. Omit entirely for a tenant that doesn't
    * send mail yet -- see `GhostTenantMailArgs`. */
   mail?: GhostTenantMailArgs;
+
+  /** Bulk-email (newsletter) transport via the platform's Mailgun-shim.
+   * Omit entirely for a tenant that doesn't send newsletters yet -- see
+   * `GhostTenantBulkEmailArgs`. */
+  bulkEmail?: GhostTenantBulkEmailArgs;
 }
 
 const DEFAULT_REGION = 'europe-west1';
@@ -179,6 +204,16 @@ export class GhostTenant extends pulumi.ComponentResource {
         ).secret
       : undefined;
 
+    const bulkEmailApiKeySecret = args.bulkEmail
+      ? secretWithValue(
+          this,
+          `${args.tenantName}-bulk-email-api-key`,
+          tenantSecretName(args.tenantName, 'bulk-email-api-key'),
+          args.bulkEmail.apiKey,
+          serviceAccount.email
+        ).secret
+      : undefined;
+
     const service = createCloudRunService(this, {
       tenantName: args.tenantName,
       siteUrl: args.siteUrl,
@@ -201,6 +236,14 @@ export class GhostTenant extends pulumi.ComponentResource {
               user: args.mail.smtpUser,
               from: args.mail.from,
               passwordSecret: mailPasswordSecret,
+            }
+          : undefined,
+      bulkEmail:
+        args.bulkEmail && bulkEmailApiKeySecret
+          ? {
+              baseUrl: args.bulkEmail.baseUrl,
+              domain: args.bulkEmail.domain,
+              apiKeySecret: bulkEmailApiKeySecret,
             }
           : undefined,
       storage: {
