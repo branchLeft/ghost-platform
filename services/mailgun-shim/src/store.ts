@@ -38,16 +38,46 @@ export interface ListEventsResult {
   nextOffset: number;
 }
 
+export type QueueRecipientStatus = 'pending' | 'sent' | 'failed' | 'suppressed';
+
+/** The parts of a parsed Mailgun send request a queued recipient still needs at send time. */
+export interface QueueBatchPayload {
+  from: string;
+  subject: string;
+  html: string;
+  text: string;
+  headers: Record<string, string>;
+  recipientVariables: Record<string, Record<string, string>>;
+}
+
+export interface EnqueueBatchParams {
+  batchId: string;
+  domain: string;
+  emailId: string | null;
+  payload: QueueBatchPayload;
+  recipients: string[];
+  now: number;
+}
+
+export interface DueRecipient {
+  batchId: string;
+  domain: string;
+  emailId: string | null;
+  payload: QueueBatchPayload;
+  recipient: string;
+  attempts: number;
+}
+
 /**
- * Storage seam for tenant keys, delivery events and suppressions.
+ * Storage seam for tenant keys, delivery events, suppressions and the
+ * durable send queue.
  *
  * Backed by SQLite here — durable across process restarts with nothing to
- * provision, which is what a story that deploys nowhere needs. It is not
- * the production answer: Cloud Run scale-to-zero can run more than one
- * instance, and a local file isn't shared between them. The platform
- * already runs one shared Cloud SQL instance (infra/platform) that a real
- * deployment should point this interface at instead — nothing above this
- * seam should need to change when that happens.
+ * provision, which is what a single Hetzner host with a persistent disk
+ * needs: no cloud database, no separate queue service. It is not built for
+ * multi-instance coordination — a local file isn't shared between
+ * processes — which this service doesn't need at its single-instance,
+ * single-tenant-credentials scale.
  */
 export interface ShimStore {
   registerTenant(domain: string, apiKey: string): void;
@@ -59,6 +89,8 @@ export interface ShimStore {
    * requireTenantForDomain in auth.ts).
    */
   verifyTenant(domain: string, apiKey: string): Tenant | null;
+  tenantExists(domain: string): boolean;
+  listTenants(): string[];
 
   recordEvent(event: Omit<StoredEvent, 'id'>): void;
   listEvents(domain: string, options: ListEventsOptions): ListEventsResult;
@@ -66,6 +98,33 @@ export interface ShimStore {
   addSuppression(domain: string, type: SuppressionType, email: string): void;
   removeSuppression(domain: string, type: SuppressionType, email: string): void;
   isSuppressed(domain: string, type: SuppressionType, email: string): boolean;
+
+  /** Inserts the batch row and every recipient row in one transaction. */
+  enqueueBatch(params: EnqueueBatchParams): void;
+  /** Oldest-batch-first; a caller-supplied limit bounds one claim's work. */
+  claimDueRecipients(now: number, limit: number): DueRecipient[];
+  recordRecipientSent(batchId: string, recipient: string, event: Omit<StoredEvent, 'id'>): void;
+  /** No event is recorded — a suppressed recipient never had mail attempted. */
+  recordRecipientSuppressed(batchId: string, recipient: string): void;
+  scheduleRecipientRetry(
+    batchId: string,
+    recipient: string,
+    attempts: number,
+    nextAttemptAt: number,
+    lastError: string
+  ): void;
+  recordRecipientFailed(
+    batchId: string,
+    recipient: string,
+    attempts: number,
+    lastError: string,
+    event: Omit<StoredEvent, 'id'>
+  ): void;
+  countPendingRecipients(): number;
+  /** Returns the number of batches deleted. The events table is untouched. */
+  cleanupCompletedBatches(olderThan: number): number;
+  /** Throws if the underlying connection can't run a trivial query. */
+  ping(): void;
 
   close(): void;
 }
@@ -81,8 +140,27 @@ function assertSuppressionType(type: SuppressionType): void {
   }
 }
 
+function withTransaction<T>(db: DatabaseSync, fn: () => T): T {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 export function createSqliteStore(filename = ':memory:'): ShimStore {
   const db = new DatabaseSync(filename);
+
+  // WAL + a busy timeout rather than SQLite's default DELETE journal mode:
+  // the CLI (register/list/events) opens this same file directly while the
+  // service is running, and a snapshot-consistent backup needs to read the
+  // file without blocking on the service's writes.
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA busy_timeout = 5000');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS tenants (
@@ -113,6 +191,28 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       email TEXT NOT NULL,
       PRIMARY KEY (domain, type, email)
     );
+
+    CREATE TABLE IF NOT EXISTS queue_batches (
+      batch_id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL,
+      email_id TEXT,
+      payload TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      completed_at REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS queue_recipients (
+      batch_id TEXT NOT NULL,
+      recipient TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at REAL NOT NULL,
+      last_error TEXT,
+      PRIMARY KEY (batch_id, recipient)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_queue_recipients_status_next
+      ON queue_recipients (status, next_attempt_at);
   `);
 
   const insertTenant = db.prepare(
@@ -121,6 +221,7 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
   const selectTenantByDomain = db.prepare(
     'SELECT domain, api_key_salt, api_key_hash FROM tenants WHERE domain = ?'
   );
+  const selectAllDomains = db.prepare('SELECT domain FROM tenants ORDER BY domain ASC');
   const insertEvent = db.prepare(`
     INSERT INTO events
       (id, domain, type, severity, recipient, email_id, provider_message_id, timestamp, error_code, error_message)
@@ -136,6 +237,56 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     'SELECT 1 FROM suppressions WHERE domain = ? AND type = ? AND email = ?'
   );
 
+  const insertBatch = db.prepare(
+    'INSERT INTO queue_batches (batch_id, domain, email_id, payload, created_at, completed_at) VALUES (?, ?, ?, ?, ?, NULL)'
+  );
+  const insertRecipient = db.prepare(
+    "INSERT INTO queue_recipients (batch_id, recipient, status, attempts, next_attempt_at, last_error) VALUES (?, ?, 'pending', 0, ?, NULL)"
+  );
+  const selectDue = db.prepare(`
+    SELECT qr.batch_id AS batch_id, qr.recipient AS recipient, qr.attempts AS attempts,
+           qb.domain AS domain, qb.email_id AS email_id, qb.payload AS payload
+    FROM queue_recipients qr
+    JOIN queue_batches qb ON qb.batch_id = qr.batch_id
+    WHERE qr.status = 'pending' AND qr.next_attempt_at <= ?
+    ORDER BY qb.created_at ASC, qr.rowid ASC
+    LIMIT ?
+  `);
+  const updateSent = db.prepare(
+    "UPDATE queue_recipients SET status = 'sent' WHERE batch_id = ? AND recipient = ?"
+  );
+  const updateSuppressed = db.prepare(
+    "UPDATE queue_recipients SET status = 'suppressed' WHERE batch_id = ? AND recipient = ?"
+  );
+  const updateRetry = db.prepare(
+    'UPDATE queue_recipients SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE batch_id = ? AND recipient = ?'
+  );
+  const updateFailed = db.prepare(
+    "UPDATE queue_recipients SET status = 'failed', attempts = ?, last_error = ? WHERE batch_id = ? AND recipient = ?"
+  );
+  const countPendingForBatch = db.prepare(
+    "SELECT COUNT(*) AS c FROM queue_recipients WHERE batch_id = ? AND status = 'pending'"
+  );
+  const updateCompletedAt = db.prepare(
+    'UPDATE queue_batches SET completed_at = ? WHERE batch_id = ? AND completed_at IS NULL'
+  );
+  const countAllPending = db.prepare(
+    "SELECT COUNT(*) AS c FROM queue_recipients WHERE status = 'pending'"
+  );
+  const selectOldBatchIds = db.prepare(
+    'SELECT batch_id FROM queue_batches WHERE completed_at IS NOT NULL AND completed_at < ?'
+  );
+  const deleteRecipientsForBatch = db.prepare('DELETE FROM queue_recipients WHERE batch_id = ?');
+  const deleteBatch = db.prepare('DELETE FROM queue_batches WHERE batch_id = ?');
+  const pingStmt = db.prepare('SELECT 1');
+
+  function maybeCompleteBatch(batchId: string): void {
+    const row = countPendingForBatch.get(batchId) as { c: number };
+    if (row.c === 0) {
+      updateCompletedAt.run(Date.now() / 1000, batchId);
+    }
+  }
+
   return {
     registerTenant(domain, apiKey) {
       const { salt, hash } = hashApiKey(apiKey);
@@ -150,6 +301,14 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       }
       const ok = verifyApiKey(apiKey, { salt: row.api_key_salt, hash: row.api_key_hash });
       return ok ? { domain: row.domain } : null;
+    },
+
+    tenantExists(domain) {
+      return selectTenantByDomain.get(domain) !== undefined;
+    },
+
+    listTenants() {
+      return (selectAllDomains.all() as Array<{ domain: string }>).map((row) => row.domain);
     },
 
     recordEvent(event) {
@@ -219,6 +378,102 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     isSuppressed(domain, type, email) {
       assertSuppressionType(type);
       return selectSuppression.get(domain, type, email) !== undefined;
+    },
+
+    enqueueBatch({ batchId, domain, emailId, payload, recipients, now }) {
+      withTransaction(db, () => {
+        insertBatch.run(batchId, domain, emailId, JSON.stringify(payload), now);
+        for (const recipient of recipients) {
+          insertRecipient.run(batchId, recipient, now);
+        }
+      });
+    },
+
+    claimDueRecipients(now, limit) {
+      const rows = selectDue.all(now, limit) as Array<{
+        batch_id: string;
+        recipient: string;
+        attempts: number;
+        domain: string;
+        email_id: string | null;
+        payload: string;
+      }>;
+      return rows.map((row) => ({
+        batchId: row.batch_id,
+        domain: row.domain,
+        emailId: row.email_id,
+        payload: JSON.parse(row.payload) as QueueBatchPayload,
+        recipient: row.recipient,
+        attempts: row.attempts,
+      }));
+    },
+
+    recordRecipientSent(batchId, recipient, event) {
+      withTransaction(db, () => {
+        updateSent.run(batchId, recipient);
+        insertEvent.run(
+          randomUUID(),
+          event.domain,
+          event.type,
+          event.severity,
+          event.recipient,
+          event.emailId,
+          event.providerMessageId,
+          event.timestamp,
+          event.errorCode,
+          event.errorMessage
+        );
+        maybeCompleteBatch(batchId);
+      });
+    },
+
+    recordRecipientSuppressed(batchId, recipient) {
+      withTransaction(db, () => {
+        updateSuppressed.run(batchId, recipient);
+        maybeCompleteBatch(batchId);
+      });
+    },
+
+    scheduleRecipientRetry(batchId, recipient, attempts, nextAttemptAt, lastError) {
+      updateRetry.run(attempts, nextAttemptAt, lastError, batchId, recipient);
+    },
+
+    recordRecipientFailed(batchId, recipient, attempts, lastError, event) {
+      withTransaction(db, () => {
+        updateFailed.run(attempts, lastError, batchId, recipient);
+        insertEvent.run(
+          randomUUID(),
+          event.domain,
+          event.type,
+          event.severity,
+          event.recipient,
+          event.emailId,
+          event.providerMessageId,
+          event.timestamp,
+          event.errorCode,
+          event.errorMessage
+        );
+        maybeCompleteBatch(batchId);
+      });
+    },
+
+    countPendingRecipients() {
+      return (countAllPending.get() as { c: number }).c;
+    },
+
+    cleanupCompletedBatches(olderThan) {
+      return withTransaction(db, () => {
+        const rows = selectOldBatchIds.all(olderThan) as Array<{ batch_id: string }>;
+        for (const row of rows) {
+          deleteRecipientsForBatch.run(row.batch_id);
+          deleteBatch.run(row.batch_id);
+        }
+        return rows.length;
+      });
+    },
+
+    ping() {
+      pingStmt.get();
     },
 
     close() {

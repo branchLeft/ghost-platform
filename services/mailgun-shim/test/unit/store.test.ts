@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createSqliteStore, type ShimStore, type StoredEvent } from '../../src/store.js';
+import {
+  createSqliteStore,
+  type QueueBatchPayload,
+  type ShimStore,
+  type StoredEvent,
+} from '../../src/store.js';
 
 const DOMAIN = 'tenant.example.com';
 
@@ -259,5 +264,334 @@ describe('createSqliteStore — durability and concurrency', () => {
     }
 
     store.close();
+  });
+});
+
+describe('createSqliteStore — tenant listing', () => {
+  let store: ShimStore;
+
+  beforeEach(() => {
+    store = createSqliteStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('tenantExists is false until registered, true after', () => {
+    expect(store.tenantExists(DOMAIN)).toBe(false);
+    store.registerTenant(DOMAIN, 'a-key');
+    expect(store.tenantExists(DOMAIN)).toBe(true);
+  });
+
+  it('listTenants returns every registered domain, sorted', () => {
+    store.registerTenant('b.example.com', 'key-b');
+    store.registerTenant('a.example.com', 'key-a');
+    expect(store.listTenants()).toEqual(['a.example.com', 'b.example.com']);
+  });
+
+  it('ping succeeds against an open connection and throws once closed', () => {
+    expect(() => store.ping()).not.toThrow();
+    store.close();
+    expect(() => store.ping()).toThrow();
+    // Re-open a fresh in-memory store so the shared afterEach close() doesn't double-close.
+    store = createSqliteStore(':memory:');
+  });
+});
+
+describe('createSqliteStore — durable queue', () => {
+  let store: ShimStore;
+
+  function payload(overrides: Partial<QueueBatchPayload> = {}): QueueBatchPayload {
+    return {
+      from: 'noreply@tenant.example.com',
+      subject: 'Hi',
+      html: '<p>hi</p>',
+      text: 'hi',
+      headers: {},
+      recipientVariables: {},
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    store = createSqliteStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('claims recipients from the oldest batch first, in enqueue order within a batch', () => {
+    store.enqueueBatch({
+      batchId: 'batch-old',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['old-1@example.com', 'old-2@example.com'],
+      now: 100,
+    });
+    store.enqueueBatch({
+      batchId: 'batch-new',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['new-1@example.com'],
+      now: 200,
+    });
+
+    const due = store.claimDueRecipients(300, 10);
+    expect(due.map((r) => r.recipient)).toEqual([
+      'old-1@example.com',
+      'old-2@example.com',
+      'new-1@example.com',
+    ]);
+    expect(due.every((r) => r.attempts === 0)).toBe(true);
+    expect(due[0]!.payload).toEqual(payload());
+  });
+
+  it('does not claim a recipient whose next_attempt_at is still in the future', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 1000,
+    });
+    expect(store.claimDueRecipients(500, 10)).toHaveLength(0);
+    expect(store.claimDueRecipients(1000, 10)).toHaveLength(1);
+  });
+
+  it('a limit caps how many rows a single claim returns', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['a@example.com', 'b@example.com', 'c@example.com'],
+      now: 0,
+    });
+    expect(store.claimDueRecipients(0, 2)).toHaveLength(2);
+  });
+
+  it('enqueueBatch rolls back the whole transaction when a duplicate recipient in the same call violates the primary key', () => {
+    expect(() =>
+      store.enqueueBatch({
+        batchId: 'batch-dup',
+        domain: DOMAIN,
+        emailId: null,
+        payload: payload(),
+        recipients: ['dup@example.com', 'dup@example.com'],
+        now: 0,
+      })
+    ).toThrow();
+
+    // Rolled back entirely — not even the batch row (inserted first,
+    // before the failing second recipient row) survived.
+    expect(store.claimDueRecipients(1000, 10)).toHaveLength(0);
+    expect(store.countPendingRecipients()).toBe(0);
+  });
+
+  it('recordRecipientSent marks the row sent, records the event, and the row is never claimed again', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: 'email-1',
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    store.recordRecipientSent('batch-1', 'member@example.com', {
+      domain: DOMAIN,
+      type: 'delivered',
+      severity: null,
+      recipient: 'member@example.com',
+      emailId: 'email-1',
+      providerMessageId: '<msg@tenant.example.com>',
+      timestamp: 0,
+      errorCode: null,
+      errorMessage: null,
+    });
+
+    expect(store.claimDueRecipients(1000, 10)).toHaveLength(0);
+    const { events } = store.listEvents(DOMAIN, { limit: 10, offset: 0 });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe('delivered');
+  });
+
+  it('recordRecipientSuppressed marks the row suppressed and records no event', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    store.recordRecipientSuppressed('batch-1', 'member@example.com');
+
+    expect(store.claimDueRecipients(1000, 10)).toHaveLength(0);
+    expect(store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events).toHaveLength(0);
+  });
+
+  it('scheduleRecipientRetry keeps the row pending and reschedules it, without recording an event', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    store.scheduleRecipientRetry('batch-1', 'member@example.com', 1, 500, 'connection reset');
+
+    expect(store.claimDueRecipients(100, 10)).toHaveLength(0);
+    const due = store.claimDueRecipients(500, 10);
+    expect(due).toHaveLength(1);
+    expect(due[0]!.attempts).toBe(1);
+    expect(store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events).toHaveLength(0);
+  });
+
+  it('recordRecipientFailed marks the row failed, records a failed event, and stops it being claimed', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    store.recordRecipientFailed('batch-1', 'member@example.com', 6, 'mailbox unavailable', {
+      domain: DOMAIN,
+      type: 'failed',
+      severity: 'permanent',
+      recipient: 'member@example.com',
+      emailId: null,
+      providerMessageId: null,
+      timestamp: 0,
+      errorCode: 550,
+      errorMessage: 'mailbox unavailable',
+    });
+
+    expect(store.claimDueRecipients(1000, 10)).toHaveLength(0);
+    const { events } = store.listEvents(DOMAIN, { limit: 10, offset: 0 });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.severity).toBe('permanent');
+  });
+
+  it('countPendingRecipients counts across every batch and domain', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['a@example.com', 'b@example.com'],
+      now: 0,
+    });
+    store.enqueueBatch({
+      batchId: 'batch-2',
+      domain: 'other.example.com',
+      emailId: null,
+      payload: payload(),
+      recipients: ['c@example.com'],
+      now: 0,
+    });
+    expect(store.countPendingRecipients()).toBe(3);
+
+    store.recordRecipientSuppressed('batch-1', 'a@example.com');
+    expect(store.countPendingRecipients()).toBe(2);
+  });
+
+  it('a batch completes only once every recipient reaches a terminal state, and cleanup then removes it without touching events', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['a@example.com', 'b@example.com'],
+      now: 0,
+    });
+    store.recordRecipientSent('batch-1', 'a@example.com', {
+      domain: DOMAIN,
+      type: 'delivered',
+      severity: null,
+      recipient: 'a@example.com',
+      emailId: null,
+      providerMessageId: null,
+      timestamp: 0,
+      errorCode: null,
+      errorMessage: null,
+    });
+
+    // One recipient still pending — cleanup must not remove the batch yet,
+    // regardless of how far in the future the threshold is.
+    expect(store.cleanupCompletedBatches(Date.now() / 1000 + 10_000)).toBe(0);
+
+    store.recordRecipientSuppressed('batch-1', 'b@example.com');
+
+    // Both recipients are now terminal — completed_at is set, so a
+    // sufficiently-future threshold now deletes it.
+    const deleted = store.cleanupCompletedBatches(Date.now() / 1000 + 10_000);
+    expect(deleted).toBe(1);
+
+    // The events table is untouched by cleanup — Ghost still pages it by offset.
+    expect(store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events).toHaveLength(1);
+  });
+
+  it('cleanup leaves a recently-completed batch alone when the threshold is in the past', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['a@example.com'],
+      now: 0,
+    });
+    store.recordRecipientSuppressed('batch-1', 'a@example.com');
+
+    expect(store.cleanupCompletedBatches(Date.now() / 1000 - 10_000)).toBe(0);
+  });
+
+  it('survives a store restart: pending, sent and retry-scheduled rows are all exactly where they were left', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-store-queue-test-'));
+    const dbPath = join(dir, 'shim.sqlite');
+    try {
+      const first = createSqliteStore(dbPath);
+      first.enqueueBatch({
+        batchId: 'batch-1',
+        domain: DOMAIN,
+        emailId: null,
+        payload: payload(),
+        recipients: ['sent@example.com', 'pending@example.com', 'retry@example.com'],
+        now: 0,
+      });
+      first.recordRecipientSent('batch-1', 'sent@example.com', {
+        domain: DOMAIN,
+        type: 'delivered',
+        severity: null,
+        recipient: 'sent@example.com',
+        emailId: null,
+        providerMessageId: null,
+        timestamp: 0,
+        errorCode: null,
+        errorMessage: null,
+      });
+      first.scheduleRecipientRetry('batch-1', 'retry@example.com', 1, 9999, 'connection reset');
+      first.close();
+
+      const reopened = createSqliteStore(dbPath);
+      const due = reopened.claimDueRecipients(0, 10);
+      expect(due.map((r) => r.recipient)).toEqual(['pending@example.com']);
+      expect(
+        reopened
+          .claimDueRecipients(9999, 10)
+          .map((r) => r.recipient)
+          .sort()
+      ).toEqual(['pending@example.com', 'retry@example.com']);
+      reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

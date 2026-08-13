@@ -3,6 +3,8 @@ import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
 import type { Transporter } from '../../src/smtp.js';
+import type { WorkerHandle } from '../../src/worker.js';
+import { createTestWorker } from '../helpers/testWorker.js';
 import { createFakeStore, type FakeShimStore } from './helpers/fakeStore.js';
 import { basicAuthHeader, type StartedRouter } from './helpers/startRouter.js';
 
@@ -30,19 +32,22 @@ function listenApp(app: ReturnType<typeof createApp>): Promise<StartedRouter> {
   });
 }
 
-describe('createApp — wires all three Mailgun-shaped routers at the root', () => {
+describe('createApp — wires all three Mailgun-shaped routers plus healthz at the root', () => {
   let store: FakeShimStore;
   let transport: Transporter;
+  let worker: WorkerHandle;
   let server: StartedRouter;
 
   beforeEach(async () => {
     store = createFakeStore();
     store.registerTenant(DOMAIN, API_KEY);
     transport = { sendMail: vi.fn(async () => ({})) } as unknown as Transporter;
-    server = await listenApp(createApp(store, transport));
+    worker = createTestWorker(store, transport);
+    server = await listenApp(createApp(store, worker));
   });
 
   afterEach(async () => {
+    await worker.stop();
     await server.close();
   });
 
@@ -74,5 +79,21 @@ describe('createApp — wires all three Mailgun-shaped routers at the root', () 
   it('an unmatched path 404s rather than falling through to any router silently', async () => {
     const res = await fetch(`${server.baseUrl}/not-a-real-path`);
     expect(res.status).toBe(404);
+  });
+
+  it('serves an unauthenticated healthz with the pending queue count', async () => {
+    const res = await fetch(`${server.baseUrl}/healthz`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; pending: number };
+    expect(body).toEqual({ status: 'ok', pending: 0 });
+  });
+
+  it("healthz 500s if the store can't be reached", async () => {
+    const pingSpy = vi.spyOn(store, 'ping').mockImplementation(() => {
+      throw new Error('db unavailable');
+    });
+    const res = await fetch(`${server.baseUrl}/healthz`);
+    expect(res.status).toBe(500);
+    pingSpy.mockRestore();
   });
 });

@@ -1,0 +1,108 @@
+name: Mailgun shim image
+
+# Builds the mailgun-shim container image on every PR/push touching
+# services/mailgun-shim/ (build-only, no credentials — mirrors build.yml's
+# stance for the tenant image), and on push to `main` also pushes it to
+# ghcr.io/branchleft/mailgun-shim tagged with the git SHA and `latest`.
+#
+# Uses GHCR rather than the platform's GCP Artifact Registry
+# (registry-push.yml): mx1, the Hetzner host this image runs on, is outside
+# GCP entirely (doc 13's delivery-host split), so there is no GCP identity
+# for it to federate into and no reason to route this pull through GCP.
+# GHCR authenticates with the workflow's own GITHUB_TOKEN — no new secret,
+# no Workload Identity Federation setup.
+#
+# The push job requests `packages: write` only for itself, on the one
+# trigger that ever runs it (push to `main`), for the same reason
+# registry-push.yml scopes `id-token: write` to its own job rather than the
+# workflow: a PR build must never sit in the same permissions block as a
+# publish credential.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/mailgun-shim/**
+      - .github/workflows/mailgun-shim-image.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - services/mailgun-shim/**
+      - .github/workflows/mailgun-shim-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: docker build (mailgun-shim)
+    runs-on: ubuntu-latest
+    # workflow_dispatch has no path filter to gate on — it always means
+    # "push the current main", so it skips straight to the push job below
+    # rather than doing a redundant build-only pass first.
+    if: github.event_name != 'workflow_dispatch'
+    defaults:
+      run:
+        working-directory: services/mailgun-shim
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build --tag mailgun-shim:ci .
+
+  push:
+    name: Build and push mailgun-shim image
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+
+    permissions:
+      contents: read
+      packages: write
+
+    defaults:
+      run:
+        working-directory: services/mailgun-shim
+
+    env:
+      IMAGE: ghcr.io/branchleft/mailgun-shim
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Two tags in one build so there is exactly one image underneath
+      # both: `latest` never points at a different layer set than the SHA
+      # tag pushed alongside it.
+      - name: Build image
+        run: |
+          docker build \
+            --tag "$IMAGE:$IMAGE_TAG" \
+            --tag "$IMAGE:latest" \
+            .
+
+      - name: Push
+        run: docker push "$IMAGE" --all-tags
+
+      - name: Write outcome to job summary
+        if: always()
+        run: |
+          {
+            echo '## mailgun-shim image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Image: \`$IMAGE:$IMAGE_TAG\`"
+            echo 'Also tagged `latest`.'
+          } >> "$GITHUB_STEP_SUMMARY"
