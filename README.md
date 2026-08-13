@@ -153,7 +153,7 @@ image with a different environment.
 |---|---|---|---|
 | `privacy__useUpdateCheck` | Optional | Deploy config | Recommend `false`. Ghost pings `explore.ghost.org` on boot by default — worth a deliberate opt-out given the platform's tenants are public-interest news outlets. Not baked into the image, since that is a policy call for the platform operator. |
 | `logging__transports` | Optional | Deploy config | The upstream image bakes in `["file", "stdout"]`. File logs are lost on every Cloud Run restart (ephemeral disk) — not a correctness problem, but consider overriding to `'["stdout"]'` so Cloud Logging is the only sink that matters. |
-| `mail__transport`, `mail__options__*` | Not required to boot | Deploy config / Secret Manager (for SMTP credentials) | Needed for staff invites, password resets and member magic links to actually send. The image boots and serves fine with the upstream `Direct` transport default; a real transport is needed before onboarding real tenants. |
+| `mail__transport`, `mail__options__*`, `mail__from` | Optional | Deploy config, except `mail__options__auth__pass` (**Secret Manager**) | Wired by `GhostTenant`'s optional `mail` arg -- SMTP host/port/user/from as deploy config, the password via a per-tenant Secret Manager secret, mirroring `database__connection__password`. Omitted entirely (not even `mail__transport`) when `mail` isn't passed; the image boots and serves fine with the upstream `Direct` transport default in that case. |
 
 ## Fail-closed storage guard
 

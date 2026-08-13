@@ -1,9 +1,10 @@
 import * as pulumi from '@pulumi/pulumi';
 import { createServiceAccount } from './serviceAccount';
-import { validateTenantName, sqlIdentifier, tenantImageRef } from './naming';
+import { validateTenantName, sqlIdentifier, tenantImageRef, tenantSecretName } from './naming';
 import { createTenantDatabase, DEFAULT_MAX_USER_CONNECTIONS } from './database';
 import { createTenantStorage } from './storage';
 import { createCloudRunService, createPublicInvokerBinding } from './cloudRunService';
+import { secretWithValue } from './secrets';
 
 /**
  * Everything this component needs from the platform stack, imported by
@@ -26,6 +27,24 @@ export interface GhostTenantPlatformArgs {
   tenantImageRepositoryDockerPath: pulumi.Input<string>;
   /** `infra/platform/index.ts`'s `mediaBucketUrl` export. */
   mediaBucketUrl: pulumi.Input<string>;
+}
+
+/**
+ * Transactional-mail transport for this tenant (doc 13 §2.3's SMTP shape,
+ * mx1/Stalwart today). Optional: a tenant with no `mail` block gets no
+ * `mail__*` envs and no mail secret at all, matching the component's
+ * behaviour before this existed.
+ */
+export interface GhostTenantMailArgs {
+  smtpHost: pulumi.Input<string>;
+  /** Defaults to `'587'` (STARTTLS submission) if omitted. */
+  smtpPort?: pulumi.Input<string | number>;
+  smtpUser: pulumi.Input<string>;
+  /** Stored in Secret Manager, never a plain env value -- see
+   * `mail__options__auth__pass` in the README's env var table. */
+  smtpPassword: pulumi.Input<string>;
+  /** `mail__from` -- the address Ghost sends as. */
+  from: pulumi.Input<string>;
 }
 
 export interface GhostTenantArgs {
@@ -81,10 +100,15 @@ export interface GhostTenantArgs {
    * for the reasoning, and for why this component can produce the
    * statement to apply this but cannot execute it itself. */
   maxUserConnections?: number;
+
+  /** Transactional-mail transport. Omit entirely for a tenant that doesn't
+   * send mail yet -- see `GhostTenantMailArgs`. */
+  mail?: GhostTenantMailArgs;
 }
 
 const DEFAULT_REGION = 'europe-west1';
 const DEFAULT_MAX_INSTANCE_COUNT = 3;
+const DEFAULT_MAIL_SMTP_PORT = '587';
 
 /**
  * Everything one Ghost tenant needs on top of the shared platform stack:
@@ -145,6 +169,16 @@ export class GhostTenant extends pulumi.ComponentResource {
         tenantImageRef(repositoryDockerPath, digestOrTag)
       );
 
+    const mailPasswordSecret = args.mail
+      ? secretWithValue(
+          this,
+          `${args.tenantName}-mail-password`,
+          tenantSecretName(args.tenantName, 'mail-password'),
+          args.mail.smtpPassword,
+          serviceAccount.email
+        ).secret
+      : undefined;
+
     const service = createCloudRunService(this, {
       tenantName: args.tenantName,
       siteUrl: args.siteUrl,
@@ -159,6 +193,16 @@ export class GhostTenant extends pulumi.ComponentResource {
         dbUserNameSecret: db.dbUserNameSecret,
         dbUserPasswordSecret: db.dbUserPasswordSecret,
       },
+      mail:
+        args.mail && mailPasswordSecret
+          ? {
+              host: args.mail.smtpHost,
+              port: pulumi.output(args.mail.smtpPort ?? DEFAULT_MAIL_SMTP_PORT).apply(String),
+              user: args.mail.smtpUser,
+              from: args.mail.from,
+              passwordSecret: mailPasswordSecret,
+            }
+          : undefined,
       storage: {
         bucketName: storage.bucketName,
         tenantPrefix: storage.tenantPrefix,

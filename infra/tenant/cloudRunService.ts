@@ -46,7 +46,35 @@ export interface CloudRunServiceArgs {
     accessKeyIdSecret: gcp.secretmanager.Secret;
     secretAccessKeySecret: gcp.secretmanager.Secret;
   };
+  /** Omit entirely for a tenant with no transactional mail configured --
+   * `mailEnvs` then emits nothing, not even `mail__transport`. */
+  mail?: {
+    host: pulumi.Input<string>;
+    port: pulumi.Input<string>;
+    user: pulumi.Input<string>;
+    from: pulumi.Input<string>;
+    passwordSecret: gcp.secretmanager.Secret;
+  };
   dependsOn: pulumi.Resource[];
+}
+
+/**
+ * `mail__*` envs per doc 13 §2.3's SMTP shape. Returns `[]` when `mail` is
+ * absent, so a tenant with no mail block gets the same env list as before
+ * this existed. The password is never a plain env -- `secretEnv` sources it
+ * from Secret Manager, mirroring `database__connection__password` below.
+ */
+export function mailEnvs(mail: CloudRunServiceArgs['mail']) {
+  if (!mail) return [];
+  return [
+    plainEnv('mail__transport', 'SMTP'),
+    plainEnv('mail__options__host', mail.host),
+    plainEnv('mail__options__port', mail.port),
+    plainEnv('mail__options__secure', 'false'),
+    plainEnv('mail__options__auth__user', mail.user),
+    secretEnv('mail__options__auth__pass', mail.passwordSecret),
+    plainEnv('mail__from', mail.from),
+  ];
 }
 
 /**
@@ -57,9 +85,8 @@ export interface CloudRunServiceArgs {
  * (`privacy__useUpdateCheck`, `logging__transports`) are set here with the
  * README's own recommended values, since this component -- not the
  * Dockerfile -- is exactly the "deploy config" layer the README says those
- * two belong to; `mail__*` is left unset, matching the README's own
- * "out of scope, boots fine without it" guidance (no SMTP provider is
- * decided anywhere in this doc set yet).
+ * two belong to; `mail__*` is added only when `args.mail` is supplied (see
+ * `mailEnvs`).
  */
 export function createCloudRunService(
   parent: pulumi.Resource,
@@ -169,6 +196,7 @@ export function createCloudRunService(
               // default-off decision").
               plainEnv('privacy__useUpdateCheck', 'false'),
               plainEnv('logging__transports', '["stdout"]'),
+              ...mailEnvs(args.mail),
             ],
             startupProbe: {
               httpGet: { path: '/' },
