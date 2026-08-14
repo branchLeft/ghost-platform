@@ -324,8 +324,12 @@ jobs:
           set -euo pipefail
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
           cd tenant
+          # The tenant-facing README replaces the template-facing one before
+          # substitution. A template snapshot without README.tenant.md fails
+          # here, before anything is pushed back to the new repo.
+          mv README.tenant.md README.md
           # Only the files the template's placeholder table names.
-          for f in Pulumi.yaml .github/workflows/infra-ci.yml scripts/assert-no-tenant-deletes.py; do
+          for f in Pulumi.yaml .github/workflows/infra-ci.yml scripts/assert-no-tenant-deletes.py README.md; do
             sed -i "s/__TENANT_PULUMI_PROJECT__/${TENANT}-infra/g; s/__TENANT_NAME__/${TENANT}/g" "$f"
           done
           python3 scripts/assert-placeholders-substituted.py
