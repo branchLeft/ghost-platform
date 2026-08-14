@@ -6,9 +6,9 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "start": "node dist/server.js"
   },
@@ -19,6 +19,7 @@
     "nodemailer": "^9.0.5"
   },
   "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
     "@types/busboy": "^1.5.4",
     "@types/express": "^4.17.21",
     "@types/mailparser": "^3.4.6",

@@ -50,8 +50,12 @@ on:
   pull_request:
     branches: [main]
 
+# `packages: read` because both programs here take a dev dependency on
+# `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401 to
+# an anonymous request even for a public package.
 permissions:
   contents: read
+  packages: read
 
 jobs:
   typecheck:
@@ -69,14 +73,18 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: infra/platform/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
           cache: npm
           cache-dependency-path: infra/platform/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Type check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       # Cheap, credential-free, and catches the way the deploy job's safety
       # gate dies quietly: a resource renamed in the Pulumi program while the
@@ -108,14 +116,18 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: infra/provisioning/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
           cache: npm
           cache-dependency-path: infra/provisioning/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Type check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       # The coverage half reads ../platform, so a resource renamed there
       # fails this job rather than silently emptying the provisioning gate.
@@ -139,13 +151,14 @@ jobs:
     environment: platform
 
     # Job-level permissions replace the workflow-level block entirely, so
-    # `contents: read` has to be restated here alongside the scope actually
-    # being added. `id-token: write` is what lets the runner request the
-    # GitHub OIDC token that Workload Identity Federation exchanges; it is
-    # granted on this job only, so no other job in this workflow can reach
-    # the deployer identity.
+    # `contents: read` and `packages: read` have to be restated here alongside
+    # the scope actually being added. `id-token: write` is what lets the runner
+    # request the GitHub OIDC token that Workload Identity Federation
+    # exchanges; it is granted on this job only, so no other job in this
+    # workflow can reach the deployer identity.
     permissions:
       contents: read
+      packages: read
       id-token: write
 
     # Serialise applies. Two overlapping `pulumi up` runs against one stack
@@ -174,11 +187,15 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: infra/platform/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
           cache: npm
           cache-dependency-path: infra/platform/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Exchanges this run's GitHub OIDC token for short-lived credentials
       # for the deployer service account. Writes an external-account

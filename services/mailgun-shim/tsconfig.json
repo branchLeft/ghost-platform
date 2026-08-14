@@ -1,14 +1,13 @@
 {
+  // strict-1 alone: no stack preset fits. `pulumi` pins ES2022 and pulls in
+  // experimentalDecorators for resource classes this service has none of, and
+  // the react presets are browser-targeted.
+  "extends": "@branchleft/tsconfig/strict-1.json",
   "compilerOptions": {
     "target": "ES2023",
+    "lib": ["ES2023"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2023"],
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
     "noUncheckedIndexedAccess": true,
     "outDir": "dist"
   },

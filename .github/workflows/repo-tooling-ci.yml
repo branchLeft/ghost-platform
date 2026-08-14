@@ -1,0 +1,54 @@
+name: Repo tooling CI
+
+# Prettier and ESLint over the whole tree, from the repo root.
+#
+# The four npm projects here each type-check and test themselves, but nothing
+# ran the root `format:check` or `lint:check` — they existed only as pre-commit
+# hooks, which are opt-in per clone and skipped by `--no-verify`. Formatting is
+# also the one check whose scope can shrink silently: the ignore set is spread
+# across `.gitignore`, `.prettierignore` and the shared set, and a change to any
+# of them still exits 0 while checking less.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# `packages: read` because the root tooling install pulls
+# `@branchleft/prettier-config` from GitHub Packages, which answers 401 to an
+# anonymous request even for a public package.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  format-and-lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint:check

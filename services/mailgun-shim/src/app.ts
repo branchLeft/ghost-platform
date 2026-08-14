@@ -26,7 +26,7 @@ export function createApp(
   const app = express();
   app.disable('x-powered-by');
 
-  app.get('/healthz', (req, res) => {
+  app.get('/healthz', (_req, res) => {
     try {
       store.ping();
       const workerStatus = worker.status();

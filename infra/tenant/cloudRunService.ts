@@ -269,7 +269,6 @@ export function createCloudRunService(
  * mirrors website/infra/cloudRun.ts's own `website-public-invoker` binding.
  */
 export function createPublicInvokerBinding(
-  parent: pulumi.Resource,
   tenantName: string,
   region: string,
   service: gcp.cloudrunv2.Service
