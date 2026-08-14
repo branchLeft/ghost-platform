@@ -24,7 +24,7 @@ export function createSuppressionsRouter(store: ShimStore): Router {
 
   router.delete(
     '/v3/:domain/:type/:email',
-    (req: Request, res: Response, next) => {
+    (req: Request, _res: Response, next) => {
       if (!isSuppressionType(req.params.type as string)) {
         next('route');
         return;

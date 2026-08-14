@@ -2,12 +2,16 @@
   "name": "ghost-provisioning-infra",
   "private": true,
   "main": "index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
-    "@pulumi/pulumi": "^3.255.0",
-    "@pulumi/gcp": "^9.32.1"
+    "@pulumi/gcp": "^9.32.1",
+    "@pulumi/pulumi": "^3.255.0"
   },
   "devDependencies": {
-    "typescript": "^5.9.0",
-    "@types/node": "^26"
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/node": "^26",
+    "typescript": "^5.9.0"
   }
 }

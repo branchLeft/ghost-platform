@@ -4,13 +4,16 @@
   "private": true,
   "description": "Repo-root tooling only. The publishable package is infra/tenant.",
   "type": "module",
+  "prettier": "@branchleft/prettier-config",
   "scripts": {
-    "lint": "eslint infra services --ext .ts",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "lint": "eslint infra services --ext .ts --fix",
+    "lint:check": "eslint infra services --ext .ts",
+    "format": "prettier --write . --ignore-path .gitignore --ignore-path .prettierignore --ignore-path node_modules/@branchleft/prettier-config/prettierignore",
+    "format:check": "prettier --check . --ignore-path .gitignore --ignore-path .prettierignore --ignore-path node_modules/@branchleft/prettier-config/prettierignore",
     "prepare": "[ \"$CI\" = \"true\" ] || pre-commit install"
   },
   "devDependencies": {
+    "@branchleft/prettier-config": "^0.3.1",
     "@eslint/js": "^9.39.1",
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^10.1.8",

@@ -160,10 +160,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
 
-      # `registry-url` is for the generated repo's `npm ci` further down, not
-      # for this repo's -- the tenant program depends on the private
-      # `@branchleft/ghost-platform-tenant` package, and GitHub Packages
-      # answers 401 unauthenticated even for a public package. Against
+      # `registry-url` covers two installs: the generated repo's `npm ci`
+      # further down, which pulls `@branchleft/ghost-platform-tenant`, and
+      # `infra/provisioning`'s own, which now takes a dev dependency on
+      # `@branchleft/tsconfig`. GitHub Packages answers 401 unauthenticated
+      # even for a public package, so both steps carry the token. Against
       # `npm.pkg.github.com` with no `scope` input, the action scopes the
       # registry line to the repository owner rather than setting a default
       # registry, so `infra/provisioning`'s public dependencies still resolve
@@ -189,6 +190,8 @@ jobs:
 
       - name: Configure the provisioning stack
         working-directory: infra/provisioning
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           npm ci

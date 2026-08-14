@@ -255,7 +255,7 @@ export class GhostTenant extends pulumi.ComponentResource {
       dependsOn: [db.dbUser, db.cloudSqlClientBinding, storage.writeBinding],
     });
 
-    createPublicInvokerBinding(this, args.tenantName, region, service);
+    createPublicInvokerBinding(args.tenantName, region, service);
 
     this.serviceAccountEmail = serviceAccount.email;
     this.cloudRunServiceName = service.name;

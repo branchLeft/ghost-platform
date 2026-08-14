@@ -31,8 +31,13 @@ on:
       - .github/workflows/mailgun-shim-image.yml
   workflow_dispatch:
 
+# `packages: read` because the image's build stage installs
+# `@branchleft/tsconfig` from GitHub Packages. It is read-only and deliberately
+# separate from the `packages: write` the push job grants itself: a PR build
+# gets what it needs to compile and nothing that can publish.
 permissions:
   contents: read
+  packages: read
 
 jobs:
   build:
@@ -50,8 +55,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The secret is consumed by a `RUN --mount` in the Dockerfile, so it
+      # reaches `npm ci` without entering a layer or the build history.
       - name: Build image
-        run: docker build --tag mailgun-shim:ci .
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --tag mailgun-shim:ci \
+            .
 
   push:
     name: Build and push mailgun-shim image
@@ -87,8 +100,11 @@ jobs:
       # both: `latest` never points at a different layer set than the SHA
       # tag pushed alongside it.
       - name: Build image
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           docker build \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
             --tag "$IMAGE:$IMAGE_TAG" \
             --tag "$IMAGE:latest" \
             .

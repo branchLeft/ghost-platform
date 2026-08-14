@@ -17,9 +17,10 @@
     "access": "public"
   },
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "npm run build",
-    "test": "vitest --run"
+    "test:unit": "vitest --run"
   },
   "dependencies": {
     "@pulumi/gcp": "^9.33.0",
@@ -27,6 +28,7 @@
     "@pulumi/random": "^4.18.0"
   },
   "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
     "@types/node": "^26",
     "typescript": "^5.9.0",
     "vitest": "^4.1.10"
