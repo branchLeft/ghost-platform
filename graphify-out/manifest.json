@@ -1,121 +1,121 @@
 {
   "docker-entrypoint.branchleft.sh": {
-    "mtime": 1786627054.4641745,
+    "mtime": 1786667394.179087,
     "ast_hash": "641aa7d926844e1299e1a4462d4efe31",
     "semantic_hash": "641aa7d926844e1299e1a4462d4efe31"
   },
   "infra/platform/apis.ts": {
-    "mtime": 1786627054.4690151,
+    "mtime": 1786667394.1842403,
     "ast_hash": "5ce38ece5afcdc7444e90f63a52c0458",
     "semantic_hash": "5ce38ece5afcdc7444e90f63a52c0458"
   },
   "infra/platform/config.ts": {
-    "mtime": 1786627054.4690151,
+    "mtime": 1786667394.1842403,
     "ast_hash": "c424836a9cfe4141d6bb379d87d9fb0a",
     "semantic_hash": "c424836a9cfe4141d6bb379d87d9fb0a"
   },
   "infra/platform/database.ts": {
-    "mtime": 1786627054.4690151,
+    "mtime": 1786667394.1842403,
     "ast_hash": "c378c766308ffc368604bf27a5271669",
     "semantic_hash": "c378c766308ffc368604bf27a5271669"
   },
   "infra/platform/index.ts": {
-    "mtime": 1786627054.4690151,
+    "mtime": 1786667394.1842403,
     "ast_hash": "fb745af642fa8afd32568071058785a8",
     "semantic_hash": "fb745af642fa8afd32568071058785a8"
   },
   "infra/platform/mediaBucket.ts": {
-    "mtime": 1786627054.4690151,
+    "mtime": 1786667394.1842403,
     "ast_hash": "b77ca34494a34c2eebac14459de8e7cd",
     "semantic_hash": "b77ca34494a34c2eebac14459de8e7cd"
   },
   "infra/platform/package.json": {
-    "mtime": 1786627054.4691746,
+    "mtime": 1786667394.1849086,
     "ast_hash": "7d0d9364b0ad16b2d9689ff2ec7a2510",
     "semantic_hash": "7d0d9364b0ad16b2d9689ff2ec7a2510"
   },
   "infra/platform/provisioningUser.ts": {
-    "mtime": 1786627054.4691746,
+    "mtime": 1786667394.1849086,
     "ast_hash": "fc90be01ec47c0879f71026488ca46c8",
     "semantic_hash": "fc90be01ec47c0879f71026488ca46c8"
   },
   "infra/platform/registry.ts": {
-    "mtime": 1786627054.4691746,
+    "mtime": 1786667394.1849086,
     "ast_hash": "8011a61df43b9ec3c57d164073aea5d6",
     "semantic_hash": "8011a61df43b9ec3c57d164073aea5d6"
   },
   "infra/platform/scripts/assert-no-platform-deletes.py": {
-    "mtime": 1786627054.4691746,
+    "mtime": 1786667394.1849086,
     "ast_hash": "f545e9ddfb5cc1c0db48027a3778170e",
     "semantic_hash": "f545e9ddfb5cc1c0db48027a3778170e"
   },
   "infra/platform/secrets.ts": {
-    "mtime": 1786627054.4691746,
+    "mtime": 1786667394.1849086,
     "ast_hash": "78075fa9d0116aa628d9fbc18d77ea30",
     "semantic_hash": "78075fa9d0116aa628d9fbc18d77ea30"
   },
   "infra/platform/serviceAccounts.ts": {
-    "mtime": 1786627054.4691746,
+    "mtime": 1786667394.1849086,
     "ast_hash": "df7ff6735d84997bd397bf4c1e16a806",
     "semantic_hash": "df7ff6735d84997bd397bf4c1e16a806"
   },
   "infra/platform/tsconfig.json": {
-    "mtime": 1786627054.4691746,
+    "mtime": 1786667394.1849086,
     "ast_hash": "29eddeff2cb035859ec82e5ff7f49d52",
     "semantic_hash": "29eddeff2cb035859ec82e5ff7f49d52"
   },
   "infra/platform/workloadIdentity.ts": {
-    "mtime": 1786627054.4691746,
+    "mtime": 1786667394.1849086,
     "ast_hash": "5988e8255f93ef74c3ab73b2049cf420",
     "semantic_hash": "5988e8255f93ef74c3ab73b2049cf420"
   },
   "infra/tenant/cloudRunService.ts": {
-    "mtime": 1786627054.4716992,
-    "ast_hash": "908e30b85dbfbdeb60516695475e923f",
-    "semantic_hash": "908e30b85dbfbdeb60516695475e923f"
+    "mtime": 1786667394.1868715,
+    "ast_hash": "646b6d5a855f1830882d18f376df8e64",
+    "semantic_hash": "646b6d5a855f1830882d18f376df8e64"
   },
   "infra/tenant/database.ts": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1868715,
     "ast_hash": "67565dec3da7f807b301c0c9d90331ea",
     "semantic_hash": "67565dec3da7f807b301c0c9d90331ea"
   },
   "infra/tenant/index.ts": {
-    "mtime": 1786627054.4716992,
-    "ast_hash": "7407383c8cc1a6f912f3754b21771d05",
-    "semantic_hash": "7407383c8cc1a6f912f3754b21771d05"
+    "mtime": 1786667394.1868715,
+    "ast_hash": "7a23a2780649c091e008c1bd5742dc25",
+    "semantic_hash": "7a23a2780649c091e008c1bd5742dc25"
   },
   "infra/tenant/package.json": {
-    "mtime": 1786627054.4716992,
-    "ast_hash": "de6023eb61b760cb5d4736283892cfd6",
-    "semantic_hash": "de6023eb61b760cb5d4736283892cfd6"
+    "mtime": 1786667394.1869087,
+    "ast_hash": "f3e287747dfdf9f0861ed7a7728f69f5",
+    "semantic_hash": "f3e287747dfdf9f0861ed7a7728f69f5"
   },
   "infra/tenant/secrets.ts": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1869087,
     "ast_hash": "88c03a62400520c3f47062fd64a3a5bf",
     "semantic_hash": "88c03a62400520c3f47062fd64a3a5bf"
   },
   "infra/tenant/serviceAccount.ts": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1869087,
     "ast_hash": "ff4011bd66c091e0d2a7188b50963431",
     "semantic_hash": "ff4011bd66c091e0d2a7188b50963431"
   },
   "infra/tenant/storage.ts": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1869087,
     "ast_hash": "fdd11bdbbc38a1e204440c87cb5b2274",
     "semantic_hash": "fdd11bdbbc38a1e204440c87cb5b2274"
   },
   "infra/tenant/tsconfig.json": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1869087,
     "ast_hash": "29eddeff2cb035859ec82e5ff7f49d52",
     "semantic_hash": "29eddeff2cb035859ec82e5ff7f49d52"
   },
   "scripts/smoke-test.sh": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1869087,
     "ast_hash": "d539e8a929c72cea2b7f2e4c0cd58d18",
     "semantic_hash": "d539e8a929c72cea2b7f2e4c0cd58d18"
   },
   "scripts/test-storage-guard.sh": {
-    "mtime": 1786627054.472888,
+    "mtime": 1786667394.1880932,
     "ast_hash": "a1d5ef0ea9b5baa56184017face670e8",
     "semantic_hash": "a1d5ef0ea9b5baa56184017face670e8"
   },
@@ -135,9 +135,9 @@
     "semantic_hash": "ad9b8b756009c7b22cc843e2dcca3d54"
   },
   "README.md": {
-    "mtime": 1786627054.4641745,
-    "ast_hash": "9ec7c5ab40350927789d16400e390300",
-    "semantic_hash": "9ec7c5ab40350927789d16400e390300"
+    "mtime": 1786653519.4610465,
+    "ast_hash": "37fc7147b8368163bad1a8d15fa0a3c6",
+    "semantic_hash": "37fc7147b8368163bad1a8d15fa0a3c6"
   },
   "infra/README.md": {
     "mtime": 1786296982.6279435,
@@ -155,12 +155,12 @@
     "semantic_hash": "919d2e60e126da0ee77a0d9a60c53df1"
   },
   "infra/platform/RUNBOOK-bootstrap.md": {
-    "mtime": 1786314847.8826652,
-    "ast_hash": "826402b023335acefcf360ccd38e3a3e",
-    "semantic_hash": "826402b023335acefcf360ccd38e3a3e"
+    "mtime": 1786666313.7491808,
+    "ast_hash": "797f4411d5ab52902b4db2123daf0a49",
+    "semantic_hash": "797f4411d5ab52902b4db2123daf0a49"
   },
   "infra/tenant/tsconfig.build.json": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1869087,
     "ast_hash": "66206131a543b51ba24cdfc2915605ba",
     "semantic_hash": "66206131a543b51ba24cdfc2915605ba"
   },
@@ -190,12 +190,12 @@
     "semantic_hash": "a545af9825aa4445c5f9f24cdeb75d41"
   },
   "eslint.config.js": {
-    "mtime": 1786627054.4641745,
+    "mtime": 1786667394.179087,
     "ast_hash": "8cadde4a763468f14ebd26af014de438",
     "semantic_hash": "8cadde4a763468f14ebd26af014de438"
   },
   "package.json": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1869087,
     "ast_hash": "a44e4e6a4b956f38add510afc064f7d3",
     "semantic_hash": "a44e4e6a4b956f38add510afc064f7d3"
   },
@@ -220,34 +220,34 @@
     "semantic_hash": "e1fc5b9b8916496285c118b9bfc2c379"
   },
   "infra/provisioning/config.ts": {
-    "mtime": 1786627054.4709187,
+    "mtime": 1786667394.186147,
     "ast_hash": "5aa0f816a6317d719b74cf2de84eeeaf",
     "semantic_hash": "5aa0f816a6317d719b74cf2de84eeeaf"
   },
   "infra/provisioning/index.ts": {
-    "mtime": 1786627054.4709187,
+    "mtime": 1786667394.186147,
     "ast_hash": "b690186d2294865dd0756926b25fc338",
     "semantic_hash": "b690186d2294865dd0756926b25fc338"
   },
   "infra/provisioning/package.json": {
-    "mtime": 1786627054.4709187,
+    "mtime": 1786667394.186147,
     "ast_hash": "e6f61f035f0e1264c68e54aac14dc9e8",
     "semantic_hash": "e6f61f035f0e1264c68e54aac14dc9e8"
   },
   "infra/provisioning/scripts/assert-no-provisioning-deletes.py": {
-    "mtime": 1786627054.4709187,
+    "mtime": 1786667394.186147,
     "ast_hash": "8c5c62aec4e5f76c785f8095aba8a8dc",
     "semantic_hash": "8c5c62aec4e5f76c785f8095aba8a8dc"
   },
   "infra/provisioning/tsconfig.json": {
-    "mtime": 1786627054.4715662,
+    "mtime": 1786667394.1867325,
     "ast_hash": "29eddeff2cb035859ec82e5ff7f49d52",
     "semantic_hash": "29eddeff2cb035859ec82e5ff7f49d52"
   },
   ".github/workflows/provision-tenant.yml": {
-    "mtime": 1786313233.7655225,
-    "ast_hash": "5b20dd57678c215eab4a4f4798111368",
-    "semantic_hash": "5b20dd57678c215eab4a4f4798111368"
+    "mtime": 1786667394.179087,
+    "ast_hash": "dfcb3847c648e98fe1b91b529acdb75e",
+    "semantic_hash": "dfcb3847c648e98fe1b91b529acdb75e"
   },
   "infra/provisioning/Pulumi.yaml": {
     "mtime": 1786299364.196297,
@@ -255,177 +255,172 @@
     "semantic_hash": "e5d82f96f3cb563298d28a2451caa201"
   },
   "infra/tenant/naming.test.ts": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1868715,
     "ast_hash": "a63c05a34febd71f09e41e3126b15a02",
     "semantic_hash": "a63c05a34febd71f09e41e3126b15a02"
   },
   "infra/tenant/naming.ts": {
-    "mtime": 1786627054.4716992,
+    "mtime": 1786667394.1868715,
     "ast_hash": "399bc32935de9dad6928083e36d2cc97",
     "semantic_hash": "399bc32935de9dad6928083e36d2cc97"
   },
   "infra/provisioning/scripts/restore-stack-secrets-config.py": {
-    "mtime": 1786627054.4715662,
+    "mtime": 1786667394.1867325,
     "ast_hash": "0621b6b7022b71b682ed04e1fcf93d95",
     "semantic_hash": "0621b6b7022b71b682ed04e1fcf93d95"
   },
   "services/mailgun-shim/package.json": {
-    "mtime": 1786627054.473062,
+    "mtime": 1786667394.1882396,
     "ast_hash": "d002b5d617c0c0db22b1f65e786574d8",
     "semantic_hash": "d002b5d617c0c0db22b1f65e786574d8"
   },
   "services/mailgun-shim/src/app.ts": {
-    "mtime": 1786627054.473062,
-    "ast_hash": "46a96e4b5a2103f009b3301c3d05d757",
-    "semantic_hash": "46a96e4b5a2103f009b3301c3d05d757"
+    "mtime": 1786667394.1882396,
+    "ast_hash": "694985cdccbbc95eb608309e1f9411ff",
+    "semantic_hash": "694985cdccbbc95eb608309e1f9411ff"
   },
   "services/mailgun-shim/src/auth.ts": {
-    "mtime": 1786627054.4734228,
+    "mtime": 1786667394.188672,
     "ast_hash": "ffecafbac3c11b5f78519b0158a45977",
     "semantic_hash": "ffecafbac3c11b5f78519b0158a45977"
   },
-  "services/mailgun-shim/src/concurrency.ts": {
-    "mtime": 1786627054.4734228,
-    "ast_hash": "3d102072ba3ba3142eea7ca5417174cb",
-    "semantic_hash": "3d102072ba3ba3142eea7ca5417174cb"
-  },
   "services/mailgun-shim/src/crypto.ts": {
-    "mtime": 1786627054.4734228,
+    "mtime": 1786667394.188672,
     "ast_hash": "d454cc38f2c62bb7af327a94a524ff1b",
     "semantic_hash": "d454cc38f2c62bb7af327a94a524ff1b"
   },
   "services/mailgun-shim/src/mailgunFields.ts": {
-    "mtime": 1786627054.4734228,
+    "mtime": 1786667394.188672,
     "ast_hash": "ac127ec6dd107b9779105bdb006aefd7",
     "semantic_hash": "ac127ec6dd107b9779105bdb006aefd7"
   },
   "services/mailgun-shim/src/rateLimit.ts": {
-    "mtime": 1786627054.4734228,
+    "mtime": 1786667394.188672,
     "ast_hash": "e34a134c6da2e3d645b0718aaa45ba52",
     "semantic_hash": "e34a134c6da2e3d645b0718aaa45ba52"
   },
   "services/mailgun-shim/src/routes/events.ts": {
-    "mtime": 1786627054.4734228,
+    "mtime": 1786667394.188672,
     "ast_hash": "63947da293fa3f8f98c3b55af561f7c7",
     "semantic_hash": "63947da293fa3f8f98c3b55af561f7c7"
   },
   "services/mailgun-shim/src/routes/messages.ts": {
-    "mtime": 1786627054.4736955,
-    "ast_hash": "d50e8b03702e18a8341eecb14f55a919",
-    "semantic_hash": "d50e8b03702e18a8341eecb14f55a919"
+    "mtime": 1786667394.1890736,
+    "ast_hash": "ae9d99c494d90b264793782f4cf78c02",
+    "semantic_hash": "ae9d99c494d90b264793782f4cf78c02"
   },
   "services/mailgun-shim/src/routes/suppressions.ts": {
-    "mtime": 1786627054.4736955,
+    "mtime": 1786667394.1890736,
     "ast_hash": "f06e9514e5adb176ba340354c5072cac",
     "semantic_hash": "f06e9514e5adb176ba340354c5072cac"
   },
   "services/mailgun-shim/src/server.ts": {
-    "mtime": 1786627054.4736955,
-    "ast_hash": "9ff5d206b75ce1e44126d159130e8357",
-    "semantic_hash": "9ff5d206b75ce1e44126d159130e8357"
+    "mtime": 1786667394.1890736,
+    "ast_hash": "6432bd0d6c283e06d32eeba758ffa649",
+    "semantic_hash": "6432bd0d6c283e06d32eeba758ffa649"
   },
   "services/mailgun-shim/src/smtp.ts": {
-    "mtime": 1786627054.4736955,
+    "mtime": 1786667394.1890736,
     "ast_hash": "2c62c477289b5cd0d9b7d175cb825332",
     "semantic_hash": "2c62c477289b5cd0d9b7d175cb825332"
   },
   "services/mailgun-shim/src/store.ts": {
-    "mtime": 1786627054.4736955,
-    "ast_hash": "16c620d9685e1956cda0c364f4c7142d",
-    "semantic_hash": "16c620d9685e1956cda0c364f4c7142d"
+    "mtime": 1786667394.1890736,
+    "ast_hash": "dcc9557acacbe1b25c3cafa8f854e52c",
+    "semantic_hash": "dcc9557acacbe1b25c3cafa8f854e52c"
   },
   "services/mailgun-shim/test/helpers/mailgunClient.ts": {
-    "mtime": 1786627054.4739897,
+    "mtime": 1786667394.1895094,
     "ast_hash": "07e05d93c6e7bde1fcd1f53287eb6664",
     "semantic_hash": "07e05d93c6e7bde1fcd1f53287eb6664"
   },
   "services/mailgun-shim/test/helpers/smtpSink.ts": {
-    "mtime": 1786627054.4740534,
+    "mtime": 1786667394.1895738,
     "ast_hash": "0bbfd25363be2891d9c58ba6ebaba18a",
     "semantic_hash": "0bbfd25363be2891d9c58ba6ebaba18a"
   },
   "services/mailgun-shim/test/helpers/testServer.ts": {
-    "mtime": 1786627054.4740534,
-    "ast_hash": "739a2adc393ba023f53f24e71bc4c6f2",
-    "semantic_hash": "739a2adc393ba023f53f24e71bc4c6f2"
+    "mtime": 1786667394.1895738,
+    "ast_hash": "e4cade56fe9a6530eb319fbc8308f12b",
+    "semantic_hash": "e4cade56fe9a6530eb319fbc8308f12b"
   },
   "services/mailgun-shim/test/shim.integration.test.ts": {
-    "mtime": 1786627054.4740534,
-    "ast_hash": "6c06f69b39137fd16d468baf61d9b31e",
-    "semantic_hash": "6c06f69b39137fd16d468baf61d9b31e"
+    "mtime": 1786667394.1895738,
+    "ast_hash": "81a825699262a6cc0e138207fbd397d7",
+    "semantic_hash": "81a825699262a6cc0e138207fbd397d7"
   },
   "services/mailgun-shim/test/unit/app.test.ts": {
-    "mtime": 1786627054.4740534,
-    "ast_hash": "bdaef36e3c8d4ca92b6af1c688f20ba9",
-    "semantic_hash": "bdaef36e3c8d4ca92b6af1c688f20ba9"
+    "mtime": 1786667394.1895738,
+    "ast_hash": "f5d0f4db6cd7b950a7b69d8d20032688",
+    "semantic_hash": "f5d0f4db6cd7b950a7b69d8d20032688"
   },
   "services/mailgun-shim/test/unit/auth.test.ts": {
-    "mtime": 1786627054.4742777,
+    "mtime": 1786667394.1899068,
     "ast_hash": "5a9aaceb9cdef6c6acb613c069ebdc38",
     "semantic_hash": "5a9aaceb9cdef6c6acb613c069ebdc38"
   },
   "services/mailgun-shim/test/unit/crypto.test.ts": {
-    "mtime": 1786627054.4742777,
+    "mtime": 1786667394.1899068,
     "ast_hash": "def29f9985849729a3f33a15eb9c6401",
     "semantic_hash": "def29f9985849729a3f33a15eb9c6401"
   },
   "services/mailgun-shim/test/unit/helpers/fakeStore.ts": {
-    "mtime": 1786627054.4742777,
-    "ast_hash": "cc8da50b02aab1d9402f2b200b6b19f1",
-    "semantic_hash": "cc8da50b02aab1d9402f2b200b6b19f1"
+    "mtime": 1786667394.1899068,
+    "ast_hash": "974307588f9930f90d1c47c2a148cf47",
+    "semantic_hash": "974307588f9930f90d1c47c2a148cf47"
   },
   "services/mailgun-shim/test/unit/helpers/startRouter.ts": {
-    "mtime": 1786627054.4744542,
+    "mtime": 1786667394.1902318,
     "ast_hash": "beb45d60cea852f691321c445b97a871",
     "semantic_hash": "beb45d60cea852f691321c445b97a871"
   },
   "services/mailgun-shim/test/unit/mailgunFields.test.ts": {
-    "mtime": 1786627054.4744542,
+    "mtime": 1786667394.1902318,
     "ast_hash": "87ed626f5a1ee41c01a0148213e07356",
     "semantic_hash": "87ed626f5a1ee41c01a0148213e07356"
   },
   "services/mailgun-shim/test/unit/rateLimit.test.ts": {
-    "mtime": 1786627054.4744542,
+    "mtime": 1786667394.1902318,
     "ast_hash": "4d822fbc4e1dfbd6749b2bada63ef0c0",
     "semantic_hash": "4d822fbc4e1dfbd6749b2bada63ef0c0"
   },
   "services/mailgun-shim/test/unit/routes/events.test.ts": {
-    "mtime": 1786627054.4744542,
+    "mtime": 1786667394.1902318,
     "ast_hash": "7ed8e38f01283ac7253e15ceef4bbfa4",
     "semantic_hash": "7ed8e38f01283ac7253e15ceef4bbfa4"
   },
   "services/mailgun-shim/test/unit/routes/messages.test.ts": {
-    "mtime": 1786627054.474696,
-    "ast_hash": "8f8454fef16dc31081469f5f8471cbb5",
-    "semantic_hash": "8f8454fef16dc31081469f5f8471cbb5"
+    "mtime": 1786667394.1905236,
+    "ast_hash": "4850418507f012054fe346fcf5f2c282",
+    "semantic_hash": "4850418507f012054fe346fcf5f2c282"
   },
   "services/mailgun-shim/test/unit/routes/suppressions.test.ts": {
-    "mtime": 1786627054.474696,
+    "mtime": 1786667394.1905236,
     "ast_hash": "ac847534512533f6f4e08fc57a9a7bf7",
     "semantic_hash": "ac847534512533f6f4e08fc57a9a7bf7"
   },
   "services/mailgun-shim/test/unit/smtp.test.ts": {
-    "mtime": 1786627054.474696,
+    "mtime": 1786667394.1905236,
     "ast_hash": "077ee8f73b3bbcd38c8097a5205f5353",
     "semantic_hash": "077ee8f73b3bbcd38c8097a5205f5353"
   },
   "services/mailgun-shim/test/unit/store.test.ts": {
-    "mtime": 1786627054.474696,
-    "ast_hash": "a231bc537573dd2e1714009d0fb39950",
-    "semantic_hash": "a231bc537573dd2e1714009d0fb39950"
+    "mtime": 1786667394.1905236,
+    "ast_hash": "33360aeacaa9db2570a282f49c01fc52",
+    "semantic_hash": "33360aeacaa9db2570a282f49c01fc52"
   },
   "services/mailgun-shim/tsconfig.build.json": {
-    "mtime": 1786627054.474696,
+    "mtime": 1786667394.1905236,
     "ast_hash": "8ee5e12b23f2976e2ede5e9de337637b",
     "semantic_hash": "8ee5e12b23f2976e2ede5e9de337637b"
   },
   "services/mailgun-shim/tsconfig.json": {
-    "mtime": 1786627054.474696,
+    "mtime": 1786667394.1905236,
     "ast_hash": "05e8ae8cbe3ec41cf29125aa856e8fc5",
     "semantic_hash": "05e8ae8cbe3ec41cf29125aa856e8fc5"
   },
   "services/mailgun-shim/vitest.config.ts": {
-    "mtime": 1786627054.474696,
+    "mtime": 1786667394.1905236,
     "ast_hash": "f3852388e12f49110f0816ebcc6bbf17",
     "semantic_hash": "f3852388e12f49110f0816ebcc6bbf17"
   },
@@ -435,8 +430,93 @@
     "semantic_hash": "66c8e62816b5523b8f7e9b7942c2cccc"
   },
   "infra/tenant/cloudRunService.test.ts": {
-    "mtime": 1786627054.4716992,
-    "ast_hash": "7903084235b51c9190aede1862c3c2ae",
-    "semantic_hash": "7903084235b51c9190aede1862c3c2ae"
+    "mtime": 1786667394.1868715,
+    "ast_hash": "f623d68cfe26c3e8d3b1d2b6cf097c67",
+    "semantic_hash": "f623d68cfe26c3e8d3b1d2b6cf097c67"
+  },
+  "services/mailgun-shim/src/asyncHandler.ts": {
+    "mtime": 1786667394.188672,
+    "ast_hash": "8efe71f226efcadb27110ced77734070",
+    "semantic_hash": "8efe71f226efcadb27110ced77734070"
+  },
+  "services/mailgun-shim/src/cli.ts": {
+    "mtime": 1786667394.188672,
+    "ast_hash": "837f74fe5d21303b631d341af1822cc6",
+    "semantic_hash": "837f74fe5d21303b631d341af1822cc6"
+  },
+  "services/mailgun-shim/src/config.ts": {
+    "mtime": 1786667394.188672,
+    "ast_hash": "7b796cd315793bf647644efc8028b91e",
+    "semantic_hash": "7b796cd315793bf647644efc8028b91e"
+  },
+  "services/mailgun-shim/src/log.ts": {
+    "mtime": 1786667394.188672,
+    "ast_hash": "54444d582db27c5b4564751ad851b0cb",
+    "semantic_hash": "54444d582db27c5b4564751ad851b0cb"
+  },
+  "services/mailgun-shim/src/throttle.ts": {
+    "mtime": 1786667394.1890736,
+    "ast_hash": "82994997cb0de44b0a06724f858fe259",
+    "semantic_hash": "82994997cb0de44b0a06724f858fe259"
+  },
+  "services/mailgun-shim/src/worker.ts": {
+    "mtime": 1786667394.1890736,
+    "ast_hash": "d52ee7d92dd21b2626cfb9f15476ed58",
+    "semantic_hash": "d52ee7d92dd21b2626cfb9f15476ed58"
+  },
+  "services/mailgun-shim/test/helpers/testLogger.ts": {
+    "mtime": 1786667394.1895738,
+    "ast_hash": "f9494e1c13bb33f19e919e1fe0d5f49e",
+    "semantic_hash": "f9494e1c13bb33f19e919e1fe0d5f49e"
+  },
+  "services/mailgun-shim/test/helpers/testThrottle.ts": {
+    "mtime": 1786667394.1895738,
+    "ast_hash": "663e519debfe63660a0940e5ba64eb07",
+    "semantic_hash": "663e519debfe63660a0940e5ba64eb07"
+  },
+  "services/mailgun-shim/test/helpers/testWorker.ts": {
+    "mtime": 1786667394.1895738,
+    "ast_hash": "03377b6b6c783674a4526af199374d0d",
+    "semantic_hash": "03377b6b6c783674a4526af199374d0d"
+  },
+  "services/mailgun-shim/test/unit/asyncHandler.test.ts": {
+    "mtime": 1786667394.1899068,
+    "ast_hash": "2badbd1c0adef0882da93b6f484de502",
+    "semantic_hash": "2badbd1c0adef0882da93b6f484de502"
+  },
+  "services/mailgun-shim/test/unit/cli.test.ts": {
+    "mtime": 1786667394.1899068,
+    "ast_hash": "faca19b77d647a6f4d02c40997aeb85e",
+    "semantic_hash": "faca19b77d647a6f4d02c40997aeb85e"
+  },
+  "services/mailgun-shim/test/unit/config.test.ts": {
+    "mtime": 1786667394.1899068,
+    "ast_hash": "82474d02e5b8cad58ec0adcc2569cd3a",
+    "semantic_hash": "82474d02e5b8cad58ec0adcc2569cd3a"
+  },
+  "services/mailgun-shim/test/unit/log.test.ts": {
+    "mtime": 1786667394.1902318,
+    "ast_hash": "a155bcf95b2979c843f1dd3c68c609ac",
+    "semantic_hash": "a155bcf95b2979c843f1dd3c68c609ac"
+  },
+  "services/mailgun-shim/test/unit/throttle.test.ts": {
+    "mtime": 1786667394.1905236,
+    "ast_hash": "cbcaba598f5baae5027a0db799643c8e",
+    "semantic_hash": "cbcaba598f5baae5027a0db799643c8e"
+  },
+  "services/mailgun-shim/test/unit/worker.test.ts": {
+    "mtime": 1786667394.1905236,
+    "ast_hash": "fba973a0e58411649294526fd7b93aed",
+    "semantic_hash": "fba973a0e58411649294526fd7b93aed"
+  },
+  ".github/workflows/mailgun-shim-image.yml": {
+    "mtime": 1786653519.4610465,
+    "ast_hash": "ab3a851e482c780ea22c5737409f819a",
+    "semantic_hash": "ab3a851e482c780ea22c5737409f819a"
+  },
+  ".github/workflows/standards.yml": {
+    "mtime": 1786665537.9188783,
+    "ast_hash": "aa90416979337024a15a1f9c1689b12b",
+    "semantic_hash": "aa90416979337024a15a1f9c1689b12b"
   }
 }
