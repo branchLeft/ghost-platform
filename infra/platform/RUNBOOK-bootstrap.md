@@ -1,14 +1,16 @@
 # Bootstrap runbook — `platform` stack, one time only
 
-This stack has never been applied. Everything in it is a `create`.
+**This bootstrap has run.** The stack is applied, and every push to `main`
+applies it automatically; no local `pulumi up` is needed or wanted. The
+procedure below is kept because the CI workflows cite it — recovery order,
+re-bootstrap conditions, the P2 escalation path — not because any step in it
+is pending. It would need running again only if the identity it creates were
+destroyed.
 
-Almost all of it is CI's job from now on, but CI cannot create the identity
-it would need in order to run — so exactly one apply has to happen from a
-workstation, under the platform owner's own credentials, and three grants
-have to be made
-by hand after it. That is what this runbook is. **It is run once.** After the
-last step, every push to `main` applies this stack automatically and no local
-`pulumi up` is ever needed again.
+The reasoning it recorded, still true: almost everything here is CI's job,
+but CI cannot create the identity it needs in order to run — so exactly one
+apply had to happen from a workstation, under the platform owner's own
+credentials, with three grants made by hand after it.
 
 Two later sections are one-time bootstraps of the same kind and are numbered
 separately: "Applying the provisioning credential" and "One-time bootstrap of
@@ -17,11 +19,10 @@ the tenant-provisioning identity". Neither recurs per tenant.
 Run the steps in order. Steps 3 and 4 cannot be done before step 1, because
 the service account they grant to does not exist until step 1 creates it.
 
-Everything here is the platform owner's to run — §6 of the implementation-loop
-skill puts the
-first `pulumi up` for a stack, every project-level IAM binding, and every repo
-settings change on the platform owner regardless of what rights the executing
-identity holds.
+Everything here is the platform owner's to run — the first `pulumi up` for a
+stack, every project-level IAM binding, and every repo-settings change are
+platform-owner operations regardless of what rights the executing identity
+holds.
 
 ---
 
