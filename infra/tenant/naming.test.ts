@@ -117,12 +117,13 @@ describe('bucketNameFromUrl', () => {
 });
 
 describe('validateTenantName', () => {
-  it.each(['blog', 'blog-archive', 'a1', 'x-9-y'])('accepts %s', (name) => {
+  it.each(['blog', 'blog-archive', 'a1', 'x-9-y', 'a', 'a-b-c-d', 'a--b'])('accepts %s', (name) => {
     expect(() => validateTenantName(name)).not.toThrow();
   });
 
   it.each([
     ['Blog', 'uppercase'],
+    ['BLOG', 'all uppercase'],
     ['1blog', 'leading digit'],
     ['-blog', 'leading hyphen'],
     ['blog_archive', 'underscore'],
@@ -130,6 +131,63 @@ describe('validateTenantName', () => {
     ['', 'empty'],
   ])('rejects %s (%s)', (name) => {
     expect(() => validateTenantName(name)).toThrow();
+  });
+
+  describe('whitespace', () => {
+    it.each([
+      [' ', 'whitespace-only'],
+      ['   ', 'multiple spaces'],
+      [' blog', 'leading space'],
+      ['blog ', 'trailing space'],
+      ['blog archive', 'embedded space'],
+      ['blog\tarchive', 'embedded tab'],
+      ['blog\narchive', 'embedded newline'],
+    ])('rejects %j (%s), not merely the trimmed form of it', (name) => {
+      // A naive `.trim()` before validating would let any of these through;
+      // asserting rejection here pins that no trimming happens.
+      expect(() => validateTenantName(name)).toThrow();
+    });
+  });
+
+  describe('unicode', () => {
+    it.each([
+      ['blög', 'latin-1 diacritic'],
+      // Cyrillic а (U+0430), not the Latin a it is visually indistinguishable from.
+      ['blаg', 'cyrillic homoglyph for a latin letter'],
+      ['b\u{1F680}log', 'emoji'],
+      ['blog​', 'zero-width space'],
+    ])('rejects %j (%s)', (name) => {
+      expect(() => validateTenantName(name)).toThrow();
+    });
+  });
+
+  describe('traversal and injection shapes', () => {
+    it.each([
+      ['../blog', 'leading parent-directory traversal'],
+      ['blog/../other', 'embedded parent-directory traversal'],
+      ['blog/other', 'path separator'],
+      ['/blog', 'leading path separator'],
+      ['blog;rm', 'shell metacharacter'],
+      ['blog' + String.fromCharCode(0), 'embedded NUL'],
+    ])('rejects %j (%s)', (name) => {
+      expect(() => validateTenantName(name)).toThrow();
+    });
+  });
+
+  describe('cross-tenant collision resistance', () => {
+    it('rejects the underscore that would let a hyphenated and an underscored name collide once sqlIdentifier folds hyphens', () => {
+      expect(() => validateTenantName('a_b')).toThrow();
+      expect(sqlIdentifier('a-b')).toBe('a_b');
+    });
+
+    it('rejects the case variants that would collide once a caller lowercases for comparison', () => {
+      expect(() => validateTenantName('Blog')).toThrow();
+      expect(() => validateTenantName('BLOG')).toThrow();
+    });
+  });
+
+  it('accepts one character under the service-account-ID limit', () => {
+    expect(() => validateTenantName('a'.repeat(MAX_TENANT_NAME_LENGTH - 1))).not.toThrow();
   });
 
   it('accepts a name at the service-account-ID limit', () => {
@@ -143,6 +201,21 @@ describe('validateTenantName', () => {
   it('keeps the derived service account id inside GCP 30-character limit', () => {
     const longest = 'a'.repeat(MAX_TENANT_NAME_LENGTH);
     expect(serviceAccountId(longest).length).toBeLessThanOrEqual(30);
+  });
+
+  describe('known gap: trailing hyphen', () => {
+    it('currently accepts a name ending in a hyphen, producing a service account id GCP rejects at apply time', () => {
+      // Documents actual behavior, not correctness. GCP's own service-account-ID
+      // grammar is `[a-z]([-a-z0-9]*[a-z0-9])` -- it must end in a letter or
+      // digit, never a hyphen. This module's pattern ends its character class
+      // with `[a-z0-9-]*` and never re-anchors the last character, so nothing
+      // here excludes a trailing hyphen. The same string is also the Cloud Run
+      // service name (`resource names`, above), which carries the identical
+      // RFC-1035 no-trailing-hyphen rule, so both derived identifiers inherit
+      // the gap from the one shared validator.
+      expect(() => validateTenantName('blog-')).not.toThrow();
+      expect(serviceAccountId('blog-')).toBe('ghost-tenant-blog-');
+    });
   });
 });
 
