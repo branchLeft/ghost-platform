@@ -1,4 +1,3 @@
-secretsprovider: gcpkms://projects/branchleft-prod/locations/europe-west1/keyRings/pulumi/cryptoKeys/pulumi-secrets
-encryptedkey: CiQAefexUjhJqs77slYC36RbQuiTMskcVdnP+pt6SdHOE69NBi4SSQBxixxQqR87u6ZOp/OVy/OquxHOBVjW0LR7NIZ1GV+tBF+pdyrpKPqznApFZTH9jBZL+Umq6SOCMEmKRrYaHM1IIvUfHP5yx50=
 config:
   gcp:project: branchleft-prod
+encryptionsalt: v1:fi+spDdpKaE=:v1:Brk53+IatGmt/Tv+:c5hJ7azoVEvMKMBSy9j4crIEgi5E7A==
