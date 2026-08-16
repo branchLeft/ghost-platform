@@ -37,6 +37,14 @@ import {
  * than a permission error. A bucket per tenant makes a plain bucket-scoped
  * `roles/storage.objectAdmin` correctly confined, and stops any tenant
  * enumerating another's stacks.
+ *
+ * State location and secrets provider are independent: this bucket holds
+ * state only, and the workflow that provisions a stack into it now selects
+ * the passphrase provider unconditionally, with no GCP KMS dependency left
+ * anywhere in this file's output. Retiring per-tenant GCS buckets in favour
+ * of Hetzner Object Storage is separate, later work with its own
+ * prerequisites, not something this file's secrets-provider choice is
+ * coupled to.
  */
 export const stateBucket = new gcp.storage.Bucket(`${tenantName}-pulumi-state`, {
   name: stateBucketName,
