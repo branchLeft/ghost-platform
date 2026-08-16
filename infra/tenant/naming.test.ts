@@ -46,6 +46,21 @@ describe('media object isolation', () => {
     expect(otherBucket.startsWith(grantedTo('blog'))).toBe(false);
   });
 
+  it('still fails closed against every real object if the bucket name is malformed', () => {
+    // `bucketNameFromUrl`'s known gap (see its own describe block) means a
+    // malformed `mediaBucketUrl` could reach this function as an empty or
+    // slash-containing "bucket name". The isolation boundary must not
+    // degrade into an accidental match in that case -- it must degrade into
+    // matching nothing, the same fail-closed shape as every other case here.
+    const noRealObjectMatches = (malformedBucketName: string) => {
+      const condition = mediaObjectConditionResource(malformedBucketName, 'blog');
+      expect(objectNameFor('blog', 'content/images/x.jpg').startsWith(condition)).toBe(false);
+      expect(objectNameFor('blog-archive', 'x.jpg').startsWith(condition)).toBe(false);
+    };
+    noRealObjectMatches('');
+    noRealObjectMatches(`${BUCKET}/`);
+  });
+
   it('keeps the trailing slash in the prefix itself', () => {
     expect(mediaObjectPrefix('blog')).toBe('blog/');
     expect(grantedTo('blog').endsWith('/')).toBe(true);
@@ -113,6 +128,47 @@ describe('bucketNameFromUrl', () => {
 
   it('rejects a bare bucket name', () => {
     expect(() => bucketNameFromUrl('some-bucket')).toThrow();
+  });
+
+  it('rejects the empty string', () => {
+    expect(() => bucketNameFromUrl('')).toThrow();
+  });
+
+  it('rejects a scheme match that requires the colon-slash-slash exactly', () => {
+    // A single slash or a missing colon must not be tolerated as "close
+    // enough" -- either would mean this function agrees with a caller who
+    // got the scheme wrong instead of failing loudly.
+    expect(() => bucketNameFromUrl('gs:/some-bucket')).toThrow();
+    expect(() => bucketNameFromUrl('gs//some-bucket')).toThrow();
+  });
+
+  it('is case-sensitive on the scheme', () => {
+    // `gcp.storage.Bucket.url` always emits lowercase; a caller passing an
+    // uppercase scheme is not this documented format and must not silently
+    // match it.
+    expect(() => bucketNameFromUrl('GS://some-bucket')).toThrow();
+  });
+
+  describe('known gap: no validation of the value after the scheme', () => {
+    // This function only checks the prefix; it never checks that what
+    // remains is a *bucket name* -- no non-empty check, no rejection of an
+    // embedded `/`. `gcp.storage.Bucket.url` (this function's only real
+    // caller) never produces any of these, so the gap is currently inert,
+    // the same class of latent, disclosed defect as `validateTenantName`'s
+    // trailing-hyphen case above. It is pinned here, not fixed, because a
+    // caller depending on this format changing is a decision this test file
+    // does not get to make silently.
+    it('accepts an empty bucket name instead of rejecting a scheme with nothing after it', () => {
+      expect(bucketNameFromUrl('gs://')).toBe('');
+    });
+
+    it('passes a trailing slash through unstripped', () => {
+      expect(bucketNameFromUrl('gs://some-bucket/')).toBe('some-bucket/');
+    });
+
+    it('passes an embedded path through as if it were part of the bucket name', () => {
+      expect(bucketNameFromUrl('gs://some-bucket/some/path')).toBe('some-bucket/some/path');
+    });
   });
 });
 
