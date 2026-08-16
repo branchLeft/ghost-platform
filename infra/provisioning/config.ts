@@ -49,8 +49,3 @@ export const platformMediaBucketUrl = config.require('platformMediaBucketUrl');
 export const provisioningServiceAccountEmail =
   config.get('provisioningServiceAccountEmail') ??
   `ghost-tenant-provisioner@${projectId}.iam.gserviceaccount.com`;
-
-/** The Cloud KMS key every stack in this workspace encrypts its data key with. */
-export const secretsKmsKeyId =
-  config.get('secretsKmsKeyId') ??
-  `projects/${projectId}/locations/${region}/keyRings/pulumi/cryptoKeys/pulumi-secrets`;

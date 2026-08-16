@@ -1052,15 +1052,21 @@ undo — anything earlier than that never ran.
 
 1. **The handover pull request**, if one was opened. Close it. Nothing else
    depends on it.
-2. **The generated repo**, if it exists. `gh repo delete branchLeft/<repo>`.
-   No longer urgent — the repo holds repo variables only, no secret, since a
-   tenant reads the package with its own `GITHUB_TOKEN` (P6). Delete it before
-   retrying regardless: onboarding is create-only and refuses a name that
-   already exists.
-3. **The tenant's own stack**, if its first apply started. Its state is in the
-   tenant's bucket:
+2. **The tenant's own stack, if its first apply started — before touching the
+   repo.** This order is load-bearing, not cosmetic: the repo holds the only
+   copy of this stack's `PULUMI_CONFIG_PASSPHRASE`, minted fresh at
+   provisioning time and never escrowed anywhere else (GitHub secrets are
+   write-only). Deleting the repo first destroys the one thing that can still
+   decrypt this stack's checkpoint, and `pulumi destroy` has to read that
+   checkpoint — do that and the stack is stranded exactly the way a lost KMS
+   key would strand it, except with no fallback. From a checkout of the
+   generated repo, with its own secret still live in CI or copied locally:
    `pulumi login gs://<state-bucket> && pulumi destroy --stack <tenant>`.
    Read the plan before confirming.
+3. **The generated repo**, once step 2 above is either confirmed unnecessary
+   (the first apply never started) or already complete. `gh repo delete
+   branchLeft/<repo>`. Delete it before retrying regardless: onboarding is
+   create-only and refuses a name that already exists.
 4. **The tenant's DB user and logical database**, if the apply reached them.
    **The provisioning identity cannot remove these** — P4's custom role is
    create-and-read only. Delete them under your own credentials:

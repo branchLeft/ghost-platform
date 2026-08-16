@@ -8,7 +8,6 @@ import {
   stateBucketName,
   deployerServiceAccountId,
   workloadIdentityPoolId,
-  secretsKmsKeyId,
   provisioningServiceAccountEmail,
   platformDbInstanceConnectionName,
   platformTenantImageRepositoryDockerPath,
@@ -37,6 +36,14 @@ import {
  * than a permission error. A bucket per tenant makes a plain bucket-scoped
  * `roles/storage.objectAdmin` correctly confined, and stops any tenant
  * enumerating another's stacks.
+ *
+ * State location and secrets provider are independent: this bucket holds
+ * state only, and the workflow that provisions a stack into it now selects
+ * the passphrase provider unconditionally, with no GCP KMS dependency left
+ * anywhere in this file's output. Retiring per-tenant GCS buckets in favour
+ * of Hetzner Object Storage is separate, later work with its own
+ * prerequisites, not something this file's secrets-provider choice is
+ * coupled to.
  */
 export const stateBucket = new gcp.storage.Bucket(`${tenantName}-pulumi-state`, {
   name: stateBucketName,
@@ -151,26 +158,6 @@ export const provisionerStateBucketAccess = new gcp.storage.BucketIAMMember(
     bucket: stateBucket.name,
     role: 'roles/storage.objectAdmin',
     member: `serviceAccount:${provisioningServiceAccountEmail}`,
-  }
-);
-
-/**
- * Lets the tenant's CI decrypt its own stack's data key. Granted on the key,
- * never as a project-level `roles/cloudkms.admin` — that would let a deploy
- * pipeline rewrite who may decrypt its own secrets.
- *
- * This is a Pulumi resource here and a `gcloud` step in the platform runbook
- * for a real reason: the platform stack cannot grant itself access to the key
- * it must decrypt before it can apply anything, but this program is a
- * *different* stack granting a *different* identity, so the chicken-and-egg
- * does not arise.
- */
-export const deployerKmsAccess = new gcp.kms.CryptoKeyIAMMember(
-  `${tenantName}-deployer-kms-decrypt`,
-  {
-    cryptoKeyId: secretsKmsKeyId,
-    role: 'roles/cloudkms.cryptoKeyEncrypterDecrypter',
-    member: deployerMember,
   }
 );
 
