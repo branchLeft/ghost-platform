@@ -173,6 +173,12 @@ jobs:
       run:
         working-directory: infra/platform
 
+    # Every pulumi command that reads stack state requires this once the
+    # stack is passphrase-wrapped; while the stack is KMS-wrapped it is
+    # ignored. Without it the deploy fails closed at the preview step.
+    env:
+      PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+
     # No path filter, on purpose. Gating this job on "did infra/platform/**
     # change" would skip most runs -- but a path filter that is subtly wrong
     # skips the deploy *and reports green*, the exact silent-success shape
