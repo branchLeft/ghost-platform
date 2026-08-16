@@ -138,7 +138,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 25,
+      "community": 21,
       "community_name": "Docker Entrypoint",
       "norm_label": "docker-entrypoint.branchleft.sh",
       "id": "docker_entrypoint_branchleft"
@@ -153,7 +153,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 25,
+      "community": 21,
       "community_name": "Docker Entrypoint",
       "norm_label": "docker-entrypoint.branchleft.sh script",
       "id": "docker_entrypoint_branchleft_sh__entry"
@@ -168,7 +168,7 @@
         "kind": "code"
       },
       "_origin": "ast",
-      "community": 25,
+      "community": 21,
       "community_name": "Docker Entrypoint",
       "norm_label": "server__port",
       "id": "docker_entrypoint_branchleft_server_port"
@@ -183,7 +183,7 @@
         "kind": "code"
       },
       "_origin": "ast",
-      "community": 25,
+      "community": 21,
       "community_name": "Docker Entrypoint",
       "norm_label": "server__host",
       "id": "docker_entrypoint_branchleft_server_host"
@@ -194,7 +194,7 @@
       "source_file": "infra/platform/mediaBucket.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "community_name": "Platform Infra Config",
       "norm_label": "mediabucket.ts",
       "id": "infra_platform_mediabucket"
@@ -205,7 +205,7 @@
       "source_file": "infra/platform/mediaBucket.ts",
       "source_location": "L66",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "community_name": "Platform Infra Config",
       "norm_label": "mediabucket",
       "id": "infra_platform_mediabucket_mediabucket"
@@ -216,7 +216,7 @@
       "source_file": "infra/platform/mediaBucket.ts",
       "source_location": "L98",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "community_name": "Platform Infra Config",
       "norm_label": "mediabucketpublicread",
       "id": "infra_platform_mediabucket_mediabucketpublicread"
@@ -227,7 +227,7 @@
       "source_file": "infra/platform/registry.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "community_name": "Platform Infra Config",
       "norm_label": "registry.ts",
       "id": "infra_platform_registry"
@@ -238,7 +238,7 @@
       "source_file": "infra/platform/registry.ts",
       "source_location": "L16",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "community_name": "Platform Infra Config",
       "norm_label": "tenantimagerepository",
       "id": "infra_platform_registry_tenantimagerepository"
@@ -249,7 +249,7 @@
       "source_file": "",
       "source_location": "",
       "_origin": "ast",
-      "community": 60,
+      "community": 56,
       "community_name": "Delete-Guard Script",
       "norm_label": "pattern",
       "id": "pattern"
@@ -260,7 +260,7 @@
       "source_file": "infra/platform/secrets.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "community_name": "Platform Infra Config",
       "norm_label": "platform/secrets.ts",
       "id": "infra_platform_secrets"
@@ -272,7 +272,7 @@
       "source_location": "L27",
       "_callable": true,
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "community_name": "Platform Infra Config",
       "norm_label": "secretwithvalue()",
       "id": "infra_platform_secrets_secretwithvalue"
@@ -283,7 +283,7 @@
       "source_file": "infra/tenant/secrets.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "community_name": "Tenant Cloud Run Service",
       "norm_label": "tenant/secrets.ts",
       "id": "infra_tenant_secrets"
@@ -295,7 +295,7 @@
       "source_location": "L21",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "community_name": "Tenant Cloud Run Service",
       "norm_label": "secretwithvalue()",
       "id": "infra_tenant_secrets_secretwithvalue"
@@ -310,7 +310,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 29,
+      "community": 25,
       "community_name": "Smoke Test Script",
       "norm_label": "smoke-test.sh",
       "id": "scripts_smoke_test"
@@ -325,7 +325,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 29,
+      "community": 25,
       "community_name": "Smoke Test Script",
       "norm_label": "smoke-test.sh script",
       "id": "scripts_smoke_test_sh__entry"
@@ -340,7 +340,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 29,
+      "community": 25,
       "community_name": "Smoke Test Script",
       "norm_label": "cleanup()",
       "id": "scripts_smoke_test_cleanup"
@@ -355,7 +355,7 @@
         "kind": "file"
       },
       "_origin": "ast",
-      "community": 27,
+      "community": 23,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh",
       "id": "scripts_test_storage_guard"
@@ -370,7 +370,7 @@
         "kind": "bash_entrypoint"
       },
       "_origin": "ast",
-      "community": 27,
+      "community": 23,
       "community_name": "Storage Guard Test",
       "norm_label": "test-storage-guard.sh script",
       "id": "scripts_test_storage_guard_sh__entry"
@@ -385,7 +385,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 27,
+      "community": 23,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_blocked()",
       "id": "scripts_test_storage_guard_assert_blocked"
@@ -400,7 +400,7 @@
         "kind": "bash_function"
       },
       "_origin": "ast",
-      "community": 27,
+      "community": 23,
       "community_name": "Storage Guard Test",
       "norm_label": "assert_boots()",
       "id": "scripts_test_storage_guard_assert_boots"
@@ -414,7 +414,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 33,
+      "community": 30,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "platform stack config (pulumi.platform.yaml)",
       "_origin": "semantic",
@@ -429,7 +429,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 33,
+      "community": 30,
       "community_name": "CI/CD Workflows & Guardrails",
       "norm_label": "branchleft-ghost-platform pulumi project",
       "_origin": "semantic",
@@ -441,7 +441,7 @@
       "source_file": "infra/platform/database.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "platform/database.ts",
       "id": "infra_platform_database"
     },
@@ -451,7 +451,7 @@
       "source_file": "infra/platform/database.ts",
       "source_location": "L47",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "dbinstance",
       "id": "infra_platform_database_dbinstance"
     },
@@ -461,7 +461,7 @@
       "source_file": "infra/platform/index.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "platform/index.ts",
       "id": "infra_platform_index"
     },
@@ -471,7 +471,7 @@
       "source_file": "infra/platform/index.ts",
       "source_location": "L23",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "dbinstanceconnectionname",
       "id": "infra_platform_index_dbinstanceconnectionname"
     },
@@ -481,7 +481,7 @@
       "source_file": "infra/platform/index.ts",
       "source_location": "L24",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "dbinstanceselflink",
       "id": "infra_platform_index_dbinstanceselflink"
     },
@@ -491,7 +491,7 @@
       "source_file": "infra/platform/index.ts",
       "source_location": "L36",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "tenantimagerepositorydockerpath",
       "id": "infra_platform_index_tenantimagerepositorydockerpath"
     },
@@ -501,7 +501,7 @@
       "source_file": "infra/platform/index.ts",
       "source_location": "L38",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "mediabucketurl",
       "id": "infra_platform_index_mediabucketurl"
     },
@@ -511,7 +511,7 @@
       "source_file": "infra/platform/index.ts",
       "source_location": "L39",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "mediabucketselflink",
       "id": "infra_platform_index_mediabucketselflink"
     },
@@ -521,7 +521,7 @@
       "source_file": "infra/platform/index.ts",
       "source_location": "L49",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "githubactionsworkloadidentityprovider",
       "id": "infra_platform_index_githubactionsworkloadidentityprovider"
     },
@@ -531,7 +531,7 @@
       "source_file": "infra/platform/index.ts",
       "source_location": "L50",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "githubactionsdeployerserviceaccountemail",
       "id": "infra_platform_index_githubactionsdeployerserviceaccountemail"
     },
@@ -541,7 +541,7 @@
       "source_file": "infra/platform/provisioningUser.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "provisioninguser.ts",
       "id": "infra_platform_provisioninguser"
     },
@@ -551,7 +551,7 @@
       "source_file": "infra/platform/provisioningUser.ts",
       "source_location": "L220",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "provisioninguserpassword",
       "id": "infra_platform_provisioninguser_provisioninguserpassword"
     },
@@ -561,7 +561,7 @@
       "source_file": "infra/platform/provisioningUser.ts",
       "source_location": "L241",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "provisioninguser",
       "id": "infra_platform_provisioninguser_provisioninguser"
     },
@@ -571,7 +571,7 @@
       "source_file": "infra/platform/provisioningUser.ts",
       "source_location": "L257",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "provisioninguserpasswordsecret",
       "id": "infra_platform_provisioninguser_provisioninguserpasswordsecret"
     },
@@ -581,7 +581,7 @@
       "source_file": "infra/platform/provisioningUser.ts",
       "source_location": "L275",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "provisioningusername",
       "id": "infra_platform_provisioninguser_provisioningusername"
     },
@@ -589,7 +589,7 @@
       "label": "GhostTenant Smoke Test README",
       "file_type": "document",
       "source_type": "infra/tenant/smoke-test/README.md",
-      "community": 59,
+      "community": 55,
       "norm_label": "ghosttenant smoke test readme",
       "_origin": "semantic",
       "id": "infra_tenant_smoke_test_readme"
@@ -598,7 +598,7 @@
       "label": "CLAUDE.md",
       "file_type": "document",
       "source_file": "CLAUDE.md",
-      "community": 34,
+      "community": 31,
       "norm_label": "claude.md",
       "_origin": "semantic",
       "id": "claude_md"
@@ -607,7 +607,7 @@
       "label": "Infrastructure README",
       "file_type": "document",
       "source_file": "infra/README.md",
-      "community": 57,
+      "community": 53,
       "norm_label": "infrastructure readme",
       "_origin": "semantic",
       "id": "infra_readme"
@@ -616,7 +616,7 @@
       "label": "Ghost Tenant Template Repo",
       "file_type": "concept",
       "source_file": "infra/README.md",
-      "community": 24,
+      "community": 20,
       "norm_label": "ghost tenant template repo",
       "_origin": "semantic",
       "id": "ghost_platform_tenant_template"
@@ -627,7 +627,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "platform/config.ts",
       "id": "infra_platform_config"
     },
@@ -637,7 +637,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "config",
       "id": "infra_platform_config_config"
     },
@@ -647,7 +647,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "gcpconfig",
       "id": "infra_platform_config_gcpconfig"
     },
@@ -657,7 +657,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "projectid",
       "id": "infra_platform_config_projectid"
     },
@@ -667,7 +667,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "region",
       "id": "infra_platform_config_region"
     },
@@ -677,7 +677,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "dbinstancename",
       "id": "infra_platform_config_dbinstancename"
     },
@@ -687,7 +687,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L18",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "tenantimagerepositoryid",
       "id": "infra_platform_config_tenantimagerepositoryid"
     },
@@ -697,7 +697,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L19",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "mediabucketname",
       "id": "infra_platform_config_mediabucketname"
     },
@@ -707,7 +707,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L39",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "githubrepo",
       "id": "infra_platform_config_githubrepo"
     },
@@ -717,7 +717,7 @@
       "source_file": "infra/platform/config.ts",
       "source_location": "L52",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "workloadidentitypoolid",
       "id": "infra_platform_config_workloadidentitypoolid"
     },
@@ -727,7 +727,7 @@
       "source_file": "infra/platform/serviceAccounts.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "serviceaccounts.ts",
       "id": "infra_platform_serviceaccounts"
     },
@@ -737,7 +737,7 @@
       "source_file": "infra/platform/serviceAccounts.ts",
       "source_location": "L18",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "deployersa",
       "id": "infra_platform_serviceaccounts_deployersa"
     },
@@ -747,7 +747,7 @@
       "source_file": "infra/platform/serviceAccounts.ts",
       "source_location": "L30",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "deployermember",
       "id": "infra_platform_serviceaccounts_deployermember"
     },
@@ -757,7 +757,7 @@
       "source_file": "infra/platform/serviceAccounts.ts",
       "source_location": "L60",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "projectroles",
       "id": "infra_platform_serviceaccounts_projectroles"
     },
@@ -767,7 +767,7 @@
       "source_file": "infra/platform/serviceAccounts.ts",
       "source_location": "L184",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "deployermediabucketaccess",
       "id": "infra_platform_serviceaccounts_deployermediabucketaccess"
     },
@@ -777,7 +777,7 @@
       "source_file": "infra/platform/serviceAccounts.ts",
       "source_location": "L251",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "deployerserviceaccountemail",
       "id": "infra_platform_serviceaccounts_deployerserviceaccountemail"
     },
@@ -787,7 +787,7 @@
       "source_file": "infra/platform/serviceAccounts.ts",
       "source_location": "L94",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "note: mediabucket.ts's grant is deliberately not in this list. it is",
       "id": "infra_platform_serviceaccounts_rationale_94"
     },
@@ -795,7 +795,7 @@
       "label": "Official Ghost Image",
       "file_type": "image",
       "source_file": null,
-      "community": 42,
+      "community": 39,
       "norm_label": "official ghost image",
       "_origin": "semantic",
       "id": "ghost_official_image"
@@ -804,7 +804,7 @@
       "label": "GCP Artifact Registry",
       "file_type": "concept",
       "source_file": null,
-      "community": 28,
+      "community": 24,
       "norm_label": "gcp artifact registry",
       "_origin": "semantic",
       "id": "gcp_artifact_registry"
@@ -813,7 +813,7 @@
       "label": "GCP Cloud Run",
       "file_type": "concept",
       "source_file": null,
-      "community": 36,
+      "community": 33,
       "norm_label": "gcp cloud run",
       "_origin": "semantic",
       "id": "gcp_cloud_run"
@@ -822,7 +822,7 @@
       "label": "GCP Cloud SQL",
       "file_type": "concept",
       "source_file": null,
-      "community": 37,
+      "community": 34,
       "norm_label": "gcp cloud sql",
       "_origin": "semantic",
       "id": "gcp_cloud_sql"
@@ -831,7 +831,7 @@
       "label": "GCP Media Bucket",
       "file_type": "concept",
       "source_file": null,
-      "community": 40,
+      "community": 37,
       "norm_label": "gcp media bucket",
       "_origin": "semantic",
       "id": "gcp_storage_bucket"
@@ -842,7 +842,7 @@
       "source_file": "eslint.config.js",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 35,
+      "community": 32,
       "norm_label": "eslint.config.js",
       "id": "eslint_config"
     },
@@ -852,7 +852,7 @@
       "source_file": "infra/platform/workloadIdentity.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "workloadidentity.ts",
       "id": "infra_platform_workloadidentity"
     },
@@ -862,7 +862,7 @@
       "source_file": "infra/platform/workloadIdentity.ts",
       "source_location": "L16",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "pool",
       "id": "infra_platform_workloadidentity_pool"
     },
@@ -872,7 +872,7 @@
       "source_file": "infra/platform/workloadIdentity.ts",
       "source_location": "L27",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "provider",
       "id": "infra_platform_workloadidentity_provider"
     },
@@ -882,7 +882,7 @@
       "source_file": "infra/platform/workloadIdentity.ts",
       "source_location": "L114",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "deployerimpersonation",
       "id": "infra_platform_workloadidentity_deployerimpersonation"
     },
@@ -892,7 +892,7 @@
       "source_file": "infra/platform/workloadIdentity.ts",
       "source_location": "L131",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "workloadidentityprovider",
       "id": "infra_platform_workloadidentity_workloadidentityprovider"
     },
@@ -905,7 +905,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 24,
+      "community": 20,
       "norm_label": "contributing.md",
       "_origin": "semantic",
       "id": "contributing"
@@ -919,7 +919,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 24,
+      "community": 20,
       "norm_label": ".github/dependabot.yml",
       "_origin": "semantic",
       "id": "github_dependabot"
@@ -928,7 +928,7 @@
       "label": "Platform Stack",
       "file_type": "code",
       "source_file": "infra/platform/",
-      "community": 24,
+      "community": 20,
       "norm_label": "platform stack",
       "_origin": "semantic",
       "id": "infra_platform"
@@ -939,7 +939,7 @@
       "source_file": "infra/platform/apis.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "apis.ts",
       "id": "infra_platform_apis"
     },
@@ -949,7 +949,7 @@
       "source_file": "infra/platform/apis.ts",
       "source_location": "L18",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "requiredservices",
       "id": "infra_platform_apis_requiredservices"
     },
@@ -959,7 +959,7 @@
       "source_file": "infra/platform/apis.ts",
       "source_location": "L62",
       "_origin": "ast",
-      "community": 2,
+      "community": 3,
       "norm_label": "enabledapis",
       "id": "infra_platform_apis_enabledapis"
     },
@@ -967,7 +967,7 @@
       "label": "Pulumi Provisioning Program",
       "file_type": "code",
       "source_file": "infra/provisioning",
-      "community": 56,
+      "community": 52,
       "norm_label": "pulumi provisioning program",
       "_origin": "semantic",
       "id": "infra_provisioning_pulumi"
@@ -975,7 +975,7 @@
     {
       "label": "Workload Identity Federation",
       "file_type": "concept",
-      "community": 41,
+      "community": 38,
       "norm_label": "workload identity federation",
       "_origin": "semantic",
       "id": "gcp_workload_identity_federation"
@@ -983,7 +983,7 @@
     {
       "label": "Pulumi Platform Stack",
       "file_type": "concept",
-      "community": 62,
+      "community": 58,
       "norm_label": "pulumi platform stack",
       "_origin": "semantic",
       "id": "pulumi_platform_stack"
@@ -994,7 +994,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "provisioning/config.ts",
       "id": "infra_provisioning_config"
     },
@@ -1004,7 +1004,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "config",
       "id": "infra_provisioning_config_config"
     },
@@ -1014,7 +1014,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "gcpconfig",
       "id": "infra_provisioning_config_gcpconfig"
     },
@@ -1024,7 +1024,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "projectid",
       "id": "infra_provisioning_config_projectid"
     },
@@ -1034,7 +1034,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "region",
       "id": "infra_provisioning_config_region"
     },
@@ -1044,7 +1044,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L14",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "tenantname",
       "id": "infra_provisioning_config_tenantname"
     },
@@ -1054,7 +1054,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "tenantgithubrepo",
       "id": "infra_provisioning_config_tenantgithubrepo"
     },
@@ -1064,7 +1064,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L26",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "statebucketname",
       "id": "infra_provisioning_config_statebucketname"
     },
@@ -1074,7 +1074,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L29",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "deployerserviceaccountid",
       "id": "infra_provisioning_config_deployerserviceaccountid"
     },
@@ -1084,7 +1084,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L30",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "workloadidentitypoolid",
       "id": "infra_provisioning_config_workloadidentitypoolid"
     },
@@ -1094,7 +1094,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L38",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "platformdbinstanceconnectionname",
       "id": "infra_provisioning_config_platformdbinstanceconnectionname"
     },
@@ -1104,7 +1104,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L39",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "platformtenantimagerepositorydockerpath",
       "id": "infra_provisioning_config_platformtenantimagerepositorydockerpath"
     },
@@ -1114,7 +1114,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L42",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "platformmediabucketurl",
       "id": "infra_provisioning_config_platformmediabucketurl"
     },
@@ -1124,7 +1124,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L49",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "provisioningserviceaccountemail",
       "id": "infra_provisioning_config_provisioningserviceaccountemail"
     },
@@ -1134,7 +1134,7 @@
       "source_file": "infra/provisioning/config.ts",
       "source_location": "L54",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "secretskmskeyid",
       "id": "infra_provisioning_config_secretskmskeyid"
     },
@@ -1144,7 +1144,7 @@
       "source_file": "infra/tenant/database.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "tenant/database.ts",
       "id": "infra_tenant_database"
     },
@@ -1154,7 +1154,7 @@
       "source_file": "infra/tenant/database.ts",
       "source_location": "L29",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "default_max_user_connections",
       "id": "infra_tenant_database_default_max_user_connections"
     },
@@ -1166,7 +1166,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "databaseresult",
       "id": "infra_tenant_database_databaseresult"
     },
@@ -1177,7 +1177,7 @@
       "source_location": "L78",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "createtenantdatabase()",
       "id": "infra_tenant_database_createtenantdatabase"
     },
@@ -1187,7 +1187,7 @@
       "source_file": "infra/tenant/serviceAccount.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "serviceaccount.ts",
       "id": "infra_tenant_serviceaccount"
     },
@@ -1198,7 +1198,7 @@
       "source_location": "L18",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "createserviceaccount()",
       "id": "infra_tenant_serviceaccount_createserviceaccount"
     },
@@ -1208,7 +1208,7 @@
       "source_file": "infra/tenant/storage.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "storage.ts",
       "id": "infra_tenant_storage"
     },
@@ -1220,7 +1220,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "storageresult",
       "id": "infra_tenant_storage_storageresult"
     },
@@ -1231,7 +1231,7 @@
       "source_location": "L146",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "createtenantstorage()",
       "id": "infra_tenant_storage_createtenantstorage"
     },
@@ -1244,7 +1244,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 23,
+      "community": 19,
       "norm_label": "actions/checkout",
       "_origin": "semantic",
       "id": "actions_checkout"
@@ -1255,7 +1255,7 @@
       "source_file": "infra/tenant/naming.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "naming.ts",
       "id": "infra_tenant_naming"
     },
@@ -1265,7 +1265,7 @@
       "source_file": "infra/tenant/naming.ts",
       "source_location": "L14",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "tenant_resource_prefix",
       "id": "infra_tenant_naming_tenant_resource_prefix"
     },
@@ -1275,7 +1275,7 @@
       "source_file": "infra/tenant/naming.ts",
       "source_location": "L16",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "max_tenant_name_length",
       "id": "infra_tenant_naming_max_tenant_name_length"
     },
@@ -1286,7 +1286,7 @@
       "source_location": "L37",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "validatetenantname()",
       "id": "infra_tenant_naming_validatetenantname"
     },
@@ -1297,7 +1297,7 @@
       "source_location": "L54",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "serviceaccountid()",
       "id": "infra_tenant_naming_serviceaccountid"
     },
@@ -1308,7 +1308,7 @@
       "source_location": "L59",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "cloudrunservicename()",
       "id": "infra_tenant_naming_cloudrunservicename"
     },
@@ -1319,7 +1319,7 @@
       "source_location": "L64",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "sqlidentifier()",
       "id": "infra_tenant_naming_sqlidentifier"
     },
@@ -1330,7 +1330,7 @@
       "source_location": "L69",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "databaseandusername()",
       "id": "infra_tenant_naming_databaseandusername"
     },
@@ -1341,7 +1341,7 @@
       "source_location": "L77",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "bucketnamefromurl()",
       "id": "infra_tenant_naming_bucketnamefromurl"
     },
@@ -1352,7 +1352,7 @@
       "source_location": "L95",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "mediaobjectprefix()",
       "id": "infra_tenant_naming_mediaobjectprefix"
     },
@@ -1363,7 +1363,7 @@
       "source_location": "L108",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "mediatenantprefixenvvalue()",
       "id": "infra_tenant_naming_mediatenantprefixenvvalue"
     },
@@ -1374,7 +1374,7 @@
       "source_location": "L120",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "tenantimageref()",
       "id": "infra_tenant_naming_tenantimageref"
     },
@@ -1385,7 +1385,7 @@
       "source_location": "L126",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "tenantsecretname()",
       "id": "infra_tenant_naming_tenantsecretname"
     },
@@ -1396,7 +1396,7 @@
       "source_location": "L137",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "mediaobjectconditionresource()",
       "id": "infra_tenant_naming_mediaobjectconditionresource"
     },
@@ -1404,7 +1404,7 @@
       "label": "Tenant Pulumi Component",
       "file_type": "code",
       "source_file": "infra/tenant",
-      "community": 58,
+      "community": 54,
       "norm_label": "tenant pulumi component",
       "_origin": "semantic",
       "id": "infra_tenant"
@@ -1415,7 +1415,7 @@
       "source_file": "infra/provisioning/scripts/restore-stack-secrets-config.py",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 26,
+      "community": 22,
       "norm_label": "restore-stack-secrets-config.py",
       "id": "infra_provisioning_scripts_restore_stack_secrets_config"
     },
@@ -1426,7 +1426,7 @@
       "source_location": "L23",
       "_callable": true,
       "_origin": "ast",
-      "community": 26,
+      "community": 22,
       "norm_label": "restore()",
       "id": "infra_provisioning_scripts_restore_stack_secrets_config_restore"
     },
@@ -1436,7 +1436,7 @@
       "source_file": "",
       "source_location": "",
       "_origin": "ast",
-      "community": 26,
+      "community": 22,
       "norm_label": "path",
       "id": "path"
     },
@@ -1447,7 +1447,7 @@
       "source_location": "L53",
       "_callable": true,
       "_origin": "ast",
-      "community": 26,
+      "community": 22,
       "norm_label": "main()",
       "id": "infra_provisioning_scripts_restore_stack_secrets_config_main"
     },
@@ -1457,7 +1457,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "provisioning/index.ts",
       "id": "infra_provisioning_index"
     },
@@ -1467,7 +1467,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L41",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "statebucket",
       "id": "infra_provisioning_index_statebucket"
     },
@@ -1477,7 +1477,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L50",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "deployersa",
       "id": "infra_provisioning_index_deployersa"
     },
@@ -1487,7 +1487,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L55",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "deployermember",
       "id": "infra_provisioning_index_deployermember"
     },
@@ -1497,7 +1497,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L57",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "pool",
       "id": "infra_provisioning_index_pool"
     },
@@ -1507,7 +1507,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L63",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "provider",
       "id": "infra_provisioning_index_provider"
     },
@@ -1517,7 +1517,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L79",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "deployerimpersonation",
       "id": "infra_provisioning_index_deployerimpersonation"
     },
@@ -1527,7 +1527,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L118",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "deployerprojectroles",
       "id": "infra_provisioning_index_deployerprojectroles"
     },
@@ -1537,7 +1537,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L133",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "deployerstatebucketaccess",
       "id": "infra_provisioning_index_deployerstatebucketaccess"
     },
@@ -1547,7 +1547,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L148",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "provisionerstatebucketaccess",
       "id": "infra_provisioning_index_provisionerstatebucketaccess"
     },
@@ -1557,7 +1557,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L168",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "deployerkmsaccess",
       "id": "infra_provisioning_index_deployerkmsaccess"
     },
@@ -1567,7 +1567,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L179",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "githubactionsworkloadidentityprovider",
       "id": "infra_provisioning_index_githubactionsworkloadidentityprovider"
     },
@@ -1577,7 +1577,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L180",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "githubactionsdeployerserviceaccountemail",
       "id": "infra_provisioning_index_githubactionsdeployerserviceaccountemail"
     },
@@ -1587,7 +1587,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L181",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "pulumistatebucket",
       "id": "infra_provisioning_index_pulumistatebucket"
     },
@@ -1597,7 +1597,7 @@
       "source_file": "infra/provisioning/index.ts",
       "source_location": "L182",
       "_origin": "ast",
-      "community": 6,
+      "community": 7,
       "norm_label": "tenantstackconfig",
       "id": "infra_provisioning_index_tenantstackconfig"
     },
@@ -1607,7 +1607,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "assert-no-platform-deletes.py",
       "id": "infra_platform_scripts_assert_no_platform_deletes"
     },
@@ -1618,7 +1618,7 @@
       "source_location": "L102",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "_declaration_pattern()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern"
     },
@@ -1628,7 +1628,7 @@
       "source_file": "",
       "source_location": "",
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "pattern",
       "id": "infra_platform_scripts_assert_no_platform_deletes_py_pattern"
     },
@@ -1639,7 +1639,7 @@
       "source_location": "L126",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "destructive_steps()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_destructive_steps"
     },
@@ -1650,7 +1650,7 @@
       "source_location": "L177",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "_plan()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_plan"
     },
@@ -1661,7 +1661,7 @@
       "source_location": "L181",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "self_test()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_self_test"
     },
@@ -1672,7 +1672,7 @@
       "source_location": "L245",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "_quarantine()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_quarantine"
     },
@@ -1683,7 +1683,7 @@
       "source_location": "L259",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "_print_quarantined()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_print_quarantined"
     },
@@ -1694,7 +1694,7 @@
       "source_location": "L276",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "_coverage_self_test()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test"
     },
@@ -1705,7 +1705,7 @@
       "source_location": "L329",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "verify_coverage()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_verify_coverage"
     },
@@ -1716,7 +1716,7 @@
       "source_location": "L380",
       "_callable": true,
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "main()",
       "id": "infra_platform_scripts_assert_no_platform_deletes_main"
     },
@@ -1726,7 +1726,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L103",
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "match `new <ctor>('<name>'` -- a resource *declaration*, not a mention....",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_103"
     },
@@ -1736,7 +1736,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L127",
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "return (name, op) for every protected resource this plan would destroy. raises...",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_127"
     },
@@ -1746,7 +1746,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L246",
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "run fn with stdout captured, then return its result plus what it printed....",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_246"
     },
@@ -1756,7 +1756,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L260",
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "print captured output labelled by whether its case passed. labelling it...",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_260"
     },
@@ -1766,7 +1766,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L277",
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "prove `--verify-coverage` still distinguishes a declaration from a mention....",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_277"
     },
@@ -1776,7 +1776,7 @@
       "source_file": "infra/platform/scripts/assert-no-platform-deletes.py",
       "source_location": "L330",
       "_origin": "ast",
-      "community": 14,
+      "community": 13,
       "norm_label": "fail if a protected name no longer appears in the pulumi program. the quiet way...",
       "id": "infra_platform_scripts_assert_no_platform_deletes_rationale_330"
     },
@@ -1987,7 +1987,7 @@
       "source_file": "services/mailgun-shim/src/auth.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "auth.ts",
       "id": "services_mailgun_shim_src_auth"
     },
@@ -1997,7 +1997,7 @@
       "source_file": "services/mailgun-shim/src/auth.ts",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "express-serve-static-core",
       "id": "services_mailgun_shim_src_auth_express_serve_static_core"
     },
@@ -2009,7 +2009,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "locals",
       "id": "services_mailgun_shim_src_auth_locals"
     },
@@ -2020,7 +2020,7 @@
       "source_location": "L10",
       "_callable": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "parsebasicauth()",
       "id": "services_mailgun_shim_src_auth_parsebasicauth"
     },
@@ -2031,7 +2031,7 @@
       "source_location": "L33",
       "_callable": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "requiretenantfordomain()",
       "id": "services_mailgun_shim_src_auth_requiretenantfordomain"
     },
@@ -2041,7 +2041,7 @@
       "source_file": "services/mailgun-shim/src/crypto.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "crypto.ts",
       "id": "services_mailgun_shim_src_crypto"
     },
@@ -2053,7 +2053,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "hashedapikey",
       "id": "services_mailgun_shim_src_crypto_hashedapikey"
     },
@@ -2064,7 +2064,7 @@
       "source_location": "L19",
       "_callable": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "hashapikey()",
       "id": "services_mailgun_shim_src_crypto_hashapikey"
     },
@@ -2075,7 +2075,7 @@
       "source_location": "L25",
       "_callable": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "verifyapikey()",
       "id": "services_mailgun_shim_src_crypto_verifyapikey"
     },
@@ -2085,7 +2085,7 @@
       "source_file": "services/mailgun-shim/src/mailgunFields.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "mailgunfields.ts",
       "id": "services_mailgun_shim_src_mailgunfields"
     },
@@ -2097,7 +2097,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "parsedmessagefields",
       "id": "services_mailgun_shim_src_mailgunfields_parsedmessagefields"
     },
@@ -2108,7 +2108,7 @@
       "source_location": "L27",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "accumulate()",
       "id": "services_mailgun_shim_src_mailgunfields_accumulate"
     },
@@ -2119,7 +2119,7 @@
       "source_location": "L38",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "asstring()",
       "id": "services_mailgun_shim_src_mailgunfields_asstring"
     },
@@ -2130,7 +2130,7 @@
       "source_location": "L45",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "asarray()",
       "id": "services_mailgun_shim_src_mailgunfields_asarray"
     },
@@ -2141,7 +2141,7 @@
       "source_location": "L52",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "parsemailgunmessagefields()",
       "id": "services_mailgun_shim_src_mailgunfields_parsemailgunmessagefields"
     },
@@ -2152,7 +2152,7 @@
       "source_location": "L121",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "resolverecipienttokens()",
       "id": "services_mailgun_shim_src_mailgunfields_resolverecipienttokens"
     },
@@ -2162,7 +2162,7 @@
       "source_file": "services/mailgun-shim/src/rateLimit.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "ratelimit.ts",
       "id": "services_mailgun_shim_src_ratelimit"
     },
@@ -2173,7 +2173,7 @@
       "source_location": "L15",
       "_callable": true,
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "tenantratelimiter()",
       "id": "services_mailgun_shim_src_ratelimit_tenantratelimiter"
     },
@@ -2183,7 +2183,7 @@
       "source_file": "services/mailgun-shim/src/routes/events.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "events.ts",
       "id": "services_mailgun_shim_src_routes_events"
     },
@@ -2194,7 +2194,7 @@
       "source_location": "L9",
       "_callable": true,
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "parseeventtypefilter()",
       "id": "services_mailgun_shim_src_routes_events_parseeventtypefilter"
     },
@@ -2205,7 +2205,7 @@
       "source_location": "L20",
       "_callable": true,
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "towireevent()",
       "id": "services_mailgun_shim_src_routes_events_towireevent"
     },
@@ -2216,7 +2216,7 @@
       "source_location": "L46",
       "_callable": true,
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "createeventsrouter()",
       "id": "services_mailgun_shim_src_routes_events_createeventsrouter"
     },
@@ -2226,7 +2226,7 @@
       "source_file": "services/mailgun-shim/src/smtp.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "smtp.ts",
       "id": "services_mailgun_shim_src_smtp"
     },
@@ -2238,7 +2238,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "deliveryhostconfig",
       "id": "services_mailgun_shim_src_smtp_deliveryhostconfig"
     },
@@ -2261,7 +2261,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "recipientsendparams",
       "id": "services_mailgun_shim_src_smtp_recipientsendparams"
     },
@@ -2273,7 +2273,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "recipientsendresult",
       "id": "services_mailgun_shim_src_smtp_recipientsendresult"
     },
@@ -2284,7 +2284,7 @@
       "source_location": "L56",
       "_callable": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "issaferecipientaddress()",
       "id": "services_mailgun_shim_src_smtp_issaferecipientaddress"
     },
@@ -2295,7 +2295,7 @@
       "source_location": "L64",
       "_callable": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "sendtorecipient()",
       "id": "services_mailgun_shim_src_smtp_sendtorecipient"
     },
@@ -2305,7 +2305,7 @@
       "source_file": "services/mailgun-shim/src/smtp.ts",
       "source_location": "L46",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "rfc-2822",
       "id": "docref_rfc_2822"
     },
@@ -2315,7 +2315,7 @@
       "source_file": "services/mailgun-shim/test/helpers/mailgunClient.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "mailgunclient.ts",
       "id": "services_mailgun_shim_test_helpers_mailgunclient"
     },
@@ -2327,7 +2327,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "mailgunconstructor",
       "id": "services_mailgun_shim_test_helpers_mailgunclient_mailgunconstructor"
     },
@@ -2337,7 +2337,7 @@
       "source_file": "services/mailgun-shim/test/helpers/mailgunClient.ts",
       "source_location": "L21",
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "mailgunctor",
       "id": "services_mailgun_shim_test_helpers_mailgunclient_mailgunctor"
     },
@@ -2348,7 +2348,7 @@
       "source_location": "L29",
       "_callable": true,
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "createmailgunclient()",
       "id": "services_mailgun_shim_test_helpers_mailgunclient_createmailgunclient"
     },
@@ -2358,7 +2358,7 @@
       "source_file": "services/mailgun-shim/test/helpers/smtpSink.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "smtpsink.ts",
       "id": "services_mailgun_shim_test_helpers_smtpsink"
     },
@@ -2370,7 +2370,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "receivedmessage",
       "id": "services_mailgun_shim_test_helpers_smtpsink_receivedmessage"
     },
@@ -2382,7 +2382,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "smtpsink",
       "id": "services_mailgun_shim_test_helpers_smtpsink_smtpsink"
     },
@@ -2393,7 +2393,7 @@
       "source_location": "L18",
       "_callable": true,
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": ".waitforcount()",
       "id": "services_mailgun_shim_test_helpers_smtpsink_smtpsink_waitforcount"
     },
@@ -2404,7 +2404,7 @@
       "source_location": "L19",
       "_callable": true,
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": ".close()",
       "id": "services_mailgun_shim_test_helpers_smtpsink_smtpsink_close"
     },
@@ -2415,7 +2415,7 @@
       "source_location": "L28",
       "_callable": true,
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "startsmtpsink()",
       "id": "services_mailgun_shim_test_helpers_smtpsink_startsmtpsink"
     },
@@ -2425,7 +2425,7 @@
       "source_file": "services/mailgun-shim/test/unit/auth.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 22,
+      "community": 1,
       "norm_label": "auth.test.ts",
       "id": "services_mailgun_shim_test_unit_auth_test"
     },
@@ -2437,7 +2437,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 22,
+      "community": 1,
       "norm_label": "fakeresponse",
       "id": "services_mailgun_shim_test_unit_auth_test_fakeresponse"
     },
@@ -2448,7 +2448,7 @@
       "source_location": "L10",
       "_callable": true,
       "_origin": "ast",
-      "community": 22,
+      "community": 1,
       "norm_label": ".status()",
       "id": "services_mailgun_shim_test_unit_auth_test_fakeresponse_status"
     },
@@ -2459,7 +2459,7 @@
       "source_location": "L11",
       "_callable": true,
       "_origin": "ast",
-      "community": 22,
+      "community": 1,
       "norm_label": ".json()",
       "id": "services_mailgun_shim_test_unit_auth_test_fakeresponse_json"
     },
@@ -2470,7 +2470,7 @@
       "source_location": "L14",
       "_callable": true,
       "_origin": "ast",
-      "community": 22,
+      "community": 1,
       "norm_label": "fakereq()",
       "id": "services_mailgun_shim_test_unit_auth_test_fakereq"
     },
@@ -2481,7 +2481,7 @@
       "source_location": "L18",
       "_callable": true,
       "_origin": "ast",
-      "community": 22,
+      "community": 1,
       "norm_label": "fakeres()",
       "id": "services_mailgun_shim_test_unit_auth_test_fakeres"
     },
@@ -2492,7 +2492,7 @@
       "source_location": "L35",
       "_callable": true,
       "_origin": "ast",
-      "community": 22,
+      "community": 1,
       "norm_label": "basicauthheader()",
       "id": "services_mailgun_shim_test_unit_auth_test_basicauthheader"
     },
@@ -2502,7 +2502,7 @@
       "source_file": "services/mailgun-shim/test/unit/crypto.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "crypto.test.ts",
       "id": "services_mailgun_shim_test_unit_crypto_test"
     },
@@ -2512,7 +2512,7 @@
       "source_file": "services/mailgun-shim/test/unit/helpers/startRouter.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "startrouter.ts",
       "id": "services_mailgun_shim_test_unit_helpers_startrouter"
     },
@@ -2524,7 +2524,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "startedrouter",
       "id": "services_mailgun_shim_test_unit_helpers_startrouter_startedrouter"
     },
@@ -2535,7 +2535,7 @@
       "source_location": "L7",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": ".close()",
       "id": "services_mailgun_shim_test_unit_helpers_startrouter_startedrouter_close"
     },
@@ -2546,7 +2546,7 @@
       "source_location": "L17",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "startrouter()",
       "id": "services_mailgun_shim_test_unit_helpers_startrouter_startrouter"
     },
@@ -2557,7 +2557,7 @@
       "source_location": "L35",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "basicauthheader()",
       "id": "services_mailgun_shim_test_unit_helpers_startrouter_basicauthheader"
     },
@@ -2568,7 +2568,7 @@
       "source_location": "L39",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "wait()",
       "id": "services_mailgun_shim_test_unit_helpers_startrouter_wait"
     },
@@ -2578,7 +2578,7 @@
       "source_file": "services/mailgun-shim/test/unit/mailgunFields.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "mailgunfields.test.ts",
       "id": "services_mailgun_shim_test_unit_mailgunfields_test"
     },
@@ -2589,7 +2589,7 @@
       "source_location": "L13",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 16,
       "norm_label": "multipartrequest()",
       "id": "services_mailgun_shim_test_unit_mailgunfields_test_multipartrequest"
     },
@@ -2599,7 +2599,7 @@
       "source_file": "services/mailgun-shim/test/unit/rateLimit.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "ratelimit.test.ts",
       "id": "services_mailgun_shim_test_unit_ratelimit_test"
     },
@@ -2610,7 +2610,7 @@
       "source_location": "L7",
       "_callable": true,
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "startlimitedapp()",
       "id": "services_mailgun_shim_test_unit_ratelimit_test_startlimitedapp"
     },
@@ -2621,7 +2621,7 @@
       "source_location": "L85",
       "_callable": true,
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "fakereqres()",
       "id": "services_mailgun_shim_test_unit_ratelimit_test_fakereqres"
     },
@@ -2632,7 +2632,7 @@
       "source_location": "L115",
       "_callable": true,
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": "runmiddleware()",
       "id": "services_mailgun_shim_test_unit_ratelimit_test_runmiddleware"
     },
@@ -2642,7 +2642,7 @@
       "source_file": "services/mailgun-shim/test/unit/routes/events.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "events.test.ts",
       "id": "services_mailgun_shim_test_unit_routes_events_test"
     },
@@ -2654,7 +2654,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "wireevent",
       "id": "services_mailgun_shim_test_unit_routes_events_test_wireevent"
     },
@@ -2666,7 +2666,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "wireeventsresponse",
       "id": "services_mailgun_shim_test_unit_routes_events_test_wireeventsresponse"
     },
@@ -2677,7 +2677,7 @@
       "source_location": "L36",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "get()",
       "id": "services_mailgun_shim_test_unit_routes_events_test_get"
     },
@@ -2687,7 +2687,7 @@
       "source_file": "services/mailgun-shim/test/unit/routes/suppressions.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "suppressions.test.ts",
       "id": "services_mailgun_shim_test_unit_routes_suppressions_test"
     },
@@ -2698,7 +2698,7 @@
       "source_location": "L23",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "del()",
       "id": "services_mailgun_shim_test_unit_routes_suppressions_test_del"
     },
@@ -2708,7 +2708,7 @@
       "source_file": "services/mailgun-shim/test/unit/smtp.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "smtp.test.ts",
       "id": "services_mailgun_shim_test_unit_smtp_test"
     },
@@ -2719,7 +2719,7 @@
       "source_location": "L5",
       "_callable": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "mocktransport()",
       "id": "services_mailgun_shim_test_unit_smtp_test_mocktransport"
     },
@@ -2729,7 +2729,7 @@
       "source_file": "services/mailgun-shim/test/unit/smtp.test.ts",
       "source_location": "L13",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "base_params",
       "id": "services_mailgun_shim_test_unit_smtp_test_base_params"
     },
@@ -2740,7 +2740,7 @@
       "source_location": "L183",
       "_callable": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "capturingrealtransport()",
       "id": "services_mailgun_shim_test_unit_smtp_test_capturingrealtransport"
     },
@@ -2750,7 +2750,7 @@
       "source_file": "services/mailgun-shim/test/unit/smtp.test.ts",
       "source_location": "L182",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "rfc-822",
       "id": "docref_rfc_822"
     },
@@ -2760,7 +2760,7 @@
       "source_file": "services/mailgun-shim/vitest.config.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 64,
+      "community": 60,
       "norm_label": "vitest.config.ts",
       "id": "services_mailgun_shim_vitest_config"
     },
@@ -2769,7 +2769,7 @@
       "file_type": "code",
       "source_file": ".github/workflows/registry-push.yml",
       "source_location": null,
-      "community": 28,
+      "community": 24,
       "norm_label": "push tenant image workflow",
       "_origin": "semantic",
       "id": "github_workflows_registry_push"
@@ -2779,7 +2779,7 @@
       "file_type": "concept",
       "source_file": ".github/workflows/registry-push.yml",
       "source_location": null,
-      "community": 28,
+      "community": 24,
       "norm_label": "ghost platform tenant image",
       "_origin": "semantic",
       "id": "ghost_platform_tenant_image"
@@ -2793,7 +2793,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": ".pre-commit-config.yaml",
       "_origin": "semantic",
       "id": "pre_commit_config_yaml"
@@ -2807,7 +2807,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": "pre-commit-hooks",
       "_origin": "semantic",
       "id": "pre_commit_hooks_repo"
@@ -2821,7 +2821,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": "trailing-whitespace",
       "_origin": "semantic",
       "id": "pre_commit_hooks_trailing_whitespace"
@@ -2835,7 +2835,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": "end-of-file-fixer",
       "_origin": "semantic",
       "id": "pre_commit_hooks_end_of_file_fixer"
@@ -2849,7 +2849,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": "check-yaml",
       "_origin": "semantic",
       "id": "pre_commit_hooks_check_yaml"
@@ -2863,7 +2863,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": "check-added-large-files",
       "_origin": "semantic",
       "id": "pre_commit_hooks_check_added_large_files"
@@ -2877,7 +2877,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": "check-merge-conflict",
       "_origin": "semantic",
       "id": "pre_commit_hooks_check_merge_conflict"
@@ -2891,7 +2891,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": "prettier",
       "_origin": "semantic",
       "id": "local_prettier"
@@ -2905,7 +2905,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 20,
+      "community": 15,
       "norm_label": "eslint",
       "_origin": "semantic",
       "id": "local_eslint"
@@ -2919,7 +2919,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 23,
+      "community": 19,
       "norm_label": "codeql workflow",
       "_origin": "semantic",
       "id": "github_workflows_codeql_codeql"
@@ -2933,7 +2933,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 23,
+      "community": 19,
       "norm_label": "analyze job",
       "_origin": "semantic",
       "id": "github_workflows_codeql_analyze"
@@ -2947,7 +2947,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 23,
+      "community": 19,
       "norm_label": "github/codeql-action/init",
       "_origin": "semantic",
       "id": "github_codeql_action_init"
@@ -2961,7 +2961,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 23,
+      "community": 19,
       "norm_label": "github/codeql-action/analyze",
       "_origin": "semantic",
       "id": "github_codeql_action_analyze"
@@ -2975,7 +2975,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 30,
+      "community": 26,
       "norm_label": "docs-lint workflow",
       "_origin": "semantic",
       "id": "github_workflows_docs_lint_yml_docs_lint"
@@ -2989,7 +2989,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 31,
+      "community": 27,
       "norm_label": "graphify workflow",
       "_origin": "semantic",
       "id": "github_workflows_graphify_yml_graphify"
@@ -3003,7 +3003,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 30,
+      "community": 26,
       "norm_label": "branchleft/github-workflows/.github/workflows/docs-lint.yml@v1.0.6",
       "_origin": "semantic",
       "id": "branchleft_github_workflows_docs_lint"
@@ -3017,7 +3017,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 31,
+      "community": 27,
       "norm_label": "branchleft/github-workflows/.github/workflows/graphify.yml@v1.0.6",
       "_origin": "semantic",
       "id": "branchleft_github_workflows_graphify"
@@ -3028,7 +3028,7 @@
       "source_file": "infra/tenant/cloudRunService.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "cloudrunservice.test.ts",
       "id": "infra_tenant_cloudrunservice_test"
     },
@@ -3059,7 +3059,7 @@
       "source_file": "services/mailgun-shim/src/cli.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 16,
+      "community": 18,
       "norm_label": "cli.ts",
       "id": "services_mailgun_shim_src_cli"
     },
@@ -3071,7 +3071,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 18,
       "norm_label": "cliio",
       "id": "services_mailgun_shim_src_cli_cliio"
     },
@@ -3082,7 +3082,7 @@
       "source_location": "L10",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 18,
       "norm_label": "generateapikey()",
       "id": "services_mailgun_shim_src_cli_generateapikey"
     },
@@ -3093,7 +3093,7 @@
       "source_location": "L20",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 18,
       "norm_label": "runcli()",
       "id": "services_mailgun_shim_src_cli_runcli"
     },
@@ -3104,7 +3104,7 @@
       "source_location": "L96",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 18,
       "norm_label": "main()",
       "id": "services_mailgun_shim_src_cli_main"
     },
@@ -3114,7 +3114,7 @@
       "source_file": "services/mailgun-shim/src/config.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "src/config.ts",
       "id": "services_mailgun_shim_src_config"
     },
@@ -3126,7 +3126,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "shimconfig",
       "id": "services_mailgun_shim_src_config_shimconfig"
     },
@@ -3138,7 +3138,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "shimenv",
       "id": "services_mailgun_shim_src_config_shimenv"
     },
@@ -3149,7 +3149,7 @@
       "source_location": "L16",
       "_callable": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "requireenv()",
       "id": "services_mailgun_shim_src_config_requireenv"
     },
@@ -3160,7 +3160,7 @@
       "source_location": "L30",
       "_callable": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "loadconfig()",
       "id": "services_mailgun_shim_src_config_loadconfig"
     },
@@ -3282,7 +3282,7 @@
       "source_file": "services/mailgun-shim/src/routes/messages.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 0,
+      "community": 1,
       "norm_label": "messages.ts",
       "id": "services_mailgun_shim_src_routes_messages"
     },
@@ -3293,7 +3293,7 @@
       "source_location": "L18",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 1,
       "norm_label": "isyes()",
       "id": "services_mailgun_shim_src_routes_messages_isyes"
     },
@@ -3304,7 +3304,7 @@
       "source_location": "L30",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 1,
       "norm_label": "deduperecipients()",
       "id": "services_mailgun_shim_src_routes_messages_deduperecipients"
     },
@@ -3315,7 +3315,7 @@
       "source_location": "L42",
       "_callable": true,
       "_origin": "ast",
-      "community": 0,
+      "community": 1,
       "norm_label": "createmessagesrouter()",
       "id": "services_mailgun_shim_src_routes_messages_createmessagesrouter"
     },
@@ -3325,7 +3325,7 @@
       "source_file": "services/mailgun-shim/src/routes/messages.ts",
       "source_location": "L25",
       "_origin": "ast",
-      "community": 0,
+      "community": 1,
       "norm_label": "rfc-5321",
       "id": "docref_rfc_5321"
     },
@@ -3335,7 +3335,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "server.ts",
       "id": "services_mailgun_shim_src_server"
     },
@@ -3345,7 +3345,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "config",
       "id": "services_mailgun_shim_src_server_config"
     },
@@ -3355,7 +3355,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "log",
       "id": "services_mailgun_shim_src_server_log"
     },
@@ -3365,7 +3365,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "store",
       "id": "services_mailgun_shim_src_server_store"
     },
@@ -3375,7 +3375,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "transport",
       "id": "services_mailgun_shim_src_server_transport"
     },
@@ -3385,7 +3385,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L13",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "throttle",
       "id": "services_mailgun_shim_src_server_throttle"
     },
@@ -3395,7 +3395,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L23",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "worker",
       "id": "services_mailgun_shim_src_server_worker"
     },
@@ -3405,7 +3405,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L25",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "app",
       "id": "services_mailgun_shim_src_server_app"
     },
@@ -3415,7 +3415,7 @@
       "source_file": "services/mailgun-shim/src/server.ts",
       "source_location": "L27",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "server",
       "id": "services_mailgun_shim_src_server_server"
     },
@@ -3426,7 +3426,7 @@
       "source_location": "L31",
       "_callable": true,
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "shutdown()",
       "id": "services_mailgun_shim_src_server_shutdown"
     },
@@ -3436,7 +3436,7 @@
       "source_file": "services/mailgun-shim/src/store.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "store.ts",
       "id": "services_mailgun_shim_src_store"
     },
@@ -3448,7 +3448,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "suppressiontype",
       "id": "services_mailgun_shim_src_store_suppressiontype"
     },
@@ -3458,7 +3458,7 @@
       "source_file": "services/mailgun-shim/src/store.ts",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "suppression_types",
       "id": "services_mailgun_shim_src_store_suppression_types"
     },
@@ -3470,7 +3470,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "tenant",
       "id": "services_mailgun_shim_src_store_tenant"
     },
@@ -3482,7 +3482,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "storedevent",
       "id": "services_mailgun_shim_src_store_storedevent"
     },
@@ -3494,7 +3494,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "listeventsoptions",
       "id": "services_mailgun_shim_src_store_listeventsoptions"
     },
@@ -3506,7 +3506,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "listeventsresult",
       "id": "services_mailgun_shim_src_store_listeventsresult"
     },
@@ -3518,7 +3518,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "queuerecipientstatus",
       "id": "services_mailgun_shim_src_store_queuerecipientstatus"
     },
@@ -3530,7 +3530,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "queuebatchpayload",
       "id": "services_mailgun_shim_src_store_queuebatchpayload"
     },
@@ -3542,7 +3542,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "enqueuebatchparams",
       "id": "services_mailgun_shim_src_store_enqueuebatchparams"
     },
@@ -3554,7 +3554,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "duerecipient",
       "id": "services_mailgun_shim_src_store_duerecipient"
     },
@@ -3566,7 +3566,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": "shimstore",
       "id": "services_mailgun_shim_src_store_shimstore"
     },
@@ -3577,7 +3577,7 @@
       "source_location": "L83",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".registertenant()",
       "id": "services_mailgun_shim_src_store_shimstore_registertenant"
     },
@@ -3588,7 +3588,7 @@
       "source_location": "L91",
       "_callable": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": ".verifytenant()",
       "id": "services_mailgun_shim_src_store_shimstore_verifytenant"
     },
@@ -3599,7 +3599,7 @@
       "source_location": "L92",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".tenantexists()",
       "id": "services_mailgun_shim_src_store_shimstore_tenantexists"
     },
@@ -3610,7 +3610,7 @@
       "source_location": "L93",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".listtenants()",
       "id": "services_mailgun_shim_src_store_shimstore_listtenants"
     },
@@ -3621,7 +3621,7 @@
       "source_location": "L95",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".recordevent()",
       "id": "services_mailgun_shim_src_store_shimstore_recordevent"
     },
@@ -3632,7 +3632,7 @@
       "source_location": "L96",
       "_callable": true,
       "_origin": "ast",
-      "community": 18,
+      "community": 1,
       "norm_label": ".listevents()",
       "id": "services_mailgun_shim_src_store_shimstore_listevents"
     },
@@ -3643,7 +3643,7 @@
       "source_location": "L98",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".addsuppression()",
       "id": "services_mailgun_shim_src_store_shimstore_addsuppression"
     },
@@ -3654,7 +3654,7 @@
       "source_location": "L99",
       "_callable": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": ".removesuppression()",
       "id": "services_mailgun_shim_src_store_shimstore_removesuppression"
     },
@@ -3665,7 +3665,7 @@
       "source_location": "L100",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".issuppressed()",
       "id": "services_mailgun_shim_src_store_shimstore_issuppressed"
     },
@@ -3676,7 +3676,7 @@
       "source_location": "L103",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".enqueuebatch()",
       "id": "services_mailgun_shim_src_store_shimstore_enqueuebatch"
     },
@@ -3687,7 +3687,7 @@
       "source_location": "L105",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".claimduerecipients()",
       "id": "services_mailgun_shim_src_store_shimstore_claimduerecipients"
     },
@@ -3698,7 +3698,7 @@
       "source_location": "L106",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".recordrecipientsent()",
       "id": "services_mailgun_shim_src_store_shimstore_recordrecipientsent"
     },
@@ -3709,7 +3709,7 @@
       "source_location": "L108",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".recordrecipientsuppressed()",
       "id": "services_mailgun_shim_src_store_shimstore_recordrecipientsuppressed"
     },
@@ -3720,7 +3720,7 @@
       "source_location": "L109",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".schedulerecipientretry()",
       "id": "services_mailgun_shim_src_store_shimstore_schedulerecipientretry"
     },
@@ -3731,7 +3731,7 @@
       "source_location": "L116",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".recordrecipientfailed()",
       "id": "services_mailgun_shim_src_store_shimstore_recordrecipientfailed"
     },
@@ -3742,7 +3742,7 @@
       "source_location": "L123",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".countpendingrecipients()",
       "id": "services_mailgun_shim_src_store_shimstore_countpendingrecipients"
     },
@@ -3753,7 +3753,7 @@
       "source_location": "L125",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".cleanupcompletedbatches()",
       "id": "services_mailgun_shim_src_store_shimstore_cleanupcompletedbatches"
     },
@@ -3764,7 +3764,7 @@
       "source_location": "L127",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".ping()",
       "id": "services_mailgun_shim_src_store_shimstore_ping"
     },
@@ -3775,7 +3775,7 @@
       "source_location": "L129",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 1,
       "norm_label": ".close()",
       "id": "services_mailgun_shim_src_store_shimstore_close"
     },
@@ -3786,7 +3786,7 @@
       "source_location": "L137",
       "_callable": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "assertsuppressiontype()",
       "id": "services_mailgun_shim_src_store_assertsuppressiontype"
     },
@@ -3797,7 +3797,7 @@
       "source_location": "L148",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 8,
       "norm_label": "assertwalenabled()",
       "id": "services_mailgun_shim_src_store_assertwalenabled"
     },
@@ -3808,7 +3808,7 @@
       "source_location": "L159",
       "_callable": true,
       "_origin": "ast",
-      "community": 17,
+      "community": 1,
       "norm_label": "withtransaction()",
       "id": "services_mailgun_shim_src_store_withtransaction"
     },
@@ -3819,7 +3819,7 @@
       "source_location": "L171",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 0,
       "norm_label": "createsqlitestore()",
       "id": "services_mailgun_shim_src_store_createsqlitestore"
     },
@@ -3997,7 +3997,7 @@
       "source_location": "L42",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": ".status()",
       "id": "services_mailgun_shim_src_worker_workerhandle_status"
     },
@@ -4171,7 +4171,7 @@
       "source_file": "services/mailgun-shim/test/shim.integration.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 19,
+      "community": 14,
       "norm_label": "shim.integration.test.ts",
       "id": "services_mailgun_shim_test_shim_integration_test"
     },
@@ -4181,7 +4181,7 @@
       "source_file": "services/mailgun-shim/test/unit/app.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "app.test.ts",
       "id": "services_mailgun_shim_test_unit_app_test"
     },
@@ -4192,7 +4192,7 @@
       "source_location": "L20",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "listenapp()",
       "id": "services_mailgun_shim_test_unit_app_test_listenapp"
     },
@@ -4223,7 +4223,7 @@
       "source_file": "services/mailgun-shim/test/unit/cli.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 16,
+      "community": 18,
       "norm_label": "cli.test.ts",
       "id": "services_mailgun_shim_test_unit_cli_test"
     },
@@ -4234,7 +4234,7 @@
       "source_location": "L7",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 18,
       "norm_label": "captureio()",
       "id": "services_mailgun_shim_test_unit_cli_test_captureio"
     },
@@ -4244,7 +4244,7 @@
       "source_file": "services/mailgun-shim/test/unit/config.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "config.test.ts",
       "id": "services_mailgun_shim_test_unit_config_test"
     },
@@ -4254,7 +4254,7 @@
       "source_file": "services/mailgun-shim/test/unit/config.test.ts",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 7,
+      "community": 0,
       "norm_label": "baseenv",
       "id": "services_mailgun_shim_test_unit_config_test_baseenv"
     },
@@ -4264,7 +4264,7 @@
       "source_file": "services/mailgun-shim/test/unit/helpers/fakeStore.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "fakestore.ts",
       "id": "services_mailgun_shim_test_unit_helpers_fakestore"
     },
@@ -4276,7 +4276,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "fakeshimstore",
       "id": "services_mailgun_shim_test_unit_helpers_fakestore_fakeshimstore"
     },
@@ -4288,7 +4288,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "recipientrow",
       "id": "services_mailgun_shim_test_unit_helpers_fakestore_recipientrow"
     },
@@ -4300,7 +4300,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "batchrow",
       "id": "services_mailgun_shim_test_unit_helpers_fakestore_batchrow"
     },
@@ -4311,7 +4311,7 @@
       "source_location": "L30",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "suppressionkey()",
       "id": "services_mailgun_shim_test_unit_helpers_fakestore_suppressionkey"
     },
@@ -4322,7 +4322,7 @@
       "source_location": "L42",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "createfakestore()",
       "id": "services_mailgun_shim_test_unit_helpers_fakestore_createfakestore"
     },
@@ -4342,7 +4342,7 @@
       "source_file": "services/mailgun-shim/test/unit/routes/messages.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "messages.test.ts",
       "id": "services_mailgun_shim_test_unit_routes_messages_test"
     },
@@ -4353,7 +4353,7 @@
       "source_location": "L14",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "multipartbody()",
       "id": "services_mailgun_shim_test_unit_routes_messages_test_multipartbody"
     },
@@ -4364,7 +4364,7 @@
       "source_location": "L45",
       "_callable": true,
       "_origin": "ast",
-      "community": 9,
+      "community": 8,
       "norm_label": "post()",
       "id": "services_mailgun_shim_test_unit_routes_messages_test_post"
     },
@@ -4374,7 +4374,7 @@
       "source_file": "services/mailgun-shim/test/unit/store.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 16,
+      "community": 8,
       "norm_label": "store.test.ts",
       "id": "services_mailgun_shim_test_unit_store_test"
     },
@@ -4385,7 +4385,7 @@
       "source_location": "L16",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 8,
       "norm_label": "makeevent()",
       "id": "services_mailgun_shim_test_unit_store_test_makeevent"
     },
@@ -4396,7 +4396,7 @@
       "source_location": "L306",
       "_callable": true,
       "_origin": "ast",
-      "community": 16,
+      "community": 8,
       "norm_label": "payload()",
       "id": "services_mailgun_shim_test_unit_store_test_payload"
     },
@@ -4446,7 +4446,7 @@
       "label": "README.md",
       "file_type": "document",
       "source_file": "README.md",
-      "community": 24,
+      "community": 20,
       "norm_label": "readme.md",
       "_origin": "semantic",
       "id": "readme"
@@ -4455,7 +4455,7 @@
       "label": "Mailgun Shim",
       "file_type": "code",
       "source_file": "services/mailgun-shim/",
-      "community": 63,
+      "community": 59,
       "norm_label": "mailgun shim",
       "_origin": "semantic",
       "id": "services_mailgun_shim"
@@ -4464,7 +4464,7 @@
       "label": "GCP Secret Manager",
       "file_type": "concept",
       "source_file": null,
-      "community": 39,
+      "community": 36,
       "norm_label": "gcp secret manager",
       "_origin": "semantic",
       "id": "gcp_secret_manager"
@@ -4473,7 +4473,7 @@
       "label": "Bootstrap Runbook",
       "file_type": "document",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 52,
+      "community": 48,
       "norm_label": "bootstrap runbook",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_bootstrap"
@@ -4482,7 +4482,7 @@
       "label": "Platform Stack",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 54,
+      "community": 50,
       "norm_label": "platform stack",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_platform_stack"
@@ -4491,7 +4491,7 @@
       "label": "CI Deployer Identity",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 53,
+      "community": 49,
       "norm_label": "ci deployer identity",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_ci_identity"
@@ -4500,7 +4500,7 @@
       "label": "Tenant Provisioning Identity",
       "file_type": "concept",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 55,
+      "community": 51,
       "norm_label": "tenant provisioning identity",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_tenant_provisioning_identity"
@@ -4509,7 +4509,7 @@
       "label": "ghost-platform-deployer Service Account",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 21,
+      "community": 17,
       "norm_label": "ghost-platform-deployer service account",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_ghost_platform_deployer"
@@ -4518,7 +4518,7 @@
       "label": "ghost-tenant-provisioner Service Account",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 21,
+      "community": 17,
       "norm_label": "ghost-tenant-provisioner service account",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_ghost_tenant_provisioner"
@@ -4527,7 +4527,7 @@
       "label": "ghost_platform_provisioner SQL User",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 21,
+      "community": 17,
       "norm_label": "ghost_platform_provisioner sql user",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_ghost_platform_provisioner"
@@ -4536,7 +4536,7 @@
       "label": "gs://branchleft-pulumi-state",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 21,
+      "community": 17,
       "norm_label": "gs://branchleft-pulumi-state",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_pulumi_state_bucket"
@@ -4545,7 +4545,7 @@
       "label": "KMS Key: pulumi-secrets",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 21,
+      "community": 17,
       "norm_label": "kms key: pulumi-secrets",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_pulumi_secrets_key"
@@ -4554,7 +4554,7 @@
       "label": "provision-tenant.yml",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 21,
+      "community": 17,
       "norm_label": "provision-tenant.yml",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_provision_tenant_workflow"
@@ -4563,7 +4563,7 @@
       "label": "Platform infra CI",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 21,
+      "community": 17,
       "norm_label": "platform infra ci",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_platform_infra_ci_workflow"
@@ -4572,7 +4572,7 @@
       "label": "@branchleft/ghost-platform-tenant",
       "file_type": "code",
       "source_file": "infra/platform/RUNBOOK-bootstrap.md",
-      "community": 21,
+      "community": 17,
       "norm_label": "@branchleft/ghost-platform-tenant",
       "_origin": "semantic",
       "id": "infra_platform_runbook_bootstrap_ghost_platform_tenant_pkg"
@@ -4580,7 +4580,7 @@
     {
       "label": "Pulumi CLI",
       "file_type": "concept",
-      "community": 61,
+      "community": 57,
       "norm_label": "pulumi cli",
       "_origin": "semantic",
       "id": "pulumi_cli"
@@ -4588,7 +4588,7 @@
     {
       "label": "GCP KMS",
       "file_type": "concept",
-      "community": 38,
+      "community": 35,
       "norm_label": "gcp kms",
       "_origin": "semantic",
       "id": "gcp_kms"
@@ -4596,7 +4596,7 @@
     {
       "label": "GitHub Actions Workload Identity Federation",
       "file_type": "concept",
-      "community": 43,
+      "community": 40,
       "norm_label": "github actions workload identity federation",
       "_origin": "semantic",
       "id": "github_actions_wif"
@@ -4607,7 +4607,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "platform/package.json",
       "id": "infra_platform_package"
     },
@@ -4617,7 +4617,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "name",
       "id": "infra_platform_package_name"
     },
@@ -4627,7 +4627,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "private",
       "id": "infra_platform_package_private"
     },
@@ -4637,7 +4637,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "main",
       "id": "infra_platform_package_main"
     },
@@ -4647,7 +4647,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "scripts",
       "id": "infra_platform_package_scripts"
     },
@@ -4657,7 +4657,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "typecheck",
       "id": "infra_platform_package_scripts_typecheck"
     },
@@ -4667,7 +4667,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "dependencies",
       "id": "infra_platform_package_dependencies"
     },
@@ -4677,7 +4677,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/gcp",
       "id": "infra_platform_package_dependencies_pulumi_gcp"
     },
@@ -4687,7 +4687,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/pulumi",
       "id": "infra_platform_package_dependencies_pulumi_pulumi"
     },
@@ -4697,7 +4697,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/pulumi",
       "id": "infra_platform_package_json_pulumi_pulumi"
     },
@@ -4707,7 +4707,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/random",
       "id": "infra_platform_package_dependencies_pulumi_random"
     },
@@ -4717,7 +4717,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L13",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "devdependencies",
       "id": "infra_platform_package_devdependencies"
     },
@@ -4727,7 +4727,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L14",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@branchleft/tsconfig",
       "id": "infra_platform_package_devdependencies_branchleft_tsconfig"
     },
@@ -4737,7 +4737,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L15",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/node",
       "id": "infra_platform_package_devdependencies_types_node"
     },
@@ -4747,7 +4747,7 @@
       "source_file": "infra/platform/package.json",
       "source_location": "L16",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "typescript",
       "id": "infra_platform_package_devdependencies_typescript"
     },
@@ -4757,7 +4757,7 @@
       "source_file": "infra/platform/tsconfig.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "platform/tsconfig.json",
       "id": "infra_platform_tsconfig"
     },
@@ -4767,7 +4767,7 @@
       "source_file": "infra/platform/tsconfig.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "extends",
       "id": "infra_platform_tsconfig_extends"
     },
@@ -4777,7 +4777,7 @@
       "source_file": "infra/platform/tsconfig.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "compileroptions",
       "id": "infra_platform_tsconfig_compileroptions"
     },
@@ -4787,7 +4787,7 @@
       "source_file": "infra/platform/tsconfig.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "pretty",
       "id": "infra_platform_tsconfig_compileroptions_pretty"
     },
@@ -4797,7 +4797,7 @@
       "source_file": "infra/platform/tsconfig.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "include",
       "id": "infra_platform_tsconfig_include"
     },
@@ -4807,7 +4807,7 @@
       "source_file": "infra/platform/tsconfig.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "**/*.ts",
       "id": "infra_platform_tsconfig_json_ref_ts"
     },
@@ -4817,7 +4817,7 @@
       "source_file": "infra/platform/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "exclude",
       "id": "infra_platform_tsconfig_exclude"
     },
@@ -4827,7 +4827,7 @@
       "source_file": "infra/platform/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "bin",
       "id": "infra_platform_tsconfig_json_ref_bin"
     },
@@ -4837,7 +4837,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "provisioning/package.json",
       "id": "infra_provisioning_package"
     },
@@ -4847,7 +4847,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "name",
       "id": "infra_provisioning_package_name"
     },
@@ -4857,7 +4857,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "private",
       "id": "infra_provisioning_package_private"
     },
@@ -4867,7 +4867,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "main",
       "id": "infra_provisioning_package_main"
     },
@@ -4877,7 +4877,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "scripts",
       "id": "infra_provisioning_package_scripts"
     },
@@ -4887,7 +4887,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "typecheck",
       "id": "infra_provisioning_package_scripts_typecheck"
     },
@@ -4897,7 +4897,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "dependencies",
       "id": "infra_provisioning_package_dependencies"
     },
@@ -4907,7 +4907,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/gcp",
       "id": "infra_provisioning_package_dependencies_pulumi_gcp"
     },
@@ -4917,7 +4917,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/pulumi",
       "id": "infra_provisioning_package_dependencies_pulumi_pulumi"
     },
@@ -4927,7 +4927,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/pulumi",
       "id": "infra_provisioning_package_json_pulumi_pulumi"
     },
@@ -4937,7 +4937,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "devdependencies",
       "id": "infra_provisioning_package_devdependencies"
     },
@@ -4947,7 +4947,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L13",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@branchleft/tsconfig",
       "id": "infra_provisioning_package_devdependencies_branchleft_tsconfig"
     },
@@ -4957,7 +4957,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L14",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/node",
       "id": "infra_provisioning_package_devdependencies_types_node"
     },
@@ -4967,7 +4967,7 @@
       "source_file": "infra/provisioning/package.json",
       "source_location": "L15",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "typescript",
       "id": "infra_provisioning_package_devdependencies_typescript"
     },
@@ -4977,7 +4977,7 @@
       "source_file": "infra/provisioning/tsconfig.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "provisioning/tsconfig.json",
       "id": "infra_provisioning_tsconfig"
     },
@@ -4987,7 +4987,7 @@
       "source_file": "infra/provisioning/tsconfig.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "extends",
       "id": "infra_provisioning_tsconfig_extends"
     },
@@ -4997,7 +4997,7 @@
       "source_file": "infra/provisioning/tsconfig.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "compileroptions",
       "id": "infra_provisioning_tsconfig_compileroptions"
     },
@@ -5007,7 +5007,7 @@
       "source_file": "infra/provisioning/tsconfig.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "pretty",
       "id": "infra_provisioning_tsconfig_compileroptions_pretty"
     },
@@ -5017,7 +5017,7 @@
       "source_file": "infra/provisioning/tsconfig.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "include",
       "id": "infra_provisioning_tsconfig_include"
     },
@@ -5027,7 +5027,7 @@
       "source_file": "infra/provisioning/tsconfig.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "**/*.ts",
       "id": "infra_provisioning_tsconfig_json_ref_ts"
     },
@@ -5037,7 +5037,7 @@
       "source_file": "infra/provisioning/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "exclude",
       "id": "infra_provisioning_tsconfig_exclude"
     },
@@ -5047,7 +5047,7 @@
       "source_file": "infra/provisioning/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "bin",
       "id": "infra_provisioning_tsconfig_json_ref_bin"
     },
@@ -5057,7 +5057,7 @@
       "source_file": "infra/tenant/cloudRunService.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "cloudrunservice.ts",
       "id": "infra_tenant_cloudrunservice"
     },
@@ -5068,7 +5068,7 @@
       "source_location": "L16",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "plainenv()",
       "id": "infra_tenant_cloudrunservice_plainenv"
     },
@@ -5079,7 +5079,7 @@
       "source_location": "L20",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "secretenv()",
       "id": "infra_tenant_cloudrunservice_secretenv"
     },
@@ -5091,7 +5091,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "cloudrunserviceargs",
       "id": "infra_tenant_cloudrunservice_cloudrunserviceargs"
     },
@@ -5102,7 +5102,7 @@
       "source_location": "L74",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "mailenvs()",
       "id": "infra_tenant_cloudrunservice_mailenvs"
     },
@@ -5113,7 +5113,7 @@
       "source_location": "L99",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "bulkemailenvs()",
       "id": "infra_tenant_cloudrunservice_bulkemailenvs"
     },
@@ -5124,7 +5124,7 @@
       "source_location": "L120",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "createcloudrunservice()",
       "id": "infra_tenant_cloudrunservice_createcloudrunservice"
     },
@@ -5135,7 +5135,7 @@
       "source_location": "L271",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "createpublicinvokerbinding()",
       "id": "infra_tenant_cloudrunservice_createpublicinvokerbinding"
     },
@@ -5145,7 +5145,7 @@
       "source_file": "infra/tenant/index.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "tenant/index.ts",
       "id": "infra_tenant_index"
     },
@@ -5157,7 +5157,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "ghosttenantplatformargs",
       "id": "infra_tenant_index_ghosttenantplatformargs"
     },
@@ -5169,7 +5169,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "ghosttenantmailargs",
       "id": "infra_tenant_index_ghosttenantmailargs"
     },
@@ -5181,7 +5181,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "ghosttenantbulkemailargs",
       "id": "infra_tenant_index_ghosttenantbulkemailargs"
     },
@@ -5193,7 +5193,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "ghosttenantargs",
       "id": "infra_tenant_index_ghosttenantargs"
     },
@@ -5205,7 +5205,7 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "ghosttenant",
       "id": "infra_tenant_index_ghosttenant"
     },
@@ -5216,7 +5216,7 @@
       "source_location": "L164",
       "_callable": true,
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": ".constructor()",
       "id": "infra_tenant_index_ghosttenant_constructor"
     },
@@ -5226,7 +5226,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "tenant/package.json",
       "id": "infra_tenant_package"
     },
@@ -5236,7 +5236,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "name",
       "id": "infra_tenant_package_name"
     },
@@ -5246,7 +5246,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "version",
       "id": "infra_tenant_package_version"
     },
@@ -5256,7 +5256,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "license",
       "id": "infra_tenant_package_license"
     },
@@ -5266,7 +5266,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "main",
       "id": "infra_tenant_package_main"
     },
@@ -5276,7 +5276,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "types",
       "id": "infra_tenant_package_types"
     },
@@ -5286,7 +5286,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "files",
       "id": "infra_tenant_package_files"
     },
@@ -5296,7 +5296,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "dist",
       "id": "infra_tenant_package_json_ref_dist"
     },
@@ -5306,7 +5306,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "repository",
       "id": "infra_tenant_package_repository"
     },
@@ -5316,7 +5316,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "type",
       "id": "infra_tenant_package_repository_type"
     },
@@ -5326,7 +5326,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "url",
       "id": "infra_tenant_package_repository_url"
     },
@@ -5336,7 +5336,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L13",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "directory",
       "id": "infra_tenant_package_repository_directory"
     },
@@ -5346,7 +5346,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L15",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "publishconfig",
       "id": "infra_tenant_package_publishconfig"
     },
@@ -5356,7 +5356,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L16",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "registry",
       "id": "infra_tenant_package_publishconfig_registry"
     },
@@ -5366,7 +5366,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "access",
       "id": "infra_tenant_package_publishconfig_access"
     },
@@ -5376,7 +5376,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L19",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "scripts",
       "id": "infra_tenant_package_scripts"
     },
@@ -5386,7 +5386,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L20",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "typecheck",
       "id": "infra_tenant_package_scripts_typecheck"
     },
@@ -5396,7 +5396,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L21",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "build",
       "id": "infra_tenant_package_scripts_build"
     },
@@ -5406,7 +5406,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L22",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "prepublishonly",
       "id": "infra_tenant_package_scripts_prepublishonly"
     },
@@ -5416,7 +5416,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L23",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "test:unit",
       "id": "infra_tenant_package_scripts_test_unit"
     },
@@ -5426,7 +5426,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L25",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "dependencies",
       "id": "infra_tenant_package_dependencies"
     },
@@ -5436,7 +5436,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L26",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/gcp",
       "id": "infra_tenant_package_dependencies_pulumi_gcp"
     },
@@ -5446,7 +5446,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L26",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/gcp",
       "id": "infra_tenant_package_json_pulumi_gcp"
     },
@@ -5456,7 +5456,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L27",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/pulumi",
       "id": "infra_tenant_package_dependencies_pulumi_pulumi"
     },
@@ -5466,7 +5466,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L27",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/pulumi",
       "id": "infra_tenant_package_json_pulumi_pulumi"
     },
@@ -5476,7 +5476,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L28",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/random",
       "id": "infra_tenant_package_dependencies_pulumi_random"
     },
@@ -5486,7 +5486,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L28",
       "_origin": "ast",
-      "community": 1,
+      "community": 2,
       "norm_label": "@pulumi/random",
       "id": "infra_tenant_package_json_pulumi_random"
     },
@@ -5496,7 +5496,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L30",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "devdependencies",
       "id": "infra_tenant_package_devdependencies"
     },
@@ -5506,7 +5506,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L31",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@branchleft/tsconfig",
       "id": "infra_tenant_package_devdependencies_branchleft_tsconfig"
     },
@@ -5516,7 +5516,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L31",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@branchleft/tsconfig",
       "id": "infra_tenant_package_json_branchleft_tsconfig"
     },
@@ -5526,7 +5526,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L32",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/node",
       "id": "infra_tenant_package_devdependencies_types_node"
     },
@@ -5536,7 +5536,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L32",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/node",
       "id": "infra_tenant_package_json_types_node"
     },
@@ -5546,7 +5546,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L33",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "typescript",
       "id": "infra_tenant_package_devdependencies_typescript"
     },
@@ -5556,7 +5556,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L33",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "typescript",
       "id": "infra_tenant_package_json_typescript"
     },
@@ -5566,7 +5566,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L34",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "vitest",
       "id": "infra_tenant_package_devdependencies_vitest"
     },
@@ -5576,7 +5576,7 @@
       "source_file": "infra/tenant/package.json",
       "source_location": "L34",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "vitest",
       "id": "infra_tenant_package_json_vitest"
     },
@@ -5686,7 +5686,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "exclude",
       "id": "infra_tenant_tsconfig_build_exclude"
     },
@@ -5696,7 +5696,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "dist",
       "id": "infra_tenant_tsconfig_build_json_ref_dist"
     },
@@ -5706,7 +5706,7 @@
       "source_file": "infra/tenant/tsconfig.build.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "**/*.test.ts",
       "id": "infra_tenant_tsconfig_build_json_ref_test_ts"
     },
@@ -5716,7 +5716,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "tenant/tsconfig.json",
       "id": "infra_tenant_tsconfig"
     },
@@ -5726,7 +5726,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "extends",
       "id": "infra_tenant_tsconfig_extends"
     },
@@ -5736,7 +5736,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "@branchleft/tsconfig/strict-1.json",
       "id": "infra_tenant_tsconfig_json_ref_branchleft_tsconfig_strict_1_json"
     },
@@ -5746,7 +5746,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "@branchleft/tsconfig/pulumi.json",
       "id": "infra_tenant_tsconfig_json_ref_branchleft_tsconfig_pulumi_json"
     },
@@ -5756,7 +5756,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "compileroptions",
       "id": "infra_tenant_tsconfig_compileroptions"
     },
@@ -5766,7 +5766,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "pretty",
       "id": "infra_tenant_tsconfig_compileroptions_pretty"
     },
@@ -5776,7 +5776,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "include",
       "id": "infra_tenant_tsconfig_include"
     },
@@ -5786,7 +5786,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "**/*.ts",
       "id": "infra_tenant_tsconfig_json_ref_ts"
     },
@@ -5796,7 +5796,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "exclude",
       "id": "infra_tenant_tsconfig_exclude"
     },
@@ -5806,7 +5806,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "node_modules",
       "id": "infra_tenant_tsconfig_json_ref_node_modules"
     },
@@ -5816,7 +5816,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "bin",
       "id": "infra_tenant_tsconfig_json_ref_bin"
     },
@@ -5826,7 +5826,7 @@
       "source_file": "infra/tenant/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "dist",
       "id": "infra_tenant_tsconfig_json_ref_dist"
     },
@@ -5836,7 +5836,7 @@
       "source_file": "package.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "package.json",
       "id": "package"
     },
@@ -5846,7 +5846,7 @@
       "source_file": "package.json",
       "source_location": "L2",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "name",
       "id": "package_name"
     },
@@ -5856,7 +5856,7 @@
       "source_file": "package.json",
       "source_location": "L3",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "version",
       "id": "package_version"
     },
@@ -5866,7 +5866,7 @@
       "source_file": "package.json",
       "source_location": "L4",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "private",
       "id": "package_private"
     },
@@ -5876,7 +5876,7 @@
       "source_file": "package.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "description",
       "id": "package_description"
     },
@@ -5886,7 +5886,7 @@
       "source_file": "package.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "type",
       "id": "package_type"
     },
@@ -5896,7 +5896,7 @@
       "source_file": "package.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "prettier",
       "id": "package_prettier"
     },
@@ -5906,7 +5906,7 @@
       "source_file": "package.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "scripts",
       "id": "package_scripts"
     },
@@ -5916,7 +5916,7 @@
       "source_file": "package.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "lint",
       "id": "package_scripts_lint"
     },
@@ -5926,7 +5926,7 @@
       "source_file": "package.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "lint:check",
       "id": "package_scripts_lint_check"
     },
@@ -5936,7 +5936,7 @@
       "source_file": "package.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "format",
       "id": "package_scripts_format"
     },
@@ -5946,7 +5946,7 @@
       "source_file": "package.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "format:check",
       "id": "package_scripts_format_check"
     },
@@ -5956,7 +5956,7 @@
       "source_file": "package.json",
       "source_location": "L13",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "prepare",
       "id": "package_scripts_prepare"
     },
@@ -5966,7 +5966,7 @@
       "source_file": "package.json",
       "source_location": "L15",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "devdependencies",
       "id": "package_devdependencies"
     },
@@ -5976,7 +5976,7 @@
       "source_file": "package.json",
       "source_location": "L16",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "@branchleft/prettier-config",
       "id": "package_devdependencies_branchleft_prettier_config"
     },
@@ -5986,7 +5986,7 @@
       "source_file": "package.json",
       "source_location": "L16",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "@branchleft/prettier-config",
       "id": "branchleft_prettier_config"
     },
@@ -5996,7 +5996,7 @@
       "source_file": "package.json",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "@eslint/js",
       "id": "package_devdependencies_eslint_js"
     },
@@ -6006,7 +6006,7 @@
       "source_file": "package.json",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "@eslint/js",
       "id": "eslint_js"
     },
@@ -6016,7 +6016,7 @@
       "source_file": "package.json",
       "source_location": "L18",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "eslint",
       "id": "package_devdependencies_eslint"
     },
@@ -6026,7 +6026,7 @@
       "source_file": "package.json",
       "source_location": "L18",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "eslint",
       "id": "eslint"
     },
@@ -6036,7 +6036,7 @@
       "source_file": "package.json",
       "source_location": "L19",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "eslint-config-prettier",
       "id": "package_devdependencies_eslint_config_prettier"
     },
@@ -6046,7 +6046,7 @@
       "source_file": "package.json",
       "source_location": "L19",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "eslint-config-prettier",
       "id": "eslint_config_prettier"
     },
@@ -6056,7 +6056,7 @@
       "source_file": "package.json",
       "source_location": "L20",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "globals",
       "id": "package_devdependencies_globals"
     },
@@ -6066,7 +6066,7 @@
       "source_file": "package.json",
       "source_location": "L20",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "globals",
       "id": "globals"
     },
@@ -6076,7 +6076,7 @@
       "source_file": "package.json",
       "source_location": "L21",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "prettier",
       "id": "package_devdependencies_prettier"
     },
@@ -6086,7 +6086,7 @@
       "source_file": "package.json",
       "source_location": "L21",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "prettier",
       "id": "prettier"
     },
@@ -6096,7 +6096,7 @@
       "source_file": "package.json",
       "source_location": "L22",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "typescript-eslint",
       "id": "package_devdependencies_typescript_eslint"
     },
@@ -6106,7 +6106,7 @@
       "source_file": "package.json",
       "source_location": "L22",
       "_origin": "ast",
-      "community": 8,
+      "community": 9,
       "norm_label": "typescript-eslint",
       "id": "typescript_eslint"
     },
@@ -6336,7 +6336,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L21",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "devdependencies",
       "id": "services_mailgun_shim_package_devdependencies"
     },
@@ -6346,7 +6346,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L22",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@branchleft/tsconfig",
       "id": "services_mailgun_shim_package_devdependencies_branchleft_tsconfig"
     },
@@ -6356,7 +6356,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L23",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/busboy",
       "id": "services_mailgun_shim_package_devdependencies_types_busboy"
     },
@@ -6366,7 +6366,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L23",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/busboy",
       "id": "types_busboy"
     },
@@ -6376,7 +6376,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L24",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/express",
       "id": "services_mailgun_shim_package_devdependencies_types_express"
     },
@@ -6386,7 +6386,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L24",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/express",
       "id": "types_express"
     },
@@ -6396,7 +6396,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L25",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/mailparser",
       "id": "services_mailgun_shim_package_devdependencies_types_mailparser"
     },
@@ -6406,7 +6406,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L25",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/mailparser",
       "id": "types_mailparser"
     },
@@ -6416,7 +6416,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L26",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/node",
       "id": "services_mailgun_shim_package_devdependencies_types_node"
     },
@@ -6426,7 +6426,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L27",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/nodemailer",
       "id": "services_mailgun_shim_package_devdependencies_types_nodemailer"
     },
@@ -6436,7 +6436,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L27",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/nodemailer",
       "id": "types_nodemailer"
     },
@@ -6446,7 +6446,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L28",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/smtp-server",
       "id": "services_mailgun_shim_package_devdependencies_types_smtp_server"
     },
@@ -6456,7 +6456,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L28",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@types/smtp-server",
       "id": "types_smtp_server"
     },
@@ -6466,7 +6466,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L29",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@vitest/coverage-v8",
       "id": "services_mailgun_shim_package_devdependencies_vitest_coverage_v8"
     },
@@ -6476,7 +6476,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L29",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "@vitest/coverage-v8",
       "id": "vitest_coverage_v8"
     },
@@ -6486,7 +6486,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L30",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "form-data",
       "id": "services_mailgun_shim_package_devdependencies_form_data"
     },
@@ -6496,7 +6496,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L30",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "form-data",
       "id": "form_data"
     },
@@ -6506,7 +6506,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L31",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "mailgun.js",
       "id": "services_mailgun_shim_package_devdependencies_mailgun_js"
     },
@@ -6516,7 +6516,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L31",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "mailgun.js",
       "id": "mailgun_js"
     },
@@ -6526,7 +6526,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L32",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "mailparser",
       "id": "services_mailgun_shim_package_devdependencies_mailparser"
     },
@@ -6536,7 +6536,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L32",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "mailparser",
       "id": "mailparser"
     },
@@ -6546,7 +6546,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L33",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "smtp-server",
       "id": "services_mailgun_shim_package_devdependencies_smtp_server"
     },
@@ -6556,7 +6556,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L33",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "smtp-server",
       "id": "smtp_server"
     },
@@ -6566,7 +6566,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L34",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "typescript",
       "id": "services_mailgun_shim_package_devdependencies_typescript"
     },
@@ -6576,7 +6576,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L35",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "vitest",
       "id": "services_mailgun_shim_package_devdependencies_vitest"
     },
@@ -6586,7 +6586,7 @@
       "source_file": "services/mailgun-shim/package.json",
       "source_location": "L35",
       "_origin": "ast",
-      "community": 5,
+      "community": 6,
       "norm_label": "vitest",
       "id": "services_mailgun_shim_package_json_vitest"
     },
@@ -6596,7 +6596,7 @@
       "source_file": "services/mailgun-shim/src/app.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 0,
+      "community": 1,
       "norm_label": "app.ts",
       "id": "services_mailgun_shim_src_app"
     },
@@ -6607,7 +6607,7 @@
       "source_location": "L21",
       "_callable": true,
       "_origin": "ast",
-      "community": 13,
+      "community": 1,
       "norm_label": "createapp()",
       "id": "services_mailgun_shim_src_app_createapp"
     },
@@ -6617,7 +6617,7 @@
       "source_file": "services/mailgun-shim/src/routes/suppressions.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "suppressions.ts",
       "id": "services_mailgun_shim_src_routes_suppressions"
     },
@@ -6628,7 +6628,7 @@
       "source_location": "L7",
       "_callable": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "issuppressiontype()",
       "id": "services_mailgun_shim_src_routes_suppressions_issuppressiontype"
     },
@@ -6639,7 +6639,7 @@
       "source_location": "L22",
       "_callable": true,
       "_origin": "ast",
-      "community": 15,
+      "community": 1,
       "norm_label": "createsuppressionsrouter()",
       "id": "services_mailgun_shim_src_routes_suppressions_createsuppressionsrouter"
     },
@@ -6729,7 +6729,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "mailgun-shim/tsconfig.json",
       "id": "services_mailgun_shim_tsconfig"
     },
@@ -6739,7 +6739,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L5",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "extends",
       "id": "services_mailgun_shim_tsconfig_extends"
     },
@@ -6749,7 +6749,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L6",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "compileroptions",
       "id": "services_mailgun_shim_tsconfig_compileroptions"
     },
@@ -6759,7 +6759,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L7",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "target",
       "id": "services_mailgun_shim_tsconfig_compileroptions_target"
     },
@@ -6769,7 +6769,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "lib",
       "id": "services_mailgun_shim_tsconfig_compileroptions_lib"
     },
@@ -6779,7 +6779,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L8",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "es2023",
       "id": "ref_es2023"
     },
@@ -6789,7 +6789,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L9",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "module",
       "id": "services_mailgun_shim_tsconfig_compileroptions_module"
     },
@@ -6799,7 +6799,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L10",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "moduleresolution",
       "id": "services_mailgun_shim_tsconfig_compileroptions_moduleresolution"
     },
@@ -6809,7 +6809,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L11",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "nouncheckedindexedaccess",
       "id": "services_mailgun_shim_tsconfig_compileroptions_nouncheckedindexedaccess"
     },
@@ -6819,7 +6819,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L12",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "outdir",
       "id": "services_mailgun_shim_tsconfig_compileroptions_outdir"
     },
@@ -6829,7 +6829,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "include",
       "id": "services_mailgun_shim_tsconfig_include"
     },
@@ -6839,7 +6839,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "src/**/*.ts",
       "id": "services_mailgun_shim_tsconfig_json_ref_src_ts"
     },
@@ -6849,7 +6849,7 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "test/**/*.ts",
       "id": "services_mailgun_shim_tsconfig_json_ref_test_ts"
     },
@@ -6859,24 +6859,15 @@
       "source_file": "services/mailgun-shim/tsconfig.json",
       "source_location": "L17",
       "_origin": "ast",
-      "community": 3,
+      "community": 4,
       "norm_label": "vitest.config.ts",
       "id": "ref_vitest_config_ts"
-    },
-    {
-      "label": "Platform infra CI",
-      "file_type": "code",
-      "source_file": ".github/workflows/infra-platform-ci.yml",
-      "community": 46,
-      "norm_label": "platform infra ci",
-      "_origin": "semantic",
-      "id": "github_workflows_infra_platform_ci_yml"
     },
     {
       "label": "Tenant infra CI",
       "file_type": "code",
       "source_file": ".github/workflows/infra-tenant-ci.yml",
-      "community": 32,
+      "community": 29,
       "norm_label": "tenant infra ci",
       "_origin": "semantic",
       "id": "github_workflows_infra_tenant_ci_yml"
@@ -6885,7 +6876,7 @@
       "label": "Mailgun shim CI",
       "file_type": "code",
       "source_file": ".github/workflows/mailgun-shim-ci.yml",
-      "community": 47,
+      "community": 43,
       "norm_label": "mailgun shim ci",
       "_origin": "semantic",
       "id": "github_workflows_mailgun_shim_ci_yml"
@@ -6894,7 +6885,7 @@
       "label": "Mailgun shim image",
       "file_type": "code",
       "source_file": ".github/workflows/mailgun-shim-image.yml",
-      "community": 48,
+      "community": 44,
       "norm_label": "mailgun shim image",
       "_origin": "semantic",
       "id": "github_workflows_mailgun_shim_image_yml"
@@ -6903,7 +6894,7 @@
       "label": "Provision tenant",
       "file_type": "code",
       "source_file": ".github/workflows/provision-tenant.yml",
-      "community": 49,
+      "community": 45,
       "norm_label": "provision tenant",
       "_origin": "semantic",
       "id": "github_workflows_provision_tenant_yml"
@@ -6912,7 +6903,7 @@
       "label": "Publish tenant package",
       "file_type": "code",
       "source_file": ".github/workflows/publish-tenant-package.yml",
-      "community": 32,
+      "community": 29,
       "norm_label": "publish tenant package",
       "_origin": "semantic",
       "id": "github_workflows_publish_tenant_package_yml"
@@ -6921,7 +6912,7 @@
       "label": "Repo tooling CI",
       "file_type": "code",
       "source_file": ".github/workflows/repo-tooling-ci.yml",
-      "community": 50,
+      "community": 46,
       "norm_label": "repo tooling ci",
       "_origin": "semantic",
       "id": "github_workflows_repo_tooling_ci_yml"
@@ -6935,7 +6926,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 51,
+      "community": 47,
       "norm_label": "standards workflow",
       "_origin": "semantic",
       "id": "github_workflows_standards_workflow"
@@ -6946,7 +6937,7 @@
       "source_file": "infra/tenant/naming.test.ts",
       "source_location": "L1",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "naming.test.ts",
       "id": "infra_tenant_naming_test"
     },
@@ -6956,7 +6947,7 @@
       "source_file": "infra/tenant/naming.test.ts",
       "source_location": "L214",
       "_origin": "ast",
-      "community": 4,
+      "community": 5,
       "norm_label": "rfc-1035",
       "id": "docref_rfc_1035"
     },
@@ -6969,9 +6960,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "github_workflows_build_workflow",
-      "community": 45,
-      "norm_label": "build image workflow"
+      "community": 42,
+      "norm_label": "build image workflow",
+      "_origin": "semantic",
+      "id": "github_workflows_build_workflow"
     },
     {
       "label": "Docker Build Job",
@@ -6982,9 +6974,26 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "id": "github_workflows_build_job_build",
-      "community": 44,
-      "norm_label": "docker build job"
+      "community": 41,
+      "norm_label": "docker build job",
+      "_origin": "semantic",
+      "id": "github_workflows_build_job_build"
+    },
+    {
+      "label": "Platform infra CI Workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/infra-platform-ci.yml",
+      "id": "github_workflows_infra_platform_ci_yml",
+      "community": 28,
+      "norm_label": "platform infra ci workflow"
+    },
+    {
+      "label": "Pulumi GCS State Backend",
+      "file_type": "concept",
+      "source_file": ".github/workflows/infra-platform-ci.yml",
+      "id": "branchleft_pulumi_state",
+      "community": 28,
+      "norm_label": "pulumi gcs state backend"
     }
   ],
   "links": [
@@ -18701,6 +18710,14 @@
       "confidence_score": 1.0,
       "source": "infra_tenant_naming_test",
       "target": "docref_rfc_1035"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": ".github/workflows/infra-platform-ci.yml",
+      "source": "github_workflows_infra_platform_ci_yml",
+      "target": "branchleft_pulumi_state"
     }
   ],
   "hyperedges": [
@@ -18827,5 +18844,5 @@
       "source_file": "infra/README.md"
     }
   ],
-  "built_at_commit": "65b84622b8dcb0810d63b2da47e68dddded920a9"
+  "built_at_commit": "8991c3bc149176e31afaf5c441eb344623ecebda"
 }
