@@ -99,6 +99,14 @@ jobs:
       PLATFORM_DB_CONN: ${{ vars.PLATFORM_DB_INSTANCE_CONNECTION_NAME }}
       PLATFORM_IMAGE_PATH: ${{ vars.PLATFORM_TENANT_IMAGE_REPOSITORY_PATH }}
       PLATFORM_MEDIA_URL: ${{ vars.PLATFORM_MEDIA_BUCKET_URL }}
+      # Read by every `pulumi` command below for both stacks this job touches
+      # (the provisioning stack and, later in the same run, the tenant's own).
+      # Required once either is passphrase-wrapped; ignored while a stack is
+      # still on `gcpkms`. Without it, a restored `encryptionsalt` gets Pulumi
+      # to the right provider but not to a decrypted stack -- the salt was
+      # never the secret, this is. Matches infra-platform-ci.yml's `deploy`
+      # job, which reads the same repo secret for the `platform` stack.
+      PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
 
     steps:
       # First, before checkout and before anything that could create or
@@ -200,12 +208,13 @@ jobs:
           # and `Pulumi.<stack>.yaml` never leaves the runner. So a retry
           # against a stack that already exists gets no secrets provider in its
           # configuration at all, falls back to the passphrase provider, and
-          # fails on a stack whose state says `gcpkms`.
+          # fails on a stack whose state says otherwise.
           #
-          # The deployment records the provider and its wrapped data key, and
-          # exporting it needs no secrets manager. Restore the configuration
-          # from there rather than naming the key again: that state holds
-          # encrypted values, and a fresh data key cannot decrypt them.
+          # The deployment records the provider and everything about it that
+          # isn't the secret itself. Restore the configuration from there
+          # rather than naming the key again: for `cloud` that's a wrapped
+          # data key, for `passphrase` a salt, and the job's own
+          # PULUMI_CONFIG_PASSPHRASE above supplies what the deployment can't.
           if pulumi stack select "$TENANT" 2>/dev/null; then
             pulumi stack export --stack "$TENANT" > deployment.json
             python3 scripts/restore-stack-secrets-config.py "$TENANT" deployment.json
@@ -346,7 +355,12 @@ jobs:
           # retry after a failed first apply reaches here with one -- holding
           # the resources that apply did create. Resume onto it rather than
           # demanding it be torn down first, restoring the secrets
-          # configuration the same way the provisioning stack does above.
+          # configuration the same way the provisioning stack does above --
+          # same script, same job-level PULUMI_CONFIG_PASSPHRASE, this stack's
+          # own backend. That passphrase stops being the one that decrypts
+          # this stack the moment the generated repo's own CI re-wraps it
+          # under a different value; making the two agree long-term is the
+          # provisioning rewrite's, not this job's.
           if pulumi stack select "$TENANT" 2>/dev/null; then
             pulumi stack export --stack "$TENANT" > deployment.json
             python3 "$GITHUB_WORKSPACE/infra/provisioning/scripts/restore-stack-secrets-config.py" \
