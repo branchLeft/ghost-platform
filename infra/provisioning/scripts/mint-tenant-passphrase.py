@@ -18,10 +18,10 @@ import argparse
 import secrets
 import sys
 
-# 32 bytes is 256 bits of entropy before base64/URL-safe encoding -- the same
-# floor RUNBOOK-existing-stack-migration.md's A.0 sets for a human-chosen
-# stack passphrase. A caller asking for less is asking for something weaker
-# than what already protects every other stack in the estate.
+# 32 bytes is 256 bits of entropy before base64/URL-safe encoding: enough that
+# brute-forcing this value is infeasible for the lifetime of the stack it
+# protects, with headroom to spare. A caller asking for less is asking for a
+# weaker floor than a machine-minted secret has any reason to accept.
 MIN_BYTES = 32
 
 

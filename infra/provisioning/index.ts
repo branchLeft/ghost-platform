@@ -8,7 +8,6 @@ import {
   stateBucketName,
   deployerServiceAccountId,
   workloadIdentityPoolId,
-  secretsKmsKeyId,
   provisioningServiceAccountEmail,
   platformDbInstanceConnectionName,
   platformTenantImageRepositoryDockerPath,
@@ -159,26 +158,6 @@ export const provisionerStateBucketAccess = new gcp.storage.BucketIAMMember(
     bucket: stateBucket.name,
     role: 'roles/storage.objectAdmin',
     member: `serviceAccount:${provisioningServiceAccountEmail}`,
-  }
-);
-
-/**
- * Lets the tenant's CI decrypt its own stack's data key. Granted on the key,
- * never as a project-level `roles/cloudkms.admin` — that would let a deploy
- * pipeline rewrite who may decrypt its own secrets.
- *
- * This is a Pulumi resource here and a `gcloud` step in the platform runbook
- * for a real reason: the platform stack cannot grant itself access to the key
- * it must decrypt before it can apply anything, but this program is a
- * *different* stack granting a *different* identity, so the chicken-and-egg
- * does not arise.
- */
-export const deployerKmsAccess = new gcp.kms.CryptoKeyIAMMember(
-  `${tenantName}-deployer-kms-decrypt`,
-  {
-    cryptoKeyId: secretsKmsKeyId,
-    role: 'roles/cloudkms.cryptoKeyEncrypterDecrypter',
-    member: deployerMember,
   }
 );
 

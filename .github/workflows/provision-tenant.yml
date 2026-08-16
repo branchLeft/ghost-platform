@@ -105,11 +105,10 @@ jobs:
       PLATFORM_MEDIA_URL: ${{ vars.PLATFORM_MEDIA_BUCKET_URL }}
       # Read by every `pulumi` command against the provisioning stack -- the
       # one stack this job keeps touching for the rest of this repo's life.
-      # This is ghost-platform's own repo-level passphrase
-      # (RUNBOOK-existing-stack-migration.md §A.0: one passphrase per repo,
-      # covering every stack that repo's workflows reach), the same secret
-      # infra-platform-ci.yml's `deploy` job reads for the `platform` stack.
-      # It is deliberately NOT used for the tenant's own stack further down --
+      # This is ghost-platform's own repo-level passphrase, one value covering
+      # every stack this repo's own workflows reach (also `platform`, via
+      # infra-platform-ci.yml's `deploy` job). It is deliberately NOT used for
+      # the tenant's own stack further down --
       # that stack gets its own freshly minted passphrase, scoped to that
       # tenant alone, so ghost-platform stops holding a decrypt key for
       # infrastructure it no longer manages after this run. An unset
@@ -253,10 +252,10 @@ jobs:
           else
             # A new stack on a filestate backend needs a secrets manager named
             # at creation. `passphrase` reads PULUMI_CONFIG_PASSPHRASE above --
-            # ghost-platform's own repo-level passphrase, per
-            # RUNBOOK-existing-stack-migration.md §A.0. No GCP KMS dependency:
-            # this stack lives in ghost-platform for good, so nothing about it
-            # needs to survive the GCP wind-down under a separate key.
+            # ghost-platform's own repo-level passphrase. No GCP KMS
+            # dependency: this stack lives in ghost-platform for good, so
+            # nothing about it needs to survive the GCP wind-down under a
+            # separate key.
             pulumi stack select "$TENANT" --create --secrets-provider=passphrase
           fi
           pulumi config set gcp:project "$GCP_PROJECT"
@@ -363,14 +362,26 @@ jobs:
       # than this job's own duration between the repo existing and it holding
       # the secret its own CI will need on its very next push.
       #
-      # This is the resolution RUNBOOK-existing-stack-migration.md §A.0 names
-      # for the two-repo hazard: ghost-platform's own passphrase must never
-      # double as a tenant's, because two different pipelines (this one, and
-      # the tenant repo's own CI) would then hold two different secrets for
-      # one checkpoint the moment either repo's passphrase ever changed.
-      # Minting one value and writing it to the one place both pipelines read
-      # from removes the second pipeline entirely -- after this run,
-      # provisioning never touches this tenant's stack again.
+      # This is the resolution the two-repo hazard needs: ghost-platform's own
+      # passphrase must never double as a tenant's, because two different
+      # pipelines (this one, and the tenant repo's own CI) would then hold two
+      # different secrets for one checkpoint the moment either repo's
+      # passphrase ever changed. Minting one value and writing it to the one
+      # place both pipelines read from removes the second pipeline entirely --
+      # after this run, provisioning never touches this tenant's stack again.
+      #
+      # This value has NO durable copy outside GitHub's own encrypted-secret
+      # storage. It is never printed: this repo is PUBLIC, so anything an
+      # Actions run writes to its own logs OR its job summary is visible to
+      # anyone on the internet, not just this org -- there is no safe channel
+      # in this job to hand a human the plaintext. That is a real, accepted
+      # gap against the general rule that a minted secret should be escrowed
+      # (a human-chosen passphrase is escrowed by typing it into the password
+      # manager directly, off any log); closing it needs a retrieval channel
+      # that does not touch this repo's own Actions output, which is
+      # follow-up work, not a property this step can give itself. What this
+      # step *can* do, and does below: say so, loudly, every run, so the gap
+      # is a known operational fact rather than a silent one discovered later.
       - name: Mint this tenant's own secrets passphrase
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
@@ -382,8 +393,23 @@ jobs:
             echo "::error::minted passphrase is empty; refusing to continue"
             exit 1
           fi
-          gh secret set PULUMI_CONFIG_PASSPHRASE --repo "$TENANT_REPO" --body "$PASSPHRASE"
+          printf '%s' "$PASSPHRASE" | gh secret set PULUMI_CONFIG_PASSPHRASE --repo "$TENANT_REPO"
           echo "TENANT_PULUMI_PASSPHRASE=$PASSPHRASE" >> "$GITHUB_ENV"
+          {
+            echo "## ${TENANT}'s Pulumi secrets passphrase is NOT escrowed"
+            echo
+            echo "A fresh passphrase was minted and stored only as this"
+            echo "tenant's own \`PULUMI_CONFIG_PASSPHRASE\` Actions secret."
+            echo "GitHub secrets are write-only -- there is no way to read it"
+            echo "back, from this run or any other, and it is never printed"
+            echo "here because this repo is public. If durable recoverability"
+            echo "matters for this tenant before its passphrase-only copy is"
+            echo "acceptable long-term, overwrite it now with a human-chosen,"
+            echo "password-manager-escrowed value:"
+            echo '```'
+            echo "gh secret set PULUMI_CONFIG_PASSPHRASE --repo \"$TENANT_REPO\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ---- the tenant's first apply ---------------------------------------
 
@@ -400,6 +426,15 @@ jobs:
           PULUMI_CONFIG_PASSPHRASE: ${{ env.TENANT_PULUMI_PASSPHRASE }}
         run: |
           set -euo pipefail
+          # Re-checked here, not just at mint time: this reads the step's own
+          # effective value, so a typo in the `env:` key above (a different
+          # failure than the mint step's own empty-value guard) would also
+          # surface here instead of silently initialising the stack under an
+          # empty passphrase.
+          if [ -z "$PULUMI_CONFIG_PASSPHRASE" ]; then
+            echo "::error::PULUMI_CONFIG_PASSPHRASE is empty for this step; refusing to continue"
+            exit 1
+          fi
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
           cd tenant
           # The tenant-facing README replaces the template-facing one before
@@ -421,23 +456,23 @@ jobs:
           # retry after a failed first apply reaches here with one -- holding
           # the resources that apply did create. Resume onto it rather than
           # demanding it be torn down first, restoring the secrets
-          # configuration the same script the provisioning stack uses above.
-          #
-          # No --allow-passphrase here, deliberately, unlike the provisioning
-          # stack's restore above. Everything from a few steps down commits
-          # this working tree into the tenant's own repo (`git add -A` further
-          # below), and a restored `encryptionsalt` is an offline verifier --
-          # committing it there would publish a way to brute-force whatever
-          # passphrase this stack was wrapped with.
-          #
-          # Unlike the provisioning stack, this branch DOES run in practice
-          # now: this tenant's stack is minted passphrase-wrapped below, using
-          # a value minted fresh in the step above and never escrowed anywhere
-          # this job can read back (GitHub Actions secrets are write-only). A
-          # retry that reaches this branch is hitting a stack that already
-          # exists under a passphrase this run has no way to reproduce, so the
-          # restore below is *meant* to fail loudly here rather than resume
-          # under a mismatched value -- recover per "Recovering a failed
+          # configuration the same script the provisioning stack uses above --
+          # in principle. In practice the restore below deliberately omits
+          # --allow-passphrase, unlike the provisioning stack's restore
+          # earlier in this file, so it refuses rather than resumes. That is
+          # not about the `encryptionsalt` reaching this tenant's own repo --
+          # unlike the provisioning stack's config, this one IS meant to be
+          # committed here (`git add -A` further below), the same way
+          # blog-infra/blog's own Pulumi.blog.yaml already is. It is about
+          # which VALUE would decrypt it: this tenant's stack is minted
+          # passphrase-wrapped below, using a value minted fresh in the step
+          # above and never escrowed anywhere this job (or any later one) can
+          # read back -- GitHub Actions secrets are write-only. A retry that
+          # reaches this branch is hitting a stack that already exists under a
+          # passphrase this run has no way to reproduce, so refusing here is
+          # correct: resuming under a freshly-minted, DIFFERENT passphrase
+          # would silently re-wrap the stack under a value the tenant repo's
+          # secret does not hold. Recover per "Recovering a failed
           # provisioning run" in infra/platform/RUNBOOK-bootstrap.md, not by
           # retrying this workflow.
           if pulumi stack select "$TENANT" 2>/dev/null; then
@@ -468,6 +503,18 @@ jobs:
           # the job-level shared one.
           PULUMI_CONFIG_PASSPHRASE: ${{ env.TENANT_PULUMI_PASSPHRASE }}
         run: |
+          # `set -e` is load-bearing here, not boilerplate: the delete-check
+          # two lines down is not the last command in this script, and
+          # without errexit its non-zero exit would be silently swallowed --
+          # the shell would carry on to self-test/verify-coverage, and the
+          # step's own exit code would end up being THEIRS, not the delete
+          # check's. That shape is exactly how this guard could report green
+          # over a plan that would have destroyed platform infrastructure.
+          set -euo pipefail
+          if [ -z "$PULUMI_CONFIG_PASSPHRASE" ]; then
+            echo "::error::PULUMI_CONFIG_PASSPHRASE is empty for this step; refusing to continue"
+            exit 1
+          fi
           pulumi preview --stack "$TENANT" --json > preview.json
           python3 "$GITHUB_WORKSPACE/infra/provisioning/scripts/assert-no-provisioning-deletes.py" \
             --tenant "$TENANT" preview.json
@@ -478,7 +525,13 @@ jobs:
         working-directory: tenant
         env:
           PULUMI_CONFIG_PASSPHRASE: ${{ env.TENANT_PULUMI_PASSPHRASE }}
-        run: pulumi up --stack "$TENANT" --yes
+        run: |
+          set -euo pipefail
+          if [ -z "$PULUMI_CONFIG_PASSPHRASE" ]; then
+            echo "::error::PULUMI_CONFIG_PASSPHRASE is empty for this step; refusing to continue"
+            exit 1
+          fi
+          pulumi up --stack "$TENANT" --yes
 
       # ---- handover --------------------------------------------------------
 
@@ -510,7 +563,7 @@ jobs:
           )"
 
       # Deliberately never pushes to the generated repo's default branch. The
-      # file being committed carries that tenant's encrypted data key and the
+      # file being committed carries that tenant's encryption salt and the
       # image it will actually run; a generated repo must not be the one place
       # in the programme where code reaches main unreviewed.
       - name: Summary
