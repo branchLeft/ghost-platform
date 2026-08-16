@@ -136,6 +136,9 @@ jobs:
           python3 scripts/assert-no-provisioning-deletes.py --self-test
           python3 scripts/assert-no-provisioning-deletes.py --verify-coverage ../platform .
 
+      - name: Run provisioning scripts' unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
   deploy:
     name: Deploy (pulumi up)
     runs-on: ubuntu-latest

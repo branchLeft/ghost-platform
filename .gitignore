@@ -5,3 +5,5 @@ infra/tenant/dist
 infra/tenant/*.tgz
 services/*/dist
 services/*/coverage
+__pycache__/
+*.pyc
