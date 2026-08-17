@@ -28,6 +28,26 @@ This repo's IaC, split by shape rather than lumped into one program:
   hostname and Cloud Run service name together are a tenant's identity, and
   a file listing them would be a client roster.
 
+- **`hetzner-host-check/`** -- not a Pulumi program or a stack: a small
+  project whose only job is proving `@branchleft/hetzner-host` (published
+  from `shared-infra`) installs from the registry here and that its types
+  and exports are usable from this repo's own dependency tree. No `.ts` file
+  in it declares a resource this repo owns; `Host` is constructed once,
+  under Pulumi's test mocks, inside `hetznerHostInstall.test.ts`. The real
+  Hetzner host stack -- the thing that will call `Host` to create an actual
+  server -- is a future addition here, once one is needed; this directory is
+  deliberately not that stack.
+
+  **Install requires a token, against `https://npm.pkg.github.com`.** An
+  anonymous request -- no `.npmrc` `_authToken`, no `NODE_AUTH_TOKEN` -- gets
+  `401 Unauthorized`, even though the package's visibility is public; GitHub
+  Packages authenticates every request to that registry regardless of the
+  target package's own visibility. A workflow's own `GITHUB_TOKEN`, granted
+  nothing beyond this repo's `packages: read`, is sufficient -- no grant on
+  `shared-infra`, the publishing repo, is needed, because that identity is
+  never checked once the package is public. Locally, any token with
+  `read:packages` works the same way (see the repo-root `.npmrc`).
+
 Why split at all, rather than one program with a `sites`-style array (the
 shape `shared-infra/sites.ts` uses for the edge)? That pattern fits the edge
 because every site there shares one load balancer -- the array *is* the
