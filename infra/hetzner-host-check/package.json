@@ -1,0 +1,20 @@
+{
+  "name": "ghost-platform-hetzner-host-check",
+  "private": true,
+  "description": "Proves @branchleft/hetzner-host installs and resolves from ghost-platform. Not a Pulumi stack -- see infra/README.md.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest --run"
+  },
+  "dependencies": {
+    "@branchleft/hetzner-host": "0.1.0",
+    "@pulumi/hcloud": "1.41.0",
+    "@pulumi/pulumi": "^3.255.0"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/node": "^26",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.10"
+  }
+}
