@@ -1,4 +1,9 @@
 /bin/
 /node_modules/
+# Reconstructed on the runner from `pulumi stack export`; carries a
+# passphrase salt once the stack is passphrase-wrapped. `Pulumi.yaml`
+# (the project file) is unaffected -- this pattern needs a character
+# between the two dots to match.
+Pulumi.*.yaml
 Pulumi.*.yaml.bak
 /preview.json
