@@ -1,1 +1,0 @@
-{"nodes": [{"id": "infra_readme", "label": "Infrastructure README", "file_type": "document", "source_file": "infra/README.md"}, {"id": "ghost_platform_tenant_template", "label": "Ghost Tenant Template Repo", "file_type": "concept", "source_file": "infra/README.md"}], "edges": [], "hyperedges": []}
