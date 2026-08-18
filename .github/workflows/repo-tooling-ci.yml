@@ -1,6 +1,9 @@
 name: Repo tooling CI
 
-# Prettier and ESLint over the whole tree, from the repo root.
+# Prettier, ESLint and the committed-secret guard over the whole tree, from the
+# repo root. The guard lives here rather than in infra-platform-ci.yml because
+# it scans every `Pulumi.<stack>.yaml` in the tree, across all three Pulumi
+# projects, and this is the one job whose scope is the repository.
 #
 # The four npm projects here each type-check and test themselves, but nothing
 # ran the root `format:check` or `lint:check` — they existed only as pre-commit
@@ -52,3 +55,14 @@ jobs:
 
       - name: Lint
         run: npm run lint:check
+
+      # Self-test first: a matcher that has quietly stopped matching passes
+      # every file, so prove it still works before trusting a pass. The scan
+      # then walks the tree rather than taking a list of changed files --
+      # pre-commit's `files:` pattern lives in another file and could drift,
+      # and a salt that arrived on a branch nobody ran the hook on has to fail
+      # here rather than at publication.
+      - name: Committed-secret guard
+        run: |
+          python3 infra/scripts/assert-no-committed-pulumi-secrets.py --self-test
+          python3 infra/scripts/assert-no-committed-pulumi-secrets.py --scan-tree .

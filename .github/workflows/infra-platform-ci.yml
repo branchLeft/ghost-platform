@@ -176,11 +176,15 @@ jobs:
       run:
         working-directory: infra/platform
 
-    # Every pulumi command that reads stack state requires this once the
-    # stack is passphrase-wrapped; while the stack is KMS-wrapped it is
-    # ignored. Without it the deploy fails closed at the preview step.
+    # Every pulumi command that reads stack state requires the passphrase now
+    # the stack is passphrase-wrapped. Without it the deploy fails closed at
+    # the preview step.
+    #
+    # The salt is the second half of the same key material and is bound here
+    # rather than interpolated into the step that uses it -- see that step.
     env:
       PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+      PULUMI_SALT_PLATFORM: ${{ secrets.PULUMI_SALT_PLATFORM }}
 
     # No path filter, on purpose. Gating this job on "did infra/platform/**
     # change" would skip most runs -- but a path filter that is subtly wrong
@@ -226,6 +230,37 @@ jobs:
 
       - name: Install Pulumi CLI
         uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      # The stack's `encryptionsalt` is not committed: it is an offline
+      # verifier for the passphrase above, and one passphrase covers this
+      # stack, the provisioning stacks and a tenant's stack during
+      # provisioning -- so a public tree must not carry it. Pulumi still needs
+      # it in the file to decrypt, so it is appended here, on the runner, for
+      # this job only.
+      #
+      # Read from the job-level `env:` block above rather than interpolated
+      # here: a `${{ }}` inside `run` is substituted before the shell parses
+      # the line, so a value containing shell metacharacters would be executed.
+      #
+      # Fails closed on an empty value. Without the check, Pulumi reads a file
+      # whose salt line is blank, reports the stack's secrets as corrupt, and
+      # sends whoever debugs it at the passphrase rather than at a repository
+      # secret nobody set. This job is the production deploy, so failing here
+      # is also the only thing standing between an unset secret and a stack
+      # update computed from config Pulumi could not read.
+      #
+      # No fork guard, unlike the equivalent step in website/infra: this job
+      # runs only on `push` to `main` (see the `if:` above), so it never runs
+      # from a fork, where no repository secret would resolve. A `pulumi
+      # preview` job on pull requests would need one -- the header comment
+      # explains why there isn't one yet.
+      - name: Restore the stack's encryption salt
+        run: |
+          if [ -z "$PULUMI_SALT_PLATFORM" ]; then
+            echo "PULUMI_SALT_PLATFORM is empty or unset -- set the repository secret before deploying" >&2
+            exit 1
+          fi
+          printf '\nencryptionsalt: %s\n' "$PULUMI_SALT_PLATFORM" >> Pulumi.platform.yaml
 
       # `pulumi login` writes ~/.pulumi/credentials.json, which persists for
       # the rest of the job. Stack selection is *not* relied on the same way:
