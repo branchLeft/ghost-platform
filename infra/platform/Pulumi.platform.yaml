@@ -1,3 +1,26 @@
+# `encryptionsalt` is deliberately absent from this committed file. It is a
+# passphrase verifier: anyone holding it can test candidate passphrases
+# offline, at their own rate, with no service in the loop and nothing to
+# notice. One passphrase covers every stack this repo reaches --
+# `branchleft-ghost-platform/platform` here, `branchleft-ghost-provisioning`'s
+# per-tenant stacks, and a tenant's own stack while it is being provisioned --
+# so a salt published here verifies guesses against all of them, not only this
+# one.
+#
+# The stack still needs the salt to decrypt, so CI appends it from the
+# `PULUMI_SALT_PLATFORM` repository secret immediately before the first
+# `pulumi` command (.github/workflows/infra-platform-ci.yml), and an operator
+# applying by hand appends it the same way from their own copy and does not
+# commit the result:
+#
+#     printf '\nencryptionsalt: %s\n' "$SALT" >> infra/platform/Pulumi.platform.yaml
+#
+# This stack holds no `secure:` values, so nothing here is ciphertext for a
+# recovered passphrase to open — the verifier itself was the exposure, and it
+# is what this file no longer carries. Earlier revisions of this path do carry
+# it, and deleting a line does not remove it from a repository's history, so it
+# stays readable until the shared passphrase is rotated. The passphrase is a
+# long random string, so that is not a practical attack — the rotation is still
+# outstanding, and a clean file here is not evidence that it happened.
 config:
   gcp:project: branchleft-prod
-encryptionsalt: v1:fi+spDdpKaE=:v1:Brk53+IatGmt/Tv+:c5hJ7azoVEvMKMBSy9j4crIEgi5E7A==
