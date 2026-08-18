@@ -1063,6 +1063,32 @@ undo — anything earlier than that never ran.
    generated repo, with its own secret still live in CI or copied locally:
    `pulumi login gs://<state-bucket> && pulumi destroy --stack <tenant>`.
    Read the plan before confirming.
+
+   That checkout's `Pulumi.<tenant>.yaml` carries no `encryptionsalt` --
+   provisioning publishes it to the generated repo's own
+   `PULUMI_ENCRYPTION_SALT` secret, which is write-only like the passphrase --
+   so Pulumi has no secrets manager to resolve until one is put back. Unlike
+   the passphrase, the salt is recorded in the stack's own deployment, and
+   exporting a deployment needs no secrets manager, so no local copy of the
+   secret is required. Restore it into a throwaway directory and append the one
+   line, rather than pointing the script at the checkout: it *replaces*
+   `Pulumi.<tenant>.yaml` with the secrets configuration alone, which would
+   discard every config value this stack needs.
+
+   ```bash
+   pulumi stack export --stack <tenant> > deployment.json
+   tmp=$(mktemp -d)
+   python3 <ghost-platform checkout>/infra/provisioning/scripts/restore-stack-secrets-config.py \
+     <tenant> deployment.json "$tmp" --allow-passphrase
+   cat "$tmp/Pulumi.<tenant>.yaml" >> Pulumi.<tenant>.yaml
+   rm -rf deployment.json "$tmp"
+   ```
+
+   Undo it with `git checkout -- Pulumi.<tenant>.yaml` once the destroy is
+   done. Committing that line puts the salt back in the repo it was taken out
+   of, and the generated repo's own committed-secret guard fails the moment it
+   does.
+
 3. **The generated repo**, once step 2 above is either confirmed unnecessary
    (the first apply never started) or already complete. `gh repo delete
    branchLeft/<repo>`. Delete it before retrying regardless: onboarding is

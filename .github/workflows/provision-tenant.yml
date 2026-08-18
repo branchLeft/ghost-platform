@@ -33,9 +33,10 @@ name: Provision tenant
 # repo: @branchleft/ghost-platform-tenant is public, and a run's own
 # GITHUB_TOKEN can read a public package. What this PAT does write to the
 # generated repo is its own Pulumi secrets passphrase -- minted for that
-# tenant alone, never ghost-platform's own -- which is the one write in this
-# workflow that hands the new repo something it needs to keep secret from
-# ghost-platform itself, going forward.
+# tenant alone, never ghost-platform's own -- and the encryption salt that
+# verifies it. Those are the two writes in this workflow that hand the new
+# repo something it needs to keep secret from ghost-platform itself, going
+# forward.
 
 on:
   workflow_dispatch:
@@ -461,17 +462,13 @@ jobs:
           # --allow-passphrase, unlike the provisioning stack's restore
           # earlier in this file, so it refuses rather than resumes.
           #
-          # That omission is not the reason an `encryptionsalt` should stay
-          # out of this tenant's own repo. It does not stay out today: `git
-          # add -A` further below commits this config file, salt included,
-          # into a repository that is public by default. A salt in a tree
-          # anyone can clone is an offline verifier for that tenant's stack
-          # passphrase, which the standard bans outright -- the platform
-          # stack's own config beside this program no longer carries one for
-          # exactly that reason. Closing it here is not a change to this file
-          # alone: the tenant template's CI has to learn to restore the salt
-          # from a per-tenant secret first, or the next tenant is generated
-          # with CI that cannot decrypt its own stack. Tracked separately.
+          # That omission is not what keeps an `encryptionsalt` out of this
+          # tenant's own repo. The two steps named below this one do that:
+          # `pulumi stack init` writes a salt into the config file here, "Publish
+          # this tenant's encryption salt to its own repository secret" moves it
+          # to the tenant's own secret, and "Remove the encryption salt before
+          # the stack config is committed" deletes the line before `git add -A`
+          # ever sees it.
           #
           # What the omission IS about is which VALUE would decrypt the
           # stack. This tenant's stack is minted passphrase-wrapped below,
@@ -501,6 +498,65 @@ jobs:
           pulumi config set platformDbInstanceConnectionName "$PLATFORM_DB_CONN" --stack "$TENANT"
           pulumi config set platformTenantImageRepositoryDockerPath "$PLATFORM_IMAGE_PATH" --stack "$TENANT"
           pulumi config set platformMediaBucketUrl "$PLATFORM_MEDIA_URL" --stack "$TENANT"
+
+      # `pulumi stack init` above wrote this stack's encryption salt into the
+      # config file, and the handover commit below must not carry it: a salt in
+      # a tree anyone can clone is an offline verifier for that tenant's stack
+      # passphrase, testable at the holder's own rate with no state backend and
+      # no cloud IAM in the loop. branchLeft/standards PUL-12 bans it outright.
+      # The generated repo's own CI appends it back from this secret for the
+      # duration of a deploy job.
+      #
+      # The name is unscoped, unlike the estate's `PULUMI_SALT_<REPO>`: the
+      # tenant-name grammar validated at the top of this job permits hyphens
+      # and a GitHub secret name permits only alphanumerics and underscores, so
+      # a scoped name would be invalid for a tenant such as `acme-blog`. The
+      # template reads this exact name -- a mismatch here is a tenant that
+      # cannot decrypt its own stack.
+      #
+      # Published here rather than beside the deletion further down, so the
+      # window in which this value exists only on this runner is as short as it
+      # can be. Nothing between here and there rewrites the salt, and the
+      # deletion step asserts that rather than assuming it.
+      - name: Publish this tenant's encryption salt to its own repository secret
+        working-directory: tenant
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+        run: |
+          set -euo pipefail
+          config="Pulumi.${TENANT}.yaml"
+          if [ ! -f "$config" ]; then
+            echo "::error::$config is missing after stack initialisation; refusing to continue"
+            exit 1
+          fi
+          # Anchored and counted rather than "find the first one". Pulumi writes
+          # this key unquoted at column 0; any other shape means the file is not
+          # what the deletion step will recognise, and a silent mismatch there
+          # commits the salt.
+          if [ "$(grep -c '^encryptionsalt:' "$config" || true)" != "1" ]; then
+            echo "::error::expected exactly one line in $config starting with 'encryptionsalt:'; refusing to continue"
+            exit 1
+          fi
+          SALT=$(sed -n 's/^encryptionsalt:[[:space:]]*//p' "$config")
+          if [ -z "$SALT" ]; then
+            echo "::error::the encryptionsalt line in $config carries no value; refusing to continue"
+            exit 1
+          fi
+          # Masked before anything else in this job can print it: the guard in
+          # the deletion step echoes any offending line it finds, and a mask
+          # registered here applies to every later step.
+          echo "::add-mask::$SALT"
+          case "$SALT" in
+            v1:*) ;;
+            *)
+              echo "::error::the encryptionsalt in $config does not carry Pulumi's 'v1:' prefix; refusing to publish a value this tenant's CI would reject"
+              exit 1
+              ;;
+          esac
+          # No trailing newline: the tenant's deploy job appends this value to
+          # its stack config with printf, and one would break that YAML line.
+          printf '%s' "$SALT" | gh secret set PULUMI_ENCRYPTION_SALT --repo "$TENANT_REPO"
+          echo "TENANT_PULUMI_SALT=$SALT" >> "$GITHUB_ENV"
 
       # The platform guard, not the tenant one. This apply runs as the
       # provisioning identity against a program that could in principle be
@@ -545,6 +601,43 @@ jobs:
 
       # ---- handover --------------------------------------------------------
 
+      # Runs against the working copy the commit below stages, after the last
+      # `pulumi` command that reads this stack -- Pulumi resolves the secrets
+      # manager from this file, so deleting the line any earlier would break
+      # the preview and the first apply.
+      #
+      # The secret is confirmed at the server before the line goes, not merely
+      # assumed from the earlier step's exit status: a `gh secret set` that
+      # looked fine and did not land would leave this working copy holding the
+      # only readable copy of the salt, and it is deleted three lines later.
+      - name: Remove the encryption salt before the stack config is committed
+        working-directory: tenant
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+        run: |
+          set -euo pipefail
+          config="Pulumi.${TENANT}.yaml"
+          if ! gh api "repos/${TENANT_REPO}/actions/secrets/PULUMI_ENCRYPTION_SALT" --silent 2>/dev/null; then
+            echo "::error::${TENANT_REPO} has no PULUMI_ENCRYPTION_SALT secret. Refusing to delete the salt from $config: nothing else would then restore it for that repo's own deploy job."
+            exit 1
+          fi
+          if [ "$(sed -n 's/^encryptionsalt:[[:space:]]*//p' "$config")" != "$TENANT_PULUMI_SALT" ]; then
+            echo "::error::$config no longer carries the salt published to ${TENANT_REPO}'s PULUMI_ENCRYPTION_SALT secret. Refusing to delete a value that secret cannot restore."
+            exit 1
+          fi
+          sed -i '/^encryptionsalt:/d' "$config"
+          # The tenant's own copy of the guard, not this repo's: it is the
+          # checker that judges the handover pull request, so a pass here is
+          # that verdict rather than a second opinion on it. Its matcher is
+          # wider than the deletion above, which is the point -- the deletion
+          # removes what Pulumi writes, and this decides whether anything is
+          # left. Any non-zero status refuses: this step needs "provably
+          # clean", and a run that could not read the file has not shown that.
+          if ! python3 scripts/assert-no-committed-pulumi-secrets.py --scan-tree . "$config"; then
+            echo "::error::refusing to commit $config: the tenant's committed-secret guard did not clear this tree"
+            exit 1
+          fi
+
       - name: Open the handover pull request
         working-directory: tenant
         env:
@@ -573,9 +666,9 @@ jobs:
           )"
 
       # Deliberately never pushes to the generated repo's default branch. The
-      # file being committed carries that tenant's encryption salt and the
-      # image it will actually run; a generated repo must not be the one place
-      # in the programme where code reaches main unreviewed.
+      # file being committed names the image this tenant will actually run; a
+      # generated repo must not be the one place in the programme where code
+      # reaches main unreviewed.
       - name: Summary
         if: always()
         env:
