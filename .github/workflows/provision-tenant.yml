@@ -459,19 +459,29 @@ jobs:
           # configuration the same script the provisioning stack uses above --
           # in principle. In practice the restore below deliberately omits
           # --allow-passphrase, unlike the provisioning stack's restore
-          # earlier in this file, so it refuses rather than resumes. That is
-          # not about the `encryptionsalt` reaching this tenant's own repo --
-          # unlike the provisioning stack's config, this one IS meant to be
-          # committed here (`git add -A` further below), the same way
-          # blog-infra/blog's own Pulumi.blog.yaml already is. It is about
-          # which VALUE would decrypt it: this tenant's stack is minted
-          # passphrase-wrapped below, using a value minted fresh in the step
-          # above and never escrowed anywhere this job (or any later one) can
-          # read back -- GitHub Actions secrets are write-only. A retry that
-          # reaches this branch is hitting a stack that already exists under a
-          # passphrase this run has no way to reproduce, so refusing here is
-          # correct: resuming under a freshly-minted, DIFFERENT passphrase
-          # would silently re-wrap the stack under a value the tenant repo's
+          # earlier in this file, so it refuses rather than resumes.
+          #
+          # That omission is not the reason an `encryptionsalt` should stay
+          # out of this tenant's own repo. It does not stay out today: `git
+          # add -A` further below commits this config file, salt included,
+          # into a repository that is public by default. A salt in a tree
+          # anyone can clone is an offline verifier for that tenant's stack
+          # passphrase, which the standard bans outright -- the platform
+          # stack's own config beside this program no longer carries one for
+          # exactly that reason. Closing it here is not a change to this file
+          # alone: the tenant template's CI has to learn to restore the salt
+          # from a per-tenant secret first, or the next tenant is generated
+          # with CI that cannot decrypt its own stack. Tracked separately.
+          #
+          # What the omission IS about is which VALUE would decrypt the
+          # stack. This tenant's stack is minted passphrase-wrapped below,
+          # using a value minted fresh in the step above and never escrowed
+          # anywhere this job (or any later one) can read back -- GitHub
+          # Actions secrets are write-only. A retry that reaches this branch
+          # is hitting a stack that already exists under a passphrase this
+          # run has no way to reproduce, so refusing here is correct:
+          # resuming under a freshly-minted, DIFFERENT passphrase would
+          # silently re-wrap the stack under a value the tenant repo's
           # secret does not hold. Recover per "Recovering a failed
           # provisioning run" in infra/platform/RUNBOOK-bootstrap.md, not by
           # retrying this workflow.
