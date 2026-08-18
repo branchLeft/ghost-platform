@@ -1059,10 +1059,75 @@ undo — anything earlier than that never ran.
    write-only). Deleting the repo first destroys the one thing that can still
    decrypt this stack's checkpoint, and `pulumi destroy` has to read that
    checkpoint — do that and the stack is stranded exactly the way a lost KMS
-   key would strand it, except with no fallback. From a checkout of the
-   generated repo, with its own secret still live in CI or copied locally:
-   `pulumi login gs://<state-bucket> && pulumi destroy --stack <tenant>`.
-   Read the plan before confirming.
+   key would strand it, except with no fallback.
+
+   **First, check out the branch that matches the stack.** The stack was created
+   under Pulumi project `<tenant>-infra`, and the DIY backend derives the state
+   object path from the project name in `Pulumi.yaml`. Placeholder substitution
+   and the stack config land in the *same* handover commit, so a default-branch
+   checkout still reads `name: __TENANT_PULUMI_PROJECT__` and every command
+   below reports "no stack named `<tenant>` found" — which reads as "nothing to
+   destroy" and is exactly how a stack with live resources gets stranded at
+   step 3.
+
+   - **The handover branch was pushed.** Step 1 closes the pull request without
+     deleting the branch, so use it:
+     `git fetch origin provisioning/handover && git checkout provisioning/handover`.
+     It carries the substituted `Pulumi.yaml` and a `Pulumi.<tenant>.yaml` with
+     no `encryptionsalt` in it.
+   - **The run failed before that push.** The default branch is all there is,
+     and it still holds the placeholder. Substitute it yourself:
+     `perl -pi -e 's/__TENANT_PULUMI_PROJECT__/<tenant>-infra/g' Pulumi.yaml`.
+     There is no `Pulumi.<tenant>.yaml`; the block below creates one.
+
+   **Second, find the passphrase — and expect not to have one.** Provisioning
+   mints this tenant's passphrase, writes it only as the generated repo's
+   write-only `PULUMI_CONFIG_PASSPHRASE` Actions secret, and prints a banner in
+   its own job summary saying there is no way to read it back from that run or
+   any other. Unless someone acted on that banner and escrowed a copy, nothing
+   below is runnable: `pulumi destroy` cannot read the checkpoint, keeping the
+   repo buys nothing, and the ordering this list is built around is protecting a
+   value that was never recoverable. In that case go straight to step 3 and
+   remove this stack's resources in GCP by hand — `pulumi stack export --stack
+   <tenant>` still lists them by URN, because an export needs no secrets
+   manager, so take that inventory **before** deleting anything.
+
+   **Third, with an escrowed passphrase in hand, rebuild the secrets
+   configuration and destroy.** The salt is in neither checkout: provisioning
+   publishes it to the repo's own write-only `PULUMI_ENCRYPTION_SALT` secret.
+   Unlike the passphrase it needs no escrowed copy, because the stack's own
+   deployment records it. `pulumi login` needs GCS credentials of your own
+   (`gcloud auth application-default login`) — the deployer service account is
+   Workload-Identity-only and no key for it exists.
+
+   ```bash
+   export PULUMI_CONFIG_PASSPHRASE='<the escrowed passphrase for this tenant>'
+   pulumi login gs://<state-bucket>
+
+   tmp=$(mktemp -d)
+   pulumi stack export --stack <tenant> > "$tmp/deployment.json"
+   python3 <ghost-platform checkout>/infra/provisioning/scripts/restore-stack-secrets-config.py \
+     <tenant> "$tmp/deployment.json" "$tmp" --allow-passphrase
+   printf '\n%s\n' "$(cat "$tmp/Pulumi.<tenant>.yaml")" >> Pulumi.<tenant>.yaml
+   rm -rf "$tmp"
+
+   pulumi destroy --stack <tenant>   # read the plan before confirming
+   ```
+
+   Everything intermediate stays in `"$tmp"` deliberately. The script *replaces*
+   the config file it writes rather than editing it, so aiming it at the
+   checkout would discard the stack's config values where one exists; and the
+   deployment export carries the salt in `secrets_providers.state.salt`, which
+   nothing in the generated repo ignores or guards, so a copy left in the
+   checkout root would be staged by a later `git add -A` in silence. `printf`
+   rather than a bare `cat >>` for the same reason the tenant's own CI uses it:
+   a target file with no trailing newline would otherwise absorb the salt into
+   its last line.
+
+   Delete `Pulumi.<tenant>.yaml` once the destroy is done. Step 3 deletes the
+   repo regardless, but until it does, that file is a committed-shaped stack
+   config carrying a live salt.
+
 3. **The generated repo**, once step 2 above is either confirmed unnecessary
    (the first apply never started) or already complete. `gh repo delete
    branchLeft/<repo>`. Delete it before retrying regardless: onboarding is
