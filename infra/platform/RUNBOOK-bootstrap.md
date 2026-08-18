@@ -1061,20 +1061,47 @@ undo — anything earlier than that never ran.
    checkpoint — do that and the stack is stranded exactly the way a lost KMS
    key would strand it, except with no fallback.
 
-   `pulumi destroy` needs the stack's secrets configuration, and a checkout of
-   the generated repo does not have it. The default branch has no
-   `Pulumi.<tenant>.yaml` at all here -- the handover pull request either was
-   never opened or is the unmerged branch step 1 above closes -- and the
-   handover branch's copy carries no `encryptionsalt`, because provisioning
-   publishes that to the repo's own write-only `PULUMI_ENCRYPTION_SALT` secret.
-   The passphrase needs a local copy; the salt does not, because the stack's own
-   deployment records it and an export needs no secrets manager to read.
+   **First, check out the branch that matches the stack.** The stack was created
+   under Pulumi project `<tenant>-infra`, and the DIY backend derives the state
+   object path from the project name in `Pulumi.yaml`. Placeholder substitution
+   and the stack config land in the *same* handover commit, so a default-branch
+   checkout still reads `name: __TENANT_PULUMI_PROJECT__` and every command
+   below reports "no stack named `<tenant>` found" — which reads as "nothing to
+   destroy" and is exactly how a stack with live resources gets stranded at
+   step 3.
 
-   Rebuild both, then destroy. From a checkout of the generated repo, in this
-   order:
+   - **The handover branch was pushed.** Step 1 closes the pull request without
+     deleting the branch, so use it:
+     `git fetch origin provisioning/handover && git checkout provisioning/handover`.
+     It carries the substituted `Pulumi.yaml` and a `Pulumi.<tenant>.yaml` with
+     no `encryptionsalt` in it.
+   - **The run failed before that push.** The default branch is all there is,
+     and it still holds the placeholder. Substitute it yourself:
+     `perl -pi -e 's/__TENANT_PULUMI_PROJECT__/<tenant>-infra/g' Pulumi.yaml`.
+     There is no `Pulumi.<tenant>.yaml`; the block below creates one.
+
+   **Second, find the passphrase — and expect not to have one.** Provisioning
+   mints this tenant's passphrase, writes it only as the generated repo's
+   write-only `PULUMI_CONFIG_PASSPHRASE` Actions secret, and prints a banner in
+   its own job summary saying there is no way to read it back from that run or
+   any other. Unless someone acted on that banner and escrowed a copy, nothing
+   below is runnable: `pulumi destroy` cannot read the checkpoint, keeping the
+   repo buys nothing, and the ordering this list is built around is protecting a
+   value that was never recoverable. In that case go straight to step 3 and
+   remove this stack's resources in GCP by hand — `pulumi stack export --stack
+   <tenant>` still lists them by URN, because an export needs no secrets
+   manager, so take that inventory **before** deleting anything.
+
+   **Third, with an escrowed passphrase in hand, rebuild the secrets
+   configuration and destroy.** The salt is in neither checkout: provisioning
+   publishes it to the repo's own write-only `PULUMI_ENCRYPTION_SALT` secret.
+   Unlike the passphrase it needs no escrowed copy, because the stack's own
+   deployment records it. `pulumi login` needs GCS credentials of your own
+   (`gcloud auth application-default login`) — the deployer service account is
+   Workload-Identity-only and no key for it exists.
 
    ```bash
-   export PULUMI_CONFIG_PASSPHRASE='<this tenant's passphrase>'
+   export PULUMI_CONFIG_PASSPHRASE='<the escrowed passphrase for this tenant>'
    pulumi login gs://<state-bucket>
 
    tmp=$(mktemp -d)
