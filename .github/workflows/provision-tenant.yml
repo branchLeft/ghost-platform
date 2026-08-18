@@ -41,11 +41,27 @@ name: Provision tenant
 on:
   workflow_dispatch:
     inputs:
+      # Deliberately the first field on the form, and deliberately not
+      # answerable by leaving the form alone. Whether a tenant's
+      # infrastructure repository is public is a disclosure about that tenant
+      # -- the repository, and its name, say that they are a customer -- so
+      # the answer is theirs to give and it has to be given before anything
+      # is created. A `choice` input always preselects its first option, so
+      # the first option here is a refusal rather than a value; the validation
+      # step accepts `public` and `private` and nothing else.
+      tenant_visibility:
+        description: 'Repository visibility. Public is the default for a new tenant; private only where the tenant asked for it.'
+        required: true
+        type: choice
+        options:
+          - 'ask the tenant -- this is not an answer'
+          - public
+          - private
       tenant_name:
         description: 'Pulumi stack name and resource prefix (lowercase, hyphenated)'
         required: true
       tenant_repo:
-        description: 'Repository to generate, without the org prefix'
+        description: 'Repository to generate, without the org prefix. Must be ghost-tenant-<name>.'
         required: true
       state_bucket:
         description: 'Globally unique GCS bucket for this tenant Pulumi state'
@@ -95,6 +111,10 @@ jobs:
     env:
       TENANT: ${{ inputs.tenant_name }}
       TENANT_REPO: branchLeft/${{ inputs.tenant_repo }}
+      # The bare name as typed, so validation can report on the field the
+      # operator filled in rather than on the org-qualified value built here.
+      TENANT_REPO_NAME: ${{ inputs.tenant_repo }}
+      TENANT_VISIBILITY: ${{ inputs.tenant_visibility }}
       STATE_BUCKET: ${{ inputs.state_bucket }}
       DEPLOYER_SA_ID: ${{ inputs.deployer_sa_id }}
       WIF_POOL_ID: ${{ inputs.wif_pool_id }}
@@ -160,10 +180,35 @@ jobs:
 
       # Cheap, credential-free, and ahead of everything that costs money or
       # mutates: a tenant name that is not a valid Pulumi stack and GCP prefix
-      # fails much later and much more expensively.
+      # fails much later and much more expensively. It is also the last point
+      # at which nothing exists yet -- no repository, no identity, no bucket
+      # -- which is why the visibility answer is checked here and not at the
+      # step that acts on it.
       - name: Validate inputs
         run: |
           fail() { echo "::error::$1"; exit 1; }
+
+          # An allow-list, not a rejection of the placeholder option: an empty
+          # value, the preselected placeholder, and anything a later edit adds
+          # to the options list all refuse here. Only the two deliberate
+          # answers pass, so this cannot be satisfied by leaving the dispatch
+          # form untouched.
+          case "$TENANT_VISIBILITY" in
+            public | private) ;;
+            *)
+              fail "tenant_visibility was not answered. Public is the default for a new tenant repository; private only where the tenant has asked for it. A public repository, and its name, disclose that this tenant is a customer, so this is the tenant's answer to give and not one to pick on their behalf. Ask, then dispatch again choosing public or private."
+              ;;
+          esac
+
+          # A fixed prefix is what lets one organisation-level ruleset cover
+          # every tenant repository, including ones that do not exist yet.
+          # `ghost-platform-tenant-template` and `ghost-platform-docs` do not
+          # carry this prefix, so a rule targeting it cannot reach them.
+          [[ "$TENANT_REPO_NAME" =~ ^ghost-tenant-[a-z0-9]+(-[a-z0-9]+)*$ ]] \
+            || fail "tenant_repo must be ghost-tenant-<name>: lowercase alphanumerics and single hyphens, no leading or trailing hyphen"
+          [[ "${#TENANT_REPO_NAME}" -le 64 ]] \
+            || fail "tenant_repo must be 64 characters or fewer"
+
           [[ "$TENANT" =~ ^[a-z][a-z0-9-]{1,28}[a-z0-9]$ ]] \
             || fail "tenant_name must be lowercase alphanumeric-hyphen, 3-30 chars"
           [[ "$DEPLOYER_SA_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
@@ -322,7 +367,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
         run: |
           set -euo pipefail
-          gh repo create "$TENANT_REPO" --private \
+          # Re-derived here rather than carried from validation. This is the
+          # step that makes the disclosure, and `gh repo create` with no
+          # visibility flag falls back to gh's own default instead of
+          # failing, so the flag is chosen from an exhaustive case that has
+          # no silent branch.
+          case "$TENANT_VISIBILITY" in
+            public) visibility_flag=--public ;;
+            private) visibility_flag=--private ;;
+            *)
+              echo "::error::tenant_visibility is not public or private at the point of creating the repository; refusing"
+              exit 1
+              ;;
+          esac
+          gh repo create "$TENANT_REPO" "$visibility_flag" \
             --template branchLeft/ghost-platform-tenant-template \
             --description "Tenant infrastructure stack"
 
@@ -683,9 +741,19 @@ jobs:
           {
             echo "## Provisioning: ${TENANT}"
             echo
-            echo "- repo: \`${TENANT_REPO}\`"
+            echo "- repo: \`${TENANT_REPO}\` (\`${TENANT_VISIBILITY}\`)"
             echo "- state bucket: \`${STATE_BUCKET}\`"
             echo "- deployer: \`${DEPLOYER_SA_EMAIL:-unknown}\`"
             echo
             echo "Onboarding completes when the handover pull request is merged."
+            # Said on every private run rather than left to be discovered: the
+            # plan tier decides this, so choosing private for a tenant also
+            # chooses that their repo cannot be ruleset-protected.
+            if [ "$TENANT_VISIBILITY" = "private" ]; then
+              echo
+              echo "This repo is private at the tenant's request. On this plan a"
+              echo "private repo can carry no branch ruleset and no environment"
+              echo "protection rule, so the guards the template ships run there"
+              echo "but cannot block a merge."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

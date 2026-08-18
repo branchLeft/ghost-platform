@@ -530,7 +530,9 @@ approval instead of starting**:
 
 ```bash
 gh workflow run provision-tenant.yml --repo branchLeft/ghost-platform \
-  -f tenant_name=gate-test -f tenant_repo=gate-test -f state_bucket=gate-test \
+  -f tenant_visibility=public \
+  -f tenant_name=gate-test -f tenant_repo=ghost-tenant-gate-test \
+  -f state_bucket=gate-test \
   -f deployer_sa_id=gate-test -f wif_pool_id=gate-test \
   -f site_url=https://example.invalid -f image_digest_or_tag=none
 gh run list --repo branchLeft/ghost-platform --workflow provision-tenant.yml --limit 1
@@ -565,7 +567,9 @@ P1—P8 do not exist yet. That is the expected outcome.
 
 ```bash
 gh workflow run provision-tenant.yml --repo branchLeft/ghost-platform \
-  -f tenant_name=gate-test -f tenant_repo=gate-test -f state_bucket=gate-test \
+  -f tenant_visibility=public \
+  -f tenant_name=gate-test -f tenant_repo=ghost-tenant-gate-test \
+  -f state_bucket=gate-test \
   -f deployer_sa_id=gate-test -f wif_pool_id=gate-test \
   -f site_url=https://example.invalid -f image_digest_or_tag=none
 # approve the deployment, then read the "Report the federation claims" step
@@ -1039,6 +1043,44 @@ gh variable set PLATFORM_MEDIA_BUCKET_URL --repo branchLeft/ghost-platform \
 These three are what replaced the tenant program's `StackReference`. Written
 as variables rather than read live so a provisioning run does not depend on
 the platform stack being applied first.
+
+### Before dispatching a real run — the visibility question
+
+**Ask the tenant whether their infrastructure repository is public or private,
+and have their answer, before any of their onboarding starts.** Not just before
+the dispatch: before the repository exists, before a GCP resource is created,
+before anything is committed.
+
+Public is the default for a new tenant repository. Private is available on
+request, per tenant. It is asked rather than assumed because the repository —
+and its name, which is visible on a public one — discloses that this tenant is
+a customer. That makes it a decision about a customer relationship rather than
+an engineering one, so whoever runs the onboarding does not take it, and
+neither does an agent. With no answer from the tenant on record, stop and put
+the question to them.
+
+The dispatch form is built so it cannot be answered late or by inattention.
+`tenant_visibility` is the first field, a `choice` whose first — and therefore
+preselected — option is not a valid answer, and "Validate inputs" accepts
+`public` and `private` and nothing else. That step runs before the repository,
+the identity and the state bucket exist, so no run can reach repository
+creation on an unanswered visibility.
+
+Say what private costs when you put the question. On this plan a private
+repository can carry no branch ruleset and no environment protection rule at
+all — `gh api repos/<owner>/<repo>/rulesets` answers `403 Upgrade to GitHub Pro
+or make this repository public to enable this feature` — so a tenant who
+chooses private also chooses a repository where the guards the template ships
+run but cannot block a merge. The provisioning run's summary repeats this on
+every private onboarding. It is theirs to weigh, not a reason to answer for
+them.
+
+The repository name is part of the same disclosure and is checked in the same
+step: it must be `ghost-tenant-<name>`. The fixed prefix is also what lets one
+organisation-level ruleset cover every tenant repository, including tenants who
+do not exist yet. `ghost-tenant-blog` already has that shape;
+`ghost-platform-tenant-template` and `ghost-platform-docs` deliberately do not,
+so a rule targeting the prefix cannot reach them.
 
 ### Recovering a failed provisioning run
 

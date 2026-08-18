@@ -7,7 +7,8 @@ Reusable Ghost-platform pieces shared across tenants: the tenant Pulumi componen
 ## Conventions
 
 - `infra/platform` is the one shared stack (Cloud SQL instance, media bucket, tenant image registry, CI identity). `infra/tenant` is a published library consumed by per-tenant repos, not a deployable stack — its CI builds and publishes the package only; no deploy jobs belong there.
-- Tenant stacks are generated from `ghost-platform-tenant-template`, one private repo per tenant. Anything naming a specific tenant belongs there, not here.
+- Tenant stacks are generated from `ghost-platform-tenant-template`, one repo per tenant, named `ghost-tenant-<name>`. The prefix is fixed so a single org-level ruleset can cover every tenant repo, including tenants that do not exist yet. Anything naming a specific tenant belongs there, not here.
+- **A tenant repo is public by default; private only where that tenant has asked for it.** Whether it is public is a disclosure about that tenant — the repo, and its name, say that they are a customer — so it is a decision about a customer relationship, not an engineering one. **Ask it and get an answer before the work starts**: before the repo is created, before a GCP resource exists, before anything is committed. **An agent never chooses it**; with no answer from the tenant on record, stop and put the question to them. `provision-tenant.yml` is built to match — its dispatch form opens on a visibility option that is not a valid answer, and input validation refuses anything but a deliberate `public` or `private`, before anything is created.
 
 ## Infrastructure
 

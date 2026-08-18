@@ -9,8 +9,11 @@ share a Cloud SQL instance, a media bucket and an image registry; each gets
 its own database, service account, storage prefix and Cloud Run service.
 
 Nothing in this repo names a tenant. A tenant's identity lives in its own
-private repo, generated from
-[`ghost-platform-tenant-template`](https://github.com/branchLeft/ghost-platform-tenant-template).
+repo — named `ghost-tenant-<name>`, generated from
+[`ghost-platform-tenant-template`](https://github.com/branchLeft/ghost-platform-tenant-template),
+and public unless that tenant asked for it to be private. That question is put
+to the tenant before their onboarding starts, because a public repo and its
+name disclose that they are a customer.
 
 ## What's here
 
