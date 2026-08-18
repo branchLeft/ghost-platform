@@ -7729,9 +7729,9 @@
       "source_file": "infra/scripts/assert-no-committed-pulumi-secrets.py",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets",
       "community": 20,
-      "norm_label": "assert-no-committed-pulumi-secrets.py"
+      "norm_label": "assert-no-committed-pulumi-secrets.py",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets"
     },
     {
       "label": "is_commented()",
@@ -7740,9 +7740,9 @@
       "source_location": "L87",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_is_commented",
       "community": 20,
-      "norm_label": "is_commented()"
+      "norm_label": "is_commented()",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_is_commented"
     },
     {
       "label": "offending_lines()",
@@ -7751,9 +7751,9 @@
       "source_location": "L96",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines",
       "community": 20,
-      "norm_label": "offending_lines()"
+      "norm_label": "offending_lines()",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines"
     },
     {
       "label": "is_stack_config()",
@@ -7762,9 +7762,9 @@
       "source_location": "L111",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config",
       "community": 20,
-      "norm_label": "is_stack_config()"
+      "norm_label": "is_stack_config()",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config"
     },
     {
       "label": "find_stack_configs()",
@@ -7773,9 +7773,9 @@
       "source_location": "L115",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs",
       "community": 20,
-      "norm_label": "find_stack_configs()"
+      "norm_label": "find_stack_configs()",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs"
     },
     {
       "label": "check()",
@@ -7784,9 +7784,9 @@
       "source_location": "L125",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_check",
       "community": 20,
-      "norm_label": "check()"
+      "norm_label": "check()",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_check"
     },
     {
       "label": "_quiet_check()",
@@ -7795,9 +7795,9 @@
       "source_location": "L183",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check",
       "community": 20,
-      "norm_label": "_quiet_check()"
+      "norm_label": "_quiet_check()",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check"
     },
     {
       "label": "_self_test()",
@@ -7806,9 +7806,9 @@
       "source_location": "L192",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
       "community": 20,
-      "norm_label": "_self_test()"
+      "norm_label": "_self_test()",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_self_test"
     },
     {
       "label": "main()",
@@ -7817,9 +7817,9 @@
       "source_location": "L319",
       "_callable": true,
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_main",
       "community": 20,
-      "norm_label": "main()"
+      "norm_label": "main()",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_main"
     },
     {
       "label": "Whether the line is entirely a comment. Only a leading `#` counts. A `#`\u2026",
@@ -7827,9 +7827,9 @@
       "source_file": "infra/scripts/assert-no-committed-pulumi-secrets.py",
       "source_location": "L88",
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_88",
       "community": 20,
-      "norm_label": "whether the line is entirely a comment. only a leading `#` counts. a `#`..."
+      "norm_label": "whether the line is entirely a comment. only a leading `#` counts. a `#`...",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_88"
     },
     {
       "label": "Every (1-based line number, line) that commits a secret.",
@@ -7837,9 +7837,9 @@
       "source_file": "infra/scripts/assert-no-committed-pulumi-secrets.py",
       "source_location": "L97",
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_97",
       "community": 20,
-      "norm_label": "every (1-based line number, line) that commits a secret."
+      "norm_label": "every (1-based line number, line) that commits a secret.",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_97"
     },
     {
       "label": "`check` with its report captured, so a fixture's own error output does not read\u2026",
@@ -7847,65 +7847,72 @@
       "source_file": "infra/scripts/assert-no-committed-pulumi-secrets.py",
       "source_location": "L184",
       "_origin": "ast",
-      "id": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_184",
       "community": 20,
-      "norm_label": "`check` with its report captured, so a fixture's own error output does not read..."
+      "norm_label": "`check` with its report captured, so a fixture's own error output does not read...",
+      "id": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_184"
     },
     {
       "label": "Pre-commit Configuration",
       "file_type": "code",
       "source_file": ".pre-commit-config.yaml",
-      "id": "pre_commit_config",
       "community": 57,
-      "norm_label": "pre-commit configuration"
+      "norm_label": "pre-commit configuration",
+      "_origin": "semantic",
+      "id": "pre_commit_config"
     },
     {
       "label": "CLAUDE.md",
       "file_type": "document",
       "source_file": "CLAUDE.md",
-      "id": "claude_md",
       "community": 37,
-      "norm_label": "claude.md"
+      "norm_label": "claude.md",
+      "_origin": "semantic",
+      "id": "claude_md"
     },
     {
       "label": "Platform Infra CI Workflow",
       "file_type": "code",
       "source_file": ".github/workflows/infra-platform-ci.yml",
-      "id": "github_workflows_infra_platform_ci",
       "community": 8,
-      "norm_label": "platform infra ci workflow"
+      "norm_label": "platform infra ci workflow",
+      "_origin": "semantic",
+      "id": "github_workflows_infra_platform_ci"
     },
     {
       "label": "Provision Tenant Workflow",
       "file_type": "code",
       "source_file": ".github/workflows/provision-tenant.yml",
-      "id": "github_workflows_provision_tenant",
       "community": 25,
-      "norm_label": "provision tenant workflow"
+      "norm_label": "provision tenant workflow",
+      "_origin": "semantic",
+      "id": "github_workflows_provision_tenant"
     },
     {
       "label": "Repo Tooling CI Workflow",
       "file_type": "code",
       "source_file": ".github/workflows/repo-tooling-ci.yml",
-      "id": "github_workflows_repo_tooling_ci",
       "community": 51,
-      "norm_label": "repo tooling ci workflow"
+      "norm_label": "repo tooling ci workflow",
+      "_origin": "semantic",
+      "id": "github_workflows_repo_tooling_ci"
     },
     {
       "label": "Pulumi Platform Config",
       "file_type": "code",
       "source_file": "infra/platform/Pulumi.platform.yaml",
-      "id": "infra_platform_pulumi_yaml",
       "community": 8,
-      "norm_label": "pulumi platform config"
+      "norm_label": "pulumi platform config",
+      "_origin": "semantic",
+      "id": "infra_platform_pulumi_yaml"
     },
     {
       "label": "Provisioning Program",
       "file_type": "concept",
       "source_file": "CLAUDE.md",
-      "id": "infra_provisioning",
       "community": 25,
-      "norm_label": "provisioning program"
+      "norm_label": "provisioning program",
+      "_origin": "semantic",
+      "id": "infra_provisioning"
     }
   ],
   "links": [
@@ -9149,6 +9156,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.9,
       "source_file": ".github/workflows/infra-platform-ci.yml",
+      "_origin": "semantic",
       "source": "github_workflows_infra_platform_ci",
       "target": "infra_platform"
     },
@@ -9999,9 +10007,9 @@
       "source_location": "L125",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_check",
-      "target": "path",
-      "confidence_score": 1.0
+      "target": "path"
     },
     {
       "relation": "references",
@@ -10011,9 +10019,9 @@
       "source_location": "L115",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs",
-      "target": "path",
-      "confidence_score": 1.0
+      "target": "path"
     },
     {
       "relation": "references",
@@ -10023,9 +10031,9 @@
       "source_location": "L111",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config",
-      "target": "path",
-      "confidence_score": 1.0
+      "target": "path"
     },
     {
       "relation": "calls",
@@ -10035,9 +10043,9 @@
       "source_location": "L329",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_main",
-      "target": "path",
-      "confidence_score": 1.0
+      "target": "path"
     },
     {
       "relation": "references",
@@ -10047,9 +10055,9 @@
       "source_location": "L183",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check",
-      "target": "path",
-      "confidence_score": 1.0
+      "target": "path"
     },
     {
       "relation": "calls",
@@ -10059,9 +10067,9 @@
       "source_location": "L229",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
-      "target": "path",
-      "confidence_score": 1.0
+      "target": "path"
     },
     {
       "relation": "contains",
@@ -21143,9 +21151,9 @@
       "source_location": "L125",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_check",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_check"
     },
     {
       "relation": "contains",
@@ -21154,9 +21162,9 @@
       "source_location": "L115",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs"
     },
     {
       "relation": "contains",
@@ -21165,9 +21173,9 @@
       "source_location": "L87",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_commented",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_commented"
     },
     {
       "relation": "contains",
@@ -21176,9 +21184,9 @@
       "source_location": "L111",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config"
     },
     {
       "relation": "contains",
@@ -21187,9 +21195,9 @@
       "source_location": "L319",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_main",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_main"
     },
     {
       "relation": "contains",
@@ -21198,9 +21206,9 @@
       "source_location": "L96",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines"
     },
     {
       "relation": "contains",
@@ -21209,9 +21217,9 @@
       "source_location": "L183",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check"
     },
     {
       "relation": "contains",
@@ -21220,9 +21228,9 @@
       "source_location": "L192",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_self_test"
     },
     {
       "relation": "calls",
@@ -21232,9 +21240,9 @@
       "source_location": "L104",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_commented",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_commented"
     },
     {
       "relation": "rationale_for",
@@ -21243,9 +21251,9 @@
       "source_location": "L88",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_88",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_commented",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_commented"
     },
     {
       "relation": "calls",
@@ -21255,9 +21263,9 @@
       "source_location": "L136",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_check",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines"
     },
     {
       "relation": "rationale_for",
@@ -21266,9 +21274,9 @@
       "source_location": "L97",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_97",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines"
     },
     {
       "relation": "calls",
@@ -21278,9 +21286,9 @@
       "source_location": "L211",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_offending_lines"
     },
     {
       "relation": "calls",
@@ -21290,9 +21298,9 @@
       "source_location": "L120",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config"
     },
     {
       "relation": "calls",
@@ -21302,9 +21310,9 @@
       "source_location": "L229",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_is_stack_config"
     },
     {
       "relation": "calls",
@@ -21314,9 +21322,9 @@
       "source_location": "L331",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_main",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs"
     },
     {
       "relation": "calls",
@@ -21326,9 +21334,9 @@
       "source_location": "L253",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs"
     },
     {
       "relation": "calls",
@@ -21338,9 +21346,9 @@
       "source_location": "L334",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_main",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_check",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_check"
     },
     {
       "relation": "calls",
@@ -21350,9 +21358,9 @@
       "source_location": "L188",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_check",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_check"
     },
     {
       "relation": "rationale_for",
@@ -21361,9 +21369,9 @@
       "source_location": "L184",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_rationale_184",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check"
     },
     {
       "relation": "calls",
@@ -21373,9 +21381,9 @@
       "source_location": "L276",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_quiet_check"
     },
     {
       "relation": "calls",
@@ -21385,15 +21393,16 @@
       "source_location": "L327",
       "weight": 1.0,
       "_origin": "ast",
+      "confidence_score": 1.0,
       "source": "infra_scripts_assert_no_committed_pulumi_secrets_main",
-      "target": "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
-      "confidence_score": 1.0
+      "target": "infra_scripts_assert_no_committed_pulumi_secrets_self_test"
     },
     {
       "relation": "references",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": ".github/workflows/infra-platform-ci.yml",
+      "_origin": "semantic",
       "source": "github_workflows_infra_platform_ci",
       "target": "infra_platform_pulumi_yaml"
     },
@@ -21402,6 +21411,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.9,
       "source_file": ".github/workflows/provision-tenant.yml",
+      "_origin": "semantic",
       "source": "github_workflows_provision_tenant",
       "target": "infra_provisioning"
     }
@@ -21514,5 +21524,5 @@
       "source_file": "CONTRIBUTING.md"
     }
   ],
-  "built_at_commit": "2f059f63b1fbef66ea6190c297c4d570259d5fba"
+  "built_at_commit": "6064dc1151d5be3d3b1fbb437320f12921a972b4"
 }
