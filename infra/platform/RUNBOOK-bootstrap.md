@@ -1059,35 +1059,47 @@ undo — anything earlier than that never ran.
    write-only). Deleting the repo first destroys the one thing that can still
    decrypt this stack's checkpoint, and `pulumi destroy` has to read that
    checkpoint — do that and the stack is stranded exactly the way a lost KMS
-   key would strand it, except with no fallback. From a checkout of the
-   generated repo, with its own secret still live in CI or copied locally:
-   `pulumi login gs://<state-bucket> && pulumi destroy --stack <tenant>`.
-   Read the plan before confirming.
+   key would strand it, except with no fallback.
 
-   That checkout's `Pulumi.<tenant>.yaml` carries no `encryptionsalt` --
-   provisioning publishes it to the generated repo's own
-   `PULUMI_ENCRYPTION_SALT` secret, which is write-only like the passphrase --
-   so Pulumi has no secrets manager to resolve until one is put back. Unlike
-   the passphrase, the salt is recorded in the stack's own deployment, and
-   exporting a deployment needs no secrets manager, so no local copy of the
-   secret is required. Restore it into a throwaway directory and append the one
-   line, rather than pointing the script at the checkout: it *replaces*
-   `Pulumi.<tenant>.yaml` with the secrets configuration alone, which would
-   discard every config value this stack needs.
+   `pulumi destroy` needs the stack's secrets configuration, and a checkout of
+   the generated repo does not have it. The default branch has no
+   `Pulumi.<tenant>.yaml` at all here -- the handover pull request either was
+   never opened or is the unmerged branch step 1 above closes -- and the
+   handover branch's copy carries no `encryptionsalt`, because provisioning
+   publishes that to the repo's own write-only `PULUMI_ENCRYPTION_SALT` secret.
+   The passphrase needs a local copy; the salt does not, because the stack's own
+   deployment records it and an export needs no secrets manager to read.
+
+   Rebuild both, then destroy. From a checkout of the generated repo, in this
+   order:
 
    ```bash
-   pulumi stack export --stack <tenant> > deployment.json
+   export PULUMI_CONFIG_PASSPHRASE='<this tenant's passphrase>'
+   pulumi login gs://<state-bucket>
+
    tmp=$(mktemp -d)
+   pulumi stack export --stack <tenant> > "$tmp/deployment.json"
    python3 <ghost-platform checkout>/infra/provisioning/scripts/restore-stack-secrets-config.py \
-     <tenant> deployment.json "$tmp" --allow-passphrase
-   cat "$tmp/Pulumi.<tenant>.yaml" >> Pulumi.<tenant>.yaml
-   rm -rf deployment.json "$tmp"
+     <tenant> "$tmp/deployment.json" "$tmp" --allow-passphrase
+   printf '\n%s\n' "$(cat "$tmp/Pulumi.<tenant>.yaml")" >> Pulumi.<tenant>.yaml
+   rm -rf "$tmp"
+
+   pulumi destroy --stack <tenant>   # read the plan before confirming
    ```
 
-   Undo it with `git checkout -- Pulumi.<tenant>.yaml` once the destroy is
-   done. Committing that line puts the salt back in the repo it was taken out
-   of, and the generated repo's own committed-secret guard fails the moment it
-   does.
+   Everything intermediate stays in `"$tmp"` deliberately. The script *replaces*
+   the config file it writes rather than editing it, so aiming it at the
+   checkout would discard the stack's config values where one exists; and the
+   deployment export carries the salt in `secrets_providers.state.salt`, which
+   nothing in the generated repo ignores or guards, so a copy left in the
+   checkout root would be staged by a later `git add -A` in silence. `printf`
+   rather than a bare `cat >>` for the same reason the tenant's own CI uses it:
+   a target file with no trailing newline would otherwise absorb the salt into
+   its last line.
+
+   Delete `Pulumi.<tenant>.yaml` once the destroy is done. Step 3 deletes the
+   repo regardless, but until it does, that file is a committed-shaped stack
+   config carrying a live salt.
 
 3. **The generated repo**, once step 2 above is either confirmed unnecessary
    (the first apply never started) or already complete. `gh repo delete

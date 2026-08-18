@@ -420,8 +420,10 @@ jobs:
           DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Overrides the job-level PULUMI_CONFIG_PASSPHRASE above for this
-          # step and the two below: this tenant's own freshly minted value,
-          # never the shared repo-level one. Step-level env always wins over
+          # step and for the two that run `pulumi` against this tenant's stack
+          # after it -- "Refuse a first apply that touches platform
+          # infrastructure" and "Tenant first apply": this tenant's own freshly
+          # minted value, never the shared repo-level one. Step-level env always wins over
           # job-level env of the same name, so this is unambiguous rather
           # than relying on GITHUB_ENV write-order against the job env.
           PULUMI_CONFIG_PASSPHRASE: ${{ env.TENANT_PULUMI_PASSPHRASE }}
@@ -617,8 +619,12 @@ jobs:
         run: |
           set -euo pipefail
           config="Pulumi.${TENANT}.yaml"
-          if ! gh api "repos/${TENANT_REPO}/actions/secrets/PULUMI_ENCRYPTION_SALT" --silent 2>/dev/null; then
-            echo "::error::${TENANT_REPO} has no PULUMI_ENCRYPTION_SALT secret. Refusing to delete the salt from $config: nothing else would then restore it for that repo's own deploy job."
+          # gh's own stderr is kept rather than discarded: this is the gate
+          # that decides whether the salt may be deleted, and a 401 or a rate
+          # limit reported as "no such secret" would be a false cause in the
+          # one place it costs most.
+          if ! gh api "repos/${TENANT_REPO}/actions/secrets/PULUMI_ENCRYPTION_SALT" --silent; then
+            echo "::error::could not confirm a PULUMI_ENCRYPTION_SALT secret on ${TENANT_REPO} (the API response is above). Refusing to delete the salt from $config: nothing else would then restore it for that repo's own deploy job."
             exit 1
           fi
           if [ "$(sed -n 's/^encryptionsalt:[[:space:]]*//p' "$config")" != "$TENANT_PULUMI_SALT" ]; then
