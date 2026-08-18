@@ -22,11 +22,15 @@ This repo's IaC, split by shape rather than lumped into one program:
   constructor args rather than resolving a `StackReference` itself, so it
   stays portable and testable independent of any one caller. Published to
   GitHub Packages as `@branchleft/ghost-platform-tenant` and instantiated
-  from one private repo per tenant, generated from
-  `ghost-platform-tenant-template`. This repo is public, so it holds the
-  reusable component but never a tenant's name, hostname or config -- a
-  hostname and Cloud Run service name together are a tenant's identity, and
-  a file listing them would be a client roster.
+  from one repo per tenant, named `ghost-tenant-<name>` and generated from
+  `ghost-platform-tenant-template`. That repo is public unless the tenant
+  asked for it to be private, which is a question put to them before their
+  onboarding starts: the repo and its name disclose that they are a customer.
+  This repo is public and holds only the reusable component, so it never
+  carries a tenant's name, hostname or config whatever any one tenant chose --
+  a hostname and Cloud Run service name together are a tenant's identity, and
+  a file listing them here would be a roster of every tenant at once,
+  including the ones who chose private.
 
 - **`hetzner-host-check/`** -- not a Pulumi program or a stack: a small
   project whose only job is proving `@branchleft/hetzner-host` (published
