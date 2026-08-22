@@ -53,9 +53,10 @@ config:
   # `id_ed25519_hetzner`, SHA256:UZLm2m1fvggsRn3wQ7Y/oJ66dqiAhexsgkKkvTshRzk.
   branchleft-ghost-platform-hosts:ownerSshKeyNames:
     - rob@branchleft.co.uk
-  # Still to land before the first apply, minted by the platform owner with
-  # RUNBOOK-provision-host.md's keygen step — one deploy identity per host:
-  #   branchleft-ghost-platform-hosts:app1DeployPublicKey
-  #   branchleft-ghost-platform-hosts:db1DeployPublicKey
-  # The program `require`s both, so a preview without them fails on a real
-  # problem rather than on a value nobody copied over.
+  # One deploy identity per host, minted by the platform owner. Public halves
+  # only — each private key stays with the owner until the CI deploy path
+  # takes the app host's as a repository secret. Committed rather than
+  # secret-stored: this is a non-secret program input, and the committed value
+  # is the auditable record of the identity each host was created trusting.
+  branchleft-ghost-platform-hosts:app1DeployPublicKey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh7WlSMsGQ8IYTkJ9+/EX66QLMteq7zK7PFj+2XA951 deploy@app1
+  branchleft-ghost-platform-hosts:db1DeployPublicKey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPeinsqkprNa+9HuEnDcWYKPX46Sin63Xc3Uxu/pV/xe deploy@db1
