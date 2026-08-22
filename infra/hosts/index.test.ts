@@ -71,24 +71,28 @@ const publicNet = (name: string) =>
   (byName(name).inputs['publicNets'] as { ipv4Enabled: boolean; ipv6Enabled: boolean }[])[0];
 
 describe('the hosts program', () => {
-  it('declares exactly two servers, two firewalls and two network attachments', () => {
+  it('declares exactly two servers, two firewalls and one separate network attachment', () => {
     expect(
       servers()
         .map((r) => r.name)
         .sort()
     ).toEqual(['app1', 'db1']);
     expect(created.filter((r) => r.type === 'hcloud:index/firewall:Firewall')).toHaveLength(2);
+    // Only app1: a private-only host carries its network inline on the
+    // server so an interface exists at first boot, and declares no separate
+    // attachment resource.
     expect(
       created.filter((r) => r.type === 'hcloud:index/serverNetwork:ServerNetwork')
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   it('attaches each host at its address-plan address', () => {
-    const ips = created
-      .filter((r) => r.type === 'hcloud:index/serverNetwork:ServerNetwork')
-      .map((r) => r.inputs['ip'])
-      .sort();
-    expect(ips).toEqual(['10.20.1.100', '10.20.1.20']);
+    const attachment = created.find((r) => r.type === 'hcloud:index/serverNetwork:ServerNetwork');
+    expect(attachment?.inputs['ip']).toBe('10.20.1.100');
+    expect(byName('db1').inputs['networks']).toEqual([
+      { networkId: 4242, ip: '10.20.1.20', aliasIps: [] },
+    ]);
+    expect(byName('app1').inputs['networks']).toBeUndefined();
   });
 
   it('gives app1 public networking — the SSH deploy path needs it', () => {
