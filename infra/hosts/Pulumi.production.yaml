@@ -1,0 +1,62 @@
+# Stack configuration for the estate's application and database hosts.
+#
+# `encryptionsalt` and the `hcloud:token` ciphertext never belong in this
+# file. The salt is an offline verifier for the stack passphrase and the
+# ciphertext is only as safe as that passphrase, so both are written into the
+# working copy only, never committed. An operator running a hand-gated stack
+# operation supplies both themselves (`pulumi config set --secret
+# hcloud:token` prompts for the token); a CI apply path, when one lands,
+# appends the salt from a repository secret at deploy. Either way it must be
+# the **estate** project's token, which `projectGuard.ts` checks rather than
+# assumes. The salt needs no vault; it is recoverable from the state bucket
+# with read access alone — `pulumi stack export` returns it uninterpreted as
+# `deployment.secrets_providers.state.salt`. **Never run `pulumi stack init`
+# to recover it**: against a stack that already exists, `stack init` mints a
+# **new** salt, which derives a different key from the same passphrase, and
+# every piece of ciphertext this stack has ever encrypted stops decrypting
+# under it, silently, until something next reads a secret.
+#
+# The deploy public keys are documentation more than mechanism: each value
+# reaches its host through cloud-init, and `userData` is in the component's
+# `ignoreChanges`, so the value that landed at creation is the one the host
+# keeps — changing one here is a clean preview, a successful apply, and no
+# effect on the host. shared-infra's RUNBOOK-provision-host.md carries the
+# rotation path that does take effect.
+#
+# `location` is deliberately not a key here. It is `ESTATE_LOCATION` in the
+# published address plan, cross-checked at preview against the estate stack's
+# applied `estateLocation` output, because more than one stack in more than
+# one repository creates hosts on this network and a per-stack config value
+# lets the second apply land somewhere the first did not — permanently, and
+# with a clean preview.
+#
+# Two things about editing this file. Pulumi rewrites it in place on every
+# `stack init` and `config set`, so the layout below is the one Pulumi itself
+# produces and an edit that reflows it will be reflowed back. And a comment
+# survives that rewrite only while the file carries at least one populated
+# config entry — emptying the block below silently deletes everything above it.
+config:
+  # Matches the rest of the estate. Ignored by the component after creation,
+  # because Hetzner reuses an image name across point releases and the value
+  # the API reports drifts on a server that was never rebuilt.
+  branchleft-ghost-platform-hosts:image: debian-13
+  # The smallest current shared-x86 type, per host rather than shared: a
+  # resize is a per-host decision, and a shared key would make one host's
+  # change read as every host's. Check `Available:` and never `Recommended:`
+  # immediately before an apply — `Recommended` reads `hel1` across the whole
+  # cx line whatever the stock is.
+  branchleft-ghost-platform-hosts:app1ServerType: cx23
+  branchleft-ghost-platform-hosts:db1ServerType: cx23
+  # The *name* the key is registered under in the hcloud estate project, not
+  # key material. `hcloud ssh-key list` is the only place the current names
+  # can be read, and the name is per-project. The key behind it is
+  # `id_ed25519_hetzner`, SHA256:UZLm2m1fvggsRn3wQ7Y/oJ66dqiAhexsgkKkvTshRzk.
+  branchleft-ghost-platform-hosts:ownerSshKeyNames:
+    - rob@branchleft.co.uk
+  # One deploy identity per host, minted by the platform owner. Public halves
+  # only — each private key stays with the owner until the CI deploy path
+  # takes the app host's as a repository secret. Committed rather than
+  # secret-stored: this is a non-secret program input, and the committed value
+  # is the auditable record of the identity each host was created trusting.
+  branchleft-ghost-platform-hosts:app1DeployPublicKey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPh7WlSMsGQ8IYTkJ9+/EX66QLMteq7zK7PFj+2XA951 deploy@app1
+  branchleft-ghost-platform-hosts:db1DeployPublicKey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPeinsqkprNa+9HuEnDcWYKPX46Sin63Xc3Uxu/pV/xe deploy@db1

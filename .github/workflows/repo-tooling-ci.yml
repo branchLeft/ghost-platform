@@ -66,3 +66,12 @@ jobs:
         run: |
           python3 infra/scripts/assert-no-committed-pulumi-secrets.py --self-test
           python3 infra/scripts/assert-no-committed-pulumi-secrets.py --scan-tree .
+
+      # The delete guard's own gate runs in the hosts plan/apply jobs, where
+      # the plan exists; this proves on every push that the guard itself
+      # still refuses what it exists to refuse and that its coverage map
+      # still matches the program tree.
+      - name: Hetzner delete guard self-test
+        run: |
+          python3 infra/scripts/assert-no-hetzner-deletes.py --self-test
+          python3 infra/scripts/assert-no-hetzner-deletes.py --verify-coverage infra/hosts

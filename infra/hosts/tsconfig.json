@@ -1,0 +1,8 @@
+{
+  "extends": ["@branchleft/tsconfig/strict-1.json", "@branchleft/tsconfig/pulumi.json"],
+  "compilerOptions": {
+    "pretty": true
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}

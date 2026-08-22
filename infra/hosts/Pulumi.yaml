@@ -1,0 +1,13 @@
+name: branchleft-ghost-platform-hosts
+runtime: nodejs
+main: index.ts
+
+# Pinned because `pulumi login` is global state on a workstation, so a project
+# that does not name its own backend can be operated against whichever one was
+# last logged into. The bucket is in `hel1`; the servers this project creates
+# are not, and the two are ordered independently. Both the endpoint host and
+# `region` must name the bucket's location — a mismatch is an opaque 403 that
+# reads as a credential problem.
+backend:
+  url: 's3://branchleft-pulumi-state?endpoint=hel1.your-objectstorage.com&s3ForcePathStyle=true&region=hel1'
+description: The application and database hosts of the Hetzner estate — app1 and db1, created together from the shared Host pattern so their colocation is decided by one apply rather than by whatever stock exists on two different days. The edge and monitoring hosts are homed in shared-infra and are not created here; nothing here installs MySQL, Ghost or Compose — those are delivered onto the hosts separately.
