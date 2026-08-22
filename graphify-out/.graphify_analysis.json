@@ -1,45 +1,44 @@
 {
   "communities": {
     "0": [
+      "docref_rfc_5321",
+      "services_mailgun_shim_src_app_createapp",
       "services_mailgun_shim_src_auth",
       "services_mailgun_shim_src_auth_express_serve_static_core",
       "services_mailgun_shim_src_auth_locals",
       "services_mailgun_shim_src_auth_parsebasicauth",
       "services_mailgun_shim_src_auth_requiretenantfordomain",
-      "services_mailgun_shim_src_cli",
-      "services_mailgun_shim_src_cli_cliio",
-      "services_mailgun_shim_src_cli_generateapikey",
-      "services_mailgun_shim_src_cli_main",
-      "services_mailgun_shim_src_cli_runcli",
-      "services_mailgun_shim_src_crypto",
-      "services_mailgun_shim_src_crypto_hashapikey",
-      "services_mailgun_shim_src_crypto_hashedapikey",
-      "services_mailgun_shim_src_crypto_verifyapikey",
+      "services_mailgun_shim_src_log_logger_info",
+      "services_mailgun_shim_src_mailgunfields",
+      "services_mailgun_shim_src_mailgunfields_accumulate",
+      "services_mailgun_shim_src_mailgunfields_asarray",
+      "services_mailgun_shim_src_mailgunfields_asstring",
+      "services_mailgun_shim_src_mailgunfields_parsedmessagefields",
+      "services_mailgun_shim_src_mailgunfields_parsemailgunmessagefields",
+      "services_mailgun_shim_src_mailgunfields_resolverecipienttokens",
       "services_mailgun_shim_src_ratelimit",
       "services_mailgun_shim_src_ratelimit_tenantratelimiter",
       "services_mailgun_shim_src_routes_events",
       "services_mailgun_shim_src_routes_events_createeventsrouter",
       "services_mailgun_shim_src_routes_events_parseeventtypefilter",
       "services_mailgun_shim_src_routes_events_towireevent",
+      "services_mailgun_shim_src_routes_messages",
+      "services_mailgun_shim_src_routes_messages_createmessagesrouter",
+      "services_mailgun_shim_src_routes_messages_deduperecipients",
+      "services_mailgun_shim_src_routes_messages_isyes",
       "services_mailgun_shim_src_routes_suppressions",
       "services_mailgun_shim_src_routes_suppressions_createsuppressionsrouter",
       "services_mailgun_shim_src_routes_suppressions_issuppressiontype",
-      "services_mailgun_shim_src_store",
-      "services_mailgun_shim_src_store_assertsuppressiontype",
-      "services_mailgun_shim_src_store_assertwalenabled",
-      "services_mailgun_shim_src_store_createsqlitestore",
-      "services_mailgun_shim_src_store_duerecipient",
-      "services_mailgun_shim_src_store_enqueuebatchparams",
-      "services_mailgun_shim_src_store_listeventsoptions",
-      "services_mailgun_shim_src_store_listeventsresult",
       "services_mailgun_shim_src_store_shimstore",
       "services_mailgun_shim_src_store_shimstore_addsuppression",
       "services_mailgun_shim_src_store_shimstore_claimduerecipients",
       "services_mailgun_shim_src_store_shimstore_cleanupcompletedbatches",
-      "services_mailgun_shim_src_store_shimstore_close",
+      "services_mailgun_shim_src_store_shimstore_countpendingrecipients",
+      "services_mailgun_shim_src_store_shimstore_enqueuebatch",
       "services_mailgun_shim_src_store_shimstore_issuppressed",
       "services_mailgun_shim_src_store_shimstore_listevents",
       "services_mailgun_shim_src_store_shimstore_listtenants",
+      "services_mailgun_shim_src_store_shimstore_ping",
       "services_mailgun_shim_src_store_shimstore_recordevent",
       "services_mailgun_shim_src_store_shimstore_recordrecipientfailed",
       "services_mailgun_shim_src_store_shimstore_recordrecipientsent",
@@ -49,10 +48,9 @@
       "services_mailgun_shim_src_store_shimstore_schedulerecipientretry",
       "services_mailgun_shim_src_store_shimstore_tenantexists",
       "services_mailgun_shim_src_store_shimstore_verifytenant",
-      "services_mailgun_shim_src_store_suppression_types",
       "services_mailgun_shim_src_store_suppressiontype",
       "services_mailgun_shim_src_store_tenant",
-      "services_mailgun_shim_src_store_withtransaction",
+      "services_mailgun_shim_src_worker_workerhandle_status",
       "services_mailgun_shim_test_unit_auth_test",
       "services_mailgun_shim_test_unit_auth_test_basicauthheader",
       "services_mailgun_shim_test_unit_auth_test_fakereq",
@@ -60,18 +58,63 @@
       "services_mailgun_shim_test_unit_auth_test_fakeresponse",
       "services_mailgun_shim_test_unit_auth_test_fakeresponse_json",
       "services_mailgun_shim_test_unit_auth_test_fakeresponse_status",
-      "services_mailgun_shim_test_unit_cli_test",
-      "services_mailgun_shim_test_unit_cli_test_captureio",
-      "services_mailgun_shim_test_unit_crypto_test",
+      "services_mailgun_shim_test_unit_mailgunfields_test",
+      "services_mailgun_shim_test_unit_mailgunfields_test_multipartrequest",
       "services_mailgun_shim_test_unit_ratelimit_test",
       "services_mailgun_shim_test_unit_ratelimit_test_fakereqres",
       "services_mailgun_shim_test_unit_ratelimit_test_runmiddleware",
-      "services_mailgun_shim_test_unit_ratelimit_test_startlimitedapp",
-      "services_mailgun_shim_test_unit_store_test",
-      "services_mailgun_shim_test_unit_store_test_makeevent",
-      "services_mailgun_shim_test_unit_store_test_payload"
+      "services_mailgun_shim_test_unit_ratelimit_test_startlimitedapp"
     ],
     "1": [
+      "busboy",
+      "express",
+      "express_rate_limit",
+      "form_data",
+      "mailgun_js",
+      "mailparser",
+      "nodemailer",
+      "services_mailgun_shim_package",
+      "services_mailgun_shim_package_dependencies",
+      "services_mailgun_shim_package_dependencies_busboy",
+      "services_mailgun_shim_package_dependencies_express",
+      "services_mailgun_shim_package_dependencies_express_rate_limit",
+      "services_mailgun_shim_package_dependencies_nodemailer",
+      "services_mailgun_shim_package_description",
+      "services_mailgun_shim_package_devdependencies",
+      "services_mailgun_shim_package_devdependencies_form_data",
+      "services_mailgun_shim_package_devdependencies_mailgun_js",
+      "services_mailgun_shim_package_devdependencies_mailparser",
+      "services_mailgun_shim_package_devdependencies_smtp_server",
+      "services_mailgun_shim_package_devdependencies_types_busboy",
+      "services_mailgun_shim_package_devdependencies_types_express",
+      "services_mailgun_shim_package_devdependencies_types_mailparser",
+      "services_mailgun_shim_package_devdependencies_types_node",
+      "services_mailgun_shim_package_devdependencies_types_nodemailer",
+      "services_mailgun_shim_package_devdependencies_types_smtp_server",
+      "services_mailgun_shim_package_devdependencies_typescript",
+      "services_mailgun_shim_package_devdependencies_vitest",
+      "services_mailgun_shim_package_devdependencies_vitest_coverage_v8",
+      "services_mailgun_shim_package_json_vitest",
+      "services_mailgun_shim_package_main",
+      "services_mailgun_shim_package_name",
+      "services_mailgun_shim_package_private",
+      "services_mailgun_shim_package_scripts",
+      "services_mailgun_shim_package_scripts_build",
+      "services_mailgun_shim_package_scripts_coverage",
+      "services_mailgun_shim_package_scripts_start",
+      "services_mailgun_shim_package_scripts_test_unit",
+      "services_mailgun_shim_package_scripts_typecheck",
+      "services_mailgun_shim_package_type",
+      "services_mailgun_shim_package_version",
+      "smtp_server",
+      "types_busboy",
+      "types_express",
+      "types_mailparser",
+      "types_nodemailer",
+      "types_smtp_server",
+      "vitest_coverage_v8"
+    ],
+    "2": [
       "infra_platform_apis",
       "infra_platform_apis_enabledapis",
       "infra_platform_apis_requiredservices",
@@ -120,7 +163,7 @@
       "infra_platform_workloadidentity_provider",
       "infra_platform_workloadidentity_workloadidentityprovider"
     ],
-    "2": [
+    "3": [
       "docref_rfc_1035",
       "infra_tenant_cloudrunservice",
       "infra_tenant_cloudrunservice_bulkemailenvs",
@@ -165,50 +208,6 @@
       "infra_tenant_storage_createtenantstorage",
       "infra_tenant_storage_storageresult"
     ],
-    "3": [
-      "infra_platform_package",
-      "infra_platform_package_dependencies",
-      "infra_platform_package_dependencies_pulumi_gcp",
-      "infra_platform_package_dependencies_pulumi_pulumi",
-      "infra_platform_package_dependencies_pulumi_random",
-      "infra_platform_package_json_pulumi_pulumi",
-      "infra_platform_package_main",
-      "infra_platform_package_name",
-      "infra_platform_package_private",
-      "infra_platform_package_scripts",
-      "infra_platform_package_scripts_typecheck",
-      "infra_provisioning_package_dependencies",
-      "infra_provisioning_package_dependencies_pulumi_gcp",
-      "infra_provisioning_package_dependencies_pulumi_pulumi",
-      "infra_provisioning_package_json_pulumi_pulumi",
-      "infra_tenant_package",
-      "infra_tenant_package_dependencies",
-      "infra_tenant_package_dependencies_pulumi_gcp",
-      "infra_tenant_package_dependencies_pulumi_pulumi",
-      "infra_tenant_package_dependencies_pulumi_random",
-      "infra_tenant_package_files",
-      "infra_tenant_package_json_pulumi_gcp",
-      "infra_tenant_package_json_pulumi_pulumi",
-      "infra_tenant_package_json_pulumi_random",
-      "infra_tenant_package_json_ref_dist",
-      "infra_tenant_package_license",
-      "infra_tenant_package_main",
-      "infra_tenant_package_name",
-      "infra_tenant_package_publishconfig",
-      "infra_tenant_package_publishconfig_access",
-      "infra_tenant_package_publishconfig_registry",
-      "infra_tenant_package_repository",
-      "infra_tenant_package_repository_directory",
-      "infra_tenant_package_repository_type",
-      "infra_tenant_package_repository_url",
-      "infra_tenant_package_scripts",
-      "infra_tenant_package_scripts_build",
-      "infra_tenant_package_scripts_prepublishonly",
-      "infra_tenant_package_scripts_test_unit",
-      "infra_tenant_package_scripts_typecheck",
-      "infra_tenant_package_types",
-      "infra_tenant_package_version"
-    ],
     "4": [
       "infra_provisioning_scripts_test_restore_stack_secrets_config",
       "infra_provisioning_scripts_test_restore_stack_secrets_config_deployment",
@@ -252,44 +251,38 @@
       "infra_provisioning_scripts_test_restore_stack_secrets_config_tempdircase_write_deployment"
     ],
     "5": [
-      "infra_hetzner_host_check_tsconfig",
-      "infra_hetzner_host_check_tsconfig_compileroptions",
-      "infra_hetzner_host_check_tsconfig_compileroptions_pretty",
-      "infra_hetzner_host_check_tsconfig_exclude",
-      "infra_hetzner_host_check_tsconfig_extends",
-      "infra_hetzner_host_check_tsconfig_include",
-      "infra_platform_tsconfig",
-      "infra_platform_tsconfig_compileroptions",
-      "infra_platform_tsconfig_compileroptions_pretty",
-      "infra_platform_tsconfig_exclude",
-      "infra_platform_tsconfig_extends",
-      "infra_platform_tsconfig_include",
-      "infra_platform_tsconfig_json_ref_bin",
-      "infra_platform_tsconfig_json_ref_ts",
-      "infra_provisioning_tsconfig",
-      "infra_provisioning_tsconfig_compileroptions",
-      "infra_provisioning_tsconfig_compileroptions_pretty",
-      "infra_provisioning_tsconfig_exclude",
-      "infra_provisioning_tsconfig_extends",
-      "infra_provisioning_tsconfig_include",
-      "infra_provisioning_tsconfig_json_ref_bin",
-      "infra_provisioning_tsconfig_json_ref_ts",
-      "infra_tenant_tsconfig",
-      "infra_tenant_tsconfig_build_exclude",
-      "infra_tenant_tsconfig_build_json_ref_dist",
-      "infra_tenant_tsconfig_build_json_ref_test_ts",
-      "infra_tenant_tsconfig_compileroptions",
-      "infra_tenant_tsconfig_compileroptions_pretty",
-      "infra_tenant_tsconfig_exclude",
-      "infra_tenant_tsconfig_extends",
-      "infra_tenant_tsconfig_include",
-      "infra_tenant_tsconfig_json_ref_bin",
-      "infra_tenant_tsconfig_json_ref_dist",
-      "infra_tenant_tsconfig_json_ref_ts",
-      "ref_branchleft_tsconfig_pulumi_json",
-      "ref_branchleft_tsconfig_strict_1_json",
-      "ref_node_modules",
-      "ref_ts"
+      "infra_hosts_index",
+      "infra_hosts_index_app1",
+      "infra_hosts_index_app1privateip",
+      "infra_hosts_index_app1publicipv4",
+      "infra_hosts_index_config",
+      "infra_hosts_index_db1",
+      "infra_hosts_index_db1privateip",
+      "infra_hosts_index_estateprojectverified",
+      "infra_hosts_index_estatestack",
+      "infra_hosts_index_hostslocation",
+      "infra_hosts_index_image",
+      "infra_hosts_index_location",
+      "infra_hosts_index_networkid",
+      "infra_hosts_index_networkstack",
+      "infra_hosts_index_ownersshkeynames",
+      "infra_hosts_index_test",
+      "infra_hosts_index_test_byname",
+      "infra_hosts_index_test_call",
+      "infra_hosts_index_test_created",
+      "infra_hosts_index_test_newresource",
+      "infra_hosts_index_test_publicnet",
+      "infra_hosts_index_test_servers",
+      "infra_hosts_locationcheck",
+      "infra_hosts_locationcheck_assertcolocatedwithedge",
+      "infra_hosts_locationcheck_test",
+      "infra_hosts_projectguard",
+      "infra_hosts_projectguard_assertestateproject",
+      "infra_hosts_projectguard_checkserversresult",
+      "infra_hosts_projectguard_mail_project_servers",
+      "infra_hosts_projectguard_mailprojectserversin",
+      "infra_hosts_projectguard_test",
+      "infra_hosts_projectguard_verifyestateproject"
     ],
     "6": [
       "branchleft_prettier_config",
@@ -352,131 +345,83 @@
       "infra_provisioning_index_tenantstackconfig"
     ],
     "8": [
-      "branchleft_ghost_platform_tenant",
-      "branchleft_hetzner_host",
-      "contributing",
-      "github_dependabot",
-      "github_packages",
-      "github_workflows_infra_hetzner_host_check_ci",
-      "github_workflows_infra_platform_ci",
-      "infra_hetzner_host_check",
       "infra_hetzner_host_check_package",
       "infra_hetzner_host_check_package_dependencies",
       "infra_hetzner_host_check_package_dependencies_branchleft_hetzner_host",
       "infra_hetzner_host_check_package_dependencies_pulumi_hcloud",
       "infra_hetzner_host_check_package_dependencies_pulumi_pulumi",
       "infra_hetzner_host_check_package_description",
+      "infra_hetzner_host_check_package_json_pulumi_pulumi",
       "infra_hetzner_host_check_package_name",
       "infra_hetzner_host_check_package_private",
       "infra_hetzner_host_check_package_scripts",
       "infra_hetzner_host_check_package_scripts_test_unit",
       "infra_hetzner_host_check_package_scripts_typecheck",
-      "infra_platform",
-      "infra_platform_pulumi_yaml",
-      "infra_readme",
-      "infra_tenant",
-      "pulumi_hcloud",
-      "pulumi_pulumi",
-      "readme"
+      "infra_hosts_package",
+      "infra_hosts_package_dependencies",
+      "infra_hosts_package_dependencies_branchleft_hetzner_host",
+      "infra_hosts_package_dependencies_pulumi_hcloud",
+      "infra_hosts_package_dependencies_pulumi_pulumi",
+      "infra_hosts_package_description",
+      "infra_hosts_package_json_branchleft_hetzner_host",
+      "infra_hosts_package_json_pulumi_hcloud",
+      "infra_hosts_package_json_pulumi_pulumi",
+      "infra_hosts_package_main",
+      "infra_hosts_package_name",
+      "infra_hosts_package_private",
+      "infra_hosts_package_scripts",
+      "infra_hosts_package_scripts_test_unit",
+      "infra_hosts_package_scripts_typecheck"
     ],
     "9": [
-      "services_mailgun_shim_src_store_queuebatchpayload",
-      "services_mailgun_shim_src_store_queuerecipientstatus",
-      "services_mailgun_shim_src_store_storedevent",
-      "services_mailgun_shim_test_unit_app_test",
-      "services_mailgun_shim_test_unit_app_test_listenapp",
-      "services_mailgun_shim_test_unit_helpers_fakestore",
-      "services_mailgun_shim_test_unit_helpers_fakestore_batchrow",
-      "services_mailgun_shim_test_unit_helpers_fakestore_createfakestore",
-      "services_mailgun_shim_test_unit_helpers_fakestore_fakeshimstore",
-      "services_mailgun_shim_test_unit_helpers_fakestore_recipientrow",
-      "services_mailgun_shim_test_unit_helpers_fakestore_suppressionkey",
-      "services_mailgun_shim_test_unit_helpers_startrouter",
-      "services_mailgun_shim_test_unit_helpers_startrouter_basicauthheader",
-      "services_mailgun_shim_test_unit_helpers_startrouter_startedrouter",
-      "services_mailgun_shim_test_unit_helpers_startrouter_startedrouter_close",
-      "services_mailgun_shim_test_unit_helpers_startrouter_startrouter",
-      "services_mailgun_shim_test_unit_helpers_startrouter_wait",
-      "services_mailgun_shim_test_unit_routes_events_test",
-      "services_mailgun_shim_test_unit_routes_events_test_get",
-      "services_mailgun_shim_test_unit_routes_events_test_wireevent",
-      "services_mailgun_shim_test_unit_routes_events_test_wireeventsresponse",
-      "services_mailgun_shim_test_unit_routes_messages_test",
-      "services_mailgun_shim_test_unit_routes_messages_test_multipartbody",
-      "services_mailgun_shim_test_unit_routes_messages_test_post",
-      "services_mailgun_shim_test_unit_routes_suppressions_test",
-      "services_mailgun_shim_test_unit_routes_suppressions_test_del"
-    ],
-    "10": [
-      "busboy",
-      "express",
-      "express_rate_limit",
-      "nodemailer",
-      "services_mailgun_shim_package",
-      "services_mailgun_shim_package_dependencies",
-      "services_mailgun_shim_package_dependencies_busboy",
-      "services_mailgun_shim_package_dependencies_express",
-      "services_mailgun_shim_package_dependencies_express_rate_limit",
-      "services_mailgun_shim_package_dependencies_nodemailer",
-      "services_mailgun_shim_package_description",
-      "services_mailgun_shim_package_main",
-      "services_mailgun_shim_package_name",
-      "services_mailgun_shim_package_private",
-      "services_mailgun_shim_package_scripts",
-      "services_mailgun_shim_package_scripts_build",
-      "services_mailgun_shim_package_scripts_coverage",
-      "services_mailgun_shim_package_scripts_start",
-      "services_mailgun_shim_package_scripts_test_unit",
-      "services_mailgun_shim_package_scripts_typecheck",
-      "services_mailgun_shim_package_type",
-      "services_mailgun_shim_package_version"
-    ],
-    "11": [
-      "form_data",
-      "mailgun_js",
-      "mailparser",
-      "services_mailgun_shim_package_devdependencies",
-      "services_mailgun_shim_package_devdependencies_form_data",
-      "services_mailgun_shim_package_devdependencies_mailgun_js",
-      "services_mailgun_shim_package_devdependencies_mailparser",
-      "services_mailgun_shim_package_devdependencies_smtp_server",
-      "services_mailgun_shim_package_devdependencies_types_busboy",
-      "services_mailgun_shim_package_devdependencies_types_express",
-      "services_mailgun_shim_package_devdependencies_types_mailparser",
-      "services_mailgun_shim_package_devdependencies_types_nodemailer",
-      "services_mailgun_shim_package_devdependencies_vitest",
-      "services_mailgun_shim_package_devdependencies_vitest_coverage_v8",
-      "services_mailgun_shim_package_json_vitest",
-      "smtp_server",
-      "types_busboy",
-      "types_express",
-      "types_mailparser",
-      "types_nodemailer",
-      "vitest_coverage_v8"
-    ],
-    "12": [
-      "services_mailgun_shim_src_throttle",
-      "services_mailgun_shim_src_throttle_createthrottle",
-      "services_mailgun_shim_src_throttle_throttle",
-      "services_mailgun_shim_src_throttle_throttle_currentrate",
-      "services_mailgun_shim_src_throttle_throttle_reload",
-      "services_mailgun_shim_src_throttle_throttle_trytake",
-      "services_mailgun_shim_src_throttle_throttleoptions",
+      "services_mailgun_shim_src_smtp_createdeliverytransport",
       "services_mailgun_shim_src_worker",
       "services_mailgun_shim_src_worker_backoff_ladder_seconds",
       "services_mailgun_shim_src_worker_createworker",
       "services_mailgun_shim_src_worker_istransientfailure",
       "services_mailgun_shim_src_worker_recipientdomain",
-      "services_mailgun_shim_src_worker_workeroptions",
+      "services_mailgun_shim_src_worker_workerhandle",
+      "services_mailgun_shim_src_worker_workerhandle_kick",
+      "services_mailgun_shim_src_worker_workerhandle_stop",
+      "services_mailgun_shim_src_worker_workerhandle_whenidle",
       "services_mailgun_shim_src_worker_workerstatus",
+      "services_mailgun_shim_test_helpers_testlogger_createtestlogger",
+      "services_mailgun_shim_test_helpers_testserver",
+      "services_mailgun_shim_test_helpers_testserver_starttestshim",
+      "services_mailgun_shim_test_helpers_testserver_testshim",
+      "services_mailgun_shim_test_helpers_testserver_testshim_close",
       "services_mailgun_shim_test_helpers_testthrottle",
       "services_mailgun_shim_test_helpers_testthrottle_createunlimitedthrottle",
-      "services_mailgun_shim_test_unit_throttle_test",
+      "services_mailgun_shim_test_helpers_testworker",
+      "services_mailgun_shim_test_helpers_testworker_createtestworker",
       "services_mailgun_shim_test_unit_worker_test",
       "services_mailgun_shim_test_unit_worker_test_createfailingworker",
       "services_mailgun_shim_test_unit_worker_test_payload"
     ],
-    "13": [
+    "10": [
+      "services_mailgun_shim_src_store",
+      "services_mailgun_shim_src_store_assertsuppressiontype",
+      "services_mailgun_shim_src_store_assertwalenabled",
+      "services_mailgun_shim_src_store_createsqlitestore",
+      "services_mailgun_shim_src_store_duerecipient",
+      "services_mailgun_shim_src_store_enqueuebatchparams",
+      "services_mailgun_shim_src_store_listeventsoptions",
+      "services_mailgun_shim_src_store_listeventsresult",
+      "services_mailgun_shim_src_store_queuebatchpayload",
+      "services_mailgun_shim_src_store_queuerecipientstatus",
+      "services_mailgun_shim_src_store_shimstore_close",
+      "services_mailgun_shim_src_store_storedevent",
+      "services_mailgun_shim_src_store_suppression_types",
+      "services_mailgun_shim_src_store_withtransaction",
+      "services_mailgun_shim_test_unit_helpers_fakestore",
+      "services_mailgun_shim_test_unit_helpers_fakestore_batchrow",
+      "services_mailgun_shim_test_unit_helpers_fakestore_recipientrow",
+      "services_mailgun_shim_test_unit_helpers_fakestore_suppressionkey",
+      "services_mailgun_shim_test_unit_store_test",
+      "services_mailgun_shim_test_unit_store_test_makeevent",
+      "services_mailgun_shim_test_unit_store_test_payload"
+    ],
+    "11": [
       "infra_provisioning_scripts_assert_no_provisioning_deletes",
       "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
       "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
@@ -497,7 +442,69 @@
       "infra_provisioning_scripts_assert_no_provisioning_deletes_self_test",
       "infra_provisioning_scripts_assert_no_provisioning_deletes_verify_coverage"
     ],
+    "12": [
+      "services_mailgun_shim_src_server",
+      "services_mailgun_shim_src_server_app",
+      "services_mailgun_shim_src_server_config",
+      "services_mailgun_shim_src_server_log",
+      "services_mailgun_shim_src_server_server",
+      "services_mailgun_shim_src_server_shutdown",
+      "services_mailgun_shim_src_server_store",
+      "services_mailgun_shim_src_server_throttle",
+      "services_mailgun_shim_src_server_transport",
+      "services_mailgun_shim_src_server_worker",
+      "services_mailgun_shim_src_throttle",
+      "services_mailgun_shim_src_throttle_createthrottle",
+      "services_mailgun_shim_src_throttle_throttle",
+      "services_mailgun_shim_src_throttle_throttle_currentrate",
+      "services_mailgun_shim_src_throttle_throttle_reload",
+      "services_mailgun_shim_src_throttle_throttle_trytake",
+      "services_mailgun_shim_src_throttle_throttleoptions",
+      "services_mailgun_shim_src_worker_workeroptions",
+      "services_mailgun_shim_test_unit_throttle_test"
+    ],
+    "13": [
+      "services_mailgun_shim_test_unit_app_test",
+      "services_mailgun_shim_test_unit_app_test_listenapp",
+      "services_mailgun_shim_test_unit_helpers_fakestore_createfakestore",
+      "services_mailgun_shim_test_unit_helpers_fakestore_fakeshimstore",
+      "services_mailgun_shim_test_unit_helpers_startrouter",
+      "services_mailgun_shim_test_unit_helpers_startrouter_basicauthheader",
+      "services_mailgun_shim_test_unit_helpers_startrouter_startedrouter",
+      "services_mailgun_shim_test_unit_helpers_startrouter_startedrouter_close",
+      "services_mailgun_shim_test_unit_helpers_startrouter_startrouter",
+      "services_mailgun_shim_test_unit_helpers_startrouter_wait",
+      "services_mailgun_shim_test_unit_routes_events_test",
+      "services_mailgun_shim_test_unit_routes_events_test_get",
+      "services_mailgun_shim_test_unit_routes_events_test_wireevent",
+      "services_mailgun_shim_test_unit_routes_events_test_wireeventsresponse",
+      "services_mailgun_shim_test_unit_routes_messages_test",
+      "services_mailgun_shim_test_unit_routes_messages_test_multipartbody",
+      "services_mailgun_shim_test_unit_routes_messages_test_post",
+      "services_mailgun_shim_test_unit_routes_suppressions_test",
+      "services_mailgun_shim_test_unit_routes_suppressions_test_del"
+    ],
     "14": [
+      "infra_scripts_assert_no_hetzner_deletes",
+      "infra_scripts_assert_no_hetzner_deletes_coverage_self_test",
+      "infra_scripts_assert_no_hetzner_deletes_declaration_pattern",
+      "infra_scripts_assert_no_hetzner_deletes_destructive_steps",
+      "infra_scripts_assert_no_hetzner_deletes_main",
+      "infra_scripts_assert_no_hetzner_deletes_plan",
+      "infra_scripts_assert_no_hetzner_deletes_print_quarantined",
+      "infra_scripts_assert_no_hetzner_deletes_quarantine",
+      "infra_scripts_assert_no_hetzner_deletes_rationale_117",
+      "infra_scripts_assert_no_hetzner_deletes_rationale_126",
+      "infra_scripts_assert_no_hetzner_deletes_rationale_200",
+      "infra_scripts_assert_no_hetzner_deletes_rationale_235",
+      "infra_scripts_assert_no_hetzner_deletes_rationale_75",
+      "infra_scripts_assert_no_hetzner_deletes_rationale_90",
+      "infra_scripts_assert_no_hetzner_deletes_self_test",
+      "infra_scripts_assert_no_hetzner_deletes_split_urn",
+      "infra_scripts_assert_no_hetzner_deletes_verify_coverage",
+      "pattern"
+    ],
+    "15": [
       "infra_tenant_tsconfig_build",
       "infra_tenant_tsconfig_build_compileroptions",
       "infra_tenant_tsconfig_build_compileroptions_declaration",
@@ -517,27 +524,27 @@
       "services_mailgun_shim_tsconfig_build_json_ref_src_ts",
       "services_mailgun_shim_tsconfig_build_json_ref_test_ts"
     ],
-    "15": [
-      "services_mailgun_shim_src_config",
-      "services_mailgun_shim_src_config_loadconfig",
-      "services_mailgun_shim_src_config_requireenv",
-      "services_mailgun_shim_src_config_shimconfig",
-      "services_mailgun_shim_src_config_shimenv",
-      "services_mailgun_shim_src_server",
-      "services_mailgun_shim_src_server_app",
-      "services_mailgun_shim_src_server_config",
-      "services_mailgun_shim_src_server_log",
-      "services_mailgun_shim_src_server_server",
-      "services_mailgun_shim_src_server_shutdown",
-      "services_mailgun_shim_src_server_store",
-      "services_mailgun_shim_src_server_throttle",
-      "services_mailgun_shim_src_server_transport",
-      "services_mailgun_shim_src_server_worker",
-      "services_mailgun_shim_src_smtp_deliveryhostconfig",
-      "services_mailgun_shim_test_unit_config_test",
-      "services_mailgun_shim_test_unit_config_test_baseenv"
-    ],
     "16": [
+      "services_mailgun_shim_src_app",
+      "services_mailgun_shim_src_asynchandler",
+      "services_mailgun_shim_src_asynchandler_asynchandler",
+      "services_mailgun_shim_src_log",
+      "services_mailgun_shim_src_log_createlogger",
+      "services_mailgun_shim_src_log_defaultwrite",
+      "services_mailgun_shim_src_log_logfields",
+      "services_mailgun_shim_src_log_logger",
+      "services_mailgun_shim_src_log_logger_error",
+      "services_mailgun_shim_src_log_logger_log",
+      "services_mailgun_shim_src_log_logger_warn",
+      "services_mailgun_shim_src_log_loglevel",
+      "services_mailgun_shim_test_helpers_testlogger",
+      "services_mailgun_shim_test_helpers_testlogger_capturedlogline",
+      "services_mailgun_shim_test_helpers_testlogger_testlogger",
+      "services_mailgun_shim_test_unit_asynchandler_test",
+      "services_mailgun_shim_test_unit_asynchandler_test_fakeres",
+      "services_mailgun_shim_test_unit_log_test"
+    ],
+    "17": [
       "infra_platform_scripts_assert_no_platform_deletes",
       "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test",
       "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern",
@@ -556,7 +563,7 @@
       "infra_platform_scripts_assert_no_platform_deletes_self_test",
       "infra_platform_scripts_assert_no_platform_deletes_verify_coverage"
     ],
-    "17": [
+    "18": [
       "infra_provisioning_scripts_test_mint_tenant_passphrase",
       "infra_provisioning_scripts_test_mint_tenant_passphrase_load_module",
       "infra_provisioning_scripts_test_mint_tenant_passphrase_maintests",
@@ -573,53 +580,38 @@
       "infra_provisioning_scripts_test_mint_tenant_passphrase_minttests_test_uses_the_urlsafe_alphabet",
       "infra_provisioning_scripts_test_mint_tenant_passphrase_rationale_23"
     ],
-    "18": [
-      "services_mailgun_shim_src_app_createapp",
-      "services_mailgun_shim_src_smtp_createdeliverytransport",
-      "services_mailgun_shim_src_store_shimstore_countpendingrecipients",
-      "services_mailgun_shim_src_store_shimstore_ping",
-      "services_mailgun_shim_src_worker_workerhandle",
-      "services_mailgun_shim_src_worker_workerhandle_status",
-      "services_mailgun_shim_src_worker_workerhandle_stop",
-      "services_mailgun_shim_src_worker_workerhandle_whenidle",
-      "services_mailgun_shim_test_helpers_testlogger_createtestlogger",
-      "services_mailgun_shim_test_helpers_testserver",
-      "services_mailgun_shim_test_helpers_testserver_starttestshim",
-      "services_mailgun_shim_test_helpers_testserver_testshim",
-      "services_mailgun_shim_test_helpers_testserver_testshim_close",
-      "services_mailgun_shim_test_helpers_testworker",
-      "services_mailgun_shim_test_helpers_testworker_createtestworker"
-    ],
     "19": [
-      "ref_es2023",
-      "ref_vitest_config_ts",
-      "services_mailgun_shim_tsconfig",
-      "services_mailgun_shim_tsconfig_compileroptions",
-      "services_mailgun_shim_tsconfig_compileroptions_lib",
-      "services_mailgun_shim_tsconfig_compileroptions_module",
-      "services_mailgun_shim_tsconfig_compileroptions_moduleresolution",
-      "services_mailgun_shim_tsconfig_compileroptions_nouncheckedindexedaccess",
-      "services_mailgun_shim_tsconfig_compileroptions_outdir",
-      "services_mailgun_shim_tsconfig_compileroptions_target",
-      "services_mailgun_shim_tsconfig_extends",
-      "services_mailgun_shim_tsconfig_include",
-      "services_mailgun_shim_tsconfig_json_ref_src_ts",
-      "services_mailgun_shim_tsconfig_json_ref_test_ts"
+      "infra_tenant_package",
+      "infra_tenant_package_files",
+      "infra_tenant_package_json_ref_dist",
+      "infra_tenant_package_license",
+      "infra_tenant_package_main",
+      "infra_tenant_package_name",
+      "infra_tenant_package_publishconfig",
+      "infra_tenant_package_publishconfig_access",
+      "infra_tenant_package_publishconfig_registry",
+      "infra_tenant_package_repository",
+      "infra_tenant_package_repository_directory",
+      "infra_tenant_package_repository_type",
+      "infra_tenant_package_repository_url",
+      "infra_tenant_package_types",
+      "infra_tenant_package_version"
     ],
     "20": [
-      "docref_rfc_5321",
-      "services_mailgun_shim_src_asynchandler",
-      "services_mailgun_shim_src_asynchandler_asynchandler",
-      "services_mailgun_shim_src_log_logger_error",
-      "services_mailgun_shim_src_log_logger_info",
-      "services_mailgun_shim_src_routes_messages",
-      "services_mailgun_shim_src_routes_messages_createmessagesrouter",
-      "services_mailgun_shim_src_routes_messages_deduperecipients",
-      "services_mailgun_shim_src_routes_messages_isyes",
-      "services_mailgun_shim_src_store_shimstore_enqueuebatch",
-      "services_mailgun_shim_src_worker_workerhandle_kick",
-      "services_mailgun_shim_test_unit_asynchandler_test",
-      "services_mailgun_shim_test_unit_asynchandler_test_fakeres"
+      "infra_hetzner_host_check_package_devdependencies",
+      "infra_hetzner_host_check_package_devdependencies_branchleft_tsconfig",
+      "infra_hetzner_host_check_package_devdependencies_types_node",
+      "infra_hetzner_host_check_package_devdependencies_typescript",
+      "infra_hetzner_host_check_package_devdependencies_vitest",
+      "infra_hetzner_host_check_package_json_vitest",
+      "infra_hosts_package_devdependencies",
+      "infra_hosts_package_devdependencies_branchleft_tsconfig",
+      "infra_hosts_package_devdependencies_types_node",
+      "infra_hosts_package_devdependencies_typescript",
+      "infra_hosts_package_devdependencies_vitest",
+      "infra_hosts_package_json_types_node",
+      "infra_hosts_package_json_typescript",
+      "infra_hosts_package_json_vitest"
     ],
     "21": [
       "infra_scripts_assert_no_committed_pulumi_secrets",
@@ -637,21 +629,33 @@
       "path"
     ],
     "22": [
-      "services_mailgun_shim_src_app",
-      "services_mailgun_shim_src_log",
-      "services_mailgun_shim_src_log_createlogger",
-      "services_mailgun_shim_src_log_defaultwrite",
-      "services_mailgun_shim_src_log_logfields",
-      "services_mailgun_shim_src_log_logger",
-      "services_mailgun_shim_src_log_logger_log",
-      "services_mailgun_shim_src_log_logger_warn",
-      "services_mailgun_shim_src_log_loglevel",
-      "services_mailgun_shim_test_helpers_testlogger",
-      "services_mailgun_shim_test_helpers_testlogger_capturedlogline",
-      "services_mailgun_shim_test_helpers_testlogger_testlogger",
-      "services_mailgun_shim_test_unit_log_test"
+      "infra_platform_package_dependencies",
+      "infra_platform_package_dependencies_pulumi_gcp",
+      "infra_platform_package_dependencies_pulumi_pulumi",
+      "infra_platform_package_dependencies_pulumi_random",
+      "infra_platform_package_json_pulumi_pulumi",
+      "infra_tenant_package_dependencies",
+      "infra_tenant_package_dependencies_pulumi_gcp",
+      "infra_tenant_package_dependencies_pulumi_pulumi",
+      "infra_tenant_package_dependencies_pulumi_random",
+      "infra_tenant_package_json_pulumi_gcp",
+      "infra_tenant_package_json_pulumi_pulumi",
+      "infra_tenant_package_json_pulumi_random"
     ],
     "23": [
+      "branchleft_ghost_platform_tenant",
+      "contributing_contributing",
+      "ghost_platform_tenant_template",
+      "ghost_tenant_name",
+      "github_dependabot",
+      "github_workflows_infra_platform_ci",
+      "github_workflows_provision_tenant_yml",
+      "infra_platform",
+      "infra_platform_pulumi_yaml",
+      "infra_tenant",
+      "readme"
+    ],
+    "24": [
       "docref_rfc_2822",
       "docref_rfc_822",
       "services_mailgun_shim_src_smtp",
@@ -664,7 +668,7 @@
       "services_mailgun_shim_test_unit_smtp_test_capturingrealtransport",
       "services_mailgun_shim_test_unit_smtp_test_mocktransport"
     ],
-    "24": [
+    "25": [
       "services_mailgun_shim_test_helpers_mailgunclient",
       "services_mailgun_shim_test_helpers_mailgunclient_createmailgunclient",
       "services_mailgun_shim_test_helpers_mailgunclient_mailgunconstructor",
@@ -677,61 +681,119 @@
       "services_mailgun_shim_test_helpers_smtpsink_startsmtpsink",
       "services_mailgun_shim_test_shim_integration_test"
     ],
-    "25": [
-      "services_mailgun_shim_src_mailgunfields",
-      "services_mailgun_shim_src_mailgunfields_accumulate",
-      "services_mailgun_shim_src_mailgunfields_asarray",
-      "services_mailgun_shim_src_mailgunfields_asstring",
-      "services_mailgun_shim_src_mailgunfields_parsedmessagefields",
-      "services_mailgun_shim_src_mailgunfields_parsemailgunmessagefields",
-      "services_mailgun_shim_src_mailgunfields_resolverecipienttokens",
-      "services_mailgun_shim_test_unit_mailgunfields_test",
-      "services_mailgun_shim_test_unit_mailgunfields_test_multipartrequest"
-    ],
     "26": [
-      "infra_provisioning_package_devdependencies_typescript",
-      "infra_tenant_package_devdependencies",
-      "infra_tenant_package_devdependencies_types_node",
-      "infra_tenant_package_devdependencies_typescript",
-      "infra_tenant_package_devdependencies_vitest",
-      "infra_tenant_package_json_vitest",
-      "services_mailgun_shim_package_devdependencies_typescript",
-      "typescript"
+      "infra_hetzner_host_check_tsconfig_extends",
+      "infra_hosts_tsconfig_extends",
+      "infra_platform_tsconfig",
+      "infra_platform_tsconfig_compileroptions",
+      "infra_platform_tsconfig_compileroptions_pretty",
+      "infra_platform_tsconfig_extends",
+      "infra_platform_tsconfig_include",
+      "infra_platform_tsconfig_json_ref_ts",
+      "ref_branchleft_tsconfig_pulumi_json",
+      "ref_branchleft_tsconfig_strict_1_json"
     ],
     "27": [
-      "branchleft_tsconfig",
-      "infra_hetzner_host_check_package_devdependencies",
-      "infra_hetzner_host_check_package_devdependencies_branchleft_tsconfig",
-      "infra_hetzner_host_check_package_devdependencies_types_node",
-      "infra_hetzner_host_check_package_devdependencies_typescript",
-      "infra_hetzner_host_check_package_devdependencies_vitest",
-      "vitest"
-    ],
-    "28": [
+      "infra_platform_package",
       "infra_platform_package_devdependencies",
       "infra_platform_package_devdependencies_branchleft_tsconfig",
       "infra_platform_package_devdependencies_types_node",
       "infra_platform_package_devdependencies_typescript",
-      "services_mailgun_shim_package_devdependencies_types_node",
-      "types_node"
+      "infra_platform_package_main",
+      "infra_platform_package_name",
+      "infra_platform_package_private",
+      "infra_platform_package_scripts",
+      "infra_platform_package_scripts_typecheck"
     ],
-    "29": [
+    "28": [
       "infra_provisioning_package",
+      "infra_provisioning_package_dependencies",
+      "infra_provisioning_package_dependencies_pulumi_gcp",
+      "infra_provisioning_package_dependencies_pulumi_pulumi",
+      "infra_provisioning_package_json_pulumi_pulumi",
       "infra_provisioning_package_main",
       "infra_provisioning_package_name",
       "infra_provisioning_package_private",
       "infra_provisioning_package_scripts",
       "infra_provisioning_package_scripts_typecheck"
     ],
+    "29": [
+      "infra_tenant_tsconfig",
+      "infra_tenant_tsconfig_compileroptions",
+      "infra_tenant_tsconfig_compileroptions_pretty",
+      "infra_tenant_tsconfig_exclude",
+      "infra_tenant_tsconfig_extends",
+      "infra_tenant_tsconfig_include",
+      "infra_tenant_tsconfig_json_ref_bin",
+      "infra_tenant_tsconfig_json_ref_dist",
+      "infra_tenant_tsconfig_json_ref_ts"
+    ],
     "30": [
+      "infra_provisioning_tsconfig",
+      "infra_provisioning_tsconfig_compileroptions",
+      "infra_provisioning_tsconfig_compileroptions_pretty",
+      "infra_provisioning_tsconfig_exclude",
+      "infra_provisioning_tsconfig_extends",
+      "infra_provisioning_tsconfig_include",
+      "infra_provisioning_tsconfig_json_ref_bin",
+      "infra_provisioning_tsconfig_json_ref_ts"
+    ],
+    "31": [
+      "ref_es2023",
+      "services_mailgun_shim_tsconfig_compileroptions",
+      "services_mailgun_shim_tsconfig_compileroptions_lib",
+      "services_mailgun_shim_tsconfig_compileroptions_module",
+      "services_mailgun_shim_tsconfig_compileroptions_moduleresolution",
+      "services_mailgun_shim_tsconfig_compileroptions_nouncheckedindexedaccess",
+      "services_mailgun_shim_tsconfig_compileroptions_outdir",
+      "services_mailgun_shim_tsconfig_compileroptions_target"
+    ],
+    "32": [
+      "services_mailgun_shim_src_config",
+      "services_mailgun_shim_src_config_loadconfig",
+      "services_mailgun_shim_src_config_requireenv",
+      "services_mailgun_shim_src_config_shimconfig",
+      "services_mailgun_shim_src_config_shimenv",
+      "services_mailgun_shim_src_smtp_deliveryhostconfig",
+      "services_mailgun_shim_test_unit_config_test",
+      "services_mailgun_shim_test_unit_config_test_baseenv"
+    ],
+    "33": [
+      "infra_hetzner_host_check_tsconfig",
+      "infra_hetzner_host_check_tsconfig_compileroptions",
+      "infra_hetzner_host_check_tsconfig_compileroptions_pretty",
+      "infra_hetzner_host_check_tsconfig_exclude",
+      "infra_hetzner_host_check_tsconfig_include",
+      "infra_hosts_tsconfig_include",
+      "ref_ts"
+    ],
+    "34": [
+      "infra_hosts_package_json_branchleft_tsconfig",
       "infra_provisioning_package_devdependencies",
       "infra_provisioning_package_devdependencies_branchleft_tsconfig",
       "infra_provisioning_package_devdependencies_types_node",
+      "infra_provisioning_package_devdependencies_typescript",
       "infra_tenant_package_devdependencies_branchleft_tsconfig",
-      "infra_tenant_package_json_branchleft_tsconfig",
       "services_mailgun_shim_package_devdependencies_branchleft_tsconfig"
     ],
-    "31": [
+    "35": [
+      "services_mailgun_shim_src_cli",
+      "services_mailgun_shim_src_cli_cliio",
+      "services_mailgun_shim_src_cli_generateapikey",
+      "services_mailgun_shim_src_cli_main",
+      "services_mailgun_shim_src_cli_runcli",
+      "services_mailgun_shim_test_unit_cli_test",
+      "services_mailgun_shim_test_unit_cli_test_captureio"
+    ],
+    "36": [
+      "infra_platform_tsconfig_exclude",
+      "infra_platform_tsconfig_json_ref_bin",
+      "infra_tenant_tsconfig_build_exclude",
+      "infra_tenant_tsconfig_build_json_ref_dist",
+      "infra_tenant_tsconfig_build_json_ref_test_ts",
+      "ref_node_modules"
+    ],
+    "37": [
       "infra_provisioning_scripts_restore_stack_secrets_config",
       "infra_provisioning_scripts_restore_stack_secrets_config_main",
       "infra_provisioning_scripts_restore_stack_secrets_config_py_path",
@@ -739,198 +801,230 @@
       "infra_provisioning_scripts_restore_stack_secrets_config_restore",
       "infra_provisioning_scripts_restore_stack_secrets_config_scalar_field"
     ],
-    "32": [
+    "38": [
+      "ref_vitest_config_ts",
+      "services_mailgun_shim_tsconfig",
+      "services_mailgun_shim_tsconfig_extends",
+      "services_mailgun_shim_tsconfig_include",
+      "services_mailgun_shim_tsconfig_json_ref_src_ts",
+      "services_mailgun_shim_tsconfig_json_ref_test_ts"
+    ],
+    "39": [
       "actions_checkout",
       "github_codeql_action_analyze",
       "github_codeql_action_init",
       "github_workflows_codeql_analyze",
       "github_workflows_codeql_codeql"
     ],
-    "33": [
+    "40": [
+      "infra_tenant_package_devdependencies",
+      "infra_tenant_package_devdependencies_types_node",
+      "infra_tenant_package_devdependencies_typescript",
+      "infra_tenant_package_devdependencies_vitest",
+      "infra_tenant_package_json_vitest"
+    ],
+    "41": [
+      "infra_tenant_package_scripts",
+      "infra_tenant_package_scripts_build",
+      "infra_tenant_package_scripts_prepublishonly",
+      "infra_tenant_package_scripts_test_unit",
+      "infra_tenant_package_scripts_typecheck"
+    ],
+    "42": [
+      "services_mailgun_shim_src_crypto",
+      "services_mailgun_shim_src_crypto_hashapikey",
+      "services_mailgun_shim_src_crypto_hashedapikey",
+      "services_mailgun_shim_src_crypto_verifyapikey",
+      "services_mailgun_shim_test_unit_crypto_test"
+    ],
+    "43": [
+      "branchleft_hetzner_host",
+      "github_workflows_infra_hosts_ci",
+      "infra_hosts",
+      "infra_hosts_pulumi_production"
+    ],
+    "44": [
       "docker_entrypoint_branchleft",
       "docker_entrypoint_branchleft_server_host",
       "docker_entrypoint_branchleft_server_port",
       "docker_entrypoint_branchleft_sh__entry"
     ],
-    "34": [
+    "45": [
       "infra_hetzner_host_check_hetznerhostinstall_test",
       "infra_hetzner_host_check_hetznerhostinstall_test_call",
       "infra_hetzner_host_check_hetznerhostinstall_test_created",
       "infra_hetzner_host_check_hetznerhostinstall_test_newresource"
     ],
-    "35": [
+    "46": [
+      "infra_hosts_tsconfig",
+      "infra_hosts_tsconfig_compileroptions",
+      "infra_hosts_tsconfig_compileroptions_pretty",
+      "infra_hosts_tsconfig_exclude"
+    ],
+    "47": [
       "scripts_test_storage_guard",
       "scripts_test_storage_guard_assert_blocked",
       "scripts_test_storage_guard_assert_boots",
       "scripts_test_storage_guard_sh__entry"
     ],
-    "36": [
+    "48": [
       "gcp_artifact_registry",
       "ghost_platform_tenant_image",
       "github_workflows_registry_push"
     ],
-    "37": [
-      "ghost_platform_tenant_template",
-      "ghost_tenant_name",
-      "github_workflows_provision_tenant_yml"
-    ],
-    "38": [
+    "49": [
       "infra_provisioning_scripts_mint_tenant_passphrase",
       "infra_provisioning_scripts_mint_tenant_passphrase_main",
       "infra_provisioning_scripts_mint_tenant_passphrase_mint"
     ],
-    "39": [
+    "50": [
       "scripts_smoke_test",
       "scripts_smoke_test_cleanup",
       "scripts_smoke_test_sh__entry"
     ],
-    "40": [
+    "51": [
       "branchleft_github_workflows_docs_lint",
       "github_workflows_docs_lint_yml_docs_lint"
     ],
-    "41": [
+    "52": [
       "branchleft_github_workflows_graphify",
       "github_workflows_graphify_yml_graphify"
     ],
-    "42": [
+    "53": [
       "github_workflows_infra_tenant_ci_yml",
       "github_workflows_publish_tenant_package_yml"
     ],
-    "43": [
-      "services_mailgun_shim_package_devdependencies_types_smtp_server",
-      "types_smtp_server"
-    ],
-    "44": [
-      "claude_md"
-    ],
-    "45": [
-      "eslint_config"
-    ],
-    "46": [
-      "gcp_cloud_run"
-    ],
-    "47": [
-      "gcp_cloud_sql"
-    ],
-    "48": [
-      "gcp_kms"
-    ],
-    "49": [
-      "gcp_secret_manager"
-    ],
-    "50": [
-      "gcp_storage_bucket"
-    ],
-    "51": [
-      "gcp_workload_identity_federation"
-    ],
-    "52": [
-      "ghost_official_image"
-    ],
-    "53": [
-      "github_actions_wif"
-    ],
     "54": [
-      "github_workflows_build_job_build"
+      "branchleft_tsconfig"
     ],
     "55": [
-      "github_workflows_build_workflow"
+      "eslint_config"
     ],
     "56": [
-      "github_workflows_mailgun_shim_ci_yml"
+      "gcp_cloud_run"
     ],
     "57": [
-      "github_workflows_mailgun_shim_image_yml"
+      "gcp_cloud_sql"
     ],
     "58": [
-      "github_workflows_repo_tooling_ci"
+      "gcp_kms"
     ],
     "59": [
-      "github_workflows_standards_workflow"
+      "gcp_secret_manager"
     ],
     "60": [
-      "infra_platform_pulumi_project"
+      "gcp_storage_bucket"
     ],
     "61": [
-      "infra_platform_runbook_bootstrap_md"
+      "gcp_workload_identity_federation"
     ],
     "62": [
-      "infra_provisioning"
+      "ghost_official_image"
     ],
     "63": [
-      "infra_tenant_smoke_test_readme"
+      "github_actions_wif"
     ],
     "64": [
-      "pattern"
+      "github_workflows_build_job_build"
     ],
     "65": [
-      "pre_commit_config"
+      "github_workflows_build_workflow"
     ],
     "66": [
-      "pulumi_cli"
+      "github_workflows_infra_hetzner_host_check_ci"
     ],
     "67": [
-      "pulumi_platform_stack"
+      "github_workflows_mailgun_shim_ci_yml"
     ],
     "68": [
-      "services_mailgun_shim"
+      "github_workflows_mailgun_shim_image_yml"
     ],
     "69": [
+      "github_workflows_repo_tooling_ci"
+    ],
+    "70": [
+      "github_workflows_standards_workflow"
+    ],
+    "71": [
+      "infra_platform_pulumi_project"
+    ],
+    "72": [
+      "infra_platform_runbook_bootstrap_md"
+    ],
+    "73": [
+      "infra_provisioning"
+    ],
+    "74": [
+      "infra_tenant_smoke_test_readme"
+    ],
+    "75": [
+      "pre_commit_config"
+    ],
+    "76": [
+      "pulumi_cli"
+    ],
+    "77": [
+      "pulumi_platform_stack"
+    ],
+    "78": [
+      "services_mailgun_shim"
+    ],
+    "79": [
       "services_mailgun_shim_vitest_config"
     ]
   },
   "cohesion": {
-    "0": 0.05029838022165388,
-    "1": 0.07955596669750231,
-    "2": 0.1184939091915836,
-    "3": 0.04878048780487805,
+    "0": 0.05427547363031234,
+    "1": 0.0425531914893617,
+    "2": 0.07955596669750231,
+    "3": 0.1184939091915836,
     "4": 0.10128205128205128,
-    "5": 0.06116642958748222,
+    "5": 0.08669354838709678,
     "6": 0.07142857142857142,
     "7": 0.10052910052910052,
-    "8": 0.08307692307692308,
-    "9": 0.16307692307692306,
-    "10": 0.09090909090909091,
-    "11": 0.09523809523809523,
-    "12": 0.16842105263157894,
-    "13": 0.18128654970760233,
-    "14": 0.1111111111111111,
-    "15": 0.13071895424836602,
-    "16": 0.19117647058823528,
-    "17": 0.13333333333333333,
-    "18": 0.22857142857142856,
-    "19": 0.14285714285714285,
-    "20": 0.21794871794871795,
+    "8": 0.07692307692307693,
+    "9": 0.1857707509881423,
+    "10": 0.14761904761904762,
+    "11": 0.18128654970760233,
+    "12": 0.12280701754385964,
+    "13": 0.2222222222222222,
+    "14": 0.1830065359477124,
+    "15": 0.1111111111111111,
+    "16": 0.20915032679738563,
+    "17": 0.19117647058823528,
+    "18": 0.13333333333333333,
+    "19": 0.13333333333333333,
+    "20": 0.15384615384615385,
     "21": 0.358974358974359,
-    "22": 0.2948717948717949,
-    "23": 0.23636363636363636,
+    "22": 0.18181818181818182,
+    "23": 0.18181818181818182,
     "24": 0.23636363636363636,
-    "25": 0.3611111111111111,
-    "26": 0.25,
-    "27": 0.2857142857142857,
-    "28": 0.3333333333333333,
-    "29": 0.3333333333333333,
-    "30": 0.3333333333333333,
-    "31": 0.4666666666666667,
-    "32": 0.5,
-    "33": 0.5,
-    "34": 0.5,
-    "35": 0.8333333333333334,
-    "36": 0.6666666666666666,
-    "37": 0.6666666666666666,
-    "38": 1.0,
-    "39": 0.6666666666666666,
-    "40": 1.0,
-    "41": 1.0,
-    "42": 1.0,
-    "43": 1.0,
-    "44": 1.0,
-    "45": 1.0,
-    "46": 1.0,
-    "47": 1.0,
-    "48": 1.0,
+    "25": 0.23636363636363636,
+    "26": 0.24444444444444444,
+    "27": 0.2,
+    "28": 0.2,
+    "29": 0.2222222222222222,
+    "30": 0.25,
+    "31": 0.25,
+    "32": 0.32142857142857145,
+    "33": 0.2857142857142857,
+    "34": 0.2857142857142857,
+    "35": 0.5238095238095238,
+    "36": 0.3333333333333333,
+    "37": 0.4666666666666667,
+    "38": 0.3333333333333333,
+    "39": 0.5,
+    "40": 0.4,
+    "41": 0.4,
+    "42": 0.7,
+    "43": 0.5,
+    "44": 0.5,
+    "45": 0.5,
+    "46": 0.5,
+    "47": 0.8333333333333334,
+    "48": 0.6666666666666666,
     "49": 1.0,
-    "50": 1.0,
+    "50": 0.6666666666666666,
     "51": 1.0,
     "52": 1.0,
     "53": 1.0,
@@ -949,7 +1043,17 @@
     "66": 1.0,
     "67": 1.0,
     "68": 1.0,
-    "69": 1.0
+    "69": 1.0,
+    "70": 1.0,
+    "71": 1.0,
+    "72": 1.0,
+    "73": 1.0,
+    "74": 1.0,
+    "75": 1.0,
+    "76": 1.0,
+    "77": 1.0,
+    "78": 1.0,
+    "79": 1.0
   },
   "gods": [
     {
@@ -1005,17 +1109,6 @@
   ],
   "surprises": [
     {
-      "source": "Hetzner Host Check Project",
-      "target": "@branchleft/tsconfig",
-      "source_files": [
-        "infra/README.md",
-        ".github/workflows/infra-hetzner-host-check-ci.yml"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories; bridges separate communities"
-    },
-    {
       "source": "ThrottleOptions",
       "target": "Logger",
       "source_files": [
@@ -1027,15 +1120,15 @@
       "why": "bridges separate communities; peripheral node `ThrottleOptions` unexpectedly reaches hub `Logger`"
     },
     {
-      "source": "Hetzner host check CI",
-      "target": "Hetzner Host Check Project",
+      "source": "exclude",
+      "target": "node_modules",
       "source_files": [
-        ".github/workflows/infra-hetzner-host-check-ci.yml",
-        "infra/README.md"
+        "infra/hosts/tsconfig.json",
+        "infra/hetzner-host-check/tsconfig.json"
       ],
       "confidence": "EXTRACTED",
-      "relation": "calls",
-      "why": "connects across different repos/directories"
+      "relation": "extends",
+      "why": "bridges separate communities; peripheral node `exclude` unexpectedly reaches hub `node_modules`"
     },
     {
       "source": "Platform Infra CI Workflow",
@@ -1049,11 +1142,22 @@
       "why": "connects across different repos/directories"
     },
     {
-      "source": "createMessagesRouter()",
-      "target": "requireTenantForDomain()",
+      "source": "Provision Tenant Workflow",
+      "target": "Tenant Template Repo",
       "source_files": [
-        "services/mailgun-shim/src/routes/messages.ts",
-        "services/mailgun-shim/src/auth.ts"
+        ".github/workflows/provision-tenant.yml",
+        "CLAUDE.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "connects across different repos/directories"
+    },
+    {
+      "source": "createWorker()",
+      "target": "resolveRecipientTokens()",
+      "source_files": [
+        "services/mailgun-shim/src/worker.ts",
+        "services/mailgun-shim/src/mailgunFields.ts"
       ],
       "confidence": "EXTRACTED",
       "relation": "calls",
@@ -1061,7 +1165,7 @@
     }
   ],
   "tokens": {
-    "input": 29015,
-    "output": 1141
+    "input": 1749,
+    "output": 1012
   }
 }
