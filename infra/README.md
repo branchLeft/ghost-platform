@@ -62,10 +62,15 @@ This repo's IaC, split by shape rather than lumped into one program:
   network id and the edge's *applied* location, and refuses to plan if that
   location does not match the address plan's. State lives on the Hetzner
   Object Storage backend under the passphrase provider -- not GCS -- and the
-  stack's config carries no salt and no token. CI type-checks and unit-tests
-  it (`.github/workflows/infra-hosts-ci.yml`) but does not plan or apply:
-  the estate hcloud token and the stack passphrase are owner-held, and the
-  apply is a platform-owner action until a gated CI apply path lands. Base
+  stack's config carries no salt and no token. Applied by CI on merge to
+  `main` (`.github/workflows/infra-hosts-ci.yml`): plan job first, preview
+  in the job summary, then an apply paused by the `production` environment's
+  required-reviewer rule -- failing closed if that rule is absent -- with
+  the delete guard (`../scripts/assert-no-hetzner-deletes.py`) refusing any
+  plan that destroys a protected resource. Pull requests run typecheck and
+  unit tests only; no cloud credential touches PR code. The one hand-run
+  operation is the stack bootstrap (`pulumi stack init` -- state only, no
+  cloud resources). Base
   pattern only: nothing here installs MySQL, Ghost or Compose -- those are
   delivered onto the hosts separately.
 
