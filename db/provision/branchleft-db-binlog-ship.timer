@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic trigger for branchleft-db-binlog-ship.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

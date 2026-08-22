@@ -1,0 +1,75 @@
+# The db Compose stack, deployed as `db` under /opt/branchleft/db.
+#
+# `${IMAGE}` is written by /usr/local/sbin/branchleft-deploy and is always a
+# digest, never a tag -- see hetzner/provision/branchleft_deploy.py in
+# shared-infra. mysqld-exporter is pinned by digest here because nothing
+# writes it for us.
+#
+# Both containers use the host network rather than Compose's default bridge:
+# db1 has no public interface, and a container's own bridge address is not
+# the address its private-network peers reach. Only the host network
+# namespace lets mysqld bind 10.20.1.20 itself, which is what
+# conf.d/branchleft.cnf's bind-address assumes.
+#
+# `./run/mysqld:/var/run/mysqld` is bind-mounted into both containers and
+# exposed to the bare host at /opt/branchleft/db/run/mysqld/mysqld.sock. It
+# is the ONLY way anything connects as root, `exporter`, `backup` or
+# `replicator` -- the official mysql image creates root as `'root'@'localhost'`
+# only, which the client library reaches solely via a socket, and the three
+# service accounts are scoped to `'...'@'localhost'` for the same reason
+# rather than to a TCP-reachable host. `bind-address` therefore only ever
+# needs to name the private address tenant accounts use -- no admin or
+# monitoring path depends on a TCP listener at all. Create the host directory
+# with permissive mode before first start (db/RUNBOOK-db.md step 1): the
+# container's `mysql` user and the host-side scripts that also open this
+# socket are different, unrelated UIDs, and this directory holds nothing but
+# an ephemeral socket file.
+name: db
+
+services:
+  mysql:
+    image: ${IMAGE}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in /etc/branchleft/db.env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./conf.d:/etc/mysql/conf.d:ro
+      - ./run/mysqld:/var/run/mysqld
+    healthcheck:
+      # Over the socket, inside this same container -- not TCP, and not
+      # `10.20.1.20`: root has no TCP-reachable account at all (see above).
+      test:
+        [
+          'CMD',
+          'mysqladmin',
+          'ping',
+          '--socket=/var/run/mysqld/mysqld.sock',
+          '-uroot',
+          '-p${MYSQL_ROOT_PASSWORD}',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.20.0@sha256:abed8dac117b4ae5b70757f988e44795935b9a72c3b58d720c67ba688f8cb79e
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # unix(/var/run/mysqld/mysqld.sock)/ form -- the `exporter` account is
+      # `'exporter'@'localhost'`, reachable only over this socket, matching
+      # every other admin/service account in this stack.
+      DATA_SOURCE_NAME: ${EXPORTER_DATA_SOURCE_NAME:?set EXPORTER_DATA_SOURCE_NAME in /etc/branchleft/db.env}
+    volumes:
+      - ./run/mysqld:/var/run/mysqld
+    command:
+      - --web.listen-address=10.20.1.20:9104
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql-data:

@@ -1,0 +1,15 @@
+# Ships every closed binary log db1 is holding to Object Storage. Triggered
+# every 15 minutes by branchleft-db-binlog-ship.timer -- see ship_binlogs.py
+# for why that interval is what bounds the RPO on host loss.
+[Unit]
+Description=branchLeft MySQL binlog shipping
+After=branchleft-compose@db.service
+Requires=branchleft-compose@db.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/branchleft/db.env
+WorkingDirectory=/opt/branchleft/db/provision
+ExecStart=/usr/bin/python3 /opt/branchleft/db/provision/ship_binlogs.py
+
+TimeoutStartSec=600

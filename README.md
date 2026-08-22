@@ -30,6 +30,13 @@ vs. component), and
 [`infra/platform/RUNBOOK-bootstrap.md`](infra/platform/RUNBOOK-bootstrap.md)
 for the one-time bootstrap that has to happen before CI can take over.
 
+**`db/`** — the shared MySQL 8 host's service layer: the Compose stack
+deployed onto `db1` (created by `infra/hosts`), tenant DB provisioning, and
+the encrypted nightly dump and binlog-shipping pipelines. See
+[`db/README.md`](db/README.md) for why it sits beside `infra/` rather than
+inside it, and [`db/RUNBOOK-db.md`](db/RUNBOOK-db.md) for deploy steps and
+the restore drill.
+
 **`Dockerfile` + `docker-entrypoint.branchleft.sh`** — the tenant image.
 Built on the official `ghost` image, pinned by tag *and* digest, with no
 tenant-specific configuration baked in. Every tenant runs the same image;

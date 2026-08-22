@@ -1,0 +1,30 @@
+# db1 is a cx23 (4 GB RAM), shared with mysqld-exporter and the OS -- sizing
+# below leaves headroom rather than assuming the whole host.
+[mysqld]
+bind-address = 10.20.1.20
+
+# TLS is required for every TCP connection -- tenant accounts only, which
+# are the only ones ever reachable over TCP (see compose.yml). A self-signed
+# cert/key pair is generated into the data directory on first start (the
+# image's default when none is supplied), enough for transport encryption on
+# a private network with no public listener. Unix-socket connections are
+# exempt by MySQL's own documented behaviour, and root/exporter/backup/
+# replicator all connect that way exclusively.
+require_secure_transport = ON
+
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+
+# Doc 14 §7.2's 7-day PITR window.
+log_bin = mysql-bin
+binlog_expire_logs_seconds = 604800
+server-id = 1
+sync_binlog = 1
+
+max_connections = 100
+innodb_buffer_pool_size = 1G
+innodb_redo_log_capacity = 268435456
+innodb_flush_log_at_trx_commit = 1
+
+# mysqld-exporter's collectors read from here.
+performance_schema = ON
