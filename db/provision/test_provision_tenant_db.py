@@ -40,7 +40,7 @@ class ProvisionNewTenantTests(unittest.TestCase):
     def test_creates_database_user_grants_and_cap(self):
         result = ptd.provision_tenant_database(
             "blog",
-            host="10.20.1.20",
+            socket_path="/tmp/mysqld.sock",
             admin_user="root",
             admin_password="secret",
             max_user_connections=7,
@@ -61,7 +61,7 @@ class ProvisionNewTenantTests(unittest.TestCase):
     def test_never_passes_the_admin_password_as_an_argument(self):
         ptd.provision_tenant_database(
             "blog",
-            host="10.20.1.20",
+            socket_path="/tmp/mysqld.sock",
             admin_user="root",
             admin_password="super-secret",
             password_factory=lambda: "x",
@@ -74,7 +74,7 @@ class ProvisionNewTenantTests(unittest.TestCase):
     def test_folds_a_hyphenated_tenant_name(self):
         result = ptd.provision_tenant_database(
             "blog-archive",
-            host="10.20.1.20",
+            socket_path="/tmp/mysqld.sock",
             admin_user="root",
             admin_password="secret",
             password_factory=lambda: "x",
@@ -88,7 +88,7 @@ class ProvisionExistingTenantTests(unittest.TestCase):
         run = FakeRun(responses=["1\n"])  # user_exists -> True
         result = ptd.provision_tenant_database(
             "blog",
-            host="10.20.1.20",
+            socket_path="/tmp/mysqld.sock",
             admin_user="root",
             admin_password="secret",
             max_user_connections=10,
@@ -108,7 +108,7 @@ class ProvisionExistingTenantTests(unittest.TestCase):
         run = FakeRun(responses=["1\n"])
         result = ptd.provision_tenant_database(
             "blog",
-            host="10.20.1.20",
+            socket_path="/tmp/mysqld.sock",
             admin_user="root",
             admin_password="secret",
             max_user_connections=25,
@@ -127,7 +127,7 @@ class InvalidTenantNameTests(unittest.TestCase):
         with self.assertRaises(InvalidTenantName):
             ptd.provision_tenant_database(
                 "Not Valid",
-                host="10.20.1.20",
+                socket_path="/tmp/mysqld.sock",
                 admin_user="root",
                 admin_password="secret",
                 run=run,
@@ -139,7 +139,7 @@ class InvalidTenantNameTests(unittest.TestCase):
         with self.assertRaises(InvalidTenantName):
             ptd.provision_tenant_database(
                 "blog'; DROP DATABASE mysql; --",
-                host="10.20.1.20",
+                socket_path="/tmp/mysqld.sock",
                 admin_user="root",
                 admin_password="secret",
                 run=run,
@@ -153,7 +153,7 @@ class MysqlFailureTests(unittest.TestCase):
         with self.assertRaises(ptd.ProvisionError):
             ptd.provision_tenant_database(
                 "blog",
-                host="10.20.1.20",
+                socket_path="/tmp/mysqld.sock",
                 admin_user="root",
                 admin_password="secret",
                 password_factory=lambda: "x",

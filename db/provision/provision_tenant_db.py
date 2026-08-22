@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """Idempotent create of one tenant's database, dedicated user and grants.
 
-Run by hand against db1 (over the private network, as an admin), once per
-tenant onboarded:
+Run by hand on db1 itself (as root, once per tenant onboarded):
 
-    MYSQL_PWD=... provision_tenant_db.py --host 10.20.1.20 --admin-user root blog
+    MYSQL_PWD=... provision_tenant_db.py --admin-user root blog
 
-Connects with the standard MySQL client library's own env var, `MYSQL_PWD`
--- never as an argument, which would land in shell history and the process
-table. Re-running against an existing tenant changes nothing about its
-password: `CREATE USER IF NOT EXISTS` is a no-op when the account already
-exists, so this is safe to run again to reapply a raised
-`MAX_USER_CONNECTIONS` or to confirm a tenant's grants without touching a
-credential something else already depends on.
+Connects over the Unix socket, never TCP: `root` only ever exists as
+`'root'@'localhost'` (the official mysql image's own default -- nothing here
+adds a `MYSQL_ROOT_HOST`), which the client library only reaches via a
+socket. Widening root to a TCP-reachable host purely so this script could
+use it would be a strictly worse trade for the one script that already runs
+locally. `MYSQL_PWD` -- never an argument, which would land in shell history
+and the process table -- still applies over a socket connection exactly as
+it would over TCP.
+
+Re-running against an existing tenant changes nothing about its password:
+`CREATE USER IF NOT EXISTS` is a no-op when the account already exists, so
+this is safe to run again to reapply a raised `MAX_USER_CONNECTIONS` or to
+confirm a tenant's grants without touching a credential something else
+already depends on.
 
 Self-managed MySQL is what makes this one script rather than two: the GCP-era
 component (`infra/tenant/database.ts`) could create the database and user but
@@ -39,6 +45,11 @@ from naming import (
 
 DEFAULT_MAX_USER_CONNECTIONS = 10
 
+# The socket bind-mounted out of the mysql container by db/stack/compose.yml
+# (`./run/mysqld:/var/run/mysqld`), reachable from the bare host at this path
+# once the stack is copied to /opt/branchleft/db per db/RUNBOOK-db.md.
+DEFAULT_SOCKET = "/opt/branchleft/db/run/mysqld/mysqld.sock"
+
 
 class ProvisionError(Exception):
     """Raised for anything a caller could have avoided by passing valid input,
@@ -48,13 +59,13 @@ class ProvisionError(Exception):
 def _run_sql(
     sql: str,
     *,
-    host: str,
+    socket_path: str,
     admin_user: str,
     admin_password: str,
     run=subprocess.run,
 ) -> str:
     result = run(
-        ["mysql", "--host", host, "--user", admin_user, "-N", "-B", "-e", sql],
+        ["mysql", "--socket", socket_path, "--user", admin_user, "-N", "-B", "-e", sql],
         env={**os.environ, "MYSQL_PWD": admin_password},
         capture_output=True,
         text=True,
@@ -68,7 +79,7 @@ def _run_sql(
 def user_exists(
     db_user: str,
     *,
-    host: str,
+    socket_path: str,
     admin_user: str,
     admin_password: str,
     run=subprocess.run,
@@ -78,7 +89,7 @@ def user_exists(
     # interpolate into a literal without a placeholder-capable transport.
     out = _run_sql(
         f"SELECT COUNT(*) FROM mysql.user WHERE User='{db_user}' AND Host='{TENANT_USER_HOST}';",
-        host=host,
+        socket_path=socket_path,
         admin_user=admin_user,
         admin_password=admin_password,
         run=run,
@@ -100,7 +111,7 @@ class ProvisionResult:
 def provision_tenant_database(
     tenant_name: str,
     *,
-    host: str,
+    socket_path: str = DEFAULT_SOCKET,
     admin_user: str,
     admin_password: str,
     max_user_connections: int = DEFAULT_MAX_USER_CONNECTIONS,
@@ -111,7 +122,7 @@ def provision_tenant_database(
     db_user = database_and_user_name(sql_identifier(tenant_name))
 
     already_exists = user_exists(
-        db_user, host=host, admin_user=admin_user, admin_password=admin_password, run=run
+        db_user, socket_path=socket_path, admin_user=admin_user, admin_password=admin_password, run=run
     )
     password = None if already_exists else password_factory()
 
@@ -135,7 +146,11 @@ def provision_tenant_database(
     statements.append("FLUSH PRIVILEGES;")
 
     _run_sql(
-        "\n".join(statements), host=host, admin_user=admin_user, admin_password=admin_password, run=run
+        "\n".join(statements),
+        socket_path=socket_path,
+        admin_user=admin_user,
+        admin_password=admin_password,
+        run=run,
     )
 
     return ProvisionResult(
@@ -150,7 +165,7 @@ def provision_tenant_database(
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("tenant_name")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--socket", dest="socket_path", default=DEFAULT_SOCKET)
     parser.add_argument("--admin-user", default="root")
     parser.add_argument(
         "--max-user-connections", type=int, default=DEFAULT_MAX_USER_CONNECTIONS
@@ -165,7 +180,7 @@ def main(argv: list[str]) -> int:
     try:
         result = provision_tenant_database(
             args.tenant_name,
-            host=args.host,
+            socket_path=args.socket_path,
             admin_user=args.admin_user,
             admin_password=admin_password,
             max_user_connections=args.max_user_connections,
