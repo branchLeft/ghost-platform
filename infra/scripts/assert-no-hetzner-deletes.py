@@ -182,8 +182,11 @@ _URN_APP1 = f"{_STACK}branchleft:hetzner:Host$hcloud:index/server:Server::app1"
 _URN_DB1 = f"{_STACK}branchleft:hetzner:Host$hcloud:index/server:Server::db1"
 _URN_APP1_FW = f"{_STACK}branchleft:hetzner:Host$hcloud:index/firewall:Firewall::app1-firewall"
 _URN_APP1_IPV4 = f"{_STACK}branchleft:hetzner:Host$hcloud:index/primaryIp:PrimaryIp::app1-ipv4"
+# app1, not db1: a private-only host carries its network inline on the server
+# and declares no separate attachment resource, so app1's is the only
+# attachment this stack can ever plan a delete for.
 _URN_ATTACH = (
-    f"{_STACK}branchleft:hetzner:Host$hcloud:index/serverNetwork:ServerNetwork::db1-network"
+    f"{_STACK}branchleft:hetzner:Host$hcloud:index/serverNetwork:ServerNetwork::app1-network"
 )
 _NET_STACK = "urn:pulumi:production::branchleft-hetzner-network::"
 _URN_NETWORK = f"{_NET_STACK}hcloud:index/network:Network::platform"
