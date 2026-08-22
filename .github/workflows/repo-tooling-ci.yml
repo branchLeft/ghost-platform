@@ -75,3 +75,10 @@ jobs:
         run: |
           python3 infra/scripts/assert-no-hetzner-deletes.py --self-test
           python3 infra/scripts/assert-no-hetzner-deletes.py --verify-coverage infra/hosts
+
+      # db1's own scripts: tenant provisioning, the encrypted dump and
+      # binlog-shipping pipelines. Every external command (mysql, mysqldump,
+      # mysqlbinlog, age) and every network call is mocked, so this needs no
+      # cloud credential and no live host.
+      - name: Database stack script tests
+        run: python3 -m unittest discover -s db/provision -p 'test_*.py'

@@ -1,0 +1,16 @@
+# One nightly logical dump of every database on db1, encrypted client-side
+# and shipped off-host. Triggered by branchleft-db-dump.timer.
+[Unit]
+Description=branchLeft nightly MySQL dump
+After=branchleft-compose@db.service
+Requires=branchleft-compose@db.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/branchleft/db.env
+WorkingDirectory=/opt/branchleft/db/provision
+ExecStart=/usr/bin/python3 /opt/branchleft/db/provision/dump_nightly.py
+
+# A dump that could not complete needs an operator, not a silent retry loop
+# indistinguishable from success in the unit's own state.
+TimeoutStartSec=1800

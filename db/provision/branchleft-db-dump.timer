@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly trigger for branchleft-db-dump.service
+
+[Timer]
+# Off-peak UTC, ahead of app1's own low-traffic window. Randomised spread so
+# a host reboot near this time does not fire every timer on the box at once.
+OnCalendar=*-*-* 03:10:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

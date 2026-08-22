@@ -1,0 +1,46 @@
+# The db Compose stack, deployed as `db` under /opt/branchleft/db.
+#
+# `${IMAGE}` is written by /usr/local/sbin/branchleft-deploy and is always a
+# digest, never a tag -- see hetzner/provision/branchleft_deploy.py in
+# shared-infra. mysqld-exporter is pinned by digest here because nothing
+# writes it for us.
+#
+# Both containers use the host network rather than Compose's default bridge:
+# db1 has no public interface, and a container's own bridge address is not
+# the address its private-network peers reach. Only the host network
+# namespace lets mysqld and the exporter bind 10.20.1.20 itself, which is
+# what conf.d/branchleft.cnf's bind-address and the exporter's
+# --web.listen-address both assume.
+name: db
+
+services:
+  mysql:
+    image: ${IMAGE}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in /etc/branchleft/db.env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./conf.d:/etc/mysql/conf.d:ro
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '10.20.1.20', '-uroot', '-p${MYSQL_ROOT_PASSWORD}']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.20.0@sha256:abed8dac117b4ae5b70757f988e44795935b9a72c3b58d720c67ba688f8cb79e
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DATA_SOURCE_NAME: ${EXPORTER_DATA_SOURCE_NAME:?set EXPORTER_DATA_SOURCE_NAME in /etc/branchleft/db.env}
+    command:
+      - --web.listen-address=10.20.1.20:9104
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
