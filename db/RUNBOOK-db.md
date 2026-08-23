@@ -59,12 +59,14 @@ re-run dump under a hand-typed key, still lands as a new version rather than
 destroying what it replaces. See the script's own docstring for the
 35-day noncurrent-version lifetime and why that number.
 
-## 1. Create the socket directory, copy the stack
+## 1. Create the socket directory, copy the stack, install host prerequisites
 
 ```bash
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 'mkdir -p /opt/branchleft/db/run/mysqld && chmod 777 /opt/branchleft/db/run/mysqld'
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@10.20.1.20:/opt/branchleft/db
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 'python3 /opt/branchleft/db/provision/install_host_prereqs.py'
 ```
 
 `chmod 777` is deliberate, not sloppy: the directory holds nothing but an
@@ -72,6 +74,15 @@ ephemeral socket file, and it is opened by three distinct, unrelated UIDs
 (the container's internal `mysql` user, the `mysqld-exporter` container's
 user, and root running the host-side scripts below) that share no other
 relationship to coordinate a tighter mode around.
+
+`db/provision/` must ship alongside `db/stack/`: §5 below copies systemd
+units from `/opt/branchleft/db/provision/`, and both units' `ExecStart`
+runs scripts from that same path -- nothing else puts it on the host.
+`install_host_prereqs.py` then installs what those scripts shell out to
+(`age`, and a MySQL-8.0-matched `mysql`/`mysqldump`/`mysqlbinlog` -- see the
+script's own docstring for the exact version-pairing constraints); it is
+idempotent, so re-running this step against an already-provisioned db1
+completes in seconds with no network access at all.
 
 ## 2. Write `/etc/branchleft/db.env`
 
@@ -109,11 +120,13 @@ systemctl enable --now branchleft-compose@db.service
 systemctl status branchleft-compose@db.service
 ```
 
-Verify the socket and TLS posture from `db1` itself, over the bind-mounted
-socket (never `-h 10.20.1.20` -- root has no account reachable that way):
+Verify the socket and TLS posture from `db1` itself, over the socket inside
+the `mysql` container (never `-h 10.20.1.20` -- root has no account
+reachable that way, and base provisioning installs no host-side `mysql`
+client for this step to assume):
 
 ```bash
-mysql --socket=/opt/branchleft/db/run/mysqld/mysqld.sock -uroot -p"$MYSQL_ROOT_PASSWORD" \
+docker exec -it db-mysql-1 mysql --socket=/var/run/mysqld/mysqld.sock -uroot -p"$MYSQL_ROOT_PASSWORD" \
   -e "SHOW VARIABLES LIKE 'require_secure_transport'; SHOW VARIABLES LIKE 'have_ssl';"
 ```
 
@@ -138,14 +151,20 @@ of them can read tenant data, and none of them is the account tenant
 provisioning creates:
 
 ```sql
--- mysqld-exporter: read-only visibility, nothing else.
+-- mysqld-exporter: read-only visibility, nothing else. PROCESS and
+-- REPLICATION CLIENT exist only at global scope and cannot be combined with
+-- a database-scoped grant in one statement (MySQL rejects it with
+-- ERROR 1221) -- SELECT stays scoped to performance_schema in its own grant.
 CREATE USER 'exporter'@'localhost' IDENTIFIED BY '<matches EXPORTER_DATA_SOURCE_NAME>';
-GRANT PROCESS, REPLICATION CLIENT, SELECT ON performance_schema.* TO 'exporter'@'localhost';
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'localhost';
+GRANT SELECT ON performance_schema.* TO 'exporter'@'localhost';
 
--- dump_nightly.py: enough to run mysqldump --all-databases --single-transaction,
--- plus SELECT @@server_uuid (no privilege required, any authenticated user).
+-- dump_nightly.py: enough to run mysqldump --all-databases --single-transaction
+-- --source-data=2 (the last of which runs SHOW MASTER STATUS, hence
+-- REPLICATION CLIENT below), plus SELECT @@server_uuid (no privilege
+-- required, any authenticated user).
 CREATE USER 'backup'@'localhost' IDENTIFIED BY '<matches DB_DUMP_MYSQL_PWD>';
-GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, RELOAD ON *.* TO 'backup'@'localhost';
+GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT ON *.* TO 'backup'@'localhost';
 
 -- ship_binlogs.py: enough for `mysqlbinlog --read-from-remote-server` and
 -- `FLUSH BINARY LOGS`, nothing more.

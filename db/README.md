@@ -9,7 +9,7 @@ over SSH and Compose, the same boundary `infra/README.md` draws for `app1`.
 | Path                                    | What it is                                                              |
 | ---------------------------------------- | ------------------------------------------------------------------------ |
 | `stack/`                                 | Copied to `/opt/branchleft/db`; MySQL 8 + mysqld-exporter, run by `branchleft-compose@db.service` |
-| `provision/`                             | Tenant DB/user provisioning, the nightly dump and binlog-shipping pipelines, and their unit tests |
+| `provision/`                             | Tenant DB/user provisioning, the nightly dump and binlog-shipping pipelines, the host-prerequisites installer, and their unit tests |
 | `RUNBOOK-db.md`                          | Deploy steps and the restore drill (both PITR and host-loss scenarios) |
 
 ## Why a top-level directory, not `infra/db`
