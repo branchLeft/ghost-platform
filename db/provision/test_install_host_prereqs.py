@@ -3,14 +3,19 @@
 
 Every external command and network fetch is faked -- no real apt, dpkg, gpg
 or HTTP call -- so these assert the constraints found live during the first
-db1 bootstrap (2026-08-23) rather than re-testing apt or dpkg themselves:
-bookworm (never trixie) is the pinned release, both signing keys go into one
-keyring, mysqldump/mysqlbinlog must report exactly 8.0.x, and -- the
-property that matters most for a script meant to run again on an
-already-provisioned host -- a fully-satisfied host makes no apt-get, dpkg,
-gpg or network call at all.
+db1 bootstrap (2026-08-23), plus three properties added after a follow-up
+review of this exact script: `libaio1` is only ever `dpkg -i`'d when its
+fetched bytes match a hash pinned in the module, the GPG keyring write is
+atomic and self-healing from a corrupt or truncated file rather than merely
+gated on existence, and the mysql-community apt pin is written even for an
+already-converged host. Also still covered: bookworm (never trixie) is the
+pinned release, both signing keys go into one keyring, mysqldump/mysqlbinlog
+must report exactly 8.0.x, and a fully-satisfied host makes no apt-get,
+dpkg, gpg or network call at all.
 """
 
+import contextlib
+import hashlib
 import os
 import shutil
 import subprocess
@@ -20,27 +25,17 @@ import unittest
 import install_host_prereqs as ihp
 
 
-def _cmp_versions(a: str, b: str) -> int:
-    """Minimal Debian-version-ish comparator for FakeRun's
-    `dpkg --compare-versions`: splits on non-alphanumeric runs and compares
-    piece by piece as integers where possible. Good enough for the
-    well-formed numeric-with-hyphen versions these tests use."""
-
-    def parts(v: str) -> list:
-        out = []
-        for piece in v.replace("-", ".").split("."):
-            out.append(int(piece) if piece.isdigit() else piece)
-        return out
-
-    pa, pb = parts(a), parts(b)
-    for x, y in zip(pa, pb):
-        if x == y:
-            continue
-        try:
-            return -1 if x < y else 1
-        except TypeError:
-            return -1 if str(x) < str(y) else 1
-    return (len(pa) > len(pb)) - (len(pa) < len(pb))
+@contextlib.contextmanager
+def _patched_libaio1_sha256(deb_bytes: bytes):
+    """Points the module's pinned hash at whatever fake bytes a test's
+    FakeFetch will return, so the hash-verification path can be exercised
+    without depending on the real pinned artifact's real content."""
+    original = ihp.LIBAIO1_DEB_SHA256
+    ihp.LIBAIO1_DEB_SHA256 = hashlib.sha256(deb_bytes).hexdigest()
+    try:
+        yield
+    finally:
+        ihp.LIBAIO1_DEB_SHA256 = original
 
 
 class FakeRun:
@@ -85,12 +80,6 @@ class FakeRun:
         if cmd == "gpg" and argv[1] == "--dearmor":
             return subprocess.CompletedProcess(argv, 0, stdout=self.dearmor_output, stderr=b"")
 
-        if cmd == "dpkg" and argv[1] == "--compare-versions":
-            candidate, op, newest = argv[2], argv[3], argv[4]
-            assert op == "gt"
-            result = _cmp_versions(candidate, newest) > 0
-            return subprocess.CompletedProcess(argv, 0 if result else 1, stdout="", stderr="")
-
         if cmd == "dpkg" and argv[1] == "-i":
             if self.dpkg_i_fail:
                 return subprocess.CompletedProcess(argv, 1, stdout="", stderr="dpkg: dependency problems")
@@ -114,6 +103,12 @@ class FakeFetch:
         if url in self.pages:
             return self.pages[url]
         raise AssertionError(f"unexpected fetch: {url}")
+
+
+MYSQL_GPG_PAGES = {
+    "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"A",
+    "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"B",
+}
 
 
 class IsInstalledTests(unittest.TestCase):
@@ -169,15 +164,10 @@ class MysqlGpgKeyringTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
-        self.keyring_path = os.path.join(self.dir, "mysql-community.gpg")
+        self.keyring_path = os.path.join(self.dir, "mysql.gpg")
 
     def test_fetches_both_the_2025_and_2023_keys(self):
-        fetch = FakeFetch(
-            {
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"KEY-2025",
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"KEY-2023",
-            }
-        )
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
         run = FakeRun()
         ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
         self.assertEqual(
@@ -195,12 +185,10 @@ class MysqlGpgKeyringTests(unittest.TestCase):
             calls.append((list(argv), input))
             return subprocess.CompletedProcess(argv, 0, stdout=b"KEYRING", stderr=b"")
 
-        fetch = FakeFetch(
-            {
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"KEY-2025-",
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"KEY-2023-",
-            }
-        )
+        fetch = FakeFetch({
+            "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"KEY-2025-",
+            "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"KEY-2023-",
+        })
         ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
         self.assertEqual(len(calls), 1)
         argv, piped_input = calls[0]
@@ -208,68 +196,60 @@ class MysqlGpgKeyringTests(unittest.TestCase):
         self.assertEqual(piped_input, b"KEY-2025-KEY-2023-")
 
     def test_writes_the_dearmored_output_to_the_keyring_path(self):
-        fetch = FakeFetch(
-            {
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"A",
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"B",
-            }
-        )
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
         run = FakeRun()
         ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
         with open(self.keyring_path, "rb") as handle:
             self.assertEqual(handle.read(), b"KEYRING-BYTES")
 
-    def test_no_op_and_no_network_when_the_keyring_already_exists(self):
+    def test_first_write_reports_changed(self):
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
+        run = FakeRun()
+        changed = ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+        self.assertTrue(changed)
+
+    def test_returns_false_and_does_not_rewrite_when_existing_content_already_matches(self):
         with open(self.keyring_path, "wb") as handle:
-            handle.write(b"already-here")
-        fetch = FakeFetch()
+            handle.write(b"KEYRING-BYTES")  # matches FakeRun's default dearmor output
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
+        run = FakeRun()
+        changed = ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+        self.assertFalse(changed)
+        with open(self.keyring_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"KEYRING-BYTES")
+
+    def test_self_heals_a_corrupt_or_truncated_keyring(self):
+        # The property existence-gating did not have: a run killed
+        # mid-write previously left a file every later run treated as
+        # already done. Re-deriving and comparing content on every call
+        # means a mismatch -- corrupt or otherwise -- is repaired, not
+        # permanent.
+        with open(self.keyring_path, "wb") as handle:
+            handle.write(b"TRUNCATED-GARBAGE")
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
+        run = FakeRun()
+        changed = ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+        self.assertTrue(changed)
+        with open(self.keyring_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"KEYRING-BYTES")
+
+    def test_write_is_atomic_no_temp_file_left_behind(self):
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
         run = FakeRun()
         ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
-        self.assertEqual(fetch.urls, [])
-        self.assertEqual(run.calls, [])
+        leftovers = [f for f in os.listdir(self.dir) if f.startswith(".install-host-prereqs-")]
+        self.assertEqual(leftovers, [])
 
     def test_raises_when_dearmor_fails(self):
         def run(argv, **kwargs):
             return subprocess.CompletedProcess(argv, 2, stdout=b"", stderr=b"gpg: no valid data found")
 
-        fetch = FakeFetch(
-            {
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"A",
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"B",
-            }
-        )
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
         with self.assertRaises(ihp.HostPrereqError):
             ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
 
 
-class PickNewestDebTests(unittest.TestCase):
-    def test_picks_the_higher_version_regardless_of_list_order(self):
-        run = FakeRun()
-        chosen = ihp.pick_newest_deb(
-            ["libaio1_0.3.113-4_amd64.deb", "libaio1_0.3.113-13_amd64.deb"], run=run
-        )
-        # Lexical/text sort would wrongly prefer "-4" over "-13" as if they
-        # were single-digit strings ("4" > "1"); the dpkg comparator must not
-        # make that mistake.
-        self.assertEqual(chosen, "libaio1_0.3.113-13_amd64.deb")
-
-    def test_single_candidate_is_returned_unconditionally(self):
-        run = FakeRun()
-        chosen = ihp.pick_newest_deb(["libaio1_0.3.113-4_amd64.deb"], run=run)
-        self.assertEqual(chosen, "libaio1_0.3.113-4_amd64.deb")
-
-    def test_raises_on_an_empty_candidate_list(self):
-        with self.assertRaises(ihp.HostPrereqError):
-            ihp.pick_newest_deb([], run=FakeRun())
-
-
 class EnsureLibaio1Tests(unittest.TestCase):
-    LISTING_HTML = (
-        '<a href="libaio1_0.3.113-4_amd64.deb">libaio1_0.3.113-4_amd64.deb</a>\n'
-        '<a href="libaio1_0.3.113-13_amd64.deb">libaio1_0.3.113-13_amd64.deb</a>\n'
-        '<a href="libaio1_0.3.113-4_arm64.deb">libaio1_0.3.113-4_arm64.deb</a>\n'
-    )
-
     def test_no_op_when_already_installed(self):
         run = FakeRun(installed={ihp.LIBAIO1_PACKAGE})
         fetch = FakeFetch()
@@ -278,45 +258,89 @@ class EnsureLibaio1Tests(unittest.TestCase):
         # Only the presence check runs; no download, no dpkg -i.
         self.assertEqual(run.calls, [["dpkg-query", "-W", "-f=${Status}", ihp.LIBAIO1_PACKAGE]])
 
-    def test_fetches_the_pool_listing_and_installs_the_newest_amd64_deb(self):
+    def test_fetches_exactly_the_pinned_url(self):
+        deb_bytes = b"PINNED-DEB-CONTENT"
+        fetch = FakeFetch({ihp.LIBAIO1_DEB_URL: deb_bytes})
         run = FakeRun()
-        fetch = FakeFetch(
-            {
-                ihp.LIBAIO1_POOL_URL: self.LISTING_HTML.encode(),
-                ihp.LIBAIO1_POOL_URL + "libaio1_0.3.113-13_amd64.deb": b"DEB-BYTES",
-            }
-        )
-        ihp.ensure_libaio1(run=run, fetch=fetch)
+        with _patched_libaio1_sha256(deb_bytes):
+            ihp.ensure_libaio1(run=run, fetch=fetch)
+        self.assertEqual(fetch.urls, [ihp.LIBAIO1_DEB_URL])
+
+    def test_installs_when_the_fetched_bytes_match_the_pinned_hash(self):
+        deb_bytes = b"PINNED-DEB-CONTENT"
+        fetch = FakeFetch({ihp.LIBAIO1_DEB_URL: deb_bytes})
+        run = FakeRun()
+        with _patched_libaio1_sha256(deb_bytes):
+            ihp.ensure_libaio1(run=run, fetch=fetch)
         dpkg_i_calls = [c for c in run.calls if c[0] == "dpkg" and c[1] == "-i"]
         self.assertEqual(len(dpkg_i_calls), 1)
         self.assertTrue(dpkg_i_calls[0][2].endswith(".deb"))
 
-    def test_never_considers_a_non_amd64_deb(self):
+    def test_raises_and_never_calls_dpkg_when_the_hash_does_not_match(self):
+        # The exact supply-chain gap the pin closes: content that does not
+        # match the pinned hash -- tampered, truncated, or simply the wrong
+        # version -- must never reach `dpkg -i` as root.
+        fetch = FakeFetch({ihp.LIBAIO1_DEB_URL: b"SOMETHING-THAT-IS-NOT-THE-PINNED-DEB"})
         run = FakeRun()
-        fetch = FakeFetch(
-            {
-                ihp.LIBAIO1_POOL_URL: '<a href="libaio1_9.9.9_arm64.deb">x</a>'.encode(),
-            }
-        )
         with self.assertRaises(ihp.HostPrereqError):
             ihp.ensure_libaio1(run=run, fetch=fetch)
+        dpkg_i_calls = [c for c in run.calls if c[0] == "dpkg" and c[1] == "-i"]
+        self.assertEqual(dpkg_i_calls, [])
 
-    def test_raises_when_dpkg_install_fails(self):
+    def test_raises_when_dpkg_install_fails_even_with_a_matching_hash(self):
+        deb_bytes = b"PINNED-DEB-CONTENT"
+        fetch = FakeFetch({ihp.LIBAIO1_DEB_URL: deb_bytes})
         run = FakeRun(dpkg_i_fail=True)
-        fetch = FakeFetch(
-            {
-                ihp.LIBAIO1_POOL_URL: self.LISTING_HTML.encode(),
-                ihp.LIBAIO1_POOL_URL + "libaio1_0.3.113-13_amd64.deb": b"DEB-BYTES",
-            }
-        )
-        with self.assertRaises(ihp.HostPrereqError):
+        with _patched_libaio1_sha256(deb_bytes), self.assertRaises(ihp.HostPrereqError):
             ihp.ensure_libaio1(run=run, fetch=fetch)
 
-    def test_raises_when_the_pool_listing_has_no_candidate(self):
+    def test_no_temp_deb_file_left_behind_after_a_successful_install(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        previous_tempdir = tempfile.tempdir
+        tempfile.tempdir = directory
+        self.addCleanup(setattr, tempfile, "tempdir", previous_tempdir)
+
+        deb_bytes = b"PINNED-DEB-CONTENT"
+        fetch = FakeFetch({ihp.LIBAIO1_DEB_URL: deb_bytes})
         run = FakeRun()
-        fetch = FakeFetch({ihp.LIBAIO1_POOL_URL: b"<html></html>"})
-        with self.assertRaises(ihp.HostPrereqError):
+        with _patched_libaio1_sha256(deb_bytes):
             ihp.ensure_libaio1(run=run, fetch=fetch)
+        self.assertEqual(os.listdir(directory), [])
+
+
+class MysqlAptPinTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.pin_path = os.path.join(self.dir, "mysql-community-8.0")
+
+    def test_names_all_five_mysql_community_packages(self):
+        ihp.ensure_mysql_apt_pin(pin_path=self.pin_path)
+        with open(self.pin_path, encoding="utf-8") as handle:
+            content = handle.read()
+        self.assertEqual(len(ihp.MYSQL_PIN_PACKAGES), 5)
+        for package in ihp.MYSQL_PIN_PACKAGES:
+            self.assertIn(package, content)
+
+    def test_pins_to_the_8_0_line_with_a_forcing_priority(self):
+        ihp.ensure_mysql_apt_pin(pin_path=self.pin_path)
+        with open(self.pin_path, encoding="utf-8") as handle:
+            content = handle.read()
+        self.assertIn("Pin: version 8.0.*", content)
+        self.assertIn("Pin-Priority: 1001", content)
+
+    def test_first_write_reports_changed(self):
+        self.assertTrue(ihp.ensure_mysql_apt_pin(pin_path=self.pin_path))
+
+    def test_a_second_call_with_identical_content_reports_unchanged(self):
+        ihp.ensure_mysql_apt_pin(pin_path=self.pin_path)
+        self.assertFalse(ihp.ensure_mysql_apt_pin(pin_path=self.pin_path))
+
+    def test_write_is_atomic_no_temp_file_left_behind(self):
+        ihp.ensure_mysql_apt_pin(pin_path=self.pin_path)
+        leftovers = [f for f in os.listdir(self.dir) if f.startswith(".install-host-prereqs-")]
+        self.assertEqual(leftovers, [])
 
 
 class VerifyTests(unittest.TestCase):
@@ -340,12 +364,15 @@ class VerifyTests(unittest.TestCase):
             },
         )
         problems = ihp.verify(run=run)
-        self.assertTrue(any("mysqldump" in p and "8.4.3" in p for p in problems))
+        self.assertTrue(any("mysqldump" in p and "8.4.3" in p and "8.0.x" in p for p in problems))
 
     def test_mysqlbinlog_from_a_newer_client_is_still_flagged_even_though_it_would_work(self):
         # Proven live that 8.4's mysqlbinlog reads an 8.0 server's binlogs
         # fine -- but this script promises an exact-matched toolchain, and a
-        # silently-drifted mysqlbinlog is still worth surfacing.
+        # silently-drifted mysqlbinlog is still worth surfacing. Also
+        # confirms the message names the binary, its reported version and
+        # the expected one, so the failure is actionable without reading
+        # this script's source.
         run = FakeRun(
             installed={"age"},
             version_output={
@@ -353,7 +380,7 @@ class VerifyTests(unittest.TestCase):
             },
         )
         problems = ihp.verify(run=run)
-        self.assertTrue(any("mysqlbinlog" in p for p in problems))
+        self.assertTrue(any("mysqlbinlog" in p and "8.4.3" in p and "8.0.x" in p for p in problems))
 
     def test_flags_a_binary_that_fails_to_run(self):
         def run_with_failure(argv, **kwargs):
@@ -372,36 +399,54 @@ class EnsureAllTests(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.list_path = os.path.join(self.dir, "mysql-community.list")
-        self.keyring_path = os.path.join(self.dir, "mysql-community.gpg")
+        self.keyring_path = os.path.join(self.dir, "mysql.gpg")
+        self.pin_path = os.path.join(self.dir, "mysql-community-8.0")
 
     def test_a_fully_provisioned_host_makes_no_apt_dpkg_gpg_or_network_call(self):
         run = FakeRun(installed={"age", ihp.MYSQL_CLIENT_PACKAGE, ihp.MYSQL_SERVER_CORE_PACKAGE})
         fetch = FakeFetch()
-        ihp.ensure_all(run=run, fetch=fetch, list_path=self.list_path, keyring_path=self.keyring_path)
+        ihp.ensure_all(
+            run=run, fetch=fetch, list_path=self.list_path, keyring_path=self.keyring_path, pin_path=self.pin_path
+        )
         # Only the three dpkg-query probes are allowed on an already-satisfied host.
         self.assertEqual({c[0] for c in run.calls}, {"dpkg-query"})
         self.assertEqual(fetch.urls, [])
         self.assertFalse(os.path.exists(self.list_path))
 
+    def test_the_apt_pin_is_still_written_on_an_already_converged_host(self):
+        # The host most exposed to unattended-upgrades drift is exactly the
+        # one that already has every package -- the pin must not be gated
+        # behind "something needs installing".
+        run = FakeRun(installed={"age", ihp.MYSQL_CLIENT_PACKAGE, ihp.MYSQL_SERVER_CORE_PACKAGE})
+        fetch = FakeFetch()
+        ihp.ensure_all(
+            run=run, fetch=fetch, list_path=self.list_path, keyring_path=self.keyring_path, pin_path=self.pin_path
+        )
+        self.assertTrue(os.path.exists(self.pin_path))
+
     def test_a_bare_host_installs_age_and_both_mysql_packages(self):
         run = FakeRun(installed=set())
-        fetch = FakeFetch(
-            {
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"A",
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"B",
-                ihp.LIBAIO1_POOL_URL: '<a href="libaio1_1.0-1_amd64.deb">x</a>'.encode(),
-                ihp.LIBAIO1_POOL_URL + "libaio1_1.0-1_amd64.deb": b"DEB",
-            }
-        )
-        ihp.ensure_all(run=run, fetch=fetch, list_path=self.list_path, keyring_path=self.keyring_path)
+        deb_bytes = b"DEB"
+        fetch = FakeFetch({**MYSQL_GPG_PAGES, ihp.LIBAIO1_DEB_URL: deb_bytes})
+        with _patched_libaio1_sha256(deb_bytes):
+            ihp.ensure_all(
+                run=run,
+                fetch=fetch,
+                list_path=self.list_path,
+                keyring_path=self.keyring_path,
+                pin_path=self.pin_path,
+            )
         installed_via_apt = {c[-1] for c in run.calls if c[0] == "apt-get" and c[1] == "install"}
         self.assertEqual(installed_via_apt, {"age", ihp.MYSQL_CLIENT_PACKAGE, ihp.MYSQL_SERVER_CORE_PACKAGE})
         self.assertTrue(os.path.exists(self.list_path))
+        self.assertTrue(os.path.exists(self.pin_path))
 
     def test_needing_only_age_never_touches_the_mysql_apt_source_or_libaio1(self):
         run = FakeRun(installed={ihp.MYSQL_CLIENT_PACKAGE, ihp.MYSQL_SERVER_CORE_PACKAGE})
         fetch = FakeFetch()
-        ihp.ensure_all(run=run, fetch=fetch, list_path=self.list_path, keyring_path=self.keyring_path)
+        ihp.ensure_all(
+            run=run, fetch=fetch, list_path=self.list_path, keyring_path=self.keyring_path, pin_path=self.pin_path
+        )
         self.assertFalse(os.path.exists(self.list_path))
         self.assertEqual(fetch.urls, [])
         installed_via_apt = {c[-1] for c in run.calls if c[0] == "apt-get" and c[1] == "install"}
@@ -409,30 +454,31 @@ class EnsureAllTests(unittest.TestCase):
 
     def test_apt_get_update_runs_before_any_install_when_something_is_missing(self):
         run = FakeRun(installed=set())
-        fetch = FakeFetch(
-            {
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"A",
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"B",
-                ihp.LIBAIO1_POOL_URL: '<a href="libaio1_1.0-1_amd64.deb">x</a>'.encode(),
-                ihp.LIBAIO1_POOL_URL + "libaio1_1.0-1_amd64.deb": b"DEB",
-            }
-        )
-        ihp.ensure_all(run=run, fetch=fetch, list_path=self.list_path, keyring_path=self.keyring_path)
+        deb_bytes = b"DEB"
+        fetch = FakeFetch({**MYSQL_GPG_PAGES, ihp.LIBAIO1_DEB_URL: deb_bytes})
+        with _patched_libaio1_sha256(deb_bytes):
+            ihp.ensure_all(
+                run=run,
+                fetch=fetch,
+                list_path=self.list_path,
+                keyring_path=self.keyring_path,
+                pin_path=self.pin_path,
+            )
         apt_calls = [c for c in run.calls if c[0] == "apt-get"]
         self.assertEqual(apt_calls[0][1], "update")
 
     def test_an_apt_install_failure_raises_and_stops(self):
         run = FakeRun(installed=set(), apt_install_fail="age")
-        fetch = FakeFetch(
-            {
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"A",
-                "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"B",
-                ihp.LIBAIO1_POOL_URL: '<a href="libaio1_1.0-1_amd64.deb">x</a>'.encode(),
-                ihp.LIBAIO1_POOL_URL + "libaio1_1.0-1_amd64.deb": b"DEB",
-            }
-        )
-        with self.assertRaises(ihp.HostPrereqError):
-            ihp.ensure_all(run=run, fetch=fetch, list_path=self.list_path, keyring_path=self.keyring_path)
+        deb_bytes = b"DEB"
+        fetch = FakeFetch({**MYSQL_GPG_PAGES, ihp.LIBAIO1_DEB_URL: deb_bytes})
+        with _patched_libaio1_sha256(deb_bytes), self.assertRaises(ihp.HostPrereqError):
+            ihp.ensure_all(
+                run=run,
+                fetch=fetch,
+                list_path=self.list_path,
+                keyring_path=self.keyring_path,
+                pin_path=self.pin_path,
+            )
 
 
 if __name__ == "__main__":
