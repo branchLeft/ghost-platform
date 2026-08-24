@@ -57,3 +57,13 @@ jobs:
       # Pulumi engine and no credentials, and runs in well under a second.
       - name: Test
         run: npm run test:unit
+
+      # The delete guard ships inside this package, so it is verified where
+      # the package is built rather than in whichever tenant repo happens to
+      # run it. `--verify-coverage` reads the component source beside it: a
+      # rename of an identity field the guard compares fails here, in the same
+      # change that made the rename.
+      - name: Tenant delete guard self-test
+        run: |
+          python3 scripts/assert-no-tenant-deletes.py --self-test
+          python3 scripts/assert-no-tenant-deletes.py --verify-coverage .

@@ -64,10 +64,15 @@ PLATFORM_PROTECTED = {
 # Declared by this program, named `<tenant>-<suffix>`. Destroying any of them
 # locks a live tenant's CI out of the project with no way back through CI --
 # and a deleted Workload Identity pool is soft-deleted, its ID unusable for 30
-# days, so "re-run the apply" does not recover it. The state bucket is worse
-# again: it is the only record of what that tenant's infrastructure is.
+# days, so "re-run the apply" does not recover it.
+#
+# `-pulumi-state` is deliberately absent. This program no longer mints a GCS
+# bucket per tenant: tenant state moved to the estate's Hetzner Object Storage
+# backend, where a stack is addressed by project name inside one shared bucket
+# and there is nothing per-tenant for a plan to destroy. A suffix left here
+# would match no resource in any plan, which is the failure mode where a guard
+# still passes its own self-test while protecting nothing.
 TENANT_SUFFIXES = {
-    "-pulumi-state",
     "-deployer-sa",
     "-gha-pool",
     "-gha-provider",
@@ -172,10 +177,14 @@ def self_test() -> int:
             [("ghost-platform-db", "create-replacement")],
         ),
         ("delete-replaced counts", _plan(("delete-replaced", _URN_POOL)), [(f"{_T}-gha-pool", "delete-replaced")]),
+        # The per-tenant GCS state bucket is retired: this program no longer
+        # declares one, so a plan naming it is a stale stack's teardown rather
+        # than a live tenant's state being destroyed, and guarding it here
+        # would refuse that teardown forever.
         (
-            "this tenant's state bucket replaced",
+            "a retired per-tenant state bucket is no longer guarded",
             _plan(("replace", _URN_BUCKET)),
-            [(f"{_T}-pulumi-state", "replace")],
+            [],
         ),
         ("unprotected resource deleted", _plan(("delete", _URN_UNPROTECTED)), []),
         ("empty plan", _plan(), []),

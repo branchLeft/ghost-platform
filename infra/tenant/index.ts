@@ -1,279 +1,320 @@
 import * as pulumi from '@pulumi/pulumi';
-import { createServiceAccount } from './serviceAccount';
-import { validateTenantName, sqlIdentifier, tenantImageRef, tenantSecretName } from './naming';
-import { createTenantDatabase, DEFAULT_MAX_USER_CONNECTIONS } from './database';
-import { createTenantStorage } from './storage';
-import { createCloudRunService, createPublicInvokerBinding } from './cloudRunService';
-import { secretWithValue } from './secrets';
+import { renderComposeStack } from './compose';
+import {
+  SECRET_ENV_KEYS,
+  tenantEnvironment,
+  tenantSecretsEnvFile,
+  type TenantBulkEmailConfig,
+  type TenantMailConfig,
+  type TenantMediaConfig,
+} from './environment';
+import {
+  adaptersVolumeName,
+  composeUnitName,
+  contentVolumeName,
+  databaseAndUserName,
+  imageEnvPath,
+  secretsEnvPath,
+  stackDirectory,
+  stackName,
+  validateTenantSlug,
+} from './naming';
+import {
+  DEFAULT_RESOURCE_CAPS,
+  DEFAULT_RSS_BUDGET_MIB,
+  DEFAULT_UPLOAD_CEILING_MIB,
+  uploadLimits,
+  validateTenantUid,
+  type ResourceCaps,
+} from './runtime';
 
-/**
- * Everything this component needs from the platform stack, imported by
- * whoever instantiates `GhostTenant` (the private `ghost-platform-tenants`
- * repo's own Pulumi program, per `infra/README.md`) -- typically via a
- * `pulumi.StackReference` to the `platform` stack's outputs. This component
- * deliberately does not resolve a `StackReference` itself: that would tie a
- * reusable, public component to one specific stack name/org, and would make
- * this component unusable in a preview-only smoke test without a real
- * platform stack to reference. Passing the values through as plain
- * constructor args keeps the component portable and testable, while the
- * *type* of each field still ties it to the platform stack's real export
- * shape -- see `infra/platform/index.ts` for where a real caller gets
- * these.
- */
-export interface GhostTenantPlatformArgs {
-  /** `infra/platform/index.ts`'s `dbInstanceConnectionName` export. */
-  dbInstanceConnectionName: pulumi.Input<string>;
-  /** `infra/platform/index.ts`'s `tenantImageRepositoryDockerPath` export. */
-  tenantImageRepositoryDockerPath: pulumi.Input<string>;
-  /** `infra/platform/index.ts`'s `mediaBucketUrl` export. */
-  mediaBucketUrl: pulumi.Input<string>;
+export interface GhostTenantDatabaseArgs {
+  /** `db1`'s private address, e.g. `10.20.1.20`. */
+  host: string;
+  /** Defaults to 3306. */
+  port?: number;
+  /** The password `db/provision/provision_tenant_db.py` printed when it
+   * created this tenant's account. Never re-derived, never defaulted: that
+   * script prints it once and prints nothing on a re-run. */
+  password: pulumi.Input<string>;
+  /** Applied by the provisioning script, recorded here so the tenant's
+   * configured cap is visible in its own repo. Defaults to 10. */
+  maxUserConnections?: number;
 }
 
-/**
- * Transactional-mail transport for this tenant (doc 13 §2.3's SMTP shape,
- * mx1/Stalwart today). Optional: a tenant with no `mail` block gets no
- * `mail__*` envs and no mail secret at all, matching the component's
- * behaviour before this existed.
- */
-export interface GhostTenantMailArgs {
-  smtpHost: pulumi.Input<string>;
-  /** Defaults to `'587'` (STARTTLS submission) if omitted. */
-  smtpPort?: pulumi.Input<string | number>;
-  smtpUser: pulumi.Input<string>;
-  /** Stored in Secret Manager, never a plain env value -- see
-   * `mail__options__auth__pass` in the README's env var table. */
-  smtpPassword: pulumi.Input<string>;
-  /** `mail__from` -- the address Ghost sends as. */
-  from: pulumi.Input<string>;
+export interface GhostTenantMediaArgs extends TenantMediaConfig {
+  accessKeyId: pulumi.Input<string>;
+  secretAccessKey: pulumi.Input<string>;
 }
 
-/**
- * Bulk-email (newsletter) transport, pointed at the platform's Mailgun-shim
- * (doc 13's mail surface, `services/mailgun-shim/`). Optional: a tenant with
- * no `bulkEmail` block gets no `bulkEmail__mailgun__*` envs at all, matching
- * `mail`'s own optionality above. All three fields travel together --
- * `createCloudRunService` emits the full set or none, never a partial one,
- * because Ghost treats the mere presence of the `bulkEmail.mailgun` object
- * as "configured" and crashes with `new URL(undefined)` on a partial set.
- */
-export interface GhostTenantBulkEmailArgs {
-  /** `bulkEmail__mailgun__baseUrl` -- the shim's own base URL. */
-  baseUrl: pulumi.Input<string>;
-  /** `bulkEmail__mailgun__domain` -- the shim-side tenant identifier, not
-   * necessarily this tenant's site hostname. */
-  domain: pulumi.Input<string>;
-  /** Stored in Secret Manager, never a plain env value -- see
-   * `bulkEmail__mailgun__apiKey` in the README's env var table. */
+export interface GhostTenantMailArgs extends TenantMailConfig {
+  password: pulumi.Input<string>;
+}
+
+export interface GhostTenantBulkEmailArgs extends TenantBulkEmailConfig {
   apiKey: pulumi.Input<string>;
 }
 
 export interface GhostTenantArgs {
   /**
-   * Short tenant identifier, e.g. `blog`, `example-news`. Must start
-   * with a lowercase letter and contain only lowercase letters, digits and
-   * hyphens; validated against GCP service-account-ID length limits at
-   * construction time (see `serviceAccount.ts`). Derives the service
-   * account ID, the logical database/DB-user names (hyphens folded to
-   * underscores for MySQL identifier safety), the GCS managed-folder
-   * prefix, and the Cloud Run service name -- deliberately plain `string`,
-   * not `pulumi.Input<string>`, since it has to be usable synchronously to
-   * build every other resource's name.
+   * Short tenant identifier, e.g. `blog`. Plain `string`, not an Input: it is
+   * the Compose project name, the systemd instance name, the directory under
+   * `/opt/branchleft`, the stem of both files under `/etc/branchleft`, the
+   * MySQL database and account name and both volume names, so it has to be
+   * usable synchronously.
    */
-  tenantName: string;
+  slug: string;
 
-  /** Public site URL including protocol, e.g. `https://news.example.org`
-   * -- becomes the `url` env var. Ghost refuses to boot without a
-   * protocol-qualified URL (README). */
-  siteUrl: pulumi.Input<string>;
+  /** Public site URL including protocol. Ghost refuses to boot without one. */
+  siteUrl: string;
 
   /**
-   * The tag or digest of the tenant container image to deploy -- e.g.
-   * `sha256:...` or a version tag, once one exists. **Required, and
-   * deliberately not defaulted or hardcoded**: no image has been pushed to
-   * `tenantImageRepositoryDockerPath` yet (pushing one is a separate,
-   * not-yet-started story), so this component has nothing sane to default
-   * to. Combined with `platform.tenantImageRepositoryDockerPath` by
-   * `tenantImageRef`, which picks the separator the form requires.
+   * This tenant's reserved UID, distinct per tenant on the host and never
+   * reused. Required rather than derived: it is host state, allocated by the
+   * host-side provisioning step against what is already claimed on that host,
+   * and a value this component computed from the slug would collide the first
+   * time two hosts disagreed about who lives where.
    */
-  imageDigestOrTag: pulumi.Input<string>;
+  uid: number;
 
-  /** Platform stack outputs this tenant's resources are provisioned
-   * against. See `GhostTenantPlatformArgs`. */
-  platform: GhostTenantPlatformArgs;
+  /** The app host's private address. Every published port binds this. */
+  appHostPrivateIp: string;
 
-  /** Defaults to `'europe-west1'`, matching `infra/platform/config.ts`'s
-   * own default -- doc 02's UK/EU data residency requirement
-   * (OPEN-QUESTIONS.md #13), inherited the same way the platform stack
-   * inherits it rather than re-decided here. Plain `string`: needed
-   * synchronously as a `gcp.cloudrunv2.Service.location` argument. */
-  region?: string;
+  /** Host-side port for this tenant's Ghost. Distinct per tenant on a host;
+   * the edge reaches this over the private network. */
+  hostPort: number;
 
-  /** Cloud Run autoscaling ceiling. Defaults to 3, matching
-   * website/infra/cloudRun.ts's own ceiling -- a near-zero-traffic tenant
-   * has no reason to differ from the marketing site's upper bound, only
-   * its floor (this component always scales to zero; see
-   * `cloudRunService.ts`). */
-  maxInstanceCount?: number;
-
-  /** MySQL `MAX_USER_CONNECTIONS` to apply to this tenant's DB user.
-   * Defaults to `DEFAULT_MAX_USER_CONNECTIONS` (10) -- see `database.ts`
-   * for the reasoning, and for why this component can produce the
-   * statement to apply this but cannot execute it itself. */
-  maxUserConnections?: number;
-
-  /** Transactional-mail transport. Omit entirely for a tenant that doesn't
-   * send mail yet -- see `GhostTenantMailArgs`. */
+  database: GhostTenantDatabaseArgs;
+  media: GhostTenantMediaArgs;
   mail?: GhostTenantMailArgs;
-
-  /** Bulk-email (newsletter) transport via the platform's Mailgun-shim.
-   * Omit entirely for a tenant that doesn't send newsletters yet -- see
-   * `GhostTenantBulkEmailArgs`. */
   bulkEmail?: GhostTenantBulkEmailArgs;
+
+  /**
+   * The single number every upload-related limit derives from, in MiB: the
+   * `/tmp` tmpfs `size=`, the three `theme__uploadLimits__*` values, the
+   * tenant's Caddy `request_body` limit at the edge, and the tmpfs half of
+   * `mem_limit`. One input because three separately-configured limits that
+   * must agree is exactly the kind of thing that drifts.
+   */
+  uploadCeilingMib?: number;
+
+  /** Ghost's resident-set budget in MiB, before the tmpfs ceiling is added. */
+  rssBudgetMib?: number;
+
+  /** CPU, PID and descriptor caps. Defaults are sized for a `cx23`-class host. */
+  resourceCaps?: Partial<ResourceCaps>;
 }
 
-const DEFAULT_REGION = 'europe-west1';
-const DEFAULT_MAX_INSTANCE_COUNT = 3;
-const DEFAULT_MAIL_SMTP_PORT = '587';
+/**
+ * The fields whose change destroys or orphans live tenant data rather than
+ * updating it — read by `scripts/assert-no-tenant-deletes.py` out of the
+ * component's own preview state. Every one of them names something that
+ * already holds data by the time a second apply happens: rename the content
+ * volume and the tenant's themes, settings and generated assets are orphaned
+ * on the host under the old name; change the UID and the tenant loses access
+ * to its own `0700` volume; change the database name and Ghost boots against
+ * an empty schema.
+ */
+export interface GhostTenantIdentity {
+  slug: string;
+  uid: number;
+  stackName: string;
+  contentVolume: string;
+  adaptersVolume: string;
+  databaseName: string;
+  appHostPrivateIp: string;
+  maxUserConnections: number;
+}
+
+const DEFAULT_DB_PORT = 3306;
+const DEFAULT_MAX_USER_CONNECTIONS = 10;
 
 /**
- * Everything one Ghost tenant needs on top of the shared platform stack:
- * a dedicated service account, a logical database + DB user on the shared
- * Cloud SQL instance, write-isolated storage on the shared media bucket,
- * and a scale-to-zero Cloud Run service wired to all of it. See the
- * per-concern files (`serviceAccount.ts`, `database.ts`, `storage.ts`,
- * `cloudRunService.ts`) for the reasoning behind each piece -- this file
- * only assembles them and registers outputs.
+ * Everything one Ghost tenant needs on a shared Hetzner app host, rendered
+ * rather than created.
  *
- * Imports the platform stack's resources (`GhostTenantPlatformArgs`)
- * rather than re-declaring any of them: no `gcp.sql.DatabaseInstance`,
- * `gcp.storage.Bucket`, or `gcp.artifactregistry.Repository` appears
- * anywhere in this component.
+ * **This component declares no cloud resources, and that is the design.** Every
+ * durable thing a tenant uses already exists and is shared: the app host and
+ * the database host come from the estate's own stack, the tenant's database
+ * and DB account are created on `db1` by `db/provision/provision_tenant_db.py`,
+ * and object storage is an account-level service. What is genuinely per-tenant
+ * is *configuration* — a Compose stack carrying a runtime-isolation posture, a
+ * secrets file, a UID, two volumes and a set of Ghost environment variables —
+ * and that is what this produces. The tenant's Pulumi stack is therefore the
+ * versioned, reviewed, passphrase-wrapped record of that configuration, and
+ * its checkpoint is what a delete guard has to protect.
+ *
+ * Three steps outside Pulumi have to have happened before the stack this
+ * renders will start, and each fails loudly rather than silently if it has
+ * not: the tenant's database and DB account on `db1`
+ * (`provision_tenant_db.py`), the tenant's two named volumes on the app host
+ * owned by `uid` at `0700` (`app/provision/provision_tenant_volume.py`), and
+ * the secrets file at `/etc/branchleft/<slug>.env`.
  */
 export class GhostTenant extends pulumi.ComponentResource {
-  public readonly serviceAccountEmail: pulumi.Output<string>;
-  public readonly cloudRunServiceName: pulumi.Output<string>;
-  public readonly cloudRunServiceUri: pulumi.Output<string>;
-  public readonly databaseName: pulumi.Output<string>;
-  public readonly mediaTenantPrefix: string;
-  /** MySQL statement a platform admin must run by hand to actually apply
-   * `MAX_USER_CONNECTIONS` -- see `database.ts`'s long comment on why this
-   * component cannot execute it itself. Wrapped as a Pulumi secret purely
-   * because it names the real DB username; it contains no password. */
-  public readonly maxUserConnectionsStatement: pulumi.Output<string>;
+  public readonly slug: string;
+  public readonly uid: number;
+  /** Compose project, systemd instance and `/opt/branchleft` directory name. */
+  public readonly stackName: string;
+  public readonly stackDirectory: string;
+  public readonly composeUnit: string;
+  public readonly secretsEnvPath: string;
+  public readonly imageEnvPath: string;
+  public readonly contentVolume: string;
+  public readonly adaptersVolume: string;
+  public readonly databaseName: string;
+  public readonly databaseUser: string;
+  /** The rendered `compose.yml` for `/opt/branchleft/<slug>/`. */
+  public readonly composeFile: string;
+  /** The tenant's Caddy `request_body max_size`, for the edge site registry.
+   * Derived from the same input as the tmpfs ceiling so the two cannot
+   * disagree. */
+  public readonly edgeRequestBodyMaxSize: string;
+  /** The exact root-run command that must create this tenant's volumes before
+   * its unit is enabled. */
+  public readonly hostProvisioningCommand: string;
+  /** The exact content of `/etc/branchleft/<slug>.env`. A Pulumi secret: it
+   * carries the tenant's database password and, where configured, its SMTP
+   * and bulk-mail credentials. */
+  public readonly secretsEnvFile: pulumi.Output<string>;
+  /** See `GhostTenantIdentity`. Registered as one output so the tenant-stack
+   * delete guard has a single place to compare old against new. */
+  public readonly identity: pulumi.Output<GhostTenantIdentity>;
 
   constructor(name: string, args: GhostTenantArgs, opts?: pulumi.ComponentResourceOptions) {
     super('ghostPlatform:tenant:GhostTenant', name, {}, opts);
 
-    validateTenantName(args.tenantName);
-    const sqlId = sqlIdentifier(args.tenantName);
-    const region = args.region ?? DEFAULT_REGION;
-    const maxInstanceCount = args.maxInstanceCount ?? DEFAULT_MAX_INSTANCE_COUNT;
-    const maxUserConnections = args.maxUserConnections ?? DEFAULT_MAX_USER_CONNECTIONS;
+    validateTenantSlug(args.slug);
+    validateTenantUid(args.uid);
 
-    const serviceAccount = createServiceAccount(this, args.tenantName);
-
-    const db = createTenantDatabase(
-      this,
-      args.tenantName,
-      sqlId,
-      args.platform.dbInstanceConnectionName,
-      serviceAccount,
-      maxUserConnections
+    const limits = uploadLimits(
+      args.uploadCeilingMib ?? DEFAULT_UPLOAD_CEILING_MIB,
+      args.rssBudgetMib ?? DEFAULT_RSS_BUDGET_MIB
     );
+    const caps = { ...DEFAULT_RESOURCE_CAPS, ...args.resourceCaps };
 
-    const storage = createTenantStorage(
-      this,
-      args.tenantName,
-      args.platform.mediaBucketUrl,
-      serviceAccount
-    );
+    this.slug = args.slug;
+    this.uid = args.uid;
+    this.stackName = stackName(args.slug);
+    this.stackDirectory = stackDirectory(args.slug);
+    this.composeUnit = composeUnitName(args.slug);
+    this.secretsEnvPath = secretsEnvPath(args.slug);
+    this.imageEnvPath = imageEnvPath(args.slug);
+    this.contentVolume = contentVolumeName(args.slug);
+    this.adaptersVolume = adaptersVolumeName(args.slug);
+    this.databaseName = databaseAndUserName(args.slug);
+    this.databaseUser = this.databaseName;
+    this.edgeRequestBodyMaxSize = limits.edgeRequestBodyMaxSize;
 
-    const image = pulumi
-      .all([args.platform.tenantImageRepositoryDockerPath, args.imageDigestOrTag])
-      .apply(([repositoryDockerPath, digestOrTag]) =>
-        tenantImageRef(repositoryDockerPath, digestOrTag)
-      );
-
-    const mailPasswordSecret = args.mail
-      ? secretWithValue(
-          this,
-          `${args.tenantName}-mail-password`,
-          tenantSecretName(args.tenantName, 'mail-password'),
-          args.mail.smtpPassword,
-          serviceAccount.email
-        ).secret
-      : undefined;
-
-    const bulkEmailApiKeySecret = args.bulkEmail
-      ? secretWithValue(
-          this,
-          `${args.tenantName}-bulk-email-api-key`,
-          tenantSecretName(args.tenantName, 'bulk-email-api-key'),
-          args.bulkEmail.apiKey,
-          serviceAccount.email
-        ).secret
-      : undefined;
-
-    const service = createCloudRunService(this, {
-      tenantName: args.tenantName,
-      siteUrl: args.siteUrl,
-      image,
-      region,
-      maxInstanceCount,
-      serviceAccount,
-      dbInstanceConnectionName: args.platform.dbInstanceConnectionName,
-      database: {
-        databaseName: db.database.name,
-        connectionSocketPath: db.connectionSocketPath,
-        dbUserNameSecret: db.dbUserNameSecret,
-        dbUserPasswordSecret: db.dbUserPasswordSecret,
-      },
-      mail:
-        args.mail && mailPasswordSecret
-          ? {
-              host: args.mail.smtpHost,
-              port: pulumi.output(args.mail.smtpPort ?? DEFAULT_MAIL_SMTP_PORT).apply(String),
-              user: args.mail.smtpUser,
-              from: args.mail.from,
-              passwordSecret: mailPasswordSecret,
-            }
-          : undefined,
-      bulkEmail:
-        args.bulkEmail && bulkEmailApiKeySecret
-          ? {
-              baseUrl: args.bulkEmail.baseUrl,
-              domain: args.bulkEmail.domain,
-              apiKeySecret: bulkEmailApiKeySecret,
-            }
-          : undefined,
-      storage: {
-        bucketName: storage.bucketName,
-        tenantPrefix: storage.tenantPrefix,
-        accessKeyIdSecret: storage.accessKeyIdSecret,
-        secretAccessKeySecret: storage.secretAccessKeySecret,
-      },
-      dependsOn: [db.dbUser, db.cloudSqlClientBinding, storage.writeBinding],
+    this.composeFile = renderComposeStack({
+      slug: args.slug,
+      uid: args.uid,
+      appHostPrivateIp: args.appHostPrivateIp,
+      hostPort: args.hostPort,
+      limits,
+      caps,
+      environment: tenantEnvironment(
+        {
+          siteUrl: args.siteUrl,
+          database: {
+            host: args.database.host,
+            port: args.database.port ?? DEFAULT_DB_PORT,
+            name: this.databaseName,
+            user: this.databaseUser,
+          },
+          media: {
+            endpoint: args.media.endpoint,
+            region: args.media.region,
+            bucket: args.media.bucket,
+            tenantPrefix: args.media.tenantPrefix,
+            publicBaseUrl: args.media.publicBaseUrl,
+          },
+          limits,
+          mail: args.mail,
+          bulkEmail: args.bulkEmail,
+        },
+        this.secretsEnvPath
+      ),
     });
 
-    createPublicInvokerBinding(args.tenantName, region, service);
+    this.hostProvisioningCommand = `provision_tenant_volume.py --uid ${args.uid} ${args.slug}`;
 
-    this.serviceAccountEmail = serviceAccount.email;
-    this.cloudRunServiceName = service.name;
-    this.cloudRunServiceUri = service.uri;
-    this.databaseName = db.database.name;
-    this.mediaTenantPrefix = storage.tenantPrefix;
-    this.maxUserConnectionsStatement = pulumi.secret(db.maxUserConnectionsStatement);
+    this.secretsEnvFile = pulumi.secret(
+      pulumi
+        .all([
+          args.database.password,
+          args.media.accessKeyId,
+          args.media.secretAccessKey,
+          args.mail?.password ?? pulumi.output(undefined),
+          args.bulkEmail?.apiKey ?? pulumi.output(undefined),
+        ])
+        .apply(
+          ([databasePassword, s3AccessKeyId, s3SecretAccessKey, mailPassword, bulkEmailApiKey]) =>
+            tenantSecretsEnvFile(args.slug, {
+              databasePassword,
+              s3AccessKeyId,
+              s3SecretAccessKey,
+              mailPassword,
+              bulkEmailApiKey,
+            })
+        )
+    );
+
+    this.identity = pulumi.output({
+      slug: this.slug,
+      uid: this.uid,
+      stackName: this.stackName,
+      contentVolume: this.contentVolume,
+      adaptersVolume: this.adaptersVolume,
+      databaseName: this.databaseName,
+      appHostPrivateIp: args.appHostPrivateIp,
+      maxUserConnections: args.database.maxUserConnections ?? DEFAULT_MAX_USER_CONNECTIONS,
+    });
 
     this.registerOutputs({
-      serviceAccountEmail: this.serviceAccountEmail,
-      cloudRunServiceName: this.cloudRunServiceName,
-      cloudRunServiceUri: this.cloudRunServiceUri,
-      databaseName: this.databaseName,
+      identity: this.identity,
+      composeFile: this.composeFile,
+      composeUnit: this.composeUnit,
+      stackDirectory: this.stackDirectory,
+      secretsEnvPath: this.secretsEnvPath,
+      imageEnvPath: this.imageEnvPath,
+      edgeRequestBodyMaxSize: this.edgeRequestBodyMaxSize,
+      hostProvisioningCommand: this.hostProvisioningCommand,
+      secretsEnvFile: this.secretsEnvFile,
     });
   }
 }
 
-// Re-exported so a caller doesn't need a second import for the value this
-// component defaults `maxUserConnections` to.
-export { DEFAULT_MAX_USER_CONNECTIONS } from './database';
-export type { CloudRunServiceArgs } from './cloudRunService';
+export { SECRET_ENV_KEYS };
+export { assertRuntimePosture, GHOST_CONTAINER_PORT, renderComposeStack } from './compose';
+export { tenantEnvironment, tenantSecretsEnvFile } from './environment';
+export {
+  MAX_TENANT_SLUG_LENGTH,
+  RESERVED_STACK_NAMES,
+  adaptersVolumeName,
+  composeUnitName,
+  contentVolumeName,
+  databaseAndUserName,
+  imageEnvPath,
+  secretsEnvPath,
+  sqlIdentifier,
+  stackDirectory,
+  stackName,
+  validateTenantSlug,
+} from './naming';
+export {
+  DEFAULT_RESOURCE_CAPS,
+  DEFAULT_RSS_BUDGET_MIB,
+  DEFAULT_UPLOAD_CEILING_MIB,
+  TENANT_UID_MAX,
+  TENANT_UID_MIN,
+  uploadLimits,
+  validateTenantUid,
+} from './runtime';
+export type { ResourceCaps, UploadLimits } from './runtime';
+export type {
+  TenantBulkEmailConfig,
+  TenantDatabaseConfig,
+  TenantMailConfig,
+  TenantMediaConfig,
+} from './environment';

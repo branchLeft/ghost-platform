@@ -2,7 +2,9 @@
 
 Reusable Ghost-platform pieces shared across tenants: the tenant Pulumi component (`infra/tenant`, published to GitHub Packages as `@branchleft/ghost-platform-tenant`), the shared platform stack (`infra/platform`), the Ghost container image, and CI tooling. No per-tenant identity or infrastructure lives here.
 
-**This repo is public.** No secrets, no tenant-identifying data, ever — in code, comments, commit messages, or CI logs. A tenant's hostname and Cloud Run service name together are that tenant's identity; both belong in that tenant's own private repo, never here.
+**This repo is public.** No secrets, no tenant-identifying data, ever — in code, comments, commit messages, or CI logs. A tenant's hostname and its stack name together are that tenant's identity; both belong in that tenant's own repo, never here.
+
+**Migration in flight.** The tenant component now targets Hetzner app hosts and the platform's GCP estate is being wound down — `ghost-platform-docs/14-hetzner-migration-programme.md` is the programme, §18 the runtime posture the component renders. `infra/platform` (Cloud Run, Cloud SQL, GCS) is still applied and still serves the live tenant; it is retired by the wind-down story, not by the component rewrite.
 
 ## Conventions
 

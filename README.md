@@ -5,8 +5,9 @@ tenant container image, and the Pulumi infrastructure that runs it.
 
 Ghost runs one site per process, so "multi-tenant" here means one container
 per tenant on shared compute — not one process serving many sites. Tenants
-share a Cloud SQL instance, a media bucket and an image registry; each gets
-its own database, service account, storage prefix and Cloud Run service.
+share an app host, a MySQL host and object storage; each gets its own Compose
+stack under its own UID, its own logical database and DB user, and its own
+media prefix.
 
 Nothing in this repo names a tenant. A tenant's identity lives in its own
 repo — named `ghost-tenant-<name>`, generated from
@@ -18,9 +19,13 @@ name disclose that they are a customer.
 ## What's here
 
 **`infra/tenant/`** — the `GhostTenant` Pulumi component, published as
-`@branchleft/ghost-platform-tenant`. One instance is one tenant: a dedicated
-service account, a logical database and DB user, prefix-scoped storage
-write-isolation, and a Cloud Run service.
+`@branchleft/ghost-platform-tenant`. One instance is one tenant: its Compose
+stack on a shared app host, carrying the whole runtime-isolation posture, plus
+the Ghost environment, the secrets file and the edge upload limit that go with
+it. It declares no cloud resources — see
+[`infra/tenant/README.md`](infra/tenant/README.md) for why, for the three
+host-side steps it depends on, and for where the media-isolation decision
+currently stands.
 
 **`infra/platform/`** — the shared platform stack, applied by CI on every
 push to `main`: the Cloud SQL instance, the media bucket, the tenant image's
@@ -29,6 +34,12 @@ Artifact Registry repository, and the CI deployer identity. See
 vs. component), and
 [`infra/platform/RUNBOOK-bootstrap.md`](infra/platform/RUNBOOK-bootstrap.md)
 for the one-time bootstrap that has to happen before CI can take over.
+
+**`app/`** — the app hosts' own per-tenant step: creating a tenant's Docker
+volumes owned by its reserved UID at `0700`, refusing a UID another tenant on
+that host already holds. The one control in the tenant path whose absence is
+invisible at runtime, which is why it is a named script rather than an
+implication of the component.
 
 **`db/`** — the shared MySQL 8 host's service layer: the Compose stack
 deployed onto `db1` (created by `infra/hosts`), tenant DB provisioning, and
@@ -56,38 +67,51 @@ npm install @branchleft/ghost-platform-tenant
 ## Usage
 
 ```ts
-import * as pulumi from '@pulumi/pulumi';
 import { GhostTenant } from '@branchleft/ghost-platform-tenant';
 
-// The component takes the platform stack's outputs as plain args rather
-// than resolving a StackReference itself, so the caller decides where they
-// come from.
-const platform = new pulumi.StackReference('organization/branchleft-ghost-platform/platform');
+const config = new pulumi.Config();
 
 const tenant = new GhostTenant('example-news', {
-  tenantName: 'example-news',
+  slug: 'example-news',
   siteUrl: 'https://news.example.org',
-  imageDigestOrTag: 'sha256:...',
-  platform: {
-    dbInstanceConnectionName: platform.requireOutput('dbInstanceConnectionName'),
-    tenantImageRepositoryDockerPath: platform.requireOutput('tenantImageRepositoryDockerPath'),
-    mediaBucketUrl: platform.requireOutput('mediaBucketUrl'),
+  uid: 30001,
+  appHostPrivateIp: '10.20.1.100',
+  hostPort: 2369,
+  database: {
+    host: '10.20.1.20',
+    password: config.requireSecret('databasePassword'),
+  },
+  media: {
+    endpoint: 'https://hel1.your-objectstorage.com',
+    region: 'hel1',
+    bucket: 'branchleft-media',
+    tenantPrefix: 'example-news',
+    publicBaseUrl: 'https://hel1.your-objectstorage.com/branchleft-media',
+    accessKeyId: config.requireSecret('mediaAccessKeyId'),
+    secretAccessKey: config.requireSecret('mediaSecretAccessKey'),
   },
 });
 
-export const url = tenant.cloudRunServiceUri;
+export const composeFile = tenant.composeFile;
+export const secretsEnvFile = tenant.secretsEnvFile;
+export const provisionVolumes = tenant.hostProvisioningCommand;
 ```
 
-`tenantName` must start with a lowercase letter and contain only lowercase
-letters, digits and hyphens, and is capped at 17 characters — it has to fit
-inside GCP's 30-character service-account-ID limit alongside the
-`ghost-tenant-` prefix the component adds. It also derives the logical
-database and DB-user names (hyphens folded to underscores), the storage
-prefix and the Cloud Run service name, so it is validated at construction
-time rather than at apply time.
+`slug` must start with a lowercase letter and contain only lowercase letters,
+digits and hyphens, and is capped at 26 characters so that `ghost_` plus the
+slug fits MySQL's 32-character account-name limit. It is also the Compose
+project name, the systemd instance name, the directory under
+`/opt/branchleft`, the stem of both files under `/etc/branchleft` and both
+volume names — so `website`, `edge`, `db` and `monitoring` are refused
+outright, and validation happens at construction rather than at apply.
 
-Optional: `region` (defaults to the platform region), `maxInstanceCount`,
-`maxUserConnections`.
+`uid` is required rather than derived: it is host state, allocated against
+what is already claimed on that host, and a value computed from the slug would
+collide the first time two hosts disagreed about who lives where.
+
+Optional: `uploadCeilingMib` (the one number every upload limit derives from),
+`rssBudgetMib`, `resourceCaps`, `mail`, `bulkEmail`, `database.port` and
+`database.maxUserConnections`.
 
 ## Building and running the image
 
@@ -109,6 +133,14 @@ while it runs migrations, so a connect check passes long before the site
 actually serves.
 
 ## Environment variables
+
+> The table below is the image's own reference and its `Set by` column still
+> describes the retired Cloud Run deployment. What a tenant actually receives
+> is rendered by `GhostTenant` — see `infra/tenant/environment.ts`, which is
+> the authority, and `infra/tenant/README.md` for the shape. The rows
+> themselves (names, `__` separators, required-ness) are unchanged by the move
+> and are still correct; rewriting the prose around them rides with the image
+> story rather than the component one.
 
 All configuration reaches Ghost through `nconf`, which reads `process.env`
 directly using `__` as the nesting separator and **no prefix**. None of

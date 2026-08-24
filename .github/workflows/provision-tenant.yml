@@ -1,7 +1,7 @@
 name: Provision tenant
 
-# Onboards one tenant end to end: its identity, its Pulumi state bucket, its
-# repo, its first apply, and the pull request that hands it over.
+# Onboards one tenant end to end: its identity, its Pulumi stack, its repo,
+# its first apply, and the pull request that hands it over.
 #
 # THE GATE IS TWO INDEPENDENT HALVES, AND BOTH ARE LOAD-BEARING.
 #
@@ -63,9 +63,6 @@ on:
       tenant_repo:
         description: 'Repository to generate, without the org prefix. Must be ghost-tenant-<name>.'
         required: true
-      state_bucket:
-        description: 'Globally unique GCS bucket for this tenant Pulumi state'
-        required: true
       deployer_sa_id:
         description: 'Deployer service account id (6-30 chars, unique in the project)'
         required: true
@@ -115,7 +112,17 @@ jobs:
       # operator filled in rather than on the org-qualified value built here.
       TENANT_REPO_NAME: ${{ inputs.tenant_repo }}
       TENANT_VISIBILITY: ${{ inputs.tenant_visibility }}
-      STATE_BUCKET: ${{ inputs.state_bucket }}
+      # The tenant's Pulumi state backend: the estate's shared Hetzner Object
+      # Storage bucket, not a bucket minted per tenant. A stack is addressed
+      # by project name inside it, so onboarding creates no storage resource
+      # at all -- which is what removes the last path by which provisioning
+      # gives a new tenant a GCP dependency. Both the endpoint host and
+      # `region` in this URL must name the bucket's own location; a mismatch
+      # is an opaque 403 that reads as a credential problem.
+      TENANT_BACKEND_URL: ${{ vars.HETZNER_PULUMI_BACKEND_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
+      AWS_REGION: hel1
       DEPLOYER_SA_ID: ${{ inputs.deployer_sa_id }}
       WIF_POOL_ID: ${{ inputs.wif_pool_id }}
       SITE_URL: ${{ inputs.site_url }}
@@ -150,6 +157,29 @@ jobs:
       #
       # The token itself is never echoed and never reaches argv; only these
       # six non-secret claims are printed.
+      # Fail closed, before the federation report and before anything is
+      # created. The tenant component this workflow provisions against no
+      # longer produces Cloud Run services, a Cloud SQL database or a GCS
+      # media prefix -- a tenant is now a Compose stack on a shared app host,
+      # a schema on db1 and a prefix in Object Storage. This workflow's own
+      # state backend and secrets provider are Hetzner-shaped as of that
+      # change, but the stack configuration it writes for a tenant, and the
+      # template repo it generates from, are not yet.
+      #
+      # Half a migrated flow does not produce half a tenant: it produces a
+      # created repository, a live GCP identity and a stack that cannot
+      # deploy, with no automatic rollback. So this refuses at step one until
+      # the flow is whole, and the variable that lifts it is set deliberately
+      # by an owner rather than defaulted here.
+      - name: Refuse to provision through a half-migrated flow
+        env:
+          FLOW_READY: ${{ vars.TENANT_PROVISIONING_FLOW_HETZNERISED }}
+        run: |
+          if [ "$FLOW_READY" != "true" ]; then
+            echo "::error::Tenant provisioning is closed. The tenant component targets Hetzner app hosts while this workflow still writes GCP-shaped stack configuration and generates from a GCP-shaped template. Provisioning reopens when the template and this flow are rewritten together; set the TENANT_PROVISIONING_FLOW_HETZNERISED repository variable to 'true' at that point."
+            exit 1
+          fi
+
       - name: Report the federation claims this run presents
         run: |
           set -euo pipefail
@@ -213,8 +243,16 @@ jobs:
             || fail "tenant_name must be lowercase alphanumeric-hyphen, 3-30 chars"
           [[ "$DEPLOYER_SA_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
             || fail "deployer_sa_id must satisfy GCP service account id grammar"
-          [[ "$STATE_BUCKET" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]] \
-            || fail "state_bucket must satisfy GCS bucket naming"
+          # Repository configuration rather than an operator's input, so it
+          # is checked for presence and shape rather than validated as a
+          # name. An unset variable expands to '' and would send the tenant's
+          # first checkpoint to whatever backend the runner last logged into.
+          [[ -n "$TENANT_BACKEND_URL" ]] \
+            || fail "the HETZNER_PULUMI_BACKEND_URL repository variable is empty or unset"
+          [[ "$TENANT_BACKEND_URL" == s3://* ]] \
+            || fail "HETZNER_PULUMI_BACKEND_URL must be an s3:// backend; a gs:// backend would give this tenant a GCP dependency"
+          [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" ]] \
+            || fail "HETZNER_S3_ACCESS_KEY_ID / HETZNER_S3_SECRET_ACCESS_KEY are empty or unset; the tenant's state backend is unreachable without them"
           [[ "$SITE_URL" =~ ^https:// ]] || fail "site_url must be https"
           if gh repo view "$TENANT_REPO" >/dev/null 2>&1; then
             fail "$TENANT_REPO already exists -- onboarding is create-only"
@@ -273,6 +311,11 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
+          # The provisioning stack's own state, not a tenant's. It stays on
+          # the shared GCS backend deliberately: it is a ghost-platform stack
+          # and it moves with the rest of them in the estate-wide backend
+          # sweep, not one tenant at a time. The tenant's own login further
+          # down is the one that had to change.
           pulumi login gs://branchleft-pulumi-state
           # `--secrets-provider` applies only when this call creates the stack,
           # and `Pulumi.<stack>.yaml` never leaves the runner. So a retry
@@ -307,7 +350,6 @@ jobs:
           pulumi config set gcp:project "$GCP_PROJECT"
           pulumi config set tenantName "$TENANT"
           pulumi config set tenantGithubRepo "$TENANT_REPO"
-          pulumi config set stateBucketName "$STATE_BUCKET"
           pulumi config set deployerServiceAccountId "$DEPLOYER_SA_ID"
           pulumi config set workloadIdentityPoolId "$WIF_POOL_ID"
           pulumi config set platformDbInstanceConnectionName "$PLATFORM_DB_CONN"
@@ -327,7 +369,7 @@ jobs:
             exit 1
           fi
 
-      - name: Apply the tenant identity and state bucket
+      - name: Apply the tenant identity
         working-directory: infra/provisioning
         run: pulumi up --stack "$TENANT" --yes
 
@@ -343,8 +385,7 @@ jobs:
           set -euo pipefail
           provider=$(pulumi stack output githubActionsWorkloadIdentityProvider --stack "$TENANT")
           sa_email=$(pulumi stack output githubActionsDeployerServiceAccountEmail --stack "$TENANT")
-          bucket=$(pulumi stack output pulumiStateBucket --stack "$TENANT")
-          for pair in "provider=$provider" "sa_email=$sa_email" "bucket=$bucket"; do
+          for pair in "provider=$provider" "sa_email=$sa_email"; do
             if [ -z "${pair#*=}" ]; then
               echo "::error::stack output ${pair%%=*} is empty; refusing to continue before the tenant repo is created"
               exit 1
@@ -353,7 +394,6 @@ jobs:
           {
             echo "provider=$provider"
             echo "sa_email=$sa_email"
-            echo "bucket=$bucket"
           } >> "$GITHUB_OUTPUT"
 
       # ---- the tenant repo ------------------------------------------------
@@ -412,7 +452,10 @@ jobs:
           gh variable set GCP_PROJECT_ID --repo "$TENANT_REPO" --body "$GCP_PROJECT"
           gh variable set GCP_DEPLOYER_SA_EMAIL --repo "$TENANT_REPO" --body "$DEPLOYER_SA_EMAIL"
           gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$TENANT_REPO" --body "$WIF_PROVIDER"
-          gh variable set PULUMI_STATE_BUCKET --repo "$TENANT_REPO" --body "$STATE_BUCKET"
+          # The full backend URL rather than a bucket name: an s3:// backend
+          # needs the endpoint, path-style and region query parameters too,
+          # and a repo that only holds the bucket would have to rebuild them.
+          gh variable set PULUMI_BACKEND_URL --repo "$TENANT_REPO" --body "$TENANT_BACKEND_URL"
 
       # This tenant's own secrets passphrase: minted fresh, never typed by a
       # human, never reused across tenants or across this repo's own stacks.
@@ -509,10 +552,16 @@ jobs:
           python3 scripts/assert-placeholders-substituted.py
 
           npm ci
-          # This tenant's own backend, not the shared bucket -- a stack
-          # reference cannot cross backends, which is why the platform values
-          # below are plain config rather than a StackReference.
-          pulumi login "gs://${STATE_BUCKET}"
+          # The estate's Hetzner Object Storage backend. A stack reference
+          # cannot cross backends, which is why the platform values below are
+          # plain config rather than a StackReference -- the provisioning
+          # stack this job also touches lives in a different backend again.
+          #
+          # Stated because it is a real change in posture, not a like-for-like
+          # swap: this bucket is shared with every other stack in it, and the
+          # S3 credential above reaches all of them. The per-tenant GCS bucket
+          # it replaces confined a tenant's deployer to its own state by IAM.
+          pulumi login "$TENANT_BACKEND_URL"
           # `stack init` fails outright on a stack that already exists, and a
           # retry after a failed first apply reaches here with one -- holding
           # the resources that apply did create. Resume onto it rather than
@@ -742,7 +791,7 @@ jobs:
             echo "## Provisioning: ${TENANT}"
             echo
             echo "- repo: \`${TENANT_REPO}\` (\`${TENANT_VISIBILITY}\`)"
-            echo "- state bucket: \`${STATE_BUCKET}\`"
+            echo "- state backend: \`${TENANT_BACKEND_URL}\`"
             echo "- deployer: \`${DEPLOYER_SA_EMAIL:-unknown}\`"
             echo
             echo "Onboarding completes when the handover pull request is merged."
