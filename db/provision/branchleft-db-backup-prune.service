@@ -1,0 +1,16 @@
+# Prunes current dump and binlog objects that have aged out of the backup
+# retention window -- see db/RUNBOOK-db.md's "Backup retention" section.
+# Triggered daily by branchleft-db-backup-prune.timer. Talks only to Object
+# Storage, never to MySQL, so this has no dependency on branchleft-compose@db.
+[Unit]
+Description=branchLeft db backup retention prune
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/branchleft/db.env
+WorkingDirectory=/opt/branchleft/db/provision
+ExecStart=/usr/bin/python3 /opt/branchleft/db/provision/prune_backups.py
+
+# A refusal (exit 1) needs an operator to look at the retained set, not a
+# silent retry loop indistinguishable from success in the unit's own state.
+TimeoutStartSec=600

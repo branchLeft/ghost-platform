@@ -59,6 +59,11 @@ re-run dump under a hand-typed key, still lands as a new version rather than
 destroying what it replaces. See the script's own docstring for the
 35-day noncurrent-version lifetime and why that number.
 
+Versioning and the noncurrent lifecycle only bound how long a *superseded*
+object survives. How long a *current* dump or binlog object survives before
+this pipeline prunes it is a separate policy -- see "Backup retention"
+below, after the timers that enforce it.
+
 ## 1. Create the socket directory, copy the stack, install host prerequisites
 
 ```bash
@@ -179,10 +184,11 @@ FLUSH PRIVILEGES;
 ```bash
 cp /opt/branchleft/db/provision/branchleft-db-dump.{service,timer} \
    /opt/branchleft/db/provision/branchleft-db-binlog-ship.{service,timer} \
+   /opt/branchleft/db/provision/branchleft-db-backup-prune.{service,timer} \
    /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now branchleft-db-dump.timer branchleft-db-binlog-ship.timer
-systemctl list-timers branchleft-db-dump.timer branchleft-db-binlog-ship.timer
+systemctl enable --now branchleft-db-dump.timer branchleft-db-binlog-ship.timer branchleft-db-backup-prune.timer
+systemctl list-timers branchleft-db-dump.timer branchleft-db-binlog-ship.timer branchleft-db-backup-prune.timer
 ```
 
 Force one of each once, to prove the pipeline end to end before waiting for
@@ -199,6 +205,118 @@ Expect `wrote dumps/<server-uuid>/db1-...sql.age` and `shipped N log(s)` (or
 `<server-uuid>` segment printed here -- it is `db1`'s current incarnation and
 is what every object key for this incarnation is namespaced under; the
 restore drill below needs it to find the right objects.
+
+**Do not force `branchleft-db-backup-prune.service` on a first setup** -- there
+is nothing to prune yet, and running it against a brand-new bucket is a no-op
+at best. See "Backup retention" below for how to bring it onto an
+already-running `db1`.
+
+## Backup retention
+
+Nothing before this pruned a *current* object: dumps and shipped binlogs
+otherwise accumulate forever, growing storage linearly with the size and age
+of the dataset even though object versioning (above) already bounds how long
+a *superseded* object survives. `prune_backups.py` is the enforcement point,
+run daily by `branchleft-db-backup-prune.timer` (03:45 UTC, after that
+night's dump and at least one more binlog-ship run have landed).
+
+**The numbers, and where they come from.** Doc 14 §7.2 states the platform's
+service level as "7-day point-in-time recovery for the tenant database" --
+`prune_backups.PITR_WINDOW_DAYS = 7` is that promise, verbatim, and is not a
+value to change without re-deciding the promise itself.
+`prune_backups.MARGIN_DAYS = 3` is slack for the pipeline's own operational
+hiccups (a missed nightly dump, a slow investigation) before an object
+becomes eligible for deletion at all -- it does not weaken the guarantee
+below, it only decides how proactively pruning happens.
+
+**The invariant `plan_prune` holds, regardless of MARGIN_DAYS:** the oldest
+*retained* dump for a given `server_uuid`, plus the retained binlogs from its
+timestamp forward, must always cover the full 7-day window. The **anchor** --
+the newest dump at or before `now - 7 days` -- is never deleted, however old
+it ends up being; a run of missed or failed nightly dumps just pushes the
+anchor further back, and `plan_prune` keeps it there rather than deleting on
+a blind age threshold that cannot see whether a replacement dump exists.
+Binlogs are kept back to the anchor's own timestamp (or `RETENTION_DAYS`,
+whichever is older), and only ever as a clean prefix by binlog sequence
+number -- never a hole partway through what's retained. A `server_uuid`
+group that cannot be pruned without the retained set falling short of the
+window is refused outright (logged to stderr, nothing in that group
+deleted) rather than pruned partway. See `plan_prune`'s own docstring and
+`test_prune_backups.py` for the full set of edge cases this covers -- a
+missed dump, a dump that failed mid-run (identical to a missed one: a failed
+run never uploads anything), a binlog rotation straddling the cutoff second,
+and a forced refusal when coverage would otherwise be lost.
+
+**Why a bucket lifecycle rule instead of this pipeline step was rejected.**
+Doc 14 §16 item 3 already documents `Expiration.Days` (current-object,
+day-based expiry) as a real Hetzner Object Storage feature, so the mechanism
+exists. It was rejected anyway because a lifecycle rule deletes strictly by
+object age, per object, with no way to ask "does a newer dump already cover
+what this one would leave uncovered?" -- exactly the question a missed
+nightly dump makes load-bearing. A pipeline step that reads the bucket's own
+listing before deciding is the only shape that can hold the invariant above.
+
+**Bringing the timer onto an already-live `db1`.** Re-copy `db/provision/`
+(step 1) so `prune_backups.py`, the extended `objectstorage.py` and the two
+new unit files land, then dry-run before ever deleting anything real:
+
+```bash
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
+  cd /opt/branchleft/db/provision &&
+  set -a && . /etc/branchleft/db.env && set +a &&
+  python3 prune_backups.py --dry-run
+'
+```
+
+Read the output before doing anything else: `would delete N dump(s), M
+binlog(s)` lists every key by name, and a `REFUSED <uuid>: <reason>` line on
+stderr means don't proceed for that incarnation until the reason is
+understood -- proceeding anyway is exactly the silent-gap failure mode this
+script exists to prevent. Only once the dry run looks right:
+
+```bash
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
+  cp /opt/branchleft/db/provision/branchleft-db-backup-prune.{service,timer} /etc/systemd/system/ &&
+  systemctl daemon-reload &&
+  systemctl enable --now branchleft-db-backup-prune.timer &&
+  systemctl start branchleft-db-backup-prune.service &&
+  journalctl -u branchleft-db-backup-prune.service -n 40
+'
+```
+
+**Proving the window is still covered after a prune.** The dry run's own
+absence of a `REFUSED` line is the pruner's own proof, but to check the
+retained bucket state directly rather than trust the tool that just acted on
+it:
+
+```bash
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
+  cd /opt/branchleft/db/provision &&
+  set -a && . /etc/branchleft/db.env && set +a &&
+  python3 - <<PYEOF
+import os
+from objectstorage import list_objects
+
+kw = dict(
+    bucket=os.environ["DB_BACKUP_BUCKET"], endpoint=os.environ["DB_BACKUP_ENDPOINT"],
+    region=os.environ["DB_BACKUP_REGION"], access_key=os.environ["AWS_ACCESS_KEY_ID"],
+    secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+)
+dumps = list_objects(prefix="dumps/", **kw)
+binlogs = list_objects(prefix="binlogs/", **kw)
+print("oldest surviving dump:  ", min(d["last_modified"] for d in dumps))
+print("oldest surviving binlog:", min(b["last_modified"] for b in binlogs))
+PYEOF
+'
+```
+
+The oldest surviving dump must be at least 7 days old (older is fine -- that
+is `MARGIN_DAYS` doing its job), and the oldest surviving binlog must be at
+or before that dump's own timestamp -- if it is not, replay from that dump
+would have nothing to resume from partway through the window, which is the
+gap this whole design exists to make structurally impossible.
 
 ## 6. Provision a tenant database
 
