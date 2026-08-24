@@ -168,6 +168,34 @@ describe('tenantSecretsEnvFile', () => {
     expect(file).toContain(`${SECRET_ENV_KEYS.bulkEmailApiKey}=bk`);
   });
 
+  // systemd parses this file line by line, so a value carrying a newline does
+  // not produce a malformed variable — it produces an extra, well-formed one.
+  // A credential arriving with a trailing line is a way to set any other
+  // variable in the container's environment, and nothing downstream reports it.
+  it.each(['databasePassword', 's3AccessKeyId', 's3SecretAccessKey'])(
+    'refuses a control character in %s',
+    (field) => {
+      const secrets = {
+        databasePassword: 'dbpw',
+        s3AccessKeyId: 'akid',
+        s3SecretAccessKey: 'sk',
+        [field]: 'value\nGHOST_DB_PASSWORD=attacker',
+      };
+      expect(() => tenantSecretsEnvFile('blog', secrets)).toThrow(/control character/);
+    }
+  );
+
+  it('refuses a control character in an optional credential too', () => {
+    expect(() =>
+      tenantSecretsEnvFile('blog', {
+        databasePassword: 'dbpw',
+        s3AccessKeyId: 'akid',
+        s3SecretAccessKey: 'sk',
+        mailPassword: 'mp\nGHOST_S3_SECRET_ACCESS_KEY=attacker',
+      })
+    ).toThrow(/control character/);
+  });
+
   // systemd's EnvironmentFile carries quotes into the value, so a quoted
   // password would arrive at Ghost with the quotes attached.
   it('emits values unquoted', () => {

@@ -21,20 +21,35 @@ late:
 
 1. **Docker re-applies the image path's ownership and mode to a volume it
    populates itself.** Ownership asserted before a first start is silently
-   overwritten by that copy-up. So this script seeds the content volume with a
-   marker file: a non-empty volume is never copied into, the image's `1777`
-   never lands, and Ghost's own entrypoint still seeds `content.orig`
-   afterwards -- it tests each sub-path individually (`[ ! -e "$target" ]`),
-   not the directory as a whole.
-2. **The tenant's UID is host state, so the uniqueness check reads the host.**
-   Nothing in a config file can answer "is 30001 already somebody's" for a host
-   that several tenant repos deploy to independently. The claim is recorded in
-   the volume and read back out of it.
+   overwritten by that copy-up, which fires on any *empty* volume. So this
+   script drops a seed file in the content volume: a non-empty volume is never
+   copied into, the image's `1777` never lands, and Ghost's own entrypoint
+   still seeds `content.orig` afterwards -- it tests each sub-path
+   individually (`[ ! -e "$target" ]`), not the directory as a whole. Declaring
+   the volumes `external` in the rendered stack is a separate control and only
+   stops Compose *creating* one; it does nothing about copy-up.
+
+2. **The UID register lives where the tenant cannot write.** `/etc/branchleft/
+   tenant-uids/<slug>`, root-owned `0700` directory, `0600` files. It is not in
+   the content volume, because unlink permission is governed by the containing
+   directory rather than the file mode, and that volume is `0700` owned by the
+   tenant -- a claim stored there is a claim its own subject can delete, and a
+   deleted claim reads as "unclaimed", which never compares equal to a real
+   UID. The register is cross-checked against the volumes Docker holds, and a
+   volume with no register entry is a refusal rather than a free UID.
+
 3. **A UID change on a provisioned volume is a data loss, not an update.** The
    content is `0700` to the old UID; re-owning it under a different tenant
    hands one tenant another's data, and re-owning it under the same tenant with
    a new number is a migration with a copy step. Either way it is refused here
    rather than performed silently.
+
+**Residual, stated rather than implied.** A tenant can delete the seed file in
+its own volume -- it owns that directory -- which re-arms copy-up on that one
+volume and would restore the image's world-writable mode there at the next
+start. It cannot free a UID, cannot reach another tenant's volume, and cannot
+touch the register. Closing the remainder needs a change to the ownership shape
+the runtime posture records, which is a decision rather than a fix.
 
 Exit 0 on success, 1 on any refusal or failure, 2 on usage error.
 """
@@ -65,14 +80,28 @@ SLUG_PATTERN = re.compile(r"\A[a-z][a-z0-9-]*\Z")
 MAX_SLUG_LENGTH = 26
 RESERVED_STACK_NAMES = ("website", "edge", "db", "monitoring")
 
-# Written into the content volume. Two jobs: it makes the volume non-empty so
-# Docker's copy-up never fires, and it is the host-readable record of which
-# tenant holds which UID.
-CLAIM_FILE = ".branchleft-tenant"
+# The UID register: one file per tenant, in a root-owned 0700 directory on the
+# host. Deliberately NOT inside the tenant's content volume, which an earlier
+# form of this script used.
+#
+# Unlink permission is governed by the containing directory, not the file's own
+# mode, and the content volume is 0700 *owned by the tenant* -- so a claim
+# stored there is a claim the tenant can delete. That is not a theoretical
+# reach: deleting it makes this script read the slug as unclaimed, and a
+# missing claim never compares equal to a real UID, so the next tenant
+# provisioned on that number would have been accepted onto it. The register
+# has to sit where the subject of the check cannot write.
+CLAIM_DIR = "/etc/branchleft/tenant-uids"
+CLAIM_DIR_MODE = 0o700
+CLAIM_MODE = 0o600
 
-# Sentinel for "this slug holds a volume whose claim cannot be read". Not
-# `None`, which would be indistinguishable from "this slug is free".
-UNREADABLE_CLAIM = -1
+# Written inside the content volume, and doing one job only: keeping the volume
+# non-empty so Docker's copy-up never populates it from the image path and
+# re-applies that path's `node:node` 1777 over the ownership set below. It is
+# not a security record -- the tenant owns the directory it sits in and can
+# delete it, which re-arms copy-up on that tenant's own volume. That residual
+# is real and is tracked; what it can no longer do is free a UID.
+SEED_FILE = ".branchleft-seed"
 
 CONTENT_MODE = 0o700
 # Read-only for the tenant and unwritable by anyone but root. The rendered
@@ -115,6 +144,10 @@ def validate_uid(uid: int) -> None:
         raise ProvisionError(
             f"uid {uid} is outside the reserved tenant range {TENANT_UID_MIN}-{TENANT_UID_MAX}"
         )
+
+
+def claim_path(slug: str, claim_dir: str = CLAIM_DIR) -> str:
+    return os.path.join(claim_dir, slug)
 
 
 def render_claim(slug: str, uid: int) -> str:
@@ -180,37 +213,46 @@ def slug_from_content_volume(volume: str) -> str:
     return volume[len(VOLUME_NAME_PREFIX) : -len(CONTENT_VOLUME_SUFFIX)]
 
 
-def existing_claims(*, run=subprocess.run, read_text=None) -> dict[str, int]:
-    """Every UID currently claimed on this host, keyed by tenant slug.
+def existing_claims(*, run=subprocess.run, claim_dir: str = CLAIM_DIR, fs=None) -> dict[str, int]:
+    """Every UID claimed on this host, keyed by tenant slug.
 
-    A content volume with no readable claim file is reported under its own slug
-    with `UNREADABLE_CLAIM` rather than skipped, so `assert_uid_available` can still
-    see that the slug is taken; what it cannot see is which UID, and that is
-    surfaced as a refusal at the point it matters rather than silently here.
+    Read from the root-owned register, then cross-checked against the volumes
+    Docker actually holds. Either source alone fails open in its own direction:
+    the register alone cannot see a tenant provisioned before it existed, and
+    the volumes alone are inside a directory the tenant owns. A content volume
+    with no register entry raises rather than being reported as free, because
+    "I could not establish this UID" and "this UID is available" must never
+    share a return value.
     """
-    if read_text is None:
-
-        def read_text(path: str) -> str:
-            with open(path, encoding="utf-8") as handle:
-                return handle.read()
+    fs = fs or _RealFs()
 
     claims: dict[str, int] = {}
+    for name in sorted(fs.listdir(claim_dir)):
+        try:
+            claimed_slug, uid = parse_claim(fs.read_text(os.path.join(claim_dir, name)))
+        except (OSError, ProvisionError) as exc:
+            raise ProvisionError(
+                f"claim {os.path.join(claim_dir, name)!r} is unreadable ({exc}). The host's UID "
+                "allocation cannot be established, and provisioning a tenant against an unknown "
+                "allocation could hand two tenants the same UID. Restore it by hand."
+            ) from exc
+        if claimed_slug != name:
+            raise ProvisionError(
+                f"claim file {name!r} names slug {claimed_slug!r}. A claim and its filename "
+                "disagreeing means the register was edited by hand; reconcile it before "
+                "provisioning anything."
+            )
+        claims[claimed_slug] = uid
+
     for volume in list_content_volumes(run=run):
         slug = slug_from_content_volume(volume)
-        try:
-            text = read_text(os.path.join(volume_mountpoint(volume, run=run), CLAIM_FILE))
-        except (OSError, ProvisionError):
-            claims[slug] = UNREADABLE_CLAIM
-            continue
-        try:
-            claimed_slug, uid = parse_claim(text)
-        except ProvisionError:
-            claims[slug] = UNREADABLE_CLAIM
-            continue
-        # The volume name is the authority on which tenant it belongs to; a
-        # claim naming a different slug means the volume was renamed or copied,
-        # which is exactly the state that must not be provisioned over.
-        claims[claimed_slug if claimed_slug == slug else slug] = uid
+        if slug not in claims:
+            raise ProvisionError(
+                f"volume {volume!r} exists on this host but has no entry in {claim_dir}. The UID "
+                "it was provisioned with cannot be established from the register. Read the "
+                "volume's ownership on the host (`docker volume inspect` then `stat`) and write "
+                "the claim by hand before provisioning anything else."
+            )
     return claims
 
 
@@ -224,13 +266,6 @@ def assert_uid_available(slug: str, uid: int, claims: dict[str, int]) -> None:
                 "Tenant UIDs are distinct per host and are never reused -- allocate a free one."
             )
     existing = claims.get(slug)
-    if existing == UNREADABLE_CLAIM:
-        raise ProvisionError(
-            f"tenant {slug!r} already has a content volume on this host whose claim file "
-            f"({CLAIM_FILE}) is missing or unreadable, so the uid it was provisioned with "
-            "cannot be established. Read the volume's ownership on the host and restore the "
-            "claim by hand; re-provisioning over it could hand this volume to a different uid."
-        )
     if existing is not None and existing != uid:
         raise ProvisionError(
             f"tenant {slug!r} already holds uid {existing} on this host, not {uid}. "
@@ -240,27 +275,56 @@ def assert_uid_available(slug: str, uid: int, claims: dict[str, int]) -> None:
         )
 
 
+class _RealFs:
+    """The filesystem operations this script performs, in one injectable place.
+
+    `write_text` opens with `O_NOFOLLOW`: the seed file is created inside a
+    directory the tenant owns, so a symlink planted at that path would
+    otherwise be followed by a root-run write.
+    """
+
+    def listdir(self, path: str) -> list[str]:
+        try:
+            return os.listdir(path)
+        except FileNotFoundError:
+            return []
+
+    def read_text(self, path: str) -> str:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def write_text(self, path: str, text: str, mode: int) -> None:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        fd = os.open(path, flags, mode)
+        try:
+            os.write(fd, text.encode("utf-8"))
+        finally:
+            os.close(fd)
+
+    def makedirs(self, path: str, mode: int) -> None:
+        os.makedirs(path, mode=mode, exist_ok=True)
+
+    def chown(self, path: str, uid: int, gid: int) -> None:
+        os.chown(path, uid, gid)
+
+    def chmod(self, path: str, mode: int) -> None:
+        os.chmod(path, mode)
+
+
 def provision_tenant_volumes(
     slug: str,
     uid: int,
     *,
     run=subprocess.run,
-    read_text=None,
-    write_text=None,
-    chown=os.chown,
-    chmod=os.chmod,
+    claim_dir: str = CLAIM_DIR,
+    fs=None,
 ) -> list[str]:
     """Create and own this tenant's volumes. Returns a list of actions taken."""
     validate_slug(slug)
     validate_uid(uid)
+    fs = fs or _RealFs()
 
-    if write_text is None:
-
-        def write_text(path: str, text: str) -> None:
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(text)
-
-    assert_uid_available(slug, uid, existing_claims(run=run, read_text=read_text))
+    assert_uid_available(slug, uid, existing_claims(run=run, claim_dir=claim_dir, fs=fs))
 
     actions: list[str] = []
     content = content_volume_name(slug)
@@ -273,48 +337,71 @@ def provision_tenant_volumes(
             _docker(["volume", "create", name], run=run)
             actions.append(f"created volume {name}")
 
+    # The register entry is written before the volumes are owned, so a run that
+    # dies halfway leaves the UID claimed rather than apparently free. The
+    # ownership is what a re-run finishes; a lost claim is what it cannot.
+    fs.makedirs(claim_dir, CLAIM_DIR_MODE)
+    fs.chown(claim_dir, 0, 0)
+    fs.chmod(claim_dir, CLAIM_DIR_MODE)
+    entry = claim_path(slug, claim_dir)
+    fs.write_text(entry, render_claim(slug, uid), CLAIM_MODE)
+    fs.chown(entry, 0, 0)
+    fs.chmod(entry, CLAIM_MODE)
+    actions.append(f"claimed uid {uid} for {slug} in {claim_dir}")
+
     content_path = volume_mountpoint(content, run=run)
-    claim_path = os.path.join(content_path, CLAIM_FILE)
-    # Written before the ownership calls below so that a partially-completed
-    # run still leaves the volume non-empty, and therefore still immune to
-    # Docker's copy-up. A re-run then finishes the ownership.
-    write_text(claim_path, render_claim(slug, uid))
-    chown(claim_path, uid, uid)
-    chmod(claim_path, 0o600)
-    chown(content_path, uid, uid)
-    chmod(content_path, CONTENT_MODE)
+    # Written before the ownership calls below so a partially-completed run
+    # still leaves the volume non-empty, and therefore still immune to Docker's
+    # copy-up. Owned by the tenant because it sits in the tenant's own
+    # directory and root-owned files there buy nothing -- the tenant owns the
+    # directory, so it can unlink either way.
+    seed = os.path.join(content_path, SEED_FILE)
+    fs.write_text(seed, f"{slug}\n", 0o600)
+    fs.chown(seed, uid, uid)
+    fs.chmod(seed, 0o600)
+    fs.chown(content_path, uid, uid)
+    fs.chmod(content_path, CONTENT_MODE)
     actions.append(f"{content} owned by {uid}:{uid} at {oct(CONTENT_MODE)}")
 
     adapters_path = volume_mountpoint(adapters, run=run)
-    chown(adapters_path, 0, 0)
-    chmod(adapters_path, ADAPTERS_MODE)
+    fs.chown(adapters_path, 0, 0)
+    fs.chmod(adapters_path, ADAPTERS_MODE)
     actions.append(f"{adapters} owned by 0:0 at {oct(ADAPTERS_MODE)}")
 
     return actions
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], *, geteuid=os.geteuid, run=subprocess.run, fs=None, out=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("slug")
-    parser.add_argument("--uid", type=int, required=True)
+    # Optional so that `--list-claims` is answerable. It reports which UIDs are
+    # taken, so requiring a UID to ask would mean already knowing the answer.
+    parser.add_argument("slug", nargs="?")
+    parser.add_argument("--uid", type=int)
     parser.add_argument(
         "--list-claims",
         action="store_true",
         help="print the UID every tenant holds on this host and exit",
     )
     args = parser.parse_args(argv)
+    emit = out or (lambda line: print(line))
 
-    if os.geteuid() != 0:
+    if geteuid() != 0:
         print("provision_tenant_volume: must run as root.", file=sys.stderr)
         return 1
 
     try:
         if args.list_claims:
-            for slug, uid in sorted(existing_claims().items()):
-                print(f"{slug}={uid}")
+            if args.slug is not None or args.uid is not None:
+                raise ProvisionError("--list-claims takes no slug and no --uid")
+            for slug, uid in sorted(existing_claims(run=run, fs=fs).items()):
+                emit(f"{slug}={uid}")
             return 0
-        for action in provision_tenant_volumes(args.slug, args.uid):
-            print(action)
+
+        if args.slug is None or args.uid is None:
+            raise ProvisionError("a slug and --uid are both required unless --list-claims is given")
+
+        for action in provision_tenant_volumes(args.slug, args.uid, run=run, fs=fs):
+            emit(action)
     except ProvisionError as exc:
         print(f"provision_tenant_volume: {exc}", file=sys.stderr)
         return 1

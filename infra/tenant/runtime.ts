@@ -76,6 +76,11 @@ export interface UploadLimits {
    * size syntax. The only limit that bounds the upload paths Ghost leaves
    * unlimited, and the only one that rejects an oversized body before it
    * reaches an app host at all.
+   *
+   * `MiB`, not `MB`: Caddy reads `MB` as a power of ten and every other value
+   * derived here is a power of two. The point of deriving them from one input
+   * is that they cannot disagree, and a unit that means something else by
+   * ~4.4% is a disagreement.
    */
   edgeRequestBodyMaxSize: string;
   /** `mem_limit` and `memswap_limit`: the RSS budget plus the tmpfs ceiling,
@@ -126,9 +131,75 @@ export function uploadLimits(
     themeCompressedBytes: (uploadCeilingMib / 4) * MIB,
     themeEntryUncompressedBytes: (uploadCeilingMib / 4) * MIB,
     themeTotalUncompressedBytes: (uploadCeilingMib / 2) * MIB,
-    edgeRequestBodyMaxSize: `${uploadCeilingMib / 2}MB`,
+    edgeRequestBodyMaxSize: `${uploadCeilingMib / 2}MiB`,
     memoryLimit: `${rssBudgetMib + uploadCeilingMib}m`,
   };
+}
+
+/**
+ * The private ranges an app host's address may come from.
+ *
+ * Checked against the address itself rather than against the port string the
+ * address produced, which is the shape the runtime-posture check had and which
+ * accepted `0.0.0.0` because the rendered port did begin with `0.0.0.0:`. A
+ * check whose expectation is derived from its subject cannot fail.
+ */
+const PRIVATE_IPV4_RANGES: Array<[number, number]> = [
+  [0x0a000000, 0x0affffff], // 10.0.0.0/8 -- the estate's own `10.20.1.0/24`
+  [0xac100000, 0xac1fffff], // 172.16.0.0/12
+  [0xc0a80000, 0xc0a8ffff], // 192.168.0.0/16
+];
+
+function ipv4ToInt(address: string): number | undefined {
+  const octets = address.split('.');
+  if (octets.length !== 4) return undefined;
+  let value = 0;
+  for (const octet of octets) {
+    if (!/^\d{1,3}$/.test(octet)) return undefined;
+    const part = Number(octet);
+    if (part > 255) return undefined;
+    // Rejected rather than normalised: a leading zero is read as octal by some
+    // parsers and as decimal by others, so `010.20.1.100` is two different
+    // hosts depending on who resolves it.
+    if (octet.length > 1 && octet.startsWith('0')) return undefined;
+    value = value * 256 + part;
+  }
+  return value;
+}
+
+/**
+ * Refuses any address a tenant's port must not be published on.
+ *
+ * `0.0.0.0` is the one that matters and the one a self-referential check
+ * misses: it puts a tenant's Ghost on the app host's public interface, behind
+ * nothing but a Hetzner firewall rule, which §18's network posture exists to
+ * prevent. Loopback is refused too, for the opposite reason -- the edge could
+ * never reach it, so a stack bound there is a site that silently never serves.
+ */
+export function validateAppHostPrivateIp(address: string): void {
+  const value = ipv4ToInt(address);
+  if (value === undefined) {
+    throw new Error(
+      `GhostTenant: appHostPrivateIp "${address}" is not a dotted-quad IPv4 address.`
+    );
+  }
+  if (!PRIVATE_IPV4_RANGES.some(([low, high]) => value >= low && value <= high)) {
+    throw new Error(
+      `GhostTenant: appHostPrivateIp "${address}" is not in a private IPv4 range. Publishing a ` +
+        `tenant anywhere else puts it on the app host's public interface, behind nothing but a ` +
+        `firewall rule.`
+    );
+  }
+}
+
+/** The host-side port a tenant's Ghost is published on. */
+export function validateHostPort(port: number): void {
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error(
+      `GhostTenant: hostPort ${port} must be an integer in 1024-65535. Below 1024 it would collide ` +
+        `with a privileged service on a host that already runs SSH.`
+    );
+  }
 }
 
 export interface ResourceCaps {

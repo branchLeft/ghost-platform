@@ -4,11 +4,20 @@
 This script owns the one runtime-isolation control that fails open: without
 it every tenant container still starts, on a volume the Ghost image leaves
 world-writable. Its refusals -- a UID another tenant already holds, a UID
-change on a provisioned volume, a reserved slug -- are what stand between a
-mistyped number and one tenant reading another's content, so they are covered
-here rather than left to a live host to discover.
+change on a provisioned volume, a reserved slug, an allocation it cannot
+establish -- are what stand between a mistyped number and one tenant reading
+another's content, so they are covered here rather than left to a live host to
+discover.
 
-Every `docker` invocation is mocked; no daemon, no network, no root.
+The UID-freeing case has its own tests, in both directions. An earlier form of
+this script kept the claim inside the tenant's own `0700` content volume, where
+the tenant could unlink it; a missing claim then read as "unclaimed", and
+because a missing claim never compares equal to a real UID, a second tenant was
+accepted onto the same number. Asserting that the *slug* is not freed did not
+catch it -- the UID is the thing that has to stay claimed.
+
+Every `docker` invocation and every filesystem call is mocked; no daemon, no
+network, no root.
 """
 
 from __future__ import annotations
@@ -66,18 +75,33 @@ class _Result:
 
 
 class FakeFs:
-    def __init__(self, files=None):
-        self.files = dict(files or {})
+    """An in-memory stand-in for the script's filesystem operations."""
+
+    def __init__(self, files=None, dirs=None):
+        self.files: dict[str, str] = dict(files or {})
+        self.dirs: set[str] = set(dirs or [])
         self.owners: dict[str, tuple[int, int]] = {}
         self.modes: dict[str, int] = {}
+        self.write_modes: dict[str, int] = {}
+
+    def listdir(self, path):
+        if path not in self.dirs:
+            return []
+        prefix = path.rstrip("/") + "/"
+        return [name[len(prefix) :] for name in self.files if name.startswith(prefix)]
 
     def read_text(self, path):
         if path not in self.files:
             raise FileNotFoundError(path)
         return self.files[path]
 
-    def write_text(self, path, text):
+    def write_text(self, path, text, mode):
         self.files[path] = text
+        self.write_modes[path] = mode
+
+    def makedirs(self, path, mode):
+        self.dirs.add(path)
+        self.modes[path] = mode
 
     def chown(self, path, uid, gid):
         self.owners[path] = (uid, gid)
@@ -86,16 +110,11 @@ class FakeFs:
         self.modes[path] = mode
 
 
+CLAIMS = "/etc/branchleft/tenant-uids"
+
+
 def provision(slug, uid, docker, fs):
-    return ptv.provision_tenant_volumes(
-        slug,
-        uid,
-        run=docker,
-        read_text=fs.read_text,
-        write_text=fs.write_text,
-        chown=fs.chown,
-        chmod=fs.chmod,
-    )
+    return ptv.provision_tenant_volumes(slug, uid, run=docker, claim_dir=CLAIMS, fs=fs)
 
 
 class ValidationTests(unittest.TestCase):
@@ -158,17 +177,32 @@ class FirstProvisionTests(unittest.TestCase):
         self.assertEqual(self.fs.owners[path], (0, 0))
         self.assertEqual(self.fs.modes[path], 0o555)
 
-    def test_seeds_a_claim_so_dockers_copy_up_never_fires(self):
+    def test_seeds_the_volume_so_dockers_copy_up_never_fires(self):
         # A non-empty volume is never populated from the image path, which is
         # what stops Docker re-applying the image's world-writable content
         # directory over the ownership set above.
-        path = f"{self.docker.volumes['ghost-blog-content']}/{ptv.CLAIM_FILE}"
-        self.assertEqual(self.fs.files[path], "slug=blog\nuid=30001\n")
-        self.assertEqual(self.fs.owners[path], (30001, 30001))
-        self.assertEqual(self.fs.modes[path], 0o600)
+        path = f"{self.docker.volumes['ghost-blog-content']}/{ptv.SEED_FILE}"
+        self.assertIn(path, self.fs.files)
+
+    def test_writes_the_claim_where_the_tenant_cannot_reach_it(self):
+        # Not in the content volume: unlink is governed by the containing
+        # directory, and the tenant owns that one.
+        entry = f"{CLAIMS}/blog"
+        self.assertEqual(self.fs.files[entry], "slug=blog\nuid=30001\n")
+        self.assertEqual(self.fs.owners[entry], (0, 0))
+        self.assertEqual(self.fs.modes[entry], 0o600)
+        self.assertEqual(self.fs.owners[CLAIMS], (0, 0))
+        self.assertEqual(self.fs.modes[CLAIMS], 0o700)
+
+    def test_the_claim_is_not_inside_the_content_volume(self):
+        content = self.docker.volumes["ghost-blog-content"]
+        for path, text in self.fs.files.items():
+            if path.startswith(content):
+                self.assertNotIn("uid=", text)
 
     def test_reports_what_it_did(self):
         self.assertTrue(any("created volume ghost-blog-content" in a for a in self.actions))
+        self.assertTrue(any("claimed uid 30001" in a for a in self.actions))
 
 
 class IdempotencyTests(unittest.TestCase):
@@ -190,11 +224,11 @@ class UidCollisionTests(unittest.TestCase):
         self.assertIn("already claimed", str(caught.exception))
 
     def test_the_check_reads_the_host_not_an_argument(self):
-        # The claim is recovered from the volume on the host, so a second
+        # The claim is recovered from the host's own register, so a second
         # tenant repo that has never seen the first repo's config is still
         # refused.
         docker = FakeDocker({"ghost-blog-content": "/v/blog"})
-        fs = FakeFs({"/v/blog/.branchleft-tenant": "slug=blog\nuid=30007\n"})
+        fs = FakeFs(files={f"{CLAIMS}/blog": "slug=blog\nuid=30007\n"}, dirs={CLAIMS})
         with self.assertRaises(ptv.ProvisionError):
             provision("news", 30007, docker, fs)
 
@@ -213,15 +247,55 @@ class UidCollisionTests(unittest.TestCase):
             provision("blog", 30002, docker, fs)
         self.assertIn("already holds uid 30001", str(caught.exception))
 
-    def test_an_unreadable_claim_does_not_silently_free_the_slug(self):
-        docker = FakeDocker({"ghost-blog-content": "/v/blog"})
-        fs = FakeFs()  # no claim file at all
-        claims = ptv.existing_claims(run=docker, read_text=fs.read_text)
-        self.assertEqual(claims["blog"], -1)
-        # Still refused, because the slug is visibly taken at a uid nobody can
-        # read -- the state a re-provision must not paper over.
+
+class DeletedClaimTests(unittest.TestCase):
+    """The regression that a slug-only assertion did not catch."""
+
+    def setUp(self):
+        self.docker, self.fs = FakeDocker(), FakeFs()
+        provision("blog", 30001, self.docker, self.fs)
+        # Whatever the tenant can reach inside its own volume, gone.
+        content = self.docker.volumes["ghost-blog-content"]
+        for path in [p for p in self.fs.files if p.startswith(content)]:
+            del self.fs.files[path]
+
+    def test_a_tenant_emptying_its_own_volume_does_not_free_its_uid(self):
+        with self.assertRaises(ptv.ProvisionError) as caught:
+            provision("news", 30001, self.docker, self.fs)
+        self.assertIn("already claimed", str(caught.exception))
+
+    def test_nor_does_it_free_the_slug(self):
         with self.assertRaises(ptv.ProvisionError):
-            provision("blog", 30001, docker, fs)
+            provision("blog", 30002, self.docker, self.fs)
+
+    def test_the_register_still_reports_the_uid(self):
+        claims = ptv.existing_claims(run=self.docker, claim_dir=CLAIMS, fs=self.fs)
+        self.assertEqual(claims, {"blog": 30001})
+
+
+class UnestablishableAllocationTests(unittest.TestCase):
+    def test_a_volume_with_no_register_entry_is_a_refusal_not_a_free_uid(self):
+        # The state a host provisioned before the register existed is in, and
+        # the state a wiped register leaves. Reporting it as free is what would
+        # hand two tenants one UID.
+        docker = FakeDocker({"ghost-blog-content": "/v/blog"})
+        fs = FakeFs()
+        with self.assertRaises(ptv.ProvisionError) as caught:
+            ptv.existing_claims(run=docker, claim_dir=CLAIMS, fs=fs)
+        self.assertIn("no entry in", str(caught.exception))
+
+    def test_an_unreadable_register_entry_is_a_refusal(self):
+        docker = FakeDocker({"ghost-blog-content": "/v/blog"})
+        fs = FakeFs(files={f"{CLAIMS}/blog": "corrupt\n"}, dirs={CLAIMS})
+        with self.assertRaises(ptv.ProvisionError):
+            ptv.existing_claims(run=docker, claim_dir=CLAIMS, fs=fs)
+
+    def test_a_claim_whose_filename_and_content_disagree_is_a_refusal(self):
+        docker = FakeDocker()
+        fs = FakeFs(files={f"{CLAIMS}/blog": "slug=news\nuid=30001\n"}, dirs={CLAIMS})
+        with self.assertRaises(ptv.ProvisionError) as caught:
+            ptv.existing_claims(run=docker, claim_dir=CLAIMS, fs=fs)
+        self.assertIn("disagreeing", str(caught.exception))
 
 
 class FailureTests(unittest.TestCase):
@@ -229,6 +303,70 @@ class FailureTests(unittest.TestCase):
         docker = FakeDocker(fail_on="volume create")
         with self.assertRaises(ptv.ProvisionError):
             provision("blog", 30001, docker, FakeFs())
+
+
+class MainTests(unittest.TestCase):
+    def run_main(self, argv, *, euid=0, docker=None, fs=None):
+        lines: list[str] = []
+        code = ptv.main(
+            argv,
+            geteuid=lambda: euid,
+            run=docker or FakeDocker(),
+            fs=fs or FakeFs(),
+            out=lines.append,
+        )
+        return code, lines
+
+    def test_refuses_to_run_as_a_non_root_user(self):
+        code, _ = self.run_main(["blog", "--uid", "30001"], euid=1000)
+        self.assertEqual(code, 1)
+
+    def test_provisions_and_reports(self):
+        docker, fs = FakeDocker(), FakeFs()
+        code, lines = self.run_main(["blog", "--uid", "30001"], docker=docker, fs=fs)
+        self.assertEqual(code, 0)
+        self.assertTrue(any("claimed uid 30001" in line for line in lines))
+
+    def test_list_claims_needs_neither_a_slug_nor_a_uid(self):
+        # The whole point of asking is not knowing which UIDs are taken.
+        docker = FakeDocker({"ghost-blog-content": "/v/blog"})
+        fs = FakeFs(files={f"{CLAIMS}/blog": "slug=blog\nuid=30001\n"}, dirs={CLAIMS})
+        code, lines = self.run_main(["--list-claims"], docker=docker, fs=fs)
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["blog=30001"])
+
+    def test_list_claims_rejects_a_slug_or_uid_rather_than_ignoring_it(self):
+        for argv in (["blog", "--list-claims"], ["--list-claims", "--uid", "30001"]):
+            with self.subTest(argv=argv):
+                code, _ = self.run_main(argv)
+                self.assertEqual(code, 1)
+
+    def test_a_missing_uid_is_an_error_not_a_default(self):
+        code, _ = self.run_main(["blog"])
+        self.assertEqual(code, 1)
+
+    def test_a_refusal_becomes_a_non_zero_exit(self):
+        docker, fs = FakeDocker(), FakeFs()
+        self.run_main(["blog", "--uid", "30001"], docker=docker, fs=fs)
+        code, _ = self.run_main(["news", "--uid", "30001"], docker=docker, fs=fs)
+        self.assertEqual(code, 1)
+
+
+class NoFollowTests(unittest.TestCase):
+    def test_the_real_writer_refuses_to_follow_a_symlink(self):
+        # The seed file is created inside a directory the tenant owns, so a
+        # symlink planted at that path would otherwise be followed by a
+        # root-run write.
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "target")
+            link = os.path.join(tmp, "link")
+            os.symlink(target, link)
+            with self.assertRaises(OSError):
+                ptv._RealFs().write_text(link, "x", 0o600)
+            self.assertFalse(os.path.exists(target))
 
 
 if __name__ == "__main__":

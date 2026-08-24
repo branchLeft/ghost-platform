@@ -108,6 +108,31 @@ describe('renderComposeStack', () => {
     }
   });
 
+  it.each(['0.0.0.0', '', '46.225.95.167', '127.0.0.1', 'localhost'])(
+    'refuses to render a stack published on %s',
+    (address) => {
+      expect(() => renderComposeStack(args({ appHostPrivateIp: address }))).toThrow();
+    }
+  );
+
+  it('refuses to render a stack on a privileged host port', () => {
+    expect(() => renderComposeStack(args({ hostPort: 22 }))).toThrow(/hostPort/);
+  });
+
+  // The posture check runs over the object, before serialisation, so it cannot
+  // see a value that becomes document structure only once it is written out.
+  // The refusal for that lives in the emitter; this asserts the two together
+  // on the paths a tenant's own configuration reaches.
+  it.each([
+    ['siteUrl', { url: 'https://blog.example.org\n    cap_add:\n      - SYS_ADMIN' }],
+    ['a media URL', { storage__S3Storage__cdnUrl: 'https://x/\n    privileged: true' }],
+    ['a mail address', { mail__from: 'a@b.c\n    network_mode: host' }],
+  ])('refuses to render a config value that would inject Compose keys via %s', (_name, extra) => {
+    expect(() =>
+      renderComposeStack(args({ environment: { url: 'https://blog.example.org', ...extra } }))
+    ).toThrow(/control character/);
+  });
+
   it('refuses a UID outside the reserved range before rendering anything', () => {
     // The rendered document would be perfectly valid Compose; the refusal is
     // this component's, not Docker's.
@@ -173,9 +198,46 @@ describe('assertRuntimePosture — the negative space', () => {
         assertRuntimePosture(documentWith({ ...compliantService(), ports: [port] }), {
           appHostPrivateIp: APP_HOST,
         })
-      ).toThrow(/must bind the app host's private address/);
+      ).toThrow(/<app-host-private-ip>:<host-port>:<container-port>/);
     }
   );
+
+  // The check used to compare each rendered port against the same unvalidated
+  // input that produced it, so `0.0.0.0` passed a `startsWith` against itself.
+  // A check whose expectation comes from its subject cannot fail, so the
+  // address is now validated on its own terms first.
+  it.each(['0.0.0.0', '', '46.225.95.167', 'localhost'])(
+    'refuses %s as the app host address rather than validating it against itself',
+    (address) => {
+      expect(() =>
+        assertRuntimePosture(
+          documentWith({ ...compliantService(), ports: [`${address}:2368:2368`] }),
+          {
+            appHostPrivateIp: address,
+          }
+        )
+      ).toThrow();
+    }
+  );
+
+  // A two-part publish binds every interface — the same outcome as `0.0.0.0`
+  // and harder to notice in a diff.
+  it('refuses a two-part publish even when the host port looks right', () => {
+    expect(() =>
+      assertRuntimePosture(documentWith({ ...compliantService(), ports: ['8080:2368'] }), {
+        appHostPrivateIp: APP_HOST,
+      })
+    ).toThrow(/<app-host-private-ip>/);
+  });
+
+  it('refuses a privileged host port on a host that already runs SSH', () => {
+    expect(() =>
+      assertRuntimePosture(
+        documentWith({ ...compliantService(), ports: [`${APP_HOST}:22:2368`] }),
+        { appHostPrivateIp: APP_HOST }
+      )
+    ).toThrow(/hostPort/);
+  });
 
   it('refuses any bind mount, not only the socket', () => {
     expect(() =>

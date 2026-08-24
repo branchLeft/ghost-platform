@@ -112,13 +112,24 @@ jobs:
       # operator filled in rather than on the org-qualified value built here.
       TENANT_REPO_NAME: ${{ inputs.tenant_repo }}
       TENANT_VISIBILITY: ${{ inputs.tenant_visibility }}
-      # The tenant's Pulumi state backend: the estate's shared Hetzner Object
-      # Storage bucket, not a bucket minted per tenant. A stack is addressed
-      # by project name inside it, so onboarding creates no storage resource
-      # at all -- which is what removes the last path by which provisioning
-      # gives a new tenant a GCP dependency. Both the endpoint host and
-      # `region` in this URL must name the bucket's own location; a mismatch
-      # is an opaque 403 that reads as a credential problem.
+      # The tenant's Pulumi state backend: one Hetzner Object Storage bucket
+      # holding every tenant stack, addressed by project name, so onboarding
+      # creates no storage resource at all -- which is what removes the last
+      # path by which provisioning gives a new tenant a GCP dependency.
+      #
+      # **A tenant bucket, never the estate's own.** `branchleft-pulumi-state`
+      # holds `branchleft-hetzner-estate/production`, whose checkpoint carries
+      # the production hcloud API token, alongside the network and mail
+      # stacks. The S3 credential a tenant repo's CI must hold to reach its own
+      # state is not scoped to a stack, so pointing tenants at that bucket
+      # would give every tenant deployer write access to the estate's control
+      # plane -- and destroying a checkpoint needs no ability to decrypt it.
+      # Object Storage is priced per account regardless of bucket count, so the
+      # separation is free. The validation step refuses that bucket by name.
+      #
+      # Both the endpoint host and `region` in this URL must name the bucket's
+      # own location; a mismatch is an opaque 403 that reads as a credential
+      # problem.
       TENANT_BACKEND_URL: ${{ vars.HETZNER_PULUMI_BACKEND_URL }}
       AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
@@ -251,6 +262,11 @@ jobs:
             || fail "the HETZNER_PULUMI_BACKEND_URL repository variable is empty or unset"
           [[ "$TENANT_BACKEND_URL" == s3://* ]] \
             || fail "HETZNER_PULUMI_BACKEND_URL must be an s3:// backend; a gs:// backend would give this tenant a GCP dependency"
+          # Named, not pattern-matched: this is the estate's own control-plane
+          # bucket, and a tenant deployer that can write to it can destroy the
+          # checkpoint the production hcloud token lives in.
+          [[ "$TENANT_BACKEND_URL" != *"s3://branchleft-pulumi-state?"* ]] \
+            || fail "HETZNER_PULUMI_BACKEND_URL points at branchleft-pulumi-state, the estate's own state bucket. Tenant state goes in a separate bucket -- the S3 credential is not scoped per stack, so this would hand every tenant deployer write access to the estate, network and mail checkpoints."
           [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" ]] \
             || fail "HETZNER_S3_ACCESS_KEY_ID / HETZNER_S3_SECRET_ACCESS_KEY are empty or unset; the tenant's state backend is unreachable without them"
           [[ "$SITE_URL" =~ ^https:// ]] || fail "site_url must be https"
@@ -558,9 +574,12 @@ jobs:
           # stack this job also touches lives in a different backend again.
           #
           # Stated because it is a real change in posture, not a like-for-like
-          # swap: this bucket is shared with every other stack in it, and the
-          # S3 credential above reaches all of them. The per-tenant GCS bucket
-          # it replaces confined a tenant's deployer to its own state by IAM.
+          # swap: this bucket is shared with every other *tenant* stack in it,
+          # and the S3 credential above reaches all of them. The per-tenant GCS
+          # bucket it replaces confined a tenant's deployer to its own state by
+          # IAM. What the separate bucket does buy is that the blast radius
+          # stops at other tenants and never reaches the estate's own control
+          # plane.
           pulumi login "$TENANT_BACKEND_URL"
           # `stack init` fails outright on a stack that already exists, and a
           # retry after a failed first apply reaches here with one -- holding
@@ -693,8 +712,22 @@ jobs:
           pulumi preview --stack "$TENANT" --json > preview.json
           python3 "$GITHUB_WORKSPACE/infra/provisioning/scripts/assert-no-provisioning-deletes.py" \
             --tenant "$TENANT" preview.json
-          python3 scripts/assert-no-tenant-deletes.py --self-test
-          python3 scripts/assert-no-tenant-deletes.py --verify-coverage node_modules/@branchleft/ghost-platform-tenant/dist
+          # The guard that ships inside the component, not the template's own
+          # copy of the same filename. Two files with that name now exist in a
+          # generated repo -- the packaged one and the template's GCP-era
+          # one -- and only the packaged one matches the component that
+          # rendered this plan. The template's copy is retired with the rest of
+          # the template.
+          #
+          # `--verify-coverage` takes the package ROOT: the script looks for
+          # `dist/index.js` beneath what it is given, so pointing it at `dist`
+          # asks for `dist/dist/index.js` and it would report a missing tree
+          # rather than a coverage result.
+          GUARD=node_modules/@branchleft/ghost-platform-tenant/scripts/assert-no-tenant-deletes.py
+          python3 "$GUARD" --self-test
+          python3 "$GUARD" --verify-coverage node_modules/@branchleft/ghost-platform-tenant
+          # The half that was never invoked against a plan before this line.
+          python3 "$GUARD" preview.json
 
       - name: Tenant first apply
         working-directory: tenant

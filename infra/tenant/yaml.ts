@@ -14,13 +14,47 @@
  * a leading `*` as an alias — and a Compose file carries UIDs, ports and
  * image digests that sit close to all three. Quoting unconditionally costs
  * some readability on the host and removes the entire class.
+ *
+ * Quoting is not escaping, and the difference is the reason `quote` refuses
+ * control characters outright: a single-quoted scalar has exactly one escape
+ * (a doubled quote) and no representation at all for a newline that does not
+ * change the document's structure. Refusing is the only faithful option, so
+ * this emitter throws rather than emitting a string it cannot round-trip.
  */
 
 export type YamlValue = string | number | boolean | YamlValue[] | { [key: string]: YamlValue };
 
 const INDENT = '  ';
 
+/**
+ * Characters a single-quoted YAML scalar cannot carry faithfully.
+ *
+ * A newline inside a single-quoted scalar is *legal* YAML — it folds, or
+ * begins a new document line — which is exactly why it has to be refused
+ * rather than emitted. A tenant-supplied value carrying one breaks out of its
+ * scalar and its remainder is parsed as document structure: at the right
+ * indentation that is a new mapping key, and `cap_add:` is a mapping key. The
+ * runtime-posture check cannot see it, because that runs over the object
+ * before serialisation and the object holds one well-formed string.
+ *
+ * So the refusal is here, at the one place that turns objects into document
+ * text. C0 controls, DEL and the C1 range go with it: none of them belongs in
+ * a Compose file, and each has its own way of being read differently than it
+ * looks.
+ */
+// eslint-disable-next-line no-control-regex -- refusing control characters is the point
+const UNQUOTABLE = /[\u0000-\u001f\u007f-\u009f]/;
+
 function quote(value: string): string {
+  const offending = UNQUOTABLE.exec(value);
+  if (offending) {
+    const code = offending[0].codePointAt(0) ?? 0;
+    throw new Error(
+      `toYaml: refusing to emit a string containing U+${code.toString(16).toUpperCase().padStart(4, '0')} ` +
+        `at index ${offending.index}. A control character in a quoted scalar is either re-read as ` +
+        `document structure or silently transformed, so there is no faithful single-quoted form of it.`
+    );
+  }
   return `'${value.replaceAll("'", "''")}'`;
 }
 
@@ -69,6 +103,9 @@ function emit(value: YamlValue, depth: number, lines: string[]): void {
       throw new Error('toYaml: an empty mapping has no unambiguous block form.');
     }
     for (const [key, child] of entries) {
+      // A key is document text exactly as a value is, and a mapping key is
+      // the shape an injected line takes.
+      quote(key);
       if (isContainer(child)) {
         lines.push(`${pad}${key}:`);
         emit(child, depth + 1, lines);

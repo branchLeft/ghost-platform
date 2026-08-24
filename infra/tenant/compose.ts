@@ -18,7 +18,13 @@
  */
 
 import { adaptersVolumeName, contentVolumeName, stackName, validateTenantSlug } from './naming';
-import { validateTenantUid, type ResourceCaps, type UploadLimits } from './runtime';
+import {
+  validateAppHostPrivateIp,
+  validateHostPort,
+  validateTenantUid,
+  type ResourceCaps,
+  type UploadLimits,
+} from './runtime';
 import type { YamlValue } from './yaml';
 import { toYaml } from './yaml';
 
@@ -58,6 +64,8 @@ export function renderComposeStack(args: ComposeStackArgs): string {
   // gets the same refusals as one that goes through `GhostTenant`.
   validateTenantSlug(args.slug);
   validateTenantUid(args.uid);
+  validateAppHostPrivateIp(args.appHostPrivateIp);
+  validateHostPort(args.hostPort);
   const document = composeDocument(args);
   assertRuntimePosture(document, args);
   return `${header(args.slug)}\n${toYaml(document)}`;
@@ -200,6 +208,13 @@ export function assertRuntimePosture(
   document: Record<string, YamlValue>,
   args: Pick<ComposeStackArgs, 'appHostPrivateIp'>
 ): void {
+  // Validated here rather than taken on trust, because everything below
+  // compares the rendered ports against this value: an unchecked
+  // `appHostPrivateIp` of `0.0.0.0` produces `0.0.0.0:8081:2368`, which passes
+  // a `startsWith` against itself. A check whose expectation comes from its
+  // subject cannot fail.
+  validateAppHostPrivateIp(args.appHostPrivateIp);
+
   const services = document.services as Record<string, Record<string, YamlValue>>;
   const problems: string[] = [];
 
@@ -244,8 +259,26 @@ export function assertRuntimePosture(
 
     const ports = Array.isArray(service.ports) ? service.ports : [];
     for (const port of ports) {
-      if (typeof port !== 'string' || !port.startsWith(`${args.appHostPrivateIp}:`)) {
-        at(`publishes \`${String(port)}\` — every port must bind the app host's private address`);
+      // `<address>:<host port>:<container port>` and nothing shorter. A
+      // two-part publish is `<host port>:<container port>`, which binds every
+      // interface -- the same outcome as `0.0.0.0` and harder to spot.
+      const parts = typeof port === 'string' ? port.split(':') : [];
+      if (parts.length !== 3 || parts[0] !== args.appHostPrivateIp) {
+        at(
+          `publishes \`${String(port)}\` — every port must be ` +
+            `<app-host-private-ip>:<host-port>:<container-port>`
+        );
+        continue;
+      }
+      const hostPort = Number(parts[1]);
+      if (!/^\d+$/.test(parts[1]) || !Number.isInteger(hostPort)) {
+        at(`publishes \`${String(port)}\` — the host port is not a number`);
+        continue;
+      }
+      try {
+        validateHostPort(hostPort);
+      } catch (error) {
+        at((error as Error).message);
       }
     }
 

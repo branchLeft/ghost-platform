@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 import tempfile
 
@@ -72,6 +73,9 @@ import tempfile
 DESTRUCTIVE_SUBSTRINGS = ("delete", "replace")
 
 COMPONENT_TYPE_TOKEN = "ghostPlatform:tenant:GhostTenant"
+
+# The only ops for which "no old state" is the truth rather than a gap.
+CREATE_OPS = {"create", "import", "refresh"}
 
 # Every field of `GhostTenantIdentity`. Named here rather than read from the
 # plan so that a field the component stops registering is a coverage failure
@@ -150,9 +154,23 @@ def identity_changes(plan: dict) -> list[str]:
         if not isinstance(urn, str) or _type_token(urn) != COMPONENT_TYPE_TOKEN:
             continue
 
+        op = step.get("op")
+        if not isinstance(op, str):
+            raise GuardError(f"step is missing a string 'op': {step!r}")
+
         old = _identity_of(step.get("oldState"))
         if old is None:
-            # A first apply has no old state to compare against.
+            # A first apply genuinely has no old state. Anything else does --
+            # `same`, `update` and every replacement op are defined against an
+            # existing resource -- so a missing old identity there means the
+            # comparison cannot be made, and an unmade comparison must not
+            # exit the same way a passed one does.
+            if op in CREATE_OPS:
+                continue
+            findings.append(
+                f"{urn}: a '{op}' step carries no existing identity to compare against. "
+                "Refusing rather than passing an unmade check."
+            )
             continue
 
         new = _identity_of(step.get("newState"))
@@ -184,12 +202,22 @@ def check_plan(plan: dict) -> list[str]:
     return findings
 
 
+_IDENTITY_BLOCK = re.compile(r"identity\s*=\s*pulumi\.output\(\s*\{(.*?)\}\s*\)", re.DOTALL)
+
+
 def verify_coverage(package_dir: pathlib.Path) -> list[str]:
     """Assert the component still registers every field this guard compares.
 
     Reads the built package where one exists and the TypeScript source
     otherwise, so the check works both from a tenant repo's `node_modules` and
     from this repository's own tree.
+
+    The check is scoped to the `identity = pulumi.output({...})` block rather
+    than run over the whole file. A bare substring search over the source
+    passes on a field that has been dropped from the *registration* while its
+    `GhostTenantIdentity` declaration, its README mention or a stale comment
+    still names it -- which is the shape a rename actually takes, and the
+    shape that would leave this guard comparing a field no plan ever carries.
     """
     candidates = [package_dir / "dist" / "index.js", package_dir / "index.ts"]
     source = next((path for path in candidates if path.is_file()), None)
@@ -206,11 +234,21 @@ def verify_coverage(package_dir: pathlib.Path) -> list[str]:
             f"{source} no longer declares the type token {COMPONENT_TYPE_TOKEN!r}, so this "
             "guard would match no step in any plan."
         )
+
+    block = _IDENTITY_BLOCK.search(text)
+    if block is None:
+        findings.append(
+            f"{source} no longer registers an `identity = pulumi.output({{...}})` output. This "
+            "guard's identity comparison reads that output and would compare nothing."
+        )
+        return findings
+
+    registered = block.group(1)
     for field in IDENTITY_FIELDS:
-        if field not in text:
+        if not re.search(rf"\b{re.escape(field)}\s*:", registered):
             findings.append(
-                f"{source} no longer names the identity field {field!r}, so this guard would "
-                "compare a field the component never registers."
+                f"{source} no longer registers the identity field {field!r}, so this guard would "
+                "compare a field that reaches no plan."
             )
     return findings
 
@@ -290,10 +328,21 @@ def _self_test() -> int:
         plan = _plan("update", old=_identity(), new=_identity(**{field: changed}))
         expect(check_plan(plan) != [], f"a changed {field} must be refused")
 
-    # Fails closed rather than passing an unmade comparison.
+    # Fails closed rather than passing an unmade comparison, in both
+    # directions. The `same`/`update`-with-no-old-state case is the one an
+    # earlier form of this script let through with a bare `continue`.
     expect(
         check_plan(_plan("update", old=_identity())) != [],
         "a plan with no new identity must be refused",
+    )
+    for op in ("same", "update"):
+        expect(
+            check_plan(_plan(op, new=_identity())) != [],
+            f"a '{op}' step with no existing identity must be refused",
+        )
+    expect(
+        check_plan(_plan("create", new=_identity())) == [],
+        "a create genuinely has no old state and must still pass",
     )
     old_missing = _identity()
     del old_missing["contentVolume"]
@@ -314,23 +363,46 @@ def _self_test() -> int:
     # Coverage verification finds a component that stopped registering a field.
     with tempfile.TemporaryDirectory() as tmp:
         package = pathlib.Path(tmp)
-        (package / "index.ts").write_text(
-            f"'{COMPONENT_TYPE_TOKEN}' " + " ".join(IDENTITY_FIELDS), encoding="utf-8"
-        )
+        def component(fields, *, token=COMPONENT_TYPE_TOKEN, extra=""):
+            body = "".join(f"      {field}: this.{field},\n" for field in fields)
+            return (
+                f"super('{token}', name, {{}}, opts);\n"
+                f"{extra}"
+                f"    this.identity = pulumi.output({{\n{body}    }});\n"
+            )
+
+        (package / "index.ts").write_text(component(IDENTITY_FIELDS), encoding="utf-8")
         expect(verify_coverage(package) == [], "a component naming every field must pass coverage")
 
-        (package / "index.ts").write_text(
-            f"'{COMPONENT_TYPE_TOKEN}' " + " ".join(IDENTITY_FIELDS[1:]), encoding="utf-8"
-        )
+        (package / "index.ts").write_text(component(IDENTITY_FIELDS[1:]), encoding="utf-8")
         expect(
             verify_coverage(package) != [],
             "a component that stopped registering a field must fail coverage",
         )
 
-        (package / "index.ts").write_text(" ".join(IDENTITY_FIELDS), encoding="utf-8")
+        # The case a whole-file substring search passes and this one must not:
+        # dropped from the registration, still named by the interface.
+        interface = "export interface GhostTenantIdentity { " + "; ".join(
+            f"{field}: string" for field in IDENTITY_FIELDS
+        ) + " }\n"
+        (package / "index.ts").write_text(
+            interface + component(IDENTITY_FIELDS[1:]), encoding="utf-8"
+        )
+        expect(
+            verify_coverage(package) != [],
+            "a field dropped from the registration but kept in the interface must fail coverage",
+        )
+
+        (package / "index.ts").write_text(component(IDENTITY_FIELDS, token="x:y:Z"), encoding="utf-8")
         expect(
             verify_coverage(package) != [],
             "a component that renamed its type token must fail coverage",
+        )
+
+        (package / "index.ts").write_text(f"super('{COMPONENT_TYPE_TOKEN}', name);\n", encoding="utf-8")
+        expect(
+            verify_coverage(package) != [],
+            "a component that registers no identity output at all must fail coverage",
         )
 
     try:

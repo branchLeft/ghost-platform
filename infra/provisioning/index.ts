@@ -21,9 +21,12 @@ import {
  * deployer.
  *
  * **No per-tenant state bucket, and that is the change here.** A tenant's
- * Pulumi state lives in the estate's Hetzner Object Storage bucket, addressed
- * by project name; the backend already exists and is shared, so a newly
- * provisioned tenant acquires no GCP resource for its state at all.
+ * Pulumi state lives in a Hetzner Object Storage bucket that holds tenant
+ * stacks and nothing else, addressed by project name; the backend already
+ * exists, so a newly provisioned tenant acquires no GCP resource for its state
+ * at all. Deliberately not the estate's own `branchleft-pulumi-state`, which
+ * holds the checkpoint the production hcloud token lives in — the S3
+ * credential is not scoped per stack, and buckets are free at the margin.
  *
  * The pattern that replaces existed for a GCS-specific reason that does not
  * carry over: an object-name prefix condition is enforced for reads and writes
@@ -34,10 +37,10 @@ import {
  * confined.
  *
  * What that costs on Hetzner is stated rather than glossed: the S3 credential
- * that reaches the shared bucket reaches every stack in it, so tenant-level
- * state isolation is no longer enforced by the credential. Scoping it needs
- * the same per-key bucket policy the media-isolation decision is waiting on,
- * and it is tracked as its own item rather than assumed here.
+ * that reaches the tenant bucket reaches every tenant stack in it, so
+ * tenant-to-tenant state isolation is no longer enforced by the credential.
+ * Scoping it needs the same per-key bucket policy the media-isolation decision
+ * is waiting on, and it is tracked as its own item rather than assumed here.
  *
  * The GCP deploy identity below is the remaining GCP-era shape in this file.
  * It is retired with the provisioning-flow rewrite, not here: a tenant repo

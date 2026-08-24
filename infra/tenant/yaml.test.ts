@@ -44,4 +44,40 @@ describe('toYaml', () => {
   it('refuses a non-finite number', () => {
     expect(() => toYaml({ k: Infinity })).toThrow(/finite/);
   });
+
+  // Quoting is not escaping. A single-quoted scalar has exactly one escape — a
+  // doubled quote — and no representation for a newline that leaves the
+  // document's structure unchanged. A value carrying one breaks out of its
+  // scalar and its remainder is read as document structure; at the right
+  // indentation that is a new mapping key, and `cap_add:` is a mapping key.
+  it('refuses a newline rather than emitting a value that becomes structure', () => {
+    expect(() => toYaml({ image: 'ghost\n    cap_add:\n      - SYS_ADMIN' })).toThrow(
+      /control character/
+    );
+  });
+
+  it.each([
+    ['a carriage return', 'a\rb'],
+    ['a tab', 'a\tb'],
+    ['a NUL', 'a\u0000b'],
+    ['an escape', 'a\u001bb'],
+    ['a DEL', 'a\u007fb'],
+    ['a C1 control', 'a\u0085b'],
+  ])('refuses %s', (_name, value) => {
+    expect(() => toYaml({ k: value })).toThrow(/control character/);
+  });
+
+  // A key is document text exactly as a value is, and a mapping key is the
+  // shape an injected line takes.
+  it('refuses a control character in a mapping key', () => {
+    expect(() => toYaml({ 'a\n    privileged': true })).toThrow(/control character/);
+  });
+
+  it('names the offending code point so the value need not be printed', () => {
+    expect(() => toYaml({ k: 'a\nb' })).toThrow(/U\+000A/);
+  });
+
+  it('still accepts the non-ASCII characters a real config carries', () => {
+    expect(toYaml({ k: 'café — ✓' })).toBe("k: 'café — ✓'\n");
+  });
 });

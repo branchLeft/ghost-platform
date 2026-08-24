@@ -23,6 +23,10 @@
 
 import type { UploadLimits } from './runtime';
 
+/** Mirrors `yaml.ts`'s refusal, for the file that never goes through it. */
+// eslint-disable-next-line no-control-regex -- refusing control characters is the point
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
+
 /** Names of the secrets the rendered Compose file expects in the process
  * environment, i.e. the keys of `/etc/branchleft/<slug>.env`. */
 export const SECRET_ENV_KEYS = {
@@ -198,6 +202,21 @@ export interface TenantSecrets {
  * character set that needs none.
  */
 export function tenantSecretsEnvFile(slug: string, secrets: TenantSecrets): string {
+  // systemd parses this file line by line, so a value carrying a newline does
+  // not produce a malformed variable -- it produces an extra, well-formed
+  // one. A credential arriving with a trailing line is therefore a way to set
+  // any other variable in a tenant's container environment, and nothing
+  // downstream would report it. Refused here, where the file is built.
+  for (const [field, value] of Object.entries(secrets)) {
+    if (typeof value === 'string' && CONTROL_CHARACTER.test(value)) {
+      throw new Error(
+        `GhostTenant: the ${field} for "${slug}" contains a control character. A newline in an ` +
+          `EnvironmentFile value adds a line rather than breaking one, so it can set any variable ` +
+          `in the container's environment.`
+      );
+    }
+  }
+
   const lines: string[] = [
     `# Secrets for the ${slug} Ghost stack. Root-owned, mode 0600.`,
     '# Written by an operator; no automated path may rewrite this file.',
