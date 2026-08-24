@@ -42,16 +42,28 @@ export interface GhostTenantDatabaseArgs {
   maxUserConnections?: number;
 }
 
+/** `TenantMediaConfig`'s addressing fields plus this tenant's own S3 key pair.
+ * Both land in the secrets file rather than the Compose file — the key id is
+ * not itself a secret, but splitting a credential pair across two files makes
+ * rotating it two edits instead of one. */
 export interface GhostTenantMediaArgs extends TenantMediaConfig {
+  /** This tenant's Object Storage access key id. */
   accessKeyId: pulumi.Input<string>;
+  /** This tenant's Object Storage secret access key. */
   secretAccessKey: pulumi.Input<string>;
 }
 
+/** `TenantMailConfig`'s SMTP transport plus its credential. */
 export interface GhostTenantMailArgs extends TenantMailConfig {
+  /** The SMTP submission password. One of the two credentials every tenant
+   * container necessarily holds that reach the platform's sending reputation
+   * from anywhere, so it never appears in the Compose file. */
   password: pulumi.Input<string>;
 }
 
+/** `TenantBulkEmailConfig`'s shim endpoint plus its credential. */
 export interface GhostTenantBulkEmailArgs extends TenantBulkEmailConfig {
+  /** This tenant's bulk-mail shim API key, presented as HTTP Basic auth. */
   apiKey: pulumi.Input<string>;
 }
 
