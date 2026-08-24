@@ -2,57 +2,51 @@ import * as pulumi from '@pulumi/pulumi';
 import * as gcp from '@pulumi/gcp';
 import {
   projectId,
-  region,
   tenantName,
   tenantGithubRepo,
-  stateBucketName,
   deployerServiceAccountId,
   workloadIdentityPoolId,
-  provisioningServiceAccountEmail,
   platformDbInstanceConnectionName,
   platformTenantImageRepositoryDockerPath,
   platformMediaBucketUrl,
 } from './config';
 
-/**
- * One tenant's deploy identity and state backend, created by the platform
- * rather than by the tenant repo — a Pulumi program cannot create the identity
- * it runs as, and the roles needed to try are the ones a deploy identity must
- * never hold.
+/*
+ * One tenant's deploy identity, created by the platform rather than by the
+ * tenant repo — a Pulumi program cannot create the identity it runs as, and
+ * the roles needed to try are the ones a deploy identity must never hold.
  *
  * No API enablements: services are enabled once by the platform stack, which
  * is what keeps `roles/serviceusage.serviceUsageAdmin` off every tenant
  * deployer.
- */
-
-/**
- * This tenant's own state bucket.
  *
- * Not a prefix on the shared bucket. An object-name prefix condition is
- * enforced exactly for reads and writes but can never grant
- * `storage.objects.list`, which evaluates against the bucket — and the
- * filestate backend resolves a stack by listing, so a prefix-confined deployer
- * fails with `no stack named '<name>' found`, a missing-stack error rather
- * than a permission error. A bucket per tenant makes a plain bucket-scoped
- * `roles/storage.objectAdmin` correctly confined, and stops any tenant
- * enumerating another's stacks.
+ * **No per-tenant state bucket, and that is the change here.** A tenant's
+ * Pulumi state lives in a Hetzner Object Storage bucket that holds tenant
+ * stacks and nothing else, addressed by project name; the backend already
+ * exists, so a newly provisioned tenant acquires no GCP resource for its state
+ * at all. Deliberately not the estate's own `branchleft-pulumi-state`, which
+ * holds the checkpoint the production hcloud token lives in — the S3
+ * credential is not scoped per stack, and buckets are free at the margin.
  *
- * State location and secrets provider are independent: this bucket holds
- * state only, and the workflow that provisions a stack into it now selects
- * the passphrase provider unconditionally, with no GCP KMS dependency left
- * anywhere in this file's output. Retiring per-tenant GCS buckets in favour
- * of Hetzner Object Storage is separate, later work with its own
- * prerequisites, not something this file's secrets-provider choice is
- * coupled to.
+ * The pattern that replaces existed for a GCS-specific reason that does not
+ * carry over: an object-name prefix condition is enforced for reads and writes
+ * but can never grant `storage.objects.list`, which evaluates against the
+ * bucket, and the filestate backend resolves a stack by listing — so a
+ * prefix-confined deployer failed with `no stack named '<name>' found`. A
+ * bucket per tenant was the only way to make a bucket-scoped role correctly
+ * confined.
+ *
+ * What that costs on Hetzner is stated rather than glossed: the S3 credential
+ * that reaches the tenant bucket reaches every tenant stack in it, so
+ * tenant-to-tenant state isolation is no longer enforced by the credential.
+ * Scoping it needs the same per-key bucket policy the media-isolation decision
+ * is waiting on, and it is tracked as its own item rather than assumed here.
+ *
+ * The GCP deploy identity below is the remaining GCP-era shape in this file.
+ * It is retired with the provisioning-flow rewrite, not here: a tenant repo
+ * that already holds a live GCP-backed pipeline keeps working until its own
+ * migration story moves it.
  */
-export const stateBucket = new gcp.storage.Bucket(`${tenantName}-pulumi-state`, {
-  name: stateBucketName,
-  location: region,
-  uniformBucketLevelAccess: true,
-  publicAccessPrevention: 'enforced',
-  // A checkpoint is the only record of what this tenant's infrastructure is.
-  versioning: { enabled: true },
-});
 
 export const deployerSa = new gcp.serviceaccount.Account(`${tenantName}-deployer-sa`, {
   accountId: deployerServiceAccountId,
@@ -136,36 +130,10 @@ for (const [suffix, role] of deployerProjectRoles) {
   });
 }
 
-/** The deployer's own state bucket, and nothing else's. */
-export const deployerStateBucketAccess = new gcp.storage.BucketIAMMember(
-  `${tenantName}-deployer-state-access`,
-  {
-    bucket: stateBucket.name,
-    role: 'roles/storage.objectAdmin',
-    member: deployerMember,
-  }
-);
-
-/**
- * The provisioning identity's own access to the bucket it just created. It
- * holds bucket administration but no object permission anywhere, so without
- * this it could create the tenant's backend and then not write the tenant's
- * first checkpoint into it.
- */
-export const provisionerStateBucketAccess = new gcp.storage.BucketIAMMember(
-  `${tenantName}-provisioner-state-access`,
-  {
-    bucket: stateBucket.name,
-    role: 'roles/storage.objectAdmin',
-    member: `serviceAccount:${provisioningServiceAccountEmail}`,
-  }
-);
-
-// Consumed by the provisioning workflow: the first three become repo
-// variables on the generated repo, the rest become that stack's config.
+// Consumed by the provisioning workflow: the first two become repo variables
+// on the generated repo, the rest become that stack's config.
 export const githubActionsWorkloadIdentityProvider = provider.name;
 export const githubActionsDeployerServiceAccountEmail = deployerSa.email;
-export const pulumiStateBucket = stateBucket.name;
 export const tenantStackConfig = pulumi.output({
   platformDbInstanceConnectionName,
   platformTenantImageRepositoryDockerPath,

@@ -64,21 +64,46 @@ PLATFORM_PROTECTED = {
 # Declared by this program, named `<tenant>-<suffix>`. Destroying any of them
 # locks a live tenant's CI out of the project with no way back through CI --
 # and a deleted Workload Identity pool is soft-deleted, its ID unusable for 30
-# days, so "re-run the apply" does not recover it. The state bucket is worse
-# again: it is the only record of what that tenant's infrastructure is.
+# days, so "re-run the apply" does not recover it.
 TENANT_SUFFIXES = {
-    "-pulumi-state",
     "-deployer-sa",
     "-gha-pool",
     "-gha-provider",
     "-gha-can-impersonate-deployer",
 }
 
+# Guarded, and deliberately no longer declared by this program.
+#
+# The distinction matters and getting it wrong is how this gate stops
+# protecting something while still passing its own self-test. A resource leaves
+# the *program* the moment its declaration is deleted; it leaves *state* only
+# when an apply destroys it. Between those two events the resource is live, it
+# is in every existing stack's checkpoint, and the next `pulumi up` plans its
+# deletion -- which is precisely the window a delete guard exists for.
+#
+# `-pulumi-state` is in that window now. Tenant state moved to the estate's
+# Hetzner Object Storage backend and this program no longer creates a bucket
+# per tenant, but `branchleft-ghost-provisioning/blog` still holds
+# `blog-pulumi-state` and the two `BucketIAMMember`s beside it, and that bucket
+# is the live state backend for the running production blog. The bucket delete
+# would fail on a non-empty bucket; the IAM deletes would succeed and revoke
+# the blog deployer's access to its own state, recoverable only by hand.
+#
+# Retire an entry from here when the resource is gone from every provisioning
+# stack's state -- not when it leaves this program.
+RETIRED_TENANT_SUFFIXES = {
+    "-pulumi-state",
+    "-deployer-state-access",
+    "-provisioner-state-access",
+}
+
 DESTRUCTIVE_SUBSTRINGS = ("delete", "replace")
 
 
 def protected_names(tenant: str) -> set[str]:
-    return PLATFORM_PROTECTED | {f"{tenant}{suffix}" for suffix in TENANT_SUFFIXES}
+    return PLATFORM_PROTECTED | {
+        f"{tenant}{suffix}" for suffix in TENANT_SUFFIXES | RETIRED_TENANT_SUFFIXES
+    }
 
 
 def destructive_steps(plan: dict, tenant: str) -> list[tuple[str, str]]:
@@ -137,6 +162,14 @@ _URN_POOL = (
     "urn:pulumi:acme::branchleft-ghost-provisioning::"
     f"gcp:iam/workloadIdentityPool:WorkloadIdentityPool::{_T}-gha-pool"
 )
+_URN_STATE_ACCESS = (
+    "urn:pulumi:acme::branchleft-ghost-provisioning::"
+    f"gcp:storage/bucketIAMMember:BucketIAMMember::{_T}-deployer-state-access"
+)
+_URN_PROVISIONER_ACCESS = (
+    "urn:pulumi:acme::branchleft-ghost-provisioning::"
+    f"gcp:storage/bucketIAMMember:BucketIAMMember::{_T}-provisioner-state-access"
+)
 _URN_UNPROTECTED = (
     "urn:pulumi:acme::branchleft-ghost-provisioning::"
     f"gcp:projects/iAMMember:IAMMember::{_T}-deployer-run-developer"
@@ -172,10 +205,22 @@ def self_test() -> int:
             [("ghost-platform-db", "create-replacement")],
         ),
         ("delete-replaced counts", _plan(("delete-replaced", _URN_POOL)), [(f"{_T}-gha-pool", "delete-replaced")]),
+        # Retired from the program, still in every existing stack's state, and
+        # therefore still guarded. This is the case the gate exists for: the
+        # commit that deleted the declaration is the commit that made the next
+        # apply plan a delete.
         (
-            "this tenant's state bucket replaced",
-            _plan(("replace", _URN_BUCKET)),
-            [(f"{_T}-pulumi-state", "replace")],
+            "this tenant's state bucket, retired from the program but live in state",
+            _plan(("delete", _URN_BUCKET)),
+            [(f"{_T}-pulumi-state", "delete")],
+        ),
+        (
+            "the state-access IAM members retired alongside it",
+            _plan(("delete", _URN_STATE_ACCESS), ("delete", _URN_PROVISIONER_ACCESS)),
+            [
+                (f"{_T}-deployer-state-access", "delete"),
+                (f"{_T}-provisioner-state-access", "delete"),
+            ],
         ),
         ("unprotected resource deleted", _plan(("delete", _URN_UNPROTECTED)), []),
         ("empty plan", _plan(), []),
@@ -259,6 +304,9 @@ def _coverage_self_test() -> int:
         "\n// was ghost-platform-db before the rename\n"
         "export const dbInstanceName = 'ghost-platform-db';\n"
     )
+    # RETIRED_TENANT_SUFFIXES is deliberately absent from this fixture: those
+    # entries are guarded precisely because the program no longer declares
+    # them, so requiring a declaration would fail every run.
     prov_decls = "\n".join(
         f"export const t{i} = new gcp.some.Type(\n  `${{tenantName}}{suffix}`,\n  {{}}\n);"
         for i, suffix in enumerate(sorted(TENANT_SUFFIXES))

@@ -82,3 +82,11 @@ jobs:
       # cloud credential and no live host.
       - name: Database stack script tests
         run: python3 -m unittest discover -s db/provision -p 'test_*.py'
+
+      # The app hosts' own per-tenant step. It owns the one runtime-isolation
+      # control that fails open -- without it a tenant container still starts,
+      # on a volume the Ghost image leaves world-writable -- so its refusals
+      # are covered here rather than by a live host. Every `docker` call is
+      # mocked; no daemon, no root.
+      - name: App host provisioning script tests
+        run: python3 -m unittest discover -s app/provision -p 'test_*.py'

@@ -1,11 +1,12 @@
 {
   "name": "@branchleft/ghost-platform-tenant",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "scripts"
   ],
   "repository": {
     "type": "git",
@@ -23,9 +24,7 @@
     "test:unit": "vitest --run"
   },
   "dependencies": {
-    "@pulumi/gcp": "^9.33.0",
-    "@pulumi/pulumi": "^3.255.0",
-    "@pulumi/random": "^4.18.0"
+    "@pulumi/pulumi": "^3.255.0"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.3.1",

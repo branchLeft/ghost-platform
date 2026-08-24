@@ -1,139 +1,124 @@
 /**
- * Every resource name this component derives from `tenantName`, in one place.
+ * Every name this component derives from a tenant slug, in one place.
  *
- * These are pure string functions with no Pulumi types, so they are the only
- * part of the component that can be tested without a Pulumi engine — which
- * matters most for `mediaObjectConditionResource`, whose trailing slash is a
- * cross-tenant isolation boundary rather than a formatting choice.
+ * Pure string functions with no Pulumi types, so the whole set is testable
+ * without an engine. That matters more here than it did on the GCP shape:
+ * these names are not resource identifiers a provider would reject if wrong,
+ * they are filesystem paths, Docker volume names and systemd instance names
+ * on a host shared by every tenant. A collision is silent.
  */
 
 /**
- * GCP service account IDs must be 6-30 characters: lowercase letters, digits,
- * hyphens. This prefix is 13, leaving 17 for the tenant name.
+ * The slug charset, shared with `db/provision/naming.py`. Kept identical
+ * deliberately: the same string becomes a MySQL account name there and a
+ * systemd instance name here, and a slug that is valid in one place and not
+ * the other produces a tenant that half-exists.
  */
-export const TENANT_RESOURCE_PREFIX = 'ghost-tenant-';
+const TENANT_SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
 
-export const MAX_TENANT_NAME_LENGTH = 30 - TENANT_RESOURCE_PREFIX.length;
-
-const TENANT_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
-
-/** `gs://<bucket-name>`, per `gcp.storage.Bucket.url`'s own field doc. */
-const BUCKET_URL_PREFIX = 'gs://';
+/** Mirrors `db/provision/naming.py`'s `TENANT_DB_PREFIX`. */
+export const TENANT_DB_PREFIX = 'ghost_';
 
 /**
- * This component's own choice of image name within the shared tenant
- * repository. Every tenant runs the same image, so there is one name here, not
- * one per tenant.
+ * MySQL's account-name limit is 32 characters and the tenant's database and
+ * dedicated user share one name of `ghost_<sql-id>`, so the slug has 26 to
+ * work with. Every other limit this slug meets is looser — systemd instance
+ * names and Docker volume names are far longer, and
+ * `branchleft_deploy.py`'s own stack-name pattern allows 32 — so this is the
+ * binding one and the only one worth encoding.
  */
-const TENANT_IMAGE_NAME = 'ghost';
-
-const IMAGE_DIGEST_PREFIX = 'sha256:';
+export const MAX_TENANT_SLUG_LENGTH = 32 - TENANT_DB_PREFIX.length;
 
 /**
- * Validates `tenantName` against both GCP's service-account-ID constraints and
- * MySQL identifier safety — the same string is reused, with hyphens folded to
- * underscores, for the logical database name and DB username.
+ * Stack names already in use on an app host by something that is not a
+ * tenant.
+ *
+ * A tenant's Compose project name *is* its directory under `/opt/branchleft`,
+ * its `/etc/branchleft/<name>.env` secrets file and its
+ * `branchleft-compose@<name>` unit. Provisioning a tenant slugged `website`
+ * would therefore land on top of the marketing site's stack — overwriting its
+ * secrets file and its Compose project — and nothing in Docker, systemd or
+ * Pulumi would object. The refusal has to be here because this component is
+ * the only thing that sees the slug before anything is written.
  */
-export function validateTenantName(tenantName: string): void {
-  if (!TENANT_NAME_PATTERN.test(tenantName)) {
+export const RESERVED_STACK_NAMES: readonly string[] = ['website', 'edge', 'db', 'monitoring'];
+
+export function validateTenantSlug(slug: string): void {
+  if (!TENANT_SLUG_PATTERN.test(slug)) {
     throw new Error(
-      `GhostTenant: tenantName "${tenantName}" must start with a lowercase letter and contain only ` +
+      `GhostTenant: tenant slug "${slug}" must start with a lowercase letter and contain only ` +
         `lowercase letters, digits and hyphens.`
     );
   }
-  if (tenantName.length > MAX_TENANT_NAME_LENGTH) {
+  if (slug.length > MAX_TENANT_SLUG_LENGTH) {
     throw new Error(
-      `GhostTenant: tenantName "${tenantName}" is ${tenantName.length} characters; must be at most ` +
-        `${MAX_TENANT_NAME_LENGTH} to fit GCP's 30-character service-account-ID limit alongside the ` +
-        `"${TENANT_RESOURCE_PREFIX}" prefix this component adds.`
+      `GhostTenant: tenant slug "${slug}" is ${slug.length} characters; must be at most ` +
+        `${MAX_TENANT_SLUG_LENGTH} so "${TENANT_DB_PREFIX}" plus the slug fits MySQL's ` +
+        `32-character account-name limit.`
+    );
+  }
+  if (RESERVED_STACK_NAMES.includes(slug)) {
+    throw new Error(
+      `GhostTenant: tenant slug "${slug}" is reserved — an app host already runs a Compose ` +
+        `stack of that name, and a tenant using it would overwrite that stack's directory, ` +
+        `secrets file and systemd unit. Reserved: ${RESERVED_STACK_NAMES.join(', ')}.`
     );
   }
 }
 
-/** The tenant's Cloud Run runtime identity. */
-export function serviceAccountId(tenantName: string): string {
-  return `${TENANT_RESOURCE_PREFIX}${tenantName}`;
-}
-
-/** The tenant's Cloud Run service. Shares the service account's prefix. */
-export function cloudRunServiceName(tenantName: string): string {
-  return `${TENANT_RESOURCE_PREFIX}${tenantName}`;
-}
-
-/** MySQL identifiers cannot carry the hyphens a tenant name may. */
-export function sqlIdentifier(tenantName: string): string {
-  return tenantName.replaceAll('-', '_');
+/** MySQL identifiers cannot carry the hyphens a slug may. */
+export function sqlIdentifier(slug: string): string {
+  return slug.replaceAll('-', '_');
 }
 
 /** The tenant's logical database and its dedicated DB user share this name. */
-export function databaseAndUserName(sqlId: string): string {
-  return `ghost_${sqlId}`;
+export function databaseAndUserName(slug: string): string {
+  return `${TENANT_DB_PREFIX}${sqlIdentifier(slug)}`;
 }
 
 /**
- * Recovers the bare bucket name from the platform stack's exported URL, so
- * the platform stack does not have to export it a second time.
+ * The Compose project name, which is also the systemd instance name, the
+ * directory under `/opt/branchleft` and the stem of both files under
+ * `/etc/branchleft`. One value, because `branchleft-compose@.service` and
+ * `branchleft-deploy` already treat them as one.
  */
-export function bucketNameFromUrl(mediaBucketUrl: string): string {
-  if (!mediaBucketUrl.startsWith(BUCKET_URL_PREFIX)) {
-    throw new Error(
-      `GhostTenant: mediaBucketUrl "${mediaBucketUrl}" doesn't start with "${BUCKET_URL_PREFIX}".`
-    );
-  }
-  return mediaBucketUrl.slice(BUCKET_URL_PREFIX.length);
+export function stackName(slug: string): string {
+  return slug;
+}
+
+export function stackDirectory(slug: string): string {
+  return `/opt/branchleft/${stackName(slug)}`;
+}
+
+export function composeUnitName(slug: string): string {
+  return `branchleft-compose@${stackName(slug)}.service`;
+}
+
+/** Root-owned `0600`, written by an operator and by no automated path. */
+export function secretsEnvPath(slug: string): string {
+  return `/etc/branchleft/${stackName(slug)}.env`;
+}
+
+/** Written by `branchleft-deploy` alone; never the same file as the above. */
+export function imageEnvPath(slug: string): string {
+  return `/etc/branchleft/${stackName(slug)}.image.env`;
 }
 
 /**
- * The tenant's object-name prefix in the shared media bucket.
+ * Volume names are given explicitly in the rendered Compose file rather than
+ * left to Compose's `<project>_<volume>` prefixing.
  *
- * The trailing slash is load-bearing. The IAM condition below matches with
- * `startsWith`, so without it tenant `blog` would also match every object
- * under `blog-archive/`. Ghost's own `S3Storage.buildKey` always inserts a `/`
- * immediately after the prefix, so this matches the real object-key shape
- * rather than an assumption about it.
+ * The host-side provisioning step has to create these volumes, own them to
+ * the tenant UID and refuse a UID another tenant already holds, and it runs
+ * before any Compose project exists to derive a prefix from. A name Compose
+ * would have synthesised is a name that step would have to reconstruct from
+ * knowledge of Compose's prefixing rule — so it is stated once, here, and
+ * both sides read it.
  */
-export function mediaObjectPrefix(tenantName: string): string {
-  return `${tenantName}/`;
+export function contentVolumeName(slug: string): string {
+  return `ghost-${slug}-content`;
 }
 
-/**
- * What Ghost receives as `storage__S3Storage__tenantPrefix`.
- *
- * Deliberately *without* the trailing slash that `mediaObjectPrefix` carries:
- * `S3Storage.buildKey` inserts the separator itself, so a slash here would
- * write every object under `<tenant>//`. The IAM condition would still match,
- * so this fails silently in both directions — which is why the relationship
- * between the two is asserted rather than left to the reader.
- */
-export function mediaTenantPrefixEnvValue(tenantName: string): string {
-  return tenantName;
-}
-
-/**
- * The container image reference to deploy.
- *
- * A digest joins with `@` and a tag with `:`. Getting this wrong is not a
- * cosmetic difference: `repo/ghost:sha256:<hex>` is rejected outright by the
- * Cloud Run API as a malformed image path, so a digest-pinned deploy fails at
- * create time rather than running the wrong revision.
- */
-export function tenantImageRef(repositoryDockerPath: string, digestOrTag: string): string {
-  const separator = digestOrTag.startsWith(IMAGE_DIGEST_PREFIX) ? '@' : ':';
-  return `${repositoryDockerPath}/${TENANT_IMAGE_NAME}${separator}${digestOrTag}`;
-}
-
-/** Secret Manager ids for this tenant, sharing the resource prefix. */
-export function tenantSecretName(tenantName: string, suffix: string): string {
-  return `${TENANT_RESOURCE_PREFIX}${tenantName}-${suffix}`;
-}
-
-/**
- * The resource-name prefix the media-bucket IAM conditions match on.
- *
- * `_` is a literal placeholder GCP's attribute-reference docs use for the
- * project segment of a Cloud Storage resource name in IAM Conditions — not a
- * real project ID.
- */
-export function mediaObjectConditionResource(bucketName: string, tenantName: string): string {
-  return `projects/_/buckets/${bucketName}/objects/${mediaObjectPrefix(tenantName)}`;
+export function adaptersVolumeName(slug: string): string {
+  return `ghost-${slug}-adapters`;
 }
