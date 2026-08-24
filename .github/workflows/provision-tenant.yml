@@ -1,54 +1,63 @@
 name: Provision tenant
 
-# Onboards one tenant end to end: its identity, its Pulumi stack, its repo,
-# its first apply, and the pull request that hands it over.
+# Onboards one tenant as far as an unattended run correctly can: its repository,
+# its stack passphrase (minted and escrowed), its stack, its non-secret config,
+# and the pull request that hands it over.
 #
-# THE GATE IS TWO INDEPENDENT HALVES, AND BOTH ARE LOAD-BEARING.
+# WHAT THIS FLOW DELIBERATELY DOES NOT DO, AND WHY EACH IS NOT AN OMISSION.
 #
-#   1. GitHub. This workflow is `workflow_dispatch` only -- no push, no
-#      schedule, no merge can start it -- and the job below declares
-#      `environment: tenant-provisioning`, which carries a required reviewer.
-#      A required reviewer only exists on a public repository for this plan
-#      tier; the environment must already carry the rule before this workflow
-#      can gate anything, because an environment with no protection rules runs
-#      straight through without pausing. Ordering is in
-#      infra/platform/RUNBOOK-bootstrap.md and it is load-bearing.
+#   1. It does not create the tenant's database, its volumes, its UID claim or
+#      its deploy slot. All four are root-run scripts on `db1` and the app host,
+#      which are on a private network a GitHub-hosted runner cannot reach. A
+#      credential that could reach them would be a credential that installs
+#      credentials on every app host, which is the thing the deploy design
+#      exists not to have.
+#   2. It does not mint the tenant's deploy keypair or write it to the generated
+#      repository. Same reason, stated as a prohibition in the migration
+#      programme's deploy-credential section: minting a host credential and
+#      writing it to a repository in one unattended run is a
+#      credential-creating credential.
+#   3. It does not set the tenant's secret stack config -- the database password
+#      and the Object Storage key pair. A `workflow_dispatch` input is plaintext
+#      in the run's API response and in its form, so there is no route by which
+#      this could carry one without publishing it. The operator sets them in the
+#      handover pull request, which also means the escrowed passphrase is used
+#      on day one rather than first tried during an incident.
+#   4. It therefore does not run a tenant first apply. There is nothing to apply
+#      until (3) is done, and a stack applied against half its config would
+#      render a secrets file missing lines.
 #
-#   2. GCP. The provisioning identity's Workload Identity provider pins
-#      `job_workflow_ref` to this file at `main` and `event_name` to
-#      `workflow_dispatch`. That is enforced by Google regardless of any
-#      GitHub plan or repo setting, so it still holds during any window where
-#      the environment rule is missing, removed, or bypassed by an admin.
-#      Renaming this file breaks provisioning until the provider condition is
-#      updated -- that is the accepted cost of pinning it.
-#
-# Neither half is redundant. The first is what makes onboarding a reviewed
-# act; the second is what stops a routine deploy job minting identities
-# however the workflow files are edited.
+# THE GATE. This workflow is `workflow_dispatch` only -- no push, no schedule,
+# no merge starts it -- and the job declares `environment: tenant-provisioning`,
+# which carries a required reviewer. **That is now the whole gate.** The GCP
+# half, a Workload Identity provider condition pinning `job_workflow_ref` to
+# this file, is gone with WIF, and nothing replaces it like for like: it was
+# enforced by Google regardless of any GitHub setting, and the environment rule
+# is enforced by GitHub. So the first steps below verify the rule is actually
+# present and that every provisioning-capable credential is scoped to that
+# environment rather than to the repository -- because an environment carrying
+# no protection rule does not pause a run and does not say so, and a
+# repository-level secret is readable by any workflow run, including one added
+# on a branch.
 #
 # `GH_PAT_TENANT_PROVISIONING` is the credential this workflow writes to
 # generated repositories with. The default GITHUB_TOKEN is scoped to this
 # repository and can neither create a repo in the org nor set another repo's
-# variables or secrets. No package-read credential is copied into a generated
-# repo: @branchleft/ghost-platform-tenant is public, and a run's own
-# GITHUB_TOKEN can read a public package. What this PAT does write to the
-# generated repo is its own Pulumi secrets passphrase -- minted for that
-# tenant alone, never ghost-platform's own -- and the encryption salt that
-# verifies it. Those are the two writes in this workflow that hand the new
-# repo something it needs to keep secret from ghost-platform itself, going
-# forward.
+# variables, secrets or environments. What this PAT writes to the generated repo
+# is that repo's own Pulumi secrets passphrase and the encryption salt that
+# verifies it -- the two writes that hand the new repo something it needs to keep
+# secret from this repo, going forward.
 
 on:
   workflow_dispatch:
     inputs:
       # Deliberately the first field on the form, and deliberately not
-      # answerable by leaving the form alone. Whether a tenant's
-      # infrastructure repository is public is a disclosure about that tenant
-      # -- the repository, and its name, say that they are a customer -- so
-      # the answer is theirs to give and it has to be given before anything
-      # is created. A `choice` input always preselects its first option, so
-      # the first option here is a refusal rather than a value; the validation
-      # step accepts `public` and `private` and nothing else.
+      # answerable by leaving the form alone. Whether a tenant's infrastructure
+      # repository is public is a disclosure about that tenant -- the
+      # repository, and its name, say that they are a customer -- so the answer
+      # is theirs to give and it has to be given before anything is created. A
+      # `choice` input always preselects its first option, so the first option
+      # here is a refusal rather than a value.
       tenant_visibility:
         description: 'Repository visibility. Public is the default for a new tenant; private only where the tenant asked for it.'
         required: true
@@ -58,22 +67,32 @@ on:
           - public
           - private
       tenant_name:
-        description: 'Pulumi stack name and resource prefix (lowercase, hyphenated)'
+        description: 'Tenant slug: Pulumi stack, Compose project, systemd instance, MySQL database and user. Lowercase, hyphenated, at most 26 characters.'
         required: true
       tenant_repo:
         description: 'Repository to generate, without the org prefix. Must be ghost-tenant-<name>.'
         required: true
-      deployer_sa_id:
-        description: 'Deployer service account id (6-30 chars, unique in the project)'
-        required: true
-      wif_pool_id:
-        description: 'Workload Identity Pool id (unique in the project)'
-        required: true
       site_url:
         description: 'https://<hostname> this tenant serves'
         required: true
-      image_digest_or_tag:
-        description: 'Tenant image, digest preferred (include the sha256: prefix)'
+      # Allocated against the host, never chosen from a spreadsheet: run
+      # `provision_tenant_volume.py --list-claims` on that app host first. The
+      # script refuses a UID another tenant holds, but only once the operator is
+      # already on the host -- by which point this repository exists.
+      tenant_uid:
+        description: 'This tenant reserved UID on its app host, from provision_tenant_volume.py --list-claims (30000-30999)'
+        required: true
+      host_port:
+        description: 'Host-side port for this tenant Ghost, distinct per tenant on that app host'
+        required: true
+      app_host_private_ip:
+        description: 'App host PRIVATE address, e.g. 10.20.1.100. Every published port binds this.'
+        required: true
+      app_host_ssh_address:
+        description: 'App host PUBLIC address. CI deploys over this; runners cannot reach the private one.'
+        required: true
+      image_ref:
+        description: 'Tenant image, digest-pinned: ghcr.io/...@sha256:<64 hex>'
         required: true
 
 permissions:
@@ -84,48 +103,51 @@ jobs:
     name: Provision
     runs-on: ubuntu-latest
 
-    # The reviewer gate. Do not remove without reading the header: this is
-    # half the control, and the run does not pause if the environment carries
-    # no protection rule.
+    # The reviewer gate, and now the only one. Do not remove without reading the
+    # header: the run does not pause if the environment carries no protection
+    # rule, which is why the second step below asserts that it does.
     environment: tenant-provisioning
 
     permissions:
       contents: read
-      id-token: write
-      packages: read
 
-    # Two provisioning runs at once would race on the shared provisioning
-    # state. Never cancel one in flight -- a half-applied identity is worse
-    # than a queued run.
+    # Two runs at once would race on the same tenant bucket and the same
+    # repository name. Never cancel one in flight -- a half-provisioned tenant
+    # is worse than a queued run, and there is no automatic rollback.
     concurrency:
       group: provision-tenant
       cancel-in-progress: false
 
     # Every input and variable a `run` block needs is bound here rather than
     # interpolated into the script. A `${{ }}` inside `run` is expanded before
-    # the shell sees it, so a value containing shell syntax becomes shell
-    # source -- in a job holding project-admin-equivalent GCP credentials.
+    # the shell sees it, so a value containing shell syntax becomes shell source
+    # -- in a job holding a token that can create repositories in this org.
     env:
       TENANT: ${{ inputs.tenant_name }}
       TENANT_REPO: branchLeft/${{ inputs.tenant_repo }}
-      # The bare name as typed, so validation can report on the field the
-      # operator filled in rather than on the org-qualified value built here.
+      # The bare name as typed, so validation reports on the field the operator
+      # filled in rather than on the org-qualified value built here.
       TENANT_REPO_NAME: ${{ inputs.tenant_repo }}
       TENANT_VISIBILITY: ${{ inputs.tenant_visibility }}
+      SITE_URL: ${{ inputs.site_url }}
+      TENANT_UID: ${{ inputs.tenant_uid }}
+      HOST_PORT: ${{ inputs.host_port }}
+      APP_HOST_PRIVATE_IP: ${{ inputs.app_host_private_ip }}
+      APP_HOST_SSH_ADDRESS: ${{ inputs.app_host_ssh_address }}
+      IMAGE_REF: ${{ inputs.image_ref }}
       # The tenant's Pulumi state backend: one Hetzner Object Storage bucket
       # holding every tenant stack, addressed by project name, so onboarding
-      # creates no storage resource at all -- which is what removes the last
-      # path by which provisioning gives a new tenant a GCP dependency.
+      # creates no storage resource at all.
       #
       # **A tenant bucket, never the estate's own.** `branchleft-pulumi-state`
       # holds `branchleft-hetzner-estate/production`, whose checkpoint carries
-      # the production hcloud API token, alongside the network and mail
-      # stacks. The S3 credential a tenant repo's CI must hold to reach its own
-      # state is not scoped to a stack, so pointing tenants at that bucket
-      # would give every tenant deployer write access to the estate's control
-      # plane -- and destroying a checkpoint needs no ability to decrypt it.
-      # Object Storage is priced per account regardless of bucket count, so the
-      # separation is free. The validation step refuses that bucket by name.
+      # the production hcloud API token, alongside the network and mail stacks.
+      # The S3 credential a tenant repo's CI must hold to reach its own state is
+      # not scoped to a stack, so pointing tenants at that bucket would give
+      # every tenant deployer write access to the estate's control plane -- and
+      # destroying a checkpoint needs no ability to decrypt it. Object Storage is
+      # priced per account regardless of bucket count, so the separation is free.
+      # The validation step refuses that bucket by name.
       #
       # Both the endpoint host and `region` in this URL must name the bucket's
       # own location; a mismatch is an opaque 403 that reads as a credential
@@ -134,106 +156,113 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
       AWS_REGION: hel1
-      DEPLOYER_SA_ID: ${{ inputs.deployer_sa_id }}
-      WIF_POOL_ID: ${{ inputs.wif_pool_id }}
-      SITE_URL: ${{ inputs.site_url }}
-      IMAGE_REF: ${{ inputs.image_digest_or_tag }}
-      GCP_PROJECT: ${{ vars.GCP_PROJECT_ID }}
-      PLATFORM_DB_CONN: ${{ vars.PLATFORM_DB_INSTANCE_CONNECTION_NAME }}
-      PLATFORM_IMAGE_PATH: ${{ vars.PLATFORM_TENANT_IMAGE_REPOSITORY_PATH }}
-      PLATFORM_MEDIA_URL: ${{ vars.PLATFORM_MEDIA_BUCKET_URL }}
-      # Read by every `pulumi` command against the provisioning stack -- the
-      # one stack this job keeps touching for the rest of this repo's life.
-      # This is ghost-platform's own repo-level passphrase, one value covering
-      # every stack this repo's own workflows reach (also `platform`, via
-      # infra-platform-ci.yml's `deploy` job). It is deliberately NOT used for
-      # the tenant's own stack further down --
-      # that stack gets its own freshly minted passphrase, scoped to that
-      # tenant alone, so ghost-platform stops holding a decrypt key for
-      # infrastructure it no longer manages after this run. An unset
-      # repository secret expands to an empty string here rather than an
-      # absent variable, which the guard step below exists to catch.
-      PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+      # Platform-wide facts rather than per-tenant answers, so they are
+      # repository variables and not ten more fields on a form nobody can fill
+      # in correctly from memory. `workflow_dispatch` also caps inputs at ten.
+      PLATFORM_DB_PRIVATE_IP: ${{ vars.PLATFORM_DB_PRIVATE_IP }}
+      PLATFORM_MEDIA_ENDPOINT: ${{ vars.PLATFORM_MEDIA_ENDPOINT }}
+      PLATFORM_MEDIA_REGION: ${{ vars.PLATFORM_MEDIA_REGION }}
+      PLATFORM_MEDIA_BUCKET: ${{ vars.PLATFORM_MEDIA_BUCKET }}
+      PLATFORM_MEDIA_PUBLIC_BASE_URL: ${{ vars.PLATFORM_MEDIA_PUBLIC_BASE_URL }}
+      ESCROW_PUBLIC_KEY: infra/provisioning/escrow/tenant-passphrase-escrow.pub.pem
 
     steps:
-      # First, before checkout and before anything that could create or
-      # validate: the federation condition in the runbook's P2 pins
-      # `job_workflow_ref`, which GitHub documents principally for
-      # reusable-workflow jobs. This job is standalone. Absence would fail
-      # closed -- a string-equality condition on a missing claim can only deny
-      # -- so this is a correctness guard rather than a security one, and it
-      # earns its place by turning an opaque token-exchange failure into a
-      # named one at step 1. It also prints the values P2's condition must be
-      # written from, rather than predicted from.
-      #
-      # The token itself is never echoed and never reaches argv; only these
-      # six non-secret claims are printed.
-      # Fail closed, before the federation report and before anything is
-      # created. The tenant component this workflow provisions against no
-      # longer produces Cloud Run services, a Cloud SQL database or a GCS
-      # media prefix -- a tenant is now a Compose stack on a shared app host,
-      # a schema on db1 and a prefix in Object Storage. This workflow's own
-      # state backend and secrets provider are Hetzner-shaped as of that
-      # change, but the stack configuration it writes for a tenant, and the
-      # template repo it generates from, are not yet.
-      #
-      # Half a migrated flow does not produce half a tenant: it produces a
-      # created repository, a live GCP identity and a stack that cannot
-      # deploy, with no automatic rollback. So this refuses at step one until
-      # the flow is whole, and the variable that lifts it is set deliberately
-      # by an owner rather than defaulted here.
+      # Fail closed, before anything is created. Half a migrated flow does not
+      # produce half a tenant: it produces a created repository and a stack that
+      # cannot deploy, with no automatic rollback. The variable that lifts this
+      # is set deliberately by an owner once the flow, the template and the
+      # host-side runbook are all proven together.
       - name: Refuse to provision through a half-migrated flow
         env:
           FLOW_READY: ${{ vars.TENANT_PROVISIONING_FLOW_HETZNERISED }}
         run: |
           if [ "$FLOW_READY" != "true" ]; then
-            echo "::error::Tenant provisioning is closed. The tenant component targets Hetzner app hosts while this workflow still writes GCP-shaped stack configuration and generates from a GCP-shaped template. Provisioning reopens when the template and this flow are rewritten together; set the TENANT_PROVISIONING_FLOW_HETZNERISED repository variable to 'true' at that point."
+            echo "::error::Tenant provisioning is closed. Set the TENANT_PROVISIONING_FLOW_HETZNERISED repository variable on branchLeft/ghost-platform to 'true' once the rewritten flow, the Hetzner-ised template and RUNBOOK-tenant-onboarding.md have been proven end to end on a real host."
             exit 1
           fi
 
-      - name: Report the federation claims this run presents
+      # The replacement for the Workload Identity provider condition this
+      # rewrite deletes, and it is checked rather than assumed for the same
+      # reason that one was worth having: it is the only thing standing between
+      # this workflow's credentials and any run of it.
+      #
+      # Two properties, both fail-closed:
+      #
+      #   - the `tenant-provisioning` environment carries at least one
+      #     protection rule. An environment with none runs straight through
+      #     without pausing and reports nothing;
+      #   - every provisioning-capable secret is an ENVIRONMENT secret on it.
+      #     `secrets.X` silently falls back to a repository secret of the same
+      #     name, so a secret moved to the repository level would keep this
+      #     workflow working while making it readable by every other run in this
+      #     repo, including one from a branch. Nothing else would report that.
+      #
+      # A failure to read either is also a refusal. This is a rare, reviewed,
+      # owner-run action; "the check could not run" is not a reason to proceed
+      # past the control it replaces.
+      - name: Verify the provisioning gate and its credential scoping
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          ENVIRONMENT: tenant-provisioning
         run: |
           set -euo pipefail
-          curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://iam.googleapis.com/" \
-            | python3 -c '
-          import base64, json, sys
-          token = json.load(sys.stdin)["value"]
-          payload = token.split(".")[1]
-          payload += "=" * (-len(payload) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(payload))
-          for key in ("sub", "event_name", "workflow_ref", "job_workflow_ref",
-                      "repository", "ref"):
-              value = claims.get(key, "<<ABSENT>>")
-              print(f"{key:17}= {value}")
-          if "job_workflow_ref" not in claims:
-              sys.exit("::error::job_workflow_ref is absent from this token. "
-                       "The provisioning provider condition pins it, so no "
-                       "token exchange can succeed. Re-point the condition at "
-                       "workflow_ref and record the substitution in "
-                       "infra/platform/RUNBOOK-bootstrap.md P2.")
-          '
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::GH_PAT_TENANT_PROVISIONING is empty or unset. It must be an environment secret on the $ENVIRONMENT environment."
+            exit 1
+          fi
+
+          rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}" \
+            --jq '[.protection_rules[].type] | join(",")') || {
+              echo "::error::could not read the $ENVIRONMENT environment on ${GITHUB_REPOSITORY}. Refusing: this environment's required-reviewer rule is the only gate in front of this workflow's credentials, and an unreadable gate is not a passed one. The token needs administration:read on this repository."
+              exit 1
+            }
+          if [ -z "$rules" ]; then
+            echo "::error::the $ENVIRONMENT environment carries no protection rules, so this run was never paused for review. Add a required reviewer before provisioning anything."
+            exit 1
+          fi
+          case ",$rules," in
+            *,required_reviewers,*) ;;
+            *)
+              echo "::error::the $ENVIRONMENT environment has protection rules ($rules) but no required reviewer. A wait timer is not a review."
+              exit 1
+              ;;
+          esac
+          echo "$ENVIRONMENT protection rules: $rules"
+
+          names=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}/secrets" \
+            --paginate --jq '.secrets[].name') || {
+              echo "::error::could not list the $ENVIRONMENT environment's secrets on ${GITHUB_REPOSITORY}. Refusing rather than assuming they are correctly scoped."
+              exit 1
+            }
+          missing=
+          for required in GH_PAT_TENANT_PROVISIONING HETZNER_S3_ACCESS_KEY_ID HETZNER_S3_SECRET_ACCESS_KEY; do
+            printf '%s\n' "$names" | grep -qx "$required" || missing="$missing $required"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::these secrets are not scoped to the $ENVIRONMENT environment:$missing. They are provisioning-capable credentials and must sit behind the required-reviewer gate. Move each one with: gh secret set <NAME> --repo ${GITHUB_REPOSITORY} --env $ENVIRONMENT, then delete the repository-level copy."
+            exit 1
+          fi
+          echo "environment-scoped: $(printf '%s' "$names" | tr '\n' ' ')"
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # Cheap, credential-free, and ahead of everything that costs money or
-      # mutates: a tenant name that is not a valid Pulumi stack and GCP prefix
-      # fails much later and much more expensively. It is also the last point
-      # at which nothing exists yet -- no repository, no identity, no bucket
-      # -- which is why the visibility answer is checked here and not at the
-      # step that acts on it.
+      # Cheap, credential-free, and ahead of everything that mutates. It is also
+      # the last point at which nothing exists yet -- no repository, no stack --
+      # which is why the visibility answer is checked here and not at the step
+      # that acts on it.
       - name: Validate inputs
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
 
           # An allow-list, not a rejection of the placeholder option: an empty
           # value, the preselected placeholder, and anything a later edit adds
-          # to the options list all refuse here. Only the two deliberate
-          # answers pass, so this cannot be satisfied by leaving the dispatch
-          # form untouched.
+          # to the options list all refuse here. This cannot be satisfied by
+          # leaving the dispatch form untouched.
           case "$TENANT_VISIBILITY" in
             public | private) ;;
             *)
@@ -243,21 +272,54 @@ jobs:
 
           # A fixed prefix is what lets one organisation-level ruleset cover
           # every tenant repository, including ones that do not exist yet.
-          # `ghost-platform-tenant-template` and `ghost-platform-docs` do not
-          # carry this prefix, so a rule targeting it cannot reach them.
           [[ "$TENANT_REPO_NAME" =~ ^ghost-tenant-[a-z0-9]+(-[a-z0-9]+)*$ ]] \
             || fail "tenant_repo must be ghost-tenant-<name>: lowercase alphanumerics and single hyphens, no leading or trailing hyphen"
           [[ "${#TENANT_REPO_NAME}" -le 64 ]] \
             || fail "tenant_repo must be 64 characters or fewer"
 
-          [[ "$TENANT" =~ ^[a-z][a-z0-9-]{1,28}[a-z0-9]$ ]] \
-            || fail "tenant_name must be lowercase alphanumeric-hyphen, 3-30 chars"
-          [[ "$DEPLOYER_SA_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
-            || fail "deployer_sa_id must satisfy GCP service account id grammar"
-          # Repository configuration rather than an operator's input, so it
-          # is checked for presence and shape rather than validated as a
-          # name. An unset variable expands to '' and would send the tenant's
-          # first checkpoint to whatever backend the runner last logged into.
+          # 26 rather than 30: MySQL caps an account name at 32 and a tenant's
+          # database and dedicated user share one name of `ghost_<slug>`. The
+          # component refuses a longer slug at preview, and the template's
+          # generation script refuses it here -- this is the earliest of the
+          # three, before a repository exists to clean up.
+          [[ "$TENANT" =~ ^[a-z][a-z0-9-]{1,24}[a-z0-9]$ ]] \
+            || fail "tenant_name must be lowercase alphanumeric-hyphen, 3-26 characters"
+
+          [[ "$SITE_URL" =~ ^https:// ]] || fail "site_url must be https"
+
+          # The component validates this range too, but only once a stack exists
+          # to preview. The UID is host state: it must already have been
+          # allocated against the app host with provision_tenant_volume.py
+          # --list-claims, which is the only thing that knows what is taken.
+          [[ "$TENANT_UID" =~ ^[0-9]+$ ]] && [ "$TENANT_UID" -ge 30000 ] && [ "$TENANT_UID" -le 30999 ] \
+            || fail "tenant_uid must be an integer in the reserved range 30000-30999"
+          [[ "$HOST_PORT" =~ ^[0-9]+$ ]] && [ "$HOST_PORT" -ge 1024 ] && [ "$HOST_PORT" -le 65535 ] \
+            || fail "host_port must be an integer between 1024 and 65535"
+
+          # Private on the inside, public on the outside, and conflating the two
+          # is the mistake this pair invites: the stack binds its published port
+          # to the private address, and CI deploys to the public one.
+          [[ "$APP_HOST_PRIVATE_IP" =~ ^10\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || fail "app_host_private_ip must be a 10.x.x.x address -- it is what the tenant's published port binds, not the address CI connects to"
+          [[ -n "$APP_HOST_SSH_ADDRESS" ]] || fail "app_host_ssh_address is empty"
+          # Spelled as an `if` rather than `[[ ... ]] && fail`: the negative form
+          # of that idiom leaves the whole list exiting non-zero on the ordinary
+          # path, and whether errexit acts on that is exactly the kind of thing
+          # nobody wants to be sure about inside a validation step.
+          if [[ "$APP_HOST_SSH_ADDRESS" =~ ^10\. ]]; then
+            fail "app_host_ssh_address is a private address. CI runs on GitHub-hosted runners and cannot reach the private network; this must be the app host's public address."
+          fi
+
+          # Digest-pinned, checked here as well as in the tenant program and on
+          # the host. A tag is a mutable pointer, so a stack deployed by tag has
+          # no answer to "what is running".
+          [[ "$IMAGE_REF" =~ @sha256:[0-9a-f]{64}$ ]] \
+            || fail "image_ref must be digest-pinned and end in @sha256:<64 lowercase hex>"
+
+          # Repository configuration rather than an operator's input, so checked
+          # for presence and shape. An unset variable expands to '' and would
+          # send the tenant's first checkpoint to whatever backend the runner
+          # last logged into.
           [[ -n "$TENANT_BACKEND_URL" ]] \
             || fail "the HETZNER_PULUMI_BACKEND_URL repository variable is empty or unset"
           [[ "$TENANT_BACKEND_URL" == s3://* ]] \
@@ -269,165 +331,55 @@ jobs:
             || fail "HETZNER_PULUMI_BACKEND_URL points at branchleft-pulumi-state, the estate's own state bucket. Tenant state goes in a separate bucket -- the S3 credential is not scoped per stack, so this would hand every tenant deployer write access to the estate, network and mail checkpoints."
           [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" ]] \
             || fail "HETZNER_S3_ACCESS_KEY_ID / HETZNER_S3_SECRET_ACCESS_KEY are empty or unset; the tenant's state backend is unreachable without them"
-          [[ "$SITE_URL" =~ ^https:// ]] || fail "site_url must be https"
-          if gh repo view "$TENANT_REPO" >/dev/null 2>&1; then
-            fail "$TENANT_REPO already exists -- onboarding is create-only"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
 
-      # Pulumi's passphrase provider reads this from the environment via a
-      # plain lookup, which does not distinguish "unset" from "set to an
-      # empty string" -- and GitHub expands a repository secret that does not
-      # exist to `''`, not to an error. So a missing secret would not fail
-      # here or later in this job; it would mint or restore a stack encrypted
-      # with an empty passphrase and report success, which is exactly the
-      # silent-success shape infra-platform-ci.yml's deploy job guards
-      # against for the same value. Cheap and credential-free, so it runs
-      # before anything that would act on a stack under that empty value.
-      - name: Confirm the shared secrets passphrase is set
-        run: |
-          if [ -z "$PULUMI_CONFIG_PASSPHRASE" ]; then
-            echo "::error::PULUMI_CONFIG_PASSPHRASE is empty or unset. Refusing to continue: Pulumi would treat an empty value as a valid passphrase rather than failing closed."
-            exit 1
-          fi
-
-      # `registry-url` covers two installs: the generated repo's `npm ci`
-      # further down, which pulls `@branchleft/ghost-platform-tenant`, and
-      # `infra/provisioning`'s own, which now takes a dev dependency on
-      # `@branchleft/tsconfig`. GitHub Packages answers 401 unauthenticated
-      # even for a public package, so both steps carry the token. Against
-      # `npm.pkg.github.com` with no `scope` input, the action scopes the
-      # registry line to the repository owner rather than setting a default
-      # registry, so `infra/provisioning`'s public dependencies still resolve
-      # from npmjs. The file it writes lives in `RUNNER_TEMP`, which is what
-      # keeps the token out of the tree that gets committed below.
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: infra/provisioning/.nvmrc
-          registry-url: https://npm.pkg.github.com
-
-      - name: Authenticate to GCP as the provisioning identity
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_PROVISIONING_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_PROVISIONING_SA_EMAIL }}
-
-      - name: Install Pulumi CLI
-        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
-
-      # ---- identity and state bucket -------------------------------------
-
-      - name: Configure the provisioning stack
-        working-directory: infra/provisioning
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          npm ci
-          # The provisioning stack's own state, not a tenant's. It stays on
-          # the shared GCS backend deliberately: it is a ghost-platform stack
-          # and it moves with the rest of them in the estate-wide backend
-          # sweep, not one tenant at a time. The tenant's own login further
-          # down is the one that had to change.
-          pulumi login gs://branchleft-pulumi-state
-          # `--secrets-provider` applies only when this call creates the stack,
-          # and `Pulumi.<stack>.yaml` never leaves the runner. So a retry
-          # against a stack that already exists gets no secrets provider in its
-          # configuration at all, falls back to the passphrase provider, and
-          # fails on a stack whose state says otherwise.
-          #
-          # The deployment records the provider and everything about it that
-          # isn't the secret itself. Restore the configuration from there
-          # rather than naming the key again: for `cloud` that's a wrapped
-          # data key, for `passphrase` a salt, and the job's own
-          # PULUMI_CONFIG_PASSPHRASE above supplies what the deployment can't.
-          #
-          # --allow-passphrase: this config file never leaves the runner --
-          # nothing in this step commits it anywhere -- which is what makes
-          # restoring a passphrase-provider salt here acceptable. Do not add
-          # this flag to the tenant-stack restore below without first reading
-          # why it is absent there.
-          if pulumi stack select "$TENANT" 2>/dev/null; then
-            pulumi stack export --stack "$TENANT" > deployment.json
-            python3 scripts/restore-stack-secrets-config.py "$TENANT" deployment.json --allow-passphrase
-            rm deployment.json
-          else
-            # A new stack on a filestate backend needs a secrets manager named
-            # at creation. `passphrase` reads PULUMI_CONFIG_PASSPHRASE above --
-            # ghost-platform's own repo-level passphrase. No GCP KMS
-            # dependency: this stack lives in ghost-platform for good, so
-            # nothing about it needs to survive the GCP wind-down under a
-            # separate key.
-            pulumi stack select "$TENANT" --create --secrets-provider=passphrase
-          fi
-          pulumi config set gcp:project "$GCP_PROJECT"
-          pulumi config set tenantName "$TENANT"
-          pulumi config set tenantGithubRepo "$TENANT_REPO"
-          pulumi config set deployerServiceAccountId "$DEPLOYER_SA_ID"
-          pulumi config set workloadIdentityPoolId "$WIF_POOL_ID"
-          pulumi config set platformDbInstanceConnectionName "$PLATFORM_DB_CONN"
-          pulumi config set platformTenantImageRepositoryDockerPath "$PLATFORM_IMAGE_PATH"
-          pulumi config set platformMediaBucketUrl "$PLATFORM_MEDIA_URL"
-
-      - name: Refuse a provisioning plan that destroys anything
-        working-directory: infra/provisioning
-        run: |
-          set -euo pipefail
-          pulumi preview --stack "$TENANT" --json > preview.json
-          python3 scripts/assert-no-provisioning-deletes.py --self-test
-          python3 scripts/assert-no-provisioning-deletes.py --verify-coverage ../platform .
-          if ! python3 scripts/assert-no-provisioning-deletes.py --tenant "$TENANT" preview.json; then
-            echo "--- full plan follows ---"
-            python3 -m json.tool preview.json
-            exit 1
-          fi
-
-      - name: Apply the tenant identity
-        working-directory: infra/provisioning
-        run: pulumi up --stack "$TENANT" --yes
-
-      # Captured into variables and checked before use. A failing command
-      # substitution inside `echo`'s arguments does not trip errexit, so the
-      # obvious spelling of this step writes empty outputs on failure -- which
-      # then flow into the generated repo's variables and surface much later,
-      # after that repo exists holding a live copy of the platform PAT.
-      - name: Read the identity outputs
-        id: identity
-        working-directory: infra/provisioning
-        run: |
-          set -euo pipefail
-          provider=$(pulumi stack output githubActionsWorkloadIdentityProvider --stack "$TENANT")
-          sa_email=$(pulumi stack output githubActionsDeployerServiceAccountEmail --stack "$TENANT")
-          for pair in "provider=$provider" "sa_email=$sa_email"; do
-            if [ -z "${pair#*=}" ]; then
-              echo "::error::stack output ${pair%%=*} is empty; refusing to continue before the tenant repo is created"
-              exit 1
-            fi
+          for pair in \
+            "PLATFORM_DB_PRIVATE_IP=$PLATFORM_DB_PRIVATE_IP" \
+            "PLATFORM_MEDIA_ENDPOINT=$PLATFORM_MEDIA_ENDPOINT" \
+            "PLATFORM_MEDIA_REGION=$PLATFORM_MEDIA_REGION" \
+            "PLATFORM_MEDIA_BUCKET=$PLATFORM_MEDIA_BUCKET" \
+            "PLATFORM_MEDIA_PUBLIC_BASE_URL=$PLATFORM_MEDIA_PUBLIC_BASE_URL"; do
+            [ -n "${pair#*=}" ] || fail "the ${pair%%=*} repository variable is empty or unset"
           done
-          {
-            echo "provider=$provider"
-            echo "sa_email=$sa_email"
-          } >> "$GITHUB_OUTPUT"
+
+          if gh repo view "$TENANT_REPO" >/dev/null 2>&1; then
+            fail "$TENANT_REPO already exists -- onboarding is create-only. This is also what stops an existing tenant's hand-set passphrase being minted over, which would rotate a live stack's wrapping key without re-wrapping its checkpoint."
+          fi
+
+      # Before the repository exists, and before anything is minted. A missing
+      # or unusable escrow key must stop the run while there is still nothing to
+      # recover: a passphrase whose only copy is a GitHub Actions secret cannot
+      # be read back, and a stack whose passphrase is lost cannot be destroyed
+      # either, because destroy reads a checkpoint it can no longer decrypt.
+      #
+      # The self-test generates an ephemeral keypair and round-trips through the
+      # exact openssl options used below and in the recovery runbook. `rsa_oaep_md`
+      # and `rsa_mgf1_md` default differently across OpenSSL versions, so an
+      # encrypt that works and a decrypt written from memory can disagree -- at
+      # the one moment the value is needed.
+      - name: Prove the passphrase escrow works on this runner
+        run: |
+          set -euo pipefail
+          python3 infra/provisioning/scripts/escrow-tenant-passphrase.py --self-test
+          if [ ! -f "$ESCROW_PUBLIC_KEY" ]; then
+            echo "::error::$ESCROW_PUBLIC_KEY is missing. Provisioning refuses to mint a passphrase it cannot escrow. Generate the keypair per infra/provisioning/escrow/README.md, commit the public half, and put the private half in the password manager and the off-site archive before provisioning any tenant."
+            exit 1
+          fi
 
       # ---- the tenant repo ------------------------------------------------
 
-      # Everything from here leaves artefacts a failure does not clean up.
-      # There is no automatic rollback -- see "Recovering a failed provisioning
-      # run" in infra/platform/RUNBOOK-bootstrap.md for the order to undo in,
-      # and why deleting the repo is the step that revokes the PAT copy.
+      # Everything from here leaves artefacts a failure does not clean up. There
+      # is no automatic rollback -- RUNBOOK-tenant-onboarding.md has the order to
+      # undo in, and why deleting the repository is the step that revokes the
+      # PAT's reach into it.
       - name: Generate the tenant repo from the template
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
         run: |
           set -euo pipefail
-          # Re-derived here rather than carried from validation. This is the
-          # step that makes the disclosure, and `gh repo create` with no
-          # visibility flag falls back to gh's own default instead of
-          # failing, so the flag is chosen from an exhaustive case that has
-          # no silent branch.
+          # Re-derived here rather than carried from validation. This is the step
+          # that makes the disclosure, and `gh repo create` with no visibility
+          # flag falls back to gh's own default instead of failing, so the flag
+          # is chosen from an exhaustive case with no silent branch.
           case "$TENANT_VISIBILITY" in
             public) visibility_flag=--public ;;
             private) visibility_flag=--private ;;
@@ -441,11 +393,10 @@ jobs:
             --description "Tenant infrastructure stack"
 
           # GitHub copies template content asynchronously and `gh repo create`
-          # returns before it lands. Cloning inside that window succeeds
-          # against an empty repository -- git calls it a warning, not an
-          # error -- so the first thing to fail is `sed` two steps later,
-          # naming a missing Pulumi.yaml rather than the race that caused it.
-          # Poll for the file the substitution step actually needs.
+          # returns before it lands. Cloning inside that window succeeds against
+          # an empty repository -- git calls it a warning, not an error -- so the
+          # first thing to fail would be the generation step, naming a missing
+          # Pulumi.yaml rather than the race that caused it.
           for _ in $(seq 1 30); do
             if gh api "repos/${TENANT_REPO}/contents/Pulumi.yaml" --silent 2>/dev/null; then
               exit 0
@@ -455,52 +406,30 @@ jobs:
           echo "::error::${TENANT_REPO} was created but the template content did not appear within 60s. Nothing further has run; recover per the runbook, starting with deleting the repo."
           exit 1
 
-      # No secret is written here. A tenant reads @branchleft/ghost-platform-tenant
-      # with its own run's GITHUB_TOKEN, so it holds no long-lived credential
-      # and a half-provisioned repo is not itself a live credential to revoke.
-      - name: Write the repo variables
+      # The substitution list lives in the template, not here. Which files carry
+      # a placeholder is a property of that repository, and a copy of the list in
+      # this workflow would go stale the first time a placeholder was added to a
+      # new file -- silently, producing generated repos that ship the literal
+      # token. The script refuses if any placeholder survives anywhere in the
+      # tree, and the template's own tests run the whole generation against its
+      # tracked files on every push.
+      - name: Clone and generate
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
-          DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
-          WIF_PROVIDER: ${{ steps.identity.outputs.provider }}
         run: |
           set -euo pipefail
-          gh variable set GCP_PROJECT_ID --repo "$TENANT_REPO" --body "$GCP_PROJECT"
-          gh variable set GCP_DEPLOYER_SA_EMAIL --repo "$TENANT_REPO" --body "$DEPLOYER_SA_EMAIL"
-          gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$TENANT_REPO" --body "$WIF_PROVIDER"
-          # The full backend URL rather than a bucket name: an s3:// backend
-          # needs the endpoint, path-style and region query parameters too,
-          # and a repo that only holds the bucket would have to rebuild them.
-          gh variable set PULUMI_BACKEND_URL --repo "$TENANT_REPO" --body "$TENANT_BACKEND_URL"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
+          cd tenant
+          python3 scripts/generate-tenant-repo.py --slug "$TENANT"
 
-      # This tenant's own secrets passphrase: minted fresh, never typed by a
-      # human, never reused across tenants or across this repo's own stacks.
-      # Set on the tenant repo before anything Pulumi-side needs it, so a
-      # human reading the generated repo's settings never sees a longer gap
-      # than this job's own duration between the repo existing and it holding
-      # the secret its own CI will need on its very next push.
+      # Minted, escrowed and only then written. The order is the whole control:
+      # if the escrow fails, no secret has been set and no stack exists, so
+      # nothing has been created that needs a passphrase nobody holds.
       #
-      # This is the resolution the two-repo hazard needs: ghost-platform's own
-      # passphrase must never double as a tenant's, because two different
-      # pipelines (this one, and the tenant repo's own CI) would then hold two
-      # different secrets for one checkpoint the moment either repo's
-      # passphrase ever changed. Minting one value and writing it to the one
-      # place both pipelines read from removes the second pipeline entirely --
-      # after this run, provisioning never touches this tenant's stack again.
-      #
-      # This value has NO durable copy outside GitHub's own encrypted-secret
-      # storage. It is never printed: this repo is PUBLIC, so anything an
-      # Actions run writes to its own logs OR its job summary is visible to
-      # anyone on the internet, not just this org -- there is no safe channel
-      # in this job to hand a human the plaintext. That is a real, accepted
-      # gap against the general rule that a minted secret should be escrowed
-      # (a human-chosen passphrase is escrowed by typing it into the password
-      # manager directly, off any log); closing it needs a retrieval channel
-      # that does not touch this repo's own Actions output, which is
-      # follow-up work, not a property this step can give itself. What this
-      # step *can* do, and does below: say so, loudly, every run, so the gap
-      # is a known operational fact rather than a silent one discovered later.
-      - name: Mint this tenant's own secrets passphrase
+      # The value is never printed. This repository is PUBLIC, so anything a run
+      # writes to its logs or its job summary is visible to anyone on the
+      # internet. What is published is the ciphertext.
+      - name: Mint, escrow and publish this tenant's secrets passphrase
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
         run: |
@@ -511,142 +440,140 @@ jobs:
             echo "::error::minted passphrase is empty; refusing to continue"
             exit 1
           fi
-          printf '%s' "$PASSPHRASE" | gh secret set PULUMI_CONFIG_PASSPHRASE --repo "$TENANT_REPO"
+
+          ESCROW=$(printf '%s' "$PASSPHRASE" \
+            | python3 infra/provisioning/scripts/escrow-tenant-passphrase.py \
+                --public-key "$ESCROW_PUBLIC_KEY")
+          if [ -z "$ESCROW" ]; then
+            echo "::error::the escrow step produced nothing; refusing to write a passphrase that cannot be recovered"
+            exit 1
+          fi
+          printf '%s\n' "$ESCROW" > escrow.b64
+
+          # Belt to the create-only check in validation: that one refuses an
+          # existing repository, this one refuses an existing secret. Minting
+          # over a tenant that already holds a passphrase would rotate a live
+          # stack's wrapping key without re-wrapping its checkpoint, which
+          # strands it -- and `gh secret set` overwrites silently, with no
+          # opportunity to notice.
+          #
+          # Both levels are checked. The one this flow writes is the environment
+          # secret, but a passphrase set by hand on an earlier tenant is a
+          # repository secret, and that is the case worth refusing --
+          # `ghost-tenant-blog` holds exactly that shape today.
+          for scope in "actions/secrets" "environments/production/secrets"; do
+            if gh api "repos/${TENANT_REPO}/${scope}/PULUMI_CONFIG_PASSPHRASE" --silent 2>/dev/null; then
+              echo "::error::${TENANT_REPO} already holds a PULUMI_CONFIG_PASSPHRASE under ${scope}. Refusing to overwrite it: minting over an existing tenant rotates a live stack's wrapping key without re-wrapping the checkpoint, and the value being replaced is not recoverable from here."
+              exit 1
+            fi
+          done
+
+          # The environment has to exist before a secret can be scoped to it,
+          # and `gh secret set --env` does not create one.
+          gh api --method PUT "repos/${TENANT_REPO}/environments/production" --silent
+
+          printf '%s' "$PASSPHRASE" \
+            | gh secret set PULUMI_CONFIG_PASSPHRASE --repo "$TENANT_REPO" --env production
           echo "TENANT_PULUMI_PASSPHRASE=$PASSPHRASE" >> "$GITHUB_ENV"
+
           {
-            echo "## ${TENANT}'s Pulumi secrets passphrase is NOT escrowed"
+            echo "## ${TENANT}'s Pulumi secrets passphrase — escrowed ciphertext"
             echo
-            echo "A fresh passphrase was minted and stored only as this"
-            echo "tenant's own \`PULUMI_CONFIG_PASSPHRASE\` Actions secret."
-            echo "GitHub secrets are write-only -- there is no way to read it"
-            echo "back, from this run or any other, and it is never printed"
-            echo "here because this repo is public. If durable recoverability"
-            echo "matters for this tenant before its passphrase-only copy is"
-            echo "acceptable long-term, overwrite it now with a human-chosen,"
-            echo "password-manager-escrowed value:"
+            echo "Base64 of the passphrase under RSA-OAEP/SHA-256 to the escrow key"
+            echo "in \`infra/provisioning/escrow/\`. Decrypt it now, into the password"
+            echo "manager — this run is the only copy outside the tenant repository's"
+            echo "own write-only Actions secret, and run retention is finite."
+            echo
             echo '```'
-            echo "gh secret set PULUMI_CONFIG_PASSPHRASE --repo \"$TENANT_REPO\""
+            echo "$ESCROW"
+            echo '```'
+            echo
+            echo 'Recovery (see infra/provisioning/escrow/README.md):'
+            echo
+            echo '```bash'
+            echo 'base64 -d < escrow.b64 > escrow.bin'
+            echo 'openssl pkeyutl -decrypt -inkey ~/tenant-passphrase-escrow.key \'
+            echo '  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \'
+            echo '  -pkeyopt rsa_mgf1_md:sha256 -in escrow.bin'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # ---- the tenant's first apply ---------------------------------------
+      # A second copy of the transport, in a form that can be downloaded rather
+      # than reselected out of rendered markdown. Both expire; the password
+      # manager is the escrow of record.
+      - name: Upload the escrowed ciphertext
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tenant-passphrase-escrow
+          path: escrow.b64
+          retention-days: 90
+          if-no-files-found: error
 
-      - name: Substitute placeholders and initialise the tenant stack
+      # ---- the tenant's stack ---------------------------------------------
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      # `stack init` fails outright on a stack that already exists, and that is
+      # the wanted behaviour rather than something to work around. A retry after
+      # a failed run reaches here against a stack minted under a passphrase this
+      # run cannot reproduce -- resuming under a freshly minted, different one
+      # would silently re-wrap the stack under a value the tenant repository's
+      # secret does not hold. Recover per RUNBOOK-tenant-onboarding.md, not by
+      # re-dispatching.
+      #
+      # No secret config is set here. See the header: a `workflow_dispatch` input
+      # is plaintext in the run's API response, so the database password and the
+      # Object Storage key pair are the operator's to add in the handover pull
+      # request.
+      - name: Initialise the tenant stack and write its non-secret config
+        working-directory: tenant
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
-          DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Overrides the job-level PULUMI_CONFIG_PASSPHRASE above for this
-          # step and for the two that run `pulumi` against this tenant's stack
-          # after it -- "Refuse a first apply that touches platform
-          # infrastructure" and "Tenant first apply": this tenant's own freshly
-          # minted value, never the shared repo-level one. Step-level env always wins over
-          # job-level env of the same name, so this is unambiguous rather
-          # than relying on GITHUB_ENV write-order against the job env.
           PULUMI_CONFIG_PASSPHRASE: ${{ env.TENANT_PULUMI_PASSPHRASE }}
         run: |
           set -euo pipefail
-          # Re-checked here, not just at mint time: this reads the step's own
-          # effective value, so a typo in the `env:` key above (a different
-          # failure than the mint step's own empty-value guard) would also
-          # surface here instead of silently initialising the stack under an
-          # empty passphrase.
+          # Re-checked against this step's own effective value: a typo in the
+          # `env:` key above is a different failure from the mint step's empty
+          # check, and it would otherwise initialise the stack under an empty
+          # passphrase and report success.
           if [ -z "$PULUMI_CONFIG_PASSPHRASE" ]; then
             echo "::error::PULUMI_CONFIG_PASSPHRASE is empty for this step; refusing to continue"
             exit 1
           fi
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
-          cd tenant
-          # The tenant-facing README replaces the template-facing one before
-          # substitution. A template snapshot without README.tenant.md fails
-          # here, before anything is pushed back to the new repo.
-          mv README.tenant.md README.md
-          # Only the files the template's placeholder table names.
-          for f in Pulumi.yaml .github/workflows/infra-ci.yml scripts/assert-no-tenant-deletes.py README.md; do
-            sed -i "s/__TENANT_PULUMI_PROJECT__/${TENANT}-infra/g; s/__TENANT_NAME__/${TENANT}/g" "$f"
-          done
-          python3 scripts/assert-placeholders-substituted.py
-
-          npm ci
-          # The estate's Hetzner Object Storage backend. A stack reference
-          # cannot cross backends, which is why the platform values below are
-          # plain config rather than a StackReference -- the provisioning
-          # stack this job also touches lives in a different backend again.
-          #
-          # Stated because it is a real change in posture, not a like-for-like
-          # swap: this bucket is shared with every other *tenant* stack in it,
-          # and the S3 credential above reaches all of them. The per-tenant GCS
-          # bucket it replaces confined a tenant's deployer to its own state by
-          # IAM. What the separate bucket does buy is that the blast radius
-          # stops at other tenants and never reaches the estate's own control
-          # plane.
           pulumi login "$TENANT_BACKEND_URL"
-          # `stack init` fails outright on a stack that already exists, and a
-          # retry after a failed first apply reaches here with one -- holding
-          # the resources that apply did create. Resume onto it rather than
-          # demanding it be torn down first, restoring the secrets
-          # configuration the same script the provisioning stack uses above --
-          # in principle. In practice the restore below deliberately omits
-          # --allow-passphrase, unlike the provisioning stack's restore
-          # earlier in this file, so it refuses rather than resumes.
-          #
-          # That omission is not what keeps an `encryptionsalt` out of this
-          # tenant's own repo. The two steps named below this one do that:
-          # `pulumi stack init` writes a salt into the config file here, "Publish
-          # this tenant's encryption salt to its own repository secret" moves it
-          # to the tenant's own secret, and "Remove the encryption salt before
-          # the stack config is committed" deletes the line before `git add -A`
-          # ever sees it.
-          #
-          # What the omission IS about is which VALUE would decrypt the
-          # stack. This tenant's stack is minted passphrase-wrapped below,
-          # using a value minted fresh in the step above and never escrowed
-          # anywhere this job (or any later one) can read back -- GitHub
-          # Actions secrets are write-only. A retry that reaches this branch
-          # is hitting a stack that already exists under a passphrase this
-          # run has no way to reproduce, so refusing here is correct:
-          # resuming under a freshly-minted, DIFFERENT passphrase would
-          # silently re-wrap the stack under a value the tenant repo's
-          # secret does not hold. Recover per "Recovering a failed
-          # provisioning run" in infra/platform/RUNBOOK-bootstrap.md, not by
-          # retrying this workflow.
-          if pulumi stack select "$TENANT" 2>/dev/null; then
-            pulumi stack export --stack "$TENANT" > deployment.json
-            python3 "$GITHUB_WORKSPACE/infra/provisioning/scripts/restore-stack-secrets-config.py" \
-              "$TENANT" deployment.json
-            rm deployment.json
-          else
-            pulumi stack init "$TENANT" --secrets-provider=passphrase
-          fi
-          pulumi config set gcp:project "$GCP_PROJECT" --stack "$TENANT"
-          pulumi config set tenantName "$TENANT" --stack "$TENANT"
+          pulumi stack init "$TENANT" --secrets-provider=passphrase
+          pulumi config set slug "$TENANT" --stack "$TENANT"
           pulumi config set siteUrl "$SITE_URL" --stack "$TENANT"
-          pulumi config set imageDigestOrTag "$IMAGE_REF" --stack "$TENANT"
-          pulumi config set deployerServiceAccountEmail "$DEPLOYER_SA_EMAIL" --stack "$TENANT"
-          pulumi config set platformDbInstanceConnectionName "$PLATFORM_DB_CONN" --stack "$TENANT"
-          pulumi config set platformTenantImageRepositoryDockerPath "$PLATFORM_IMAGE_PATH" --stack "$TENANT"
-          pulumi config set platformMediaBucketUrl "$PLATFORM_MEDIA_URL" --stack "$TENANT"
+          pulumi config set uid "$TENANT_UID" --stack "$TENANT"
+          pulumi config set hostPort "$HOST_PORT" --stack "$TENANT"
+          pulumi config set appHostPrivateIp "$APP_HOST_PRIVATE_IP" --stack "$TENANT"
+          pulumi config set imageRef "$IMAGE_REF" --stack "$TENANT"
+          pulumi config set databaseHost "$PLATFORM_DB_PRIVATE_IP" --stack "$TENANT"
+          pulumi config set mediaEndpoint "$PLATFORM_MEDIA_ENDPOINT" --stack "$TENANT"
+          pulumi config set mediaRegion "$PLATFORM_MEDIA_REGION" --stack "$TENANT"
+          pulumi config set mediaBucket "$PLATFORM_MEDIA_BUCKET" --stack "$TENANT"
+          # The slug, with no trailing slash: `S3Storage.buildKey` inserts the
+          # separator itself. Derived rather than asked for, because a prefix
+          # that is not the slug is a tenant whose media lives somewhere its own
+          # name does not point at.
+          pulumi config set mediaTenantPrefix "$TENANT" --stack "$TENANT"
+          pulumi config set mediaPublicBaseUrl "$PLATFORM_MEDIA_PUBLIC_BASE_URL" --stack "$TENANT"
 
-      # `pulumi stack init` above wrote this stack's encryption salt into the
-      # config file, and the handover commit below must not carry it: a salt in
-      # a tree anyone can clone is an offline verifier for that tenant's stack
-      # passphrase, testable at the holder's own rate with no state backend and
-      # no cloud IAM in the loop. branchLeft/standards PUL-12 bans it outright.
-      # The generated repo's own CI appends it back from this secret for the
-      # duration of a deploy job.
+      # `pulumi stack init` wrote this stack's encryption salt into the config
+      # file, and the handover commit must not carry it: a salt in a tree anyone
+      # can clone is an offline verifier for that tenant's passphrase, testable
+      # at the holder's own rate with no state backend and no cloud IAM in the
+      # loop. branchLeft/standards PUL-12 bans it outright.
       #
       # The name is unscoped, unlike the estate's `PULUMI_SALT_<REPO>`: the
-      # tenant-name grammar validated at the top of this job permits hyphens
-      # and a GitHub secret name permits only alphanumerics and underscores, so
-      # a scoped name would be invalid for a tenant such as `acme-blog`. The
-      # template reads this exact name -- a mismatch here is a tenant that
-      # cannot decrypt its own stack.
+      # tenant-name grammar permits hyphens and a GitHub secret name permits only
+      # alphanumerics and underscores, so a scoped name would be invalid for a
+      # tenant such as `acme-blog`. The template reads this exact name.
       #
       # Published here rather than beside the deletion further down, so the
       # window in which this value exists only on this runner is as short as it
-      # can be. Nothing between here and there rewrites the salt, and the
-      # deletion step asserts that rather than assuming it.
-      - name: Publish this tenant's encryption salt to its own repository secret
+      # can be.
+      - name: Publish this tenant's encryption salt to its own environment secret
         working-directory: tenant
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
@@ -670,9 +597,9 @@ jobs:
             echo "::error::the encryptionsalt line in $config carries no value; refusing to continue"
             exit 1
           fi
-          # Masked before anything else in this job can print it: the guard in
-          # the deletion step echoes any offending line it finds, and a mask
-          # registered here applies to every later step.
+          # Masked before anything else in this job can print it: the deletion
+          # step echoes any offending line it finds, and a mask registered here
+          # applies to every later step.
           echo "::add-mask::$SALT"
           case "$SALT" in
             v1:*) ;;
@@ -683,70 +610,41 @@ jobs:
           esac
           # No trailing newline: the tenant's deploy job appends this value to
           # its stack config with printf, and one would break that YAML line.
-          printf '%s' "$SALT" | gh secret set PULUMI_ENCRYPTION_SALT --repo "$TENANT_REPO"
+          printf '%s' "$SALT" | gh secret set PULUMI_ENCRYPTION_SALT --repo "$TENANT_REPO" --env production
           echo "TENANT_PULUMI_SALT=$SALT" >> "$GITHUB_ENV"
 
-      # The platform guard, not the tenant one. This apply runs as the
-      # provisioning identity against a program that could in principle be
-      # edited to name a shared resource; the tenant-side guard's protected
-      # set is tenant-derived and would not catch that.
-      - name: Refuse a first apply that touches platform infrastructure
-        working-directory: tenant
+      # The state credentials the tenant's own CI needs to reach its checkpoint.
+      # Distributing them is this flow's job -- the tenant repository has no
+      # other way to obtain them, and without them its deploy job cannot even
+      # log in to the backend.
+      #
+      # Environment-scoped like the rest: at the repository level they would be
+      # readable by any workflow run in that repo, and they reach every tenant
+      # stack in the shared bucket rather than only this one.
+      - name: Write the tenant repo's state credentials and variables
         env:
-          # This tenant's own passphrase, same as the init step above -- not
-          # the job-level shared one.
-          PULUMI_CONFIG_PASSPHRASE: ${{ env.TENANT_PULUMI_PASSPHRASE }}
-        run: |
-          # `set -e` is load-bearing here, not boilerplate: the delete-check
-          # two lines down is not the last command in this script, and
-          # without errexit its non-zero exit would be silently swallowed --
-          # the shell would carry on to self-test/verify-coverage, and the
-          # step's own exit code would end up being THEIRS, not the delete
-          # check's. That shape is exactly how this guard could report green
-          # over a plan that would have destroyed platform infrastructure.
-          set -euo pipefail
-          if [ -z "$PULUMI_CONFIG_PASSPHRASE" ]; then
-            echo "::error::PULUMI_CONFIG_PASSPHRASE is empty for this step; refusing to continue"
-            exit 1
-          fi
-          pulumi preview --stack "$TENANT" --json > preview.json
-          python3 "$GITHUB_WORKSPACE/infra/provisioning/scripts/assert-no-provisioning-deletes.py" \
-            --tenant "$TENANT" preview.json
-          # The guard that ships inside the component, not the template's own
-          # copy of the same filename. Two files with that name now exist in a
-          # generated repo -- the packaged one and the template's GCP-era
-          # one -- and only the packaged one matches the component that
-          # rendered this plan. The template's copy is retired with the rest of
-          # the template.
-          #
-          # `--verify-coverage` takes the package ROOT: the script looks for
-          # `dist/index.js` beneath what it is given, so pointing it at `dist`
-          # asks for `dist/dist/index.js` and it would report a missing tree
-          # rather than a coverage result.
-          GUARD=node_modules/@branchleft/ghost-platform-tenant/scripts/assert-no-tenant-deletes.py
-          python3 "$GUARD" --self-test
-          python3 "$GUARD" --verify-coverage node_modules/@branchleft/ghost-platform-tenant
-          # The half that was never invoked against a plan before this line.
-          python3 "$GUARD" preview.json
-
-      - name: Tenant first apply
-        working-directory: tenant
-        env:
-          PULUMI_CONFIG_PASSPHRASE: ${{ env.TENANT_PULUMI_PASSPHRASE }}
+          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
         run: |
           set -euo pipefail
-          if [ -z "$PULUMI_CONFIG_PASSPHRASE" ]; then
-            echo "::error::PULUMI_CONFIG_PASSPHRASE is empty for this step; refusing to continue"
-            exit 1
-          fi
-          pulumi up --stack "$TENANT" --yes
+          printf '%s' "$AWS_ACCESS_KEY_ID" \
+            | gh secret set HETZNER_S3_ACCESS_KEY_ID --repo "$TENANT_REPO" --env production
+          printf '%s' "$AWS_SECRET_ACCESS_KEY" \
+            | gh secret set HETZNER_S3_SECRET_ACCESS_KEY --repo "$TENANT_REPO" --env production
+          # The full backend URL rather than a bucket name: an s3:// backend
+          # needs the endpoint, path-style and region query parameters too, and
+          # a repo that only held the bucket would have to rebuild them.
+          gh variable set PULUMI_BACKEND_URL --repo "$TENANT_REPO" --body "$TENANT_BACKEND_URL"
+          # The public address. The private one is stack config, because it is
+          # what the container's published port binds; this is what CI connects
+          # to, and conflating them is the mistake the two names exist to stop.
+          gh variable set APP_HOST_SSH_ADDRESS --repo "$TENANT_REPO" --body "$APP_HOST_SSH_ADDRESS"
 
       # ---- handover --------------------------------------------------------
 
       # Runs against the working copy the commit below stages, after the last
       # `pulumi` command that reads this stack -- Pulumi resolves the secrets
-      # manager from this file, so deleting the line any earlier would break
-      # the preview and the first apply.
+      # manager from this file, so deleting the line any earlier would break the
+      # config writes above.
       #
       # The secret is confirmed at the server before the line goes, not merely
       # assumed from the earlier step's exit status: a `gh secret set` that
@@ -759,12 +657,12 @@ jobs:
         run: |
           set -euo pipefail
           config="Pulumi.${TENANT}.yaml"
-          # gh's own stderr is kept rather than discarded: this is the gate
-          # that decides whether the salt may be deleted, and a 401 or a rate
-          # limit reported as "no such secret" would be a false cause in the
-          # one place it costs most.
-          if ! gh api "repos/${TENANT_REPO}/actions/secrets/PULUMI_ENCRYPTION_SALT" --silent; then
-            echo "::error::could not confirm a PULUMI_ENCRYPTION_SALT secret on ${TENANT_REPO} (the API response is above). Refusing to delete the salt from $config: nothing else would then restore it for that repo's own deploy job."
+          # gh's own stderr is kept rather than discarded: this is the gate that
+          # decides whether the salt may be deleted, and a 401 or a rate limit
+          # reported as "no such secret" would be a false cause in the one place
+          # it costs most.
+          if ! gh api "repos/${TENANT_REPO}/environments/production/secrets/PULUMI_ENCRYPTION_SALT" --silent; then
+            echo "::error::could not confirm a PULUMI_ENCRYPTION_SALT secret on ${TENANT_REPO}'s production environment (the API response is above). Refusing to delete the salt from $config: nothing else would then restore it for that repo's own deploy job."
             exit 1
           fi
           if [ "$(sed -n 's/^encryptionsalt:[[:space:]]*//p' "$config")" != "$TENANT_PULUMI_SALT" ]; then
@@ -773,69 +671,88 @@ jobs:
           fi
           sed -i '/^encryptionsalt:/d' "$config"
           # The tenant's own copy of the guard, not this repo's: it is the
-          # checker that judges the handover pull request, so a pass here is
-          # that verdict rather than a second opinion on it. Its matcher is
-          # wider than the deletion above, which is the point -- the deletion
-          # removes what Pulumi writes, and this decides whether anything is
-          # left. Any non-zero status refuses: this step needs "provably
-          # clean", and a run that could not read the file has not shown that.
+          # checker that judges the handover pull request, so a pass here is that
+          # verdict rather than a second opinion on it. Its matcher is wider than
+          # the deletion above, which is the point -- the deletion removes what
+          # Pulumi writes, and this decides whether anything is left.
           if ! python3 scripts/assert-no-committed-pulumi-secrets.py --scan-tree . "$config"; then
             echo "::error::refusing to commit $config: the tenant's committed-secret guard did not clear this tree"
             exit 1
           fi
 
+      # Deliberately never pushes to the generated repo's default branch. The
+      # pull request is where an operator adds the three things this flow cannot
+      # -- the database password, the Object Storage key pair and the app host's
+      # SSH host key -- and merging it is what runs the first deploy.
       - name: Open the handover pull request
         working-directory: tenant
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
         run: |
+          set -euo pipefail
           git config user.name "branchLeft provisioning"
           git config user.email "noreply@branchleft.co.uk"
           git checkout -b provisioning/handover
           git add -A
-          git commit -m "Substitute template placeholders and commit the stack config"
+          git commit -m "Generate this tenant's repo and commit its stack config"
           git push -u origin provisioning/handover
           gh pr create --repo "$TENANT_REPO" --base main --head provisioning/handover \
             --title "Provisioning handover" \
             --body "$(cat <<'BODY'
-          Generated by the platform's provisioning workflow. Contains the
-          substituted template placeholders and the stack config file the
-          first apply produced.
+          Generated by the platform's provisioning workflow: substituted template
+          placeholders and this stack's non-secret config.
 
-          Merging is the confirmation test: the push to `main` runs the deploy
-          job, and a healthy first run reports `unchanged` because the
-          infrastructure already exists.
+          **This is not mergeable as it stands, and that is deliberate.** Three
+          values cannot come from an unattended run, and one host-side sequence
+          has to have happened first. `RUNBOOK-bootstrap.md` in this repository
+          has both, in order.
 
-          Nothing here is a value that can be entered wrongly. `imageDigestOrTag`
-          is the only field worth a second look before merging.
+          Add to this branch:
+
+          - `databasePassword` — printed once by `provision_tenant_db.py` on the
+            database host, and by nothing afterwards.
+          - `mediaAccessKeyId` and `mediaSecretAccessKey` — this tenant's Object
+            Storage key pair.
+          - `known_hosts` — the app host's SSH host key, taken from the host over
+            an operator root session, never with `ssh-keyscan`.
+
+          All three need this stack's passphrase and its salt locally first;
+          `RUNBOOK-bootstrap.md` gives the order, and appending the salt before
+          `pulumi config set --secret` is the step that matters.
+
+          Merging runs the deploy, which will fail loudly if the host-side steps
+          have not been done or if this repository's `APP_HOST_DEPLOY_KEY`
+          environment secret is not set.
           BODY
           )"
 
-      # Deliberately never pushes to the generated repo's default branch. The
-      # file being committed names the image this tenant will actually run; a
-      # generated repo must not be the one place in the programme where code
-      # reaches main unreviewed.
       - name: Summary
         if: always()
-        env:
-          DEPLOYER_SA_EMAIL: ${{ steps.identity.outputs.sa_email }}
         run: |
           {
             echo "## Provisioning: ${TENANT}"
             echo
             echo "- repo: \`${TENANT_REPO}\` (\`${TENANT_VISIBILITY}\`)"
             echo "- state backend: \`${TENANT_BACKEND_URL}\`"
-            echo "- deployer: \`${DEPLOYER_SA_EMAIL:-unknown}\`"
+            echo "- app host: \`${APP_HOST_PRIVATE_IP}\` private, \`${APP_HOST_SSH_ADDRESS}\` for CI"
+            echo "- uid: \`${TENANT_UID}\`, host port: \`${HOST_PORT}\`"
             echo
-            echo "Onboarding completes when the handover pull request is merged."
-            # Said on every private run rather than left to be discovered: the
-            # plan tier decides this, so choosing private for a tenant also
-            # chooses that their repo cannot be ruleset-protected.
+            echo "### Still to do, in this order"
+            echo
+            echo "1. Decrypt and file the escrowed passphrase above."
+            echo "2. \`provision_tenant_db.py ${TENANT}\` on the database host, as root."
+            echo "3. \`provision_tenant_volume.py --uid ${TENANT_UID} ${TENANT}\` on the app host, as root."
+            echo "4. Write \`/etc/branchleft/${TENANT}.env\` and \`/opt/branchleft/${TENANT}/compose.yml\` from the stack's outputs, then \`systemctl enable branchleft-compose@${TENANT}\`."
+            echo "5. \`provision_deploy_slot.py --public-key-file /dev/stdin ${TENANT}\` on the app host, and set \`APP_HOST_DEPLOY_KEY\` on this tenant repo's \`production\` environment."
+            echo "6. Add this tenant's site block, with its \`edgeRequestBodyMaxSize\`, to the edge site registry."
+            echo "7. Complete and merge the handover pull request."
+            echo
+            echo "Full sequence, with the exact commands: \`RUNBOOK-tenant-onboarding.md\`."
             if [ "$TENANT_VISIBILITY" = "private" ]; then
               echo
               echo "This repo is private at the tenant's request. On this plan a"
               echo "private repo can carry no branch ruleset and no environment"
-              echo "protection rule, so the guards the template ships run there"
-              echo "but cannot block a merge."
+              echo "protection rule, so its \`production\` environment scopes its"
+              echo "secrets to the deploy job but gates nothing."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
