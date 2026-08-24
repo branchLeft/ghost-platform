@@ -196,6 +196,126 @@ class PutBucketSubresourceTests(unittest.TestCase):
         self.assertIn("AccessDenied", str(ctx.exception))
 
 
+class ListObjectsTests(unittest.TestCase):
+    def _page(self, keys, *, truncated=False, next_token=None):
+        contents = "".join(
+            f"<Contents><Key>{key}</Key><LastModified>2026-08-01T00:00:00.000Z</LastModified></Contents>"
+            for key in keys
+        )
+        truncated_xml = f"<IsTruncated>{'true' if truncated else 'false'}</IsTruncated>"
+        token_xml = f"<NextContinuationToken>{next_token}</NextContinuationToken>" if next_token else ""
+        return (
+            f'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            f"{contents}{truncated_xml}{token_xml}</ListBucketResult>"
+        ).encode()
+
+    def test_single_page_returns_every_key(self):
+        def fake_transport(url, headers):
+            return 200, self._page(["dumps/u/db1-a.sql.age", "dumps/u/db1-b.sql.age"])
+
+        objects = os3.list_objects(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", prefix="dumps/", transport=fake_transport,
+        )
+        self.assertEqual([o["key"] for o in objects], ["dumps/u/db1-a.sql.age", "dumps/u/db1-b.sql.age"])
+        self.assertEqual(objects[0]["last_modified"], "2026-08-01T00:00:00.000Z")
+
+    def test_uses_a_get_request_with_the_prefix_and_list_type_query(self):
+        calls = []
+
+        def fake_transport(url, headers):
+            calls.append(url)
+            return 200, self._page([])
+
+        os3.list_objects(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", prefix="binlogs/", transport=fake_transport,
+        )
+        self.assertIn("list-type=2", calls[0])
+        self.assertIn("prefix=binlogs%2F", calls[0])
+
+    def test_paginates_on_is_truncated_until_a_page_says_otherwise(self):
+        pages = [
+            self._page(["k1"], truncated=True, next_token="TOKEN-A"),
+            self._page(["k2"], truncated=False),
+        ]
+        calls = []
+
+        def fake_transport(url, headers):
+            calls.append(url)
+            return 200, pages.pop(0)
+
+        objects = os3.list_objects(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", transport=fake_transport,
+        )
+        self.assertEqual([o["key"] for o in objects], ["k1", "k2"])
+        self.assertNotIn("continuation-token", calls[0])
+        self.assertIn("continuation-token=TOKEN-A", calls[1])
+
+    def test_raises_on_a_non_2xx_response(self):
+        def fake_transport(url, headers):
+            return 403, b"<Error><Code>AccessDenied</Code></Error>"
+
+        with self.assertRaises(os3.ObjectStorageError):
+            os3.list_objects(
+                bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+                access_key="AK", secret_key="SECRET", transport=fake_transport,
+            )
+
+    def test_truncated_with_no_continuation_token_raises_rather_than_returning_a_partial_page(self):
+        # doc 14 §16.3: this backend can accept a request and silently drop
+        # an element. IsTruncated=true with no token to resume from is that
+        # shape -- treating it as "done" would hand every caller a listing
+        # that looks complete but silently isn't.
+        def fake_transport(url, headers):
+            return 200, self._page(["k1"], truncated=True, next_token=None)
+
+        with self.assertRaises(os3.ObjectStorageError):
+            os3.list_objects(
+                bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+                access_key="AK", secret_key="SECRET", transport=fake_transport,
+            )
+
+
+class DeleteObjectTests(unittest.TestCase):
+    def test_deletes_at_the_path_style_url(self):
+        calls = []
+
+        def fake_transport(url, headers):
+            calls.append((url, headers))
+            return 204, b""
+
+        os3.delete_object(
+            bucket="branchleft-db-backups", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="dumps/u/db1-old.sql.age", transport=fake_transport,
+        )
+        url, headers = calls[0]
+        self.assertEqual(
+            url, "https://hel1.your-objectstorage.com/branchleft-db-backups/dumps/u/db1-old.sql.age"
+        )
+        self.assertIn("Authorization", headers)
+
+    def test_a_404_is_not_an_error(self):
+        def fake_transport(url, headers):
+            return 404, b"<Error><Code>NoSuchKey</Code></Error>"
+
+        os3.delete_object(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )  # does not raise -- deleting an already-gone key is a safe re-run
+
+    def test_raises_on_a_non_2xx_non_404_response(self):
+        def fake_transport(url, headers):
+            return 403, b"<Error><Code>AccessDenied</Code></Error>"
+
+        with self.assertRaises(os3.ObjectStorageError):
+            os3.delete_object(
+                bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+                access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+            )
+
+
 class KnownAnswerTests(unittest.TestCase):
     """Cross-checks `build_headers` against a second, independently written
     SigV4 implementation rather than a single hardcoded magic value.
