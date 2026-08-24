@@ -9,11 +9,25 @@ name: Hosts stack CI
 # delete guard catches the destruction class mechanically; the reviewer
 # catches the plan that is green and still wrong.
 
+# The path list is the program's full dependency surface, not a guess at
+# likely edits: infra/hosts/index.ts imports only from other files under
+# infra/hosts/ and from @branchleft/hetzner-host, an external package whose
+# version is pinned in infra/hosts/package.json and package-lock.json — both
+# already inside the filter. The delete guard it shells out to is the one
+# file this program reads from outside its own directory.
 on:
   push:
     branches: [main]
+    paths:
+      - 'infra/hosts/**'
+      - 'infra/scripts/assert-no-hetzner-deletes.py'
+      - '.github/workflows/infra-hosts-ci.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'infra/hosts/**'
+      - 'infra/scripts/assert-no-hetzner-deletes.py'
+      - '.github/workflows/infra-hosts-ci.yml'
 
 # `packages: read` because @branchleft/hetzner-host and
 # @branchleft/tsconfig are both hosted on GitHub Packages, which answers 401
