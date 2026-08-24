@@ -59,7 +59,7 @@ re-run dump under a hand-typed key, still lands as a new version rather than
 destroying what it replaces. See the script's own docstring for the
 35-day noncurrent-version lifetime and why that number.
 
-Versioning and the noncurrent lifecycle only bound how long a *superseded*
+Versioning and the noncurrent lifecycle only bound how long a *replaced*
 object survives. How long a *current* dump or binlog object survives before
 this pipeline prunes it is a separate policy -- see "Backup retention"
 below, after the timers that enforce it.
@@ -216,7 +216,7 @@ already-running `db1`.
 Nothing before this pruned a *current* object: dumps and shipped binlogs
 otherwise accumulate forever, growing storage linearly with the size and age
 of the dataset even though object versioning (above) already bounds how long
-a *superseded* object survives. `prune_backups.py` is the enforcement point,
+a *replaced* object survives. `prune_backups.py` is the enforcement point,
 run daily by `branchleft-db-backup-prune.timer` (03:45 UTC, after that
 night's dump and at least one more binlog-ship run have landed).
 
