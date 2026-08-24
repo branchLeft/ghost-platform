@@ -34,9 +34,18 @@ Each fails loudly rather than silently when it has not been done:
    `database.password` input and belongs in the tenant stack's own encrypted
    config, never in a plain config value.
 2. **The volumes.** `provision_tenant_volume.py --uid <uid> <slug>` on the app
-   host, as root. The rendered stack declares both volumes `external`, so a
-   tenant whose volumes have not been provisioned fails to start rather than
-   coming up on a volume Docker seeded — and re-owned — from the image.
+   host, as root. `--list-claims` reports which UIDs that host has already
+   handed out. The rendered stack declares both volumes `external`, so a tenant
+   whose volumes have not been provisioned fails to start rather than coming up
+   on a volume Docker seeded — and re-owned — from the image.
+
+   The UID register lives at `/etc/branchleft/tenant-uids/<slug>`, root-owned
+   `0700`, deliberately **not** inside the tenant's content volume: unlink
+   permission is governed by the containing directory rather than the file
+   mode, and that volume is `0700` owned by the tenant, so a claim stored there
+   is a claim its own subject can delete. The register is cross-checked against
+   the volumes Docker holds, and a volume with no register entry is a refusal
+   rather than a free UID.
 3. **The secrets file.** Written by an operator from `secretsEnvFile`. No
    automated path may write it; `branchleft-deploy` writes only
    `/etc/branchleft/<slug>.image.env`.
@@ -56,6 +65,20 @@ outside the content volume, `content/adapters` mounted read-only,
 having passed it, and the unit tests assert the *absence* of the Docker socket,
 `cap_add`, `privileged`, `seccomp=unconfined`, a `0.0.0.0` publish and host
 networking. A posture with no test for its absence is a comment.
+
+Two things that check is careful about, because both were wrong in an earlier
+draft. The app host's address is validated as an address — private IPv4 range,
+no loopback, no leading-zero octet — rather than compared against the rendered
+port string it produced, since a check whose expectation comes from its subject
+cannot fail. And the posture check runs over the object *before* serialisation,
+so it cannot see a value that only becomes document structure once written out;
+the refusal for that lives in `yaml.ts`, which throws on any control character
+rather than emitting a single-quoted scalar it cannot round-trip.
+
+**What is asserted here is what the component renders, not what is on a host.**
+Nothing in this package observes a running container's UID, volume mode, seccomp
+state or AppArmor profile. Those are live checks that belong to the parity gate
+and the host provisioning path.
 
 Two controls in the same design are deliberately **not** this component's:
 
@@ -79,6 +102,13 @@ that drifts — and none of them substitutes for another:
   because Ghost's generic upload middleware sets no limit on those at all.
 - The tmpfs `size=` is the backstop under both. A write past it fails one
   upload with `ENOSPC` rather than taking the host down.
+
+`edgeRequestBodyMaxSize` is emitted in `MiB`, not `MB`: Caddy reads `MB` as a
+power of ten while every other value here is a power of two, and a ~4.4%
+disagreement in a set of numbers whose stated purpose is that they cannot
+disagree is still a disagreement. **The component emits the value; nothing yet
+carries it into the edge's site registry**, which lives in a different
+repository — so today it is an output an operator has to place by hand.
 
 `mem_limit` is the RSS budget **plus** the tmpfs ceiling, because tmpfs pages
 are charged to the container's own memory cgroup. A tenant sitting at its RSS

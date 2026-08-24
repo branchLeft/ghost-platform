@@ -25,7 +25,16 @@ are gone from the dependency set, so no 0.x caller compiles against this.
 - Both volumes are declared `external`, which makes the host-side provisioning
   step (`app/provision/provision_tenant_volume.py`) a precondition that fails
   loudly instead of a step whose absence leaves the tenant on a volume Docker
-  re-owned from the image.
+  re-owned from the image. That script keeps its UID register in a root-owned
+  directory on the host rather than in the tenant's own volume, because unlink
+  permission follows the containing directory and a tenant can delete anything
+  inside a directory it owns.
+- `yaml.ts` refuses control characters outright. Quoting is not escaping: a
+  single-quoted scalar has one escape and no faithful form for a newline, so a
+  config value carrying one would have become document structure — past a
+  posture check that runs before serialisation.
+- The app host's address and the published host port are validated on their own
+  terms, so `0.0.0.0` and a privileged port are refused at render time.
 - Reserved stack names (`website`, `edge`, `db`, `monitoring`) are refused: a
   tenant slugged for one of them would land on top of that stack's directory,
   secrets file and systemd unit on the same host.
