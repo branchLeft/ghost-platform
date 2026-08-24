@@ -263,6 +263,20 @@ class ListObjectsTests(unittest.TestCase):
                 access_key="AK", secret_key="SECRET", transport=fake_transport,
             )
 
+    def test_truncated_with_no_continuation_token_raises_rather_than_returning_a_partial_page(self):
+        # doc 14 §16.3: this backend can accept a request and silently drop
+        # an element. IsTruncated=true with no token to resume from is that
+        # shape -- treating it as "done" would hand every caller a listing
+        # that looks complete but silently isn't.
+        def fake_transport(url, headers):
+            return 200, self._page(["k1"], truncated=True, next_token=None)
+
+        with self.assertRaises(os3.ObjectStorageError):
+            os3.list_objects(
+                bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+                access_key="AK", secret_key="SECRET", transport=fake_transport,
+            )
+
 
 class DeleteObjectTests(unittest.TestCase):
     def test_deletes_at_the_path_style_url(self):

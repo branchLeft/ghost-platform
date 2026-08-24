@@ -181,6 +181,93 @@ class PlanPruneRefusalTests(unittest.TestCase):
         self.assertEqual(len(plan.refusals), 1)
         self.assertIn("monotonic", plan.refusals[0].reason)
 
+    def test_an_unparseable_binlog_name_refuses_only_its_own_server_uuid(self):
+        # Group A has one binlog with no trailing digits -- _binlog_sequence
+        # can't parse it. That must not stop group B, an otherwise-healthy
+        # incarnation, from being pruned in the same run.
+        anchor_a = _dump(UUID_A, days_ago=12)
+        recent_a = _dump(UUID_A, days_ago=1)
+        malformed_binlog = pb.BinlogObject(
+            key=f"binlogs/{UUID_A}/db1-mysql-bin-no-number.age",
+            server_uuid=UUID_A,
+            log_name="mysql-bin-no-number",
+            timestamp=NOW - datetime.timedelta(days=20),
+        )
+        recent_binlog_a = _binlog(UUID_A, seq=1, days_ago=1)
+
+        old_surplus_b = _dump(UUID_B, days_ago=100)
+        anchor_b = _dump(UUID_B, days_ago=12)
+        recent_b = _dump(UUID_B, days_ago=1)
+        binlogs_b = [_binlog(UUID_B, seq=s, days_ago=20 - s) for s in range(1, 21)]
+
+        plan = pb.plan_prune(
+            [anchor_a, recent_a, old_surplus_b, anchor_b, recent_b],
+            [malformed_binlog, recent_binlog_a, *binlogs_b],
+            now=NOW,
+        )
+
+        a_refusals = [r for r in plan.refusals if r.server_uuid == UUID_A]
+        self.assertEqual(len(a_refusals), 1)
+        self.assertIn("unparseable", a_refusals[0].reason)
+        # Nothing in group A was touched -- the refusal discards its whole plan.
+        self.assertEqual([d for d in plan.delete_dumps if d.server_uuid == UUID_A], [])
+        self.assertEqual([b for b in plan.delete_binlogs if b.server_uuid == UUID_A], [])
+
+        # Group B is untouched by A's problem: its ordinary surplus dump is
+        # still deleted and its anchor still survives.
+        self.assertIn(old_surplus_b.key, {d.key for d in plan.delete_dumps})
+        self.assertNotIn(anchor_b.key, {d.key for d in plan.delete_dumps})
+        self.assertEqual([r for r in plan.refusals if r.server_uuid == UUID_B], [])
+
+
+class PlanPruneNoDumpsTests(unittest.TestCase):
+    def test_a_server_uuid_with_binlogs_but_no_dumps_is_left_untouched(self):
+        # Named explicitly in the review brief as a scenario to attack:
+        # eligible_anchors is empty (there is no dump at all), so the group
+        # must be skipped rather than mishandled.
+        orphan_binlogs = [_binlog(UUID_A, seq=s, days_ago=20 - s) for s in range(1, 21)]
+        healthy = [_dump(UUID_B, days_ago=d) for d in range(0, 21)]
+        plan = pb.plan_prune(healthy, orphan_binlogs, now=NOW)
+        self.assertEqual([d for d in plan.delete_dumps if d.server_uuid == UUID_A], [])
+        self.assertEqual([b for b in plan.delete_binlogs if b.server_uuid == UUID_A], [])
+        self.assertEqual([r for r in plan.refusals if r.server_uuid == UUID_A], [])
+
+
+class CoverageReportTests(unittest.TestCase):
+    def test_covered_when_the_oldest_binlog_is_at_or_before_the_oldest_dump(self):
+        dumps = [_dump(UUID_A, days_ago=10)]
+        binlogs = [_binlog(UUID_A, seq=1, days_ago=10), _binlog(UUID_A, seq=2, days_ago=1)]
+        rows = pb.coverage_report(dumps, binlogs)
+        self.assertEqual(rows, [pb.CoverageRow(UUID_A, dumps[0].timestamp, binlogs[0].timestamp, "covered")])
+
+    def test_gap_when_the_oldest_binlog_is_newer_than_the_oldest_dump(self):
+        dumps = [_dump(UUID_A, days_ago=10)]
+        binlogs = [_binlog(UUID_A, seq=1, days_ago=5)]
+        rows = pb.coverage_report(dumps, binlogs)
+        self.assertEqual(rows[0].status, "gap")
+
+    def test_no_dump_reported_when_only_binlogs_exist(self):
+        binlogs = [_binlog(UUID_A, seq=1, days_ago=1)]
+        rows = pb.coverage_report([], binlogs)
+        self.assertEqual(rows[0].status, "no dump")
+        self.assertIsNone(rows[0].oldest_dump)
+
+    def test_no_binlog_reported_when_only_a_dump_exists(self):
+        dumps = [_dump(UUID_A, days_ago=1)]
+        rows = pb.coverage_report(dumps, [])
+        self.assertEqual(rows[0].status, "no binlog")
+        self.assertIsNone(rows[0].oldest_binlog)
+
+    def test_rows_are_independent_per_server_uuid(self):
+        # The bug this replaces: a bucket-wide min() would have reported
+        # UUID_B's ancient, forever-kept anchor as "the" oldest dump and
+        # hidden UUID_A's real gap behind it.
+        dumps = [_dump(UUID_A, days_ago=10), _dump(UUID_B, days_ago=100)]
+        binlogs = [_binlog(UUID_A, seq=1, days_ago=5), _binlog(UUID_B, seq=1, days_ago=100)]
+        rows = {row.server_uuid: row for row in pb.coverage_report(dumps, binlogs)}
+        self.assertEqual(rows[UUID_A].status, "gap")
+        self.assertEqual(rows[UUID_B].status, "covered")
+
 
 class ParseObjectsTests(unittest.TestCase):
     def test_parses_dump_keys_and_uses_last_modified_not_the_key_timestamp(self):
@@ -243,6 +330,23 @@ class BuildAndApplyPlanTests(unittest.TestCase):
         pb.apply_plan(plan, bucket="b", endpoint="e", region="r", access_key="ak", secret_key="sk", remover=fake_remover)
         self.assertEqual(deleted, [plan.delete_dumps[0].key, plan.delete_binlogs[0].key])
 
+    def test_build_coverage_report_lists_both_prefixes_and_feeds_coverage_report(self):
+        calls = []
+
+        def fake_lister(*, bucket, endpoint, region, access_key, secret_key, prefix):
+            calls.append(prefix)
+            ts = (NOW - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if prefix == "dumps/":
+                return [{"key": f"dumps/{UUID_A}/db1-20260101T000000Z.sql.age", "last_modified": ts}]
+            return [{"key": f"binlogs/{UUID_A}/db1-mysql-bin.000001.age", "last_modified": ts}]
+
+        rows = pb.build_coverage_report(
+            bucket="b", endpoint="e", region="r", access_key="ak", secret_key="sk", lister=fake_lister
+        )
+        self.assertEqual(sorted(calls), ["binlogs/", "dumps/"])
+        self.assertEqual(rows[0].server_uuid, UUID_A)
+        self.assertEqual(rows[0].status, "covered")
+
 
 class MainTests(unittest.TestCase):
     ENV = {
@@ -283,6 +387,24 @@ class MainTests(unittest.TestCase):
             code = pb.main([])
         self.assertEqual(code, 0)
         apply_mock.assert_called_once()
+
+    def test_verify_coverage_exits_zero_when_every_row_is_covered(self):
+        rows = [pb.CoverageRow(UUID_A, NOW, NOW, "covered")]
+        with mock.patch.dict(os.environ, self.ENV, clear=True), mock.patch.object(
+            pb, "build_coverage_report", return_value=rows
+        ), mock.patch.object(pb, "apply_plan") as apply_mock, mock.patch.object(pb, "build_plan") as build_plan_mock:
+            code = pb.main(["--verify-coverage"])
+        self.assertEqual(code, 0)
+        apply_mock.assert_not_called()
+        build_plan_mock.assert_not_called()
+
+    def test_verify_coverage_exits_nonzero_on_any_gap(self):
+        rows = [pb.CoverageRow(UUID_A, NOW, NOW, "covered"), pb.CoverageRow(UUID_B, NOW, NOW, "gap")]
+        with mock.patch.dict(os.environ, self.ENV, clear=True), mock.patch.object(
+            pb, "build_coverage_report", return_value=rows
+        ):
+            code = pb.main(["--verify-coverage"])
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

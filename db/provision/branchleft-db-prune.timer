@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily trigger for branchleft-db-backup-prune.service
+Description=Daily trigger for branchleft-db-prune.service
 
 [Timer]
 # After the nightly dump (03:10 UTC) and at least one more binlog-ship run

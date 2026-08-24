@@ -2,7 +2,7 @@
 """Prunes current dump and binlog objects that have aged out of the backup
 retention window -- see db/RUNBOOK-db.md's "Backup retention" section.
 
-Run by branchleft-db-backup-prune.timer via branchleft-db-backup-prune.service,
+Run by branchleft-db-prune.timer via branchleft-db-prune.service,
 as root on db1. Reads DB_BACKUP_BUCKET, DB_BACKUP_ENDPOINT, DB_BACKUP_REGION,
 AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from the environment --
 /etc/branchleft/db.env via the unit's EnvironmentFile, the same variables
@@ -78,6 +78,13 @@ class BinlogObject(NamedTuple):
 class Refusal(NamedTuple):
     server_uuid: str
     reason: str
+
+
+class CoverageRow(NamedTuple):
+    server_uuid: str
+    oldest_dump: datetime.datetime | None
+    oldest_binlog: datetime.datetime | None
+    status: str  # "covered", "no dump", "no binlog", "gap"
 
 
 class PrunePlan(NamedTuple):
@@ -233,7 +240,17 @@ def plan_prune(
             continue
 
         if group_delete_binlogs:
-            sequences = [_binlog_sequence(b.log_name) for b in uuid_binlogs]
+            try:
+                sequences = [_binlog_sequence(b.log_name) for b in uuid_binlogs]
+                delete_seq = {_binlog_sequence(b.log_name) for b in group_delete_binlogs}
+                keep_seq = {_binlog_sequence(b.log_name) for b in group_keep_binlogs}
+            except PruneError as exc:
+                # A name `_binlog_sequence` can't parse is this incarnation's
+                # problem alone -- letting it propagate out of the function
+                # would abandon every other `server_uuid`'s otherwise-safe
+                # plan over one bad key in an unrelated incarnation.
+                refusals.append(Refusal(server_uuid, f"unparseable binlog name: {exc}"))
+                continue
             if sequences != sorted(sequences):
                 # Sequence order should always track ship order, and so
                 # timestamp order. If it doesn't, a cutoff split by
@@ -241,8 +258,6 @@ def plan_prune(
                 # hole in the middle of what's retained.
                 refusals.append(Refusal(server_uuid, "binlog sequence numbers are not monotonic with ship time"))
                 continue
-            delete_seq = {_binlog_sequence(b.log_name) for b in group_delete_binlogs}
-            keep_seq = {_binlog_sequence(b.log_name) for b in group_keep_binlogs}
             if delete_seq and keep_seq and max(delete_seq) >= min(keep_seq):
                 # Redundant with the monotonic check above given how the
                 # split above is constructed -- kept as its own guard so a
@@ -276,6 +291,61 @@ def build_plan(
     return plan_prune(dumps, binlogs, now=now)
 
 
+def coverage_report(dumps: list[DumpObject], binlogs: list[BinlogObject]) -> list[CoverageRow]:
+    """Per-`server_uuid` (oldest retained dump, oldest retained binlog,
+    status), re-derived from a fresh listing rather than trusted from
+    `plan_prune`'s own guarantee -- this is the independent check an
+    operator runs after a prune to see the bucket's actual state.
+
+    A **bucket-wide** `min()` across every incarnation's objects (an earlier
+    version of this check did exactly that) is meaningless: it mixes a live
+    incarnation's numbers with a dead, rebuilt one's forever-kept anchor, so
+    a live gap can hide behind an old incarnation's reassuringly ancient
+    timestamp. Grouping by `server_uuid` is what makes the check mean
+    anything.
+
+    `"gap"` (oldest binlog newer than the oldest dump) is the one status
+    that means recoverability is actually at risk -- there is no shipped
+    binlog old enough to replay from the anchor dump's own timestamp
+    forward. `"no dump"` and `"no binlog"` are reported as distinct
+    conditions rather than folded into `"gap"` because they read
+    differently to an operator: an incarnation with binlogs but no dump has
+    nothing to restore *from* at all, and one still inside its first ~15
+    minutes legitimately has a dump and no binlog yet.
+    """
+    dump_groups = _group_by_uuid(dumps)
+    binlog_groups = _group_by_uuid(binlogs)
+    rows: list[CoverageRow] = []
+    for server_uuid in sorted(set(dump_groups) | set(binlog_groups)):
+        oldest_dump = min((d.timestamp for d in dump_groups.get(server_uuid, [])), default=None)
+        oldest_binlog = min((b.timestamp for b in binlog_groups.get(server_uuid, [])), default=None)
+        if oldest_dump is None:
+            status = "no dump"
+        elif oldest_binlog is None:
+            status = "no binlog"
+        elif oldest_binlog > oldest_dump:
+            status = "gap"
+        else:
+            status = "covered"
+        rows.append(CoverageRow(server_uuid, oldest_dump, oldest_binlog, status))
+    return rows
+
+
+def build_coverage_report(
+    *,
+    bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    lister=list_objects,
+) -> list[CoverageRow]:
+    common = dict(bucket=bucket, endpoint=endpoint, region=region, access_key=access_key, secret_key=secret_key)
+    dumps = parse_dump_objects(lister(prefix="dumps/", **common))
+    binlogs = parse_binlog_objects(lister(prefix="binlogs/", **common))
+    return coverage_report(dumps, binlogs)
+
+
 def apply_plan(
     plan: PrunePlan,
     *,
@@ -302,6 +372,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan and any refusals; delete nothing."
     )
+    parser.add_argument(
+        "--verify-coverage",
+        action="store_true",
+        help="Report each server_uuid's oldest retained dump/binlog and whether the window is covered; deletes nothing.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -311,10 +386,26 @@ def main(argv: list[str]) -> int:
         access_key = _require_env("AWS_ACCESS_KEY_ID")
         secret_key = _require_env("AWS_SECRET_ACCESS_KEY")
 
-        plan = build_plan(bucket=bucket, endpoint=endpoint, region=region, access_key=access_key, secret_key=secret_key)
+        if args.verify_coverage:
+            rows = build_coverage_report(
+                bucket=bucket, endpoint=endpoint, region=region, access_key=access_key, secret_key=secret_key
+            )
+        else:
+            plan = build_plan(
+                bucket=bucket, endpoint=endpoint, region=region, access_key=access_key, secret_key=secret_key
+            )
     except (PruneError, ObjectStorageError) as exc:
         print(f"prune_backups: {exc}", file=sys.stderr)
         return 1
+
+    if args.verify_coverage:
+        for row in rows:
+            print(f"prune_backups: {row.server_uuid} oldest_dump={row.oldest_dump} oldest_binlog={row.oldest_binlog} status={row.status}")
+        if any(row.status != "covered" for row in rows):
+            print("prune_backups: coverage check FAILED -- see status above", file=sys.stderr)
+            return 1
+        print("prune_backups: coverage check passed for every server_uuid")
+        return 0
 
     verb = "would delete" if args.dry_run else "deleting"
     print(f"prune_backups: {verb} {len(plan.delete_dumps)} dump(s), {len(plan.delete_binlogs)} binlog(s)")

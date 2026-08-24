@@ -265,8 +265,20 @@ def list_objects(
         _raise_for_status(what=f"GET {bucket}?list-type=2", status=status, body=body)
         objects, is_truncated, next_token = _parse_list_objects_v2(body)
         results.extend(objects)
-        if not is_truncated or not next_token:
+        if not is_truncated:
             return results
+        if not next_token:
+            # `IsTruncated=true` with no token to resume from: doc 14 §16.3
+            # records this backend accepting a request and silently dropping
+            # an element, so a response shaped like this is a corrupt
+            # listing, not a complete one. Returning `results` here would
+            # read as "this is everything" to every caller downstream,
+            # including the retention decision -- raise instead of
+            # pretending the page count is known.
+            raise ObjectStorageError(
+                f"GET {bucket}?list-type=2: IsTruncated=true but no NextContinuationToken -- "
+                "listing may be incomplete"
+            )
         continuation_token = next_token
 
 
