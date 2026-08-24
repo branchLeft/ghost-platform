@@ -158,13 +158,28 @@ jobs:
       AWS_REGION: hel1
       # Platform-wide facts rather than per-tenant answers, so they are
       # repository variables and not ten more fields on a form nobody can fill
-      # in correctly from memory. `workflow_dispatch` also caps inputs at ten.
+      # in correctly from memory. `workflow_dispatch` also caps inputs at ten,
+      # and this flow uses nine.
+      #
+      # **The media shape these encode is provisional.** One shared bucket with
+      # a per-tenant key prefix is the migration programme's *second*-preference
+      # candidate and its isolation primitive is undemonstrated; bucket-per-
+      # tenant with per-bucket key allowlisting is listed first and is the
+      # documented Hetzner mechanism. Changing to that shape changes
+      # PLATFORM_MEDIA_BUCKET from a constant into a per-tenant value and so
+      # changes this workflow, not only these variables. Tracked as
+      # branchLeft/workspace#282, which turns on the same probe as
+      # branchLeft/workspace#281.
       PLATFORM_DB_PRIVATE_IP: ${{ vars.PLATFORM_DB_PRIVATE_IP }}
       PLATFORM_MEDIA_ENDPOINT: ${{ vars.PLATFORM_MEDIA_ENDPOINT }}
       PLATFORM_MEDIA_REGION: ${{ vars.PLATFORM_MEDIA_REGION }}
       PLATFORM_MEDIA_BUCKET: ${{ vars.PLATFORM_MEDIA_BUCKET }}
       PLATFORM_MEDIA_PUBLIC_BASE_URL: ${{ vars.PLATFORM_MEDIA_PUBLIC_BASE_URL }}
       ESCROW_PUBLIC_KEY: infra/provisioning/escrow/tenant-passphrase-escrow.pub.pem
+      # The `reviewers` array for a tenant repo's `production` environment,
+      # verbatim JSON. A repository variable rather than an identity hardcoded
+      # into a workflow file in a public repository.
+      TENANT_ENVIRONMENT_REVIEWERS: ${{ vars.TENANT_ENVIRONMENT_REVIEWERS }}
 
     steps:
       # Fail closed, before anything is created. Half a migrated flow does not
@@ -244,6 +259,28 @@ jobs:
           fi
           echo "environment-scoped: $(printf '%s' "$names" | tr '\n' ' ')"
 
+          # The half that matters, and the half an earlier draft of this step
+          # was missing. Checking only that the environment secret EXISTS
+          # cannot see a repository-level copy left behind, and `secrets.X`
+          # resolves the repository one for any workflow run in this repo --
+          # including one added on a branch. So a skipped `gh secret delete`
+          # leaves GH_PAT_TENANT_PROVISIONING, a token that creates
+          # repositories in this org, readable by every run here, with this
+          # workflow still green. Refuse on the intersection, not on absence.
+          repo_names=$(gh api "repos/${GITHUB_REPOSITORY}/actions/secrets" \
+            --paginate --jq '.secrets[].name') || {
+              echo "::error::could not list ${GITHUB_REPOSITORY}'s repository-level secrets. Refusing rather than assuming none shadow the environment-scoped ones."
+              exit 1
+            }
+          shadowed=
+          for required in GH_PAT_TENANT_PROVISIONING HETZNER_S3_ACCESS_KEY_ID HETZNER_S3_SECRET_ACCESS_KEY; do
+            printf '%s\n' "$repo_names" | grep -qx "$required" && shadowed="$shadowed $required"
+          done
+          if [ -n "$shadowed" ]; then
+            echo "::error::these provisioning-capable secrets still exist at the REPOSITORY level on ${GITHUB_REPOSITORY}:$shadowed. Any workflow run in this repository can read them, including one added on a branch, which is the exact reach the environment scoping exists to remove. Delete each with: gh secret delete <NAME> --repo ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -285,6 +322,17 @@ jobs:
           [[ "$TENANT" =~ ^[a-z][a-z0-9-]{1,24}[a-z0-9]$ ]] \
             || fail "tenant_name must be lowercase alphanumeric-hyphen, 3-26 characters"
 
+          # Refused here, at the last point where nothing exists yet. The
+          # template's generation script refuses these too, but only after
+          # `gh repo create` has already made a public repository named
+          # ghost-tenant-<slug> -- and on this estate the existence of that
+          # repository is itself the disclosure that a tenant is a customer.
+          case "$TENANT" in
+            website | edge | db | monitoring)
+              fail "tenant_name '$TENANT' is reserved: an app host already runs a Compose stack of that name, and a tenant taking it would overwrite that stack's directory, secrets file and systemd unit."
+              ;;
+          esac
+
           [[ "$SITE_URL" =~ ^https:// ]] || fail "site_url must be https"
 
           # The component validates this range too, but only once a stack exists
@@ -324,11 +372,20 @@ jobs:
             || fail "the HETZNER_PULUMI_BACKEND_URL repository variable is empty or unset"
           [[ "$TENANT_BACKEND_URL" == s3://* ]] \
             || fail "HETZNER_PULUMI_BACKEND_URL must be an s3:// backend; a gs:// backend would give this tenant a GCP dependency"
-          # Named, not pattern-matched: this is the estate's own control-plane
-          # bucket, and a tenant deployer that can write to it can destroy the
-          # checkpoint the production hcloud token lives in.
-          [[ "$TENANT_BACKEND_URL" != *"s3://branchleft-pulumi-state?"* ]] \
-            || fail "HETZNER_PULUMI_BACKEND_URL points at branchleft-pulumi-state, the estate's own state bucket. Tenant state goes in a separate bucket -- the S3 credential is not scoped per stack, so this would hand every tenant deployer write access to the estate, network and mail checkpoints."
+          # The bucket name is extracted and compared, not substring-matched.
+          # An earlier spelling tested for the literal `s3://branchleft-pulumi-state?`
+          # and so passed the same bucket written without query parameters --
+          # a refusal that depends on punctuation is not a refusal. This is the
+          # estate's own control-plane bucket, and a tenant deployer that can
+          # write to it can destroy the checkpoint the production hcloud token
+          # lives in; destroying a checkpoint needs no ability to decrypt it.
+          backend_bucket="${TENANT_BACKEND_URL#s3://}"
+          backend_bucket="${backend_bucket%%\?*}"
+          backend_bucket="${backend_bucket%%/*}"
+          [[ "$backend_bucket" != "branchleft-pulumi-state" ]] \
+            || fail "HETZNER_PULUMI_BACKEND_URL names branchleft-pulumi-state, the estate's own state bucket. Tenant state goes in a separate bucket -- the S3 credential is not scoped per stack, so this would hand every tenant deployer write access to the estate, network and mail checkpoints."
+          [[ -n "$backend_bucket" ]] \
+            || fail "HETZNER_PULUMI_BACKEND_URL names no bucket"
           [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" ]] \
             || fail "HETZNER_S3_ACCESS_KEY_ID / HETZNER_S3_SECRET_ACCESS_KEY are empty or unset; the tenant's state backend is unreachable without them"
 
@@ -364,6 +421,17 @@ jobs:
             echo "::error::$ESCROW_PUBLIC_KEY is missing. Provisioning refuses to mint a passphrase it cannot escrow. Generate the keypair per infra/provisioning/escrow/README.md, commit the public half, and put the private half in the password manager and the off-site archive before provisioning any tenant."
             exit 1
           fi
+          # Existence is not usability. `--check-key` runs every substantive
+          # check -- PEM header, RSA, at least 3072 bits, and that the file is
+          # not the private half committed by mistake -- with no passphrase in
+          # hand, so all of them land HERE. The encrypt path reaches the same
+          # checks only once there is something to encrypt, which is several
+          # steps after `gh repo create`; a 2048-bit or EC key caught there is
+          # caught after a public repository named ghost-tenant-<slug> exists,
+          # and on this estate that repository's existence is itself the
+          # disclosure that the tenant is a customer.
+          python3 infra/provisioning/scripts/escrow-tenant-passphrase.py \
+            --check-key "$ESCROW_PUBLIC_KEY"
 
       # ---- the tenant repo ------------------------------------------------
 
@@ -457,20 +525,66 @@ jobs:
           # strands it -- and `gh secret set` overwrites silently, with no
           # opportunity to notice.
           #
-          # Both levels are checked. The one this flow writes is the environment
-          # secret, but a passphrase set by hand on an earlier tenant is a
-          # repository secret, and that is the case worth refusing --
-          # `ghost-tenant-blog` holds exactly that shape today.
-          for scope in "actions/secrets" "environments/production/secrets"; do
-            if gh api "repos/${TENANT_REPO}/${scope}/PULUMI_CONFIG_PASSPHRASE" --silent 2>/dev/null; then
-              echo "::error::${TENANT_REPO} already holds a PULUMI_CONFIG_PASSPHRASE under ${scope}. Refusing to overwrite it: minting over an existing tenant rotates a live stack's wrapping key without re-wrapping the checkpoint, and the value being replaced is not recoverable from here."
-              exit 1
-            fi
-          done
+          # Repository level only, and deliberately so. An earlier draft also
+          # probed `environments/production/secrets`, which was dead code: this
+          # step creates that environment three lines below, so the probe ran
+          # against an environment that could not exist and 404'd every time.
+          # The repository-level probe is the one with a real subject --
+          # `ghost-tenant-blog`'s hand-set passphrase is a repository secret,
+          # which is exactly the shape this refuses.
+          if gh api "repos/${TENANT_REPO}/actions/secrets/PULUMI_CONFIG_PASSPHRASE" --silent 2>/dev/null; then
+            echo "::error::${TENANT_REPO} already holds a repository-level PULUMI_CONFIG_PASSPHRASE. Refusing to overwrite it: minting over an existing tenant rotates a live stack's wrapping key without re-wrapping the checkpoint, and the value being replaced is not recoverable from here."
+            exit 1
+          fi
 
           # The environment has to exist before a secret can be scoped to it,
           # and `gh secret set --env` does not create one.
-          gh api --method PUT "repos/${TENANT_REPO}/environments/production" --silent
+          #
+          # **Created WITH its required reviewer, not empty.** An earlier draft
+          # PUT an empty body, which produces an environment carrying no
+          # protection rule -- and an environment with no rule does not pause a
+          # deployment and does not say so. Four documents claimed that rule
+          # stood in front of the tenant's deploy credentials; none of them
+          # created it.
+          #
+          # The reviewer set is a repository variable rather than an identity
+          # written into a public workflow file. It is the JSON body's
+          # `reviewers` array verbatim, e.g. [{"type":"User","id":1234567}].
+          if [ "$TENANT_VISIBILITY" = "private" ]; then
+            # Environment protection rules are a public-repository feature on
+            # this plan tier, so a private tenant repo cannot carry one and the
+            # API refuses the reviewers. The environment is still created,
+            # because the SCOPING it gives -- secrets readable only by the job
+            # that declares it, never by a run from a branch -- is plan-
+            # independent and is most of the value. Said loudly rather than
+            # discovered: choosing private for a tenant also chooses that their
+            # deploy cannot be gated.
+            gh api --method PUT "repos/${TENANT_REPO}/environments/production" --silent
+            echo "::warning::${TENANT_REPO} is private, so its production environment carries no required reviewer -- protection rules are public-repository-only on this plan. Its secrets are still scoped to the deploy job."
+          else
+            if [ -z "$TENANT_ENVIRONMENT_REVIEWERS" ]; then
+              echo "::error::the TENANT_ENVIRONMENT_REVIEWERS repository variable is unset. It is the reviewers array for the tenant's production environment, e.g. [{\"type\":\"User\",\"id\":1234567}]. Refusing to create an environment with no protection rule while the template and doc 14 both state that one gates this tenant's deploy credentials."
+              exit 1
+            fi
+            printf '{"reviewers":%s}' "$TENANT_ENVIRONMENT_REVIEWERS" \
+              | gh api --method PUT "repos/${TENANT_REPO}/environments/production" --input - --silent
+
+            # Read back rather than trusted. A PUT that silently dropped the
+            # reviewers -- a stale id, a user without repository access -- leaves
+            # exactly the state this exists to prevent, and reports success.
+            rules=$(gh api "repos/${TENANT_REPO}/environments/production" \
+              --jq '[.protection_rules[].type] | join(",")') || {
+                echo "::error::could not read back ${TENANT_REPO}'s production environment. Refusing to continue without confirming its protection rule."
+                exit 1
+              }
+            case ",$rules," in
+              *,required_reviewers,*) echo "${TENANT_REPO} production protection rules: $rules" ;;
+              *)
+                echo "::error::${TENANT_REPO}'s production environment came back with protection rules '$rules' and no required reviewer. Check TENANT_ENVIRONMENT_REVIEWERS names a principal with access to that repository."
+                exit 1
+                ;;
+            esac
+          fi
 
           printf '%s' "$PASSPHRASE" \
             | gh secret set PULUMI_CONFIG_PASSPHRASE --repo "$TENANT_REPO" --env production
@@ -619,8 +733,19 @@ jobs:
       # log in to the backend.
       #
       # Environment-scoped like the rest: at the repository level they would be
-      # readable by any workflow run in that repo, and they reach every tenant
-      # stack in the shared bucket rather than only this one.
+      # readable by any workflow run in that repo.
+      #
+      # **What that scoping does NOT bound, stated rather than implied.** This
+      # credential is not scoped per stack. Once read, it lists and deletes
+      # `.pulumi/stacks/*` for every tenant in the bucket -- and destroying a
+      # checkpoint needs no ability to decrypt it. The environment gate bounds
+      # which job may read it, not what it reaches. Bounding the reach itself
+      # needs Hetzner's per-bucket key allowlisting, whose behaviour on
+      # `ListBucket` is undemonstrated and whose account caps may not fit 100
+      # tenants: branchLeft/workspace#281. What IS bounded, by name in the
+      # validation step above, is the direction that matters most -- this is
+      # never the estate's own bucket, so the reach stops before the checkpoint
+      # the production hcloud token lives in.
       - name: Write the tenant repo's state credentials and variables
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}

@@ -139,6 +139,40 @@ class Refusals(unittest.TestCase):
         self.assertIn("RSA-OAEP", str(caught.exception))
 
 
+class CheckKey(unittest.TestCase):
+    """`--check-key` is the pre-creation gate. Every refusal it must make is
+    exercised here, because the whole point of the mode is that these are caught
+    BEFORE a public repository exists whose name discloses a tenant."""
+
+    def test_a_good_key_reports_its_size_and_capacity(self) -> None:
+        _, public = keypair()
+        report = module.check_key(public)
+        self.assertIn("RSA-3072", report)
+
+    def test_it_refuses_everything_the_encrypt_path_refuses(self) -> None:
+        private, _ = keypair()
+        _, weak = keypair(bits=2048)
+        with tempfile.TemporaryDirectory() as tmp:
+            notakey = pathlib.Path(tmp) / "notakey.pem"
+            notakey.write_text("hello\n", encoding="utf-8")
+            for bad in (private, weak, notakey, pathlib.Path("/nonexistent/escrow.pem")):
+                with self.subTest(bad=bad.name):
+                    with self.assertRaises(module.EscrowError):
+                        module.check_key(bad)
+
+    def test_it_reads_no_stdin(self) -> None:
+        # It runs before a passphrase exists, so it must not block on or consume
+        # stdin. A mode that waited for input here would hang the provisioning
+        # run at the step before anything is created.
+        _, public = keypair()
+        saved = sys.stdin
+        sys.stdin = None  # any read would raise
+        try:
+            self.assertEqual(module.main(["--check-key", str(public)]), 0)
+        finally:
+            sys.stdin = saved
+
+
 class Main(unittest.TestCase):
     def test_self_test_exits_zero(self) -> None:
         self.assertEqual(module.main(["--self-test"]), 0)
@@ -159,11 +193,25 @@ class Main(unittest.TestCase):
         self.assertNotIn("\n", printed)
         self.assertEqual(module.decrypt(printed, private), "a-passphrase")
 
-    def test_a_missing_key_exits_one(self) -> None:
-        self.assertEqual(module.main(["--public-key", "/nonexistent/escrow.pem"]), 1)
+    def test_a_missing_key_exits_one_without_reading_stdin(self) -> None:
+        # The key is validated before stdin is read. Reading first blocks on a
+        # terminal instead of failing, and reports an unusable key only after a
+        # passphrase has already been handed to the process.
+        saved = sys.stdin
+        sys.stdin = None  # any read would raise
+        try:
+            self.assertEqual(module.main(["--public-key", "/nonexistent/escrow.pem"]), 1)
+        finally:
+            sys.stdin = saved
 
     def test_self_test_refuses_a_public_key_argument(self) -> None:
         self.assertEqual(module.main(["--self-test", "--public-key", "x.pem"]), 1)
+
+    def test_check_key_and_public_key_are_alternatives(self) -> None:
+        self.assertEqual(module.main(["--check-key", "a.pem", "--public-key", "b.pem"]), 1)
+
+    def test_check_key_on_a_missing_file_exits_one(self) -> None:
+        self.assertEqual(module.main(["--check-key", "/nonexistent/escrow.pem"]), 1)
 
 
 if __name__ == "__main__":

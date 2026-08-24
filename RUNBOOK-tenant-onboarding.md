@@ -38,6 +38,36 @@ are in `infra/provisioning/escrow/README.md`. **Do this before any tenant
 exists** — a lost escrow private key makes every ciphertext the flow ever
 publishes useless at once, and the flow would still report success on every run.
 
+**Prove the archived private key decrypts what the committed public key
+produces — before the first tenant, not at the first recovery.** "Saved and
+readable" is not custody: doc 14 §3.3 records this rule from INC-3, that the
+value read back out of the password manager is the one a decrypt-touching
+command has proved. The escrow's `--self-test` round-trips an *ephemeral*
+keypair, which proves the openssl option strings are self-consistent and nothing
+whatever about the committed key.
+
+Run this once, and again after any rotation, with the private half fetched from
+**each** place it is meant to live — the password manager and the off-site
+archive — not from the copy still on the workstation from generation:
+
+```bash
+# The public half as committed, the private half as retrieved.
+printf 'escrow-custody-proof' \
+  | python3 infra/provisioning/scripts/escrow-tenant-passphrase.py \
+      --public-key infra/provisioning/escrow/tenant-passphrase-escrow.pub.pem \
+  | base64 -d > /tmp/escrow-proof.bin
+openssl pkeyutl -decrypt -inkey <the retrieved private key> \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+  -pkeyopt rsa_mgf1_md:sha256 -in /tmp/escrow-proof.bin
+rm -f /tmp/escrow-proof.bin
+```
+
+It must print `escrow-custody-proof`. Anything else — a padding error, a
+different key, an archive holding a truncated paste — means every tenant
+passphrase this flow would go on to publish is unrecoverable, while the flow
+reports success on every run. That is the failure this step exists to catch, and
+it is the only step in this runbook that catches it.
+
 **The provisioning credentials, environment-scoped.** Every
 provisioning-capable secret on `branchLeft/ghost-platform` must sit on the
 `tenant-provisioning` environment, not at the repository level, behind that
@@ -75,6 +105,28 @@ gh variable set PLATFORM_MEDIA_PUBLIC_BASE_URL --repo branchLeft/ghost-platform 
 gh variable set HETZNER_PULUMI_BACKEND_URL     --repo branchLeft/ghost-platform --body 's3://<tenant-state-bucket>?endpoint=<region>.your-objectstorage.com&s3ForcePathStyle=true&region=<region>'
 ```
 
+And the reviewers a generated tenant repository's `production` environment is
+created with. Verbatim JSON, because it becomes the API body's `reviewers` array
+— a repository variable rather than an identity written into a workflow file in
+a public repository:
+
+```bash
+gh api users/Rob-branchLeft --jq .id     # the numeric id to put below
+gh variable set TENANT_ENVIRONMENT_REVIEWERS --repo branchLeft/ghost-platform \
+  --body '[{"type":"User","id":<that id>}]'
+```
+
+Provisioning refuses to create a public tenant repo's environment while this is
+unset, and reads the environment back afterwards to confirm a
+`required_reviewers` rule actually landed — a PUT naming a principal without
+access to the new repository succeeds and silently produces no rule. For a
+**private** tenant repo it is skipped with a warning: protection rules are a
+public-repository feature on this plan tier, so choosing private for a tenant
+also chooses that their deploy cannot be gated. The environment is still
+created, because the scoping it gives — secrets readable only by the job that
+declares it, never by a run from a branch — is plan-independent and is most of
+the value.
+
 The media values are the ones the media-isolation decision is still open on, so
 they are placeholders here rather than invented: the endpoint host and the
 region must name the same location, and a mismatch is an opaque 403 that reads
@@ -98,7 +150,43 @@ tenant — the repository, and its name, say that they are a customer — so it 
 their answer to give, before anything is created. The dispatch form opens on an
 option that is not a valid answer, so it cannot be left unanswered.
 
-### 2. Allocate the UID on the app host
+### 2. Put the provisioning scripts on the hosts
+
+**Do this before step 3, every time.** Three different directories in two
+repositories provide the scripts this runbook invokes, they land in three
+different places, and `db1` is private-network-only so everything reaching it
+goes through `edge1`. An earlier draft of this runbook invoked all of them from
+one invented path.
+
+```bash
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
+
+# a. db1's own scripts, from branchLeft/ghost-platform. Destination fixed by
+#    db/RUNBOOK-db.md -- the systemd units installed from there reference it.
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r \
+  db/provision root@10.20.1.20:/opt/branchleft/db/
+
+# b. The app host's per-tenant volume step, also from branchLeft/ghost-platform.
+#    No runbook placed this anywhere before; it goes beside the host-provisioning
+#    scripts so that one directory on an app host holds everything root runs.
+scp -i ~/.ssh/id_ed25519_hetzner -r \
+  app/provision/. root@<app1-public-ipv4>:/root/platform-provision/
+
+# c. The host-provisioning scripts, from branchLeft/shared-infra. This is what
+#    installs provision_deploy_slot.py and the branchleft-deploy wrapper that
+#    understands --slot; a host provisioned before slot keys existed needs the
+#    wrapper refreshed or every slot deploy fails with `invalid stack name`.
+scp -i ~/.ssh/id_ed25519_hetzner -r \
+  hetzner/provision/. root@<app1-public-ipv4>:/root/platform-provision
+ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+  '/root/platform-provision/30-install-deploy-tooling.sh'
+```
+
+`app/provision/` and `hetzner/provision/` share `/root/platform-provision` on an
+app host and come from different repositories, so copy both whenever either
+changes; a stale half is a script that runs and disagrees with its neighbour.
+
+### 3. Allocate the UID on the app host
 
 ```bash
 ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
@@ -113,7 +201,7 @@ point the repository would exist.
 
 Pick the host port the same way, distinct per tenant on that host.
 
-### 3. Dispatch the provisioning workflow
+### 4. Dispatch the provisioning workflow
 
 ```bash
 gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
@@ -121,8 +209,8 @@ gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
   -f tenant_name=<slug> \
   -f tenant_repo=ghost-tenant-<slug> \
   -f site_url=https://<hostname> \
-  -f tenant_uid=<uid from step 2> \
-  -f host_port=<port from step 2> \
+  -f tenant_uid=<uid from step 3> \
+  -f host_port=<port from step 3> \
   -f app_host_private_ip=10.20.1.100 \
   -f app_host_ssh_address=<app1-public-ipv4> \
   -f image_ref=ghcr.io/branchleft/<image>@sha256:<digest>
@@ -136,11 +224,14 @@ it, then read the job summary: it carries the escrowed passphrase ciphertext.
 expire; the password manager is the escrow of record, and step 5 needs the
 plaintext anyway.
 
-### 4. Create the tenant's database and DB user, on `db1`
+### 5. Create the tenant's database and DB user, on `db1`
+
+`db1` has no public address, so this goes through `edge1`:
 
 ```bash
-ssh -i ~/.ssh/id_ed25519_hetzner root@<db1-reachable-address> \
-  'MYSQL_PWD=<mysql root password> /root/platform-provision/provision_tenant_db.py <slug>'
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
+  'MYSQL_PWD=<mysql root password> python3 /opt/branchleft/db/provision/provision_tenant_db.py <slug>'
 ```
 
 It prints `password=<value>` **once**, and prints nothing about it on a re-run —
@@ -148,9 +239,8 @@ It prints `password=<value>` **once**, and prints nothing about it on a re-run �
 before the terminal scrolls; the recovery if you lose it is a password reset,
 not a lookup.
 
-`db1` is private-network-only, so this runs from `app1` or through it.
 
-### 5. Complete and merge nothing yet — finish the handover branch
+### 6. Complete and merge nothing yet — finish the handover branch
 
 From a local checkout of the generated repository, on the
 `provisioning/handover` branch:
@@ -170,7 +260,7 @@ pulumi login "$(gh variable get PULUMI_BACKEND_URL --repo branchLeft/ghost-tenan
 # config about which key its secrets are under.
 printf '\nencryptionsalt: %s\n' '<the PULUMI_ENCRYPTION_SALT value>' >> Pulumi.<slug>.yaml
 
-pulumi config set --secret databasePassword     --stack <slug>   # from step 4
+pulumi config set --secret databasePassword     --stack <slug>   # from step 5
 pulumi config set --secret mediaAccessKeyId     --stack <slug>
 pulumi config set --secret mediaSecretAccessKey --stack <slug>
 
@@ -200,7 +290,7 @@ The salt is not in the escrow ciphertext: it is in the tenant repository's
 longer have it, read it out of the stack's checkpoint —
 `pulumi stack export --stack <slug> | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployment"]["secrets_providers"]["state"]["salt"])'`.
 
-### 6. Provision the host side, in this order
+### 7. Provision the host side, in this order
 
 ```bash
 # a. The volumes and the UID claim. The rendered stack declares both volumes
@@ -234,6 +324,17 @@ ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
 #    whichever authorized_keys entry sshd reaches first, which hands one
 #    repository a deploy into the other's stack.
 ssh-keygen -t ed25519 -N '' -C 'unused' -f ~/.ssh/id_ed25519_slot_<slug>
+#    Run WITHOUT --adopt-existing-stack first. It is expected to REFUSE, and
+#    the refusal names the stack it found on the host -- that name is the
+#    check. Passing the flag up front suppresses the message entirely, so a
+#    mistyped slug would grant that stack's deploy slot to this tenant with no
+#    signal at all.
+ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+  "/root/platform-provision/provision_deploy_slot.py --public-key-file /dev/stdin <slug>" \
+  < ~/.ssh/id_ed25519_slot_<slug>.pub
+
+#    Read the refusal. It must name the slug you are onboarding, and nothing
+#    else. Only then re-run with the flag.
 ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
   "/root/platform-provision/provision_deploy_slot.py --public-key-file /dev/stdin --adopt-existing-stack <slug>" \
   < ~/.ssh/id_ed25519_slot_<slug>.pub
@@ -246,20 +347,28 @@ gh secret set APP_HOST_DEPLOY_KEY --repo branchLeft/ghost-tenant-<slug> --env pr
 rm ~/.ssh/id_ed25519_slot_<slug>
 ```
 
-**Why `--adopt-existing-stack` is expected here, and what you must check before
-passing it.** `provision_deploy_slot.py` refuses a slug naming a stack the host
-already runs, and step (c) has just created `/opt/branchleft/<slug>`. The
-ordering is deliberate — the compose file has to exist before the first deploy,
-because `branchleft-deploy` refuses a stack with no compose file, so a slot
-granted first would authenticate and then fail every deploy. The cost is that
-this refusal fires on every tenant, which is the thing that makes it stop being
-read. **So read it every time:** the refusal names the stack it found. If that
-name is anything other than the tenant you are onboarding — `website`, `edge`,
-`db`, `monitoring` — stop. Granting `website`'s slot to a tenant repository
-hands that repository the marketing site.
+**Why the grant is run twice, and why the first one is not a mistake.**
+`provision_deploy_slot.py` refuses a slug naming a stack the host already runs
+unless `--adopt-existing-stack` is given, and step (c) has just created
+`/opt/branchleft/<slug>`. That ordering is deliberate: the compose file has to
+exist before the first deploy, because `branchleft-deploy` refuses a stack with
+no compose file, so a slot granted first would authenticate and then fail every
+deploy.
 
-Tightening this so the flag is not routine on the normal path is tracked
-separately; until then, the check is yours to make.
+The cost is that the refusal fires for every tenant, which is what makes a
+refusal stop being read. Passing the flag up front is worse than that, not
+better: the script raises **only** when the flag is absent, so with it there is
+no refusal, no warning, and no line naming the stack found — a mistyped slug at
+this step silently grants that stack's slot to this tenant. Granting `website`'s
+slot to a tenant repository hands that repository the marketing site.
+
+So the first run exists to produce the message, and reading it is the control.
+If it names anything other than the tenant you are onboarding — `website`,
+`edge`, `db`, `monitoring` — stop.
+
+Changing the check's shape so the flag is not routine on the normal path is
+[branchLeft/workspace#279](https://github.com/branchLeft/workspace/issues/279);
+until it lands, this two-step is the procedure.
 
 **Verify the slot before going further.** Nothing in CI can exercise the path a
 slot key takes — sshd forced command → `$SHELL -c` → `sudo -n` with no
@@ -285,7 +394,7 @@ Record the tenant, the host and the key fingerprint
 (`ssh-keygen -lf ~/.ssh/id_ed25519_slot_<slug>.pub`) wherever that tenant's
 other provisioning facts live.
 
-### 7. Register the tenant at the edge
+### 8. Register the tenant at the edge
 
 Add this tenant's site block to the edge site registry in
 `branchLeft/shared-infra`, using the stack's own value:
@@ -297,7 +406,7 @@ pulumi stack output edgeRequestBodyMaxSize --stack <slug>
 It is derived from the same input as the container's `/tmp` ceiling so the two
 cannot disagree. Setting it there by hand to a different number defeats that.
 
-### 8. Merge the handover pull request
+### 9. Merge the handover pull request
 
 That is the first deploy. A healthy run applies the stack, reads `image` from
 it, and pipes the digest over the slot key. Check the `Deploy` job actually ran

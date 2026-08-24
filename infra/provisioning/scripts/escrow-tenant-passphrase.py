@@ -2,6 +2,7 @@
 """Encrypt a minted tenant passphrase to the escrow key, for a public log.
 
     escrow-tenant-passphrase.py --public-key <pem>   # passphrase on stdin
+    escrow-tenant-passphrase.py --check-key <pem>    # validate only, no input
     escrow-tenant-passphrase.py --self-test
 
 Prints one base64 line: the passphrase under RSA-OAEP/SHA-256 to the platform
@@ -27,10 +28,15 @@ secret stack config cannot be set without it. An escrow first exercised years
 later, during an incident, is not an escrow.
 
 **It fails closed, and the ordering is what makes that mean anything.** The
-caller runs `--self-test` and then this, and only writes the tenant repository's
-`PULUMI_CONFIG_PASSPHRASE` secret afterwards. A missing or unusable escrow key
-therefore stops the run before any stack exists that would need the passphrase,
-rather than after.
+caller runs `--self-test` and `--check-key` **before it creates anything**, and
+only writes the tenant repository's `PULUMI_CONFIG_PASSPHRASE` secret after the
+ciphertext exists. `--check-key` is why the second of those is a separate mode:
+every substantive check on the committed key lives in `validate_public_key()`,
+which the encrypt path reaches only once there is a passphrase to encrypt --
+several steps after `gh repo create`. Without it, a 2048-bit key, an EC key or
+the private half committed by mistake is caught only after a public repository
+named `ghost-tenant-<slug>` exists, and on this estate the existence of that
+repository is itself the disclosure that the tenant is a customer.
 
 Exit 0 on success, 1 on any refusal, 2 on usage error.
 """
@@ -129,6 +135,13 @@ def validate_public_key(public_key: pathlib.Path) -> int:
     return bits
 
 
+def check_key(public_key: pathlib.Path) -> str:
+    """Validate the escrow key with no passphrase in hand. Returns a report line."""
+    bits = validate_public_key(public_key)
+    capacity = bits // 8 - OAEP_HASH_OVERHEAD
+    return f"escrow key OK: RSA-{bits}, {capacity} bytes of RSA-OAEP capacity"
+
+
 def escrow(passphrase: str, public_key: pathlib.Path) -> str:
     if not passphrase:
         raise EscrowError("refusing to escrow an empty passphrase")
@@ -213,28 +226,44 @@ def self_test() -> None:
             (pathlib.Path(tmp) / "absent.pem", "a missing key"),
             (private, "the private half"),
         ):
-            try:
-                escrow(secret, bad)
-            except EscrowError:
-                continue
-            raise EscrowError(f"escrow accepted {why}")
+            for entry, name in ((escrow, "escrow"), (lambda k: check_key(k), "check_key")):
+                try:
+                    entry(secret, bad) if name == "escrow" else entry(bad)
+                except EscrowError:
+                    continue
+                raise EscrowError(f"{name} accepted {why}")
     print("escrow-tenant-passphrase.py self-test passed")
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--public-key", type=pathlib.Path)
+    parser.add_argument(
+        "--check-key",
+        type=pathlib.Path,
+        help="validate the escrow public key and exit; reads no passphrase",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
     try:
         if args.self_test:
-            if args.public_key is not None:
-                raise EscrowError("--self-test takes no --public-key")
+            if args.public_key is not None or args.check_key is not None:
+                raise EscrowError("--self-test takes no --public-key and no --check-key")
             self_test()
+            return 0
+        if args.check_key is not None:
+            if args.public_key is not None:
+                raise EscrowError("--check-key and --public-key are alternatives")
+            print(check_key(args.check_key))
             return 0
         if args.public_key is None:
             raise EscrowError("--public-key is required unless --self-test is given")
+        # Validated before stdin is read, not after. Reading first means an
+        # unusable key is reported only once a passphrase has been handed over
+        # -- and when stdin is a terminal rather than a pipe it means blocking
+        # forever instead of failing, which is how this surfaced.
+        validate_public_key(args.public_key)
         passphrase = sys.stdin.read().strip("\n")
         # No trailing newline: the caller writes this into a job summary and an
         # artifact, and a stray one is a base64 line that no longer decodes as a
