@@ -8,7 +8,7 @@
     "test:unit": "vitest --run"
   },
   "dependencies": {
-    "@branchleft/hetzner-host": "0.2.0",
+    "@branchleft/hetzner-host": "0.3.0",
     "@pulumi/hcloud": "1.41.0",
     "@pulumi/pulumi": "^3.255.0"
   },
