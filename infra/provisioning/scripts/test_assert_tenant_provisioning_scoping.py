@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import pathlib
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest.mock import patch
 
 
 def _load_module():
@@ -182,6 +184,69 @@ class MainTests(unittest.TestCase):
         # argparse's own parser.error() exits 2, distinct from the guard's
         # own pass/fail exit codes of 0 and 1.
         self.assertEqual(ctx.exception.code, 2)
+
+
+class MessageFunctionsTests(unittest.TestCase):
+    # The regression this class exists to catch: an earlier draft printed the
+    # literal string `<owner>/<repo>` in every failure message, which errors
+    # if an operator pastes it straight out of a failed run's log -- exactly
+    # when nobody wants to be reconstructing the command by hand.
+    def test_missing_message_interpolates_the_given_repo(self):
+        message = guard._missing_message(frozenset({"GH_PAT_TENANT_PROVISIONING"}), "acme/widgets")
+        self.assertIn("gh secret set <NAME> --repo acme/widgets --env tenant-provisioning", message)
+
+    def test_shadowed_message_interpolates_the_given_repo(self):
+        message = guard._shadowed_message(frozenset({"TENANT_STATE_S3_ACCESS_KEY_ID"}), "acme/widgets")
+        self.assertIn("gh secret delete <NAME> --repo acme/widgets", message)
+
+
+class RepoInterpolationTests(unittest.TestCase):
+    """`main`'s --repo resolution: explicit flag, then $GITHUB_REPOSITORY --
+    which the Actions runner always sets during a real workflow run -- and
+    only the placeholder when neither is available."""
+
+    def _write(self, directory: pathlib.Path, name: str, names: list[str]) -> str:
+        path = directory / name
+        path.write_text("\n".join(names) + ("\n" if names else ""))
+        return str(path)
+
+    def _run_and_capture(self, extra_args: list[str]) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            env_file = self._write(directory, "env.txt", [])
+            repo_file = self._write(directory, "repo.txt", [])
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                rc = guard.main(
+                    ["--environment-secrets", env_file, "--repository-secrets", repo_file]
+                    + extra_args
+                )
+            return rc, stderr.getvalue()
+
+    def test_explicit_repo_flag_is_interpolated(self):
+        with patch.dict(os.environ, {}, clear=True):
+            rc, stderr = self._run_and_capture(["--repo", "acme/widgets"])
+        self.assertEqual(rc, 1)
+        self.assertIn("--repo acme/widgets --env tenant-provisioning", stderr)
+
+    def test_github_repository_env_var_is_used_with_no_explicit_flag(self):
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "branchLeft/ghost-platform"}):
+            rc, stderr = self._run_and_capture([])
+        self.assertEqual(rc, 1)
+        self.assertIn("--repo branchLeft/ghost-platform --env tenant-provisioning", stderr)
+
+    def test_falls_back_to_the_placeholder_when_neither_is_set(self):
+        with patch.dict(os.environ, {}, clear=True):
+            rc, stderr = self._run_and_capture([])
+        self.assertEqual(rc, 1)
+        self.assertIn(f"--repo {guard.REPO_PLACEHOLDER} --env tenant-provisioning", stderr)
+
+    def test_explicit_repo_flag_overrides_the_environment_variable(self):
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "wrong/repo"}):
+            rc, stderr = self._run_and_capture(["--repo", "acme/widgets"])
+        self.assertEqual(rc, 1)
+        self.assertIn("--repo acme/widgets", stderr)
+        self.assertNotIn("wrong/repo", stderr)
 
 
 if __name__ == "__main__":

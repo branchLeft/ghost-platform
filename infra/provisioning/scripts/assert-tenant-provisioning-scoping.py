@@ -27,12 +27,26 @@ check at all.
     assert-tenant-provisioning-scoping.py --self-test
     assert-tenant-provisioning-scoping.py \
         --environment-secrets <file> --repository-secrets <file>
+
+A failure message's remediation commands (`gh secret set ... --repo`) carry
+the real owner/repo, read from $GITHUB_REPOSITORY -- which the Actions runner
+always sets -- or an explicit --repo, so an operator can copy one straight
+out of a failed run's log rather than reconstructing it by hand during a
+failed provisioning run.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+
+# Used only when neither $GITHUB_REPOSITORY nor an explicit --repo is
+# available -- outside a real Actions run, i.e. local testing. A real
+# provisioning run always has $GITHUB_REPOSITORY set by the runner, so an
+# operator reading a failed run's log always gets a pasteable command, never
+# this placeholder.
+REPO_PLACEHOLDER = "<owner>/<repo>"
 
 # The tenant-provisioning environment's own credentials. Not
 # HETZNER_S3_ACCESS_KEY_ID / HETZNER_S3_SECRET_ACCESS_KEY: those name the
@@ -62,6 +76,27 @@ def check(
 def _read_names(path: str) -> list[str]:
     with open(path, encoding="utf-8") as handle:
         return [line.strip() for line in handle if line.strip()]
+
+
+def _missing_message(missing: frozenset[str], repo: str) -> str:
+    return (
+        "::error::these secrets are not scoped to the tenant-provisioning "
+        f"environment: {' '.join(sorted(missing))}. They are "
+        "provisioning-capable credentials and must sit behind the "
+        "required-reviewer gate. Move each one with: gh secret set <NAME> "
+        f"--repo {repo} --env tenant-provisioning, then delete the "
+        "repository-level copy."
+    )
+
+
+def _shadowed_message(shadowed: frozenset[str], repo: str) -> str:
+    return (
+        "::error::these provisioning-capable secrets still exist at the "
+        f"repository level: {' '.join(sorted(shadowed))}. Any workflow run "
+        "in this repository can read them, including one added on a "
+        "branch, which is the exact reach the environment scoping exists "
+        f"to remove. Delete each with: gh secret delete <NAME> --repo {repo}"
+    )
 
 
 def _self_test() -> None:
@@ -126,6 +161,17 @@ def main(argv: list[str]) -> int:
         "--repository-secrets",
         help="file of newline-separated secret names at the repository level",
     )
+    parser.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY") or None,
+        help=(
+            "owner/repo interpolated into the remediation commands in a "
+            "failure message. Defaults to $GITHUB_REPOSITORY, which the "
+            "Actions runner always sets during a real workflow run; falls "
+            f"back to the placeholder '{REPO_PLACEHOLDER}' when neither is "
+            "available, e.g. running this script locally."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.self_test:
@@ -138,28 +184,14 @@ def main(argv: list[str]) -> int:
     missing, shadowed = check(
         _read_names(args.environment_secrets), _read_names(args.repository_secrets)
     )
+    repo = args.repo or REPO_PLACEHOLDER
 
     ok = True
     if missing:
-        print(
-            "::error::these secrets are not scoped to the tenant-provisioning "
-            f"environment: {' '.join(sorted(missing))}. They are "
-            "provisioning-capable credentials and must sit behind the "
-            "required-reviewer gate. Move each one with: gh secret set <NAME> "
-            "--repo <owner>/<repo> --env tenant-provisioning, then delete the "
-            "repository-level copy.",
-            file=sys.stderr,
-        )
+        print(_missing_message(missing, repo), file=sys.stderr)
         ok = False
     if shadowed:
-        print(
-            "::error::these provisioning-capable secrets still exist at the "
-            f"repository level: {' '.join(sorted(shadowed))}. Any workflow run "
-            "in this repository can read them, including one added on a "
-            "branch, which is the exact reach the environment scoping exists "
-            "to remove. Delete each with: gh secret delete <NAME> --repo <owner>/<repo>",
-            file=sys.stderr,
-        )
+        print(_shadowed_message(shadowed, repo), file=sys.stderr)
         ok = False
     return 0 if ok else 1
 
