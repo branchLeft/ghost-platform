@@ -26,12 +26,17 @@ WHAT THE POLICY HAS TO ACHIEVE, AND WHY EACH PIECE IS SHAPED AS IT IS.
 
   3. Append-only media. `s3:DeleteObject` is deliberately not available to the
      tenant's own key, which is why deletion from Ghost admin returns a 403.
-     That is a decision, not a gap.
+     That is a decision, not a gap -- and it is worth nothing unless the tenant
+     is also kept away from the bucket's *configuration*. A lifecycle rule
+     expiring every object destroys media without ever calling `DeleteObject`;
+     `PutBucketAcl` re-opens listing without touching this policy; and
+     `PutBucketPolicy` replaces the whole fence. The tenant's key therefore gets
+     no bucket-resource action beyond three harmless reads.
 
-  4. The bucket must stay administrable. A `NotPrincipal` deny over `s3:*` on
-     the bucket resource also denies `PutBucketPolicy` -- so a policy that
-     names only the tenant's key locks the bucket permanently, including
-     against the account that owns it. The operator's own key is therefore in
+  4. The bucket must stay administrable. A `NotPrincipal` deny covering
+     `PutBucketPolicy` locks the bucket permanently if it does not exempt the
+     account that owns it, because the statement that would have to be edited
+     is the statement doing the denying. The operator's own key is therefore in
      every `NotPrincipal` list here. Hetzner also warns that the Console stops
      being able to list a restricted bucket at all, which is worth knowing
      before an incident rather than during one.
@@ -66,6 +71,13 @@ MEDIA_BUCKET_PREFIX = "branchleft-media-"
 # end in a letter or a digit.
 SLUG_PATTERN = re.compile(r"\A[a-z][a-z0-9-]*[a-z0-9]\Z|\A[a-z]\Z")
 
+# Mirrors `RESERVED_STACK_NAMES` in infra/tenant/naming.ts. Refused here as well
+# as there because this script is the FIRST thing an operator runs for a new
+# tenant -- earlier than the component, earlier than provision-tenant.yml -- and
+# it prints commands that create a real bucket. A slug the rest of the platform
+# will later refuse must not get a bucket made for it first.
+RESERVED_SLUGS = frozenset({"website", "edge", "db", "monitoring"})
+
 # Refusing anything but alphanumerics is the control, not the format check: a
 # colon or a quote in either value lands inside an ARN string and changes which
 # principal the policy names.
@@ -78,6 +90,18 @@ ACCESS_KEY_PATTERN = re.compile(r"\A[A-Za-z0-9]{16,64}\Z")
 # cannot enumerate versions, because `ListBucketVersions` is an action on the
 # BUCKET resource and the bucket resource is denied to them outright.
 PUBLIC_READ_ACTIONS = ["s3:GetObject", "s3:GetObjectVersion"]
+
+# The only bucket-resource actions the tenant's key keeps. None of them mutates
+# anything. None is known to be needed by Ghost either -- `exists()` sends
+# `HeadObjectCommand`, an object action, and `S3Storage.ts` issues no
+# `ListBucket` anywhere -- so they are retained as AWS-SDK headroom (region
+# resolution, multipart enumeration) rather than as a Ghost requirement, and
+# they are the first thing to shrink if that headroom proves unnecessary.
+TENANT_BUCKET_READ_ACTIONS = [
+    "s3:ListBucket",
+    "s3:ListBucketMultipartUploads",
+    "s3:GetBucketLocation",
+]
 
 # Withheld from the tenant's own key. Lifecycle expiry is performed by the
 # storage service rather than by an API caller, so a retention rule still
@@ -98,6 +122,12 @@ def media_bucket_name(slug: str) -> str:
     if len(slug) > 26:
         raise PolicyInputError(
             f"tenant slug {slug!r} is {len(slug)} characters; the platform caps it at 26"
+        )
+    if slug in RESERVED_SLUGS:
+        raise PolicyInputError(
+            f"tenant slug {slug!r} is reserved -- an app host already runs a Compose stack of "
+            f"that name, and the tenant component refuses it. Refused here too, because this "
+            f"script runs first and its commands create a real bucket."
         )
     return f"{MEDIA_BUCKET_PREFIX}{slug}"
 
@@ -148,14 +178,39 @@ def render_policy(
                 "Resource": objects_arn,
             },
             {
-                # Everything addressed at the bucket itself -- ListBucket,
-                # ListBucketVersions, the policy and lifecycle sub-resources --
-                # is denied to everyone but the two named keys. This is what
-                # makes the bucket unlistable rather than merely un-granted.
-                "Sid": "DenyBucketLevelAccessExceptNamedKeys",
+                # Every bucket-resource action except the three harmless reads,
+                # denied to everyone but the OPERATOR -- the tenant included.
+                #
+                # The tenant's exclusion is the point, and the first draft of
+                # this file got it wrong by putting the tenant in this
+                # `NotPrincipal` list. Hetzner's project-wide default then
+                # applied, so the key sitting in `/etc/branchleft/<slug>.env`
+                # inside the tenant's own container could call
+                # `PutBucketPolicy` and replace these statements,
+                # `PutBucketAcl` and publish the object listing, or
+                # `PutLifecycleConfiguration` and expire every object without
+                # ever calling `DeleteObject`. "The bucket is the boundary" is
+                # only true while the boundary is not writable from inside it.
+                #
+                # `NotAction` rather than an enumerated `Action` list, so a
+                # bucket sub-resource nobody thought of falls closed.
+                "Sid": "DenyBucketConfigurationExceptOperator",
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": [admin]},
+                "NotAction": TENANT_BUCKET_READ_ACTIONS,
+                "Resource": bucket_arn,
+            },
+            {
+                # The three reads the statement above exempts, denied to
+                # everyone but the tenant and the operator. This is what makes
+                # the bucket unlistable *explicitly* rather than merely
+                # un-granted, and the distinction is load-bearing: an implicit
+                # deny is overcome by a `public-read` bucket ACL, an explicit
+                # policy Deny is not.
+                "Sid": "DenyBucketReadsExceptNamedKeys",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": [tenant, admin]},
-                "Action": "s3:*",
+                "Action": TENANT_BUCKET_READ_ACTIONS,
                 "Resource": bucket_arn,
             },
             {
@@ -212,23 +267,49 @@ S3='aws --endpoint-url {endpoint} s3api'
 $S3 create-bucket --bucket {bucket} --acl private \\
   --create-bucket-configuration LocationConstraint={region}
 
-# 2. Versioning, so an overwrite is recoverable and the lifecycle rule in
-#    doc 14 section 8 has something to expire.
+# 2. Versioning, so an overwrite is recoverable and step 3 has something to
+#    expire.
 $S3 put-bucket-versioning --bucket {bucket} \\
   --versioning-configuration Status=Enabled
 
-# 3. The policy. Until this lands the bucket is reachable by EVERY key in the
+# 3. The lifecycle rule doc 14 section 8 specifies. BEFORE the policy, because
+#    step 4 denies `PutLifecycleConfiguration` to every key but the operator's
+#    and there is no reason to depend on that exemption holding. Hetzner
+#    supports only `NoncurrentDays` for NoncurrentVersionExpiration --
+#    `NewerNoncurrentVersions` is unavailable -- and days is what section 8
+#    wants. `AbortIncompleteMultipartUpload` stops a failed Ghost upload
+#    accruing storage nothing will ever complete or bill down.
+cat > /tmp/{bucket}-lifecycle.json <<'LIFECYCLE'
+{{
+  "Rules": [
+    {{
+      "ID": "branchleft-media-retention",
+      "Status": "Enabled",
+      "Filter": {{"Prefix": ""}},
+      "NoncurrentVersionExpiration": {{"NoncurrentDays": 30}},
+      "AbortIncompleteMultipartUpload": {{"DaysAfterInitiation": 7}}
+    }}
+  ]
+}}
+LIFECYCLE
+$S3 put-bucket-lifecycle-configuration --bucket {bucket} \\
+  --lifecycle-configuration file:///tmp/{bucket}-lifecycle.json
+rm /tmp/{bucket}-lifecycle.json
+
+# 4. The policy. Until this lands the bucket is reachable by EVERY key in the
 #    project, because Hetzner's default is project-wide key access -- so do not
-#    leave step 3 for later, and do not hand the tenant its key before it.
+#    leave step 4 for later, and do not hand the tenant its key before it.
 cat > /tmp/{bucket}-policy.json <<'POLICY'
 {policy}
 POLICY
 $S3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 rm /tmp/{bucket}-policy.json
 
-# 4. Read it back. A put that was accepted and stored something different is
-#    the failure worth catching here.
+# 5. Read both back. A put that was accepted and stored something different is
+#    the failure worth catching here -- Hetzner is known to accept a
+#    configuration and silently drop an element of it.
 $S3 get-bucket-policy --bucket {bucket} --output text
+$S3 get-bucket-lifecycle-configuration --bucket {bucket}
 """
 
 
@@ -259,7 +340,15 @@ def _self_test() -> None:
         (tenant, "s3:ListBucket", bucket, "allow"),
         (tenant, "s3:DeleteObject", f"{bucket}/x.png", "deny"),
         (tenant, "s3:DeleteObjectVersion", f"{bucket}/x.png", "deny"),
-        (tenant, "s3:PutBucketPolicy", bucket, "allow"),
+        # The tenant must not be able to edit the fence that constrains it.
+        # Each of these was `allow` in the first draft.
+        (tenant, "s3:PutBucketPolicy", bucket, "deny"),
+        (tenant, "s3:DeleteBucketPolicy", bucket, "deny"),
+        (tenant, "s3:PutBucketAcl", bucket, "deny"),
+        (tenant, "s3:PutLifecycleConfiguration", bucket, "deny"),
+        (tenant, "s3:PutBucketVersioning", bucket, "deny"),
+        (tenant, "s3:DeleteBucket", bucket, "deny"),
+        (tenant, "s3:ListBucketVersions", bucket, "deny"),
         (other, "s3:ListBucket", bucket, "deny"),
         (other, "s3:PutObject", f"{bucket}/x.png", "deny"),
         (other, "s3:DeleteObject", f"{bucket}/x.png", "deny"),

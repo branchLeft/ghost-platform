@@ -302,7 +302,11 @@ Take the credential first, because the policy has to name it:
    immediately: **the secret is shown once and cannot be read back, through the
    Console or otherwise.**
 2. Run the rendered sequence. It creates the bucket with `--acl private`,
-   enables versioning, applies the policy and reads it back.
+   enables versioning, applies doc 14 §8's 30-day noncurrent lifecycle rule,
+   applies the policy, and reads both the policy and the lifecycle back. The
+   lifecycle comes **before** the policy deliberately: the policy denies
+   `PutLifecycleConfiguration` to every key but the operator's, and there is no
+   reason to depend on that exemption holding.
 
 **Do not leave the policy for later, and do not hand the tenant its key before
 the policy is applied.** Hetzner's default is that every key pair is valid for
@@ -314,41 +318,98 @@ LIST in S3 semantics: it would publish this tenant's object names, and through
 the bucket name the fact that the tenant exists. Public-read-but-not-listable is
 served by the policy's `s3:GetObject` grant on the object path alone.
 
-#### Verify the four decisions against the live bucket
+#### Verify the policy against the live bucket
 
 Hetzner documents `NotPrincipal` verbatim but publishes no list of supported
-policy actions or conditions, and says nothing about `NotAction`, which the
-policy's object-level deny relies on to leave anonymous reads intact. A
-successful `put-bucket-policy` is therefore not proof. Run all four, with the
-**tenant's** key in the environment except where stated:
+policy actions, principals or conditions — it defers to Amazon's documentation —
+and says nothing about `NotAction`, which both of the policy's blanket denies
+rely on. A successful `put-bucket-policy` is therefore not proof of anything.
+
+**Each probe states which credential it runs under, and the block switches them
+explicitly.** Running the tenant probes under the operator key is the mistake
+this ordering exists to prevent: (d) and (e) would succeed and read as "the
+policy did not land", failing a bucket that is in fact correct.
 
 ```bash
 S3="aws --endpoint-url https://hel1.your-objectstorage.com s3api"
+BUCKET=branchleft-media-<slug>
 
-# a. Public read works. No credential at all -- if this needs one, cdnUrl is
-#    broken for every reader.
+# ---- as the OPERATOR ------------------------------------------------------
+export AWS_ACCESS_KEY_ID='<operator access key id>'
+export AWS_SECRET_ACCESS_KEY='<operator secret access key>'
 echo hello > /tmp/probe.txt
-$S3 put-object --bucket branchleft-media-<slug> --key probe.txt --body /tmp/probe.txt
-curl -fsS "https://hel1.your-objectstorage.com/branchleft-media-<slug>/probe.txt"
+$S3 put-object --bucket "$BUCKET" --key probe.txt --body /tmp/probe.txt
 
-# b. The bucket is NOT listable anonymously. This is the one that fails
-#    silently: every image would still load. Expect AccessDenied, not a listing.
-curl -sS "https://hel1.your-objectstorage.com/branchleft-media-<slug>?list-type=2"
+# a. Public read works, with no credential at all. If this needs one, cdnUrl is
+#    broken for every reader of every post.
+curl -fsS "https://hel1.your-objectstorage.com/$BUCKET/probe.txt"
 
-# c. Media is append-only for the tenant's own key. Expect AccessDenied.
-$S3 delete-object --bucket branchleft-media-<slug> --key probe.txt
+# b. The bucket is NOT listable anonymously. The failure that looks like
+#    success: every image still loads. Expect AccessDenied, not a listing.
+curl -sS "https://hel1.your-objectstorage.com/$BUCKET?list-type=2"
 
-# d. The tenant's key reaches no other tenant's bucket. Expect AccessDenied.
-$S3 list-objects-v2 --bucket branchleft-media-<another live slug>
+# ---- as a THIRD key: neither the tenant's nor the operator's ---------------
+#    This is the only probe that exercises the object-level `NotAction` deny,
+#    and it is the dangerous direction. If Hetzner ignores `NotAction`
+#    permissively, every probe except this one still passes while every key in
+#    the project can write over this tenant's media. Use the tenant-state
+#    credential (TENANT_STATE_S3_ACCESS_KEY_ID) -- it exists today, and it is a
+#    real non-tenant, non-operator key in the same project.
+export AWS_ACCESS_KEY_ID='<tenant-state access key id>'
+export AWS_SECRET_ACCESS_KEY='<tenant-state secret access key>'
+
+# c. A foreign key cannot write into this bucket. Expect AccessDenied.
+$S3 put-object --bucket "$BUCKET" --key foreign.txt --body /tmp/probe.txt
+
+# ---- as the TENANT --------------------------------------------------------
+export AWS_ACCESS_KEY_ID='<this tenant access key id>'
+export AWS_SECRET_ACCESS_KEY='<this tenant secret access key>'
+
+# d. Media is append-only for the tenant's own key. Expect AccessDenied.
+$S3 delete-object --bucket "$BUCKET" --key probe.txt
+
+# e. The tenant cannot edit the fence that constrains it. Expect AccessDenied
+#    on all three. This key sits inside the tenant's own container, so without
+#    these the tenant can replace the policy, publish the listing with a
+#    bucket ACL, or expire every object with a lifecycle rule -- destroying its
+#    media without ever calling delete.
+$S3 put-bucket-acl --bucket "$BUCKET" --acl public-read
+$S3 get-bucket-policy --bucket "$BUCKET"
+$S3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Suspended
+
+# f. The tenant's key reaches no other bucket in the project. Use an estate
+#    bucket that already exists rather than another tenant's: on the first
+#    onboarding there is no other tenant, and this probe must not be the one
+#    that gets skipped. Expect AccessDenied.
+$S3 list-objects-v2 --bucket branchleft-pulumi-state
+
+# ---- back to the OPERATOR, to clean up ------------------------------------
+export AWS_ACCESS_KEY_ID='<operator access key id>'
+export AWS_SECRET_ACCESS_KEY='<operator secret access key>'
 ```
 
-If (b) returns a listing, or (c) succeeds, stop: the policy did not land as
-written, and neither failure is visible from the tenant's side. Delete `probe.txt`
-with your **operator** key once the four are done.
+**Every one of (b) through (f) must return `AccessDenied`, and (a) must return
+`hello`.** If any tenant probe succeeds, stop and do not hand over the
+credential: none of these failures is visible from the tenant's side, and (c) in
+particular fails silently for every other tenant on the platform, not just this
+one.
 
-The operator key is deliberately still able to delete: append-only is a property
-of the tenant's credential, so that Ghost admin's delete button returns a 403,
-not a property of the bucket.
+Then remove the probe object. **A plain `delete-object` is not enough on a
+versioned bucket** — it writes a delete marker and leaves the prior version
+readable anonymously at `?versionId=`, because the policy grants
+`s3:GetObjectVersion` to everyone. The same is true of any real takedown:
+
+```bash
+$S3 list-object-versions --bucket "$BUCKET" --prefix probe.txt \
+  --query 'Versions[].VersionId' --output text \
+  | tr '\t' '\n' \
+  | while read -r v; do $S3 delete-object --bucket "$BUCKET" --key probe.txt --version-id "$v"; done
+$S3 delete-object --bucket "$BUCKET" --key probe.txt   # the delete marker itself
+```
+
+The operator key is deliberately still able to delete, and is the only key that
+can. Append-only is a property of the *tenant's* credential — so that Ghost
+admin's delete button returns a 403 — not a property of the bucket.
 
 ### 7. Complete and merge nothing yet — finish the handover branch
 

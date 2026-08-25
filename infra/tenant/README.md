@@ -168,6 +168,15 @@ caps are raisable has never been asked; branchLeft/workspace#176 is that support
 ticket, and a positive answer removes the constraint outright. The platform is
 at one tenant.
 
+## Breaking changes in 2.0.0
+
+`GhostTenantMediaArgs` loses `bucket`, `publicBaseUrl` and `tenantPrefix`; the
+component derives the first two from the slug and the endpoint. A 1.x caller
+passing any of the three does not compile. `storage__S3Storage__tenantPrefix` is
+no longer emitted, so a tenant that had media under a key prefix in a shared
+bucket does not find it after upgrading — moving that media is a migration, not
+an upgrade.
+
 ## Breaking changes in 1.0.0
 
 The 0.x component targeted GCP: a per-tenant service account, a Cloud SQL

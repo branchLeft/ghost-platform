@@ -427,6 +427,10 @@ jobs:
           # exists to preview.
           [[ "$PLATFORM_MEDIA_ENDPOINT" == https://* ]] \
             || fail "PLATFORM_MEDIA_ENDPOINT must be https -- Ghost embeds this base URL in every published post"
+          # Stricter than the component on purpose. `mediaPublicBaseUrl` trims
+          # trailing slashes and then refuses a path; this refuses both, because
+          # a trailing slash in a repository variable is a typo worth seeing
+          # once here rather than silently normalising for every tenant.
           [[ "${PLATFORM_MEDIA_ENDPOINT#https://}" != */* ]] \
             || fail "PLATFORM_MEDIA_ENDPOINT must be a bare host with no path and no trailing slash; the bucket is the first path segment under it"
 
@@ -435,6 +439,11 @@ jobs:
           # deliberately holds no credential that reaches any tenant's media.
           # Stated in the summary instead, where the operator who created the
           # bucket can compare it against what they created.
+          # Display only. The authoritative derivation is `mediaBucketName` in
+          # the tenant component, which is what the container is configured
+          # with; this echo and the job summary's two below exist so the
+          # operator can compare against the bucket they created. They are not
+          # a second source of truth, and nothing reads them back.
           echo "this tenant's media bucket will be branchleft-media-${TENANT}"
 
           if gh repo view "$TENANT_REPO" >/dev/null 2>&1; then
@@ -926,12 +935,16 @@ jobs:
             echo "### Still to do, in this order"
             echo
             echo "1. Decrypt and file the escrowed passphrase above."
-            echo "2. \`provision_tenant_db.py ${TENANT}\` on the database host, as root."
-            echo "3. \`provision_tenant_volume.py --uid ${TENANT_UID} ${TENANT}\` on the app host, as root."
-            echo "4. Write \`/etc/branchleft/${TENANT}.env\` and \`/opt/branchleft/${TENANT}/compose.yml\` from the stack's outputs, then \`systemctl enable branchleft-compose@${TENANT}\`."
-            echo "5. \`provision_deploy_slot.py --public-key-file /dev/stdin ${TENANT}\` on the app host, and set \`APP_HOST_DEPLOY_KEY\` on this tenant repo's \`production\` environment."
-            echo "6. Add this tenant's site block, with its \`edgeRequestBodyMaxSize\`, to the edge site registry."
-            echo "7. Complete and merge the handover pull request."
+            echo "2. Create \`branchleft-media-${TENANT}\`, its lifecycle rule, its"
+            echo "   bucket policy and this tenant's Object Storage credential, then run"
+            echo "   the verification probes. Nothing in this run did any of it, and a"
+            echo "   missing bucket is uploads failing after a deploy that reported success."
+            echo "3. \`provision_tenant_db.py ${TENANT}\` on the database host, as root."
+            echo "4. \`provision_tenant_volume.py --uid ${TENANT_UID} ${TENANT}\` on the app host, as root."
+            echo "5. Write \`/etc/branchleft/${TENANT}.env\` and \`/opt/branchleft/${TENANT}/compose.yml\` from the stack's outputs, then \`systemctl enable branchleft-compose@${TENANT}\`."
+            echo "6. \`provision_deploy_slot.py --public-key-file /dev/stdin ${TENANT}\` on the app host, and set \`APP_HOST_DEPLOY_KEY\` on this tenant repo's \`production\` environment."
+            echo "7. Add this tenant's site block, with its \`edgeRequestBodyMaxSize\`, to the edge site registry."
+            echo "8. Complete and merge the handover pull request."
             echo
             echo "Full sequence, with the exact commands: \`RUNBOOK-tenant-onboarding.md\`."
             if [ "$TENANT_VISIBILITY" = "private" ]; then
