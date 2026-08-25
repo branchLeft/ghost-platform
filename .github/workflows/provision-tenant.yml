@@ -26,6 +26,16 @@ name: Provision tenant
 #   4. It therefore does not run a tenant first apply. There is nothing to apply
 #      until (3) is done, and a stack applied against half its config would
 #      render a secrets file missing lines.
+#   5. It does not create the tenant's media bucket, its bucket policy or its
+#      media credential. Hetzner states that S3 credentials are created in the
+#      Cloud Console and NOT via any API -- neither the S3 API nor the hcloud
+#      API has the resource -- so there is nothing for an unattended run to
+#      call. That is not only a limitation: a credential able to mint media
+#      credentials would be a credential able to reach every tenant's media,
+#      which is the boundary the whole bucket-per-tenant shape exists to draw.
+#      RUNBOOK-tenant-onboarding.md has the operator sequence, and
+#      infra/provisioning/scripts/render-media-bucket-policy.py renders the
+#      policy it applies.
 #
 # THE GATE. This workflow is `workflow_dispatch` only -- no push, no schedule,
 # no merge starts it -- and the job declares `environment: tenant-provisioning`,
@@ -173,20 +183,22 @@ jobs:
       # in correctly from memory. `workflow_dispatch` also caps inputs at ten,
       # and this flow uses nine.
       #
-      # **The media shape these encode is provisional.** One shared bucket with
-      # a per-tenant key prefix is the migration programme's *second*-preference
-      # candidate and its isolation primitive is undemonstrated; bucket-per-
-      # tenant with per-bucket key allowlisting is listed first and is the
-      # documented Hetzner mechanism. Changing to that shape changes
-      # PLATFORM_MEDIA_BUCKET from a constant into a per-tenant value and so
-      # changes this workflow, not only these variables. Tracked as
-      # branchLeft/workspace#282, which turns on the same probe as
-      # branchLeft/workspace#281.
+      # **Two media variables, not four.** Each tenant now has its own media
+      # bucket, reached with a credential allowlisted to that bucket alone
+      # (branchLeft/workspace#282, doc 14 section 6 candidate (a)). The bucket
+      # name and the public base URL are therefore per-tenant, and they are
+      # derived from the slug by the tenant component rather than written here:
+      # a value a stack could set is a value a stack could set to another
+      # tenant's bucket. `PLATFORM_MEDIA_BUCKET` and
+      # `PLATFORM_MEDIA_PUBLIC_BASE_URL` are gone, and must be deleted from
+      # this repository's variables -- an unread variable holding a shared
+      # bucket name is a reader's evidence for a shape that no longer exists.
+      #
+      # The endpoint and the region stay platform-wide: one Object Storage
+      # location holds every tenant's bucket.
       PLATFORM_DB_PRIVATE_IP: ${{ vars.PLATFORM_DB_PRIVATE_IP }}
       PLATFORM_MEDIA_ENDPOINT: ${{ vars.PLATFORM_MEDIA_ENDPOINT }}
       PLATFORM_MEDIA_REGION: ${{ vars.PLATFORM_MEDIA_REGION }}
-      PLATFORM_MEDIA_BUCKET: ${{ vars.PLATFORM_MEDIA_BUCKET }}
-      PLATFORM_MEDIA_PUBLIC_BASE_URL: ${{ vars.PLATFORM_MEDIA_PUBLIC_BASE_URL }}
       ESCROW_PUBLIC_KEY: infra/provisioning/escrow/tenant-passphrase-escrow.pub.pem
       # The `reviewers` array for a tenant repo's `production` environment,
       # verbatim JSON. A repository variable rather than an identity hardcoded
@@ -403,11 +415,36 @@ jobs:
           for pair in \
             "PLATFORM_DB_PRIVATE_IP=$PLATFORM_DB_PRIVATE_IP" \
             "PLATFORM_MEDIA_ENDPOINT=$PLATFORM_MEDIA_ENDPOINT" \
-            "PLATFORM_MEDIA_REGION=$PLATFORM_MEDIA_REGION" \
-            "PLATFORM_MEDIA_BUCKET=$PLATFORM_MEDIA_BUCKET" \
-            "PLATFORM_MEDIA_PUBLIC_BASE_URL=$PLATFORM_MEDIA_PUBLIC_BASE_URL"; do
+            "PLATFORM_MEDIA_REGION=$PLATFORM_MEDIA_REGION"; do
             [ -n "${pair#*=}" ] || fail "the ${pair%%=*} repository variable is empty or unset"
           done
+
+          # The endpoint is the stem of every media URL this tenant will ever
+          # publish -- the component appends `/<bucket>` to it and Ghost writes
+          # the result into each post. A wrong shape here is not a config error
+          # to correct later; it is a set of URLs already in readers' feeds.
+          # The component refuses both of these too, but only once a stack
+          # exists to preview.
+          [[ "$PLATFORM_MEDIA_ENDPOINT" == https://* ]] \
+            || fail "PLATFORM_MEDIA_ENDPOINT must be https -- Ghost embeds this base URL in every published post"
+          # Stricter than the component on purpose. `mediaPublicBaseUrl` trims
+          # trailing slashes and then refuses a path; this refuses both, because
+          # a trailing slash in a repository variable is a typo worth seeing
+          # once here rather than silently normalising for every tenant.
+          [[ "${PLATFORM_MEDIA_ENDPOINT#https://}" != */* ]] \
+            || fail "PLATFORM_MEDIA_ENDPOINT must be a bare host with no path and no trailing slash; the bucket is the first path segment under it"
+
+          # Not a check on the media bucket, because there cannot be one: the
+          # credential that could see it is the tenant's own, and this workflow
+          # deliberately holds no credential that reaches any tenant's media.
+          # Stated in the summary instead, where the operator who created the
+          # bucket can compare it against what they created.
+          # Display only. The authoritative derivation is `mediaBucketName` in
+          # the tenant component, which is what the container is configured
+          # with; this echo and the job summary's two below exist so the
+          # operator can compare against the bucket they created. They are not
+          # a second source of truth, and nothing reads them back.
+          echo "this tenant's media bucket will be branchleft-media-${TENANT}"
 
           if gh repo view "$TENANT_REPO" >/dev/null 2>&1; then
             fail "$TENANT_REPO already exists -- onboarding is create-only. This is also what stops an existing tenant's hand-set passphrase being minted over, which would rotate a live stack's wrapping key without re-wrapping its checkpoint."
@@ -674,15 +711,13 @@ jobs:
           pulumi config set appHostPrivateIp "$APP_HOST_PRIVATE_IP" --stack "$TENANT"
           pulumi config set imageRef "$IMAGE_REF" --stack "$TENANT"
           pulumi config set databaseHost "$PLATFORM_DB_PRIVATE_IP" --stack "$TENANT"
+          # Two media keys, not five. The bucket and the public base URL are
+          # derived from the slug inside the component, so this stack holds no
+          # value that could name another tenant's bucket -- and the key prefix
+          # that used to separate tenants inside one shared bucket is gone with
+          # the shared bucket.
           pulumi config set mediaEndpoint "$PLATFORM_MEDIA_ENDPOINT" --stack "$TENANT"
           pulumi config set mediaRegion "$PLATFORM_MEDIA_REGION" --stack "$TENANT"
-          pulumi config set mediaBucket "$PLATFORM_MEDIA_BUCKET" --stack "$TENANT"
-          # The slug, with no trailing slash: `S3Storage.buildKey` inserts the
-          # separator itself. Derived rather than asked for, because a prefix
-          # that is not the slug is a tenant whose media lives somewhere its own
-          # name does not point at.
-          pulumi config set mediaTenantPrefix "$TENANT" --stack "$TENANT"
-          pulumi config set mediaPublicBaseUrl "$PLATFORM_MEDIA_PUBLIC_BASE_URL" --stack "$TENANT"
 
       # `pulumi stack init` wrote this stack's encryption salt into the config
       # file, and the handover commit must not carry it: a salt in a tree anyone
@@ -859,7 +894,11 @@ jobs:
           - `databasePassword` — printed once by `provision_tenant_db.py` on the
             database host, and by nothing afterwards.
           - `mediaAccessKeyId` and `mediaSecretAccessKey` — this tenant's Object
-            Storage key pair.
+            Storage key pair, created in the Hetzner Console against this
+            tenant's own media bucket and shown once. The bucket and its policy
+            must already exist: the stack derives the bucket name from the slug
+            and nothing here creates it, so a missing bucket is a tenant whose
+            uploads fail after the deploy succeeded.
           - `known_hosts` — the app host's SSH host key, taken from the host over
             an operator root session, never with `ssh-keyscan`.
 
@@ -883,16 +922,29 @@ jobs:
             echo "- state backend: \`${TENANT_BACKEND_URL}\`"
             echo "- app host: \`${APP_HOST_PRIVATE_IP}\` private, \`${APP_HOST_SSH_ADDRESS}\` for CI"
             echo "- uid: \`${TENANT_UID}\`, host port: \`${HOST_PORT}\`"
+            echo "- media bucket: \`branchleft-media-${TENANT}\` at \`${PLATFORM_MEDIA_ENDPOINT}\`"
+            echo "- media URL base: \`${PLATFORM_MEDIA_ENDPOINT}/branchleft-media-${TENANT}\`"
+            echo
+            echo "The media bucket is created and fenced by an operator, not by this run:"
+            echo "Object Storage credentials cannot be created over any Hetzner API, only in"
+            echo "the Cloud Console. If the bucket above does not exist, or exists without the"
+            echo "policy from \`render-media-bucket-policy.py\`, this tenant's uploads fail"
+            echo "after a deploy that reported success — and an unfenced bucket is reachable"
+            echo "by every S3 key in the project."
             echo
             echo "### Still to do, in this order"
             echo
             echo "1. Decrypt and file the escrowed passphrase above."
-            echo "2. \`provision_tenant_db.py ${TENANT}\` on the database host, as root."
-            echo "3. \`provision_tenant_volume.py --uid ${TENANT_UID} ${TENANT}\` on the app host, as root."
-            echo "4. Write \`/etc/branchleft/${TENANT}.env\` and \`/opt/branchleft/${TENANT}/compose.yml\` from the stack's outputs, then \`systemctl enable branchleft-compose@${TENANT}\`."
-            echo "5. \`provision_deploy_slot.py --public-key-file /dev/stdin ${TENANT}\` on the app host, and set \`APP_HOST_DEPLOY_KEY\` on this tenant repo's \`production\` environment."
-            echo "6. Add this tenant's site block, with its \`edgeRequestBodyMaxSize\`, to the edge site registry."
-            echo "7. Complete and merge the handover pull request."
+            echo "2. Create \`branchleft-media-${TENANT}\`, its lifecycle rule, its"
+            echo "   bucket policy and this tenant's Object Storage credential, then run"
+            echo "   the verification probes. Nothing in this run did any of it, and a"
+            echo "   missing bucket is uploads failing after a deploy that reported success."
+            echo "3. \`provision_tenant_db.py ${TENANT}\` on the database host, as root."
+            echo "4. \`provision_tenant_volume.py --uid ${TENANT_UID} ${TENANT}\` on the app host, as root."
+            echo "5. Write \`/etc/branchleft/${TENANT}.env\` and \`/opt/branchleft/${TENANT}/compose.yml\` from the stack's outputs, then \`systemctl enable branchleft-compose@${TENANT}\`."
+            echo "6. \`provision_deploy_slot.py --public-key-file /dev/stdin ${TENANT}\` on the app host, and set \`APP_HOST_DEPLOY_KEY\` on this tenant repo's \`production\` environment."
+            echo "7. Add this tenant's site block, with its \`edgeRequestBodyMaxSize\`, to the edge site registry."
+            echo "8. Complete and merge the handover pull request."
             echo
             echo "Full sequence, with the exact commands: \`RUNBOOK-tenant-onboarding.md\`."
             if [ "$TENANT_VISIBILITY" = "private" ]; then

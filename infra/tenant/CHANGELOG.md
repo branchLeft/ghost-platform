@@ -2,6 +2,35 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## 2.0.0
+
+**Breaking: each tenant's media moves to its own Object Storage bucket, and the
+component derives where that is instead of taking it as config.** This is
+doc 14 §6 candidate (a), decided on 2026-08-25 (branchLeft/workspace#282), and
+it replaces one shared bucket with a per-tenant key prefix.
+
+- `GhostTenantMediaArgs` loses `bucket`, `publicBaseUrl` and `tenantPrefix`. It
+  now takes `endpoint`, `region` and the key pair only. A caller passing any of
+  the three removed fields does not compile.
+- `mediaBucketName(slug)` and `mediaPublicBaseUrl(endpoint, slug)` are exported,
+  and the component exposes `mediaBucket` and `mediaPublicBaseUrl` as readonly
+  properties. Deriving rather than configuring is the isolation control: a value
+  a stack can set is a value a stack can set to another tenant's bucket, and the
+  bucket boundary is the only media isolation this platform has.
+- `storage__S3Storage__tenantPrefix` is no longer emitted. Ghost treats the
+  option as optional and stores keys unprefixed without it; a prefix inside a
+  bucket holding one tenant's objects would only add a redundant segment to every
+  published media URL.
+- The endpoint is refused unless it is `https://` and a bare host. It is the stem
+  of every media URL Ghost writes into a published post, so a wrong value there
+  is not a config error to correct later.
+- **The bucket, its versioning and its policy are still created by an operator.**
+  Hetzner creates S3 credentials in its Cloud Console and not through any API, so
+  nothing automated can mint one. `infra/provisioning/scripts/render-media-bucket-policy.py`
+  renders the policy; `RUNBOOK-tenant-onboarding.md` §6 applies and verifies it.
+  Media stays append-only by decision — `s3:DeleteObject` is withheld from the
+  tenant's own key, which is what Ghost admin's 403 on media deletion is.
+
 ## 1.0.0
 
 **Breaking: the component targets Hetzner app hosts and no longer touches

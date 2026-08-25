@@ -6,8 +6,8 @@ import {
   tenantSecretsEnvFile,
   type TenantBulkEmailConfig,
   type TenantMailConfig,
-  type TenantMediaConfig,
 } from './environment';
+import { mediaBucketName, mediaPublicBaseUrl } from './media';
 import {
   adaptersVolumeName,
   composeUnitName,
@@ -42,12 +42,29 @@ export interface GhostTenantDatabaseArgs {
   maxUserConnections?: number;
 }
 
-/** `TenantMediaConfig`'s addressing fields plus this tenant's own S3 key pair.
- * Both land in the secrets file rather than the Compose file — the key id is
- * not itself a secret, but splitting a credential pair across two files makes
- * rotating it two edits instead of one. */
-export interface GhostTenantMediaArgs extends TenantMediaConfig {
-  /** This tenant's Object Storage access key id. */
+/**
+ * The platform-wide half of media addressing, plus this tenant's own S3 key
+ * pair.
+ *
+ * **The bucket and the public base URL are deliberately not here.** Each tenant
+ * has its own bucket, named from its slug by `media.ts`, so there is no value
+ * for a tenant stack to set — and therefore no value a stack could set to
+ * another tenant's bucket. Both are exported from this component so the
+ * operator who creates the bucket and the container that writes to it read one
+ * derivation.
+ *
+ * The key pair lands in the secrets file rather than the Compose file. The key
+ * id is not itself a secret; splitting a credential pair across two files makes
+ * rotating it two edits instead of one.
+ */
+export interface GhostTenantMediaArgs {
+  /** e.g. `https://hel1.your-objectstorage.com`. Platform-wide. */
+  endpoint: string;
+  /** Must name the bucket's own location; a mismatch is an opaque 403 that
+   * reads as a credential problem. Platform-wide. */
+  region: string;
+  /** This tenant's Object Storage access key id, allowlisted by bucket policy
+   * to this tenant's bucket alone. */
   accessKeyId: pulumi.Input<string>;
   /** This tenant's Object Storage secret access key. */
   secretAccessKey: pulumi.Input<string>;
@@ -176,6 +193,12 @@ export class GhostTenant extends pulumi.ComponentResource {
   public readonly adaptersVolume: string;
   public readonly databaseName: string;
   public readonly databaseUser: string;
+  /** This tenant's own Object Storage bucket. Must exist, and must carry the
+   * bucket policy from `render-media-bucket-policy.py`, before the container
+   * can store anything: nothing in this component creates it. */
+  public readonly mediaBucket: string;
+  /** `<endpoint>/<bucket>` — what Ghost writes into every published post. */
+  public readonly mediaPublicBaseUrl: string;
   /** The rendered `compose.yml` for `/opt/branchleft/<slug>/`. */
   public readonly composeFile: string;
   /** The tenant's Caddy `request_body max_size`, for the edge site registry.
@@ -216,6 +239,8 @@ export class GhostTenant extends pulumi.ComponentResource {
     this.adaptersVolume = adaptersVolumeName(args.slug);
     this.databaseName = databaseAndUserName(args.slug);
     this.databaseUser = this.databaseName;
+    this.mediaBucket = mediaBucketName(args.slug);
+    this.mediaPublicBaseUrl = mediaPublicBaseUrl(args.media.endpoint, args.slug);
     this.edgeRequestBodyMaxSize = limits.edgeRequestBodyMaxSize;
 
     this.composeFile = renderComposeStack({
@@ -237,9 +262,8 @@ export class GhostTenant extends pulumi.ComponentResource {
           media: {
             endpoint: args.media.endpoint,
             region: args.media.region,
-            bucket: args.media.bucket,
-            tenantPrefix: args.media.tenantPrefix,
-            publicBaseUrl: args.media.publicBaseUrl,
+            bucket: this.mediaBucket,
+            publicBaseUrl: this.mediaPublicBaseUrl,
           },
           limits,
           mail: args.mail,
@@ -292,6 +316,8 @@ export class GhostTenant extends pulumi.ComponentResource {
       imageEnvPath: this.imageEnvPath,
       edgeRequestBodyMaxSize: this.edgeRequestBodyMaxSize,
       hostProvisioningCommand: this.hostProvisioningCommand,
+      mediaBucket: this.mediaBucket,
+      mediaPublicBaseUrl: this.mediaPublicBaseUrl,
       secretsEnvFile: this.secretsEnvFile,
     });
   }
@@ -300,6 +326,7 @@ export class GhostTenant extends pulumi.ComponentResource {
 export { SECRET_ENV_KEYS };
 export { assertRuntimePosture, GHOST_CONTAINER_PORT, renderComposeStack } from './compose';
 export { tenantEnvironment, tenantSecretsEnvFile } from './environment';
+export { MEDIA_BUCKET_PREFIX, mediaBucketName, mediaPublicBaseUrl } from './media';
 export {
   MAX_TENANT_SLUG_LENGTH,
   RESERVED_STACK_NAMES,
