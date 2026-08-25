@@ -349,7 +349,7 @@ credentials are already exported from step 2b.
 
 No `--versioning-already-enabled` here: nothing in this repo enables or asserts
 versioning on this bucket, and a probe that succeeded would turn it on. This
-bucket has no lifecycle rule, so that would retain every superseded checkpoint
+bucket has no lifecycle rule, so that would retain every overwritten checkpoint
 indefinitely — storage growth caused by the verification rather than found by
 it.
 
