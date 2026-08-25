@@ -152,9 +152,21 @@ jobs:
       # Both the endpoint host and `region` in this URL must name the bucket's
       # own location; a mismatch is an opaque 403 that reads as a credential
       # problem.
+      #
+      # **A dedicated credential, deliberately not HETZNER_S3_ACCESS_KEY_ID /
+      # HETZNER_S3_SECRET_ACCESS_KEY.** Those names are `infra-hosts-ci.yml`'s
+      # own repository-level credential for `branchleft-pulumi-state`, the
+      # estate's bucket; its plan job declares no `environment:` and so can only
+      # ever resolve a repository secret. Reusing that name here would force one
+      # of two outcomes: an estate credential scoped to this environment (which
+      # breaks the hosts stack, since environment secrets are invisible to a job
+      # with no `environment:`), or a repository-level copy of a
+      # provisioning-capable credential (which the scoping guard below exists to
+      # refuse). A separate credential under a separate name removes the
+      # collision instead of choosing a side of it -- branchLeft/workspace#284.
       TENANT_BACKEND_URL: ${{ vars.HETZNER_PULUMI_BACKEND_URL }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.TENANT_STATE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY }}
       AWS_REGION: hel1
       # Platform-wide facts rather than per-tenant answers, so they are
       # repository variables and not ten more fields on a form nobody can fill
@@ -195,6 +207,16 @@ jobs:
             echo "::error::Tenant provisioning is closed. Set the TENANT_PROVISIONING_FLOW_HETZNERISED repository variable on branchLeft/ghost-platform to 'true' once the rewritten flow, the Hetzner-ised template and RUNBOOK-tenant-onboarding.md have been proven end to end on a real host."
             exit 1
           fi
+
+      # Checked out ahead of the credential-scoping step below, which needs
+      # this tree on the runner to invoke its extracted guard script. Cheap,
+      # credential-free (`persist-credentials: false`) and creates nothing --
+      # moving it earlier changes nothing about what "before anything is
+      # created" protects.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The replacement for the Workload Identity provider condition this
       # rewrite deletes, and it is checked rather than assumed for the same
@@ -244,47 +266,36 @@ jobs:
           esac
           echo "$ENVIRONMENT protection rules: $rules"
 
-          names=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}/secrets" \
-            --paginate --jq '.secrets[].name') || {
+          gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}/secrets" \
+            --paginate --jq '.secrets[].name' > /tmp/env-secret-names.txt || {
               echo "::error::could not list the $ENVIRONMENT environment's secrets on ${GITHUB_REPOSITORY}. Refusing rather than assuming they are correctly scoped."
               exit 1
             }
-          missing=
-          for required in GH_PAT_TENANT_PROVISIONING HETZNER_S3_ACCESS_KEY_ID HETZNER_S3_SECRET_ACCESS_KEY; do
-            printf '%s\n' "$names" | grep -qx "$required" || missing="$missing $required"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::these secrets are not scoped to the $ENVIRONMENT environment:$missing. They are provisioning-capable credentials and must sit behind the required-reviewer gate. Move each one with: gh secret set <NAME> --repo ${GITHUB_REPOSITORY} --env $ENVIRONMENT, then delete the repository-level copy."
-            exit 1
-          fi
-          echo "environment-scoped: $(printf '%s' "$names" | tr '\n' ' ')"
 
-          # The half that matters, and the half an earlier draft of this step
-          # was missing. Checking only that the environment secret EXISTS
-          # cannot see a repository-level copy left behind, and `secrets.X`
-          # resolves the repository one for any workflow run in this repo --
-          # including one added on a branch. So a skipped `gh secret delete`
-          # leaves GH_PAT_TENANT_PROVISIONING, a token that creates
-          # repositories in this org, readable by every run here, with this
-          # workflow still green. Refuse on the intersection, not on absence.
-          repo_names=$(gh api "repos/${GITHUB_REPOSITORY}/actions/secrets" \
-            --paginate --jq '.secrets[].name') || {
+          # The shadow check matters as much as the presence check, and is the
+          # half an earlier draft of this step was missing: checking only that
+          # the environment secret EXISTS cannot see a repository-level copy
+          # left behind, and `secrets.X` resolves the repository one for any
+          # workflow run in this repo -- including one from a branch. So a
+          # skipped `gh secret delete` leaves GH_PAT_TENANT_PROVISIONING, a
+          # token that creates repositories in this org, readable by every run
+          # here, with this workflow still green.
+          gh api "repos/${GITHUB_REPOSITORY}/actions/secrets" \
+            --paginate --jq '.secrets[].name' > /tmp/repo-secret-names.txt || {
               echo "::error::could not list ${GITHUB_REPOSITORY}'s repository-level secrets. Refusing rather than assuming none shadow the environment-scoped ones."
               exit 1
             }
-          shadowed=
-          for required in GH_PAT_TENANT_PROVISIONING HETZNER_S3_ACCESS_KEY_ID HETZNER_S3_SECRET_ACCESS_KEY; do
-            printf '%s\n' "$repo_names" | grep -qx "$required" && shadowed="$shadowed $required"
-          done
-          if [ -n "$shadowed" ]; then
-            echo "::error::these provisioning-capable secrets still exist at the REPOSITORY level on ${GITHUB_REPOSITORY}:$shadowed. Any workflow run in this repository can read them, including one added on a branch, which is the exact reach the environment scoping exists to remove. Delete each with: gh secret delete <NAME> --repo ${GITHUB_REPOSITORY}"
-            exit 1
-          fi
 
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+          # The set logic -- which names are required, what counts as missing
+          # or shadowed -- lives in a plain Python script with its own unit
+          # tests (infra/provisioning/scripts/test_assert_tenant_provisioning_scoping.py)
+          # rather than here, so the two failure classes this step exists to
+          # catch stay provable offline instead of only by dispatching this
+          # workflow for real.
+          python3 infra/provisioning/scripts/assert-tenant-provisioning-scoping.py --self-test
+          python3 infra/provisioning/scripts/assert-tenant-provisioning-scoping.py \
+            --environment-secrets /tmp/env-secret-names.txt \
+            --repository-secrets /tmp/repo-secret-names.txt
 
       # Cheap, credential-free, and ahead of everything that mutates. It is also
       # the last point at which nothing exists yet -- no repository, no stack --
@@ -387,7 +398,7 @@ jobs:
           [[ -n "$backend_bucket" ]] \
             || fail "HETZNER_PULUMI_BACKEND_URL names no bucket"
           [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" ]] \
-            || fail "HETZNER_S3_ACCESS_KEY_ID / HETZNER_S3_SECRET_ACCESS_KEY are empty or unset; the tenant's state backend is unreachable without them"
+            || fail "TENANT_STATE_S3_ACCESS_KEY_ID / TENANT_STATE_S3_SECRET_ACCESS_KEY are empty or unset; the tenant's state backend is unreachable without them"
 
           for pair in \
             "PLATFORM_DB_PRIVATE_IP=$PLATFORM_DB_PRIVATE_IP" \
@@ -734,6 +745,17 @@ jobs:
       #
       # Environment-scoped like the rest: at the repository level they would be
       # readable by any workflow run in that repo.
+      #
+      # **Written under the tenant repo's own name for this credential, not
+      # this workflow's.** `$AWS_ACCESS_KEY_ID` / `$AWS_SECRET_ACCESS_KEY` now
+      # come from this job's TENANT_STATE_S3_* environment secrets, but the
+      # generated repo's own CI (ghost-platform-tenant-template's
+      # `infra-ci.yml`) reads `HETZNER_S3_ACCESS_KEY_ID` /
+      # `HETZNER_S3_SECRET_ACCESS_KEY` -- that repo has no hosts-stack
+      # workflow to collide with, so the name this platform used before the
+      # branchLeft/workspace#284 rename is still the right one to hand it.
+      # Every tenant repo receives the same credential value today, until
+      # branchLeft/workspace#281 gives each tenant its own.
       #
       # **What that scoping does NOT bound, stated rather than implied.** This
       # credential is not scoped per stack. Once read, it lists and deletes

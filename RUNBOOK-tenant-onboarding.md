@@ -77,19 +77,36 @@ by Google regardless of any GitHub setting, and there is no like-for-like
 substitute. The workflow verifies both the rule and the scoping before it
 creates anything, and refuses if it cannot read either.
 
+**The tenant-state credential is its own Object Storage key pair, not
+`HETZNER_S3_ACCESS_KEY_ID` / `HETZNER_S3_SECRET_ACCESS_KEY`.** Those two names
+are `infra-hosts-ci.yml`'s repository-level credential for
+`branchleft-pulumi-state`, the estate's own state bucket; that workflow's plan
+job declares no `environment:` and can only ever resolve a repository secret,
+so it must keep them at the repository level. Provisioning reaches a
+different bucket, `branchleft-tenant-pulumi-state`, and needs a *second*
+Object Storage credential scoped to it — reusing the estate's would give a
+tenant deployer write access to the checkpoint the production hcloud token
+lives in (branchLeft/workspace#284). Mint it in the Hetzner Cloud Console
+(Object Storage → the project holding `branchleft-tenant-pulumi-state` →
+Credentials → Generate credential), scoped read-write to that bucket alone if
+per-bucket scoping is available on the account, and set it under its own
+names:
+
 ```bash
-gh secret set GH_PAT_TENANT_PROVISIONING    --repo branchLeft/ghost-platform --env tenant-provisioning
-gh secret set HETZNER_S3_ACCESS_KEY_ID      --repo branchLeft/ghost-platform --env tenant-provisioning
-gh secret set HETZNER_S3_SECRET_ACCESS_KEY  --repo branchLeft/ghost-platform --env tenant-provisioning
-gh secret delete GH_PAT_TENANT_PROVISIONING   --repo branchLeft/ghost-platform
-gh secret delete HETZNER_S3_ACCESS_KEY_ID     --repo branchLeft/ghost-platform
-gh secret delete HETZNER_S3_SECRET_ACCESS_KEY --repo branchLeft/ghost-platform
+gh secret set GH_PAT_TENANT_PROVISIONING        --repo branchLeft/ghost-platform --env tenant-provisioning
+gh secret set TENANT_STATE_S3_ACCESS_KEY_ID     --repo branchLeft/ghost-platform --env tenant-provisioning
+gh secret set TENANT_STATE_S3_SECRET_ACCESS_KEY --repo branchLeft/ghost-platform --env tenant-provisioning
+gh secret delete GH_PAT_TENANT_PROVISIONING     --repo branchLeft/ghost-platform
 ```
 
-The deletes matter as much as the sets: `secrets.X` falls back to a
-repository-level secret of the same name, so a copy left behind keeps the
-workflow working while remaining readable by every other run in the repository,
-including one from a branch. Nothing else reports that.
+**Do not delete `HETZNER_S3_ACCESS_KEY_ID` / `HETZNER_S3_SECRET_ACCESS_KEY` at
+the repository level.** `infra-hosts-ci.yml`'s plan and apply jobs both read
+them from there, and deleting them breaks the hosts stack that owns `app1` and
+`db1`. The delete above applies only to `GH_PAT_TENANT_PROVISIONING`, which
+has no other consumer: `secrets.X` falls back to a repository-level secret of
+the same name, so a copy left behind keeps `provision-tenant.yml` working
+while remaining readable by every other run in the repository, including one
+from a branch. Nothing else reports that.
 
 **The platform-wide repository variables** the flow reads. These are facts about
 the estate rather than per-tenant answers, which is why they are variables and
