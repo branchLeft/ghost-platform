@@ -6,6 +6,16 @@ Usage:
     assert-no-tenant-deletes.py --self-test
     assert-no-tenant-deletes.py --verify-coverage <package-dir>
 
+`<preview-json-file>` must come from `pulumi preview --json --show-sames`.
+Without `--show-sames`, Pulumi omits a component from `steps` entirely once
+its registered inputs stop changing -- proved against a real capture of this
+component, not assumed. Without the flag, a tenant that has not changed and a
+tenant whose component silently stopped registering its identity as an input
+(this guard's original defect; see below) produce the identical empty result,
+and this guard cannot tell them apart. `component_is_present()` refuses a plan
+that carries no step at all for the component it guards, so a plan captured
+without the flag fails closed rather than silently passing.
+
 Exit 0 when the plan is clean, 1 on any finding (or when any input could not be
 read or understood), 2 on usage error.
 
@@ -196,9 +206,34 @@ def identity_changes(plan: dict) -> list[str]:
     return findings
 
 
+def component_is_present(plan: dict) -> bool:
+    """True if `plan` carries at least one step for the guarded component.
+
+    Proved against a real capture rather than assumed: `pulumi preview --json`
+    omits a resource from `steps` entirely once its registered inputs stop
+    changing, unless the preview was run with `--show-sames`. Without that
+    flag, a tenant that has not changed and a tenant whose component silently
+    stopped registering its identity as an input -- this guard's original
+    defect -- produce the same empty result, and this guard cannot tell them
+    apart from the plan alone.
+    """
+    for step in _steps(plan):
+        urn = step.get("urn")
+        if isinstance(urn, str) and _type_token(urn) == COMPONENT_TYPE_TOKEN:
+            return True
+    return False
+
+
 def check_plan(plan: dict) -> list[str]:
     findings = [f"{urn} would be destroyed by a '{op}' step" for urn, op in destructive_steps(plan)]
     findings.extend(identity_changes(plan))
+    if not component_is_present(plan):
+        findings.append(
+            f"the plan carries no step at all for a {COMPONENT_TYPE_TOKEN!r} resource. Either "
+            "it was captured without `pulumi preview --json --show-sames`, or the component "
+            "stopped registering its identity as an input. Both leave nothing to compare, and a "
+            "check that cannot see its subject must not report success."
+        )
     return findings
 
 
@@ -256,10 +291,17 @@ def verify_coverage(package_dir: pathlib.Path) -> list[str]:
 # --- self-test ---------------------------------------------------------------
 #
 # A guard whose matcher has quietly stopped matching passes every input, so the
-# refusals are exercised rather than assumed. Every fixture below is a plan
-# shape the real Pulumi CLI emits.
+# refusals are exercised rather than assumed. The `_CAPTURED_*` fixtures below
+# are trimmed from real `pulumi preview --json` runs against this component --
+# the guard's original defect was exactly a plan shape nobody had captured,
+# only assumed, so this is the part that has to stop being hand-built. The
+# destructive-op fixtures below them stay synthetic: a `ComponentResource` has
+# no provider to produce a genuine `replace`, so there is no real preview to
+# capture for those, and they exist to exercise the op-name substring match
+# rather than a captured shape.
 
 _URN = f"urn:pulumi:blog::ghost-tenant-blog::{COMPONENT_TYPE_TOKEN}::blog"
+_STACK_URN = "urn:pulumi:blog::ghost-tenant-blog::pulumi:pulumi:Stack::ghost-tenant-blog-blog"
 
 
 def _identity(**overrides) -> dict:
@@ -284,6 +326,107 @@ def _plan(op: str, *, old: dict | None = None, new: dict | None = None) -> dict:
     if new is not None:
         step["newState"] = {"urn": _URN, "outputs": {"identity": new}}
     return {"steps": [step]}
+
+
+def _captured_same_stack_step() -> dict:
+    """The top-level `pulumi:pulumi:Stack` step every plan carries.
+
+    `same`-shaped exactly as a real preview emits it: `newState` carries no
+    `identity` at all, because a component's outputs are not resolved until an
+    actual apply -- true of every step below, not just this one, and the
+    reason `_identity_of()` has to fall back to `inputs`.
+    """
+    return {
+        "op": "same",
+        "urn": _STACK_URN,
+        "oldState": {
+            "urn": _STACK_URN,
+            "type": "pulumi:pulumi:Stack",
+            "outputs": {"identity": _identity()},
+        },
+        "newState": {"urn": _STACK_URN, "type": "pulumi:pulumi:Stack"},
+    }
+
+
+# Trimmed from a real `pulumi preview --json` captured against this component
+# after fixing the defect this guard exists to catch: applied once with `uid`
+# and `appHostPrivateIp` as above, then both changed in stack config before
+# the preview that produced this shape.
+#
+# This is the shape that made the original bug easy to miss by hand: `uid` and
+# `appHostPrivateIp` differ between `oldState` and `newState`, but `newState`
+# -- the desired state a preview computes -- carries the identity under
+# `inputs` only, never `outputs`.
+_CAPTURED_IDENTITY_UPDATE: dict = {
+    "steps": [
+        _captured_same_stack_step(),
+        {
+            "op": "update",
+            "urn": _URN,
+            "oldState": {
+                "urn": _URN,
+                "type": COMPONENT_TYPE_TOKEN,
+                "inputs": {"identity": _identity()},
+                "outputs": {"identity": _identity()},
+            },
+            "newState": {
+                "urn": _URN,
+                "type": COMPONENT_TYPE_TOKEN,
+                "inputs": {"identity": _identity(uid=30099, appHostPrivateIp="10.20.1.101")},
+            },
+        },
+    ]
+}
+
+# Trimmed from a real `pulumi preview --json --show-sames` capture against an
+# unchanged tenant. Without `--show-sames`, Pulumi omits the second step
+# entirely -- this fixture is also what proves `component_is_present()` needs
+# that flag to mean anything.
+_CAPTURED_SAME: dict = {
+    "steps": [
+        _captured_same_stack_step(),
+        {
+            "op": "same",
+            "urn": _URN,
+            "oldState": {
+                "urn": _URN,
+                "type": COMPONENT_TYPE_TOKEN,
+                "inputs": {"identity": _identity()},
+                "outputs": {"identity": _identity()},
+            },
+            "newState": {
+                "urn": _URN,
+                "type": COMPONENT_TYPE_TOKEN,
+                "inputs": {"identity": _identity()},
+            },
+        },
+    ]
+}
+
+# Trimmed from a real first-apply `pulumi preview --json` capture: a `create`
+# step carries a `newState` and no `oldState` at all.
+_CAPTURED_CREATE: dict = {
+    "steps": [
+        {"op": "create", "urn": _STACK_URN, "newState": {"urn": _STACK_URN, "type": "pulumi:pulumi:Stack"}},
+        {
+            "op": "create",
+            "urn": _URN,
+            "newState": {
+                "urn": _URN,
+                "type": COMPONENT_TYPE_TOKEN,
+                "inputs": {"identity": _identity()},
+            },
+        },
+    ]
+}
+
+# Captured from the unfixed component (`super(token, name, {}, opts)`) after
+# the same `uid`/`appHostPrivateIp` change as `_CAPTURED_IDENTITY_UPDATE`:
+# with empty props, the component registers no step at all, so the identity
+# change leaves no trace anywhere in the plan. This is the literal shape that
+# let the unfixed guard exit 0 on live tenant data loss -- reproduced locally
+# against the published component, not assumed from the bug report.
+_CAPTURED_VACUOUS_REGRESSION: dict = {"steps": [_captured_same_stack_step()]}
 
 
 def _self_test() -> int:
@@ -327,6 +470,33 @@ def _self_test() -> int:
     ):
         plan = _plan("update", old=_identity(), new=_identity(**{field: changed}))
         expect(check_plan(plan) != [], f"a changed {field} must be refused")
+
+    # Captured, not assumed: proven against trimmed real `pulumi preview
+    # --json` runs (see the fixtures above and the module docstring for how
+    # they were produced), rather than only the hand-built shapes above.
+    expect(
+        check_plan(_CAPTURED_IDENTITY_UPDATE) != [],
+        "a captured plan with a changed uid and appHostPrivateIp must be refused",
+    )
+    expect(check_plan(_CAPTURED_SAME) == [], "a captured plan for an unchanged tenant must pass")
+    expect(check_plan(_CAPTURED_CREATE) == [], "a captured first-apply plan must pass")
+
+    # The guard must not be silently vacuous. A plan carrying no step at all
+    # for the component cannot be compared and must be refused, not passed --
+    # this is the literal regression `_CAPTURED_VACUOUS_REGRESSION` reproduces.
+    expect(
+        check_plan(_CAPTURED_VACUOUS_REGRESSION) != [],
+        "a plan with no step at all for the component must be refused, not passed",
+    )
+    expect(check_plan({"steps": []}) != [], "a completely empty plan must be refused, not passed")
+    expect(
+        component_is_present(_CAPTURED_IDENTITY_UPDATE),
+        "a plan with an update step for the component must register as present",
+    )
+    expect(
+        not component_is_present(_CAPTURED_VACUOUS_REGRESSION),
+        "a plan with no step for the component must register as absent",
+    )
 
     # Fails closed rather than passing an unmade comparison, in both
     # directions. The `same`/`update`-with-no-old-state case is the one an

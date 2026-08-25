@@ -217,7 +217,33 @@ export class GhostTenant extends pulumi.ComponentResource {
   public readonly identity: pulumi.Output<GhostTenantIdentity>;
 
   constructor(name: string, args: GhostTenantArgs, opts?: pulumi.ComponentResourceOptions) {
-    super('ghostPlatform:tenant:GhostTenant', name, {}, opts);
+    // Registered as the component's props rather than `{}`: a ComponentResource's
+    // step in a preview is derived from whether its registered inputs changed, so
+    // empty props can never produce a step, and `identity_changes()` in
+    // `scripts/assert-no-tenant-deletes.py` has no step to read a comparison from.
+    // Repeated verbatim in the `this.identity` assignment below rather than shared
+    // through a variable: during a preview the plan's new-state carries only these
+    // registered inputs, never the computed output (Pulumi does not resolve a
+    // component's outputs until an actual apply), so the two must already agree
+    // field-for-field or an in-flight identity change would go undetected on
+    // exactly the run meant to catch it.
+    super(
+      'ghostPlatform:tenant:GhostTenant',
+      name,
+      {
+        identity: {
+          slug: args.slug,
+          uid: args.uid,
+          stackName: stackName(args.slug),
+          contentVolume: contentVolumeName(args.slug),
+          adaptersVolume: adaptersVolumeName(args.slug),
+          databaseName: databaseAndUserName(args.slug),
+          appHostPrivateIp: args.appHostPrivateIp,
+          maxUserConnections: args.database.maxUserConnections ?? DEFAULT_MAX_USER_CONNECTIONS,
+        },
+      },
+      opts
+    );
 
     validateTenantSlug(args.slug);
     validateTenantUid(args.uid);

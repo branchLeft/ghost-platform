@@ -2,6 +2,42 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## 2.1.0
+
+**Fixed: `GhostTenant` registered no inputs (`{}`), so the delete guard's
+identity comparison matched no step in any plan.** `identity_changes()` in
+`scripts/assert-no-tenant-deletes.py` reads a tenant's `uid`, `stackName`,
+`contentVolume`, `adaptersVolume`, `databaseName` and `appHostPrivateIp` from
+the component's own state, but a `ComponentResource` with unchanged registered
+inputs produces no step at all for a preview to compare — so a changed `uid`
+or `appHostPrivateIp` reached `pulumi up` as a clean `update` with a green
+guard, and the container started as a user that could not read its own
+`0700` content volume. Reproduced locally against the published `2.0.0`
+before fixing it, not assumed from the report.
+
+- The component now passes its identity fields as its actual registered props
+  to `super(...)`, so a change to any of them surfaces as a real `update` step
+  and `identity_changes()` has something to compare.
+- The guard refuses a plan carrying no step at all for the component
+  (`component_is_present()`), rather than treating "nothing to compare" the
+  same as "nothing changed" — those were previously indistinguishable, which
+  is exactly how the original defect passed silently. This requires the
+  preview to be captured with `pulumi preview --json --show-sames`: without
+  that flag Pulumi omits a genuinely unchanged component from `steps` too, and
+  the guard cannot tell the two apart. **A tenant repo's CI must add
+  `--show-sames` to its `pulumi preview --json` invocation when it adopts this
+  version, or every preview will fail the new check.**
+- The guard's self-test fixtures for the identity comparison are now trimmed
+  from real `pulumi preview --json` captures against this component (taken
+  against both the broken `2.0.0` behaviour and the fix), replacing shapes
+  that had only ever been assumed.
+- **Operational note:** an existing tenant's next `pulumi up` after upgrading
+  will show a one-time `update` step for the `GhostTenant` resource even with
+  no configuration change, because its registered inputs go from `{}` to the
+  identity object. This is expected, carries no side effect (a
+  `ComponentResource` has no provider to call), and the guard passes it
+  cleanly since the underlying values are unchanged.
+
 ## 2.0.0
 
 **Breaking: each tenant's media moves to its own Object Storage bucket, and the
