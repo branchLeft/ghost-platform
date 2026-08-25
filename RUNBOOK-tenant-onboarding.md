@@ -251,8 +251,9 @@ it, then read the job summary: it carries the escrowed passphrase ciphertext.
 
 **Decrypt and file that ciphertext now**, per
 `infra/provisioning/escrow/README.md`. The run's summary and its artifact both
-expire; the password manager is the escrow of record, and step 5 needs the
-plaintext anyway.
+expire; the password manager is the escrow of record, and step 7 needs the
+plaintext anyway — it is what unlocks `pulumi config set --secret` on this
+tenant's stack.
 
 ### 5. Create the tenant's database and DB user, on `db1`
 
