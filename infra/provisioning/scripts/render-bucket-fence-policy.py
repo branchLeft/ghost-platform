@@ -16,14 +16,24 @@ and held by CI, or by a tenant's own container.
 
 WHAT THIS POLICY HAS TO ACHIEVE.
 
-  1. The named workload keys keep exactly the access their job needs: every
-     object action, plus the bucket reads that make listing work. They get no
-     bucket-CONFIGURATION action at all. A key that can call
+  1. The named workload keys keep exactly the access their job needs: object
+     reads and writes, plus the bucket reads that make listing work. They get
+     no bucket-CONFIGURATION action at all. A key that can call
      `PutLifecycleConfiguration` can expire every object without ever issuing a
      delete; one that can call `PutBucketPolicy` can replace this fence; one
      that can call `PutBucketVersioning` can suspend the versioning that makes
      an overwrite recoverable. Withholding `DeleteObject` while leaving those
-     available buys nothing.
+     available buys nothing. They also lose the object actions that defeat
+     versioning and object-lock from below -- see
+     `OPERATOR_ONLY_OBJECT_ACTIONS`.
+
+     THE WORKLOAD KEY LIST HAS TO BE COMPLETE. A key that legitimately uses the
+     bucket and is not named here is denied by the same statements as a
+     stranger, and nothing detects it: `verify-bucket-fence.py` proves the keys
+     it is given still work, never that no other key was fenced out. When a
+     bucket gains a second legitimate consumer -- per-tenant state credentials
+     are the live example -- the policy is re-rendered with the full list and
+     re-applied, before the new key is used.
 
   2. Every other principal is denied outright -- other keys in the project, and
      anonymous callers. Expressed as `Deny`, never as an absent `Allow`: an
@@ -65,6 +75,16 @@ while reporting success, and one that reads a `NotPrincipal` deny as naming
 everybody locks it. Both directions are settled only by
 `verify-bucket-fence.py` against the live bucket, run before the operator
 walks away -- see RUNBOOK-bucket-fencing.md.
+
+Nor can it establish that `--project-id` is the right project. Every principal
+here is built from that one value, so `assert_recoverable()` below compares a
+fabricated ARN against itself and passes for any project id at all -- while
+live, an ARN carrying the right access key under the wrong account names a
+principal that does not exist, and the operator's `NotPrincipal` exemption
+exempts nobody. That is the one lockout no offline check can see. It is caught
+by resolving the account from the credential itself, which
+`verify-bucket-fence.py --preflight` and `configure_backup_bucket.py` both do
+before anything is written.
 """
 
 from __future__ import annotations
@@ -87,6 +107,29 @@ WORKLOAD_BUCKET_READ_ACTIONS = [
 
 # Actions the operator must retain for the bucket to be recoverable at all.
 RECOVERY_ACTIONS = ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]
+
+# Object actions withheld from the workload keys, operator only. Each one
+# defeats a layer that exists specifically to survive a compromise of the host
+# holding the workload credential: `DeleteObjectVersion` destroys a version
+# outright, where a plain `DeleteObject` on a versioned bucket only writes a
+# delete marker the operator can remove; the retention trio disarms any
+# object-lock policy; and `PutObjectAcl` publishes a single object without
+# touching the bucket ACL this policy guards. None of them is used by the
+# pipelines -- `prune_backups.py` issues a plain delete and relies on the
+# lifecycle rule for versions -- so withholding them costs nothing.
+#
+# Enumerated rather than expressed as a `NotAction` catch-all, deliberately:
+# this statement NARROWS a fence that is already closed to everyone but the
+# named keys, so an action missing from the list falls back to that fence
+# rather than to Hetzner's project-wide default.
+OPERATOR_ONLY_OBJECT_ACTIONS = [
+    "s3:DeleteObjectVersion",
+    "s3:PutObjectAcl",
+    "s3:PutObjectVersionAcl",
+    "s3:PutObjectRetention",
+    "s3:PutObjectLegalHold",
+    "s3:BypassGovernanceRetention",
+]
 
 
 def render_policy(
@@ -181,6 +224,13 @@ def render_policy(
                 "Action": "s3:*",
                 "Resource": objects_arn,
             },
+            {
+                "Sid": "DenyObjectMutationsExceptOperator",
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": [admin]},
+                "Action": OPERATOR_ONLY_OBJECT_ACTIONS,
+                "Resource": objects_arn,
+            },
         ],
     }
 
@@ -225,42 +275,55 @@ def render_commands(
         ""
         if bucket_exists
         else f"""\
-# 1. The bucket. `--acl private` is stated rather than left to the default:
+# 2. The bucket. Creating one is a spend decision and is the platform owner's
+#    alone. `--acl private` is stated rather than left to the default:
 #    `public-read` is a BUCKET acl and grants LIST, which would publish the
 #    object names of an estate bucket to anyone who guesses its name.
-$S3 create-bucket --bucket {bucket} --acl private \\
+s3 create-bucket --bucket {bucket} --acl private \\
   --create-bucket-configuration LocationConstraint={region}
 
-# 2. Versioning, so an overwrite or a mistaken delete is recoverable. Applied
+# 3. Versioning, so an overwrite or a mistaken delete is recoverable. Applied
 #    BEFORE the policy, because the policy denies `PutBucketVersioning` to
 #    every key but the operator's and there is no reason to depend on that
 #    exemption holding.
-$S3 put-bucket-versioning --bucket {bucket} \\
+s3 put-bucket-versioning --bucket {bucket} \\
   --versioning-configuration Status=Enabled
 
 """
     )
-    step = 1 if bucket_exists else 3
+    step = 2 if bucket_exists else 4
     return f"""\
 # Run as the OPERATOR, with the operator key in the environment. Every command
 # below is idempotent.
+#
+# `s3` is a shell function, not a variable: zsh does not word-split an
+# unquoted parameter expansion, so `S3='aws ... s3api'` followed by `$S3 ...`
+# fails there with "no such file or directory: aws --endpoint-url ...".
 export AWS_ACCESS_KEY_ID='<the operator access key id>'
 export AWS_SECRET_ACCESS_KEY='<the operator secret access key>'
 export AWS_DEFAULT_REGION='{region}'
-S3='aws --endpoint-url {endpoint} s3api'
+s3() {{ aws --endpoint-url {endpoint} s3api "$@"; }}
+
+# 1. CONFIRM THE POLICY NAMES THE ACCOUNT THIS CREDENTIAL IS IN. Every
+#    principal in the document below was built from the --project-id passed to
+#    the generator, and nothing offline can check that value. An ARN carrying
+#    the right access key under the wrong account names a principal that does
+#    not exist, so the operator's exemption exempts nobody and the fence locks
+#    the bucket. This must print the same id the policy's ARNs carry.
+s3 list-buckets --query Owner.ID --output text
 
 {create}\
 # {step}. Keep whatever policy is there now. On a bucket that has never carried
 #    one this prints NoSuchBucketPolicy, which is the expected result and is
 #    itself the finding that this fence exists to close.
-$S3 get-bucket-policy --bucket {bucket} --output text \\
+s3 get-bucket-policy --bucket {bucket} --query Policy --output text \\
   > /tmp/{bucket}-policy.previous.json || true
 
 # {step + 1}. The fence.
 cat > /tmp/{bucket}-policy.json <<'POLICY'
 {policy}
 POLICY
-$S3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
+s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 
 # {step + 2}. PROVE THE BUCKET IS STILL ADMINISTRABLE, before anything else and
 #    before leaving the terminal. Re-PUTting the identical document is a no-op
@@ -268,21 +331,17 @@ $S3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.jso
 #    that denies the operator `PutBucketPolicy` cannot be edited or removed by
 #    any key in the project, and recovery is a Hetzner support request against
 #    the storage cluster.
-$S3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
+s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 
-# {step + 3}. Read it back. A put that was accepted and stored something
-#    different is the failure worth catching here -- this backend is known to
-#    accept a configuration and silently drop an element of it.
-$S3 get-bucket-policy --bucket {bucket} --output text
-
-# {step + 4}. Prove both directions against the live bucket, now, in this
+# {step + 3}. Prove both directions against the live bucket, now, in this
 #    terminal. A successful put is not evidence that the fence works, and a
 #    single AccessDenied is not evidence either: it is returned both by a
 #    working fence and by a key that reaches nothing at all. The verifier pairs
-#    every denial with a control probe on the same credential and reports
-#    INCONCLUSIVE rather than PASS when the control does not succeed.
-#    Credentials come from its own environment variables, not from the exported
-#    operator key above -- run it exactly as RUNBOOK-bucket-fencing.md states.
+#    every denial with a control probe on the same credential, compares the
+#    STORED policy against this document, and reports INCONCLUSIVE rather than
+#    PASS when a control does not succeed. Credentials come from its own
+#    environment variables, not from the exported operator key above -- run it
+#    exactly as RUNBOOK-bucket-fencing.md states.
 
 rm /tmp/{bucket}-policy.json /tmp/{bucket}-policy.previous.json
 """
@@ -307,6 +366,12 @@ def _self_test() -> None:
         (workload_arn, "s3:DeleteObject", f"{bucket}/dumps/x.sql.age", "allow"),
         (workload_arn, "s3:ListBucket", bucket, "allow"),
         (workload_arn, "s3:ListBucketVersions", bucket, "allow"),
+        # A plain delete on a versioned bucket writes a marker the operator can
+        # remove; destroying the version outright is the operator's alone.
+        (workload_arn, "s3:DeleteObjectVersion", f"{bucket}/dumps/x.sql.age", "deny"),
+        (workload_arn, "s3:PutObjectAcl", f"{bucket}/dumps/x.sql.age", "deny"),
+        (workload_arn, "s3:BypassGovernanceRetention", f"{bucket}/dumps/x.sql.age", "deny"),
+        (admin_arn, "s3:DeleteObjectVersion", f"{bucket}/dumps/x.sql.age", "allow"),
         # The workload must not be able to edit the fence that constrains it,
         # nor destroy the bucket's contents through its configuration.
         (workload_arn, "s3:PutBucketPolicy", bucket, "deny"),

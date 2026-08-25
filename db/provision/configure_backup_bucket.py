@@ -47,7 +47,7 @@ import json
 import os
 import sys
 
-from objectstorage import ObjectStorageError, put_bucket_subresource
+from objectstorage import ObjectStorageError, owner_id, put_bucket_subresource
 
 S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
@@ -76,21 +76,39 @@ def lifecycle_document(noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS
     ).encode()
 
 
-def _statement_resources(statement: dict) -> list[str]:
-    resource = statement.get("Resource", [])
-    return [resource] if isinstance(resource, str) else list(resource)
+_MISSING = object()
 
 
-def _principals(statement: dict, field: str) -> list[str]:
-    principal = statement.get(field)
-    if not isinstance(principal, dict):
-        return []
-    aws = principal.get("AWS", [])
-    return [aws] if isinstance(aws, str) else list(aws)
+def _string_list(value) -> list[str]:
+    """Every place a policy takes "one or many" -- Resource, Action, and the
+    `AWS` member of Principal -- accepts a bare string or a list, and the bare
+    string is the form most published examples use. Reading only the list form
+    silently skips the statement, which for a `Deny` means passing it."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []
 
 
-def assert_policy_fences_this_bucket(policy: dict, bucket: str, access_key: str) -> None:
-    """Refuse a policy that names another bucket, or locks out the caller.
+def _principals(statement: dict, field: str):
+    """The principals a statement names, or `_MISSING` when it names no such
+    field at all. The distinction matters: an empty list and an absent key are
+    the same to `.get`, but a `Deny` with no `Principal` and no `NotPrincipal`
+    is a statement whose scope this checker cannot bound, not a statement that
+    names nobody."""
+    if field not in statement:
+        return _MISSING
+    principal = statement[field]
+    if isinstance(principal, str):
+        return [principal]
+    if isinstance(principal, dict):
+        return _string_list(principal.get("AWS"))
+    return []
+
+
+def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_principal: str) -> None:
+    """Refuse a policy that names another bucket, locks out the caller, or fences nothing.
 
     Applying a bucket policy is the one operation here that can be
     irreversible. Every `Deny` in the policy governs the very API call that
@@ -100,50 +118,97 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, access_key: str)
     not `DeleteBucket`, which it denies too. Recovery is a support request
     against the storage cluster, with the bucket unreachable meanwhile.
 
-    `render-bucket-fence-policy.py` checks the same invariant from the other
-    direction, by evaluating the policy it just built. This check is structural
-    and runs against the key actually in the environment, so it also catches
-    the case that one cannot see: a correct policy for the right bucket,
-    applied by the wrong credential. Two independent checks of one invariant is
-    the intent.
+    `operator_principal` is the caller's own full ARN, resolved from the live
+    API rather than assembled from an argument. Matching on the access key
+    alone would accept an ARN carrying the right key under the wrong account
+    id, which names a principal that does not exist -- a `NotPrincipal`
+    exemption for nobody, and the one lockout no offline check can see, because
+    a rendered policy is self-consistent with whatever account id it was built
+    from.
+
+    Anything this checker cannot bound is refused rather than passed. A `Deny`
+    with no `Resource`, or with neither `Principal` nor `NotPrincipal`, has a
+    scope that depends on how the engine reads an absent field, and "probably
+    fine" is not a basis for an irreversible write.
     """
     bucket_arn = f"arn:aws:s3:::{bucket}"
-    caller_suffix = f":{access_key}"
+    objects_prefix = f"{bucket_arn}/"
+
+    denies_bucket = False
+    denies_objects = False
 
     for statement in policy.get("Statement", []):
-        for resource in _statement_resources(statement):
-            if resource != bucket_arn and not resource.startswith(f"{bucket_arn}/"):
+        sid = statement.get("Sid", "<no Sid>")
+        effect = statement.get("Effect")
+        resources = _string_list(statement.get("Resource"))
+
+        if not resources:
+            raise BucketConfigError(
+                f"policy statement {sid!r} names no Resource. Its scope depends on how the "
+                f"engine reads an absent field, so it cannot be applied to {bucket!r}."
+            )
+        for resource in resources:
+            if resource != bucket_arn and not resource.startswith(objects_prefix):
                 raise BucketConfigError(
                     f"the policy names resource {resource!r}, which is not {bucket!r}. "
                     f"Applying it here would fence the wrong bucket and leave this one open."
                 )
 
-        if statement.get("Effect") != "Deny":
+        principals = _principals(statement, "Principal")
+        not_principals = _principals(statement, "NotPrincipal")
+
+        if effect == "Allow":
+            if principals is not _MISSING and any(arn == "*" for arn in principals):
+                raise BucketConfigError(
+                    f"policy statement {sid!r} allows every principal on {bucket!r}. This "
+                    f"bucket has no anonymous-read requirement, and applying it would "
+                    f"publish the bucket rather than fence it."
+                )
             continue
-        if not any(
-            resource == bucket_arn for resource in _statement_resources(statement)
-        ):
+        if effect != "Deny":
+            raise BucketConfigError(f"policy statement {sid!r} has no usable Effect")
+
+        if bucket_arn in resources:
+            denies_bucket = True
+        if any(resource.startswith(objects_prefix) for resource in resources):
+            denies_objects = True
+
+        # Only a Deny reaching the BUCKET resource can withhold
+        # `PutBucketPolicy`; a Deny confined to `<bucket>/*` covers object
+        # actions and cannot lock anything.
+        if bucket_arn not in resources:
             continue
 
-        not_principals = _principals(statement, "NotPrincipal")
-        if not_principals:
-            if not any(arn.endswith(caller_suffix) for arn in not_principals):
+        if not_principals is not _MISSING:
+            if operator_principal not in not_principals:
                 raise BucketConfigError(
-                    f"policy statement {statement.get('Sid', '<no Sid>')!r} denies bucket "
-                    f"actions to every principal except "
-                    f"{', '.join(not_principals)}, and the credential in this environment "
-                    f"is not among them. Applying it would lock this bucket permanently. "
-                    f"Run this as the operator whose access key the policy exempts."
+                    f"policy statement {sid!r} denies bucket actions to every principal "
+                    f"except {', '.join(not_principals) or '(nobody)'}, and this credential "
+                    f"is {operator_principal}. Applying it would lock this bucket "
+                    f"permanently. Check the project id the policy was rendered with, and "
+                    f"that this is the operator credential the policy exempts."
                 )
             continue
 
-        principals = _principals(statement, "Principal")
-        if any(arn == "*" or arn.endswith(caller_suffix) for arn in principals):
+        if principals is _MISSING:
             raise BucketConfigError(
-                f"policy statement {statement.get('Sid', '<no Sid>')!r} denies bucket actions "
-                f"to the credential in this environment. Applying it would lock this bucket "
-                f"permanently."
+                f"policy statement {sid!r} denies bucket actions and names neither Principal "
+                f"nor NotPrincipal. If the engine reads that as every principal, applying it "
+                f"locks this bucket permanently."
             )
+        if any(arn == "*" or arn == operator_principal for arn in principals):
+            raise BucketConfigError(
+                f"policy statement {sid!r} denies bucket actions to this credential "
+                f"({operator_principal}). Applying it would lock this bucket permanently."
+            )
+
+    if not denies_bucket or not denies_objects:
+        raise BucketConfigError(
+            f"the policy denies nothing on the bucket resource, or nothing on its objects. "
+            f"Hetzner's default is that every key pair in a project reaches every bucket in "
+            f"it, so a policy without both denials leaves {bucket!r} open to every credential "
+            f"in the project while reporting success."
+        )
 
 
 def load_policy(path: str) -> tuple[dict, bytes]:
@@ -230,8 +295,18 @@ def main(argv: list[str]) -> int:
 
     try:
         policy, policy_body = load_policy(args.policy_file)
-        assert_policy_fences_this_bucket(policy, args.bucket, access_key)
-    except (BucketConfigError, OSError) as exc:
+        # Resolved from the live API, never assembled from an argument: the
+        # account id in a policy principal is the half no offline check can
+        # verify, and getting it wrong exempts nobody.
+        account = owner_id(
+            endpoint=args.endpoint,
+            region=args.region,
+            access_key=access_key,
+            secret_key=secret_key,
+        )
+        operator_principal = f"arn:aws:iam:::user/{account}:{access_key}"
+        assert_policy_fences_this_bucket(policy, args.bucket, operator_principal)
+    except (BucketConfigError, ObjectStorageError, OSError) as exc:
         print(f"configure_backup_bucket: {exc}", file=sys.stderr)
         return 2
 

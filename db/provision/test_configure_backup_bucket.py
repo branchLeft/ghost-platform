@@ -25,8 +25,8 @@ import configure_backup_bucket as cbb
 
 BUCKET = "branchleft-db-backups"
 BUCKET_ARN = f"arn:aws:s3:::{BUCKET}"
-OPERATOR_ARN = "arn:aws:iam:::user/p15766609:OOOOOOOOOOOOOOOOOOOO"
-WORKLOAD_ARN = "arn:aws:iam:::user/p15766609:WWWWWWWWWWWWWWWWWWWW"
+OPERATOR_ARN = "arn:aws:iam:::user/p1231234:OOOOOOOOOOOOOOOOOOOO"
+WORKLOAD_ARN = "arn:aws:iam:::user/p1231234:WWWWWWWWWWWWWWWWWWWW"
 OPERATOR_KEY = "OOOOOOOOOOOOOOOOOOOO"
 WORKLOAD_KEY = "WWWWWWWWWWWWWWWWWWWW"
 
@@ -188,15 +188,26 @@ class PolicyRefusalTests(unittest.TestCase):
     """The refusals that stand between an operator and an unrecoverable bucket."""
 
     def test_a_policy_exempting_this_credential_is_accepted(self):
-        cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, OPERATOR_KEY)
+        cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, OPERATOR_ARN)
 
     def test_a_policy_that_would_lock_out_this_credential_is_refused(self):
         # The operator ran it with db1's backup key rather than their own. The
         # policy is correct; applying it from here removes the last credential
         # able to replace it.
         with self.assertRaises(cbb.BucketConfigError) as caught:
-            cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, WORKLOAD_KEY)
+            cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, WORKLOAD_ARN)
         self.assertIn("lock this bucket permanently", str(caught.exception))
+
+    def test_the_right_access_key_under_the_wrong_account_is_refused(self):
+        # The lockout no offline check can see: every principal in a rendered
+        # policy comes from one --project-id argument, so the generator's own
+        # check compares a fabricated ARN against itself and passes for any
+        # value. Live, this ARN names a principal that does not exist, so the
+        # NotPrincipal exemption exempts nobody.
+        wrong_account = OPERATOR_ARN.replace("p1231234", "p9999999")
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, wrong_account)
+        self.assertIn("project id", str(caught.exception))
 
     def test_a_deny_naming_this_credential_directly_is_refused(self):
         policy = fence_policy()
@@ -210,52 +221,129 @@ class PolicyRefusalTests(unittest.TestCase):
             }
         )
         with self.assertRaises(cbb.BucketConfigError):
-            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_KEY)
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
 
-    def test_a_deny_naming_every_principal_is_refused(self):
+    def test_a_deny_naming_every_principal_is_refused_in_both_spellings(self):
+        # `{"AWS": "*"}` and a bare `"*"` are the same statement. The bare form
+        # is what most published deny-all examples use, and reading only the
+        # dict form skips the statement -- which for a Deny means passing it.
+        for principal in ({"AWS": "*"}, "*", {"AWS": ["*"]}):
+            with self.subTest(principal=principal):
+                policy = fence_policy()
+                policy["Statement"].append(
+                    {
+                        "Sid": "DenyEveryone",
+                        "Effect": "Deny",
+                        "Principal": principal,
+                        "Action": "s3:*",
+                        "Resource": BUCKET_ARN,
+                    }
+                )
+                with self.assertRaises(cbb.BucketConfigError):
+                    cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+
+    def test_a_deny_naming_no_principal_at_all_is_refused(self):
+        # Whether an absent Principal means "everybody" or "nobody" is the
+        # engine's business, and this one is undocumented. An irreversible
+        # write is not the place to find out.
         policy = fence_policy()
         policy["Statement"].append(
             {
-                "Sid": "DenyEveryone",
+                "Sid": "DenyNobodyKnows",
                 "Effect": "Deny",
-                "Principal": {"AWS": "*"},
                 "Action": "s3:*",
                 "Resource": BUCKET_ARN,
             }
         )
         with self.assertRaises(cbb.BucketConfigError):
-            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_KEY)
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+
+    def test_a_statement_with_no_resource_is_refused(self):
+        policy = fence_policy()
+        policy["Statement"].append(
+            {"Sid": "DenyEverywhere", "Effect": "Deny", "Principal": {"AWS": "*"}, "Action": "s3:*"}
+        )
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn("names no Resource", str(caught.exception))
+
+    def test_a_policy_that_fences_nothing_is_refused(self):
+        # `--policy-file` is required so that a bucket cannot be configured
+        # unfenced. A file with statements but no denials satisfies the flag
+        # and fences nothing, which is the same outcome with extra steps.
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "AllowOperator",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": [OPERATOR_ARN]},
+                    "Action": "s3:*",
+                    "Resource": [BUCKET_ARN, f"{BUCKET_ARN}/*"],
+                }
+            ],
+        }
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn("denies nothing", str(caught.exception))
+
+    def test_a_policy_that_opens_the_bucket_to_everyone_is_refused(self):
+        # An operational bucket has no anonymous-read requirement, so a
+        # wildcard Allow is a paste error, not a decision.
+        policy = fence_policy()
+        policy["Statement"].append(
+            {
+                "Sid": "PublicRead",
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": "s3:GetObject",
+                "Resource": f"{BUCKET_ARN}/*",
+            }
+        )
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn("publish the bucket", str(caught.exception))
 
     def test_a_policy_for_a_different_bucket_is_refused(self):
         # Two fences are rendered in one session and the wrong file is passed:
         # the bucket in hand stays open while the operator reads success.
         with self.assertRaises(cbb.BucketConfigError) as caught:
             cbb.assert_policy_fences_this_bucket(
-                fence_policy("branchleft-tenant-pulumi-state"), BUCKET, OPERATOR_KEY
+                fence_policy("branchleft-tenant-pulumi-state"), BUCKET, OPERATOR_ARN
             )
         self.assertIn("fence the wrong bucket", str(caught.exception))
 
     def test_a_neighbouring_bucket_name_does_not_count_as_this_bucket(self):
         with self.assertRaises(cbb.BucketConfigError):
             cbb.assert_policy_fences_this_bucket(
-                fence_policy("branchleft-db-backups-archive"), BUCKET, OPERATOR_KEY
+                fence_policy("branchleft-db-backups-archive"), BUCKET, OPERATOR_ARN
             )
 
     def test_an_object_only_deny_never_blocks_the_run(self):
         # A Deny on `<bucket>/*` cannot deny PutBucketPolicy, which is an
         # action on the bucket resource, so it is not a lockout risk.
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "DenyObjects",
-                    "Effect": "Deny",
-                    "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
-                    "Action": "s3:*",
-                    "Resource": f"{BUCKET_ARN}/*",
-                }
-            ]
-        }
-        cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_KEY)
+        policy = fence_policy()
+        policy["Statement"] = [
+            statement
+            for statement in policy["Statement"]
+            if statement["Sid"] != "DenyBucketConfigurationExceptOperator"
+        ] + [
+            {
+                "Sid": "DenyBucketReads",
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                "Action": "s3:ListBucket",
+                "Resource": BUCKET_ARN,
+            },
+            {
+                "Sid": "DenyObjectsToOthers",
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
+                "Action": "s3:*",
+                "Resource": f"{BUCKET_ARN}/*",
+            },
+        ]
+        cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
 
 
 class LoadPolicyTests(unittest.TestCase):
@@ -337,6 +425,40 @@ class MainTests(unittest.TestCase):
                     ]
                 )
 
+    def test_the_account_is_resolved_from_the_credential_not_from_an_argument(self):
+        # A project id typed into the generator is not evidence of anything.
+        # The account has to come from the credential that will do the writing.
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = self._policy_file(directory, fence_policy())
+            environment = {
+                "AWS_ACCESS_KEY_ID": OPERATOR_KEY,
+                "AWS_SECRET_ACCESS_KEY": "secret",
+            }
+            with mock.patch.dict(os.environ, environment, clear=False):
+                with mock.patch.object(cbb, "owner_id", return_value="p9999999") as resolve:
+                    with contextlib.redirect_stderr(stderr):
+                        code = cbb.main(
+                            [
+                                "--bucket",
+                                BUCKET,
+                                "--endpoint",
+                                "hel1.your-objectstorage.com",
+                                "--region",
+                                "hel1",
+                                "--policy-file",
+                                policy_file,
+                            ]
+                        )
+        self.assertEqual(code, 2)
+        resolve.assert_called_once()
+        self.assertIn("lock this bucket permanently", stderr.getvalue())
+
     def test_a_locking_policy_stops_the_run_before_any_request(self):
         import contextlib
         import io
@@ -350,7 +472,9 @@ class MainTests(unittest.TestCase):
                 "AWS_ACCESS_KEY_ID": WORKLOAD_KEY,
                 "AWS_SECRET_ACCESS_KEY": "secret",
             }
-            with mock.patch.dict(os.environ, environment, clear=False):
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                cbb, "owner_id", return_value="p1231234"
+            ):
                 with contextlib.redirect_stderr(stderr):
                     code = cbb.main(
                         [

@@ -16,8 +16,10 @@ reports simply as exit 0.
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -29,11 +31,38 @@ _spec.loader.exec_module(verify)
 
 FENCED = "branchleft-db-backups"
 CONTROL = "branchleft-tenant-pulumi-state"
-POLICY_FILE = "/tmp/branchleft-db-backups-policy.json"
 
 OPERATOR_KEY = "O" * 20
 WORKLOAD_KEY = "W" * 20
 FOREIGN_KEY = "F" * 20
+ACCOUNT = "p00000000"
+
+OPERATOR_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{OPERATOR_KEY}"
+WORKLOAD_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{WORKLOAD_KEY}"
+
+POLICY = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "DenyBucketConfigurationExceptOperator",
+            "Effect": "Deny",
+            "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+            "NotAction": ["s3:ListBucket"],
+            "Resource": f"arn:aws:s3:::{FENCED}",
+        },
+        {
+            "Sid": "DenyObjectAccessExceptNamedKeys",
+            "Effect": "Deny",
+            "NotPrincipal": {"AWS": [WORKLOAD_ARN, OPERATOR_ARN]},
+            "Action": "s3:*",
+            "Resource": f"arn:aws:s3:::{FENCED}/*",
+        },
+    ],
+}
+
+_TEMP = tempfile.TemporaryDirectory()
+POLICY_FILE = str(pathlib.Path(_TEMP.name) / "policy.json")
+pathlib.Path(POLICY_FILE).write_text(json.dumps(POLICY))
 
 ENVIRONMENT = {
     "FENCE_OPERATOR_ACCESS_KEY_ID": OPERATOR_KEY,
@@ -91,17 +120,20 @@ def a_fully_working_fence() -> dict:
     return {
         ("workload", "get-bucket-policy", FENCED): denied,
         ("workload", "put-bucket-policy", FENCED): denied,
-        ("workload", "put-bucket-acl", FENCED): denied,
         ("workload", "put-bucket-versioning", FENCED): denied,
         ("foreign", "list-objects-v2", FENCED): denied,
         ("foreign", "get-object", FENCED): denied,
         ("foreign", "put-object", FENCED): denied,
         ("anonymous", "list-objects-v2", FENCED): denied,
         ("operator", "list-object-versions", FENCED): Completed(0, stdout="{}"),
+        ("operator", "get-bucket-policy", FENCED): Completed(0, stdout=json.dumps(POLICY)),
+        ("operator", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
+        ("workload", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
+        ("foreign", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
     }
 
 
-def run(answers, environment=None):
+def run(answers, environment=None, extra_args=()):
     runner = Runner(answers)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -113,6 +145,7 @@ def run(answers, environment=None):
                 CONTROL,
                 "--policy-file",
                 POLICY_FILE,
+                *extra_args,
             ],
             runner=runner,
             environ=dict(environment or ENVIRONMENT),
@@ -171,6 +204,105 @@ class TestBothDirections(unittest.TestCase):
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn("the key that must keep working is denied", output)
+
+    def test_a_workload_that_can_write_but_not_read_fails(self):
+        # The object Allow and the object Deny are separate statements. A write
+        # that succeeds says nothing about the read, and a backup nobody can
+        # read back is not a backup.
+        answers = a_fully_working_fence()
+        answers[("workload", "get-object", FENCED)] = Completed(1, stderr=ACCESS_DENIED)
+        code, output, _ = run(answers)
+        self.assertEqual(code, 1)
+        self.assertIn("workload can read an object back", output)
+        self.assertIn(verify.FAIL, output)
+
+    def test_the_workload_read_probe_is_always_in_the_check_set(self):
+        checks = verify.build_checks(
+            bucket=FENCED,
+            foreign_control_bucket=CONTROL,
+            policy_file=POLICY_FILE,
+            probe_key="fence-probe/x.txt",
+        )
+        reads = [
+            check
+            for check in checks
+            if check.probe.role == "workload"
+            and check.expect == "allow"
+            and check.probe.args[0] == "get-object"
+        ]
+        self.assertEqual(len(reads), 1)
+
+
+class TestStoredPolicy(unittest.TestCase):
+    def test_a_stored_policy_that_differs_from_the_sent_one_fails(self):
+        # This backend accepts a configuration and silently drops an element of
+        # it. Every other probe would still pass -- they would simply be
+        # measuring a different fence.
+        answers = a_fully_working_fence()
+        trimmed = {"Version": POLICY["Version"], "Statement": POLICY["Statement"][:1]}
+        answers[("operator", "get-bucket-policy", FENCED)] = Completed(
+            0, stdout=json.dumps(trimmed)
+        )
+        code, output, _ = run(answers)
+        self.assertEqual(code, 1)
+        self.assertIn("the stored policy is not the document that was sent", output)
+
+    def test_a_reordered_statement_list_is_not_a_mismatch(self):
+        answers = a_fully_working_fence()
+        reordered = {
+            "Version": POLICY["Version"],
+            "Statement": list(reversed(POLICY["Statement"])),
+        }
+        answers[("operator", "get-bucket-policy", FENCED)] = Completed(
+            0, stdout=json.dumps(reordered)
+        )
+        code, output, _ = run(answers)
+        self.assertEqual(code, 0, output)
+
+
+class TestPreflight(unittest.TestCase):
+    def test_a_policy_rendered_against_the_wrong_account_is_caught_before_the_put(self):
+        # One mistyped digit in --project-id. The generator's own check passes,
+        # because it compares a fabricated ARN against itself. Live, the
+        # NotPrincipal names a principal that does not exist, so the operator's
+        # exemption exempts nobody and the bucket becomes unrecoverable.
+        answers = a_fully_working_fence()
+        for role in ("operator", "workload", "foreign"):
+            answers[(role, "list-buckets", None)] = Completed(0, stdout="p99999999\n")
+        code, output, _ = run(answers, extra_args=["--preflight"])
+        self.assertEqual(code, 1)
+        self.assertIn("DO NOT APPLY THIS POLICY", output)
+        self.assertIn("the policy exempts THIS operator credential", output)
+
+    def test_a_correctly_rendered_policy_passes_preflight(self):
+        code, output, _ = run(a_fully_working_fence(), extra_args=["--preflight"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("safe to apply", output)
+
+    def test_preflight_writes_nothing(self):
+        _, _, runner = run(a_fully_working_fence(), extra_args=["--preflight"])
+        mutations = [
+            call
+            for call in runner.calls
+            if call[1].startswith("put-") or call[1].startswith("delete-")
+        ]
+        self.assertEqual(mutations, [])
+
+    def test_a_foreign_key_in_another_account_fails_preflight(self):
+        # Its denials would be the account boundary, which is precisely the
+        # substitution that produced branchLeft/workspace#286.
+        answers = a_fully_working_fence()
+        answers[("foreign", "list-buckets", None)] = Completed(0, stdout="p99999999\n")
+        code, output, _ = run(answers, extra_args=["--preflight"])
+        self.assertEqual(code, 1)
+        self.assertIn("all three credentials are in one account", output)
+
+    def test_a_credential_that_cannot_resolve_its_account_is_inconclusive(self):
+        answers = a_fully_working_fence()
+        answers[("operator", "list-buckets", None)] = Completed(1, stderr=INVALID_KEY)
+        code, output, _ = run(answers, extra_args=["--preflight"])
+        self.assertEqual(code, 1)
+        self.assertIn(verify.INCONCLUSIVE, output)
 
 
 class TestControlsMakeDenialsMeanSomething(unittest.TestCase):
@@ -244,21 +376,58 @@ class TestLockout(unittest.TestCase):
 
 
 class TestProbesAreNonDestructive(unittest.TestCase):
-    def test_no_probe_would_damage_the_bucket_if_the_fence_let_it_through(self):
-        # Every denial probe has to be safe on success, because a probe whose
-        # success is the incident cannot be run on a live bucket at all.
+    # The property, stated once: a denial probe runs against a live production
+    # bucket, so its SUCCESS must leave that bucket exactly as it was. Anything
+    # whose success changes bucket state is either removed or gated behind an
+    # explicit assertion that the change is a no-op.
+    SAFE_ON_SUCCESS = {
+        # Reads.
+        "get-bucket-policy",
+        "get-object",
+        "list-objects-v2",
+        "list-object-versions",
+        "head-object",
+        # Writes whose payload is the state the bucket is already in.
+        "put-bucket-policy",
+    }
+    GATED_ON_ASSERTED_STATE = {"put-bucket-versioning"}
+
+    def _denial_probes(self, **kwargs):
         checks = verify.build_checks(
             bucket=FENCED,
             foreign_control_bucket=CONTROL,
             policy_file=POLICY_FILE,
-            probe_key="fence-probe/x.txt",
+            probe_key=f"{verify.PROBE_PREFIX}x.txt",
+            **kwargs,
         )
-        args = [" ".join(check.probe.args) for check in checks if check.expect == "deny"]
-        joined = "\n".join(args)
-        self.assertNotIn("Status=Suspended", joined)
-        self.assertNotIn("public-read", joined)
-        self.assertNotIn("delete-bucket", joined)
-        self.assertNotIn("delete-bucket-policy", joined)
+        return [check.probe for check in checks if check.expect == "deny"]
+
+    def test_every_default_denial_probe_is_a_no_op_on_success(self):
+        for probe in self._denial_probes():
+            operation = probe.args[0]
+            with self.subTest(operation=operation):
+                # put-object into a foreign bucket creates an object, which
+                # cleanup removes; that is the one deliberate exception.
+                if operation == "put-object":
+                    continue
+                self.assertIn(operation, self.SAFE_ON_SUCCESS)
+
+    def test_a_probe_that_changes_bucket_state_only_runs_when_that_state_is_asserted(self):
+        # Turning versioning on for a bucket that has it off, and no lifecycle
+        # rule, retains every superseded object forever. That is storage growth
+        # caused by the verification rather than found by it.
+        default = {probe.args[0] for probe in self._denial_probes()}
+        gated = {probe.args[0] for probe in self._denial_probes(versioning_already_enabled=True)}
+        self.assertEqual(gated - default, self.GATED_ON_ASSERTED_STATE)
+        self.assertFalse(default & self.GATED_ON_ASSERTED_STATE)
+
+    def test_no_probe_replaces_the_bucket_acl(self):
+        # `put-bucket-acl` replaces rather than merges, so it is a no-op only
+        # if the current ACL is exactly what is sent -- which nothing here can
+        # assert. The bucket-configuration deny is one statement, so
+        # get/put-bucket-policy already prove it applies.
+        for probe in self._denial_probes(versioning_already_enabled=True):
+            self.assertNotEqual(probe.args[0], "put-bucket-acl")
 
     def test_the_workload_write_probes_stay_under_the_probe_prefix(self):
         # prune_backups.py reads `dumps/` and `binlogs/`; a probe object under
@@ -316,6 +485,27 @@ class TestSetupRefusals(unittest.TestCase):
         environment["FENCE_FOREIGN_ACCESS_KEY_ID"] = WORKLOAD_KEY
         with self.assertRaises(verify.VerifierError):
             verify.read_credentials(environment)
+
+    def test_dry_run_lists_the_matrix_and_touches_nothing(self):
+        runner = Runner({})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = verify.main(
+                [
+                    "--bucket",
+                    FENCED,
+                    "--foreign-control-bucket",
+                    CONTROL,
+                    "--policy-file",
+                    POLICY_FILE,
+                    "--dry-run",
+                ],
+                runner=runner,
+                environ={},
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(runner.calls, [])
+        self.assertIn("workload can read an object back", out.getvalue())
 
     def test_probes_never_inherit_an_ambient_credential(self):
         # An operator arrives at this script with a key already exported, from

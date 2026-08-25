@@ -314,6 +314,53 @@ def delete_object(
     _raise_for_status(what=f"DELETE {bucket}/{key}", status=status, body=body)
 
 
+def owner_id(
+    *,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    transport=_urllib_get,
+) -> str:
+    """The storage account this credential belongs to, from ListAllMyBuckets.
+
+    The only way to learn, from the credential itself, which account a bucket
+    policy has to name. A policy principal is
+    `arn:aws:iam:::user/<owner>:<access key>`, and both halves have to be
+    right: an ARN carrying the correct key under the wrong account names a
+    principal that does not exist, which turns a `NotPrincipal` exemption into
+    an exemption for nobody. That is unrecoverable on a statement covering
+    `PutBucketPolicy`, and no offline check can catch it, because a rendered
+    policy is self-consistent with whatever account id it was given.
+
+    Service-level, so no bucket policy governs it.
+    """
+    headers = build_headers(
+        bucket="",
+        key=None,
+        payload=b"",
+        host=endpoint,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        now=datetime.datetime.now(datetime.timezone.utc),
+        method="GET",
+    )
+    status, body = transport(f"https://{endpoint}/", headers)
+    _raise_for_status(what="GET / (ListAllMyBuckets)", status=status, body=body)
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as exc:
+        raise ObjectStorageError(f"GET /: response was not XML: {exc}") from exc
+    for child in root:
+        if _local_name(child.tag) != "Owner":
+            continue
+        for grandchild in child:
+            if _local_name(grandchild.tag) == "ID" and (grandchild.text or "").strip():
+                return grandchild.text.strip()
+    raise ObjectStorageError("GET /: no Owner/ID in the ListAllMyBuckets response")
+
+
 def put_bucket_subresource(
     *,
     bucket: str,
@@ -326,12 +373,14 @@ def put_bucket_subresource(
     content_md5: str | None = None,
     transport=_urllib_put,
 ) -> None:
-    """PUTs a bucket-level subresource document (`?versioning`, `?lifecycle`)
-    -- a one-time, hand-run operation, never called by either automated
-    pipeline. `content_md5` (base64, RFC 1864) is required by this endpoint
-    for `?lifecycle` and not for `?versioning`, matching
+    """PUTs a bucket-level subresource document (`?versioning`, `?lifecycle`,
+    `?policy`) -- a one-time, hand-run operation, never called by either
+    automated pipeline. `content_md5` (base64, RFC 1864) is required by this
+    endpoint for `?lifecycle` and not for `?versioning`, matching
     `shared-infra/hetzner/scripts/probe-object-storage.py`'s already-proven
-    behaviour against the same API."""
+    behaviour against the same API. Whether `?policy` accepts or requires one
+    is unverified against this endpoint; callers send none, which is what
+    `aws s3api put-bucket-policy` does."""
     query = {subresource: ""}
     extra_headers = {"content-md5": content_md5} if content_md5 else None
     headers = build_headers(

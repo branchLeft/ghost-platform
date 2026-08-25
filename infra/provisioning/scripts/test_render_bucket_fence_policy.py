@@ -25,7 +25,7 @@ assert _spec is not None and _spec.loader is not None
 fence = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fence)
 
-PROJECT = "15766609"
+PROJECT = "1231234"
 WORKLOAD = "W" * 20
 SECOND_WORKLOAD = "S" * 20
 ADMIN = "O" * 20
@@ -215,7 +215,33 @@ class TestRenderedCommands(unittest.TestCase):
         commands = fence.render_commands(
             BUCKET, PROJECT, [WORKLOAD], ADMIN, "https://hel1.your-objectstorage.com", "hel1", True
         )
-        self.assertEqual(commands.count("$S3 put-bucket-policy"), 2)
+        self.assertEqual(commands.count("\ns3 put-bucket-policy"), 2)
+
+    def test_the_sequence_survives_zsh(self):
+        # zsh does not word-split an unquoted parameter expansion, so
+        # `S3='aws ... s3api'` followed by `$S3 ...` fails there with "no such
+        # file or directory". This sequence has to run verbatim in the shell
+        # the operator actually has, and an abort between the two policy PUTs
+        # is an unproven fence on a live bucket.
+        commands = fence.render_commands(
+            BUCKET, PROJECT, [WORKLOAD], ADMIN, "https://hel1.your-objectstorage.com", "hel1", True
+        )
+        runnable = [
+            line for line in commands.splitlines() if line and not line.startswith("#")
+        ]
+        self.assertFalse([line for line in runnable if line.startswith("$")])
+        self.assertIn(
+            's3() { aws --endpoint-url https://hel1.your-objectstorage.com s3api "$@"; }',
+            runnable,
+        )
+
+    def test_the_sequence_confirms_the_account_before_it_writes(self):
+        # The project id is the one value nothing offline can check, and the
+        # one whose being wrong is unrecoverable.
+        commands = fence.render_commands(
+            BUCKET, PROJECT, [WORKLOAD], ADMIN, "https://hel1.your-objectstorage.com", "hel1", True
+        )
+        self.assertLess(commands.index("list-buckets"), commands.index("put-bucket-policy"))
 
     def test_the_embedded_policy_is_the_rendered_policy(self):
         commands = fence.render_commands(

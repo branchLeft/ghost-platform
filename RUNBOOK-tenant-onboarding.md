@@ -339,15 +339,26 @@ explicitly.** Running the tenant probes under the operator key is the mistake
 this ordering exists to prevent: (d) and (e) would succeed and read as "the
 policy did not land", failing a bucket that is in fact correct.
 
+**Probe (f) has a prerequisite.** It expects `branchleft-db-backups` to already
+carry its own fence, per
+[`RUNBOOK-bucket-fencing.md`](RUNBOOK-bucket-fencing.md) section 1. Until that
+has landed, (f) returns a listing rather than `AccessDenied` — correctly, since
+the bucket really is open to every key in the project — and this block's own
+rule then blocks the onboarding. Fence that bucket first.
+
+`s3` is a shell function rather than a variable because zsh does not word-split
+an unquoted parameter expansion: `S3="aws … s3api"` then `$S3 …` fails
+there with `no such file or directory: aws --endpoint-url …`.
+
 ```bash
-S3="aws --endpoint-url https://hel1.your-objectstorage.com s3api"
+s3() { aws --endpoint-url https://hel1.your-objectstorage.com s3api "$@"; }
 BUCKET=branchleft-media-<slug>
 
 # ---- as the OPERATOR ------------------------------------------------------
 export AWS_ACCESS_KEY_ID='<operator access key id>'
 export AWS_SECRET_ACCESS_KEY='<operator secret access key>'
 echo hello > /tmp/probe.txt
-$S3 put-object --bucket "$BUCKET" --key probe.txt --body /tmp/probe.txt
+s3 put-object --bucket "$BUCKET" --key probe.txt --body /tmp/probe.txt
 
 # a. Public read works, with no credential at all. If this needs one, cdnUrl is
 #    broken for every reader of every post.
@@ -368,14 +379,14 @@ export AWS_ACCESS_KEY_ID='<tenant-state access key id>'
 export AWS_SECRET_ACCESS_KEY='<tenant-state secret access key>'
 
 # c. A foreign key cannot write into this bucket. Expect AccessDenied.
-$S3 put-object --bucket "$BUCKET" --key foreign.txt --body /tmp/probe.txt
+s3 put-object --bucket "$BUCKET" --key foreign.txt --body /tmp/probe.txt
 
 # ---- as the TENANT --------------------------------------------------------
 export AWS_ACCESS_KEY_ID='<this tenant access key id>'
 export AWS_SECRET_ACCESS_KEY='<this tenant secret access key>'
 
 # d. Media is append-only for the tenant's own key. Expect AccessDenied.
-$S3 delete-object --bucket "$BUCKET" --key probe.txt
+s3 delete-object --bucket "$BUCKET" --key probe.txt
 
 # e. The tenant cannot edit the fence that constrains it. Expect AccessDenied
 #    on all three. This key sits inside the tenant's own container, so without
@@ -385,27 +396,31 @@ $S3 delete-object --bucket "$BUCKET" --key probe.txt
 #    Each is deliberately a no-op if it SUCCEEDS: `private` is already the ACL
 #    and `Enabled` is already the versioning state. A probe whose success is
 #    itself the damage cannot be run against a live bucket.
-$S3 put-bucket-acl --bucket "$BUCKET" --acl private
-$S3 get-bucket-policy --bucket "$BUCKET"
-$S3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
+s3 put-bucket-acl --bucket "$BUCKET" --acl private
+s3 get-bucket-policy --bucket "$BUCKET"
+s3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
 
-# f. The tenant's key reaches no other bucket IN THE SAME PROJECT. The bucket
-#    named here must be one of those: `branchleft-pulumi-state` is in a
-#    different project, so its AccessDenied would be the project boundary and
-#    would say nothing whatever about this policy. That substitution is exactly
-#    how per-bucket key scoping was once recorded as working here when it does
-#    not exist (branchLeft/workspace#286). Expect AccessDenied.
-$S3 list-objects-v2 --bucket branchleft-db-backups
+# f. The tenant's key does not reach branchleft-db-backups, a FENCED bucket in
+#    THE SAME PROJECT. The bucket named here has to be both: an unfenced one
+#    would deny nothing, and `branchleft-pulumi-state` is in a different
+#    project, so its AccessDenied would be the project boundary and would say
+#    nothing whatever about this policy. That substitution is exactly how
+#    per-bucket key scoping was once recorded as working here when it does not
+#    exist (branchLeft/workspace#286). This probes that bucket's fence as much
+#    as this one's, and it does NOT establish that the tenant key reaches no
+#    other bucket in the project -- every unfenced bucket there is still open
+#    to it. Expect AccessDenied.
+s3 list-objects-v2 --bucket branchleft-db-backups
 
 # g. The control for (c) and (f), and the reason either one means anything: the
 #    same credentials must SUCCEED where they are entitled. A denial from a key
 #    that reaches nothing is not evidence about a fence. Expect a listing.
 export AWS_ACCESS_KEY_ID='<tenant-state access key id>'
 export AWS_SECRET_ACCESS_KEY='<tenant-state secret access key>'
-$S3 list-objects-v2 --bucket branchleft-tenant-pulumi-state --max-keys 1
+s3 list-objects-v2 --bucket branchleft-tenant-pulumi-state --max-keys 1
 export AWS_ACCESS_KEY_ID='<this tenant access key id>'
 export AWS_SECRET_ACCESS_KEY='<this tenant secret access key>'
-$S3 list-objects-v2 --bucket "$BUCKET" --max-keys 1
+s3 list-objects-v2 --bucket "$BUCKET" --max-keys 1
 
 # ---- back to the OPERATOR, to clean up ------------------------------------
 export AWS_ACCESS_KEY_ID='<operator access key id>'
@@ -427,11 +442,11 @@ readable anonymously at `?versionId=`, because the policy grants
 `s3:GetObjectVersion` to everyone. The same is true of any real takedown:
 
 ```bash
-$S3 list-object-versions --bucket "$BUCKET" --prefix probe.txt \
+s3 list-object-versions --bucket "$BUCKET" --prefix probe.txt \
   --query 'Versions[].VersionId' --output text \
   | tr '\t' '\n' \
-  | while read -r v; do $S3 delete-object --bucket "$BUCKET" --key probe.txt --version-id "$v"; done
-$S3 delete-object --bucket "$BUCKET" --key probe.txt   # the delete marker itself
+  | while read -r v; do s3 delete-object --bucket "$BUCKET" --key probe.txt --version-id "$v"; done
+s3 delete-object --bucket "$BUCKET" --key probe.txt   # the delete marker itself
 ```
 
 The operator key is deliberately still able to delete, and is the only key that

@@ -22,12 +22,29 @@ is supposed to keep working must still work. A policy that denies everybody is
 not a fence, it is an outage -- on the backup bucket, a silent one that surfaces
 at the next restore.
 
-THE CHECK THAT MATTERS MOST IS THE FIRST ONE. `put-bucket-policy` as the
-operator, re-PUTting the document just applied, is a no-op when it succeeds and
-the only warning you will ever get when it does not. A policy that denies the
-operator `PutBucketPolicy` cannot be edited or removed by any key in the
-project, and recovery is a support request against the storage cluster. Run
-this before leaving the terminal, not the next morning.
+THE CHECK THAT MATTERS MOST RUNS BEFORE THE POLICY IS APPLIED. `--preflight`
+resolves each credential's own storage account and confirms the policy names
+those principals. Nothing else can: every principal in a rendered policy comes
+from one `--project-id` argument, so the generator's own recoverability check
+compares a fabricated ARN against itself and passes for any value at all. Live,
+an ARN carrying the right access key under the wrong account names a principal
+that does not exist -- `NotPrincipal` exempts nobody, the operator loses
+`PutBucketPolicy` along with everyone else, and the bucket cannot be recovered
+from inside the account. One mistyped digit is enough. `--preflight` writes
+nothing.
+
+After the policy is applied, the check that cannot wait is `put-bucket-policy`
+as the operator, re-PUTting the document just applied: a no-op when it succeeds
+and the only warning you will ever get when it does not. Run it before leaving
+the terminal, not the next morning.
+
+A PROBE MUST BE SAFE WHEN IT SUCCEEDS. These run against live production
+buckets, so every denial check either only reads, or writes back the state the
+bucket is already in. That is why the bucket ACL is never set here at all
+(`put-bucket-acl` replaces rather than merges, and nothing can assert the
+current ACL) and why the versioning probe is behind
+`--versioning-already-enabled`: turning versioning on for a bucket that has it
+off, with no lifecycle rule, retains every superseded object indefinitely.
 
 Credentials come from the environment, one pair per role, and are never
 accepted as arguments:
@@ -138,15 +155,20 @@ def classify(returncode: int, stderr: str) -> tuple[str, str]:
 
 
 class Verifier:
-    def __init__(self, *, endpoint: str, region: str, credentials: dict, runner=_default_runner):
+    def __init__(
+        self, *, endpoint: str, region: str, credentials: dict, runner=_default_runner, environ=None
+    ):
         self.endpoint = endpoint
         self.region = region
         self.credentials = credentials
         self.runner = runner
+        # Threaded in rather than read from `os.environ` at use, so a test
+        # exercises the same environment the probes get.
+        self.environ = os.environ if environ is None else environ
         self._outcomes: dict[tuple, tuple[str, str]] = {}
 
     def env_for(self, role: str) -> dict[str, str]:
-        env = dict(os.environ)
+        env = dict(self.environ)
         # The ambient AWS_* variables are cleared rather than left in place: a
         # probe that silently ran as whatever key was already exported is the
         # failure mode with no symptom.
@@ -191,7 +213,12 @@ class Verifier:
 
 
 def build_checks(
-    *, bucket: str, foreign_control_bucket: str, policy_file: str, probe_key: str
+    *,
+    bucket: str,
+    foreign_control_bucket: str,
+    policy_file: str,
+    probe_key: str,
+    versioning_already_enabled: bool = False,
 ) -> list[Check]:
     workload_control = Probe(
         "workload", f"list {bucket}", ["list-objects-v2", "--bucket", bucket, "--max-keys", "1"]
@@ -203,7 +230,7 @@ def build_checks(
     )
     policy_arg = f"file://{policy_file}"
 
-    return [
+    checks = [
         Check(
             "operator can read the policy",
             Probe("operator", "get the policy", ["get-bucket-policy", "--bucket", bucket]),
@@ -227,6 +254,21 @@ def build_checks(
                 "workload",
                 "put the probe object",
                 ["put-object", "--bucket", bucket, "--key", probe_key],
+            ),
+            "allow",
+        ),
+        Check(
+            # Not implied by the write. The object Allow and the object Deny
+            # are separate statements, and an engine that handles the pair
+            # asymmetrically could leave the workload able to write and unable
+            # to read -- which on the backup bucket surfaces at the next
+            # restore and nowhere earlier, and on a Pulumi state bucket is a
+            # checkpoint written and then unreadable.
+            "workload can read an object back",
+            Probe(
+                "workload",
+                "read the probe object",
+                ["get-object", "--bucket", bucket, "--key", probe_key, os.devnull],
             ),
             "allow",
         ),
@@ -279,37 +321,6 @@ def build_checks(
             control=workload_control,
         ),
         Check(
-            "workload cannot re-open the bucket with an ACL",
-            # `private` rather than `public-read`: a probe whose success is
-            # itself the damage is not a safe probe.
-            Probe(
-                "workload",
-                "set the bucket ACL",
-                ["put-bucket-acl", "--bucket", bucket, "--acl", "private"],
-            ),
-            "deny",
-            control=workload_control,
-        ),
-        Check(
-            "workload cannot touch versioning",
-            # `Enabled` rather than `Suspended`, for the same reason: suspending
-            # versioning on a backup bucket to find out whether it is allowed
-            # would be the incident.
-            Probe(
-                "workload",
-                "re-enable versioning",
-                [
-                    "put-bucket-versioning",
-                    "--bucket",
-                    bucket,
-                    "--versioning-configuration",
-                    "Status=Enabled",
-                ],
-            ),
-            "deny",
-            control=workload_control,
-        ),
-        Check(
             "the bucket is not world-readable",
             Probe(
                 "anonymous",
@@ -330,6 +341,79 @@ def build_checks(
             "allow",
         ),
     ]
+
+    if versioning_already_enabled:
+        # Only safe where the bucket's versioning is ALREADY `Enabled`, which
+        # is why it is opt-in rather than always on. A probe whose success
+        # changes the bucket is not a probe: on a bucket with versioning off
+        # and no lifecycle rule, a successful `Status=Enabled` starts retaining
+        # every superseded object indefinitely, which is storage growth caused
+        # by the verification rather than found by it.
+        checks.insert(
+            -1,
+            Check(
+                "workload cannot touch versioning",
+                Probe(
+                    "workload",
+                    "re-enable versioning",
+                    [
+                        "put-bucket-versioning",
+                        "--bucket",
+                        bucket,
+                        "--versioning-configuration",
+                        "Status=Enabled",
+                    ],
+                ),
+                "deny",
+                control=workload_control,
+            ),
+        )
+    return checks
+
+
+def compare_stored_policy(verifier, bucket: str, policy_file: str) -> tuple[str, str]:
+    """Prove the bucket stores the document that was sent.
+
+    This backend is known to accept a configuration and silently drop an
+    element of it, and every other check here would still pass on a bucket
+    whose stored policy is not the rendered one -- the probes would simply be
+    measuring a different fence. Statements are compared as a sorted set, so an
+    engine that reorders them is not reported as a mismatch.
+    """
+    argv = [
+        "aws",
+        "--endpoint-url",
+        verifier.endpoint,
+        "s3api",
+        "get-bucket-policy",
+        "--bucket",
+        bucket,
+        "--query",
+        "Policy",
+        "--output",
+        "text",
+    ]
+    completed = verifier.runner(argv, verifier.env_for("operator"))
+    if completed.returncode != 0:
+        return INCONCLUSIVE, f"could not read the stored policy: {(completed.stderr or '').strip()[:200]}"
+    try:
+        stored = json.loads(completed.stdout or "")
+        with open(policy_file, "r", encoding="utf-8") as handle:
+            sent = json.load(handle)
+    except (json.JSONDecodeError, OSError) as error:
+        return INCONCLUSIVE, f"could not compare the policies: {error}"
+
+    if _normalised(stored) != _normalised(sent):
+        return FAIL, "the stored policy is not the document that was sent"
+    return PASS, ""
+
+
+def _normalised(policy: dict) -> tuple:
+    statements = policy.get("Statement", [])
+    return (
+        policy.get("Version"),
+        tuple(sorted(json.dumps(statement, sort_keys=True) for statement in statements)),
+    )
 
 
 def cleanup(verifier: Verifier, bucket: str) -> list[str]:
@@ -385,6 +469,124 @@ def cleanup(verifier: Verifier, bucket: str) -> list[str]:
     return problems
 
 
+def account_of(verifier, role: str) -> tuple[str | None, str]:
+    """The storage account a credential belongs to, from ListAllMyBuckets.
+
+    Service-level, so no bucket policy governs it, and it works before a fence
+    exists as well as after.
+    """
+    argv = [
+        "aws",
+        "--endpoint-url",
+        verifier.endpoint,
+        "s3api",
+        "list-buckets",
+        "--query",
+        "Owner.ID",
+        "--output",
+        "text",
+    ]
+    completed = verifier.runner(argv, verifier.env_for(role))
+    if completed.returncode != 0:
+        return None, (completed.stderr or "").strip()[:200]
+    account = (completed.stdout or "").strip()
+    return (account, "") if account else (None, "no Owner.ID in the response")
+
+
+def preflight(verifier, *, bucket: str, policy_file: str) -> list[tuple]:
+    """Everything that must hold BEFORE a policy is applied, not after.
+
+    The check that cannot wait until after the PUT is the account id. Every
+    principal in a rendered policy is built from one `--project-id` argument,
+    so the generator's own recoverability check compares a fabricated ARN
+    against itself and passes for any value at all. Live, an ARN carrying the
+    right access key under the wrong account names a principal that does not
+    exist -- so `NotPrincipal` exempts nobody, the operator loses
+    `PutBucketPolicy` along with everyone else, and the bucket is
+    unrecoverable. One mistyped digit in the runbook command is enough.
+
+    Resolving the account from each credential itself is the only way to catch
+    it, and it has to happen while the policy is still a file on disk.
+    """
+    rows: list[tuple] = []
+    accounts: dict[str, str] = {}
+    for role in ("operator", "workload", "foreign"):
+        account, reason = account_of(verifier, role)
+        if account is None:
+            rows.append((f"{role} credential resolves its account", INCONCLUSIVE, reason, "", True))
+            continue
+        accounts[role] = account
+        rows.append((f"{role} credential resolves its account", PASS, "", account, False))
+
+    if len(accounts) == 3 and len(set(accounts.values())) != 1:
+        rows.append(
+            (
+                "all three credentials are in one account",
+                FAIL,
+                f"accounts differ ({accounts}); a foreign key outside this account is denied "
+                f"by the account boundary, so its denials would say nothing about the fence",
+                "",
+                True,
+            )
+        )
+    elif len(accounts) == 3:
+        rows.append(("all three credentials are in one account", PASS, "", "", False))
+
+    if "operator" not in accounts:
+        return rows
+
+    account = accounts["operator"]
+    operator_arn = f"arn:aws:iam:::user/{account}:{verifier.credentials['operator'][0]}"
+    workload_arn = f"arn:aws:iam:::user/{account}:{verifier.credentials['workload'][0]}"
+    try:
+        with open(policy_file, "r", encoding="utf-8") as handle:
+            policy = json.load(handle)
+    except (json.JSONDecodeError, OSError) as error:
+        rows.append(("the policy file is readable", INCONCLUSIVE, str(error), "", True))
+        return rows
+
+    bucket_arn = f"arn:aws:s3:::{bucket}"
+    objects_prefix = f"{bucket_arn}/"
+    exempts_operator = None
+    exempts_workload = None
+    for statement in policy.get("Statement", []):
+        if statement.get("Effect") != "Deny":
+            continue
+        resource = statement.get("Resource", [])
+        resources = [resource] if isinstance(resource, str) else list(resource)
+        not_principal = statement.get("NotPrincipal", {})
+        named = not_principal.get("AWS", []) if isinstance(not_principal, dict) else []
+        named = [named] if isinstance(named, str) else list(named)
+        if bucket_arn in resources:
+            exempts_operator = (exempts_operator is not False) and operator_arn in named
+        if any(r.startswith(objects_prefix) for r in resources) and workload_arn in named:
+            exempts_workload = True
+
+    rows.append(
+        (
+            "the policy exempts THIS operator credential",
+            PASS if exempts_operator else FAIL,
+            ""
+            if exempts_operator
+            else f"no bucket-level Deny exempts {operator_arn}. Applying this policy would "
+            f"lock the bucket permanently -- most likely the --project-id it was rendered "
+            f"with is not {account}.",
+            operator_arn,
+            True,
+        )
+    )
+    rows.append(
+        (
+            "the policy exempts THIS workload credential",
+            PASS if exempts_workload else FAIL,
+            "" if exempts_workload else f"no object-level Deny exempts {workload_arn}",
+            workload_arn,
+            False,
+        )
+    )
+    return rows
+
+
 def read_credentials(environ: dict[str, str]) -> dict[str, tuple[str, str]]:
     credentials = {}
     missing = []
@@ -410,31 +612,39 @@ def read_credentials(environ: dict[str, str]) -> dict[str, tuple[str, str]]:
     return credentials
 
 
-def report(results: list[tuple[Check, str, str]], problems: list[str], stream) -> int:
-    width = max(len(check.name) for check, _, _ in results)
-    for check, status, reason in results:
-        line = f"{status:<13} {check.name:<{width}}"
+def report(rows: list[tuple], problems: list[str], stream, *, applied: bool) -> int:
+    """`rows` are `(name, status, reason, note, critical)`."""
+    width = max(len(name) for name, _, _, _, _ in rows)
+    for name, status, reason, note, _ in rows:
+        line = f"{status:<13} {name:<{width}}"
         if reason:
             line += f"  -- {reason}"
-        elif check.note:
-            line += f"  ({check.note})"
+        elif note:
+            line += f"  ({note})"
         print(line, file=stream)
 
     for problem in problems:
         print(f"CLEANUP       {problem}", file=stream)
 
-    failed = [check for check, status, _ in results if status == FAIL]
-    inconclusive = [check for check, status, _ in results if status == INCONCLUSIVE]
+    failed = [row for row in rows if row[1] == FAIL]
+    inconclusive = [row for row in rows if row[1] == INCONCLUSIVE]
 
-    critical_failed = [check for check in failed + inconclusive if check.critical]
-    if critical_failed:
-        print(
-            "\n*** THE BUCKET MAY BE LOCKED. The operator key could not replace the policy. "
-            "No other key in the project can either. Do not leave this terminal: raise a "
-            "Hetzner support request to remove the bucket policy, and see "
-            "RUNBOOK-bucket-fencing.md.",
-            file=stream,
-        )
+    if any(row[4] for row in failed + inconclusive):
+        if applied:
+            print(
+                "\n*** THE BUCKET MAY BE LOCKED. The operator key could not replace the policy. "
+                "No other key in the project can either. Do not leave this terminal: raise a "
+                "Hetzner support request to remove the bucket policy, and see "
+                "RUNBOOK-bucket-fencing.md.",
+                file=stream,
+            )
+        else:
+            print(
+                "\n*** DO NOT APPLY THIS POLICY. Nothing has been written yet, and applying it "
+                "in this state would lock the bucket with no recovery inside the account. "
+                "Re-render it against the account id printed above.",
+                file=stream,
+            )
     if failed:
         print(f"\n{len(failed)} check(s) FAILED: the fence is not doing what it must.", file=stream)
     if inconclusive:
@@ -445,7 +655,13 @@ def report(results: list[tuple[Check, str, str]], problems: list[str], stream) -
             file=stream,
         )
     if not failed and not inconclusive and not problems:
-        print("\nEvery check passed, in both directions.", file=stream)
+        message = (
+            "\nEvery check passed, in both directions."
+            if applied
+            else "\nPre-flight clean. The policy is safe to apply to this bucket, with this "
+            "operator credential."
+        )
+        print(message, file=stream)
     return 0 if not failed and not inconclusive and not problems else 1
 
 
@@ -466,6 +682,16 @@ def main(argv: list[str] | None = None, runner=_default_runner, environ=None) ->
     parser.add_argument("--endpoint", default="https://hel1.your-objectstorage.com")
     parser.add_argument("--region", default="hel1")
     parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="check the policy against the live credentials BEFORE applying it; writes nothing",
+    )
+    parser.add_argument(
+        "--versioning-already-enabled",
+        action="store_true",
+        help="add the versioning-write denial probe; only safe where versioning is already on",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="print the probe matrix and run nothing"
     )
     args = parser.parse_args(argv)
@@ -476,11 +702,16 @@ def main(argv: list[str] | None = None, runner=_default_runner, environ=None) ->
         foreign_control_bucket=args.foreign_control_bucket,
         policy_file=args.policy_file,
         probe_key=probe_key,
+        versioning_already_enabled=args.versioning_already_enabled,
     )
 
     if args.dry_run:
         for check in checks:
-            control = f", control: {check.control.role} {check.control.description}" if check.control else ""
+            control = (
+                f", control: {check.control.role} {check.control.description}"
+                if check.control
+                else ""
+            )
             print(f"{check.expect:<5} {check.probe.role:<9} {check.name}{control}")
         return 0
 
@@ -491,11 +722,22 @@ def main(argv: list[str] | None = None, runner=_default_runner, environ=None) ->
         return 2
 
     verifier = Verifier(
-        endpoint=args.endpoint, region=args.region, credentials=credentials, runner=runner
+        endpoint=args.endpoint,
+        region=args.region,
+        credentials=credentials,
+        runner=runner,
+        environ=environ,
     )
-    results = [(check, *verifier.check(check)) for check in checks]
+
+    if args.preflight:
+        return report(preflight(verifier, bucket=args.bucket, policy_file=args.policy_file), [], sys.stdout, applied=False)
+
+    rows = [
+        (check.name, *verifier.check(check), check.note, check.critical) for check in checks
+    ]
+    rows.append(("the stored policy is the one that was sent", *compare_stored_policy(verifier, args.bucket, args.policy_file), "", False))
     problems = cleanup(verifier, args.bucket)
-    return report(results, problems, sys.stdout)
+    return report(rows, problems, sys.stdout, applied=True)
 
 
 if __name__ == "__main__":
