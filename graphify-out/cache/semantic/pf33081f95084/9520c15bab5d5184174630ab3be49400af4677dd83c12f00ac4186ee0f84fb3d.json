@@ -1,1 +1,0 @@
-{"nodes": [{"id": "db_runbook_db", "label": "Runbook: db1 MySQL Stack", "file_type": "document", "source_file": "db/RUNBOOK-db.md", "source_location": null}, {"id": "db_env", "label": "/etc/branchleft/db.env", "file_type": "rationale", "source_file": "db/RUNBOOK-db.md", "source_location": null}], "edges": [], "hyperedges": []}
