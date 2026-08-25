@@ -198,7 +198,14 @@ def identity_changes(plan: dict) -> list[str]:
                     "stack predates this guard's contract and must be reconciled by hand."
                 )
                 continue
-            if field in new and old[field] != new[field]:
+            if field not in new:
+                findings.append(
+                    f"{urn}: {field!r} is in the existing identity but missing from the new one. "
+                    "A field a plan drops is not a field that stayed the same, and an unmade "
+                    "comparison must not exit the same way a passed one does."
+                )
+                continue
+            if old[field] != new[field]:
                 findings.append(
                     f"{urn}: {field} would change from {old[field]!r} to {new[field]!r}. "
                     "That is a data migration, not an update — see this script's header."
@@ -237,7 +244,14 @@ def check_plan(plan: dict) -> list[str]:
     return findings
 
 
-_IDENTITY_BLOCK = re.compile(r"identity\s*=\s*pulumi\.output\(\s*\{(.*?)\}\s*\)", re.DOTALL)
+# PUL-1 — a `super()` call for this component naming `identity` as one of its
+# own props, either shorthand (`{ identity }`) or as a key (`{ identity: x }`).
+# Anchored to `COMPONENT_TYPE_TOKEN` so a renamed token fails this match too,
+# on top of the separate check below that names that failure directly.
+_SUPER_IDENTITY_PROP = re.compile(
+    r"super\(\s*['\"]" + re.escape(COMPONENT_TYPE_TOKEN) + r"['\"][^)]*?[{,]\s*identity\s*[,}]",
+    re.DOTALL,
+)
 
 
 def verify_coverage(package_dir: pathlib.Path) -> list[str]:
@@ -247,12 +261,15 @@ def verify_coverage(package_dir: pathlib.Path) -> list[str]:
     otherwise, so the check works both from a tenant repo's `node_modules` and
     from this repository's own tree.
 
-    The check is scoped to the `identity = pulumi.output({...})` block rather
-    than run over the whole file. A bare substring search over the source
-    passes on a field that has been dropped from the *registration* while its
-    `GhostTenantIdentity` declaration, its README mention or a stale comment
-    still names it -- which is the shape a rename actually takes, and the
-    shape that would leave this guard comparing a field no plan ever carries.
+    Scoped to whatever object `super()` actually passes as `identity`, not to
+    `this.identity = pulumi.output(...)`. A preview decides whether a
+    component emits a step at all from its *registered inputs* -- what
+    `super()` was called with -- never from an output assignment, which a
+    preview does not even resolve (see the constructor's own comment). A
+    version of this check that read the output instead passed a component
+    with genuinely empty props outright, which is the exact defect this guard
+    exists to catch; checking the output was never checking the thing that
+    determines whether a plan carries a step at all.
     """
     candidates = [package_dir / "dist" / "index.js", package_dir / "index.ts"]
     source = next((path for path in candidates if path.is_file()), None)
@@ -270,15 +287,23 @@ def verify_coverage(package_dir: pathlib.Path) -> list[str]:
             "guard would match no step in any plan."
         )
 
-    block = _IDENTITY_BLOCK.search(text)
-    if block is None:
+    if _SUPER_IDENTITY_PROP.search(text) is None:
         findings.append(
-            f"{source} no longer registers an `identity = pulumi.output({{...}})` output. This "
-            "guard's identity comparison reads that output and would compare nothing."
+            f"{source}'s super() call no longer passes `identity` as one of its own props. A "
+            "preview decides whether this component emits a step at all from those registered "
+            "inputs, so this guard would have no step to compare."
         )
         return findings
 
-    registered = block.group(1)
+    decl = re.search(r"\bconst\s+identity\b[^=\n]*=\s*\{(.*?)\}\s*;", text, re.DOTALL)
+    if decl is None:
+        findings.append(
+            f"{source} passes `identity` to super() but declares no `const identity = {{...}}` "
+            "this check can read its fields from."
+        )
+        return findings
+
+    registered = decl.group(1)
     for field in IDENTITY_FIELDS:
         if not re.search(rf"\b{re.escape(field)}\s*:", registered):
             findings.append(
@@ -520,6 +545,17 @@ def _self_test() -> int:
         check_plan(_plan("update", old=old_missing, new=_identity())) != [],
         "existing state missing an identity field must be refused",
     )
+    # The other direction: a field present in the old identity but dropped
+    # from the new one. Not reachable from today's `index.ts`, which registers
+    # all eight fields unconditionally, but a bare `if field in new` here once
+    # let this through with no finding at all -- the same silent vacuity this
+    # guard exists to eliminate, one field of granularity down.
+    new_missing = _identity()
+    del new_missing["uid"]
+    expect(
+        check_plan(_plan("update", old=_identity(), new=new_missing)) != [],
+        "a field dropped from the new identity must be refused, not silently skipped",
+    )
 
     # A plan it cannot parse is an error, never a pass.
     for malformed in ({}, {"steps": "no"}, {"steps": [{"op": "same"}]}):
@@ -530,15 +566,18 @@ def _self_test() -> int:
         else:
             failures.append(f"a malformed plan must raise: {malformed!r}")
 
-    # Coverage verification finds a component that stopped registering a field.
+    # Coverage verification finds a component that stopped registering a field
+    # as part of `super()`'s own props -- the thing a real preview actually
+    # reads, not the `this.identity = pulumi.output(...)` output assignment.
     with tempfile.TemporaryDirectory() as tmp:
         package = pathlib.Path(tmp)
-        def component(fields, *, token=COMPONENT_TYPE_TOKEN, extra=""):
+
+        def component(fields, *, token=COMPONENT_TYPE_TOKEN):
             body = "".join(f"      {field}: this.{field},\n" for field in fields)
             return (
-                f"super('{token}', name, {{}}, opts);\n"
-                f"{extra}"
-                f"    this.identity = pulumi.output({{\n{body}    }});\n"
+                f"    const identity = {{\n{body}    }};\n"
+                f"    super('{token}', name, {{ identity }}, opts);\n"
+                "    this.identity = pulumi.output(identity);\n"
             )
 
         (package / "index.ts").write_text(component(IDENTITY_FIELDS), encoding="utf-8")
@@ -572,7 +611,23 @@ def _self_test() -> int:
         (package / "index.ts").write_text(f"super('{COMPONENT_TYPE_TOKEN}', name);\n", encoding="utf-8")
         expect(
             verify_coverage(package) != [],
-            "a component that registers no identity output at all must fail coverage",
+            "a component that registers no identity props at all must fail coverage",
+        )
+
+        # The regression this check exists to close: every field present in
+        # the *output* assignment is not evidence the *props* carry them too,
+        # and the props are what a real preview reads (see this function's
+        # docstring). A version of this check that read the output alone
+        # passed exactly this shape.
+        body = "".join(f"      {field}: this.{field},\n" for field in IDENTITY_FIELDS)
+        output_only = (
+            f"    super('{COMPONENT_TYPE_TOKEN}', name, {{}}, opts);\n"
+            f"    this.identity = pulumi.output({{\n{body}    }});\n"
+        )
+        (package / "index.ts").write_text(output_only, encoding="utf-8")
+        expect(
+            verify_coverage(package) != [],
+            "empty super() props with a fully-registered output must still fail coverage",
         )
 
     try:
