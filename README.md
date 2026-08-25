@@ -48,6 +48,13 @@ the encrypted nightly dump and binlog-shipping pipelines. See
 inside it, and [`db/RUNBOOK-db.md`](db/RUNBOOK-db.md) for deploy steps and
 the restore drill.
 
+**`RUNBOOK-bucket-fencing.md`** — applying and proving the bucket policy that
+restricts an Object Storage bucket to the keys that legitimately use it. Every
+Hetzner key pair is valid for every bucket in its own project by default, so a
+bucket policy is the whole of that boundary — and it is the one control that
+governs the API call that would edit it, which is why the runbook opens on how
+to recover from a bucket it locks.
+
 **`Dockerfile` + `docker-entrypoint.branchleft.sh`** — the tenant image.
 Built on the official `ghost` image, pinned by tag *and* digest, with no
 tenant-specific configuration baked in. Every tenant runs the same image;

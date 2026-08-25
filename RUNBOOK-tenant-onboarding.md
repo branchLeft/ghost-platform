@@ -88,9 +88,18 @@ Object Storage credential scoped to it — reusing the estate's would give a
 tenant deployer write access to the checkpoint the production hcloud token
 lives in (branchLeft/workspace#284). Mint it in the Hetzner Cloud Console
 (Object Storage → the project holding `branchleft-tenant-pulumi-state` →
-Credentials → Generate credential), scoped read-write to that bucket alone if
-per-bucket scoping is available on the account, and set it under its own
-names:
+Credentials → Generate credential).
+
+**A separate credential is not by itself a separate boundary.** Hetzner's
+documented default is that every key pair is valid for every bucket in its own
+project, so there is nothing to scope at mint time and a new credential reaches
+every unfenced bucket in the project — including the estate's database backups
+([branchLeft/workspace#286](https://github.com/branchLeft/workspace/issues/286)).
+What narrows it is a `Deny` on the bucket: fence
+`branchleft-tenant-pulumi-state` per
+[`RUNBOOK-bucket-fencing.md`](RUNBOOK-bucket-fencing.md) section 2.
+
+Set it under its own names:
 
 ```bash
 gh secret set GH_PAT_TENANT_PROVISIONING        --repo branchLeft/ghost-platform --env tenant-provisioning
@@ -373,26 +382,44 @@ $S3 delete-object --bucket "$BUCKET" --key probe.txt
 #    these the tenant can replace the policy, publish the listing with a
 #    bucket ACL, or expire every object with a lifecycle rule -- destroying its
 #    media without ever calling delete.
-$S3 put-bucket-acl --bucket "$BUCKET" --acl public-read
+#    Each is deliberately a no-op if it SUCCEEDS: `private` is already the ACL
+#    and `Enabled` is already the versioning state. A probe whose success is
+#    itself the damage cannot be run against a live bucket.
+$S3 put-bucket-acl --bucket "$BUCKET" --acl private
 $S3 get-bucket-policy --bucket "$BUCKET"
-$S3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Suspended
+$S3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
 
-# f. The tenant's key reaches no other bucket in the project. Use an estate
-#    bucket that already exists rather than another tenant's: on the first
-#    onboarding there is no other tenant, and this probe must not be the one
-#    that gets skipped. Expect AccessDenied.
-$S3 list-objects-v2 --bucket branchleft-pulumi-state
+# f. The tenant's key reaches no other bucket IN THE SAME PROJECT. The bucket
+#    named here must be one of those: `branchleft-pulumi-state` is in a
+#    different project, so its AccessDenied would be the project boundary and
+#    would say nothing whatever about this policy. That substitution is exactly
+#    how per-bucket key scoping was once recorded as working here when it does
+#    not exist (branchLeft/workspace#286). Expect AccessDenied.
+$S3 list-objects-v2 --bucket branchleft-db-backups
+
+# g. The control for (c) and (f), and the reason either one means anything: the
+#    same credentials must SUCCEED where they are entitled. A denial from a key
+#    that reaches nothing is not evidence about a fence. Expect a listing.
+export AWS_ACCESS_KEY_ID='<tenant-state access key id>'
+export AWS_SECRET_ACCESS_KEY='<tenant-state secret access key>'
+$S3 list-objects-v2 --bucket branchleft-tenant-pulumi-state --max-keys 1
+export AWS_ACCESS_KEY_ID='<this tenant access key id>'
+export AWS_SECRET_ACCESS_KEY='<this tenant secret access key>'
+$S3 list-objects-v2 --bucket "$BUCKET" --max-keys 1
 
 # ---- back to the OPERATOR, to clean up ------------------------------------
 export AWS_ACCESS_KEY_ID='<operator access key id>'
 export AWS_SECRET_ACCESS_KEY='<operator secret access key>'
 ```
 
-**Every one of (b) through (f) must return `AccessDenied`, and (a) must return
-`hello`.** If any tenant probe succeeds, stop and do not hand over the
-credential: none of these failures is visible from the tenant's side, and (c) in
-particular fails silently for every other tenant on the platform, not just this
-one.
+**Every one of (b) through (f) must return `AccessDenied`, (a) must return
+`hello`, and both listings in (g) must succeed.** If any tenant probe succeeds,
+stop and do not hand over the credential: none of these failures is visible
+from the tenant's side, and (c) in particular fails silently for every other
+tenant on the platform, not just this one. **If either listing in (g) fails,
+none of (c) or (f) proved anything** — a revoked key, a mistyped key id and a
+region mismatch all return the same `AccessDenied` a working fence does. Fix
+the credential and re-run the block rather than recording the denials.
 
 Then remove the probe object. **A plain `delete-object` is not enough on a
 versioned bucket** — it writes a delete marker and leaves the prior version

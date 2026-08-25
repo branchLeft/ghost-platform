@@ -12,6 +12,8 @@ import json
 import pathlib
 import unittest
 
+import bucketpolicy
+
 _MODULE_PATH = pathlib.Path(__file__).with_name("render-media-bucket-policy.py")
 _spec = importlib.util.spec_from_file_location("render_media_bucket_policy", _MODULE_PATH)
 assert _spec is not None and _spec.loader is not None
@@ -29,7 +31,7 @@ def policy_for(slug: str = "blog") -> dict:
 
 
 def decide(principal: str, action: str, resource: str, slug: str = "blog") -> str:
-    return policy_module._decide(policy_for(slug), principal, action, resource)
+    return bucketpolicy.decide(policy_for(slug), principal, action, resource)
 
 
 TENANT = f"arn:aws:iam:::user/p{PROJECT}:{TENANT_KEY}"
@@ -191,12 +193,12 @@ class TestPrefixCollision(unittest.TestCase):
         # objects: no statement in it may match that resource.
         for statement in policy_for("blog")["Statement"]:
             self.assertFalse(
-                policy_module._matches(statement["Resource"], archive_object),
+                bucketpolicy.matches(statement["Resource"], archive_object),
                 f"{statement['Sid']} matches another tenant's object",
             )
         for index in (1, 2):
             self.assertFalse(
-                policy_module._matches(
+                bucketpolicy.matches(
                     policy_for("blog")["Statement"][index]["Resource"],
                     "arn:aws:s3:::branchleft-media-blog-archive",
                 )

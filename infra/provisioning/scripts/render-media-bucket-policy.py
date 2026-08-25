@@ -49,8 +49,8 @@ RUNBOOK-tenant-onboarding.md verifies the four decisions against the live
 bucket before the credential is handed over, rather than treating a successful
 `put-bucket-policy` as proof.
 
-Principal syntax is Hetzner's, not AWS's: `arn:aws:iam:::user/p<project>:<key>`
--- three empty colon-separated fields, and a `p` prefix on the project id.
+The principal syntax, the input charset rules and the evaluation model are in
+`bucketpolicy.py`, shared with the operational-bucket generator.
 """
 
 from __future__ import annotations
@@ -59,6 +59,8 @@ import argparse
 import json
 import re
 import sys
+
+from bucketpolicy import PolicyInputError, decide, key_principal
 
 # Mirrors `MEDIA_BUCKET_PREFIX` in infra/tenant/media.ts. The two derivations
 # have to agree: this one runs first, because the bucket must exist before a
@@ -77,12 +79,6 @@ SLUG_PATTERN = re.compile(r"\A[a-z][a-z0-9-]*[a-z0-9]\Z|\A[a-z]\Z")
 # it prints commands that create a real bucket. A slug the rest of the platform
 # will later refuse must not get a bucket made for it first.
 RESERVED_SLUGS = frozenset({"website", "edge", "db", "monitoring"})
-
-# Refusing anything but alphanumerics is the control, not the format check: a
-# colon or a quote in either value lands inside an ARN string and changes which
-# principal the policy names.
-PROJECT_ID_PATTERN = re.compile(r"\A[0-9]{1,20}\Z")
-ACCESS_KEY_PATTERN = re.compile(r"\A[A-Za-z0-9]{16,64}\Z")
 
 # Ghost needs these two to serve media from a versioned bucket: Hetzner's own
 # note is that allowing `s3:GetObject` on a bucket with versioning enabled
@@ -109,10 +105,6 @@ TENANT_BUCKET_READ_ACTIONS = [
 DELETE_ACTIONS = ["s3:DeleteObject", "s3:DeleteObjectVersion"]
 
 
-class PolicyInputError(ValueError):
-    """A value that would produce a policy naming the wrong thing."""
-
-
 def media_bucket_name(slug: str) -> str:
     if not SLUG_PATTERN.match(slug):
         raise PolicyInputError(
@@ -130,17 +122,6 @@ def media_bucket_name(slug: str) -> str:
             f"script runs first and its commands create a real bucket."
         )
     return f"{MEDIA_BUCKET_PREFIX}{slug}"
-
-
-def key_principal(project_id: str, access_key: str) -> str:
-    if not PROJECT_ID_PATTERN.match(project_id):
-        raise PolicyInputError(f"project id {project_id!r} must be digits only")
-    if not ACCESS_KEY_PATTERN.match(access_key):
-        raise PolicyInputError(
-            f"access key {access_key!r} must be 16-64 alphanumerics; anything else would "
-            f"change which principal the ARN names"
-        )
-    return f"arn:aws:iam:::user/p{project_id}:{access_key}"
 
 
 def render_policy(
@@ -316,8 +297,8 @@ $S3 get-bucket-lifecycle-configuration --bucket {bucket}
 def _self_test() -> None:
     """Prove the decisions this policy exists to make, not just its shape.
 
-    `_decide` is a model of S3 policy evaluation -- explicit Deny beats Allow
-    beats the platform default -- written here so the four properties can be
+    `bucketpolicy.decide` is a model of S3 policy evaluation -- explicit Deny
+    beats Allow beats the platform default -- so the four properties can be
     stated as a decision table rather than as assertions about JSON. It is a
     model: what Hetzner's implementation actually does is verified against a
     live bucket in RUNBOOK-tenant-onboarding.md, and nothing here substitutes
@@ -356,7 +337,7 @@ def _self_test() -> None:
         (admin, "s3:PutBucketPolicy", bucket, "allow"),
     ]
     for principal, action, resource, expected in cases:
-        got = _decide(policy, principal, action, resource)
+        got = decide(policy, principal, action, resource)
         if got != expected:
             raise AssertionError(
                 f"policy self-test: {principal} {action} on {resource} -> {got}, expected {expected}"
@@ -377,42 +358,6 @@ def _self_test() -> None:
         raise AssertionError(f"policy self-test: access key {bad_key!r} was accepted")
 
     print("render-media-bucket-policy self-test: ok", file=sys.stderr)
-
-
-def _matches(pattern, value: str) -> bool:
-    values = pattern if isinstance(pattern, list) else [pattern]
-    return any(p == "*" or p == value or (p.endswith("*") and value.startswith(p[:-1])) for p in values)
-
-
-def _decide(policy: dict, principal: str, action: str, resource: str) -> str:
-    """Explicit Deny wins; otherwise an Allow, or Hetzner's project default.
-
-    The default is `allow` for any key in the project and `deny` for anonymous,
-    because Hetzner grants every key pair read and write on every bucket in its
-    own project. Modelling that is the point: without it a reader would
-    conclude the Allow statements are what grant the tenant its access, and
-    would then think removing a Deny is safe.
-    """
-    allowed = False
-    for statement in policy["Statement"]:
-        if not _matches(statement["Resource"], resource):
-            continue
-        if "NotAction" in statement:
-            if _matches(statement["NotAction"], action):
-                continue
-        elif not _matches(statement["Action"], action):
-            continue
-        if "NotPrincipal" in statement:
-            if _matches(statement["NotPrincipal"]["AWS"], principal):
-                continue
-        elif not _matches(statement["Principal"]["AWS"], principal):
-            continue
-        if statement["Effect"] == "Deny":
-            return "deny"
-        allowed = True
-    if allowed:
-        return "allow"
-    return "allow" if principal.startswith("arn:aws:iam:::user/") else "deny"
 
 
 def main(argv: list[str] | None = None) -> int:
