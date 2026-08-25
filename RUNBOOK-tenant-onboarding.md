@@ -93,8 +93,7 @@ Credentials → Generate credential).
 **A separate credential is not by itself a separate boundary.** Hetzner's
 documented default is that every key pair is valid for every bucket in its own
 project, so there is nothing to scope at mint time and a new credential reaches
-every unfenced bucket in the project — including the estate's database backups
-([branchLeft/workspace#286](https://github.com/branchLeft/workspace/issues/286)).
+every unfenced bucket in the project, including the estate's database backups.
 What narrows it is a `Deny` on the bucket: fence
 `branchleft-tenant-pulumi-state` per
 [`RUNBOOK-bucket-fencing.md`](RUNBOOK-bucket-fencing.md) section 2.
@@ -393,10 +392,17 @@ s3 delete-object --bucket "$BUCKET" --key probe.txt
 #    these the tenant can replace the policy, publish the listing with a
 #    bucket ACL, or expire every object with a lifecycle rule -- destroying its
 #    media without ever calling delete.
-#    Each is deliberately a no-op if it SUCCEEDS: `private` is already the ACL
-#    and `Enabled` is already the versioning state. A probe whose success is
-#    itself the damage cannot be run against a live bucket.
-s3 put-bucket-acl --bucket "$BUCKET" --acl private
+#    Both are deliberately a no-op if they SUCCEED: reading the policy changes
+#    nothing, and `Enabled` is the versioning state step 2 of the rendered
+#    sequence just set. A probe whose success is itself the damage cannot be
+#    run against a live bucket.
+#    There is deliberately no `put-bucket-acl` probe. `put-bucket-acl`
+#    REPLACES the ACL rather than merging into it, so it is a no-op only while
+#    the current ACL is exactly what is sent -- a thing to assume, not to
+#    check. Nothing is lost: the policy withholds bucket configuration in a
+#    single `NotAction` statement, so any one of these actions being denied is
+#    that statement being enforced. verify-bucket-fence.py states the same
+#    rule for the estate's buckets and omits the probe for the same reason.
 s3 get-bucket-policy --bucket "$BUCKET"
 s3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
 
@@ -404,9 +410,9 @@ s3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=En
 #    THE SAME PROJECT. The bucket named here has to be both: an unfenced one
 #    would deny nothing, and `branchleft-pulumi-state` is in a different
 #    project, so its AccessDenied would be the project boundary and would say
-#    nothing whatever about this policy. That substitution is exactly how
-#    per-bucket key scoping was once recorded as working here when it does not
-#    exist (branchLeft/workspace#286). This probes that bucket's fence as much
+#    nothing whatever about this policy. That substitution is exactly how a
+#    project boundary once got recorded as per-bucket key scoping, which this
+#    backend does not have. This probes that bucket's fence as much
 #    as this one's, and it does NOT establish that the tenant key reaches no
 #    other bucket in the project -- every unfenced bucket there is still open
 #    to it. Expect AccessDenied.

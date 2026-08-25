@@ -12,6 +12,8 @@ no undo inside the account. Both directions have to be asserted here, because
 neither is observable from a successful `put-bucket-policy`.
 """
 
+from __future__ import annotations
+
 import importlib.util
 import json
 import pathlib
@@ -191,7 +193,7 @@ class TestRefusedInput(unittest.TestCase):
 
     def test_a_non_numeric_project_id_is_refused(self):
         with self.assertRaises(bucketpolicy.PolicyInputError):
-            fence.render_policy(BUCKET, "p15766609", [WORKLOAD], ADMIN)
+            fence.render_policy(BUCKET, f"p{PROJECT}", [WORKLOAD], ADMIN)
 
 
 class TestRenderedCommands(unittest.TestCase):

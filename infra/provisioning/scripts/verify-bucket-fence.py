@@ -8,8 +8,9 @@ working fence, by a credential that was revoked, by a typo in a key id, by a
 region mismatch in the SigV4 scope, and by a bucket that lives in a different
 project entirely. Those are different facts with one wire response, and a
 denial recorded without distinguishing them has already been mistaken here for
-proof of per-bucket key scoping that did not exist
-(branchLeft/workspace#286).
+proof of per-bucket key scoping that does not exist on this backend: the bucket
+that returned it was in a different project, so the denial was the project
+boundary and said nothing about the key's scope.
 
 So every denial check in this file carries a CONTROL: a probe on the *same
 credential* that must succeed. If the control does not succeed, the denial is
@@ -22,16 +23,43 @@ is supposed to keep working must still work. A policy that denies everybody is
 not a fence, it is an outage -- on the backup bucket, a silent one that surfaces
 at the next restore.
 
-THE CHECK THAT MATTERS MOST RUNS BEFORE THE POLICY IS APPLIED. `--preflight`
-resolves each credential's own storage account and confirms the policy names
-those principals. Nothing else can: every principal in a rendered policy comes
-from one `--project-id` argument, so the generator's own recoverability check
-compares a fabricated ARN against itself and passes for any value at all. Live,
-an ARN carrying the right access key under the wrong account names a principal
-that does not exist -- `NotPrincipal` exempts nobody, the operator loses
-`PutBucketPolicy` along with everyone else, and the bucket cannot be recovered
-from inside the account. One mistyped digit is enough. `--preflight` writes
-nothing.
+THE CHECK THAT MATTERS MOST IS REVERSIBLE, AND RUNS FIRST. `--probe-notprincipal`
+asks the live engine the one question every other check assumes the answer to:
+does this backend read `NotPrincipal` as an exemption, or as decoration?
+
+Every other guard here, and both guards outside this file, validate a document
+against a MODEL of S3 evaluation. None of them touches Hetzner's implementation,
+which is undocumented on this point. If its principal match short-circuits
+naively -- "a `Principal` field is present and is not me, so this statement does
+not apply" inverted, or simply ignored -- then
+`DenyBucketConfigurationExceptOperator` matches EVERY principal including the
+operator's. The apply succeeds. The second PUT comes back `AccessDenied`. The
+bucket is then unrecoverable from inside the account, with `DeleteBucket` denied
+by the same statement, and every offline guard will have passed on the way in.
+
+So this mode applies a policy whose only `Deny` is scoped to an unused object
+prefix and names no bucket-resource action at all, then reads an object back as
+the operator. Denied means `NotPrincipal` does not exempt on this engine and the
+real fence would have locked the bucket. Allowed, with a foreign key denied on
+the same object, means the exemption works. The probe policy cannot lock
+anything, because it contains no statement on the bucket resource -- so
+`PutBucketPolicy` and `DeleteBucketPolicy` stay available to every key
+throughout, and the probe is removed at the end. That reversibility is asserted
+in code before the policy is sent, not assumed.
+
+AND THEN `--preflight`, which resolves each credential's own storage account and
+confirms the policy names those principals. Nothing else can: every principal in
+a rendered policy comes from one `--project-id` argument, so the generator's own
+recoverability check compares a fabricated ARN against itself and passes for any
+value at all. Live, an ARN carrying the right access key under the wrong account
+names a principal that does not exist -- `NotPrincipal` exempts nobody, the
+operator loses `PutBucketPolicy` along with everyone else, and the bucket cannot
+be recovered from inside the account. One mistyped digit is enough.
+`--preflight` writes nothing.
+
+`--apply` then runs the pre-flight and the double PUT in ONE process, so the
+guard cannot be skipped by an operator who ran the real `put-bucket-policy` from
+a different terminal than the check.
 
 After the policy is applied, the check that cannot wait is `put-bucket-policy`
 as the operator, re-PUTting the document just applied: a no-op when it succeeds
@@ -66,6 +94,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 
 PROBE_PREFIX = "fence-probe/"
@@ -131,7 +160,18 @@ class Check:
 
 
 def _default_runner(argv: list[str], env: dict[str, str]):
-    return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
+    """A failure to run the CLI is an outcome, not an exception.
+
+    An exception escaping here skips `cleanup()`, which leaves probe objects in
+    a production bucket. Both failures are returned in the shape `classify`
+    already refuses to read as a denial, so they surface as INCONCLUSIVE.
+    """
+    try:
+        return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, 1, "", "the aws CLI did not return within 120s")
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(argv, 1, "", "the aws CLI is not on PATH")
 
 
 def classify(returncode: int, stderr: str) -> tuple[str, str]:
@@ -587,6 +627,225 @@ def preflight(verifier, *, bucket: str, policy_file: str) -> list[tuple]:
     return rows
 
 
+def probe_policy(bucket: str, operator_arn: str) -> dict:
+    """A policy that answers the `NotPrincipal` question and cannot lock anything.
+
+    Two properties carry the whole design, and `assert_probe_policy_is_reversible`
+    below enforces both before it is sent:
+
+      1. No statement names the BUCKET resource. `PutBucketPolicy` and
+         `DeleteBucketPolicy` are bucket-resource actions, so no key loses the
+         ability to replace or remove this document -- including the key that
+         would remove it if the engine turns out to treat `NotPrincipal` as
+         naming everybody. That is what makes asking the question safe.
+      2. The `Deny` is confined to an object prefix nothing else writes, so a
+         misread in either direction touches no real object.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Id": f"notprincipal-probe-{bucket}",
+        "Statement": [
+            {
+                "Sid": "ProbeNotPrincipal",
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": [operator_arn]},
+                "Action": "s3:GetObject",
+                "Resource": f"arn:aws:s3:::{bucket}/{PROBE_PREFIX}*",
+            }
+        ],
+    }
+
+
+def assert_probe_policy_is_reversible(policy: dict, bucket: str) -> None:
+    """Refuse to send a probe that could take `PutBucketPolicy` away.
+
+    The probe exists because the engine's `NotPrincipal` semantics are unknown.
+    It would be self-defeating to establish that with a document that becomes
+    unremovable under the very reading it is testing for, so the check assumes
+    the worst case -- `NotPrincipal` matches everybody -- and requires that even
+    then, nothing on the bucket resource is denied.
+    """
+    bucket_arn = f"arn:aws:s3:::{bucket}"
+    for statement in policy.get("Statement", []):
+        resource = statement.get("Resource", [])
+        resources = [resource] if isinstance(resource, str) else list(resource)
+        if not resources:
+            raise VerifierError("probe policy statement names no Resource")
+        for entry in resources:
+            if entry == bucket_arn:
+                raise VerifierError(
+                    "probe policy names the bucket resource, so it could deny "
+                    "PutBucketPolicy and become unremovable -- which is the outcome it "
+                    "exists to test for"
+                )
+            if not entry.startswith(f"{bucket_arn}/{PROBE_PREFIX}"):
+                raise VerifierError(
+                    f"probe policy reaches {entry!r}, outside the probe prefix"
+                )
+
+
+def probe_notprincipal(verifier, *, bucket: str, replace_existing: bool) -> list[tuple]:
+    """Ask the live engine whether `NotPrincipal` exempts, reversibly.
+
+    Ordering is the whole safety argument: the object is written before the
+    probe policy exists, the probe policy is removed before this returns
+    whatever the answer was, and the probe policy can never deny the removal.
+    """
+    rows: list[tuple] = []
+    account, reason = account_of(verifier, "operator")
+    if account is None:
+        return [("operator credential resolves its account", INCONCLUSIVE, reason, "", True)]
+    operator_arn = f"arn:aws:iam:::user/{account}:{verifier.credentials['operator'][0]}"
+
+    existing = verifier.runner(
+        _argv(verifier, ["get-bucket-policy", "--bucket", bucket, "--query", "Policy", "--output", "text"]),
+        verifier.env_for("operator"),
+    )
+    if existing.returncode == 0 and not replace_existing:
+        # Replacing a live fence with the probe would un-fence the bucket for
+        # the duration. In the documented sequence the bucket is still open at
+        # this point, so this only fires on a re-run.
+        return [
+            (
+                "the bucket carries no policy to displace",
+                INCONCLUSIVE,
+                "this bucket already has a policy; running the probe would replace it and "
+                "leave the bucket unfenced until the probe is removed. Pass "
+                "--replace-existing-policy only if that window is acceptable.",
+                "",
+                True,
+            )
+        ]
+
+    policy = probe_policy(bucket, operator_arn)
+    assert_probe_policy_is_reversible(policy, bucket)
+    probe_key = f"{PROBE_PREFIX}notprincipal-{uuid.uuid4().hex}.txt"
+
+    put_object = verifier.runner(
+        _argv(verifier, ["put-object", "--bucket", bucket, "--key", probe_key]),
+        verifier.env_for("operator"),
+    )
+    if put_object.returncode != 0:
+        return [
+            (
+                "the probe object is written",
+                INCONCLUSIVE,
+                (put_object.stderr or "").strip()[:200],
+                "",
+                True,
+            )
+        ]
+
+    with _temporary_policy(verifier, bucket, policy, rows):
+        operator_read = verifier.runner(
+            _argv(verifier, ["get-object", "--bucket", bucket, "--key", probe_key, os.devnull]),
+            verifier.env_for("operator"),
+        )
+        foreign_read = verifier.runner(
+            _argv(verifier, ["get-object", "--bucket", bucket, "--key", probe_key, os.devnull]),
+            verifier.env_for("foreign"),
+        )
+
+    operator_outcome, operator_reason = classify(operator_read.returncode, operator_read.stderr or "")
+    foreign_outcome, foreign_reason = classify(foreign_read.returncode, foreign_read.stderr or "")
+
+    rows.append(
+        (
+            "NotPrincipal EXEMPTS the named key on this engine",
+            PASS if operator_outcome == "allowed" else FAIL if operator_outcome == "denied" else INCONCLUSIVE,
+            ""
+            if operator_outcome == "allowed"
+            else "the operator was denied by a statement that names it in NotPrincipal. This "
+            "engine does not read NotPrincipal as an exemption, and the real fence WOULD "
+            "HAVE LOCKED THE BUCKET. Do not apply it."
+            if operator_outcome == "denied"
+            else operator_reason,
+            "",
+            True,
+        )
+    )
+    rows.append(
+        (
+            "NotPrincipal DENIES everyone else on this engine",
+            PASS if foreign_outcome == "denied" else FAIL if foreign_outcome == "allowed" else INCONCLUSIVE,
+            ""
+            if foreign_outcome == "denied"
+            else "a key not named in NotPrincipal was still allowed, so the statement is not "
+            "being enforced at all and a fence built from it would fence nothing"
+            if foreign_outcome == "allowed"
+            else foreign_reason,
+            "",
+            False,
+        )
+    )
+    rows.extend(("probe object removed: " + problem, FAIL, "", "", False) for problem in cleanup(verifier, bucket))
+    return rows
+
+
+def _argv(verifier, args: list[str]) -> list[str]:
+    return ["aws", "--endpoint-url", verifier.endpoint, "s3api"] + args
+
+
+class _temporary_policy:
+    """Applies a policy, and removes it again whatever happens in between."""
+
+    def __init__(self, verifier, bucket: str, policy: dict, rows: list[tuple]):
+        self.verifier = verifier
+        self.bucket = bucket
+        self.policy = policy
+        self.rows = rows
+        self.path = None
+
+    def __enter__(self):
+        handle, self.path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(self.policy, stream)
+        applied = self.verifier.runner(
+            _argv(
+                self.verifier,
+                ["put-bucket-policy", "--bucket", self.bucket, "--policy", f"file://{self.path}"],
+            ),
+            self.verifier.env_for("operator"),
+        )
+        if applied.returncode != 0:
+            self.rows.append(
+                (
+                    "the probe policy is accepted",
+                    INCONCLUSIVE,
+                    f"this engine rejected a NotPrincipal document outright: "
+                    f"{(applied.stderr or '').strip()[:200]}",
+                    "",
+                    True,
+                )
+            )
+        return self
+
+    def __exit__(self, *exc):
+        removed = self.verifier.runner(
+            _argv(self.verifier, ["delete-bucket-policy", "--bucket", self.bucket]),
+            self.verifier.env_for("operator"),
+        )
+        if removed.returncode != 0:
+            self.rows.append(
+                (
+                    "THE PROBE POLICY IS REMOVED",
+                    FAIL,
+                    f"the probe policy is still on {self.bucket} and denies reads under "
+                    f"{PROBE_PREFIX} to every key but the operator. Remove it by hand: "
+                    f"aws --endpoint-url {self.verifier.endpoint} s3api delete-bucket-policy "
+                    f"--bucket {self.bucket}",
+                    "",
+                    True,
+                )
+            )
+        if self.path:
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
+        return False
+
+
 def read_credentials(environ: dict[str, str]) -> dict[str, tuple[str, str]]:
     credentials = {}
     missing = []
@@ -610,6 +869,66 @@ def read_credentials(environ: dict[str, str]) -> dict[str, tuple[str, str]]:
                     f"fence it never tested."
                 )
     return credentials
+
+
+def apply_fence(verifier, *, bucket: str, policy_file: str) -> tuple[list[tuple], bool]:
+    """Pre-flight and the double PUT, in one process.
+
+    Split across two commands these are two decisions an operator makes
+    separately, with scroll-back and two credential blocks in between, and the
+    riskier bucket was the one whose apply had no in-process guard at all --
+    `configure_backup_bucket.py` covers the backup bucket and nothing covered
+    the state bucket. Here the PUT is unreachable unless the pre-flight passed.
+    """
+    rows = preflight(verifier, bucket=bucket, policy_file=policy_file)
+    if any(status in (FAIL, INCONCLUSIVE) for _, status, _, _, _ in rows):
+        rows.append(
+            (
+                "the policy is applied",
+                INCONCLUSIVE,
+                "not attempted: the pre-flight above did not pass, and applying a policy "
+                "this credential is not exempt from is unrecoverable",
+                "",
+                False,
+            )
+        )
+        # Nothing was written, so the caller must not print the lockout banner.
+        # Telling an operator the bucket may be locked when it was never
+        # touched sends them to open a support request against a healthy
+        # bucket -- the same misread the region handling exists to avoid.
+        return rows, False
+
+    argv = _argv(verifier, ["put-bucket-policy", "--bucket", bucket, "--policy", f"file://{policy_file}"])
+    first = verifier.runner(argv, verifier.env_for("operator"))
+    rows.append(
+        (
+            "the policy is applied",
+            PASS if first.returncode == 0 else FAIL,
+            "" if first.returncode == 0 else (first.stderr or "").strip()[:200],
+            "",
+            False,
+        )
+    )
+    if first.returncode != 0:
+        return rows, True
+
+    # The identical document again. A no-op when it succeeds, and the only
+    # signal available if the engine has just denied the operator the ability
+    # to edit the statement doing the denying.
+    second = verifier.runner(argv, verifier.env_for("operator"))
+    rows.append(
+        (
+            "THE BUCKET IS STILL ADMINISTRABLE",
+            PASS if second.returncode == 0 else FAIL,
+            "" if second.returncode == 0 else (second.stderr or "").strip()[:200],
+            "a no-op when it succeeds; a permanent lockout when it does not",
+            True,
+        )
+    )
+    rows.append(
+        ("the stored policy is the one that was sent", *compare_stored_policy(verifier, bucket, policy_file), "", False)
+    )
+    return rows, True
 
 
 def report(rows: list[tuple], problems: list[str], stream, *, applied: bool) -> int:
@@ -682,9 +1001,24 @@ def main(argv: list[str] | None = None, runner=_default_runner, environ=None) ->
     parser.add_argument("--endpoint", default="https://hel1.your-objectstorage.com")
     parser.add_argument("--region", default="hel1")
     parser.add_argument(
+        "--probe-notprincipal",
+        action="store_true",
+        help="ask the live engine whether NotPrincipal exempts, reversibly; run this first",
+    )
+    parser.add_argument(
+        "--replace-existing-policy",
+        action="store_true",
+        help="allow --probe-notprincipal on a bucket that already carries a policy",
+    )
+    parser.add_argument(
         "--preflight",
         action="store_true",
         help="check the policy against the live credentials BEFORE applying it; writes nothing",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="pre-flight, then apply the policy and prove it is replaceable, in one process",
     )
     parser.add_argument(
         "--versioning-already-enabled",
@@ -729,8 +1063,22 @@ def main(argv: list[str] | None = None, runner=_default_runner, environ=None) ->
         environ=environ,
     )
 
+    if args.probe_notprincipal:
+        try:
+            rows = probe_notprincipal(
+                verifier, bucket=args.bucket, replace_existing=args.replace_existing_policy
+            )
+        except VerifierError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        return report(rows, [], sys.stdout, applied=False)
+
     if args.preflight:
         return report(preflight(verifier, bucket=args.bucket, policy_file=args.policy_file), [], sys.stdout, applied=False)
+
+    if args.apply:
+        rows, wrote = apply_fence(verifier, bucket=args.bucket, policy_file=args.policy_file)
+        return report(rows, [], sys.stdout, applied=wrote)
 
     rows = [
         (check.name, *verifier.check(check), check.note, check.critical) for check in checks

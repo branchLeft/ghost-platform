@@ -263,15 +263,25 @@ def configure_backup_bucket(
     # `aws s3api put-bucket-policy` sends none either, and a header this
     # endpoint does not expect is one more thing that can be rejected on the
     # one call that must not fail halfway.
-    put(
-        bucket=bucket,
-        endpoint=endpoint,
-        region=region,
-        access_key=access_key,
-        secret_key=secret_key,
-        subresource="policy",
-        body=policy_body,
-    )
+    #
+    # Twice, deliberately, and the second call is the control. If this engine
+    # reads the policy's `NotPrincipal` as naming every principal rather than
+    # exempting the one it lists, the first PUT succeeds and the bucket is
+    # already unrecoverable -- `PutBucketPolicy` and `DeleteBucket` both denied
+    # by the statement that would have to be edited. The second PUT is a no-op
+    # when the exemption works and the only signal that exists when it does
+    # not. It lives here rather than only in the runbook because the operator
+    # path for a rebuilt db1 (db/RUNBOOK-db.md) runs this script and stops.
+    for _ in range(2):
+        put(
+            bucket=bucket,
+            endpoint=endpoint,
+            region=region,
+            access_key=access_key,
+            secret_key=secret_key,
+            subresource="policy",
+            body=policy_body,
+        )
 
 
 def main(argv: list[str]) -> int:
@@ -326,7 +336,8 @@ def main(argv: list[str]) -> int:
 
     print(
         f"configure_backup_bucket: versioning enabled, {args.noncurrent_days}-day noncurrent "
-        f"expiry set, and the fence applied on {args.bucket}. The fence is not proven until "
+        f"expiry set, and the fence applied on {args.bucket}, then re-applied to prove the "
+        f"bucket is still administrable. The fence is not proven to FENCE anything until "
         f"verify-bucket-fence.py passes -- run it now, from this terminal."
     )
     return 0

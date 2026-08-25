@@ -39,6 +39,25 @@ ADMIN = f"arn:aws:iam:::user/p{PROJECT}:{ADMIN_KEY}"
 OTHER_TENANT = f"arn:aws:iam:::user/p{PROJECT}:CD9VO12DNIH0DHLYOT11"
 
 
+class TestTheSequenceRunsInTheOperatorsShell(unittest.TestCase):
+    def test_the_rendered_commands_survive_zsh(self):
+        # zsh does not word-split an unquoted parameter expansion, so
+        # `S3='aws ... s3api'` followed by `$S3 ...` fails there with "no such
+        # file or directory". This sequence creates a bucket, applies a
+        # lifecycle rule and then the fence; aborting partway leaves a tenant's
+        # media bucket created and unfenced, reachable by every key in the
+        # project.
+        commands = policy_module.render_commands(
+            "blog", PROJECT, TENANT_KEY, ADMIN_KEY, "https://hel1.your-objectstorage.com", "hel1"
+        )
+        runnable = [line for line in commands.splitlines() if line and not line.startswith("#")]
+        self.assertFalse([line for line in runnable if line.startswith("$")])
+        self.assertIn(
+            's3() { aws --endpoint-url https://hel1.your-objectstorage.com s3api "$@"; }',
+            runnable,
+        )
+
+
 class TestPublicReadNotListable(unittest.TestCase):
     """Doc 14 section 6 requirement 2, which is the one that fails silently."""
 

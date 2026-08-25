@@ -240,17 +240,20 @@ def render_commands(
 export AWS_ACCESS_KEY_ID='<the operator access key id>'
 export AWS_SECRET_ACCESS_KEY='<the operator secret access key>'
 export AWS_DEFAULT_REGION='{region}'
-S3='aws --endpoint-url {endpoint} s3api'
+# `s3` is a shell function, not a variable: zsh does not word-split an
+# unquoted parameter expansion, so `S3='aws ... s3api'` then `$S3 ...`
+# fails there with "no such file or directory".
+s3() {{ aws --endpoint-url {endpoint} s3api "$@"; }}
 
 # 1. The bucket. `--acl private` is stated rather than left to the default:
 #    `public-read` is a BUCKET acl and grants LIST, which would publish this
 #    tenant's object names and, through the bucket name, the tenant roster.
-$S3 create-bucket --bucket {bucket} --acl private \\
+s3 create-bucket --bucket {bucket} --acl private \\
   --create-bucket-configuration LocationConstraint={region}
 
 # 2. Versioning, so an overwrite is recoverable and step 3 has something to
 #    expire.
-$S3 put-bucket-versioning --bucket {bucket} \\
+s3 put-bucket-versioning --bucket {bucket} \\
   --versioning-configuration Status=Enabled
 
 # 3. The lifecycle rule doc 14 section 8 specifies. BEFORE the policy, because
@@ -273,7 +276,7 @@ cat > /tmp/{bucket}-lifecycle.json <<'LIFECYCLE'
   ]
 }}
 LIFECYCLE
-$S3 put-bucket-lifecycle-configuration --bucket {bucket} \\
+s3 put-bucket-lifecycle-configuration --bucket {bucket} \\
   --lifecycle-configuration file:///tmp/{bucket}-lifecycle.json
 rm /tmp/{bucket}-lifecycle.json
 
@@ -283,14 +286,14 @@ rm /tmp/{bucket}-lifecycle.json
 cat > /tmp/{bucket}-policy.json <<'POLICY'
 {policy}
 POLICY
-$S3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
+s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 rm /tmp/{bucket}-policy.json
 
 # 5. Read both back. A put that was accepted and stored something different is
 #    the failure worth catching here -- Hetzner is known to accept a
 #    configuration and silently drop an element of it.
-$S3 get-bucket-policy --bucket {bucket} --output text
-$S3 get-bucket-lifecycle-configuration --bucket {bucket}
+s3 get-bucket-policy --bucket {bucket} --output text
+s3 get-bucket-lifecycle-configuration --bucket {bucket}
 """
 
 

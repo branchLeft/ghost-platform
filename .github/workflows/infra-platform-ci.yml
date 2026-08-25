@@ -121,6 +121,15 @@ jobs:
           cache: npm
           cache-dependency-path: infra/provisioning/package-lock.json
 
+      # Pinned rather than inherited from the runner image, so that a syntax
+      # feature the default interpreter happens to support is not what decides
+      # whether these tests run at all. The path is repo-relative: an action's
+      # `with:` inputs do not follow this job's `defaults.run.working-directory`.
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
       - name: Install dependencies
         run: npm ci
         env:

@@ -96,10 +96,66 @@ class ConfigureBackupBucketTests(unittest.TestCase):
         # The fence last: it denies every bucket-configuration action to
         # every key but the operator's, so the two calls it would block have
         # to have landed already rather than rely on that exemption holding.
-        self.assertEqual([call["subresource"] for call in calls], ["versioning", "lifecycle", "policy"])
+        self.assertEqual(
+            [call["subresource"] for call in calls],
+            ["versioning", "lifecycle", "policy", "policy"],
+        )
         self.assertNotIn("content_md5", calls[0])
         self.assertNotIn("content_md5", calls[2])
         self.assertEqual(calls[2]["body"], b"{}")
+
+    def test_the_policy_is_put_twice_so_a_lockout_surfaces_here(self):
+        # The second PUT is the control. If this engine reads NotPrincipal as
+        # naming every principal rather than exempting the one it lists, the
+        # first PUT succeeds and the bucket is already unrecoverable. The
+        # second is a no-op when the exemption works and the only signal that
+        # exists when it does not.
+        #
+        # It has to be in the code rather than only in the runbook: the
+        # operator path for a rebuilt db1 runs this script and stops.
+        calls = []
+
+        def fake_put(**kwargs):
+            calls.append(kwargs)
+
+        cbb.configure_backup_bucket(
+            bucket="b",
+            endpoint="hel1.your-objectstorage.com",
+            region="hel1",
+            access_key="AK",
+            secret_key="SECRET",
+            policy_body=b'{"Statement": []}',
+            put=fake_put,
+        )
+        policy_calls = [call for call in calls if call["subresource"] == "policy"]
+        self.assertEqual(len(policy_calls), 2)
+        # Byte-identical, so a success on the second is genuinely a no-op.
+        self.assertEqual(policy_calls[0]["body"], policy_calls[1]["body"])
+
+    def test_a_denied_second_policy_put_fails_the_run(self):
+        # The lockout, surfacing at the only moment anything can be done about
+        # it. Without this the script would exit 0 on a bucket nobody can ever
+        # re-administer.
+        seen = {"policy": 0}
+
+        def fake_put(**kwargs):
+            if kwargs["subresource"] != "policy":
+                return
+            seen["policy"] += 1
+            if seen["policy"] == 2:
+                raise cbb.ObjectStorageError("PUT b?policy failed: HTTP 403 (AccessDenied)")
+
+        with self.assertRaises(cbb.ObjectStorageError):
+            cbb.configure_backup_bucket(
+                bucket="b",
+                endpoint="hel1.your-objectstorage.com",
+                region="hel1",
+                access_key="AK",
+                secret_key="SECRET",
+                policy_body=b"{}",
+                put=fake_put,
+            )
+        self.assertEqual(seen["policy"], 2)
 
     def test_lifecycle_call_carries_a_correct_content_md5(self):
         calls = []

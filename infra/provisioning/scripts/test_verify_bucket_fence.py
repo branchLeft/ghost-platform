@@ -8,10 +8,12 @@ out of this file as a pass.
 
 Responses are the real shapes. The AWS CLI renders every service error as
 `An error occurred (Code) when calling the Operation operation: message` on
-stderr and exits non-zero, and the listing that started
-branchLeft/workspace#286 was an HTTP 200 carrying object keys -- which the CLI
-reports simply as exit 0.
+stderr and exits non-zero, and the listing that disproved the earlier
+conclusion was an HTTP 200 carrying object keys -- which the CLI reports simply
+as exit 0.
 """
+
+from __future__ import annotations
 
 import contextlib
 import importlib.util
@@ -290,7 +292,7 @@ class TestPreflight(unittest.TestCase):
 
     def test_a_foreign_key_in_another_account_fails_preflight(self):
         # Its denials would be the account boundary, which is precisely the
-        # substitution that produced branchLeft/workspace#286.
+        # substitution that made a project boundary look like a fence.
         answers = a_fully_working_fence()
         answers[("foreign", "list-buckets", None)] = Completed(0, stdout="p99999999\n")
         code, output, _ = run(answers, extra_args=["--preflight"])
@@ -357,6 +359,211 @@ class TestControlsMakeDenialsMeanSomething(unittest.TestCase):
             with self.subTest(check=check.name):
                 self.assertIsNotNone(check.control)
                 self.assertEqual(check.control.role, check.probe.role)
+
+
+class TestNotPrincipalProbe(unittest.TestCase):
+    """The reversible test of the assumption every other check rests on.
+
+    Every other guard in this repository validates a document against a model
+    of S3 evaluation. If Hetzner's engine reads `NotPrincipal` as matching
+    everybody rather than exempting the named key, all of them pass and the
+    fence still locks the bucket permanently. These tests are about that one
+    question, and about the probe being unable to cause the harm it detects.
+    """
+
+    def _answers(self, operator_read, foreign_read):
+        return {
+            ("operator", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
+            ("operator", "get-bucket-policy", FENCED): Completed(
+                1, stderr=NO_SUCH_BUCKET_POLICY
+            ),
+            ("operator", "put-object", FENCED): Completed(0),
+            ("operator", "put-bucket-policy", FENCED): Completed(0),
+            ("operator", "delete-bucket-policy", FENCED): Completed(0),
+            ("operator", "get-object", FENCED): operator_read,
+            ("foreign", "get-object", FENCED): foreign_read,
+            ("operator", "list-object-versions", FENCED): Completed(0, stdout="{}"),
+        }
+
+    def _run(self, operator_read, foreign_read, extra=()):
+        return run(
+            self._answers(operator_read, foreign_read),
+            extra_args=["--probe-notprincipal", *extra],
+        )
+
+    def test_an_engine_that_exempts_the_named_key_passes(self):
+        code, output, _ = self._run(Completed(0), Completed(1, stderr=ACCESS_DENIED))
+        self.assertEqual(code, 0, output)
+
+    def test_an_engine_that_denies_the_named_key_fails_loudly(self):
+        # The finding that would otherwise arrive as a locked bucket.
+        code, output, _ = self._run(
+            Completed(1, stderr=ACCESS_DENIED), Completed(1, stderr=ACCESS_DENIED)
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("WOULD HAVE LOCKED THE BUCKET", output)
+        self.assertIn("DO NOT APPLY", output)
+
+    def test_an_engine_that_ignores_the_statement_fails(self):
+        # Stored and not enforced: a fence that fences nothing, while every
+        # other signal says it worked.
+        code, output, _ = self._run(Completed(0), Completed(0))
+        self.assertEqual(code, 1)
+        self.assertIn("NotPrincipal DENIES everyone else", output)
+
+    def test_the_probe_policy_can_never_deny_its_own_removal(self):
+        # The property that makes asking the question safe. Asserted against
+        # the worst case the probe is testing for: NotPrincipal matching
+        # everybody. Even then, nothing on the bucket resource is denied, so
+        # PutBucketPolicy and DeleteBucketPolicy survive for every key.
+        policy = verify.probe_policy(FENCED, OPERATOR_ARN)
+        verify.assert_probe_policy_is_reversible(policy, FENCED)
+        for statement in policy["Statement"]:
+            resource = statement["Resource"]
+            resources = [resource] if isinstance(resource, str) else resource
+            for entry in resources:
+                self.assertNotEqual(entry, f"arn:aws:s3:::{FENCED}")
+                self.assertTrue(entry.startswith(f"arn:aws:s3:::{FENCED}/{verify.PROBE_PREFIX}"))
+
+    def test_a_probe_policy_touching_the_bucket_resource_is_refused(self):
+        locking = {
+            "Statement": [
+                {
+                    "Sid": "WouldLock",
+                    "Effect": "Deny",
+                    "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                    "Action": "s3:*",
+                    "Resource": f"arn:aws:s3:::{FENCED}",
+                }
+            ]
+        }
+        with self.assertRaises(verify.VerifierError):
+            verify.assert_probe_policy_is_reversible(locking, FENCED)
+
+    def test_a_probe_policy_reaching_outside_the_probe_prefix_is_refused(self):
+        broad = {
+            "Statement": [
+                {
+                    "Sid": "TooBroad",
+                    "Effect": "Deny",
+                    "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                    "Action": "s3:GetObject",
+                    "Resource": f"arn:aws:s3:::{FENCED}/*",
+                }
+            ]
+        }
+        with self.assertRaises(verify.VerifierError):
+            verify.assert_probe_policy_is_reversible(broad, FENCED)
+
+    def test_the_probe_policy_is_removed_even_when_the_reads_fail(self):
+        _, _, runner = self._run(
+            Completed(1, stderr=INVALID_KEY), Completed(1, stderr=INVALID_KEY)
+        )
+        self.assertIn(("operator", "delete-bucket-policy", FENCED), runner.calls)
+
+    def test_a_probe_policy_left_behind_is_shouted_about_with_the_fix(self):
+        answers = self._answers(Completed(0), Completed(1, stderr=ACCESS_DENIED))
+        answers[("operator", "delete-bucket-policy", FENCED)] = Completed(
+            1, stderr=ACCESS_DENIED
+        )
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertIn("THE PROBE POLICY IS REMOVED", output)
+        self.assertIn("delete-bucket-policy", output)
+
+    def test_it_refuses_a_bucket_that_already_carries_a_policy(self):
+        # Replacing a live fence with the probe would un-fence the bucket for
+        # the duration of the probe.
+        answers = self._answers(Completed(0), Completed(1, stderr=ACCESS_DENIED))
+        answers[("operator", "get-bucket-policy", FENCED)] = Completed(
+            0, stdout=json.dumps(POLICY)
+        )
+        code, output, runner = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertIn("already has a policy", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), runner.calls)
+
+    def test_an_engine_that_rejects_the_document_is_inconclusive_not_a_pass(self):
+        answers = self._answers(Completed(0), Completed(1, stderr=ACCESS_DENIED))
+        answers[("operator", "put-bucket-policy", FENCED)] = Completed(
+            1, stderr="\nAn error occurred (MalformedPolicy) when calling the "
+            "PutBucketPolicy operation: Invalid policy\n"
+        )
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertIn("the probe policy is accepted", output)
+
+
+class TestApplyMode(unittest.TestCase):
+    """Pre-flight and the double PUT in one process, so neither can be skipped."""
+
+    def _answers(self):
+        return {
+            ("operator", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
+            ("workload", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
+            ("foreign", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
+            ("operator", "put-bucket-policy", FENCED): Completed(0),
+            ("operator", "get-bucket-policy", FENCED): Completed(0, stdout=json.dumps(POLICY)),
+        }
+
+    def test_a_clean_apply_puts_the_policy_twice(self):
+        code, output, runner = run(self._answers(), extra_args=["--apply"])
+        self.assertEqual(code, 0, output)
+        puts = [c for c in runner.calls if c == ("operator", "put-bucket-policy", FENCED)]
+        self.assertEqual(len(puts), 2)
+
+    def test_a_failed_preflight_makes_the_put_unreachable(self):
+        # The whole reason this is one process rather than two commands.
+        answers = self._answers()
+        for role in ("operator", "workload", "foreign"):
+            answers[(role, "list-buckets", None)] = Completed(0, stdout="p99999999\n")
+        code, output, runner = run(answers, extra_args=["--apply"])
+        self.assertEqual(code, 1)
+        self.assertIn("DO NOT APPLY THIS POLICY", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), runner.calls)
+
+    def test_a_second_put_that_is_denied_reports_a_lockout(self):
+        calls = {"n": 0}
+        answers = self._answers()
+
+        class Sequenced(Runner):
+            def __call__(self, argv, env):
+                result = super().__call__(argv, env)
+                if argv[argv.index("s3api") + 1] == "put-bucket-policy":
+                    calls["n"] += 1
+                    if calls["n"] == 2:
+                        return Completed(1, stderr=ACCESS_DENIED)
+                return result
+
+        runner = Sequenced(answers)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = verify.main(
+                [
+                    "--bucket",
+                    FENCED,
+                    "--foreign-control-bucket",
+                    CONTROL,
+                    "--policy-file",
+                    POLICY_FILE,
+                    "--apply",
+                ],
+                runner=runner,
+                environ=dict(ENVIRONMENT),
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("THE BUCKET MAY BE LOCKED", out.getvalue())
+
+
+class TestRunnerFailuresNeverStrand(unittest.TestCase):
+    def test_a_missing_cli_is_an_error_not_a_denial(self):
+        outcome, reason = verify.classify(1, "the aws CLI is not on PATH")
+        self.assertEqual(outcome, "error")
+        self.assertIn("aws CLI", reason)
+
+    def test_a_timeout_is_an_error_not_a_denial(self):
+        outcome, _ = verify.classify(1, "the aws CLI did not return within 120s")
+        self.assertEqual(outcome, "error")
 
 
 class TestLockout(unittest.TestCase):
