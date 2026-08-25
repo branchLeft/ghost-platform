@@ -64,7 +64,13 @@ export function mediaPublicBaseUrl(endpoint: string, slug: string): string {
         `change can recall.`
     );
   }
-  const host = endpoint.replace(/\/+$/, '');
+  // Trailing slashes are trimmed by index rather than by `/\/+$/`, which is a
+  // polynomial-backtracking pattern on a string of many slashes.
+  let end = endpoint.length;
+  while (end > 0 && endpoint.charAt(end - 1) === '/') {
+    end -= 1;
+  }
+  const host = endpoint.slice(0, end);
   if (host.slice('https://'.length).includes('/')) {
     throw new Error(
       `GhostTenant: media endpoint "${endpoint}" must be a bare host, with no path. The bucket is ` +

@@ -56,6 +56,9 @@ describe('mediaPublicBaseUrl', () => {
 
   it('tolerates a trailing slash on the endpoint rather than emitting a double one', () => {
     expect(mediaPublicBaseUrl(`${ENDPOINT}/`, 'blog')).toBe(mediaPublicBaseUrl(ENDPOINT, 'blog'));
+    expect(mediaPublicBaseUrl(`${ENDPOINT}${'/'.repeat(64)}`, 'blog')).toBe(
+      mediaPublicBaseUrl(ENDPOINT, 'blog')
+    );
   });
 
   // Ghost writes this into every published post. A wrong value here is not a
