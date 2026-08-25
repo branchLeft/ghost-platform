@@ -16,9 +16,8 @@ function envArgs(overrides: Partial<TenantEnvironmentArgs> = {}): TenantEnvironm
     media: {
       endpoint: 'https://hel1.your-objectstorage.com',
       region: 'hel1',
-      bucket: 'branchleft-media',
-      tenantPrefix: 'blog',
-      publicBaseUrl: 'https://hel1.your-objectstorage.com/branchleft-media',
+      bucket: 'branchleft-media-blog',
+      publicBaseUrl: 'https://hel1.your-objectstorage.com/branchleft-media-blog',
     },
     limits: uploadLimits(128, 512),
     ...overrides,
@@ -134,10 +133,15 @@ describe('tenantEnvironment', () => {
     expect(env.storage__active).toBe('S3Storage');
   });
 
-  // `S3Storage.buildKey` inserts the separator itself, so a trailing slash
-  // here writes every object under `<tenant>//`.
-  it('passes the tenant prefix without a trailing slash', () => {
-    expect(env.storage__S3Storage__tenantPrefix).toBe('blog');
+  // Bucket-per-tenant, so there is no prefix to set. Ghost's S3Storage takes
+  // `tenantPrefix` as optional and stores keys unprefixed without it; setting
+  // it would put a redundant segment into every published media URL.
+  it('sets no tenant prefix, and points at this tenant own bucket', () => {
+    expect(env).not.toHaveProperty('storage__S3Storage__tenantPrefix');
+    expect(env.storage__S3Storage__bucket).toBe('branchleft-media-blog');
+    expect(env.storage__S3Storage__cdnUrl).toBe(
+      'https://hel1.your-objectstorage.com/branchleft-media-blog'
+    );
   });
 });
 

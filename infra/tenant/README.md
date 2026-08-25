@@ -115,48 +115,58 @@ are charged to the container's own memory cgroup. A tenant sitting at its RSS
 budget with a full `/tmp` is OOM-killed; that is bounded and tenant-local by
 construction, and it is why the two upload ceilings are set well below the sum.
 
-## Media isolation — what is settled and what is not
+## Media isolation — bucket per tenant, decided 2026-08-25
 
-The component takes media storage as explicit inputs (`endpoint`, `region`,
-`bucket`, `tenantPrefix`, `publicBaseUrl`, and the key pair) rather than
-deriving them, and that shape is deliberate: **the platform's per-tenant media
-isolation mechanism is not decided**, and the two live candidates produce
-different values for the same fields.
+Each tenant's media lives in **its own Object Storage bucket**, reached with a
+credential allowlisted by bucket policy to that bucket alone. That is candidate
+(a) of the migration programme's doc 14 §6, chosen because its isolation
+primitive is the one that has been demonstrated: a credential allowlisted to one
+bucket in this account returned `AccessDenied` against another on a `list-type=2`
+request — per-bucket key allowlisting working, and failing closed on
+`ListBucket`. The alternative shape, one shared bucket with a per-key object
+prefix, needs a policy `Condition` that Hetzner documents nowhere and nobody has
+tested.
 
-What the supplier evidence established, and it cuts against the earlier
-preference order rather than confirming it:
+**What the component therefore does not take as input.** `bucket` and
+`publicBaseUrl` are derived from the slug and the endpoint by `media.ts`, not
+configured. A value a stack can set is a value a stack can set to another
+tenant's bucket, and this is the platform's only isolation boundary for media —
+so the safest configuration surface for it is none. `endpoint` and `region` stay
+inputs: one Object Storage location holds every tenant's bucket.
 
-- Buckets are free at the margin — Object Storage is priced per account
-  "regardless of how many Buckets you have" — but the account is capped at
-  **100 buckets and 200 S3 credentials across all projects**. A bucket per
-  tenant therefore consumes the entire published bucket allowance at 100
-  tenants and sits on the credential cap during rotation. Whether those caps
-  are raisable on request is not established, and it is the question that
-  decides the candidate.
-- Credential scoping is achievable **by bucket policy, not at key creation**,
-  and both documented routes scope a key to a *whole bucket* — which is the
-  bucket-per-tenant mechanism. Scoping a key to an object *prefix* inside a
-  shared bucket is documented nowhere and has been tested by nobody, so the
-  candidate that fits the caps is the one whose isolation primitive is
-  undemonstrated.
-- Public-read-but-not-listable must come from a bucket **policy** granting
-  `s3:GetObject` on `<bucket>/*` and nothing on the bucket resource itself.
-  The obvious `x-amz-acl: public-read` grants READ *on the bucket*, which in S3
-  semantics is LIST — a listable bucket publishes the tenant roster, and it
-  would fail silently because every image would still work.
+There is no `tenantPrefix`. It separated tenants inside one shared bucket, and
+it went with the shared bucket; Ghost treats the option as optional and stores
+keys unprefixed without it. Keeping it would put a redundant path segment into
+every published media URL for no isolation gain.
 
-Two consequences for this component, both of them present in the code rather
-than left as a caveat:
+**Three properties this component depends on and does not create.** The bucket,
+its versioning and its policy are made by an operator before a tenant stack
+exists — Hetzner creates S3 credentials in its Cloud Console and not through any
+API, so no automated path can do it. `render-media-bucket-policy.py` in this
+repository renders the policy and the exact commands, and
+`RUNBOOK-tenant-onboarding.md` §6 verifies them against the live bucket:
 
-1. `publicBaseUrl` is an explicit input, not derived from `endpoint` and
-   `bucket`. Bucket-per-tenant and shared-bucket-with-prefix serve media from
-   different URLs, and deriving one would hardcode the undecided answer.
-2. Media deletion stays **append-only** by decision, not by omission — the
-   property is load-bearing for restore simplicity and is kept rather than
-   "fixed" during the migration.
+1. **Public-read but NOT listable.** Served by a bucket **policy** granting
+   `s3:GetObject` on `<bucket>/*`, plus an explicit `Deny` of everything on the
+   bucket resource itself. Never the `x-amz-acl: public-read` canned ACL — READ
+   on a *bucket* is LIST in S3 semantics, so that would publish this tenant's
+   object names and, through the bucket name, that the tenant exists. It fails
+   silently: every image still loads.
+2. **Append-only.** `s3:DeleteObject` is withheld from the tenant's own key by
+   decision, not by omission, which is why media deletion from Ghost admin
+   returns a 403. The property is load-bearing for restore simplicity. The
+   operator's key keeps deletion, for teardown.
+3. **A bucket with no policy is open to every key in its project.** Hetzner's
+   default is that each key pair is valid for every bucket in the same project,
+   so the policy is what creates the boundary rather than tightening one.
 
-The decision is not needed while one tenant is on the platform. It is needed
-before a second, and the component does not need to change when it lands.
+**The standing cost, and the horizon it binds at.** One bucket and one
+credential per tenant, against account-wide caps of 100 buckets and 200 S3
+credentials *across all projects* — so rotation, which needs two credentials for
+one tenant briefly, sits on the credential cap near 100 tenants. Whether the
+caps are raisable has never been asked; branchLeft/workspace#176 is that support
+ticket, and a positive answer removes the constraint outright. The platform is
+at one tenant.
 
 ## Breaking changes in 1.0.0
 

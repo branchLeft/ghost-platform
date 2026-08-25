@@ -90,3 +90,13 @@ jobs:
       # mocked; no daemon, no root.
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'
+
+      # The tenant-provisioning scripts. Their tests existed before this step
+      # did and nothing ran them: provision-tenant.yml invokes the scripts'
+      # own `--self-test` flags, which is a different and much narrower thing,
+      # and it only runs when an owner dispatches a real provisioning run. So
+      # the media bucket policy -- the whole of the media isolation boundary,
+      # and the one artefact whose failure mode is invisible from the outside
+      # -- was covered by tests that no push or pull request executed.
+      - name: Tenant provisioning script tests
+        run: python3 -m unittest discover -s infra/provisioning/scripts -p 'test_*.py'

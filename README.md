@@ -5,9 +5,9 @@ tenant container image, and the Pulumi infrastructure that runs it.
 
 Ghost runs one site per process, so "multi-tenant" here means one container
 per tenant on shared compute — not one process serving many sites. Tenants
-share an app host, a MySQL host and object storage; each gets its own Compose
-stack under its own UID, its own logical database and DB user, and its own
-media prefix.
+share an app host, a MySQL host and an object-storage account; each gets its
+own Compose stack under its own UID, its own logical database and DB user, and
+its own media bucket.
 
 Nothing in this repo names a tenant. A tenant's identity lives in its own
 repo — named `ghost-tenant-<name>`, generated from
@@ -24,8 +24,8 @@ stack on a shared app host, carrying the whole runtime-isolation posture, plus
 the Ghost environment, the secrets file and the edge upload limit that go with
 it. It declares no cloud resources — see
 [`infra/tenant/README.md`](infra/tenant/README.md) for why, for the three
-host-side steps it depends on, and for where the media-isolation decision
-currently stands.
+host-side steps it depends on, and for the media isolation the bucket policy
+carries.
 
 **`infra/platform/`** — the shared platform stack, applied by CI on every
 push to `main`: the Cloud SQL instance, the media bucket, the tenant image's
@@ -81,12 +81,13 @@ const tenant = new GhostTenant('example-news', {
     host: '10.20.1.20',
     password: config.requireSecret('databasePassword'),
   },
+  // The bucket and the public base URL are not here: they are derived from
+  // the slug, so no stack holds a value that could name another tenant's
+  // bucket. This tenant's media is `branchleft-media-example-news`, served
+  // from `https://hel1.your-objectstorage.com/branchleft-media-example-news`.
   media: {
     endpoint: 'https://hel1.your-objectstorage.com',
     region: 'hel1',
-    bucket: 'branchleft-media',
-    tenantPrefix: 'example-news',
-    publicBaseUrl: 'https://hel1.your-objectstorage.com/branchleft-media',
     accessKeyId: config.requireSecret('mediaAccessKeyId'),
     secretAccessKey: config.requireSecret('mediaSecretAccessKey'),
   },
@@ -177,15 +178,15 @@ image with a different environment.
 | Variable | Required | Origin | Notes |
 |---|---|---|---|
 | `storage__active` | **Required** in production, **enforced at boot** | Deploy config | `S3Storage`. The entrypoint refuses to start Ghost's server process if this is unset or names a `Local*Storage` adapter — see "Fail-closed storage guard" below. A misconfigured tenant fails to boot instead of silently serving on local disk. |
-| `storage__S3Storage__bucket` | **Required** | Deploy config | The shared platform bucket — one bucket, tenant-prefixed paths, not one bucket per tenant. |
+| `storage__S3Storage__bucket` | **Required** | Deploy config | This tenant's own bucket, `branchleft-media-<slug>`. One bucket per tenant, fenced by a bucket policy allowlisting this tenant's key — not a prefix in a shared one. |
 | `storage__S3Storage__staticFileURLPrefix` | **Required** | Deploy config | Key prefix under the bucket, e.g. `content/images`. |
 | `storage__S3Storage__cdnUrl` | **Required** | Deploy config | Public base URL files are served from, e.g. a CDN in front of the bucket, or `https://storage.googleapis.com/<bucket>` directly. |
 | `storage__S3Storage__multipartUploadThresholdBytes` | **Required** | Deploy config | Platform-wide constant, not per-tenant. Recommend `10485760` (10 MiB). |
 | `storage__S3Storage__multipartChunkSizeBytes` | **Required** | Deploy config | Platform-wide constant. Must be ≥ 5 MiB (`5242880`) — S3Storage enforces this floor itself (GCS's own multipart minimum). |
 | `storage__S3Storage__endpoint` | **Required** for GCS | Deploy config | `https://storage.googleapis.com`. |
-| `storage__S3Storage__region` | Required by the AWS SDK client, functionally unused by GCS | Deploy config | The client requires *some* region string even though GCS's XML API does not use it meaningfully. |
+| `storage__S3Storage__region` | **Required** | Deploy config | On Hetzner this stops being cosmetic: against Ceph RGW the region is part of the SigV4 credential scope, so a wrong value is a signature mismatch surfacing as an opaque 403. It must name the bucket's own location. |
 | `storage__S3Storage__forcePathStyle` | Recommended `true` for GCS | Deploy config | Per GCS's published S3-interoperability guidance. |
-| `storage__S3Storage__tenantPrefix` | Optional | Deploy config | Per-tenant prefix within the shared bucket. |
+| `storage__S3Storage__tenantPrefix` | Optional, and **not set by this platform** | Deploy config | A key prefix within a shared bucket. Bucket-per-tenant makes it redundant, and setting it would put an extra path segment into every published media URL. Ghost stores keys unprefixed when it is absent. |
 | `storage__S3Storage__accessKeyId` | **Required** in production | **Secret Manager** | Per-tenant GCS HMAC key. |
 | `storage__S3Storage__secretAccessKey` | **Required** in production | **Secret Manager** | Per-tenant GCS HMAC secret. |
 

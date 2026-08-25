@@ -114,12 +114,22 @@ not ten more fields on a dispatch form — `workflow_dispatch` also caps inputs 
 ten.
 
 ```bash
-gh variable set PLATFORM_DB_PRIVATE_IP         --repo branchLeft/ghost-platform --body '10.20.1.20'
-gh variable set PLATFORM_MEDIA_ENDPOINT        --repo branchLeft/ghost-platform --body '<https://<region>.your-objectstorage.com>'
-gh variable set PLATFORM_MEDIA_REGION          --repo branchLeft/ghost-platform --body '<region>'
-gh variable set PLATFORM_MEDIA_BUCKET          --repo branchLeft/ghost-platform --body '<media bucket>'
-gh variable set PLATFORM_MEDIA_PUBLIC_BASE_URL --repo branchLeft/ghost-platform --body '<https://... >'
-gh variable set HETZNER_PULUMI_BACKEND_URL     --repo branchLeft/ghost-platform --body 's3://<tenant-state-bucket>?endpoint=<region>.your-objectstorage.com&s3ForcePathStyle=true&region=<region>'
+gh variable set PLATFORM_DB_PRIVATE_IP     --repo branchLeft/ghost-platform --body '10.20.1.20'
+gh variable set PLATFORM_MEDIA_ENDPOINT    --repo branchLeft/ghost-platform --body 'https://hel1.your-objectstorage.com'
+gh variable set PLATFORM_MEDIA_REGION      --repo branchLeft/ghost-platform --body 'hel1'
+gh variable set HETZNER_PULUMI_BACKEND_URL --repo branchLeft/ghost-platform --body 's3://<tenant-state-bucket>?endpoint=<region>.your-objectstorage.com&s3ForcePathStyle=true&region=<region>'
+```
+
+**There is no `PLATFORM_MEDIA_BUCKET` or `PLATFORM_MEDIA_PUBLIC_BASE_URL`, and
+if this repository still holds either, delete it.** Each tenant has its own
+media bucket, `branchleft-media-<slug>`, and the tenant component derives both
+the bucket name and the public base URL from the slug and the endpoint. A
+leftover variable naming one shared bucket is read by nothing and is evidence
+for a shape that no longer exists:
+
+```bash
+gh variable delete PLATFORM_MEDIA_BUCKET          --repo branchLeft/ghost-platform
+gh variable delete PLATFORM_MEDIA_PUBLIC_BASE_URL --repo branchLeft/ghost-platform
 ```
 
 And the reviewers a generated tenant repository's `production` environment is
@@ -144,10 +154,10 @@ created, because the scoping it gives — secrets readable only by the job that
 declares it, never by a run from a branch — is plan-independent and is most of
 the value.
 
-The media values are the ones the media-isolation decision is still open on, so
-they are placeholders here rather than invented: the endpoint host and the
-region must name the same location, and a mismatch is an opaque 403 that reads
-as a credential problem. `HETZNER_PULUMI_BACKEND_URL` must **not** be
+The endpoint host and the region must name the same location: against Ceph RGW
+the region is part of the SigV4 credential scope, so a mismatch is an opaque 403
+that reads as a credential problem rather than as an addressing one.
+`HETZNER_PULUMI_BACKEND_URL` must **not** be
 `branchleft-pulumi-state` — that bucket holds the estate's own checkpoint, and
 the S3 credential is not scoped per stack, so pointing tenants at it would give
 every tenant deployer write access to the checkpoint the production hcloud token
@@ -158,7 +168,10 @@ lives in. The workflow refuses that bucket by name.
 ## Onboarding, in order
 
 The order is not arbitrary. Two steps have to precede the deploy slot, and one
-of them changes whether a safety check fires at all — see step 6.
+of them changes whether a safety check fires at all — see step 8. Step 6 has an
+ordering constraint of its own: a media bucket exists, briefly, before the
+policy that fences it, and during that window every S3 key in the project can
+reach it.
 
 ### 1. Ask the tenant whether their repository is public
 
@@ -257,7 +270,86 @@ before the terminal scrolls; the recovery if you lose it is a password reset,
 not a lookup.
 
 
-### 6. Complete and merge nothing yet — finish the handover branch
+### 6. Create this tenant's media bucket, credential and bucket policy
+
+**This is an operator step and cannot be anything else.** Hetzner states that
+S3 credentials are created in the Cloud Console and *not* via any API — neither
+the S3 API nor the hcloud API carries the resource — so no runner can mint one.
+That is also the posture we would want: a credential able to create media
+credentials is a credential able to reach every tenant's media, which is the
+boundary this whole shape exists to draw.
+
+The bucket name is `branchleft-media-<slug>`. It is derived, not chosen: the
+tenant component computes it from the slug, so a bucket under any other name is
+a tenant whose uploads fail after a deploy that reported success.
+
+Render the exact sequence, with every value in place, from a checkout of
+`branchLeft/ghost-platform`:
+
+```bash
+python3 infra/provisioning/scripts/render-media-bucket-policy.py --commands \
+  --slug <slug> \
+  --project-id <the Hetzner project id holding the Object Storage credentials> \
+  --tenant-access-key <the access key id the Console showed for this tenant> \
+  --admin-access-key <your own operator access key id>
+```
+
+Take the credential first, because the policy has to name it:
+
+1. Hetzner Cloud Console → the project holding the media buckets → Object
+   Storage → Credentials → **Generate credential**. Record both halves
+   immediately: **the secret is shown once and cannot be read back, through the
+   Console or otherwise.**
+2. Run the rendered sequence. It creates the bucket with `--acl private`,
+   enables versioning, applies the policy and reads it back.
+
+**Do not leave the policy for later, and do not hand the tenant its key before
+the policy is applied.** Hetzner's default is that every key pair is valid for
+every bucket in its own project, so an unfenced bucket is reachable by every
+credential in that project, and a fresh credential reaches every unfenced bucket.
+
+**Never `--acl public-read`.** That is a *bucket* ACL, and READ on a bucket is
+LIST in S3 semantics: it would publish this tenant's object names, and through
+the bucket name the fact that the tenant exists. Public-read-but-not-listable is
+served by the policy's `s3:GetObject` grant on the object path alone.
+
+#### Verify the four decisions against the live bucket
+
+Hetzner documents `NotPrincipal` verbatim but publishes no list of supported
+policy actions or conditions, and says nothing about `NotAction`, which the
+policy's object-level deny relies on to leave anonymous reads intact. A
+successful `put-bucket-policy` is therefore not proof. Run all four, with the
+**tenant's** key in the environment except where stated:
+
+```bash
+S3="aws --endpoint-url https://hel1.your-objectstorage.com s3api"
+
+# a. Public read works. No credential at all -- if this needs one, cdnUrl is
+#    broken for every reader.
+echo hello > /tmp/probe.txt
+$S3 put-object --bucket branchleft-media-<slug> --key probe.txt --body /tmp/probe.txt
+curl -fsS "https://hel1.your-objectstorage.com/branchleft-media-<slug>/probe.txt"
+
+# b. The bucket is NOT listable anonymously. This is the one that fails
+#    silently: every image would still load. Expect AccessDenied, not a listing.
+curl -sS "https://hel1.your-objectstorage.com/branchleft-media-<slug>?list-type=2"
+
+# c. Media is append-only for the tenant's own key. Expect AccessDenied.
+$S3 delete-object --bucket branchleft-media-<slug> --key probe.txt
+
+# d. The tenant's key reaches no other tenant's bucket. Expect AccessDenied.
+$S3 list-objects-v2 --bucket branchleft-media-<another live slug>
+```
+
+If (b) returns a listing, or (c) succeeds, stop: the policy did not land as
+written, and neither failure is visible from the tenant's side. Delete `probe.txt`
+with your **operator** key once the four are done.
+
+The operator key is deliberately still able to delete: append-only is a property
+of the tenant's credential, so that Ghost admin's delete button returns a 403,
+not a property of the bucket.
+
+### 7. Complete and merge nothing yet — finish the handover branch
 
 From a local checkout of the generated repository, on the
 `provisioning/handover` branch:
@@ -307,7 +399,7 @@ The salt is not in the escrow ciphertext: it is in the tenant repository's
 longer have it, read it out of the stack's checkpoint —
 `pulumi stack export --stack <slug> | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployment"]["secrets_providers"]["state"]["salt"])'`.
 
-### 7. Provision the host side, in this order
+### 8. Provision the host side, in this order
 
 ```bash
 # a. The volumes and the UID claim. The rendered stack declares both volumes
@@ -411,7 +503,7 @@ Record the tenant, the host and the key fingerprint
 (`ssh-keygen -lf ~/.ssh/id_ed25519_slot_<slug>.pub`) wherever that tenant's
 other provisioning facts live.
 
-### 8. Register the tenant at the edge
+### 9. Register the tenant at the edge
 
 Add this tenant's site block to the edge site registry in
 `branchLeft/shared-infra`, using the stack's own value:
@@ -423,7 +515,7 @@ pulumi stack output edgeRequestBodyMaxSize --stack <slug>
 It is derived from the same input as the container's `/tmp` ceiling so the two
 cannot disagree. Setting it there by hand to a different number defeats that.
 
-### 9. Merge the handover pull request
+### 10. Merge the handover pull request
 
 That is the first deploy. A healthy run applies the stack, reads `image` from
 it, and pipes the digest over the slot key. Check the `Deploy` job actually ran
@@ -473,7 +565,8 @@ ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
 ```
 
 3. **Take the final backups you intend to keep** — the database dump and the
-   media prefix. After step 5 there is no configured place to put them back.
+   whole of `branchleft-media-<slug>`. After step 5 there is no configured place
+   to put them back.
 
 4. **`pulumi destroy` and `pulumi stack rm`, before the repository or its
    passphrase secret is deleted.** A stack whose passphrase is gone cannot be
@@ -499,6 +592,14 @@ mysql --socket /opt/branchleft/db/run/mysqld/mysqld.sock --user root \
 8. Archive the tenant repository rather than deleting it, unless the tenant
    asked otherwise. Archiving keeps the audit trail; deleting removes the record
    that the stack ever existed.
+
+9. **The media credential, then the bucket, in the Cloud Console.** Both count
+   against account-wide allowances — 200 S3 credentials and 100 buckets across
+   all projects — so a teardown that leaves them behind spends two of a fixed
+   budget on a tenant that no longer exists. Delete the credential first: a
+   bucket deleted while its key still exists leaves a key with no policy fencing
+   it, valid for every other bucket in the project. Emptying the bucket needs
+   your operator key, because the tenant's own cannot delete.
 
 A tenant removed without step 1 leaves a working deploy key for a stack that no
 longer exists, and on a host that has not been rebuilt the on-host register is

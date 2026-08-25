@@ -41,8 +41,9 @@ export const SECRET_ENV_KEYS = {
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = 10485760; // 10 MiB
 /** S3Storage enforces a 5 MiB floor itself. */
 const MULTIPART_CHUNK_SIZE_BYTES = 5242880;
-/** Key prefix under the bucket; per-tenant separation is `tenantPrefix`,
- * layered underneath this. */
+/** Key prefix under the bucket. Every object a tenant stores sits under it,
+ * and nothing else shares the bucket -- per-tenant separation is the bucket
+ * itself, not a prefix within one. */
 const STATIC_FILE_URL_PREFIX = 'content/images';
 
 export interface TenantDatabaseConfig {
@@ -56,19 +57,18 @@ export interface TenantDatabaseConfig {
 }
 
 export interface TenantMediaConfig {
-  /** e.g. `https://hel1.your-objectstorage.com`. */
+  /** e.g. `https://hel1.your-objectstorage.com`. Platform-wide. */
   endpoint: string;
-  /** Must name the bucket's own location; a mismatch is an opaque 403. */
+  /** Must name the bucket's own location; a mismatch is an opaque 403.
+   * Platform-wide. */
   region: string;
+  /** This tenant's own bucket. Nothing else stores objects in it, and the
+   * credential in the secrets file below is allowlisted to it alone. Derived
+   * from the slug by `media.ts`, never configured. */
   bucket: string;
-  /** This tenant's key prefix, without a trailing slash — `S3Storage.buildKey`
-   * inserts the separator itself, and a slash here writes every object under
-   * `<tenant>//`. */
-  tenantPrefix: string;
-  /** Public base URL objects are served from. Explicit rather than derived:
-   * whether a tenant's media sits in its own bucket or behind a prefix in a
-   * shared one is an open platform decision, and the two produce different
-   * public URLs. */
+  /** Public base URL objects are served from — `<endpoint>/<bucket>`, also
+   * derived. Ghost writes it into every published post, so it is the one media
+   * value a later change cannot fully undo. */
   publicBaseUrl: string;
 }
 
@@ -132,7 +132,10 @@ export function tenantEnvironment(
     storage__S3Storage__region: args.media.region,
     storage__S3Storage__endpoint: args.media.endpoint,
     storage__S3Storage__forcePathStyle: true,
-    storage__S3Storage__tenantPrefix: args.media.tenantPrefix,
+    // No `storage__S3Storage__tenantPrefix`. Ghost treats it as optional and
+    // stores keys unprefixed when it is absent, which is what a bucket holding
+    // one tenant's objects wants. Setting it would put every object under a
+    // redundant segment and bake that segment into every published media URL.
     storage__S3Storage__staticFileURLPrefix: STATIC_FILE_URL_PREFIX,
     storage__S3Storage__cdnUrl: args.media.publicBaseUrl,
     storage__S3Storage__multipartUploadThresholdBytes: MULTIPART_UPLOAD_THRESHOLD_BYTES,
