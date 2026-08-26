@@ -129,8 +129,16 @@ fence would leave that workload able to rewrite the policy that constrains it,
 which is most of what the fence withholds. Both generators refuse this. Mint a
 distinct operator credential in the Console first.
 
-`aws` CLI v2 must be on the workstation. Everything here uses `s3api` against
-`https://hel1.your-objectstorage.com`, region `hel1`.
+`aws` CLI v2 must be on the workstation, and so must `curl` 7.75 or newer
+(macOS 14 ships 8.4). Everything here goes to
+`https://hel1.your-objectstorage.com`, region `hel1`, through `aws s3api` —
+except the object-read probes, which `verify-bucket-fence.py` signs with
+`curl --aws-sigv4`. `aws s3api get-object` cannot render an error response from
+this endpoint at all: it exits 255 printing a client-internal message in place
+of the S3 error, for every failure including a plain missing object, so a probe
+built on it can only ever report `INCONCLUSIVE`. Nothing you type changes; if
+`curl` is missing or too old, the object-read rows come back `INCONCLUSIVE`
+naming the reason, and never as a pass.
 
 **Confirm the project id rather than trusting this document.** Every principal
 in a rendered policy is built from it, and it is the one value whose being
@@ -282,7 +290,7 @@ do not close this terminal.
 makes it a valid control bucket for the tenant-state key. The credentials are
 already exported from step 1b.
 
-`--versioning-already-enabled` is safe here and only here: step 1c just enabled
+`--versioning-already-enabled` is safe here and only here: step 1e enabled
 versioning on this bucket, so the probe that tries to set it is a genuine
 no-op. It is left off in section 2, where nothing has asserted that state.
 
