@@ -217,10 +217,37 @@ export class GhostTenant extends pulumi.ComponentResource {
   public readonly identity: pulumi.Output<GhostTenantIdentity>;
 
   constructor(name: string, args: GhostTenantArgs, opts?: pulumi.ComponentResourceOptions) {
-    super('ghostPlatform:tenant:GhostTenant', name, {}, opts);
-
+    // Before super(): an invalid slug or uid must never reach the engine at
+    // all, registered or not. Neither validator touches `this`, so both are
+    // legal here and the alternative -- validating after registration, as
+    // this used to -- sends the bad value to the engine microtask queue
+    // before the throw unwinds the constructor.
     validateTenantSlug(args.slug);
     validateTenantUid(args.uid);
+
+    // Computed before super() and passed as its props rather than `{}`, then
+    // reused (not recomputed) for `this.identity` below: a ComponentResource's
+    // step in a preview is derived from whether its registered inputs changed,
+    // so empty props can never produce a step, and `identity_changes()` in
+    // `scripts/assert-no-tenant-deletes.py` has no step to read a comparison
+    // from. One object rather than two copies of the same fields means the
+    // props super() registers and the output the guard also reads cannot drift
+    // apart -- a preview's new-state carries only the registered inputs, never
+    // the computed output (Pulumi does not resolve a component's outputs until
+    // an actual apply), so a mismatch between the two would hide an in-flight
+    // identity change on exactly the run meant to catch it.
+    const identity: GhostTenantIdentity = {
+      slug: args.slug,
+      uid: args.uid,
+      stackName: stackName(args.slug),
+      contentVolume: contentVolumeName(args.slug),
+      adaptersVolume: adaptersVolumeName(args.slug),
+      databaseName: databaseAndUserName(args.slug),
+      appHostPrivateIp: args.appHostPrivateIp,
+      maxUserConnections: args.database.maxUserConnections ?? DEFAULT_MAX_USER_CONNECTIONS,
+    };
+
+    super('ghostPlatform:tenant:GhostTenant', name, { identity }, opts);
 
     const limits = uploadLimits(
       args.uploadCeilingMib ?? DEFAULT_UPLOAD_CEILING_MIB,
@@ -296,16 +323,7 @@ export class GhostTenant extends pulumi.ComponentResource {
         )
     );
 
-    this.identity = pulumi.output({
-      slug: this.slug,
-      uid: this.uid,
-      stackName: this.stackName,
-      contentVolume: this.contentVolume,
-      adaptersVolume: this.adaptersVolume,
-      databaseName: this.databaseName,
-      appHostPrivateIp: args.appHostPrivateIp,
-      maxUserConnections: args.database.maxUserConnections ?? DEFAULT_MAX_USER_CONNECTIONS,
-    });
+    this.identity = pulumi.output(identity);
 
     this.registerOutputs({
       identity: this.identity,
