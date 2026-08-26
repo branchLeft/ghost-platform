@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
-"""One-time setup of the backup bucket's versioning and lifecycle.
+"""One-time setup of the backup bucket's versioning, lifecycle and fence.
 
 Run once by the platform owner, right after creating the bucket
-(db/RUNBOOK-db.md's Rob-gated bucket step), from a workstation with the
-bucket's S3 credential in the environment -- never from db1, and never by
-either automated pipeline:
+(db/RUNBOOK-db.md's owner-only bucket step), from a workstation with the
+**operator's** S3 credential in the environment -- never db1's backup
+credential, never from db1, and never by either automated pipeline:
 
     AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \\
       configure_backup_bucket.py --bucket branchleft-db-backups \\
-      --endpoint hel1.your-objectstorage.com --region hel1
+      --endpoint hel1.your-objectstorage.com --region hel1 \\
+      --policy-file /tmp/branchleft-db-backups-policy.json
+
+The policy is not optional and there is no flag to skip it. Hetzner's
+documented default is that every key pair in a project is valid for every
+bucket in that project, so a bucket configured without one is readable and
+deletable by every credential in its project -- including keys minted for
+something else entirely, and keys that sit in CI. A bucket fenced later than
+it is created has a window; a bucket that can be configured without being
+fenced grows a second unfenced bucket the next time someone adds one. Render
+the document with `infra/provisioning/scripts/render-bucket-fence-policy.py`
+and see RUNBOOK-bucket-fencing.md for the ordering and the live verification.
+
+The credential in the environment must be the operator's because the fence
+withholds every bucket-configuration action from db1's backup key: after this
+runs, that key can no longer set versioning or lifecycle, which is the point.
 
 Object keys in this pipeline are already namespaced under MySQL's
 `@@server_uuid` (dump_nightly.py, ship_binlogs.py), which is the primary
@@ -28,10 +43,11 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import json
 import os
 import sys
 
-from objectstorage import ObjectStorageError, put_bucket_subresource
+from objectstorage import ObjectStorageError, owner_id, put_bucket_subresource
 
 S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
@@ -60,6 +76,153 @@ def lifecycle_document(noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS
     ).encode()
 
 
+_MISSING = object()
+
+
+def _string_list(value) -> list[str]:
+    """Every place a policy takes "one or many" -- Resource, Action, and the
+    `AWS` member of Principal -- accepts a bare string or a list, and the bare
+    string is the form most published examples use. Reading only the list form
+    silently skips the statement, which for a `Deny` means passing it."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
+def _principals(statement: dict, field: str):
+    """The principals a statement names, or `_MISSING` when it names no such
+    field at all. The distinction matters: an empty list and an absent key are
+    the same to `.get`, but a `Deny` with no `Principal` and no `NotPrincipal`
+    is a statement whose scope this checker cannot bound, not a statement that
+    names nobody."""
+    if field not in statement:
+        return _MISSING
+    principal = statement[field]
+    if isinstance(principal, str):
+        return [principal]
+    if isinstance(principal, dict):
+        return _string_list(principal.get("AWS"))
+    return []
+
+
+def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_principal: str) -> None:
+    """Refuse a policy that names another bucket, locks out the caller, or fences nothing.
+
+    Applying a bucket policy is the one operation here that can be
+    irreversible. Every `Deny` in the policy governs the very API call that
+    would edit it, so a `Deny` covering the credential in this environment
+    leaves nobody able to replace or remove the statement doing the denying --
+    not another key in the project, which the same statement also denies, and
+    not `DeleteBucket`, which it denies too. Recovery is a support request
+    against the storage cluster, with the bucket unreachable meanwhile.
+
+    `operator_principal` is the caller's own full ARN, resolved from the live
+    API rather than assembled from an argument. Matching on the access key
+    alone would accept an ARN carrying the right key under the wrong account
+    id, which names a principal that does not exist -- a `NotPrincipal`
+    exemption for nobody, and the one lockout no offline check can see, because
+    a rendered policy is self-consistent with whatever account id it was built
+    from.
+
+    Anything this checker cannot bound is refused rather than passed. A `Deny`
+    with no `Resource`, or with neither `Principal` nor `NotPrincipal`, has a
+    scope that depends on how the engine reads an absent field, and "probably
+    fine" is not a basis for an irreversible write.
+    """
+    bucket_arn = f"arn:aws:s3:::{bucket}"
+    objects_prefix = f"{bucket_arn}/"
+
+    denies_bucket = False
+    denies_objects = False
+
+    for statement in policy.get("Statement", []):
+        sid = statement.get("Sid", "<no Sid>")
+        effect = statement.get("Effect")
+        resources = _string_list(statement.get("Resource"))
+
+        if not resources:
+            raise BucketConfigError(
+                f"policy statement {sid!r} names no Resource. Its scope depends on how the "
+                f"engine reads an absent field, so it cannot be applied to {bucket!r}."
+            )
+        for resource in resources:
+            if resource != bucket_arn and not resource.startswith(objects_prefix):
+                raise BucketConfigError(
+                    f"the policy names resource {resource!r}, which is not {bucket!r}. "
+                    f"Applying it here would fence the wrong bucket and leave this one open."
+                )
+
+        principals = _principals(statement, "Principal")
+        not_principals = _principals(statement, "NotPrincipal")
+
+        if effect == "Allow":
+            if principals is not _MISSING and any(arn == "*" for arn in principals):
+                raise BucketConfigError(
+                    f"policy statement {sid!r} allows every principal on {bucket!r}. This "
+                    f"bucket has no anonymous-read requirement, and applying it would "
+                    f"publish the bucket rather than fence it."
+                )
+            continue
+        if effect != "Deny":
+            raise BucketConfigError(f"policy statement {sid!r} has no usable Effect")
+
+        if bucket_arn in resources:
+            denies_bucket = True
+        if any(resource.startswith(objects_prefix) for resource in resources):
+            denies_objects = True
+
+        # Only a Deny reaching the BUCKET resource can withhold
+        # `PutBucketPolicy`; a Deny confined to `<bucket>/*` covers object
+        # actions and cannot lock anything.
+        if bucket_arn not in resources:
+            continue
+
+        if not_principals is not _MISSING:
+            if operator_principal not in not_principals:
+                raise BucketConfigError(
+                    f"policy statement {sid!r} denies bucket actions to every principal "
+                    f"except {', '.join(not_principals) or '(nobody)'}, and this credential "
+                    f"is {operator_principal}. Applying it would lock this bucket "
+                    f"permanently. Check the project id the policy was rendered with, and "
+                    f"that this is the operator credential the policy exempts."
+                )
+            continue
+
+        if principals is _MISSING:
+            raise BucketConfigError(
+                f"policy statement {sid!r} denies bucket actions and names neither Principal "
+                f"nor NotPrincipal. If the engine reads that as every principal, applying it "
+                f"locks this bucket permanently."
+            )
+        if any(arn == "*" or arn == operator_principal for arn in principals):
+            raise BucketConfigError(
+                f"policy statement {sid!r} denies bucket actions to this credential "
+                f"({operator_principal}). Applying it would lock this bucket permanently."
+            )
+
+    if not denies_bucket or not denies_objects:
+        raise BucketConfigError(
+            f"the policy denies nothing on the bucket resource, or nothing on its objects. "
+            f"Hetzner's default is that every key pair in a project reaches every bucket in "
+            f"it, so a policy without both denials leaves {bucket!r} open to every credential "
+            f"in the project while reporting success."
+        )
+
+
+def load_policy(path: str) -> tuple[dict, bytes]:
+    with open(path, "rb") as handle:
+        body = handle.read()
+    try:
+        policy = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise BucketConfigError(f"{path} is not valid JSON: {error}") from error
+    if not isinstance(policy, dict) or not policy.get("Statement"):
+        raise BucketConfigError(f"{path} carries no policy statements")
+    return policy, body
+
+
 def configure_backup_bucket(
     *,
     bucket: str,
@@ -67,6 +230,7 @@ def configure_backup_bucket(
     region: str,
     access_key: str,
     secret_key: str,
+    policy_body: bytes,
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
     put=put_bucket_subresource,
 ) -> None:
@@ -93,6 +257,32 @@ def configure_backup_bucket(
         content_md5=content_md5,
     )
 
+    # The fence goes on LAST. It denies every bucket-configuration action to
+    # every key but the operator's, so the two calls above must already have
+    # landed rather than depend on that exemption holding. No `content_md5`:
+    # `aws s3api put-bucket-policy` sends none either, and a header this
+    # endpoint does not expect is one more thing that can be rejected on the
+    # one call that must not fail halfway.
+    #
+    # Twice, deliberately, and the second call is the control. If this engine
+    # reads the policy's `NotPrincipal` as naming every principal rather than
+    # exempting the one it lists, the first PUT succeeds and the bucket is
+    # already unrecoverable -- `PutBucketPolicy` and `DeleteBucket` both denied
+    # by the statement that would have to be edited. The second PUT is a no-op
+    # when the exemption works and the only signal that exists when it does
+    # not. It lives here rather than only in the runbook because the operator
+    # path for a rebuilt db1 (db/RUNBOOK-db.md) runs this script and stops.
+    for _ in range(2):
+        put(
+            bucket=bucket,
+            endpoint=endpoint,
+            region=region,
+            access_key=access_key,
+            secret_key=secret_key,
+            subresource="policy",
+            body=policy_body,
+        )
+
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -100,6 +290,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--endpoint", required=True, help="e.g. hel1.your-objectstorage.com")
     parser.add_argument("--region", required=True, help="the bucket's own location, e.g. hel1")
     parser.add_argument("--noncurrent-days", type=int, default=NONCURRENT_VERSION_EXPIRATION_DAYS)
+    parser.add_argument(
+        "--policy-file",
+        required=True,
+        help="the fence policy, from infra/provisioning/scripts/render-bucket-fence-policy.py",
+    )
     args = parser.parse_args(argv)
 
     access_key = os.environ.get("AWS_ACCESS_KEY_ID")
@@ -109,19 +304,42 @@ def main(argv: list[str]) -> int:
         return 2
 
     try:
+        policy, policy_body = load_policy(args.policy_file)
+        # Resolved from the live API, never assembled from an argument: the
+        # account id in a policy principal is the half no offline check can
+        # verify, and getting it wrong exempts nobody.
+        account = owner_id(
+            endpoint=args.endpoint,
+            region=args.region,
+            access_key=access_key,
+            secret_key=secret_key,
+        )
+        operator_principal = f"arn:aws:iam:::user/{account}:{access_key}"
+        assert_policy_fences_this_bucket(policy, args.bucket, operator_principal)
+    except (BucketConfigError, ObjectStorageError, OSError) as exc:
+        print(f"configure_backup_bucket: {exc}", file=sys.stderr)
+        return 2
+
+    try:
         configure_backup_bucket(
             bucket=args.bucket,
             endpoint=args.endpoint,
             region=args.region,
             access_key=access_key,
             secret_key=secret_key,
+            policy_body=policy_body,
             noncurrent_days=args.noncurrent_days,
         )
     except ObjectStorageError as exc:
         print(f"configure_backup_bucket: {exc}", file=sys.stderr)
         return 1
 
-    print(f"configure_backup_bucket: versioning enabled, {args.noncurrent_days}-day noncurrent expiry set on {args.bucket}")
+    print(
+        f"configure_backup_bucket: versioning enabled, {args.noncurrent_days}-day noncurrent "
+        f"expiry set, and the fence applied on {args.bucket}, then re-applied to prove the "
+        f"bucket is still administrable. The fence is not proven to FENCE anything until "
+        f"verify-bucket-fence.py passes -- run it now, from this terminal."
+    )
     return 0
 
 

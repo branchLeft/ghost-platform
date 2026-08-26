@@ -12,6 +12,8 @@ import json
 import pathlib
 import unittest
 
+import bucketpolicy
+
 _MODULE_PATH = pathlib.Path(__file__).with_name("render-media-bucket-policy.py")
 _spec = importlib.util.spec_from_file_location("render_media_bucket_policy", _MODULE_PATH)
 assert _spec is not None and _spec.loader is not None
@@ -29,12 +31,31 @@ def policy_for(slug: str = "blog") -> dict:
 
 
 def decide(principal: str, action: str, resource: str, slug: str = "blog") -> str:
-    return policy_module._decide(policy_for(slug), principal, action, resource)
+    return bucketpolicy.decide(policy_for(slug), principal, action, resource)
 
 
 TENANT = f"arn:aws:iam:::user/p{PROJECT}:{TENANT_KEY}"
 ADMIN = f"arn:aws:iam:::user/p{PROJECT}:{ADMIN_KEY}"
 OTHER_TENANT = f"arn:aws:iam:::user/p{PROJECT}:CD9VO12DNIH0DHLYOT11"
+
+
+class TestTheSequenceRunsInTheOperatorsShell(unittest.TestCase):
+    def test_the_rendered_commands_survive_zsh(self):
+        # zsh does not word-split an unquoted parameter expansion, so
+        # `S3='aws ... s3api'` followed by `$S3 ...` fails there with "no such
+        # file or directory". This sequence creates a bucket, applies a
+        # lifecycle rule and then the fence; aborting partway leaves a tenant's
+        # media bucket created and unfenced, reachable by every key in the
+        # project.
+        commands = policy_module.render_commands(
+            "blog", PROJECT, TENANT_KEY, ADMIN_KEY, "https://hel1.your-objectstorage.com", "hel1"
+        )
+        runnable = [line for line in commands.splitlines() if line and not line.startswith("#")]
+        self.assertFalse([line for line in runnable if line.startswith("$")])
+        self.assertIn(
+            's3() { aws --endpoint-url https://hel1.your-objectstorage.com s3api "$@"; }',
+            runnable,
+        )
 
 
 class TestPublicReadNotListable(unittest.TestCase):
@@ -191,12 +212,12 @@ class TestPrefixCollision(unittest.TestCase):
         # objects: no statement in it may match that resource.
         for statement in policy_for("blog")["Statement"]:
             self.assertFalse(
-                policy_module._matches(statement["Resource"], archive_object),
+                bucketpolicy.matches(statement["Resource"], archive_object),
                 f"{statement['Sid']} matches another tenant's object",
             )
         for index in (1, 2):
             self.assertFalse(
-                policy_module._matches(
+                bucketpolicy.matches(
                     policy_for("blog")["Statement"][index]["Resource"],
                     "arn:aws:s3:::branchleft-media-blog-archive",
                 )

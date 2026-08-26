@@ -316,6 +316,66 @@ class DeleteObjectTests(unittest.TestCase):
             )
 
 
+class OwnerIdTests(unittest.TestCase):
+    """The account a credential belongs to, which is half of every policy principal.
+
+    Getting it wrong is the one bucket-policy mistake with no offline symptom
+    and no recovery: an ARN with the right access key under the wrong account
+    names a principal that does not exist, so a `NotPrincipal` exemption
+    exempts nobody.
+    """
+
+    # The real ListAllMyBuckets shape, namespaced as this backend returns it.
+    RESPONSE = (
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+        b"<Owner><ID>p1231234</ID><DisplayName>p1231234</DisplayName></Owner>"
+        b"<Buckets>"
+        b"<Bucket><Name>branchleft-db-backups</Name><CreationDate>2026-08-01T00:00:00.000Z</CreationDate></Bucket>"
+        b"<Bucket><Name>branchleft-tenant-pulumi-state</Name><CreationDate>2026-08-01T00:00:00.000Z</CreationDate></Bucket>"
+        b"</Buckets></ListAllMyBucketsResult>"
+    )
+
+    def _call(self, transport):
+        return os3.owner_id(
+            endpoint="hel1.your-objectstorage.com",
+            region="hel1",
+            access_key="AK",
+            secret_key="SECRET",
+            transport=transport,
+        )
+
+    def test_reads_the_owner_id_out_of_a_real_response(self):
+        captured = {}
+
+        def transport(url, headers):
+            captured["url"] = url
+            captured["headers"] = headers
+            return 200, self.RESPONSE
+
+        self.assertEqual(self._call(transport), "p1231234")
+        # Service-level: the request addresses the endpoint root, not a bucket,
+        # so no bucket policy governs it and it works before a fence exists.
+        self.assertEqual(captured["url"], "https://hel1.your-objectstorage.com/")
+        self.assertIn("Authorization", captured["headers"])
+
+    def test_a_non_2xx_response_raises_rather_than_returning_a_guess(self):
+        with self.assertRaises(os3.ObjectStorageError):
+            self._call(lambda url, headers: (403, b"<Error><Code>AccessDenied</Code></Error>"))
+
+    def test_a_response_without_an_owner_raises(self):
+        body = (
+            b'<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            b"<Buckets/></ListAllMyBucketsResult>"
+        )
+        with self.assertRaises(os3.ObjectStorageError):
+            self._call(lambda url, headers: (200, body))
+
+    def test_a_non_xml_response_raises(self):
+        with self.assertRaises(os3.ObjectStorageError):
+            self._call(lambda url, headers: (200, b"not xml"))
+
+
 class KnownAnswerTests(unittest.TestCase):
     """Cross-checks `build_headers` against a second, independently written
     SigV4 implementation rather than a single hardcoded magic value.

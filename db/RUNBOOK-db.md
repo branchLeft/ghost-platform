@@ -34,21 +34,45 @@ ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
 ```
 
 The backup bucket must also exist before step 2 (`db.env` names it), with
-versioning and a lifecycle rule set — see "The backup bucket" below.
+versioning, a lifecycle rule and its fence set — see "The backup bucket" below.
 
 ## The backup bucket
 
 Console-only (no `hcloud` API for Object Storage), one time, before `db.env`
 is written. This repo's PR body carries the exact bucket name, location and
-S3 credential step with a priced estimate; once it exists, run this
-repo's own setup for the versioning/lifecycle layer, from a workstation with
-the bucket's S3 credential in the environment (never from `db1`):
+S3 credential step with a priced estimate; once it exists, run this repo's own
+setup for the versioning, lifecycle and fencing layers, from a workstation with
+the **operator's** S3 credential in the environment — not `db1`'s backup
+credential, and never from `db1`:
 
 ```bash
+python3 infra/provisioning/scripts/render-bucket-fence-policy.py \
+  --bucket branchleft-db-backups \
+  --project-id 15766609 \
+  --workload-access-key '<db1 backup key id>' \
+  --admin-access-key '<operator key id>' \
+  > /tmp/branchleft-db-backups-policy.json
+
 AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
   python3 db/provision/configure_backup_bucket.py \
-  --bucket branchleft-db-backups --endpoint hel1.your-objectstorage.com --region hel1
+  --bucket branchleft-db-backups --endpoint hel1.your-objectstorage.com --region hel1 \
+  --policy-file /tmp/branchleft-db-backups-policy.json
 ```
+
+**The fence is not optional and there is no flag to skip it.** Every Hetzner
+Object Storage key pair is valid for every bucket in its own project by
+default, so a backup bucket without a policy is readable and deletable by every
+credential in that project. It also cannot be treated as applied until it has
+been proven in both directions against the live bucket — a successful
+`put-bucket-policy` says nothing, and a single `AccessDenied` says nothing
+either. The apply order, the verification, and what to do if the policy locks
+the bucket are in
+[`RUNBOOK-bucket-fencing.md`](../RUNBOOK-bucket-fencing.md); read its lockout
+section before running either command above.
+
+The credential must be the operator's because the fence withholds every
+bucket-configuration action from `db1`'s backup key: once it lands, that key
+can no longer set versioning or lifecycle, which is the point.
 
 Why this exists alongside the `@@server_uuid`-namespaced object keys
 (`dump_nightly.py`, `ship_binlogs.py`): the namespace is the primary defence
