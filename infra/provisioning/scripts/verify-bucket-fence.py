@@ -74,25 +74,35 @@ current ACL) and why the versioning probe is behind
 `--versioning-already-enabled`: turning versioning on for a bucket that has it
 off, with no lifecycle rule, retains every superseded object indefinitely.
 
-OBJECT READS DO NOT GO THROUGH THE CLI. `aws s3api get-object` cannot render an
-error response from this endpoint at all: it exits 255 printing a
-client-internal error in place of the S3 one, for every failure including a
-plain missing object on a bucket the credential can read. A probe whose denials
-arrive as unparseable output can only ever report INCONCLUSIVE, so object reads
-are signed with `curl --aws-sigv4` and the verdict is taken from the `Code` in
-the returned error document. Every other s3api command renders errors
-correctly and is left alone: rewriting nine working probes to fix the one
-broken one would swap a client that is known to work on this endpoint for one
-that is not, across the whole file, to fix nothing.
+THE CLI CANNOT READ THIS BACKEND'S DENIALS, AND THAT IS WIDER THAN ONE COMMAND.
+The storage engine returns its errors with an empty `<Message></Message>`, and
+`aws s3api` v2 exits 255 printing a client-internal error in place of the S3
+one rather than render that. It is not specific to an operation:
+`get-object`, `list-objects-v2`, `get-bucket-policy`, `put-object` and
+`list-buckets` all do it, for `AccessDenied` and `InvalidAccessKeyId` alike.
+What does render is the gateway's own `NoSuchBucket`, which carries a real
+message -- which is why the failure looks at first like one broken command.
+`head-object` renders too, because a HEAD response has no body to fail on, but
+it reports a refusal as the code `403`: an HTTP status rather than an S3 error
+code, matching no denial set here, so it is not a way out either.
+
+`classify` finds no code in a crash and returns `error`, which is correct,
+fail-safe, and useless as proof. Object reads are therefore signed with
+`curl --aws-sigv4` and their verdict taken from the `Code` in the returned
+document, which is what makes the `NotPrincipal` probe able to reach a verdict
+at all. THE REMAINING DENIAL PROBES STILL GO THROUGH THE CLI AND STILL CANNOT
+CLASSIFY A DENIAL FROM THIS BACKEND: they come back INCONCLUSIVE, never as a
+false pass, but the full verification cannot reach a clean run until they move
+onto a signed transport too. That is a larger change than this one and turns on
+whether this file grows its own signing or shares the implementation
+`db/provision/objectstorage.py` already carries.
 
 The HTTP status is never enough on its own. `AccessDenied`,
 `InvalidAccessKeyId` and `SignatureDoesNotMatch` all arrive as HTTP 403, so a
 status-only reading turns a dead key into a fence -- the substitution the
-controls above exist to prevent. It is also why `head-object`, which renders
-its errors cleanly, is not the fix: it reports a denial as the code `403`,
-which is not an S3 error code and matches nothing here. `curl` 7.75 or newer is
-required for `--aws-sigv4`; an older one, or none at all, comes out as an error
-and never as a denial.
+controls above exist to prevent. `curl` 7.75 or newer is required for
+`--aws-sigv4`; an older one, or none at all, comes out as an error and never as
+a denial.
 
 Credentials come from the environment, one pair per role, and are never
 accepted as arguments:
@@ -124,6 +134,15 @@ PROBE_PREFIX = "fence-probe/"
 # botocore's rendering of a service error, which is the only place the S3 error
 # code appears when the CLI fails.
 ERROR_CODE = re.compile(r"An error occurred \(([A-Za-z0-9_]+)\)")
+
+# The same shape, applied to a code read out of an error document rather than
+# out of botocore's rendering, so the two transports agree on what can even be
+# a code.
+S3_ERROR_CODE = re.compile(r"[A-Za-z0-9_]{1,64}")
+
+# Enough for any error document this endpoint returns, and small enough that a
+# body built to be expensive to parse is truncated before it is.
+_MAX_ERROR_BODY = 64 * 1024
 
 # Denials. `AllAccessDisabled` is what this backend returns when the bucket
 # exists but the caller may not learn anything about it.
@@ -236,11 +255,27 @@ def _default_runner(argv: list[str], env: dict[str, str]):
     """
     client = argv[0] if argv else "the client"
     try:
-        return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
+        # `errors="replace"` because an object read now returns the object's
+        # own bytes on stdout, and strict decoding would raise out of the one
+        # function whose contract is that it never does.
+        return subprocess.run(
+            argv, env=env, capture_output=True, text=True, errors="replace", timeout=120
+        )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(argv, 1, "", f"{client} did not return within 120s")
     except FileNotFoundError:
         return subprocess.CompletedProcess(argv, 1, "", f"{client} is not on PATH")
+
+
+def _one_line(text: str, limit: int = 200) -> str:
+    """Flatten external text before it becomes a reason on a report line.
+
+    `report()` prints one row per line, so a response body or a client's stderr
+    containing a newline would render as extra lines -- and text arriving from
+    the far end of the connection is exactly what must not be able to write a
+    line that reads like a verdict.
+    """
+    return " ".join(text.split())[:limit]
 
 
 def _from_error_code(code: str) -> tuple[str, str]:
@@ -268,7 +303,7 @@ def classify(returncode: int, stderr: str) -> tuple[str, str]:
         return "allowed", ""
     match = ERROR_CODE.search(stderr)
     if not match:
-        return "error", f"no S3 error code in the CLI output: {stderr.strip()[:200]}"
+        return "error", f"no S3 error code in the CLI output: {_one_line(stderr)}"
     return _from_error_code(match.group(1))
 
 
@@ -293,16 +328,25 @@ def _s3_error_code(body: str) -> str | None:
     document -- an HTML page from something sitting in front of the endpoint, a
     truncated response, an object whose own contents mention a code -- yields
     nothing to act on rather than a code lifted out of prose.
+
+    The result is held to the same shape `ERROR_CODE` allows on the CLI side.
+    An error code is a short identifier; anything else in that element is not
+    one, and passing it through would put attacker-influenced text of arbitrary
+    length into a reason the report prints as a line of its own. The body is
+    capped before parsing for the same reason -- ElementTree expands internal
+    entities, so a small document can otherwise become a large string.
     """
     try:
-        root = ET.fromstring(body.strip())
+        root = ET.fromstring(body.strip()[:_MAX_ERROR_BODY])
     except ET.ParseError:
         return None
     if root.tag.rsplit("}", 1)[-1] != "Error":
         return None
     for child in root:
-        if child.tag.rsplit("}", 1)[-1] == "Code" and (child.text or "").strip():
-            return child.text.strip()
+        if child.tag.rsplit("}", 1)[-1] != "Code":
+            continue
+        code = (child.text or "").strip()
+        return code if S3_ERROR_CODE.fullmatch(code) else None
     return None
 
 
@@ -320,18 +364,18 @@ def classify_object_read(returncode: int, stdout: str, stderr: str) -> tuple[str
     if returncode != 0:
         return (
             "error",
-            f"the signed object read did not complete: {(stderr or stdout).strip()[:200]}",
+            f"the signed object read did not complete: {_one_line(stderr or stdout)}",
         )
     body, status = _split_status(stdout)
     if status is None:
-        return "error", f"no HTTP status in the object-read output: {stdout.strip()[:200]}"
+        return "error", f"no HTTP status in the object-read output: {_one_line(stdout)}"
     if 200 <= status < 300:
         return "allowed", ""
     code = _s3_error_code(body)
     if code is None:
         return (
             "error",
-            f"HTTP {status} with no S3 error document to read a code from: {body.strip()[:200]}",
+            f"HTTP {status} with no S3 error document to read a code from: {_one_line(body)}",
         )
     return _from_error_code(code)
 
@@ -374,6 +418,19 @@ def _curl_argv(*, endpoint: str, region: str, bucket: str, key: str, config_path
     path = urllib.parse.quote(f"/{bucket}/{key}", safe="/~")
     return [
         "curl",
+        # `-q` FIRST, or it does not apply: without it curl reads ~/.curlrc,
+        # where a `proxy`, `insecure` or `location` line would redirect this
+        # probe, disable certificate checking, or follow a redirect the code
+        # below documents as deliberately not followed. The same reasoning as
+        # clearing the ambient AWS_* variables: a probe that quietly obeyed
+        # some other configuration is the failure with no symptom, and here it
+        # could put an `AccessDenied` from something that is not the storage
+        # backend in front of a denial check.
+        "-q",
+        # Proxy settings arrive by environment as well as by file, and `-q`
+        # does not cover those.
+        "--noproxy",
+        "*",
         "--silent",
         "--show-error",
         "--config",
@@ -656,7 +713,7 @@ def compare_stored_policy(verifier, bucket: str, policy_file: str) -> tuple[str,
     ]
     completed = verifier.runner(argv, verifier.env_for("operator"))
     if completed.returncode != 0:
-        return INCONCLUSIVE, f"could not read the stored policy: {(completed.stderr or '').strip()[:200]}"
+        return INCONCLUSIVE, f"could not read the stored policy: {_one_line(completed.stderr or '')}"
     try:
         stored = json.loads(completed.stdout or "")
         with open(policy_file, "r", encoding="utf-8") as handle:
@@ -700,7 +757,7 @@ def cleanup(verifier: Verifier, bucket: str) -> list[str]:
     env = verifier.env_for("operator")
     completed = verifier.runner(argv, env)
     if completed.returncode != 0:
-        return [f"could not list probe object versions: {(completed.stderr or '').strip()[:200]}"]
+        return [f"could not list probe object versions: {_one_line(completed.stderr or '')}"]
     try:
         listing = json.loads(completed.stdout or "{}")
     except json.JSONDecodeError as error:
@@ -749,7 +806,7 @@ def account_of(verifier, role: str) -> tuple[str | None, str]:
     ]
     completed = verifier.runner(argv, verifier.env_for(role))
     if completed.returncode != 0:
-        return None, (completed.stderr or "").strip()[:200]
+        return None, _one_line(completed.stderr or "")
     account = (completed.stdout or "").strip()
     return (account, "") if account else (None, "no Owner.ID in the response")
 
@@ -951,7 +1008,7 @@ def probe_notprincipal(verifier, *, bucket: str, replace_existing: bool) -> list
             (
                 "the probe object is written",
                 INCONCLUSIVE,
-                (put_object.stderr or "").strip()[:200],
+                _one_line(put_object.stderr or ""),
                 "",
                 True,
             )
@@ -1027,7 +1084,7 @@ class _temporary_policy:
                     "the probe policy is accepted",
                     INCONCLUSIVE,
                     f"this engine rejected a NotPrincipal document outright: "
-                    f"{(applied.stderr or '').strip()[:200]}",
+                    f"{_one_line(applied.stderr or '')}",
                     "",
                     True,
                 )
@@ -1118,7 +1175,7 @@ def apply_fence(verifier, *, bucket: str, policy_file: str) -> tuple[list[tuple]
         (
             "the policy is applied",
             PASS if first.returncode == 0 else FAIL,
-            "" if first.returncode == 0 else (first.stderr or "").strip()[:200],
+            "" if first.returncode == 0 else _one_line(first.stderr or ""),
             "",
             False,
         )
@@ -1134,7 +1191,7 @@ def apply_fence(verifier, *, bucket: str, policy_file: str) -> tuple[list[tuple]
         (
             "THE BUCKET IS STILL ADMINISTRABLE",
             PASS if second.returncode == 0 else FAIL,
-            "" if second.returncode == 0 else (second.stderr or "").strip()[:200],
+            "" if second.returncode == 0 else _one_line(second.stderr or ""),
             "a no-op when it succeeds; a permanent lockout when it does not",
             True,
         )

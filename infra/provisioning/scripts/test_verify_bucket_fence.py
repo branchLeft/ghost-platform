@@ -105,8 +105,16 @@ ENDPOINT_HOST = "hel1.your-objectstorage.com"
 AWS_CLI = "observed: aws-cli/2.36.25 against " + ENDPOINT_HOST
 CURL = "observed: curl 8.4.0 against " + ENDPOINT_HOST
 
-# The three verbatim CLI renderings the s3api transport classifies. Every
-# command except `get-object` renders a service error this way.
+# botocore's documented rendering, which `classify` is written against.
+#
+# THIS ENDPOINT DOES NOT PRODUCE IT FOR A DENIAL. Its storage engine returns
+# errors with an empty `<Message></Message>` and the client crashes rather than
+# render them -- see `AWS_ACCESS_DENIED_CRASH` below, which is what actually
+# comes back. These three stay because they are the contract `classify` has to
+# keep for any response that IS rendered (the gateway's `NoSuchBucket` is one),
+# and because the checks built on them are about control logic rather than
+# about wire format. They are labelled here rather than left to be mistaken for
+# observations, which is the whole failure this file is recording.
 ACCESS_DENIED = (
     "\nAn error occurred (AccessDenied) when calling the ListObjectsV2 operation: Access Denied\n"
 )
@@ -119,15 +127,35 @@ NO_SUCH_BUCKET_POLICY = (
     "The bucket policy does not exist\n"
 )
 
-# The defect. `aws s3api get-object` cannot render an error response from this
-# endpoint for any reason: it exits 255 with a client-internal message and an
-# empty stdout. Reproduced above with a deliberately invalid key, and reported
-# originally against a plain missing object on a bucket the credential could
-# read -- so no denial is involved in producing it.
+# The defect, and it is wider than one command. This endpoint's storage engine
+# returns errors with an empty `<Message></Message>`, and the client exits 255
+# with a client-internal message and an empty stdout rather than render one.
+# The same crash was captured from `get-object`, `list-objects-v2`,
+# `get-bucket-policy`, `put-object` and `list-buckets`, for `AccessDenied` and
+# `InvalidAccessKeyId` alike -- unsigned in the first case, with a deliberately
+# invalid key in the second, so no real credential produced any of them.
 AWS_GET_OBJECT_CRASH = Response(
-    AWS_CLI,
+    AWS_CLI + " (get-object)",
     255,
     stderr="\naws: [ERROR]: argument of type 'NoneType' is not a container or iterable\n",
+)
+
+# The same crash, from the command the runbook's denial probes actually use.
+# This is why `classify` cannot reach a verdict for those probes either, and
+# why section 1f cannot come back clean on the CLI transport.
+AWS_ACCESS_DENIED_CRASH = Response(
+    AWS_CLI + " (list-objects-v2, unsigned, on a bucket that exists)",
+    255,
+    stderr="\naws: [ERROR]: argument of type 'NoneType' is not a container or iterable\n",
+)
+
+# What renders, and why the failure reads at first as one broken command: the
+# gateway's own `NoSuchBucket` carries a real message.
+AWS_NO_SUCH_BUCKET_RENDERS = Response(
+    AWS_CLI + " (list-objects-v2, unsigned, on a bucket that does not exist)",
+    254,
+    stderr="\naws: [ERROR]: An error occurred (NoSuchBucket) when calling the "
+    "ListObjectsV2 operation: The specified bucket does not exist.\n",
 )
 
 # Why `head-object` is not the fix. It renders its error cleanly, and renders a
@@ -725,6 +753,47 @@ class TestObjectReadsDoNotUseTheAwsCli(unittest.TestCase):
         self.assertEqual(outcome, "error")
         self.assertIn("no S3 error code", reason)
 
+    def test_the_crash_is_the_error_document_shape_not_the_command(self):
+        # The scope of the defect, recorded because getting it wrong is what
+        # made this look like a one-command problem. The SAME crash comes back
+        # from `list-objects-v2` -- the command four denial probes use -- when
+        # the answer is `AccessDenied`, while the gateway's `NoSuchBucket`
+        # renders fine from the same command. The difference is the empty
+        # `<Message></Message>` in the engine's own error documents.
+        self.assertEqual(
+            verify.classify(
+                AWS_ACCESS_DENIED_CRASH.returncode, AWS_ACCESS_DENIED_CRASH.stderr
+            )[0],
+            "error",
+        )
+        outcome, reason = verify.classify(
+            AWS_NO_SUCH_BUCKET_RENDERS.returncode, AWS_NO_SUCH_BUCKET_RENDERS.stderr
+        )
+        self.assertEqual(outcome, "error")
+        self.assertIn("NoSuchBucket", reason)
+
+    def test_the_cli_denial_probes_cannot_yet_reach_a_verdict_on_this_endpoint(self):
+        # The state of the world, asserted rather than described, so that the
+        # change which moves these probes onto the signed transport has to come
+        # back here and say so. Every denial probe still on the CLI answers
+        # INCONCLUSIVE against a correctly fenced bucket -- fail-safe, and not
+        # a pass, but not proof either.
+        answers = a_fully_working_fence()
+        for probe in (
+            ("foreign", "list-objects-v2", FENCED),
+            ("foreign", "put-object", FENCED),
+            ("workload", "get-bucket-policy", FENCED),
+            ("workload", "put-bucket-policy", FENCED),
+            ("anonymous", "list-objects-v2", FENCED),
+        ):
+            answers[probe] = AWS_ACCESS_DENIED_CRASH
+        code, output, _ = run(answers)
+        self.assertEqual(code, 1)
+        self.assertIn(verify.INCONCLUSIVE, output)
+        self.assertNotIn(verify.FAIL, output)
+        # The object read is the one denial that still reaches a verdict.
+        self.assertIn(f"{verify.PASS}          foreign key cannot read an object", output)
+
     def test_head_object_is_not_the_substitute(self):
         # It renders its error cleanly and calls a refusal `403`, which is an
         # HTTP status rather than an S3 error code. Swapping to it would turn
@@ -823,6 +892,34 @@ class TestObjectReadClassification(unittest.TestCase):
         outcome, _ = self._classify(CURL_BAD_GATEWAY_HTML)
         self.assertEqual(outcome, "error")
 
+    def test_a_code_element_that_is_not_a_code_yields_no_verdict(self):
+        # `report()` prints a reason as a line of its own, so text of arbitrary
+        # length or containing newlines would forge report lines. An S3 error
+        # code is a short identifier and anything else in that element is not
+        # one -- held to the same shape the CLI side already enforces.
+        for text in (
+            "Nope\nPASS          foreign key cannot read an object",
+            "A" * 65,
+            "Access Denied",
+            "Access-Denied",
+            "<b>AccessDenied</b>",
+        ):
+            with self.subTest(text=text[:30]):
+                body = f"<Error><Code>{text}</Code></Error>"
+                outcome, reason = verify.classify_object_read(0, f"{body}\n403", "")
+                self.assertEqual(outcome, "error")
+                self.assertNotIn("\n", reason)
+
+    def test_an_expensive_document_cannot_produce_an_expensive_reason(self):
+        # ElementTree expands internal entities, so a small body can become a
+        # very large string. The body is capped before parsing and the code is
+        # capped after it.
+        entity = "<!DOCTYPE r [<!ENTITY a \"" + "A" * 5000 + "\">]>"
+        body = entity + "<Error><Code>" + "&a;" * 2000 + "</Code></Error>"
+        outcome, reason = verify.classify_object_read(0, f"{body}\n403", "")
+        self.assertEqual(outcome, "error")
+        self.assertLess(len(reason), 500)
+
     def test_a_request_that_never_reached_the_endpoint_is_an_error(self):
         outcome, reason = self._classify(CURL_CONNECTION_REFUSED)
         self.assertEqual(outcome, "error")
@@ -902,6 +999,21 @@ class TestObjectReadTransport(unittest.TestCase):
         self.assertEqual(
             captured["argv"][-1],
             f"https://hel1.your-objectstorage.com/{FENCED}/{verify.PROBE_PREFIX}x.txt",
+        )
+
+    def test_the_probe_obeys_no_configuration_but_its_own(self):
+        # curl reads ~/.curlrc unless `-q` comes FIRST, and takes proxy
+        # settings from the environment whether or not it does. A `proxy` line
+        # there would put a response from something that is not the storage
+        # backend in front of a denial check -- a generic 403 answering the
+        # foreign read reads as PASS -- and an `insecure` line would drop
+        # certificate checking on a probe carrying a live credential. Same
+        # reasoning as clearing the ambient AWS_* variables, which this file
+        # already does.
+        captured = self._argv_for()
+        self.assertEqual(captured["argv"][1], "-q")
+        self.assertEqual(
+            captured["argv"][captured["argv"].index("--noproxy") + 1], "*"
         )
 
     def test_the_status_is_asked_for_explicitly(self):
@@ -1000,6 +1112,17 @@ class TestRunnerFailuresNeverStrand(unittest.TestCase):
     def test_a_timeout_is_an_error_not_a_denial(self):
         outcome, _ = verify.classify(1, "curl did not return within 120s")
         self.assertEqual(outcome, "error")
+
+    def test_a_non_utf8_response_body_does_not_raise_out_of_the_runner(self):
+        # An object read returns the object's own bytes on stdout, where the
+        # CLI only ever returned JSON. An exception escaping the runner skips
+        # `cleanup()` and leaves probe objects in a production bucket, which is
+        # the one thing this function must never do.
+        completed = verify._default_runner(
+            ["/bin/sh", "-c", "printf '\\377\\376 not utf-8'"], dict(os.environ)
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertIsInstance(completed.stdout, str)
 
     def test_the_runner_names_the_client_it_could_not_start(self):
         # One runner now starts two different binaries, and "the aws CLI is not

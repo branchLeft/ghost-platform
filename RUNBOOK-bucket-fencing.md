@@ -133,12 +133,26 @@ distinct operator credential in the Console first.
 (macOS 14 ships 8.4). Everything here goes to
 `https://hel1.your-objectstorage.com`, region `hel1`, through `aws s3api` —
 except the object-read probes, which `verify-bucket-fence.py` signs with
-`curl --aws-sigv4`. `aws s3api get-object` cannot render an error response from
-this endpoint at all: it exits 255 printing a client-internal message in place
-of the S3 error, for every failure including a plain missing object, so a probe
-built on it can only ever report `INCONCLUSIVE`. Nothing you type changes; if
-`curl` is missing or too old, the object-read rows come back `INCONCLUSIVE`
-naming the reason, and never as a pass.
+`curl --aws-sigv4`. Nothing you type changes.
+
+**The `aws` CLI cannot read this backend's denials, and that limits what
+section 1f can currently prove.** The storage engine returns its errors with an
+empty `<Message></Message>`, and `aws s3api` v2 exits 255 with a
+client-internal message rather than render that — on every operation, for
+`AccessDenied` and `InvalidAccessKeyId` alike. The verifier is fail-safe about
+it: a response it cannot read is `INCONCLUSIVE`, never a pass. But that means
+**every denial probe still on the CLI reports `INCONCLUSIVE`**, so section 1f
+will not reach exit code 0 until those probes move onto the signed transport
+too. Step 1c is unaffected — its two decisive reads are object reads, and every
+other call it makes is one that succeeds.
+
+If `curl` is missing or too old, the object-read rows come back `INCONCLUSIVE`
+naming the reason, and never as a pass. There is no pre-flight check for it, so
+confirm it before step 1c rather than after:
+
+```bash
+curl --version | head -1
+```
 
 **Confirm the project id rather than trusting this document.** Every principal
 in a rendered policy is built from it, and it is the one value whose being
@@ -304,17 +318,30 @@ python3 infra/provisioning/scripts/verify-bucket-fence.py \
   --versioning-already-enabled
 ```
 
-Every line must read `PASS` and the exit code must be 0. This includes
+The target is every line `PASS` and exit code 0, and that includes
 `the stored policy is the one that was sent` — the backend has previously
 accepted a configuration and silently dropped part of it, and every other probe
 would still pass on a bucket storing a different fence.
 
+**It cannot reach that today.** Every denial probe here except
+`foreign key cannot read an object` still runs through the `aws` CLI, which
+cannot render this backend's `AccessDenied` at all (see "The values you supply"
+above), so each of them reports `INCONCLUSIVE` on a bucket that is correctly
+fenced. The verifier is behaving as designed — it refuses to call an unreadable
+response a pass — but the run cannot be clean until those probes move onto the
+signed transport. Until then this step proves the *allow* direction and the
+object-read denial, and nothing more; treat the remaining denials as unproven
+rather than as either passed or failed, and **do not proceed to section 2 on
+the strength of it.**
+
 - **`FAIL`** — the fence is not doing what it must. Do not proceed to the
   second bucket.
-- **`INCONCLUSIVE`** — the probe proved nothing, usually because a control
-  probe on the same credential did not succeed. It is **not** a pass: recording
-  an inconclusive denial as proof is what produced this work in the first
-  place. Fix the credential and re-run.
+- **`INCONCLUSIVE`** — the probe proved nothing. It is **not** a pass:
+  recording an inconclusive denial as proof is what produced this work in the
+  first place. Distinguish the two causes from the reason printed beside it — a
+  control probe on the same credential that did not succeed is something to fix
+  and re-run; `no S3 error code in the CLI output` is the client limitation
+  above and is not fixable from here.
 
 ### 1g. Confirm db1's own pipeline still works
 
@@ -435,7 +462,10 @@ python3 infra/provisioning/scripts/verify-bucket-fence.py \
 ```
 
 Every line `PASS`, exit code 0 — including `the stored policy is the one that
-was sent`.
+was sent`. The CLI limitation described under section 1f applies here
+identically: the denial probes still on the `aws` CLI report `INCONCLUSIVE`
+against a correctly fenced bucket, and section 1f is the gate for reaching this
+step at all.
 
 ### 2e. Confirm CI still reaches its own state
 
@@ -480,8 +510,9 @@ denied by the same one. Recovery is a Hetzner support request and nothing else.
 Step 1c exists to make this outcome unreachable. It asks exactly this question
 with a policy that names no bucket-resource action, so the answer costs
 nothing, and a `FAIL` there stops the sequence before any fence is applied. **If
-you are reading this because step 1e or 2c reported `THE BUCKET IS STILL
-ADMINISTRABLE — FAIL`, then step 1c was skipped or its result was overridden.**
+you are reading this because step 2c, 1f or 2d reported `THE BUCKET IS STILL
+ADMINISTRABLE — FAIL`, or because step 1e exited non-zero on its second
+`put-bucket-policy`, then step 1c was skipped or its result was overridden.**
 Go to "The lockout" above, open the support request, and do not touch the second
 bucket.
 
