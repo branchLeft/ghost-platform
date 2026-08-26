@@ -11,7 +11,9 @@ import base64
 import datetime
 import hashlib
 import hmac
+import io
 import unittest
+import unittest.mock
 import urllib.parse
 
 import objectstorage as os3
@@ -545,6 +547,171 @@ class KnownAnswerTests(unittest.TestCase):
             now=now,
         )
         self.assertEqual(actual["Authorization"], expected)
+
+
+class SignedRequestTests(unittest.TestCase):
+    """The entry point the fence verifier sends every probe through.
+
+    It differs from the named operations above in exactly one way, and that way
+    is the point: it interprets nothing. The verifier has to tell `AccessDenied`
+    apart from `InvalidAccessKeyId` when both arrive as HTTP 403, so a refusal
+    has to come back as a response rather than as an exception.
+    """
+
+    def _send(self, **overrides):
+        captured = {}
+
+        def transport(url, headers, payload, method):
+            captured.update(url=url, headers=headers, payload=payload, method=method)
+            return 403, b"<Error><Code>AccessDenied</Code></Error>"
+
+        kwargs = dict(
+            method="GET",
+            endpoint="hel1.your-objectstorage.com",
+            region="hel1",
+            access_key="AK",
+            secret_key="SECRET",
+            bucket="branchleft-db-backups",
+            transport=transport,
+        )
+        kwargs.update(overrides)
+        return os3.signed_request(**kwargs), captured
+
+    def test_a_refusal_comes_back_as_a_response_rather_than_an_exception(self):
+        (status, body), _ = self._send(key="dumps/x.age")
+        self.assertEqual(status, 403)
+        self.assertIn(b"AccessDenied", body)
+
+    def test_the_request_is_path_style_and_signed(self):
+        _, captured = self._send(key="dumps/x.age")
+        self.assertEqual(
+            captured["url"], "https://hel1.your-objectstorage.com/branchleft-db-backups/dumps/x.age"
+        )
+        self.assertIn("Credential=AK/", captured["headers"]["Authorization"])
+        self.assertEqual(captured["method"], "GET")
+
+    def test_a_bucket_subresource_is_signed_into_the_query_string(self):
+        _, captured = self._send(query={"policy": ""})
+        self.assertEqual(
+            captured["url"], "https://hel1.your-objectstorage.com/branchleft-db-backups?policy="
+        )
+        signed = captured["headers"]["Authorization"].split("SignedHeaders=")[1].split(",")[0]
+        self.assertEqual(signed, "host;x-amz-content-sha256;x-amz-date")
+
+    def test_the_payload_is_hashed_into_the_signature(self):
+        _, with_body = self._send(method="PUT", query={"policy": ""}, payload=b'{"a":1}')
+        _, empty = self._send(method="PUT", query={"policy": ""}, payload=b"")
+        self.assertNotEqual(
+            with_body["headers"]["Authorization"], empty["headers"]["Authorization"]
+        )
+        self.assertEqual(
+            with_body["headers"]["x-amz-content-sha256"],
+            hashlib.sha256(b'{"a":1}').hexdigest(),
+        )
+
+    def test_the_service_root_is_addressable_for_list_all_my_buckets(self):
+        _, captured = self._send(bucket="")
+        self.assertEqual(captured["url"], "https://hel1.your-objectstorage.com/")
+
+    def test_the_secret_never_appears_in_the_request(self):
+        _, captured = self._send(key="dumps/x.age")
+        rendered = captured["url"] + repr(captured["headers"]) + repr(captured["payload"])
+        self.assertNotIn("SECRET", rendered)
+
+
+class ParseOwnerIdTests(unittest.TestCase):
+    def test_reads_the_id_out_of_a_namespaced_response(self):
+        body = (
+            b'<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            b"<Owner><ID>p1231234</ID></Owner><Buckets/></ListAllMyBucketsResult>"
+        )
+        self.assertEqual(os3.parse_owner_id(body), "p1231234")
+
+    def test_a_response_that_is_not_xml_yields_nothing_rather_than_raising(self):
+        self.assertIsNone(os3.parse_owner_id(b"not xml"))
+
+    def test_a_response_without_an_owner_yields_nothing(self):
+        self.assertIsNone(os3.parse_owner_id(b"<ListAllMyBucketsResult/>"))
+
+    def test_an_unsigned_requests_owner_is_returned_verbatim_for_the_caller_to_refuse(self):
+        # This endpoint answers an UNSIGNED `GET /` with HTTP 200 and this
+        # owner id rather than refusing. Deciding that it is unusable belongs
+        # to a caller building a policy principal, not to a parser.
+        body = (
+            b'<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            b"<Owner><ID>anonymous</ID><DisplayName></DisplayName></Owner>"
+            b"<Buckets></Buckets></ListAllMyBucketsResult>"
+        )
+        self.assertEqual(os3.parse_owner_id(body), "anonymous")
+
+
+class UrllibRequestTests(unittest.TestCase):
+    """The default transport's contract, without touching the network."""
+
+    class _Response:
+        status = 200
+
+        def __init__(self, body=b""):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _urlopen(self, captured, result):
+        def urlopen(request, timeout=None):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return urlopen
+
+    def test_a_zero_byte_put_still_carries_a_body(self):
+        # `data=None` makes urllib send no Content-Length, which this endpoint
+        # answers with 411 for a zero-byte PUT -- and the fence verifier's
+        # probe object is exactly that.
+        captured = {}
+        with unittest.mock.patch.object(
+            os3.urllib.request, "urlopen", self._urlopen(captured, self._Response())
+        ):
+            os3.urllib_request("https://host/b/k", {}, b"", "PUT")
+        self.assertEqual(captured["request"].data, b"")
+
+    def test_a_get_sends_no_body_at_all(self):
+        captured = {}
+        with unittest.mock.patch.object(
+            os3.urllib.request, "urlopen", self._urlopen(captured, self._Response())
+        ):
+            os3.urllib_request("https://host/b", {}, b"", "GET")
+        self.assertIsNone(captured["request"].data)
+
+    def test_a_4xx_is_returned_rather_than_raised(self):
+        error = os3.urllib.error.HTTPError(
+            "https://host/b", 403, "Forbidden", {}, io.BytesIO(b"<Error/>")
+        )
+        with unittest.mock.patch.object(
+            os3.urllib.request, "urlopen", self._urlopen({}, error)
+        ):
+            self.assertEqual(os3.urllib_request("https://host/b", {}, b"", "GET"), (403, b"<Error/>"))
+
+    def test_a_request_that_never_completes_raises_object_storage_error(self):
+        for failure in (
+            OSError("connection refused"),
+            os3.http.client.BadStatusLine("garbage"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                with unittest.mock.patch.object(
+                    os3.urllib.request, "urlopen", self._urlopen({}, failure)
+                ):
+                    with self.assertRaises(os3.ObjectStorageError):
+                        os3.urllib_request("https://host/b", {}, b"", "GET")
 
 
 if __name__ == "__main__":

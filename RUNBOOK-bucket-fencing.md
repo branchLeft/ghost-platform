@@ -129,47 +129,54 @@ fence would leave that workload able to rewrite the policy that constrains it,
 which is most of what the fence withholds. Both generators refuse this. Mint a
 distinct operator credential in the Console first.
 
-`aws` CLI v2 must be on the workstation, and so must `curl` 7.75 or newer
-(macOS 14 ships 8.4). Everything here goes to
-`https://hel1.your-objectstorage.com`, region `hel1`, through `aws s3api` —
-except the object-read probes, which `verify-bucket-fence.py` signs with
-`curl --aws-sigv4`. Nothing you type changes.
+Everything here goes to `https://hel1.your-objectstorage.com`, region `hel1`,
+and nothing you type changes. **`python3` is the only tool the fencing and
+verification steps need.** `verify-bucket-fence.py` and
+`configure_backup_bucket.py` sign and send every request themselves, from the
+standard library — no `aws` CLI, no `curl`, and no credential written to a
+temporary file for either. The `aws` CLI is still what the rendered
+`--commands` sequences print (section 2a, and "Adding a new operational bucket
+later"), and creating a bucket is the one operation nothing here performs for
+you.
 
-**The `aws` CLI cannot read this backend's denials, and that limits what
-section 1f can currently prove.** The storage engine returns its errors with an
-empty `<Message></Message>`, and `aws s3api` v2 exits 255 with a
-client-internal message rather than render that — on every operation, for
-`AccessDenied` and `InvalidAccessKeyId` alike. The verifier is fail-safe about
-it: a response it cannot read is `INCONCLUSIVE`, never a pass. But that means
-**every denial probe still on the CLI reports `INCONCLUSIVE`**, so section 1f
-will not reach exit code 0 until those probes move onto the signed transport
-too. Step 1c is unaffected — its two decisive reads are object reads, and every
-other call it makes is one that succeeds.
-
-If `curl` is missing or too old, the object-read rows come back `INCONCLUSIVE`
-naming the reason, and never as a pass. There is no pre-flight check for it, so
-confirm it before step 1c rather than after:
-
-```bash
-curl --version | head -1
-```
+**Why the verifier signs its own requests rather than shelling out to
+`aws s3api`.** This backend's storage engine returns its error documents with
+an empty `<Message></Message>`, and `aws s3api` v2 exits 255 printing a
+client-internal message rather than render one — on every operation, for
+`AccessDenied` and `InvalidAccessKeyId` alike. What renders is the gateway's
+own `NoSuchBucket`, which carries a real message, which is why the failure
+looked at first like one broken command. A client that cannot render a denial
+cannot prove a fence: every denial probe running through it came back
+`INCONCLUSIVE` — fail-safe, and useless as evidence. The verifier now reads
+each verdict out of the returned document itself, and never out of the HTTP
+status: `AccessDenied`, `InvalidAccessKeyId` and `SignatureDoesNotMatch` are
+all 403 here, so a status-only reading would turn a dead credential into a
+proven fence.
 
 **Confirm the project id rather than trusting this document.** Every principal
 in a rendered policy is built from it, and it is the one value whose being
-wrong is unrecoverable. Run this first, as the operator, and use what it
-prints:
+wrong is unrecoverable. Run this first, and use what it prints:
 
 ```bash
-AWS_ACCESS_KEY_ID='<operator key id>' AWS_SECRET_ACCESS_KEY='<operator secret>' \
-AWS_DEFAULT_REGION=hel1 \
-  aws --endpoint-url https://hel1.your-objectstorage.com s3api list-buckets \
-  --query Owner.ID --output text
+FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>' \
+FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>' \
+  python3 infra/provisioning/scripts/verify-bucket-fence.py --show-account
 ```
 
-It must print `p15766609`. The `--project-id` argument below is that value
-**without** the leading `p`. If it prints anything else, stop: the credential
-is in a different project from the buckets, and every policy rendered from
-`15766609` would name principals that do not exist there.
+It writes nothing, and it must print `PASS` with `p15766609` beside it. The
+`--project-id` argument below is that value **without** the leading `p`. If it
+prints anything else, stop: the credential is in a different project from the
+buckets, and every policy rendered from `15766609` would name principals that
+do not exist there.
+
+Two answers that are not the project id, and what each means:
+
+- **`the endpoint saw this request as unsigned`** — the secret is wrong or
+  empty. This endpoint answers an unsigned `ListAllMyBuckets` with HTTP 200 and
+  an owner of `anonymous` rather than refusing, so the verifier refuses that
+  value rather than letting it become a policy principal.
+- **`InvalidAccessKeyId`** — the key id does not exist in this account. Re-read
+  it from the Console; it is not a statement about the buckets.
 
 ---
 
@@ -247,6 +254,23 @@ Both lines must read `PASS`.
 - **`THE PROBE POLICY IS REMOVED` — `FAIL`.** The probe is still on the bucket.
   The message carries the exact command to remove it. It denies only reads under
   `fence-probe/`, so nothing real is affected, but do not leave it.
+- **`the bucket carries no policy to displace` — `INCONCLUSIVE`.** The bucket
+  already has a policy, and running the probe would replace it. The message
+  says which policy it found. If it is this step's own probe left behind by an
+  interrupted run, replacing it costs nothing — re-run the command above with
+  `--replace-existing-policy` added, and it is removed at the end of the run:
+
+  ```bash
+  python3 infra/provisioning/scripts/verify-bucket-fence.py --probe-notprincipal \
+    --bucket branchleft-db-backups \
+    --foreign-control-bucket branchleft-tenant-pulumi-state \
+    --policy-file /tmp/branchleft-db-backups-policy.json \
+    --replace-existing-policy
+  ```
+
+  If it is a real fence, **do not pass the flag**: the bucket would be unfenced
+  for the duration of the probe, and there is nothing to learn — the engine
+  question is a property of the account and this step has already settled it.
 
 This tests the *engine*, not the bucket, so its answer holds for the whole
 account — section 2 does not repeat it.
@@ -318,30 +342,25 @@ python3 infra/provisioning/scripts/verify-bucket-fence.py \
   --versioning-already-enabled
 ```
 
-The target is every line `PASS` and exit code 0, and that includes
+Every line must read `PASS` and the exit code must be 0, and that includes
 `the stored policy is the one that was sent` — the backend has previously
 accepted a configuration and silently dropped part of it, and every other probe
-would still pass on a bucket storing a different fence.
-
-**It cannot reach that today.** Every denial probe here except
-`foreign key cannot read an object` still runs through the `aws` CLI, which
-cannot render this backend's `AccessDenied` at all (see "The values you supply"
-above), so each of them reports `INCONCLUSIVE` on a bucket that is correctly
-fenced. The verifier is behaving as designed — it refuses to call an unreadable
-response a pass — but the run cannot be clean until those probes move onto the
-signed transport. Until then this step proves the *allow* direction and the
-object-read denial, and nothing more; treat the remaining denials as unproven
-rather than as either passed or failed, and **do not proceed to section 2 on
-the strength of it.**
+would still pass on a bucket storing a different fence. **Do not proceed to
+section 2 on anything less.**
 
 - **`FAIL`** — the fence is not doing what it must. Do not proceed to the
   second bucket.
 - **`INCONCLUSIVE`** — the probe proved nothing. It is **not** a pass:
   recording an inconclusive denial as proof is what produced this work in the
-  first place. Distinguish the two causes from the reason printed beside it — a
-  control probe on the same credential that did not succeed is something to fix
-  and re-run; `no S3 error code in the CLI output` is the client limitation
-  above and is not fixable from here.
+  first place. The reason printed beside it says which of these it is:
+  - *the control probe on the same credential did not succeed* — that key
+    reaches nothing, so its denial here says nothing about the fence. Check the
+    credential and the control bucket, then re-run.
+  - *`InvalidAccessKeyId` / `SignatureDoesNotMatch`* — a wrong key id or a
+    wrong secret. Not a statement about the policy.
+  - *`no S3 error document to read a code from`*, or *the request did not
+    complete* — the response could not be interpreted, so no verdict exists.
+    Re-run; if it persists, record the output verbatim and stop.
 
 ### 1g. Confirm db1's own pipeline still works
 
@@ -462,10 +481,8 @@ python3 infra/provisioning/scripts/verify-bucket-fence.py \
 ```
 
 Every line `PASS`, exit code 0 — including `the stored policy is the one that
-was sent`. The CLI limitation described under section 1f applies here
-identically: the denial probes still on the `aws` CLI report `INCONCLUSIVE`
-against a correctly fenced bucket, and section 1f is the gate for reaching this
-step at all.
+was sent`. Read an `INCONCLUSIVE` here exactly as section 1f says to, and note
+that section 1f passing in full is the gate for reaching this step at all.
 
 ### 2e. Confirm CI still reaches its own state
 

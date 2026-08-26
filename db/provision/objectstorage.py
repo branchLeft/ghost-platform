@@ -10,6 +10,24 @@ is safe to remove. The signing algorithm is the same one
 this endpoint; path-style addressing is mandatory there for the same reason
 it is here -- a dotted bucket name falls outside the endpoint's one-label
 wildcard certificate.
+
+THIS IS THE ONLY SIGV4 IMPLEMENTATION IN THIS REPOSITORY, AND IT IS SHARED.
+`infra/provisioning/scripts/verify-bucket-fence.py` sends every one of its
+probes through `signed_request` below, reached via
+`infra/provisioning/scripts/shared_objectstorage.py`. Two copies of a signing
+implementation is how one of them rots while the tests keep passing against
+the other, so the verifier imports this file rather than restating it -- and
+this file stays here, rather than moving somewhere both trees can see, because
+`db/RUNBOOK-db.md` provisions db1 by copying `db/provision/` to the host with
+`scp -r` and running the scripts in place, so every module they import has to
+be inside that one directory.
+
+The split between `signed_request` and the named operations below is
+deliberate. The named operations raise on anything but success, which is what
+an unattended pipeline wants. The verifier must reach a *verdict* on a
+refusal, including telling `AccessDenied` apart from `InvalidAccessKeyId` when
+both arrive as HTTP 403, so it needs the response rather than an exception --
+`signed_request` interprets nothing and hands back whatever came off the wire.
 """
 
 from __future__ import annotations
@@ -17,6 +35,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import hmac
+import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -111,14 +130,41 @@ def build_headers(
     return headers
 
 
-def _request_url(*, endpoint: str, bucket: str, key: str | None, query: dict[str, str] | None) -> str:
+def request_url(*, endpoint: str, bucket: str, key: str | None, query: dict[str, str] | None) -> str:
+    """The path-style URL a request goes to, built the same way it is signed.
+
+    Public because the fence verifier sends one deliberately unsigned request
+    -- proving the bucket is not world-readable -- and that request must go to
+    exactly the URL a signed one would, or it is not the same probe.
+    """
     url = f"https://{endpoint}{_canonical_uri(bucket, key)}"
     q = _canonical_query(query)
     return f"{url}?{q}" if q else url
 
 
-def _urllib_put(url: str, headers: dict[str, str], payload: bytes) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, data=payload, method="PUT")
+def urllib_request(
+    url: str, headers: dict[str, str], payload: bytes, method: str
+) -> tuple[int, bytes]:
+    """One HTTP request, returning `(status, body)` for ANY response.
+
+    A 4xx is a response, not a failure: `AccessDenied` and `InvalidAccessKeyId`
+    both arrive here as 403 and only the body tells them apart, so neither may
+    be collapsed into an exception on the way back. `ObjectStorageError` is
+    raised only when no response arrived at all.
+
+    A body is sent whenever there is one, and for `PUT`/`POST` even when it is
+    empty: `data=None` makes urllib send no `Content-Length`, which this
+    endpoint answers with `411 Length Required` for a zero-byte PUT.
+
+    `http.client.HTTPException` is caught alongside `OSError` because a
+    truncated or malformed response is not an `OSError` and would otherwise
+    escape as an exception type no caller expects. The fence verifier removes
+    its probe objects in a `finally`-shaped path around these calls, so an
+    exception it does not recognise leaves objects behind in a production
+    bucket.
+    """
+    data = payload if payload or method in ("PUT", "POST") else None
+    request = urllib.request.Request(url, data=data, method=method)
     for name, value in headers.items():
         request.add_header(name, value)
     try:
@@ -126,8 +172,12 @@ def _urllib_put(url: str, headers: dict[str, str], payload: bytes) -> tuple[int,
             return response.status, response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
-    except OSError as exc:
-        raise ObjectStorageError(f"PUT {url} failed to complete: {exc}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise ObjectStorageError(f"{method} {url} failed to complete: {exc}") from exc
+
+
+def _urllib_put(url: str, headers: dict[str, str], payload: bytes) -> tuple[int, bytes]:
+    return urllib_request(url, headers, payload, "PUT")
 
 
 def _raise_for_status(*, what: str, status: int, body: bytes) -> None:
@@ -168,35 +218,61 @@ def put_object(
         content_type=content_type,
         now=datetime.datetime.now(datetime.timezone.utc),
     )
-    url = _request_url(endpoint=endpoint, bucket=bucket, key=key, query=None)
+    url = request_url(endpoint=endpoint, bucket=bucket, key=key, query=None)
     status, body = transport(url, headers, data)
     _raise_for_status(what=f"PUT {bucket}/{key}", status=status, body=body)
 
 
 def _urllib_get(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, method="GET")
-    for name, value in headers.items():
-        request.add_header(name, value)
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()
-    except OSError as exc:
-        raise ObjectStorageError(f"GET {url} failed to complete: {exc}") from exc
+    return urllib_request(url, headers, b"", "GET")
 
 
 def _urllib_delete(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, method="DELETE")
-    for name, value in headers.items():
-        request.add_header(name, value)
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()
-    except OSError as exc:
-        raise ObjectStorageError(f"DELETE {url} failed to complete: {exc}") from exc
+    return urllib_request(url, headers, b"", "DELETE")
+
+
+def signed_request(
+    *,
+    method: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    bucket: str,
+    key: str | None = None,
+    query: dict[str, str] | None = None,
+    payload: bytes = b"",
+    content_type: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+    transport=urllib_request,
+) -> tuple[int, bytes]:
+    """One signed request, returning `(status, body)` and interpreting neither.
+
+    Every operation the fence verifier needs goes through here, so that a
+    denial probe and the control probe that licenses it are the same kind of
+    request, signed by the same code. A control on a different transport
+    establishes nothing about the transport the probe used.
+
+    Nothing here decides what a response means. That is the caller's job, and
+    keeping it out of this function is what stops a status code from becoming a
+    verdict on its own.
+    """
+    headers = build_headers(
+        bucket=bucket,
+        key=key,
+        payload=payload,
+        host=endpoint,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        now=datetime.datetime.now(datetime.timezone.utc),
+        query=query,
+        content_type=content_type,
+        extra_headers=extra_headers,
+        method=method,
+    )
+    url = request_url(endpoint=endpoint, bucket=bucket, key=key, query=query)
+    return transport(url, headers, payload, method)
 
 
 def _local_name(tag: str) -> str:
@@ -260,7 +336,7 @@ def list_objects(
             query=query,
             method="GET",
         )
-        url = _request_url(endpoint=endpoint, bucket=bucket, key=None, query=query)
+        url = request_url(endpoint=endpoint, bucket=bucket, key=None, query=query)
         status, body = transport(url, headers)
         _raise_for_status(what=f"GET {bucket}?list-type=2", status=status, body=body)
         objects, is_truncated, next_token = _parse_list_objects_v2(body)
@@ -307,7 +383,7 @@ def delete_object(
         now=datetime.datetime.now(datetime.timezone.utc),
         method="DELETE",
     )
-    url = _request_url(endpoint=endpoint, bucket=bucket, key=key, query=None)
+    url = request_url(endpoint=endpoint, bucket=bucket, key=key, query=None)
     status, body = transport(url, headers)
     if status == 404:
         return
@@ -348,17 +424,36 @@ def owner_id(
     )
     status, body = transport(f"https://{endpoint}/", headers)
     _raise_for_status(what="GET / (ListAllMyBuckets)", status=status, body=body)
+    owner = parse_owner_id(body)
+    if owner is None:
+        raise ObjectStorageError("GET /: no Owner/ID in the ListAllMyBuckets response")
+    return owner
+
+
+def parse_owner_id(body: bytes) -> str | None:
+    """`Owner/ID` out of a ListAllMyBuckets response, or None if it is absent.
+
+    Separate from `owner_id` because the fence verifier resolves the same value
+    from a response it classified itself, rather than from one that raised.
+
+    `anonymous` is returned as-is and is deliberately NOT special-cased here:
+    this endpoint answers an unsigned `GET /` with HTTP 200 and that owner id,
+    so the string is a real answer to the question "who signed this request"
+    -- the answer being "nobody". A caller resolving an account to name in a
+    policy has to refuse it; a caller parsing a response has no business
+    deciding that.
+    """
     try:
         root = ET.fromstring(body)
-    except ET.ParseError as exc:
-        raise ObjectStorageError(f"GET /: response was not XML: {exc}") from exc
+    except ET.ParseError:
+        return None
     for child in root:
         if _local_name(child.tag) != "Owner":
             continue
         for grandchild in child:
             if _local_name(grandchild.tag) == "ID" and (grandchild.text or "").strip():
                 return grandchild.text.strip()
-    raise ObjectStorageError("GET /: no Owner/ID in the ListAllMyBuckets response")
+    return None
 
 
 def put_bucket_subresource(
@@ -395,6 +490,6 @@ def put_bucket_subresource(
         query=query,
         extra_headers=extra_headers,
     )
-    url = _request_url(endpoint=endpoint, bucket=bucket, key=None, query=query)
+    url = request_url(endpoint=endpoint, bucket=bucket, key=None, query=query)
     status, response_body = transport(url, headers, body)
     _raise_for_status(what=f"PUT {bucket}?{subresource}", status=status, body=response_body)
