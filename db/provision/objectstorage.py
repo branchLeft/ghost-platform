@@ -425,9 +425,19 @@ def owner_id(
     status, body = transport(f"https://{endpoint}/", headers)
     _raise_for_status(what="GET / (ListAllMyBuckets)", status=status, body=body)
     owner = parse_owner_id(body)
-    if owner is None:
-        raise ObjectStorageError("GET /: no Owner/ID in the ListAllMyBuckets response")
-    return owner
+    if owner is not None:
+        return owner
+    # The two ways this fails send an operator to different places -- a
+    # response that is not XML means something other than the storage endpoint
+    # answered, while one without an Owner means the endpoint did and the
+    # account cannot be resolved from it. `parse_owner_id` cannot say which,
+    # because a parser that raised would be useless to the fence verifier,
+    # which has to classify the response rather than be interrupted by it.
+    try:
+        ET.fromstring(body)
+    except ET.ParseError as exc:
+        raise ObjectStorageError(f"GET /: response was not XML: {exc}") from exc
+    raise ObjectStorageError("GET /: no Owner/ID in the ListAllMyBuckets response")
 
 
 def parse_owner_id(body: bytes) -> str | None:

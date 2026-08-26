@@ -105,12 +105,20 @@ class Response:
     fixture observed on the wire constrains the code; one written here
     constrains only what its author expected, which is how the object-read
     probes once shipped unable to reach a verdict.
+
+    Every instance registers itself. `TestFixtureProvenance` used to walk
+    module globals, which silently skipped every fixture built inside a test
+    method -- so the guard that is supposed to refuse an unlabelled fixture
+    would not have refused the next one written inline.
     """
+
+    every: list["Response"] = []
 
     def __init__(self, source: str, status: int, body: bytes = b""):
         self.source = source
         self.status = status
         self.body = body
+        Response.every.append(self)
 
 
 # THE DOCUMENT THIS WHOLE PROGRAMME TURNS ON. Empty `<Message></Message>`, which
@@ -271,6 +279,18 @@ NO_SUCH_BUCKET_POLICY = Response(
     "constructed: what a bucket with no policy returns to get-bucket-policy",
     404,
     b"<Error><Code>NoSuchBucketPolicy</Code></Error>",
+)
+
+# Case 4 in RUNBOOK-bucket-fencing.md's list of ways this engine can differ
+# from its documentation: it rejects the NotPrincipal document outright. An
+# anticipated outcome, and the one that used to end with the probe deleting a
+# policy it had never displaced.
+REJECTED_POLICY = Response(
+    "constructed: an engine refusing a NotPrincipal document. Whether this endpoint accepts "
+    "one is the open question the probe exists to settle, so a refusal cannot be captured "
+    "without applying a policy to a live bucket",
+    400,
+    b"<Error><Code>MalformedPolicy</Code></Error>",
 )
 
 
@@ -473,6 +493,24 @@ class TestClassification(unittest.TestCase):
                 self.assertEqual(outcome, "error")
                 self.assertNotIn("\n", reason)
 
+    def test_a_code_element_outside_an_error_document_yields_no_verdict(self):
+        # A `<Code>AccessDenied</Code>` can appear inside any XML this endpoint
+        # -- or anything in front of it -- returns. Only a document whose root
+        # is `Error` is an S3 error, and without that guard a 403 carrying some
+        # other envelope becomes a `denied` verdict, which is a fence proven by
+        # a response that was not a refusal.
+        for body in (
+            b"<ListBucketResult><Code>AccessDenied</Code></ListBucketResult>",
+            b"<Response><Error><Code>AccessDenied</Code></Error></Response>",
+            b'<html><body><Code>AccessDenied</Code></body></html>',
+        ):
+            with self.subTest(body=body[:30]):
+                self.assertIsNone(verify.s3_error_code(body))
+                self.assertEqual(verify.classify(403, body)[0], "error")
+        # The same code inside a real error document still is one, so the guard
+        # is not simply refusing everything.
+        self.assertEqual(verify.classify(403, b"<Error><Code>AccessDenied</Code></Error>")[0], "denied")
+
     def test_an_expensive_document_cannot_produce_an_expensive_reason(self):
         # ElementTree expands internal entities, so a small body can become a
         # very large string. The body is capped before parsing and the code is
@@ -671,6 +709,22 @@ class TestStoredPolicy(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("could not read the stored policy", output)
 
+    def test_a_stored_policy_under_a_different_version_is_a_mismatch(self):
+        # `Version` selects the grammar the whole document is evaluated under.
+        # An engine that stored the statements and rewrote that would be
+        # enforcing something other than what was sent, and every probe would
+        # still pass because they measure the fence that is there.
+        answers = a_fully_working_fence()
+        rewritten = {"Version": "2008-10-17", "Statement": POLICY["Statement"]}
+        answers[("operator", "get-bucket-policy", FENCED)] = Response(
+            "constructed: the same statements stored under a different policy Version",
+            200,
+            json.dumps(rewritten).encode(),
+        )
+        code, output, _ = run(answers)
+        self.assertEqual(code, 1)
+        self.assertIn("the stored policy is not the document that was sent", output)
+
 
 class TestPreflight(unittest.TestCase):
     def test_a_policy_rendered_against_the_wrong_account_is_caught_before_the_put(self):
@@ -733,6 +787,118 @@ class TestPreflight(unittest.TestCase):
         code, output, _ = run(answers, extra_args=["--preflight"])
         self.assertEqual(code, 1)
         self.assertIn(verify.INCONCLUSIVE, output)
+
+    def test_a_second_deny_that_locks_a_credential_out_is_not_masked_by_the_first(self):
+        # A policy is a set of statements that all apply, so one statement
+        # naming a credential says nothing about what the next one withholds
+        # from it. A check that stopped at the first exemption would report the
+        # credential as safe while a second statement locked it out -- and
+        # `--apply` gates on these rows, so it would then write the policy.
+        #
+        # The route in is `RUNBOOK-bucket-fencing.md`'s own re-fencing case:
+        # re-rendering with several `--workload-access-key` values when
+        # per-tenant state credentials land. One typo in that list and every
+        # deploy on the mistyped key stops at an unwritable checkpoint.
+        for role, arn, extra in (
+            (
+                "operator",
+                OPERATOR_ARN,
+                {
+                    "Sid": "SecondBucketDeny",
+                    "Effect": "Deny",
+                    "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
+                    "Action": "s3:DeleteBucket",
+                    "Resource": f"arn:aws:s3:::{FENCED}",
+                },
+            ),
+            (
+                "workload",
+                WORKLOAD_ARN,
+                {
+                    "Sid": "SecondObjectDeny",
+                    "Effect": "Deny",
+                    "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                    "Action": "s3:PutObject",
+                    "Resource": f"arn:aws:s3:::{FENCED}/*",
+                },
+            ),
+        ):
+            with self.subTest(role=role):
+                masked = {"Version": POLICY["Version"], "Statement": POLICY["Statement"] + [extra]}
+                rows = verify.preflight(
+                    verify.Verifier(
+                        endpoint=ENDPOINT,
+                        region="hel1",
+                        credentials={
+                            "operator": (OPERATOR_KEY, "s"),
+                            "workload": (WORKLOAD_KEY, "s"),
+                            "foreign": (FOREIGN_KEY, "s"),
+                        },
+                        transport=Transport(a_fully_working_fence()),
+                    ),
+                    bucket=FENCED,
+                    policy_document=json.dumps(masked).encode(),
+                )
+                exemption = [
+                    row for row in rows if row[0] == f"the policy exempts THIS {role} credential"
+                ][0]
+                self.assertEqual(exemption[1], verify.FAIL, exemption)
+                self.assertIn(arn, exemption[2])
+
+    def test_the_correctly_rendered_policy_still_passes_both_exemption_checks(self):
+        # The other direction of the test above: a policy whose Denys all
+        # exempt the credential must not be reported as locking it out.
+        rows = verify.preflight(
+            verify.Verifier(
+                endpoint=ENDPOINT,
+                region="hel1",
+                credentials={
+                    "operator": (OPERATOR_KEY, "s"),
+                    "workload": (WORKLOAD_KEY, "s"),
+                    "foreign": (FOREIGN_KEY, "s"),
+                },
+                transport=Transport(a_fully_working_fence()),
+            ),
+            bucket=FENCED,
+            policy_document=POLICY_DOCUMENT,
+        )
+        for role in ("operator", "workload"):
+            with self.subTest(role=role):
+                exemption = [
+                    row for row in rows if row[0] == f"the policy exempts THIS {role} credential"
+                ][0]
+                self.assertEqual(exemption[1], verify.PASS, exemption)
+
+    def test_a_policy_with_no_deny_of_that_shape_is_not_an_exemption(self):
+        # `None` rather than `True`: a policy that never denies at the object
+        # level has not exempted the workload, it has said nothing about it.
+        allow_only = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {"Sid": "A", "Effect": "Allow", "Principal": "*", "Action": "s3:*",
+                 "Resource": f"arn:aws:s3:::{FENCED}/*"}
+            ],
+        }
+        rows = verify.preflight(
+            verify.Verifier(
+                endpoint=ENDPOINT,
+                region="hel1",
+                credentials={
+                    "operator": (OPERATOR_KEY, "s"),
+                    "workload": (WORKLOAD_KEY, "s"),
+                    "foreign": (FOREIGN_KEY, "s"),
+                },
+                transport=Transport(a_fully_working_fence()),
+            ),
+            bucket=FENCED,
+            policy_document=json.dumps(allow_only).encode(),
+        )
+        for role in ("operator", "workload"):
+            with self.subTest(role=role):
+                exemption = [
+                    row for row in rows if row[0] == f"the policy exempts THIS {role} credential"
+                ][0]
+                self.assertEqual(exemption[1], verify.FAIL, exemption)
 
     def test_an_owner_of_anonymous_is_refused_rather_than_named_in_a_principal(self):
         # This endpoint answers an unsigned ListAllMyBuckets with 200 and
@@ -1010,42 +1176,58 @@ class TestNotPrincipalProbe(unittest.TestCase):
         self.assertIn("THE PROBE POLICY IS REMOVED", output)
         self.assertIn("delete-bucket-policy", output)
 
-    def test_it_refuses_a_bucket_that_already_carries_a_policy(self):
-        # Replacing a live fence with the probe would un-fence the bucket for
-        # the duration of the probe.
-        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
-        answers[("operator", "get-bucket-policy", FENCED)] = Response(
-            "constructed: a bucket already carrying its real fence", 200, POLICY_DOCUMENT
-        )
-        code, output, transport = run(answers, extra_args=["--probe-notprincipal"])
-        self.assertEqual(code, 1)
-        self.assertIn("already carries a policy", output)
-        self.assertIn("--replace-existing-policy", output)
-        self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
-
-    def test_a_real_fence_and_a_leftover_probe_get_different_advice(self):
-        # Both are "this bucket already has a policy", and the right next step
-        # is opposite in each case. Replacing a leftover probe costs nothing;
-        # replacing a live fence un-fences the bucket. The document is already
-        # in hand, so the message says which one this is.
-        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
-        answers[("operator", "get-bucket-policy", FENCED)] = Response(
+    def _leftover_probe(self):
+        return Response(
             "constructed: the probe policy this file writes, left behind by an interrupted run",
             200,
             json.dumps(verify.probe_policy(FENCED, OPERATOR_ARN)).encode(),
         )
+
+    def _real_fence(self):
+        return Response(
+            "constructed: a bucket already carrying its real fence", 200, POLICY_DOCUMENT
+        )
+
+    def test_it_refuses_a_bucket_that_already_carries_a_policy(self):
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._real_fence()
+        code, output, transport = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertIn("already carries a policy", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+
+    def test_replace_existing_policy_does_not_authorise_displacing_a_real_fence(self):
+        # NOTHING HERE RESTORES A DISPLACED DOCUMENT. The probe is applied and
+        # then deleted, so a fence it replaced is gone for good and the bucket
+        # is unfenced from that moment on. The flag therefore covers exactly
+        # one case -- a probe policy this file wrote itself -- and a real
+        # document is refused with the flag exactly as it is without it.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._real_fence()
+        code, output, transport = run(
+            answers, extra_args=["--probe-notprincipal", "--replace-existing-policy"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("did not write", output)
+        self.assertIn("does not cover this", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+        self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
+
+    def test_a_real_fence_and_a_leftover_probe_get_different_advice(self):
+        # Both are "this bucket already has a policy", and the right next step
+        # is opposite in each case. The document is already in hand, so the
+        # message says which one this is rather than leaving both to be weighed.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._leftover_probe()
         code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
         self.assertEqual(code, 1)
         self.assertIn("left its own probe policy", output)
         self.assertIn("--replace-existing-policy", output)
-        self.assertNotIn("leave the bucket unfenced", output)
+        self.assertNotIn("did not write", output)
 
-    def test_replace_existing_policy_lets_the_probe_run(self):
+    def test_replace_existing_policy_lets_the_probe_run_over_a_leftover_probe(self):
         answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
-        answers[("operator", "get-bucket-policy", FENCED)] = Response(
-            "constructed: a leftover probe policy", 200,
-            json.dumps(verify.probe_policy(FENCED, OPERATOR_ARN)).encode(),
-        )
+        answers[("operator", "get-bucket-policy", FENCED)] = self._leftover_probe()
         code, output, transport = run(
             answers, extra_args=["--probe-notprincipal", "--replace-existing-policy"]
         )
@@ -1054,14 +1236,49 @@ class TestNotPrincipalProbe(unittest.TestCase):
 
     def test_an_engine_that_rejects_the_document_is_inconclusive_not_a_pass(self):
         answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
-        answers[("operator", "put-bucket-policy", FENCED)] = Response(
-            "constructed: an engine refusing a NotPrincipal document",
-            400,
-            b"<Error><Code>MalformedPolicy</Code></Error>",
-        )
+        answers[("operator", "put-bucket-policy", FENCED)] = REJECTED_POLICY
         code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
         self.assertEqual(code, 1)
         self.assertIn("the probe policy is accepted", output)
+
+    def test_a_refused_put_does_not_delete_the_policy_that_is_already_there(self):
+        # `DeleteBucketPolicy` removes whatever is on the bucket, not the
+        # document this block meant to put there. Deleting after a refused PUT
+        # therefore removes a policy this run never displaced -- and the engine
+        # rejecting a NotPrincipal document outright is case 4 in the runbook's
+        # own list of ways this engine can differ from its documentation, not
+        # an exotic outcome.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._leftover_probe()
+        answers[("operator", "put-bucket-policy", FENCED)] = REJECTED_POLICY
+        code, output, transport = run(
+            answers, extra_args=["--probe-notprincipal", "--replace-existing-policy"]
+        )
+        self.assertEqual(code, 1)
+        self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
+
+    def test_a_refused_put_yields_no_engine_verdict_from_the_reads(self):
+        # The reads would answer about whatever policy IS on the bucket, or
+        # about none. `PASS NotPrincipal EXEMPTS the named key` drawn from a
+        # document the engine never saw is the runbook's gate passing on
+        # evidence that does not exist.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "put-bucket-policy", FENCED)] = REJECTED_POLICY
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertNotIn(verify.PASS, output)
+        self.assertIn("says nothing about how this engine evaluates NotPrincipal", " ".join(output.split()))
+
+    def test_the_banner_does_not_claim_a_policy_is_waiting_to_be_re_rendered(self):
+        # This mode writes no fence, so neither "the bucket may be locked" nor
+        # "re-render it against the account id" is a true sentence about what
+        # happened here.
+        answers = self._answers(ACCESS_DENIED_OBJECT, ACCESS_DENIED_OBJECT)
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertNotIn("Re-render it", output)
+        self.assertNotIn("THE BUCKET MAY BE LOCKED", output)
+        self.assertIn("DO NOT APPLY THE REAL FENCE", output)
 
 
 class TestApplyMode(unittest.TestCase):
@@ -1211,26 +1428,97 @@ class TestSignedTransport(unittest.TestCase):
         captured = self._send(verify._policy_probe("operator", FENCED, "GET"))
         self.assertEqual(captured["url"], f"{ENDPOINT}/{FENCED}?policy=")
 
+    def test_two_probes_differing_only_in_body_do_not_share_a_cached_verdict(self):
+        # `_policy_probe` builds PUTs that are identical except for the
+        # document they carry, and the outcome cache is keyed on the probe. A
+        # key that ignored the payload would answer the second PUT with the
+        # first one's verdict -- so a policy the engine would have refused
+        # reports the verdict of one it accepted, from a request never sent.
+        one = verify._policy_probe("operator", FENCED, "PUT", b'{"Version":"2012-10-17"}')
+        two = verify._policy_probe("operator", FENCED, "PUT", b'{"Version":"2008-10-17"}')
+        self.assertNotEqual(one.cache_key(), two.cache_key())
+
+        sent = []
+
+        def transport(url, headers, payload, method):
+            sent.append(payload)
+            return 200, b""
+
+        verifier = self._verifier(transport)
+        verifier.run(one)
+        verifier.run(two)
+        verifier.run(one)  # the cache is real: this one does not go out again
+        self.assertEqual(sent, [one.payload, two.payload])
+
 
 class TestFixtureProvenance(unittest.TestCase):
+    """Run last by name, so `Response.every` holds the inline fixtures too.
+
+    Ordering is a convenience rather than the guarantee: the module-level
+    fixtures are registered at import and are checked whatever runs first, and
+    an inline fixture that this ordering missed would be caught on the next run
+    that reached it. Walking `globals()` missed every inline fixture on every
+    run, which is the difference.
+    """
+
+    # A Ceph RGW transaction id, which is what this endpoint puts in RequestId
+    # and HostId. Matched by shape rather than by the `-hel1-prod1-` substring
+    # the earlier check used, so a response captured from another region or
+    # cluster is caught too.
+    REQUEST_ID = re.compile(rb"tx[0-9a-f]{10,}|-prod\d+-")
+
+    def _fixtures(self):
+        module_level = [value for value in globals().values() if isinstance(value, Response)]
+        self.assertGreaterEqual(len(module_level), 12)
+        # Every fixture ever built in this run, module-level and inline alike.
+        self.assertGreater(len(Response.every), len(module_level))
+        return Response.every
+
+    @staticmethod
+    def _unlabelled(fixtures):
+        return [f for f in fixtures if not f.source.startswith(("observed:", "constructed:"))]
+
     def test_every_fixture_says_whether_it_was_observed_or_written(self):
         # The failure this file is fixing was a fixture nobody had checked
         # against the wire. An unlabelled one is how that happens again.
-        fixtures = [value for value in globals().values() if isinstance(value, Response)]
-        self.assertGreaterEqual(len(fixtures), 12)
-        for fixture in fixtures:
-            with self.subTest(source=fixture.source[:40]):
-                self.assertTrue(fixture.source.startswith(("observed:", "constructed:")))
+        for fixture in self._unlabelled(self._fixtures()):
+            self.fail(f"unlabelled fixture: {fixture.source[:60]!r}")
+
+    def test_the_guard_would_actually_refuse_an_unlabelled_fixture(self):
+        # A guard that has quietly stopped covering anything passes every
+        # fixture, so prove it still refuses one before trusting a pass. The
+        # fixture is built INSIDE a test on purpose: eleven of the fixtures in
+        # this file are, and the earlier guard walked module globals, so every
+        # one of them was invisible to it.
+        mark = len(Response.every)
+        Response("this fixture is deliberately unlabelled", 200)
+        try:
+            self.assertEqual(len(self._unlabelled(self._fixtures())), 1)
+        finally:
+            del Response.every[mark:]
+        self.assertEqual(self._unlabelled(self._fixtures()), [])
 
     def test_no_fixture_carries_a_live_request_identifier(self):
         # RequestId and HostId name one request on Hetzner's side. Harmless,
         # and pointless to commit.
-        for fixture in [value for value in globals().values() if isinstance(value, Response)]:
+        for fixture in self._fixtures():
             with self.subTest(source=fixture.source[:40]):
-                self.assertNotIn(b"-hel1-prod1-", fixture.body)
+                self.assertIsNone(self.REQUEST_ID.search(fixture.body))
+
+    def test_the_request_identifier_matcher_still_matches_a_real_one(self):
+        # A matcher that has quietly stopped matching passes every fixture.
+        # This is the identifier shape captured off the live endpoint, with its
+        # digits changed.
+        for real in (
+            b"<RequestId>tx0000043296e609d7694e1-006a8eb7bf-1a7ba04d-hel1-prod1-ceph4</RequestId>",
+            b"<HostId>1a7ba04d-hel1-prod1-ceph4-hel1</HostId>",
+        ):
+            with self.subTest(real=real[:20]):
+                self.assertIsNotNone(self.REQUEST_ID.search(real))
+        self.assertIsNone(self.REQUEST_ID.search(b"<RequestId>N/A</RequestId>"))
 
     def test_no_fixture_carries_a_credential(self):
-        for fixture in [value for value in globals().values() if isinstance(value, Response)]:
+        for fixture in self._fixtures():
             with self.subTest(source=fixture.source[:40]):
                 self.assertNotIn(b"secret", fixture.body.lower())
                 self.assertNotIn(b"Signature=", fixture.body)

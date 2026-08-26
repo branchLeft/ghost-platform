@@ -169,14 +169,23 @@ prints anything else, stop: the credential is in a different project from the
 buckets, and every policy rendered from `15766609` would name principals that
 do not exist there.
 
-Two answers that are not the project id, and what each means:
+Three answers that are not the project id, and what each means. None of them is
+a statement about the buckets:
 
-- **`the endpoint saw this request as unsigned`** — the secret is wrong or
-  empty. This endpoint answers an unsigned `ListAllMyBuckets` with HTTP 200 and
-  an owner of `anonymous` rather than refusing, so the verifier refuses that
-  value rather than letting it become a policy principal.
 - **`InvalidAccessKeyId`** — the key id does not exist in this account. Re-read
-  it from the Console; it is not a statement about the buckets.
+  it from the Console.
+- **`SignatureDoesNotMatch`** — the key id exists and the secret does not match
+  it. Re-read the secret from the password manager; it is shown once at
+  creation, so a stale copy is the usual cause.
+- **`the endpoint saw this request as unsigned`** — a request went out with no
+  `Authorization` header at all, which nothing here does; treat it as a bug
+  rather than a credential problem and record the output. The check exists
+  because this endpoint answers an unsigned `ListAllMyBuckets` with HTTP 200
+  and an owner of `anonymous` rather than refusing, and `anonymous` is a
+  principal that cannot exist — so it must never reach a rendered policy.
+
+A missing or empty variable does not reach the endpoint at all: the script
+exits 2 with `no credentials in the environment` before sending anything.
 
 ---
 
@@ -255,22 +264,30 @@ Both lines must read `PASS`.
   The message carries the exact command to remove it. It denies only reads under
   `fence-probe/`, so nothing real is affected, but do not leave it.
 - **`the bucket carries no policy to displace` — `INCONCLUSIVE`.** The bucket
-  already has a policy, and running the probe would replace it. The message
-  says which policy it found. If it is this step's own probe left behind by an
-  interrupted run, replacing it costs nothing — re-run the command above with
-  `--replace-existing-policy` added, and it is removed at the end of the run:
+  already has a policy, and applying the probe would replace it. **Nothing
+  restores a displaced document** — the probe is applied and then deleted, so
+  whatever it replaced is gone and the bucket is left with no policy at all.
+  The message says which policy it found, and there are only two cases:
 
-  ```bash
-  python3 infra/provisioning/scripts/verify-bucket-fence.py --probe-notprincipal \
-    --bucket branchleft-db-backups \
-    --foreign-control-bucket branchleft-tenant-pulumi-state \
-    --policy-file /tmp/branchleft-db-backups-policy.json \
-    --replace-existing-policy
-  ```
+  - **This step's own probe, left behind by an interrupted run.** It denies
+    only reads under `fence-probe/` and constrains nothing else, so replacing
+    it costs nothing. Re-run the command above with `--replace-existing-policy`
+    added, and it is removed at the end of the run:
 
-  If it is a real fence, **do not pass the flag**: the bucket would be unfenced
-  for the duration of the probe, and there is nothing to learn — the engine
-  question is a property of the account and this step has already settled it.
+    ```bash
+    python3 infra/provisioning/scripts/verify-bucket-fence.py --probe-notprincipal \
+      --bucket branchleft-db-backups \
+      --foreign-control-bucket branchleft-tenant-pulumi-state \
+      --policy-file /tmp/branchleft-db-backups-policy.json \
+      --replace-existing-policy
+    ```
+
+  - **Any other document.** Refused, and `--replace-existing-policy` does not
+    override it — the flag cannot make the removal reversible. There is also
+    nothing to learn: the engine question is a property of the account and this
+    step settles it once, so a bucket that is already fenced does not need it.
+    If you genuinely mean to run it here, remove that policy by hand first and
+    keep a copy of it.
 
 This tests the *engine*, not the bucket, so its answer holds for the whole
 account — section 2 does not repeat it.
@@ -358,6 +375,12 @@ section 2 on anything less.**
     credential and the control bucket, then re-run.
   - *`InvalidAccessKeyId` / `SignatureDoesNotMatch`* — a wrong key id or a
     wrong secret. Not a statement about the policy.
+  - *`<Code>: not a denial and not a success`* — the engine refused with a code
+    this file does not classify. Every denial code it knows was captured from
+    an *unsigned* request, so a refusal aimed at a live-but-fenced key could
+    arrive as something else. **Record the code verbatim and hand it back**
+    before re-running: it is a one-line addition to `DENIAL_CODES`, and
+    guessing at it instead is how a code that is not a denial becomes one.
   - *`no S3 error document to read a code from`*, or *the request did not
     complete* — the response could not be interpreted, so no verdict exists.
     Re-run; if it persists, record the output verbatim and stop.

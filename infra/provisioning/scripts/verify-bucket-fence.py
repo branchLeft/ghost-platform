@@ -879,6 +879,14 @@ def preflight(verifier: Verifier, *, bucket: str, policy_document: bytes) -> lis
         rows.append(("the policy file is readable", INCONCLUSIVE, str(error), "", True))
         return rows
 
+    # EVERY Deny has to exempt the credential, not merely one of them. A policy
+    # is a set of statements that all apply, so one statement naming the
+    # credential says nothing about what the next one withholds from it -- and
+    # a check that stopped at the first exemption would report a credential as
+    # safe while a second statement locked it out. That is unrecoverable for
+    # the operator, and on the state bucket it stops every tenant deploy for
+    # the workload. Both start as `None` so that a policy with no Deny of that
+    # shape at all reads as "not established" rather than as an exemption.
     bucket_arn = f"arn:aws:s3:::{bucket}"
     objects_prefix = f"{bucket_arn}/"
     exempts_operator = None
@@ -893,8 +901,8 @@ def preflight(verifier: Verifier, *, bucket: str, policy_document: bytes) -> lis
         named = [named] if isinstance(named, str) else list(named)
         if bucket_arn in resources:
             exempts_operator = (exempts_operator is not False) and operator_arn in named
-        if any(r.startswith(objects_prefix) for r in resources) and workload_arn in named:
-            exempts_workload = True
+        if any(r.startswith(objects_prefix) for r in resources):
+            exempts_workload = (exempts_workload is not False) and workload_arn in named
 
     rows.append(
         (
@@ -913,7 +921,11 @@ def preflight(verifier: Verifier, *, bucket: str, policy_document: bytes) -> lis
         (
             "the policy exempts THIS workload credential",
             PASS if exempts_workload else FAIL,
-            "" if exempts_workload else f"no object-level Deny exempts {workload_arn}",
+            ""
+            if exempts_workload
+            else f"an object-level Deny does not exempt {workload_arn}. Applying this policy "
+            f"would leave that key unable to use the bucket -- on the backup bucket, silently "
+            f"until the next restore; on the state bucket, at the next tenant deploy.",
             workload_arn,
             False,
         )
@@ -982,39 +994,62 @@ def assert_probe_policy_is_reversible(policy: dict, bucket: str) -> None:
                 )
 
 
-def _existing_policy_refusal(bucket: str, body: bytes) -> tuple:
+def stored_policy_id(body: bytes) -> str | None:
+    """The `Id` of a policy document, or None if there is not one to read."""
+    try:
+        stored = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return stored.get("Id") if isinstance(stored, dict) else None
+
+
+def _existing_policy_refusal(bucket: str, stored_id: str | None, replace_existing: bool) -> tuple:
     """The row that stops `--probe-notprincipal` on a bucket that has a policy.
 
-    Which policy it is decides what an operator should do next, and the
-    document is already in hand, so the message says which case this is rather
-    than leaving both to be weighed. A leftover probe from an interrupted run
-    is safe to replace; a real fence is not.
-    """
-    command = "--probe-notprincipal ... --replace-existing-policy"
-    try:
-        stored_id = json.loads(body.decode("utf-8")).get("Id")
-    except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-        stored_id = None
+    NOTHING HERE RESTORES A DISPLACED DOCUMENT. The probe is applied and then
+    deleted, so a policy it replaced is gone -- there is no undo, and on a
+    fenced bucket that means the fence is off from that moment on. So
+    `--replace-existing-policy` permits exactly one thing: replacing a probe
+    policy this file wrote itself, which constrains nothing and is what an
+    interrupted run leaves behind. Any other document is refused whether or not
+    the flag was passed, because the flag cannot make its removal reversible.
 
+    Which policy it is therefore decides the whole answer, and the document is
+    already in hand, so the message says which case this is rather than leaving
+    the operator to weigh both.
+    """
     if stored_id == probe_policy_id(bucket):
-        reason = (
+        return (
+            "the bucket carries no policy to displace",
+            INCONCLUSIVE,
             f"a previous --probe-notprincipal run left its own probe policy on {bucket} "
             f"(Id {stored_id}). It denies reads under {PROBE_PREFIX} to every key but the "
             f"operator and constrains nothing else, so replacing it costs nothing: re-run "
-            f"this exact command with --replace-existing-policy ({command}) and it will be "
-            f"removed at the end of the run."
+            f"this exact command with --replace-existing-policy added, and it is removed at "
+            f"the end of the run.",
+            "",
+            True,
         )
-    else:
-        reason = (
-            f"{bucket} already carries a policy"
-            + (f" (Id {stored_id})" if stored_id else "")
-            + ". Running the probe would replace it and leave the bucket unfenced until the "
-            "probe is removed. If this bucket is already fenced, do not run the probe -- the "
-            "engine question it answers is a property of the account and section 1 of "
-            "RUNBOOK-bucket-fencing.md has settled it. Otherwise re-run with "
-            f"--replace-existing-policy ({command})."
-        )
-    return ("the bucket carries no policy to displace", INCONCLUSIVE, reason, "", True)
+    named = f" (Id {stored_id})" if stored_id else ""
+    flagged = (
+        " --replace-existing-policy does not cover this: it permits replacing a leftover "
+        "probe policy and nothing else, because nothing here can put a displaced document "
+        "back."
+        if replace_existing
+        else ""
+    )
+    return (
+        "the bucket carries no policy to displace",
+        INCONCLUSIVE,
+        f"{bucket} already carries a policy{named} that this run did not write. Applying the "
+        f"probe would replace it, and removing the probe afterwards would leave the bucket "
+        f"with no policy at all -- if that document is a fence, the bucket is then unfenced "
+        f"and stays that way.{flagged} The engine question this step answers is a property "
+        f"of the account, so a bucket that is already fenced does not need it. If you "
+        f"genuinely mean to run it here, remove that policy by hand first and keep a copy.",
+        "",
+        True,
+    )
 
 
 def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: bool) -> list[tuple]:
@@ -1039,11 +1074,14 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
         query={"policy": ""},
     )
     status, body, failure = verifier.request(existing)
-    if classify(status, body, failure)[0] == "allowed" and not replace_existing:
-        # Replacing a live fence with the probe would un-fence the bucket for
-        # the duration. In the documented sequence the bucket is still open at
-        # this point, so this only fires on a re-run.
-        return [_existing_policy_refusal(bucket, body)]
+    if classify(status, body, failure)[0] == "allowed":
+        # In the documented sequence the bucket is still open at this point, so
+        # this only fires on a re-run. Nothing here can restore a document the
+        # probe displaces, so the only one it will replace is a probe policy of
+        # its own -- see `_existing_policy_refusal`.
+        stored_id = stored_policy_id(body)
+        if stored_id != probe_policy_id(bucket) or not replace_existing:
+            return [_existing_policy_refusal(bucket, stored_id, replace_existing)]
 
     policy = probe_policy(bucket, operator_arn)
     assert_probe_policy_is_reversible(policy, bucket)
@@ -1061,11 +1099,21 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
     if outcome != "allowed":
         return [("the probe object is written", INCONCLUSIVE, reason, "", True)]
 
-    with _temporary_policy(verifier, bucket, policy, rows):
-        # Both reads happen inside the block, so the probe policy is removed
-        # whatever either of them does.
-        operator_outcome, operator_reason = verifier.run(_read(bucket, "operator", probe_key))
-        foreign_outcome, foreign_reason = verifier.run(_read(bucket, "foreign", probe_key))
+    with _temporary_policy(verifier, bucket, policy, rows) as probe:
+        if probe.applied:
+            # Both reads happen inside the block, so the probe policy is
+            # removed whatever either of them does.
+            operator_outcome, operator_reason = verifier.run(_read(bucket, "operator", probe_key))
+            foreign_outcome, foreign_reason = verifier.run(_read(bucket, "foreign", probe_key))
+        else:
+            # Whatever these reads returned would be the bucket answering about
+            # some other policy, or about none. Reporting PASS from them would
+            # be an engine verdict drawn from a document the engine never saw.
+            operator_outcome = foreign_outcome = "error"
+            operator_reason = foreign_reason = (
+                "the probe policy was not applied, so a read here says nothing about how "
+                "this engine evaluates NotPrincipal"
+            )
 
     rows.append(
         (
@@ -1128,13 +1176,24 @@ def _policy_probe(role: str, bucket: str, method: str, payload: bytes = b"") -> 
 
 
 class _temporary_policy:
-    """Applies a policy, and removes it again whatever happens in between."""
+    """Applies a policy, and removes it again whatever happens in between.
+
+    `applied` says whether the PUT succeeded, and the removal is conditional on
+    it. `DeleteBucketPolicy` removes whatever document is on the bucket, not
+    the one this block meant to put there -- so deleting after a refused PUT
+    would remove a policy this run never displaced, and on a fenced bucket that
+    is the fence. The engine rejecting a `NotPrincipal` document outright is an
+    anticipated outcome, not an exotic one: it is case 4 in
+    `RUNBOOK-bucket-fencing.md`'s own list of ways this engine can differ from
+    its documentation.
+    """
 
     def __init__(self, verifier: Verifier, bucket: str, policy: dict, rows: list[tuple]):
         self.verifier = verifier
         self.bucket = bucket
         self.document = json.dumps(policy).encode("utf-8")
         self.rows = rows
+        self.applied = False
 
     def __enter__(self):
         outcome, reason = classify(
@@ -1142,7 +1201,8 @@ class _temporary_policy:
                 _policy_probe("operator", self.bucket, "PUT", self.document)
             )
         )
-        if outcome != "allowed":
+        self.applied = outcome == "allowed"
+        if not self.applied:
             self.rows.append(
                 (
                     "the probe policy is accepted",
@@ -1155,6 +1215,8 @@ class _temporary_policy:
         return self
 
     def __exit__(self, *exc):
+        if not self.applied:
+            return False
         outcome, reason = classify(
             *self.verifier.request(_policy_probe("operator", self.bucket, "DELETE"))
         )
@@ -1166,10 +1228,11 @@ class _temporary_policy:
                     f"the probe policy is still on {self.bucket} and denies reads under "
                     f"{PROBE_PREFIX} to every key but the operator ({reason}). Re-run this "
                     f"command with --replace-existing-policy: it replaces the leftover probe "
-                    f"and removes the replacement, and needs nothing but python3. If that "
-                    f"also leaves it behind, delete it directly: aws --endpoint-url "
+                    f"and removes the replacement, and needs nothing but python3. Failing "
+                    f"that, delete it directly with aws --endpoint-url "
                     f"https://{self.verifier.host} s3api delete-bucket-policy --bucket "
-                    f"{self.bucket}",
+                    f"{self.bucket} -- which prints a client-internal error rather than the "
+                    f"S3 one if it is refused in turn, so read its exit code, not its text",
                     "",
                     True,
                 )
@@ -1300,13 +1363,24 @@ def _account_row(verifier: Verifier, role: str) -> tuple:
 
 
 def report(
-    rows: list[tuple], problems: list[str], stream, *, applied: bool, clean_message: str = ""
+    rows: list[tuple],
+    problems: list[str],
+    stream,
+    *,
+    applied: bool,
+    clean_message: str = "",
+    banner: str = "",
 ) -> int:
     """`rows` are `(name, status, reason, note, critical)`.
 
     `clean_message` replaces the closing line for a mode whose clean run is not
     a statement about a policy. Without it, `--show-account` would end by
     saying the policy is safe to apply, having read no policy at all.
+
+    `banner` replaces the shout raised by a failed critical row, for the same
+    reason: `--probe-notprincipal` writes no fence, so neither "the bucket may
+    be locked" nor "re-render it against the account id printed above" is a
+    true sentence about what just happened there.
     """
     width = max(len(name) for name, _, _, _, _ in rows)
     for name, status, reason, note, _ in rows:
@@ -1324,7 +1398,9 @@ def report(
     inconclusive = [row for row in rows if row[1] == INCONCLUSIVE]
 
     if any(row[4] for row in failed + inconclusive):
-        if applied:
+        if banner:
+            print(f"\n{banner}", file=stream)
+        elif applied:
             print(
                 "\n*** THE BUCKET MAY BE LOCKED. The operator key could not replace the policy. "
                 "No other key in the project can either. Do not leave this terminal: raise a "
@@ -1336,7 +1412,9 @@ def report(
             print(
                 "\n*** DO NOT APPLY THIS POLICY. Nothing has been written yet, and applying it "
                 "in this state would lock the bucket with no recovery inside the account. "
-                "Re-render it against the account id printed above.",
+                "Re-render it against the account id this pre-flight resolved; if no account "
+                "was resolved above, fix that credential first -- nothing can be decided "
+                "without it.",
                 file=stream,
             )
     if failed:
@@ -1501,7 +1579,16 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         except VerifierError as error:
             print(f"error: {error}", file=sys.stderr)
             return 2
-        return report(rows, [], sys.stdout, applied=False)
+        return report(
+            rows,
+            [],
+            sys.stdout,
+            applied=False,
+            banner="*** DO NOT APPLY THE REAL FENCE. This step is the gate for "
+            "everything after it, and a critical row above did not pass. No fence was "
+            "written here; if `THE PROBE POLICY IS REMOVED` reads FAIL, the probe policy "
+            "is still on the bucket and that row carries the fix.",
+        )
 
     if args.preflight:
         return report(

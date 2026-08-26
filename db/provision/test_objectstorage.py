@@ -377,6 +377,19 @@ class OwnerIdTests(unittest.TestCase):
         with self.assertRaises(os3.ObjectStorageError):
             self._call(lambda url, headers: (200, b"not xml"))
 
+    def test_the_two_failures_are_told_apart_in_the_message(self):
+        # They send an operator to different places: a response that is not XML
+        # means something other than the storage endpoint answered, while one
+        # without an Owner means the endpoint did and the account cannot be
+        # resolved from it.
+        with self.assertRaises(os3.ObjectStorageError) as not_xml:
+            self._call(lambda url, headers: (200, b"not xml"))
+        self.assertIn("not XML", str(not_xml.exception))
+
+        with self.assertRaises(os3.ObjectStorageError) as no_owner:
+            self._call(lambda url, headers: (200, b"<ListAllMyBucketsResult/>"))
+        self.assertIn("no Owner/ID", str(no_owner.exception))
+
 
 class KnownAnswerTests(unittest.TestCase):
     """Cross-checks `build_headers` against a second, independently written
@@ -618,6 +631,53 @@ class SignedRequestTests(unittest.TestCase):
         rendered = captured["url"] + repr(captured["headers"]) + repr(captured["payload"])
         self.assertNotIn("SECRET", rendered)
 
+    def test_the_verb_reaches_the_transport(self):
+        for method in ("GET", "PUT", "DELETE"):
+            with self.subTest(method=method):
+                _, captured = self._send(method=method, key="k")
+                self.assertEqual(captured["method"], method)
+
+    def test_the_query_string_is_inside_the_signature_and_not_only_in_the_url(self):
+        # Every bucket sub-resource the fence verifier probes -- `?policy=`,
+        # `?versions=`, `?versionId=`, `?list-type=2` -- depends on this
+        # binding. Signed without the query, all of them come back
+        # SignatureDoesNotMatch, which the verifier classifies as `error` and
+        # reports as INCONCLUSIVE: no fence could ever be proven, and no test
+        # asserting only the URL and the SignedHeaders list would notice.
+        #
+        # Asserted against `build_headers`, which `KnownAnswerTests` below
+        # cross-checks against an independently written SigV4, using the
+        # `x-amz-date` the request actually carried so the comparison is exact.
+        query = {"policy": ""}
+        _, captured = self._send(method="PUT", query=query, payload=b'{"a":1}')
+        now = datetime.datetime.strptime(
+            captured["headers"]["x-amz-date"], "%Y%m%dT%H%M%SZ"
+        ).replace(tzinfo=datetime.timezone.utc)
+
+        def reference(with_query):
+            return os3.build_headers(
+                bucket="branchleft-db-backups",
+                key=None,
+                payload=b'{"a":1}',
+                host="hel1.your-objectstorage.com",
+                region="hel1",
+                access_key="AK",
+                secret_key="SECRET",
+                now=now,
+                query=with_query,
+                method="PUT",
+            )["Authorization"]
+
+        self.assertEqual(captured["headers"]["Authorization"], reference(query))
+        self.assertNotEqual(captured["headers"]["Authorization"], reference(None))
+
+    def test_a_different_query_produces_a_different_signature(self):
+        signatures = set()
+        for query in ({"policy": ""}, {"versions": ""}, {"list-type": "2"}, None):
+            _, captured = self._send(query=query)
+            signatures.add(captured["headers"]["Authorization"])
+        self.assertEqual(len(signatures), 4)
+
 
 class ParseOwnerIdTests(unittest.TestCase):
     def test_reads_the_id_out_of_a_namespaced_response(self):
@@ -632,6 +692,27 @@ class ParseOwnerIdTests(unittest.TestCase):
 
     def test_a_response_without_an_owner_yields_nothing(self):
         self.assertIsNone(os3.parse_owner_id(b"<ListAllMyBucketsResult/>"))
+
+    # `ID` is not a reserved element name, and the account id is the one value
+    # whose being wrong is unrecoverable: an ARN carrying the right access key
+    # under the wrong account names a principal that does not exist, so a
+    # `NotPrincipal` exemption exempts nobody and the bucket cannot be
+    # recovered from inside the account. The contract is therefore "the `ID`
+    # under `Owner`", not "the first `ID` in the document" -- constructed
+    # rather than observed, because no response carrying a competing `ID` has
+    # been seen; it pins the contract so a looser parser cannot pass.
+    COMPETING_ID = (
+        b'<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+        b"<RequestedBy><ID>not-an-account</ID></RequestedBy>"
+        b"%s</ListAllMyBucketsResult>"
+    )
+
+    def test_only_the_ID_under_Owner_counts(self):
+        body = self.COMPETING_ID % b"<Owner><ID>p1231234</ID></Owner>"
+        self.assertEqual(os3.parse_owner_id(body), "p1231234")
+
+    def test_an_ID_outside_Owner_is_not_an_account(self):
+        self.assertIsNone(os3.parse_owner_id(self.COMPETING_ID % b""))
 
     def test_an_unsigned_requests_owner_is_returned_verbatim_for_the_caller_to_refuse(self):
         # This endpoint answers an UNSIGNED `GET /` with HTTP 200 and this
@@ -691,6 +772,45 @@ class UrllibRequestTests(unittest.TestCase):
         ):
             os3.urllib_request("https://host/b", {}, b"", "GET")
         self.assertIsNone(captured["request"].data)
+
+    def test_the_request_carries_the_verb_it_was_given(self):
+        # The one place the real HTTP verb is chosen, in the transport shared
+        # with db1's backup pipeline. urllib infers GET or POST from `data`
+        # unless `method` is passed, so a regression here turns every PUT and
+        # DELETE into a GET: the fence is never written, the write-denial
+        # probes silently become read probes, and cleanup removes nothing --
+        # all of it green, because every other seam takes the verb as a
+        # parameter and never reaches urllib.
+        for method, payload in (("GET", b""), ("PUT", b"x"), ("PUT", b""), ("DELETE", b"")):
+            with self.subTest(method=method, payload=payload):
+                captured = {}
+                with unittest.mock.patch.object(
+                    os3.urllib.request, "urlopen", self._urlopen(captured, self._Response())
+                ):
+                    os3.urllib_request("https://host/b/k", {}, payload, method)
+                self.assertEqual(captured["request"].get_method(), method)
+
+    def test_every_named_operation_sends_its_own_verb(self):
+        # Asserted end to end rather than on the transport alone, so a caller
+        # that passed the wrong verb is caught as well as a transport that
+        # dropped it.
+        seen = {}
+
+        def capture(url, headers, payload, method):
+            seen[url.split("?")[0].rsplit("/", 1)[-1] + ":" + method] = True
+            return 200, OwnerIdTests.RESPONSE if url.endswith("/") else b"<ListBucketResult/>"
+
+        common = dict(
+            bucket="b",
+            endpoint="hel1.your-objectstorage.com",
+            region="hel1",
+            access_key="AK",
+            secret_key="SECRET",
+        )
+        os3.signed_request(method="PUT", transport=capture, key="k", payload=b"x", **common)
+        os3.signed_request(method="DELETE", transport=capture, key="k", **common)
+        os3.signed_request(method="GET", transport=capture, key="k", **common)
+        self.assertEqual(sorted(seen), ["k:DELETE", "k:GET", "k:PUT"])
 
     def test_a_4xx_is_returned_rather_than_raised(self):
         error = os3.urllib.error.HTTPError(
