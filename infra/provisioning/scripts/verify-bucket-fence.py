@@ -50,21 +50,27 @@ throughout, and the probe is removed at the end. That reversibility is asserted
 in code before the policy is sent, not assumed.
 
 AND THEN `--preflight`, which resolves each credential's own storage account and
-confirms the policy names those principals. Nothing else can: every principal in
-a rendered policy comes from one `--project-id` argument, so the generator's own
-recoverability check compares a fabricated ARN against itself and passes for any
-value at all. Live, an ARN carrying the right access key under the wrong account
-names a principal that does not exist -- `NotPrincipal` exempts nobody, the
-operator loses `PutBucketPolicy` along with everyone else, and the bucket cannot
-be recovered from inside the account. One mistyped digit is enough.
-`--preflight` writes nothing.
+then evaluates the policy against the ARN built from it. Nothing else can:
+every principal in a rendered policy comes from one `--project-id` argument, so
+the generator's own recoverability check compares a fabricated ARN against
+itself and passes for any value at all. Live, an ARN carrying the right access
+key under the wrong account names a principal that does not exist --
+`NotPrincipal` exempts nobody, the operator loses `PutBucketPolicy` along with
+everyone else, and the bucket cannot be recovered from inside the account. One
+mistyped digit is enough. `--preflight` writes nothing.
+
+It asks that as an EVALUATION question, through `bucketpolicy.decide`, and not
+by reading `NotPrincipal` lists. A working fence contains Deny statements that
+name only the operator -- the version-destroying object actions are withheld
+from the workload deliberately -- so "this Deny does not name the workload" is
+what a correct fence looks like, and a structural reading of it condemns the
+policy this repository's own renderer emits.
 
 `--preflight` also exercises the transport every probe uses, on all three
-credentials, before anything has been written. That is deliberate: the earlier
-version of this file read objects through an external `curl` and resolved
-accounts through the `aws` CLI, so a workstation missing one of them discovered
-it in the middle of `--probe-notprincipal`, after a probe policy had been
-applied to and removed from a production bucket.
+credentials, before anything has been written. A transport that does not work
+has to surface where nothing has been written yet, not in the middle of
+`--probe-notprincipal`, which applies a policy to a production bucket and
+removes it again.
 
 `--apply` then runs the pre-flight and the double PUT in ONE process, so the
 guard cannot be skipped by an operator who ran the real `put-bucket-policy` from
@@ -133,9 +139,19 @@ import urllib.parse
 import uuid
 import xml.etree.ElementTree as ET
 
+from bucketpolicy import (
+    RECOVERY_ACTIONS,
+    WORKLOAD_BUCKET_ACTIONS,
+    WORKLOAD_OBJECT_ACTIONS,
+    decide,
+)
+
 try:
     import shared_objectstorage as storage
-except ImportError as _error:  # pragma: no cover - exercised through SIGNING_UNAVAILABLE
+except Exception as _error:  # pragma: no cover - exercised through SIGNING_UNAVAILABLE
+    # Broader than ImportError on purpose: a corrupt `objectstorage.py` raises
+    # SyntaxError, and an operator needs the same one-line refusal for that as
+    # for a missing file, not a traceback.
     storage = None
     SIGNING_UNAVAILABLE = str(_error)
 else:
@@ -288,13 +304,26 @@ def s3_error_code(body: bytes) -> str | None:
     truncated response, an object whose own contents mention a code -- yields
     nothing to act on rather than a code lifted out of prose.
 
-    The body is capped before parsing because ElementTree expands internal
-    entities, so a small document can otherwise become a large string, and the
-    code is held to `S3_ERROR_CODE` after it.
+    THIS FUNCTION NEVER RAISES, and the response body is the one input here
+    that an attacker on the far end of the connection chooses. Three bounds,
+    because capping the input alone does not cap the work:
+
+      1. A `DOCTYPE` is refused outright. Internal entities are the only way a
+         small body becomes a large one, ElementTree expands them, and no S3
+         error document has ever carried a doctype -- so 500 bytes cannot
+         become a gigabyte of `Code`.
+      2. The body is capped before parsing, and the code is held to
+         `S3_ERROR_CODE` after it.
+      3. Anything else the parser can raise comes back as "not an error
+         document". A response that cannot be read is one no verdict can be
+         drawn from, which is the same answer by a different route.
     """
+    text = _decoded(body).strip()
+    if "<!DOCTYPE" in text:
+        return None
     try:
-        root = ET.fromstring(_decoded(body).strip())
-    except ET.ParseError:
+        root = ET.fromstring(text)
+    except Exception:
         return None
     if _local_name(root.tag) != "Error":
         return None
@@ -694,9 +723,8 @@ def parse_object_versions(body: bytes) -> tuple[list[tuple[str, str]], bool, dic
     """`(key, version id)` for every version and delete marker on one page.
 
     Also returns whether the listing is truncated and the query parameters that
-    resume it, so the caller can page rather than assume one response is the
-    whole bucket. `aws s3api` paginated on the caller's behalf; nothing does
-    that here.
+    resume it. One response is a page, not the bucket: read as the whole
+    listing it reports a bucket clean while probe objects remain in it.
     """
     root = ET.fromstring(body)
     entries: list[tuple[str, str]] = []
@@ -801,11 +829,11 @@ def account_of(verifier: Verifier, role: str) -> tuple[str | None, str]:
     account = storage.parse_owner_id(body)
     if account is None:
         return None, "no Owner/ID in the ListAllMyBuckets response"
-    if account == ANONYMOUS_OWNER:
+    if account.casefold() == ANONYMOUS_OWNER:
         # This endpoint answers an unsigned `GET /` with 200 and this owner id.
-        # Naming it in a policy principal would be a principal that cannot
-        # exist, which is exactly the unrecoverable mistake pre-flight is here
-        # to catch.
+        # Naming it in a policy principal names one that cannot exist, and that
+        # is unrecoverable, so the comparison folds case rather than trusting
+        # the endpoint to spell it the way it did last time.
         return None, "the endpoint saw this request as unsigned, so it resolved no account"
     return account, ""
 
@@ -879,58 +907,93 @@ def preflight(verifier: Verifier, *, bucket: str, policy_document: bytes) -> lis
         rows.append(("the policy file is readable", INCONCLUSIVE, str(error), "", True))
         return rows
 
-    # EVERY Deny has to exempt the credential, not merely one of them. A policy
-    # is a set of statements that all apply, so one statement naming the
-    # credential says nothing about what the next one withholds from it -- and
-    # a check that stopped at the first exemption would report a credential as
-    # safe while a second statement locked it out. That is unrecoverable for
-    # the operator, and on the state bucket it stops every tenant deploy for
-    # the workload. Both start as `None` so that a policy with no Deny of that
-    # shape at all reads as "not established" rather than as an exemption.
     bucket_arn = f"arn:aws:s3:::{bucket}"
-    objects_prefix = f"{bucket_arn}/"
-    exempts_operator = None
-    exempts_workload = None
-    for statement in policy.get("Statement", []):
-        if statement.get("Effect") != "Deny":
-            continue
-        resource = statement.get("Resource", [])
-        resources = [resource] if isinstance(resource, str) else list(resource)
-        not_principal = statement.get("NotPrincipal", {})
-        named = not_principal.get("AWS", []) if isinstance(not_principal, dict) else []
-        named = [named] if isinstance(named, str) else list(named)
-        if bucket_arn in resources:
-            exempts_operator = (exempts_operator is not False) and operator_arn in named
-        if any(r.startswith(objects_prefix) for r in resources):
-            exempts_workload = (exempts_workload is not False) and workload_arn in named
+    try:
+        operator_denied = _denied_actions(policy, operator_arn, bucket_arn, RECOVERY_ACTIONS, [])
+        workload_denied = _denied_actions(
+            policy, workload_arn, bucket_arn, WORKLOAD_BUCKET_ACTIONS, WORKLOAD_OBJECT_ACTIONS
+        )
+    except (KeyError, TypeError, AttributeError) as error:
+        # `--policy-file` takes any file. A document `decide` cannot walk is one
+        # nothing here can reason about, which is not the same as a safe one.
+        rows.append(
+            (
+                "the policy can be evaluated",
+                INCONCLUSIVE,
+                f"this document is not a policy this tool can evaluate ({error!r}), so "
+                f"whether it locks a credential out is unknown",
+                "",
+                True,
+            )
+        )
+        return rows
 
     rows.append(
         (
-            "the policy exempts THIS operator credential",
-            PASS if exempts_operator else FAIL,
+            "the policy leaves THIS operator credential able to replace it",
+            PASS if not operator_denied else FAIL,
             ""
-            if exempts_operator
-            else f"no bucket-level Deny exempts {operator_arn}. Applying this policy would "
-            f"lock the bucket permanently -- most likely the --project-id it was rendered "
-            f"with is not {account}.",
+            if not operator_denied
+            else f"this policy denies {operator_arn} {', '.join(operator_denied)}. Applying it "
+            f"would lock the bucket permanently -- most likely the --project-id it was "
+            f"rendered with is not {account}.",
             operator_arn,
             True,
         )
     )
     rows.append(
         (
-            "the policy exempts THIS workload credential",
-            PASS if exempts_workload else FAIL,
+            "the policy leaves THIS workload credential able to use the bucket",
+            PASS if not workload_denied else FAIL,
             ""
-            if exempts_workload
-            else f"an object-level Deny does not exempt {workload_arn}. Applying this policy "
-            f"would leave that key unable to use the bucket -- on the backup bucket, silently "
-            f"until the next restore; on the state bucket, at the next tenant deploy.",
+            if not workload_denied
+            else f"this policy denies {workload_arn} {', '.join(workload_denied)}. Applying it "
+            f"would break that key's own work -- on the backup bucket, silently until the "
+            f"next restore; on the state bucket, at the next tenant deploy.",
             workload_arn,
             False,
         )
     )
     return rows
+
+
+def _denied_actions(
+    policy: dict,
+    principal: str,
+    bucket_arn: str,
+    bucket_actions: list[str],
+    object_actions: list[str],
+) -> list[str]:
+    """Which of the actions this credential needs the policy takes away.
+
+    WHETHER A CREDENTIAL IS LOCKED OUT IS AN EVALUATION QUESTION. `decide` is
+    the repository's model of S3 evaluation and the renderer's own
+    `assert_recoverable` already asks it this way; asking it here as well is
+    two independent checks of one invariant, which is the intent.
+
+    Reading `NotPrincipal` lists structurally cannot answer it. A working fence
+    contains Deny statements that name only the operator -- the version-
+    destroying actions are withheld from the workload on purpose -- so "this
+    Deny does not name the workload" describes the fence doing its job.
+
+    Object actions are asked at the object space the fence governs, not at a
+    concrete key. A key would give a different answer for a statement scoped to
+    a narrower prefix -- `--probe-notprincipal` applies exactly such a policy,
+    denying reads under the probe prefix to everyone but the operator -- and
+    reporting the workload locked out because of it would be false.
+
+    This is still a model. `decide` is not Hetzner's engine, a Deny scoped to
+    some other prefix is not visible at this resource, and the live probes are
+    what turn any of it into evidence.
+    """
+    denied = []
+    for action in bucket_actions:
+        if decide(policy, principal, action, bucket_arn) != "allow":
+            denied.append(action)
+    for action in object_actions:
+        if decide(policy, principal, action, f"{bucket_arn}/*") != "allow":
+            denied.append(action)
+    return denied
 
 
 def probe_policy_id(bucket: str) -> str:
@@ -1073,15 +1136,32 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
         bucket=bucket,
         query={"policy": ""},
     )
+    # THE PROBE PROCEEDS ONLY ON AN AFFIRMATIVE "THERE IS NO POLICY".
+    # Applying it replaces whatever is there and removing it afterwards leaves
+    # nothing, so a bucket whose policy could not be READ is one this step must
+    # not write to: a transient 503, a reset connection, a truncated body and
+    # `AccessDenied` are one outcome here, and treating "unknown" as "empty"
+    # destroys a fence on the strength of a failed request.
     status, body, failure = verifier.request(existing)
-    if classify(status, body, failure)[0] == "allowed":
-        # In the documented sequence the bucket is still open at this point, so
-        # this only fires on a re-run. Nothing here can restore a document the
-        # probe displaces, so the only one it will replace is a probe policy of
-        # its own -- see `_existing_policy_refusal`.
+    outcome, reason = classify(status, body, failure)
+    if outcome == "allowed":
         stored_id = stored_policy_id(body)
         if stored_id != probe_policy_id(bucket) or not replace_existing:
             return [_existing_policy_refusal(bucket, stored_id, replace_existing)]
+    elif s3_error_code(body) != "NoSuchBucketPolicy":
+        return [
+            (
+                "the bucket's current policy is known",
+                INCONCLUSIVE,
+                f"could not read whether {bucket} carries a policy ({reason}). This step "
+                f"replaces whatever is there and removes it afterwards, so it will not run "
+                f"without an affirmative NoSuchBucketPolicy -- an unreadable answer is not "
+                f"an empty bucket. Nothing has been written. Re-run once the endpoint "
+                f"answers, and if it keeps refusing, that refusal is itself the finding.",
+                "",
+                True,
+            )
+        ]
 
     policy = probe_policy(bucket, operator_arn)
     assert_probe_policy_is_reversible(policy, bucket)
@@ -1196,22 +1276,45 @@ class _temporary_policy:
         self.applied = False
 
     def __enter__(self):
-        outcome, reason = classify(
-            *self.verifier.request(
-                _policy_probe("operator", self.bucket, "PUT", self.document)
-            )
+        status, body, failure = self.verifier.request(
+            _policy_probe("operator", self.bucket, "PUT", self.document)
         )
+        outcome, reason = classify(status, body, failure)
         self.applied = outcome == "allowed"
-        if not self.applied:
+        if self.applied:
+            return self
+        if status is None:
+            # The request did not complete, so whether it reached the engine
+            # is unknown -- the policy may be on the bucket. Removing it would
+            # be a DELETE on a bucket whose state this run cannot establish,
+            # which is how a fence gets removed by a probe that never applied
+            # one; leaving it is the safer half of a genuine dilemma, and the
+            # operator has to be told which way it went.
             self.rows.append(
                 (
-                    "the probe policy is accepted",
+                    "THE PROBE POLICY'S FATE IS UNKNOWN",
                     INCONCLUSIVE,
-                    f"this engine rejected a NotPrincipal document outright: {reason}",
+                    f"the PUT of the probe policy got no response ({reason}), so it may or "
+                    f"may not be on {self.bucket}. Nothing was deleted, because a DELETE "
+                    f"here removes whatever is on the bucket rather than only this probe. "
+                    f"Check by hand before doing anything else: aws --endpoint-url "
+                    f"https://{self.verifier.host} s3api get-bucket-policy --bucket "
+                    f"{self.bucket}. A policy with Id {probe_policy_id(self.bucket)} is this "
+                    f"probe and is safe to delete.",
                     "",
                     True,
                 )
             )
+            return self
+        self.rows.append(
+            (
+                "the probe policy is accepted",
+                INCONCLUSIVE,
+                f"this engine rejected a NotPrincipal document outright: {reason}",
+                "",
+                True,
+            )
+        )
         return self
 
     def __exit__(self, *exc):

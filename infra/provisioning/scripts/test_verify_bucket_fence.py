@@ -19,6 +19,7 @@ unlabelled one.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -28,9 +29,12 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.parse
 from unittest import mock
+
+from bucketpolicy import decide
 
 _MODULE_PATH = pathlib.Path(__file__).with_name("verify-bucket-fence.py")
 _spec = importlib.util.spec_from_file_location("verify_bucket_fence", _MODULE_PATH)
@@ -44,32 +48,34 @@ CONTROL = "branchleft-tenant-pulumi-state"
 OPERATOR_KEY = "O" * 20
 WORKLOAD_KEY = "W" * 20
 FOREIGN_KEY = "F" * 20
-ACCOUNT = "p00000000"
+PROJECT_ID = "00000000"
+ACCOUNT = f"p{PROJECT_ID}"
 
 OPERATOR_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{OPERATOR_KEY}"
 WORKLOAD_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{WORKLOAD_KEY}"
 
 ROLE_OF_KEY = {OPERATOR_KEY: "operator", WORKLOAD_KEY: "workload", FOREIGN_KEY: "foreign"}
 
-POLICY = {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "DenyBucketConfigurationExceptOperator",
-            "Effect": "Deny",
-            "NotPrincipal": {"AWS": [OPERATOR_ARN]},
-            "NotAction": ["s3:ListBucket"],
-            "Resource": f"arn:aws:s3:::{FENCED}",
-        },
-        {
-            "Sid": "DenyObjectAccessExceptNamedKeys",
-            "Effect": "Deny",
-            "NotPrincipal": {"AWS": [WORKLOAD_ARN, OPERATOR_ARN]},
-            "Action": "s3:*",
-            "Resource": f"arn:aws:s3:::{FENCED}/*",
-        },
-    ],
-}
+# THE POLICY UNDER TEST IS THE ONE THE TOOL WILL BE POINTED AT. It comes from
+# `render-bucket-fence-policy.py`, not from a stub written here, because a
+# hand-written policy is a fixture built to the assumptions of whoever wrote
+# it: a two-statement stub omits `DenyObjectMutationsExceptOperator`, which is
+# the statement that distinguishes "this Deny does not name the workload"
+# (correct, by design) from "this policy locks the workload out" (an outage).
+# A suite that never evaluates the real document can be entirely green while
+# the only input the tool ever receives is refused.
+_render_spec = importlib.util.spec_from_file_location(
+    "render_bucket_fence_policy", pathlib.Path(__file__).with_name("render-bucket-fence-policy.py")
+)
+render = importlib.util.module_from_spec(_render_spec)
+_render_spec.loader.exec_module(render)
+
+POLICY = render.render_policy(
+    bucket=FENCED,
+    project_id=PROJECT_ID,
+    workload_access_keys=[WORKLOAD_KEY],
+    admin_access_key=OPERATOR_KEY,
+)
 POLICY_DOCUMENT = json.dumps(POLICY).encode()
 
 _TEMP = tempfile.TemporaryDirectory()
@@ -103,13 +109,12 @@ class Response:
 
     `source` opens with `observed:` or `constructed:` and nothing else. A
     fixture observed on the wire constrains the code; one written here
-    constrains only what its author expected, which is how the object-read
-    probes once shipped unable to reach a verdict.
+    constrains only what its author expected, and a probe covered by a fixture
+    nobody checked against the wire can be green and unable to reach a verdict.
 
-    Every instance registers itself. `TestFixtureProvenance` used to walk
-    module globals, which silently skipped every fixture built inside a test
-    method -- so the guard that is supposed to refuse an unlabelled fixture
-    would not have refused the next one written inline.
+    Every instance registers itself, for the body checks in `tearDownModule`
+    that need the actual bytes. The label check is static -- see
+    `_fixture_labels` for why a registry cannot answer it.
     """
 
     every: list["Response"] = []
@@ -283,8 +288,8 @@ NO_SUCH_BUCKET_POLICY = Response(
 
 # Case 4 in RUNBOOK-bucket-fencing.md's list of ways this engine can differ
 # from its documentation: it rejects the NotPrincipal document outright. An
-# anticipated outcome, and the one that used to end with the probe deleting a
-# policy it had never displaced.
+# anticipated outcome, and the one where a probe that applied nothing must not
+# then delete anything.
 REJECTED_POLICY = Response(
     "constructed: an engine refusing a NotPrincipal document. Whether this endpoint accepts "
     "one is the open question the probe exists to settle, so a refusal cannot be captured "
@@ -511,15 +516,67 @@ class TestClassification(unittest.TestCase):
         # is not simply refusing everything.
         self.assertEqual(verify.classify(403, b"<Error><Code>AccessDenied</Code></Error>")[0], "denied")
 
-    def test_an_expensive_document_cannot_produce_an_expensive_reason(self):
-        # ElementTree expands internal entities, so a small body can become a
-        # very large string. The body is capped before parsing and the code is
-        # capped after it.
+    def test_an_expensive_document_is_refused_before_it_is_expanded(self):
+        # CAPPING THE INPUT DOES NOT CAP THE WORK. ElementTree expands internal
+        # entities, so a body well under the input cap becomes a string that is
+        # not: this one is 605 KB and expands to a gigabyte. Python 3.13 refuses
+        # it; 3.9 is a supported target and does not, so the bound has to be
+        # here rather than in the interpreter.
+        #
+        # The response body is the one input an attacker on the far end of the
+        # connection chooses, and it is parsed on the path that decides whether
+        # a bucket is fenced.
         entity = '<!DOCTYPE r [<!ENTITY a "' + "A" * 5000 + '">]>'
-        body = (entity + "<Error><Code>" + "&a;" * 2000 + "</Code></Error>").encode()
+        body = (entity + "<Error><Code>" + "&a;" * 200000 + "</Code></Error>").encode()
+        self.assertGreaterEqual(5000 * 200000, 10**9)
+        started = time.monotonic()
         outcome, reason = verify.classify(403, body)
+        self.assertLess(time.monotonic() - started, 1.0)
         self.assertEqual(outcome, "error")
         self.assertLess(len(reason), 500)
+
+    def test_a_doctype_is_never_treated_as_an_error_document(self):
+        # Internal entities are the only route from a small body to a large
+        # one, and they need a doctype. No S3 error document carries one.
+        self.assertIsNone(
+            verify.s3_error_code(
+                b'<!DOCTYPE Error><Error><Code>AccessDenied</Code></Error>'
+            )
+        )
+        self.assertEqual(
+            verify.classify(403, b'<!DOCTYPE Error><Error><Code>AccessDenied</Code></Error>')[0],
+            "error",
+        )
+
+    def test_the_classifier_never_raises_even_if_the_parser_does(self):
+        # `s3_error_code`'s contract is that it never raises, and `classify`
+        # being total is what keeps `cleanup()` reachable: `run()` calls
+        # `classify(*self.request(probe))`, so the parse of the untrusted body
+        # happens outside the guard in `request`, and an exception escaping
+        # there strands probe objects in a production bucket. Asserted against
+        # the contract rather than against the exceptions this parser happens
+        # to raise today.
+        for failure in (MemoryError("out of memory"), RecursionError(), ValueError("nope")):
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.object(verify.ET, "fromstring", side_effect=failure):
+                    outcome, _ = verify.classify(403, b"<Error><Code>AccessDenied</Code></Error>")
+                self.assertEqual(outcome, "error")
+
+    def test_the_classifier_never_raises_whatever_the_body_is(self):
+        # `run()` calls `classify(*self.request(probe))`, so the parse of the
+        # untrusted body happens outside the guard in `request`. An exception
+        # escaping there skips `cleanup()` and strands probe objects in a
+        # production bucket.
+        for body in (
+            b"\xff\xfe\x00 not utf-8 at all",
+            b"<Error><Code>" + b"\x00" * 100 + b"</Code></Error>",
+            b"<" * 10000,
+            b"<Error>" + b"<a>" * 5000,
+            b'<?xml version="1.0" encoding="NOT-A-CHARSET"?><Error/>',
+        ):
+            with self.subTest(body=body[:20]):
+                outcome, _ = verify.classify(403, body)
+                self.assertEqual(outcome, "error")
 
     def test_a_non_utf8_body_does_not_raise(self):
         # An object read returns the object's own bytes. An exception escaping
@@ -598,11 +655,10 @@ class TestEveryDenialProbeReachesAVerdict(unittest.TestCase):
 
 class TestNoExternalClient(unittest.TestCase):
     def test_a_whole_verification_runs_without_starting_a_process(self):
-        # `aws` cannot render this backend's denials and `curl --aws-sigv4`
-        # needed a credential file and a version check. Neither is reachable
-        # from here any more, and this is asserted on behaviour rather than on
-        # the import list: a subprocess started anywhere under `main` fails the
-        # test.
+        # Asserted on behaviour rather than on the import list: a subprocess
+        # started anywhere under `main` fails this test. No client this file
+        # could shell out to can render this backend's denials, so a probe that
+        # reached one could not reach a verdict.
         with mock.patch.object(
             subprocess, "run", side_effect=AssertionError("a subprocess was started")
         ), mock.patch.object(
@@ -614,6 +670,41 @@ class TestNoExternalClient(unittest.TestCase):
     def test_the_module_does_not_import_subprocess(self):
         self.assertNotIn("subprocess", vars(verify))
         self.assertNotIn("tempfile", vars(verify))
+
+    def test_a_missing_signing_source_is_refused_with_the_fix(self):
+        # A checkout without `db/provision/` can prove nothing. Both the
+        # missing and the corrupt case have to refuse, and they have to refuse
+        # differently: the likely cause of a missing file is someone working
+        # from the scripts directory alone, and that is a fix an operator can
+        # act on. A bare `FileNotFoundError` re-raised from the loader is not.
+        import shared_objectstorage
+
+        missing = pathlib.Path("/nonexistent/objectstorage.py")
+        with mock.patch.object(shared_objectstorage, "_SOURCE", missing):
+            with self.assertRaises(ImportError) as raised:
+                shared_objectstorage._load()
+        message = str(raised.exception)
+        self.assertIn(str(missing), message)
+        self.assertIn("Check out the whole of", message)
+        self.assertNotIn("could not be executed", message)
+
+    def test_a_corrupt_signing_source_is_refused_rather_than_traced_back(self):
+        # SyntaxError is not ImportError, and the caller refuses on ImportError
+        # alone. Both mean the same thing to an operator -- the signing is not
+        # usable -- and both must produce the one-line refusal.
+        import shared_objectstorage
+
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+            handle.write("def broken(:\n")
+            corrupt = pathlib.Path(handle.name)
+        try:
+            with mock.patch.object(shared_objectstorage, "_SOURCE", corrupt):
+                with self.assertRaises(ImportError) as raised:
+                    shared_objectstorage._load()
+            self.assertIn("could not be executed", str(raised.exception))
+            self.assertIn("SyntaxError", str(raised.exception))
+        finally:
+            corrupt.unlink()
 
     def test_the_signing_is_the_one_the_backup_pipeline_uses(self):
         # Not a second copy. `db/provision/objectstorage.py` signs db1's dumps
@@ -738,7 +829,10 @@ class TestPreflight(unittest.TestCase):
         code, output, _ = run(answers, extra_args=["--preflight"])
         self.assertEqual(code, 1)
         self.assertIn("DO NOT APPLY THIS POLICY", output)
-        self.assertIn("the policy exempts THIS operator credential", output)
+        self.assertIn("THIS operator credential able to replace it", output)
+        # The ARN under the wrong account names a principal that does not
+        # exist, so the operator loses recovery along with everyone else.
+        self.assertIn("s3:PutBucketPolicy", output)
 
     def test_a_correctly_rendered_policy_passes_preflight(self):
         code, output, _ = run(a_fully_working_fence(), extra_args=["--preflight"])
@@ -750,11 +844,10 @@ class TestPreflight(unittest.TestCase):
         self.assertEqual([sent for sent in transport.sent if sent.method != "GET"], [])
 
     def test_preflight_exercises_the_transport_every_probe_uses(self):
-        # The gap this closes: the object reads used to go through an external
-        # `curl` that pre-flight never invoked, so a workstation missing it, or
-        # carrying one too old for `--aws-sigv4`, found out in the middle of
-        # --probe-notprincipal -- after a probe policy had been applied to and
-        # removed from a production bucket. Pre-flight now signs and sends a
+        # A transport that does not work has to surface where nothing has been
+        # written yet. The mode that discovers it otherwise is
+        # --probe-notprincipal, which applies a policy to a production bucket
+        # and removes it again. Pre-flight now signs and sends a
         # real request on each of the three credentials.
         _, output, transport = run(a_fully_working_fence(), extra_args=["--preflight"])
         self.assertIn("the signed transport reaches the endpoint", output)
@@ -788,67 +881,40 @@ class TestPreflight(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(verify.INCONCLUSIVE, output)
 
-    def test_a_second_deny_that_locks_a_credential_out_is_not_masked_by_the_first(self):
-        # A policy is a set of statements that all apply, so one statement
-        # naming a credential says nothing about what the next one withholds
-        # from it. A check that stopped at the first exemption would report the
-        # credential as safe while a second statement locked it out -- and
-        # `--apply` gates on these rows, so it would then write the policy.
-        #
-        # The route in is `RUNBOOK-bucket-fencing.md`'s own re-fencing case:
-        # re-rendering with several `--workload-access-key` values when
-        # per-tenant state credentials land. One typo in that list and every
-        # deploy on the mistyped key stops at an unwritable checkpoint.
-        for role, arn, extra in (
-            (
-                "operator",
-                OPERATOR_ARN,
-                {
-                    "Sid": "SecondBucketDeny",
-                    "Effect": "Deny",
-                    "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
-                    "Action": "s3:DeleteBucket",
-                    "Resource": f"arn:aws:s3:::{FENCED}",
+    def _preflight_rows(self, policy_document):
+        return verify.preflight(
+            verify.Verifier(
+                endpoint=ENDPOINT,
+                region="hel1",
+                credentials={
+                    "operator": (OPERATOR_KEY, "s"),
+                    "workload": (WORKLOAD_KEY, "s"),
+                    "foreign": (FOREIGN_KEY, "s"),
                 },
+                transport=Transport(a_fully_working_fence()),
             ),
-            (
-                "workload",
-                WORKLOAD_ARN,
-                {
-                    "Sid": "SecondObjectDeny",
-                    "Effect": "Deny",
-                    "NotPrincipal": {"AWS": [OPERATOR_ARN]},
-                    "Action": "s3:PutObject",
-                    "Resource": f"arn:aws:s3:::{FENCED}/*",
-                },
-            ),
-        ):
-            with self.subTest(role=role):
-                masked = {"Version": POLICY["Version"], "Statement": POLICY["Statement"] + [extra]}
-                rows = verify.preflight(
-                    verify.Verifier(
-                        endpoint=ENDPOINT,
-                        region="hel1",
-                        credentials={
-                            "operator": (OPERATOR_KEY, "s"),
-                            "workload": (WORKLOAD_KEY, "s"),
-                            "foreign": (FOREIGN_KEY, "s"),
-                        },
-                        transport=Transport(a_fully_working_fence()),
-                    ),
-                    bucket=FENCED,
-                    policy_document=json.dumps(masked).encode(),
-                )
-                exemption = [
-                    row for row in rows if row[0] == f"the policy exempts THIS {role} credential"
-                ][0]
-                self.assertEqual(exemption[1], verify.FAIL, exemption)
-                self.assertIn(arn, exemption[2])
+            bucket=FENCED,
+            policy_document=policy_document,
+        )
 
-    def test_the_correctly_rendered_policy_still_passes_both_exemption_checks(self):
-        # The other direction of the test above: a policy whose Denys all
-        # exempt the credential must not be reported as locking it out.
-        rows = verify.preflight(
+    def _row(self, rows, role):
+        return [row for row in rows if f"THIS {role} credential" in row[0]][0]
+
+    def test_the_policy_this_repository_renders_passes_and_is_applied(self):
+        # THE ONLY DOCUMENT THIS TOOL WILL EVER BE POINTED AT. A fence contains
+        # Deny statements that name only the operator -- the version-destroying
+        # object actions are withheld from the workload deliberately -- so a
+        # check that read `NotPrincipal` lists structurally would condemn the
+        # correct policy, `apply_fence` would refuse to write, and the runbook
+        # could not terminate: re-rendering against the same account id changes
+        # nothing, leaving a hand-run PUT that skips the in-process guard.
+        rows = self._preflight_rows(POLICY_DOCUMENT)
+        for role in ("operator", "workload"):
+            with self.subTest(role=role):
+                self.assertEqual(self._row(rows, role)[1], verify.PASS, self._row(rows, role))
+        self.assertNotIn(verify.FAIL, [row[1] for row in rows])
+
+        _, wrote = verify.apply_fence(
             verify.Verifier(
                 endpoint=ENDPOINT,
                 region="hel1",
@@ -862,43 +928,112 @@ class TestPreflight(unittest.TestCase):
             bucket=FENCED,
             policy_document=POLICY_DOCUMENT,
         )
-        for role in ("operator", "workload"):
-            with self.subTest(role=role):
-                exemption = [
-                    row for row in rows if row[0] == f"the policy exempts THIS {role} credential"
-                ][0]
-                self.assertEqual(exemption[1], verify.PASS, exemption)
+        self.assertTrue(wrote)
 
-    def test_a_policy_with_no_deny_of_that_shape_is_not_an_exemption(self):
-        # `None` rather than `True`: a policy that never denies at the object
-        # level has not exempted the workload, it has said nothing about it.
-        allow_only = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {"Sid": "A", "Effect": "Allow", "Principal": "*", "Action": "s3:*",
-                 "Resource": f"arn:aws:s3:::{FENCED}/*"}
+    def test_the_workload_keeps_exactly_what_it_needs_and_loses_the_rest(self):
+        # The claim the workload row makes, asserted against the evaluator
+        # rather than against the row. `DenyObjectMutationsExceptOperator` is
+        # the statement a structural check misreads, and it is doing its job.
+        arn = lambda key: f"arn:aws:iam:::user/{ACCOUNT}:{key}"
+        objects, bucket = f"arn:aws:s3:::{FENCED}/dumps/x.age", f"arn:aws:s3:::{FENCED}"
+        for action, resource in (
+            ("s3:PutObject", objects), ("s3:GetObject", objects),
+            ("s3:DeleteObject", objects), ("s3:ListBucket", bucket),
+        ):
+            with self.subTest(keeps=action):
+                self.assertEqual(decide(POLICY, arn(WORKLOAD_KEY), action, resource), "allow")
+        for action in ("s3:DeleteObjectVersion", "s3:PutObjectAcl", "s3:BypassGovernanceRetention"):
+            with self.subTest(loses=action):
+                self.assertEqual(decide(POLICY, arn(WORKLOAD_KEY), action, objects), "deny")
+        for action in ("s3:PutBucketPolicy", "s3:PutBucketVersioning", "s3:DeleteBucket"):
+            with self.subTest(loses=action):
+                self.assertEqual(decide(POLICY, arn(WORKLOAD_KEY), action, bucket), "deny")
+
+    def test_a_policy_that_really_does_lock_a_credential_out_fails(self):
+        # The other direction. Each of these takes away an action the role
+        # cannot do its job without, and `--apply` gates on the rows.
+        for role, key, extra in (
+            ("operator", OPERATOR_KEY, {
+                "Sid": "NoRecovery", "Effect": "Deny",
+                "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
+                "Action": "s3:PutBucketPolicy", "Resource": f"arn:aws:s3:::{FENCED}"}),
+            # Recovery is both actions. A bucket whose policy can be replaced
+            # but not removed is one whose fence cannot be taken off.
+            ("operator", OPERATOR_KEY, {
+                "Sid": "NoDelete", "Effect": "Deny",
+                "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
+                "Action": "s3:DeleteBucketPolicy", "Resource": f"arn:aws:s3:::{FENCED}"}),
+            ("workload", WORKLOAD_KEY, {
+                "Sid": "NoWrites", "Effect": "Deny",
+                "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                "Action": "s3:PutObject", "Resource": f"arn:aws:s3:::{FENCED}/*"}),
+            ("workload", WORKLOAD_KEY, {
+                "Sid": "NoList", "Effect": "Deny",
+                "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                "Action": "s3:ListBucket", "Resource": f"arn:aws:s3:::{FENCED}"}),
+        ):
+            with self.subTest(role=role, sid=extra["Sid"]):
+                broken = {"Version": POLICY["Version"], "Statement": POLICY["Statement"] + [extra]}
+                row = self._row(self._preflight_rows(json.dumps(broken).encode()), role)
+                self.assertEqual(row[1], verify.FAIL, row)
+                self.assertIn(extra["Action"], row[2])
+                self.assertIn(f"arn:aws:iam:::user/{ACCOUNT}:{key}", row[2])
+
+    def test_a_deny_scoped_to_the_probe_prefix_is_not_a_workload_lockout(self):
+        # `--probe-notprincipal` applies exactly this policy: reads under the
+        # probe prefix denied to everyone but the operator. Evaluated at a
+        # concrete key under that prefix the workload looks locked out of the
+        # bucket, which is false -- nothing it does lives there.
+        probe_on_bucket = {
+            "Version": POLICY["Version"],
+            "Statement": POLICY["Statement"]
+            + [verify.probe_policy(FENCED, OPERATOR_ARN)["Statement"][0]],
+        }
+        row = self._row(self._preflight_rows(json.dumps(probe_on_bucket).encode()), "workload")
+        self.assertEqual(row[1], verify.PASS, row)
+
+    def test_a_deny_on_every_resource_is_not_invisible(self):
+        # `Resource: "*"` reaches this bucket as surely as a named ARN does.
+        broken = {
+            "Version": POLICY["Version"],
+            "Statement": POLICY["Statement"] + [
+                {"Sid": "DenyAll", "Effect": "Deny", "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
+                 "Action": "s3:*", "Resource": "*"}
             ],
         }
-        rows = verify.preflight(
-            verify.Verifier(
-                endpoint=ENDPOINT,
-                region="hel1",
-                credentials={
-                    "operator": (OPERATOR_KEY, "s"),
-                    "workload": (WORKLOAD_KEY, "s"),
-                    "foreign": (FOREIGN_KEY, "s"),
-                },
-                transport=Transport(a_fully_working_fence()),
-            ),
-            bucket=FENCED,
-            policy_document=json.dumps(allow_only).encode(),
-        )
-        for role in ("operator", "workload"):
-            with self.subTest(role=role):
-                exemption = [
-                    row for row in rows if row[0] == f"the policy exempts THIS {role} credential"
-                ][0]
-                self.assertEqual(exemption[1], verify.FAIL, exemption)
+        row = self._row(self._preflight_rows(json.dumps(broken).encode()), "operator")
+        self.assertEqual(row[1], verify.FAIL, row)
+
+    def test_a_document_the_evaluator_cannot_walk_is_inconclusive_not_safe(self):
+        # `--policy-file` takes any file. A document nothing can reason about
+        # is not the same as one that is safe to apply.
+        for document in (
+            b'{"Statement": [{"Effect": "Deny"}]}',
+            b'{"Statement": [{"Effect": "Deny", "Resource": "*"}]}',
+            b'{"Statement": "not a list"}',
+            b'{"Statement": [null]}',
+        ):
+            with self.subTest(document=document[:40]):
+                rows = self._preflight_rows(document)
+                statuses = [row[1] for row in rows]
+                self.assertIn(verify.INCONCLUSIVE, statuses)
+                self.assertNotIn(verify.PASS, [r[1] for r in rows if "THIS " in r[0]])
+
+    def test_an_owner_of_anonymous_is_refused_whatever_its_case(self):
+        # The one unrecoverable path: an account id that cannot exist, named in
+        # a policy principal. Nothing guarantees the endpoint keeps spelling it
+        # the way it does today.
+        for spelling in (b"anonymous", b"Anonymous", b"ANONYMOUS"):
+            with self.subTest(spelling=spelling):
+                answers = a_fully_working_fence()
+                answers[("operator", "list-buckets", None)] = Response(
+                    "constructed: the captured anonymous ListAllMyBuckets, recased",
+                    200,
+                    ANONYMOUS_OWNER.body.replace(b"anonymous", spelling),
+                )
+                code, output, _ = run(answers, extra_args=["--preflight"])
+                self.assertEqual(code, 1)
+                self.assertIn("saw this request as unsigned", output)
 
     def test_an_owner_of_anonymous_is_refused_rather_than_named_in_a_principal(self):
         # This endpoint answers an unsigned ListAllMyBuckets with 200 and
@@ -1031,11 +1166,9 @@ class TestControlsMakeDenialsMeanSomething(unittest.TestCase):
                 self.assertEqual(check.control.role, check.probe.role)
 
     def test_every_control_travels_the_same_transport_as_the_probe_it_licenses(self):
-        # The gap this closes: `foreign key cannot read an object` was a signed
-        # `curl` read while its control was still `aws s3api`, so the control
-        # established that the CLI worked for that credential and said nothing
-        # about the transport the probe used. A control on a different
-        # transport licenses nothing.
+        # A control on a different transport licenses nothing: it establishes
+        # that some other client worked for that credential, which is not the
+        # question the probe beside it is answering.
         for check in checks(versioning_already_enabled=True):
             if check.control is None:
                 continue
@@ -1146,8 +1279,15 @@ class TestNotPrincipalProbe(unittest.TestCase):
                 }
             ]
         }
-        with self.assertRaises(verify.VerifierError):
+        with self.assertRaises(verify.VerifierError) as raised:
             verify.assert_probe_policy_is_reversible(locking, FENCED)
+        # The two refusals guard different outcomes and the message has to say
+        # which one fired: naming the bucket resource is the unrecoverable
+        # case, because `PutBucketPolicy` is a bucket-resource action, so the
+        # document could deny its own removal. "Outside the probe prefix" is
+        # the broader hygiene rule and does not tell an operator that.
+        self.assertIn("names the bucket resource", str(raised.exception))
+        self.assertIn("unremovable", str(raised.exception))
 
     def test_a_probe_policy_reaching_outside_the_probe_prefix_is_refused(self):
         broad = {
@@ -1161,8 +1301,9 @@ class TestNotPrincipalProbe(unittest.TestCase):
                 }
             ]
         }
-        with self.assertRaises(verify.VerifierError):
+        with self.assertRaises(verify.VerifierError) as raised:
             verify.assert_probe_policy_is_reversible(broad, FENCED)
+        self.assertIn("outside the probe prefix", str(raised.exception))
 
     def test_the_probe_policy_is_removed_even_when_the_reads_fail(self):
         _, _, transport = self._run(FORBIDDEN_NO_DOCUMENT, FORBIDDEN_NO_DOCUMENT)
@@ -1280,6 +1421,88 @@ class TestNotPrincipalProbe(unittest.TestCase):
         self.assertNotIn("THE BUCKET MAY BE LOCKED", output)
         self.assertIn("DO NOT APPLY THE REAL FENCE", output)
 
+    def test_a_policy_read_that_did_not_succeed_stops_the_probe_before_it_writes(self):
+        # THE ONE THAT DESTROYS A FENCE. "There is definitely a policy" is not
+        # the only case that must stop this step -- "we could not find out" has
+        # to as well. Applying the probe replaces whatever is on the bucket and
+        # removing it afterwards leaves nothing, so a transient 503, a reset
+        # connection, a truncated body or an AccessDenied on the policy read
+        # would each end with a live fence overwritten and then deleted, on the
+        # strength of a request that failed.
+        for label, answer in (
+            ("a transient 503", Response(
+                "constructed: a gateway 503 on the policy read",
+                503,
+                b"<Error><Code>ServiceUnavailable</Code></Error>",
+            )),
+            ("a refused read", ACCESS_DENIED_POLICY),
+            ("a body that is not an error document", BAD_GATEWAY_HTML),
+        ):
+            with self.subTest(case=label):
+                answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+                answers[("operator", "get-bucket-policy", FENCED)] = answer
+                code, output, transport = run(answers, extra_args=["--probe-notprincipal"])
+                self.assertEqual(code, 1)
+                self.assertIn("the bucket's current policy is known", output)
+                self.assertIn("Nothing has been written", output)
+                self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+                self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
+
+    def test_a_connection_that_never_answered_stops_the_probe_too(self):
+        # `status is None` reaches the same call site as a 503 and means even
+        # less about what is on the bucket.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        reads = {"n": 0}
+
+        class Flaky(Transport):
+            def __call__(self, url, headers, payload, method):
+                if method == "GET" and "policy=" in url:
+                    reads["n"] += 1
+                    raise verify.storage.ObjectStorageError("GET ... failed to complete: reset")
+                return super().__call__(url, headers, payload, method)
+
+        transport = Flaky(answers)
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"], transport=transport)
+        self.assertEqual(code, 1)
+        self.assertEqual(reads["n"], 1)
+        self.assertIn("the bucket's current policy is known", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+
+    def test_only_an_affirmative_no_such_bucket_policy_lets_it_proceed(self):
+        # The affirmative answer, and the only one: this bucket has no policy.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        self.assertEqual(
+            verify.s3_error_code(answers[("operator", "get-bucket-policy", FENCED)].body),
+            "NoSuchBucketPolicy",
+        )
+        code, output, transport = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 0, output)
+        self.assertIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+
+    def test_a_put_that_got_no_response_leaves_the_policy_alone_and_says_so(self):
+        # The genuine dilemma: the PUT may have reached the engine. Deleting
+        # would be a DELETE on a bucket whose state this run cannot establish;
+        # not deleting may leave the probe behind. The safer half is taken, and
+        # the operator is told which way it went rather than left with a row
+        # that reads like a clean refusal.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+
+        class Silent(Transport):
+            def __call__(self, url, headers, payload, method):
+                if method == "PUT" and "policy=" in url:
+                    raise verify.storage.ObjectStorageError(
+                        "PUT ... failed to complete: timed out"
+                    )
+                return super().__call__(url, headers, payload, method)
+
+        transport = Silent(answers)
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"], transport=transport)
+        self.assertEqual(code, 1)
+        self.assertIn("THE PROBE POLICY'S FATE IS UNKNOWN", output)
+        self.assertIn(verify.probe_policy_id(FENCED), output)
+        self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
+        self.assertNotIn(verify.PASS, output)
+
 
 class TestApplyMode(unittest.TestCase):
     """Pre-flight and the double PUT in one process, so neither can be skipped."""
@@ -1366,11 +1589,9 @@ class TestSignedTransport(unittest.TestCase):
         self.assertEqual(captured["headers"]["host"], ENDPOINT_HOST)
 
     def test_the_secret_is_never_sent_anywhere_a_reader_could_take_it(self):
-        # It never leaves this process except as an HMAC. There is also no
-        # argument vector and no credential file for it to sit in any more:
-        # the earlier transport wrote a 0600 `.curlrc` per read, and argv is
-        # readable out of the process table by every other process on the
-        # workstation.
+        # It never leaves this process except as an HMAC. No argument vector
+        # carries it either, which matters because argv is readable out of the
+        # process table by every other process on the workstation.
         captured = self._send(verify._read(FENCED, "workload", "fence-probe/x.txt"))
         rendered = captured["url"] + json.dumps(captured["headers"]) + repr(captured["payload"])
         self.assertNotIn("workload-secret", rendered)
@@ -1451,64 +1672,96 @@ class TestSignedTransport(unittest.TestCase):
         self.assertEqual(sent, [one.payload, two.payload])
 
 
-class TestFixtureProvenance(unittest.TestCase):
-    """Run last by name, so `Response.every` holds the inline fixtures too.
+def _fixture_labels():
+    """Every `Response(...)` in this file, read from its source.
 
-    Ordering is a convenience rather than the guarantee: the module-level
-    fixtures are registered at import and are checked whatever runs first, and
-    an inline fixture that this ordering missed would be caught on the next run
-    that reached it. Walking `globals()` missed every inline fixture on every
-    run, which is the difference.
+    Static rather than runtime, because a runtime registry only ever holds the
+    fixtures constructed so far: `unittest` runs classes in alphabetical order,
+    so a registry inspected from a test class sees nothing built by the classes
+    that sort after it, and `Response.every` starts empty in every process.
+    Roughly half the fixtures here are built inside test methods.
+
+    A label has to be resolvable from the source -- a literal, a module
+    constant, or a concatenation of those. One computed at run time cannot be
+    checked here and is refused on that basis.
+    """
+    tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    labels = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Name) and node.func.id == "Response"):
+            continue
+        argument = node.args[0] if node.args else None
+        labels.append((node.lineno, _resolve(argument)))
+    return labels
+
+
+def _resolve(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        value = globals().get(node.id)
+        return value if isinstance(value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _resolve(node.left), _resolve(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr) and node.values:
+        # An f-string: only the literal head decides the prefix.
+        return _resolve(node.values[0])
+    return None
+
+
+class TestFixtureProvenance(unittest.TestCase):
+    """Every fixture states whether it was seen on the wire or written here.
+
+    One observed on the wire constrains the code; one written here constrains
+    only what its author expected, and a fixture built to an assumption is the
+    defect this whole file exists to stop shipping.
     """
 
+    LABELS = ("observed:", "constructed:")
+
     # A Ceph RGW transaction id, which is what this endpoint puts in RequestId
-    # and HostId. Matched by shape rather than by the `-hel1-prod1-` substring
-    # the earlier check used, so a response captured from another region or
-    # cluster is caught too.
+    # and HostId. Matched by shape rather than by a `-hel1-prod1-` substring,
+    # so a response captured from another region or cluster is caught too.
     REQUEST_ID = re.compile(rb"tx[0-9a-f]{10,}|-prod\d+-")
 
-    def _fixtures(self):
-        module_level = [value for value in globals().values() if isinstance(value, Response)]
-        self.assertGreaterEqual(len(module_level), 12)
-        # Every fixture ever built in this run, module-level and inline alike.
-        self.assertGreater(len(Response.every), len(module_level))
-        return Response.every
+    def test_every_fixture_in_this_file_says_where_it_came_from(self):
+        labels = _fixture_labels()
+        self.assertGreaterEqual(len(labels), 25)
+        for line, label in labels:
+            with self.subTest(line=line):
+                self.assertIsNotNone(label, f"line {line}: provenance label is not a literal")
+                self.assertTrue(
+                    label.startswith(self.LABELS), f"line {line}: {label[:60]!r}"
+                )
 
-    @staticmethod
-    def _unlabelled(fixtures):
-        return [f for f in fixtures if not f.source.startswith(("observed:", "constructed:"))]
+    def test_the_scan_reaches_fixtures_built_inside_test_methods(self):
+        # The half a runtime registry inspected from here cannot see. The class
+        # definitions all begin after the module-level fixtures, so a scan that
+        # found only those would report nothing past that line.
+        labels = _fixture_labels()
+        first_class = min(
+            node.lineno
+            for node in ast.walk(ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8")))
+            if isinstance(node, ast.ClassDef)
+        )
+        self.assertGreaterEqual(len([line for line, _ in labels if line > first_class]), 8)
 
-    def test_every_fixture_says_whether_it_was_observed_or_written(self):
-        # The failure this file is fixing was a fixture nobody had checked
-        # against the wire. An unlabelled one is how that happens again.
-        for fixture in self._unlabelled(self._fixtures()):
-            self.fail(f"unlabelled fixture: {fixture.source[:60]!r}")
-
-    def test_the_guard_would_actually_refuse_an_unlabelled_fixture(self):
+    def test_the_scan_refuses_an_unlabelled_fixture(self):
         # A guard that has quietly stopped covering anything passes every
-        # fixture, so prove it still refuses one before trusting a pass. The
-        # fixture is built INSIDE a test on purpose: eleven of the fixtures in
-        # this file are, and the earlier guard walked module globals, so every
-        # one of them was invisible to it.
-        mark = len(Response.every)
-        Response("this fixture is deliberately unlabelled", 200)
-        try:
-            self.assertEqual(len(self._unlabelled(self._fixtures())), 1)
-        finally:
-            del Response.every[mark:]
-        self.assertEqual(self._unlabelled(self._fixtures()), [])
-
-    def test_no_fixture_carries_a_live_request_identifier(self):
-        # RequestId and HostId name one request on Hetzner's side. Harmless,
-        # and pointless to commit.
-        for fixture in self._fixtures():
-            with self.subTest(source=fixture.source[:40]):
-                self.assertIsNone(self.REQUEST_ID.search(fixture.body))
+        # fixture, so prove it still refuses one.
+        tree = ast.parse('Response("I AM UNLABELLED", 200)\nResponse(observed_name, 200)\n')
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Response":
+                found.append(_resolve(node.args[0] if node.args else None))
+        self.assertEqual(len(found), 2)
+        self.assertFalse(found[0].startswith(self.LABELS))
+        self.assertIsNone(found[1])
 
     def test_the_request_identifier_matcher_still_matches_a_real_one(self):
-        # A matcher that has quietly stopped matching passes every fixture.
-        # This is the identifier shape captured off the live endpoint, with its
-        # digits changed.
         for real in (
             b"<RequestId>tx0000043296e609d7694e1-006a8eb7bf-1a7ba04d-hel1-prod1-ceph4</RequestId>",
             b"<HostId>1a7ba04d-hel1-prod1-ceph4-hel1</HostId>",
@@ -1517,11 +1770,80 @@ class TestFixtureProvenance(unittest.TestCase):
                 self.assertIsNotNone(self.REQUEST_ID.search(real))
         self.assertIsNone(self.REQUEST_ID.search(b"<RequestId>N/A</RequestId>"))
 
-    def test_no_fixture_carries_a_credential(self):
-        for fixture in self._fixtures():
-            with self.subTest(source=fixture.source[:40]):
-                self.assertNotIn(b"secret", fixture.body.lower())
-                self.assertNotIn(b"Signature=", fixture.body)
+    def test_the_body_checks_refuse_what_must_not_be_committed(self):
+        # `tearDownModule` runs these over every fixture, and a check that has
+        # quietly stopped refusing anything passes them all. This repository is
+        # public, so each of these lands in git if the check is asleep.
+        #
+        # Built as stand-ins rather than as `Response`s: a real one would be
+        # registered and scanned like any other fixture, and the static label
+        # check would refuse the unlabelled case here -- correctly, which is
+        # itself the point.
+        bad = [
+            _Fixture("observed: real shape", b"<RequestId>tx0000043296e609d7694e1-hel1-prod1-ceph4</RequestId>"),
+            _Fixture("observed: real shape", b"AWS4-HMAC-SHA256 Signature=deadbeef"),
+            _Fixture("observed: real shape", b"aws_secret_access_key=..."),
+            _Fixture("no label at all", b""),
+        ]
+        self.assertEqual(len(fixture_body_problems(bad)), 4)
+        self.assertEqual(fixture_body_problems(Response.every), [])
+
+    def test_module_teardown_actually_fails_the_run_on_a_bad_fixture(self):
+        # The wiring, not just the helper: `tearDownModule` is the only thing
+        # that sees every fixture, so it is the only place a bad body can be
+        # refused, and a teardown that collects problems and drops them is
+        # indistinguishable from a clean run.
+        mark = len(Response.every)
+        Response.every.append(
+            _Fixture("observed: real shape", b"<HostId>1a7ba04d-hel1-prod1-ceph4-hel1</HostId>")
+        )
+        try:
+            with self.assertRaises(AssertionError) as raised:
+                tearDownModule()
+            self.assertIn("live request identifier", str(raised.exception))
+        finally:
+            del Response.every[mark:]
+        tearDownModule()
+
+
+class _Fixture:
+    """A `source`/`body` pair for exercising `fixture_body_problems` itself."""
+
+    def __init__(self, source, body):
+        self.source = source
+        self.body = body
+
+
+def fixture_body_problems(fixtures):
+    """What must not be committed, found in the bytes of a fixture.
+
+    This repository is public, so an unscrubbed `RequestId` or anything
+    credential-shaped in a fixture body lands in git.
+    """
+    problems = []
+    for fixture in fixtures:
+        source = fixture.source[:50]
+        if not fixture.source.startswith(TestFixtureProvenance.LABELS):
+            problems.append(f"unlabelled fixture: {source!r}")
+        if TestFixtureProvenance.REQUEST_ID.search(fixture.body):
+            problems.append(f"live request identifier in {source!r}")
+        if b"secret" in fixture.body.lower() or b"Signature=" in fixture.body:
+            problems.append(f"credential-shaped bytes in {source!r}")
+    return problems
+
+
+def tearDownModule():
+    """The body checks, after every test has run and built its fixtures.
+
+    Module teardown rather than a test method, because these need the actual
+    bytes and `Response.every` is only complete once nothing else will add to
+    it -- `unittest` runs classes in alphabetical order, so a test method
+    cannot see the fixtures built by the classes that sort after it. The label
+    check is static and does not need this.
+    """
+    problems = fixture_body_problems(Response.every)
+    if problems:
+        raise AssertionError("; ".join(problems))
 
 
 class TestSigningIsARequirement(unittest.TestCase):

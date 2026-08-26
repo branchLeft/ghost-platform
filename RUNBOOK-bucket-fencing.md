@@ -289,6 +289,28 @@ Both lines must read `PASS`.
     If you genuinely mean to run it here, remove that policy by hand first and
     keep a copy of it.
 
+- **`the bucket's current policy is known` — `INCONCLUSIVE`.** The policy read
+  did not succeed, so whether the bucket carries one is unknown. This step
+  replaces whatever is there and removes it afterwards, so it will not run
+  without an affirmative `NoSuchBucketPolicy` — an unreadable answer is not an
+  empty bucket. Nothing was written. Re-run once the endpoint answers; if it
+  keeps refusing the operator's `get-bucket-policy`, that refusal is itself the
+  finding and the bucket is not in the state this section assumes.
+- **`THE PROBE POLICY'S FATE IS UNKNOWN` — `INCONCLUSIVE`.** The PUT of the
+  probe policy got no response, so it may or may not have reached the engine.
+  Nothing was deleted, because a delete here removes whatever is on the bucket
+  rather than only the probe. **Check by hand before doing anything else**, and
+  a policy whose `Id` is `notprincipal-probe-branchleft-db-backups` is the
+  probe and is safe to delete:
+
+  ```bash
+  AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" \
+  AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" \
+  AWS_DEFAULT_REGION=hel1 \
+    aws --endpoint-url https://hel1.your-objectstorage.com s3api get-bucket-policy \
+    --bucket branchleft-db-backups
+  ```
+
 This tests the *engine*, not the bucket, so its answer holds for the whole
 account — section 2 does not repeat it.
 
@@ -301,8 +323,16 @@ designed to make it unnecessary.
 ### 1d. Pre-flight against the live credentials, before anything is written
 
 This is the check that catches a wrong `--project-id`, and it is the only one
-that can: it resolves each credential's own account and confirms the policy
-names *those* principals. It writes nothing.
+that can: it resolves each credential's own account, builds the ARN from it,
+and then *evaluates* the policy against that ARN — asking whether the operator
+can still replace the document and whether the workload can still put, get,
+delete and list. It writes nothing.
+
+It asks that as an evaluation rather than by reading `NotPrincipal` lists,
+because a correct fence contains Deny statements that name only the operator:
+`DenyObjectMutationsExceptOperator` withholds the version-destroying actions
+from the workload deliberately. "This Deny does not name the workload" is the
+fence doing its job, not a lockout.
 
 ```bash
 python3 infra/provisioning/scripts/verify-bucket-fence.py --preflight \

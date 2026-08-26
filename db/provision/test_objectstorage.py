@@ -812,6 +812,18 @@ class UrllibRequestTests(unittest.TestCase):
         os3.signed_request(method="GET", transport=capture, key="k", **common)
         self.assertEqual(sorted(seen), ["k:DELETE", "k:GET", "k:PUT"])
 
+    def test_every_request_carries_a_bounded_timeout(self):
+        # Unbounded, a probe against an endpoint that accepts the connection
+        # and never answers hangs the whole run -- including the fence
+        # verifier's, which holds a probe policy on a production bucket
+        # between its two reads and removes it only once they return.
+        captured = {}
+        with unittest.mock.patch.object(
+            os3.urllib.request, "urlopen", self._urlopen(captured, self._Response())
+        ):
+            os3.urllib_request("https://host/b", {}, b"", "GET")
+        self.assertEqual(captured["timeout"], 120)
+
     def test_a_4xx_is_returned_rather_than_raised(self):
         error = os3.urllib.error.HTTPError(
             "https://host/b", 403, "Forbidden", {}, io.BytesIO(b"<Error/>")

@@ -12,7 +12,7 @@ IT IS IMPORTED BY PATH RATHER THAN MOVED SOMEWHERE BOTH TREES CAN SEE.
 `scp -r` and running the scripts in place; the dump, binlog-shipping and prune
 units all import `objectstorage` as a sibling of themselves. Relocating the
 file into a shared parent would leave the next copy of that directory shipping
-a module whose import is no longer beside it, and the symptom would be a backup
+a module whose import is not beside it, and the symptom would be a backup
 pipeline that stops at the next redeploy rather than a failure here.
 
 `importlib` rather than a `sys.path` entry, so that importing this module does
@@ -41,7 +41,14 @@ def _load():
     if spec is None or spec.loader is None:
         raise ImportError(f"{_SOURCE} could not be loaded as a Python module")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as error:
+        # A corrupt or truncated file raises SyntaxError, not ImportError, and
+        # the caller refuses on ImportError alone. Both mean the same thing to
+        # an operator -- the signing is not usable -- and both must produce the
+        # same one-line refusal rather than a traceback.
+        raise ImportError(f"{_SOURCE} could not be executed: {error!r}") from error
     return module
 
 
