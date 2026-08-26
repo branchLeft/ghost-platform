@@ -74,6 +74,36 @@ current ACL) and why the versioning probe is behind
 `--versioning-already-enabled`: turning versioning on for a bucket that has it
 off, with no lifecycle rule, retains every superseded object indefinitely.
 
+THE CLI CANNOT READ THIS BACKEND'S DENIALS, AND THAT IS WIDER THAN ONE COMMAND.
+The storage engine returns its errors with an empty `<Message></Message>`, and
+`aws s3api` v2 exits 255 printing a client-internal error in place of the S3
+one rather than render that. It is not specific to an operation:
+`get-object`, `list-objects-v2`, `get-bucket-policy`, `put-object` and
+`list-buckets` all do it, for `AccessDenied` and `InvalidAccessKeyId` alike.
+What does render is the gateway's own `NoSuchBucket`, which carries a real
+message -- which is why the failure looks at first like one broken command.
+`head-object` renders too, because a HEAD response has no body to fail on, but
+it reports a refusal as the code `403`: an HTTP status rather than an S3 error
+code, matching no denial set here, so it is not a way out either.
+
+`classify` finds no code in a crash and returns `error`, which is correct,
+fail-safe, and useless as proof. Object reads are therefore signed with
+`curl --aws-sigv4` and their verdict taken from the `Code` in the returned
+document, which is what makes the `NotPrincipal` probe able to reach a verdict
+at all. THE REMAINING DENIAL PROBES STILL GO THROUGH THE CLI AND STILL CANNOT
+CLASSIFY A DENIAL FROM THIS BACKEND: they come back INCONCLUSIVE, never as a
+false pass, but the full verification cannot reach a clean run until they move
+onto a signed transport too. That is a larger change than this one and turns on
+whether this file grows its own signing or shares the implementation
+`db/provision/objectstorage.py` already carries.
+
+The HTTP status is never enough on its own. `AccessDenied`,
+`InvalidAccessKeyId` and `SignatureDoesNotMatch` all arrive as HTTP 403, so a
+status-only reading turns a dead key into a fence -- the substitution the
+controls above exist to prevent. `curl` 7.75 or newer is required for
+`--aws-sigv4`; an older one, or none at all, comes out as an error and never as
+a denial.
+
 Credentials come from the environment, one pair per role, and are never
 accepted as arguments:
 
@@ -95,13 +125,24 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import uuid
+import xml.etree.ElementTree as ET
 
 PROBE_PREFIX = "fence-probe/"
 
 # botocore's rendering of a service error, which is the only place the S3 error
 # code appears when the CLI fails.
 ERROR_CODE = re.compile(r"An error occurred \(([A-Za-z0-9_]+)\)")
+
+# The same shape, applied to a code read out of an error document rather than
+# out of botocore's rendering, so the two transports agree on what can even be
+# a code.
+S3_ERROR_CODE = re.compile(r"[A-Za-z0-9_]{1,64}")
+
+# Enough for any error document this endpoint returns, and small enough that a
+# body built to be expensive to parse is truncated before it is.
+_MAX_ERROR_BODY = 64 * 1024
 
 # Denials. `AllAccessDisabled` is what this backend returns when the bucket
 # exists but the caller may not learn anything about it.
@@ -132,13 +173,57 @@ class VerifierError(Exception):
 
 
 class Probe:
-    def __init__(self, role: str, description: str, args: list[str]):
+    """One `aws s3api` invocation, as one role."""
+
+    kind = "s3api"
+
+    def __init__(
+        self,
+        role: str,
+        description: str,
+        args: list[str],
+        *,
+        operation: str | None = None,
+        object_key: str | None = None,
+    ):
         self.role = role
         self.description = description
         self.args = args
+        # The S3 operation, and the object it touches, named independently of
+        # how the probe is sent. The invariants asserted over the check set --
+        # that no probe changes bucket state on success, that every write stays
+        # under the probe prefix -- are about what reaches the bucket, and must
+        # not stop holding because one probe changed client.
+        self.operation = operation if operation is not None else (args[0] if args else "")
+        if object_key is not None:
+            self.object_key = object_key
+        elif "--key" in args:
+            self.object_key = args[args.index("--key") + 1]
+        else:
+            self.object_key = None
 
     def key(self) -> tuple:
-        return (self.role, tuple(self.args))
+        return (self.kind, self.role, tuple(self.args))
+
+
+class ObjectRead(Probe):
+    """A GET of one object, signed directly instead of run through the CLI.
+
+    `aws s3api get-object` cannot render an error response from this endpoint:
+    it exits 255 printing a client-internal error in place of the S3 one, for
+    every failure including a plain missing object. `classify` finds no code in
+    that, so an object-read denial probe built on it could only ever report
+    INCONCLUSIVE -- the verifier could not prove a fence did anything.
+    """
+
+    kind = "object-read"
+
+    def __init__(self, role: str, description: str, *, bucket: str, key: str):
+        super().__init__(role, description, [], operation="get-object", object_key=key)
+        self.bucket = bucket
+
+    def key(self) -> tuple:
+        return (self.kind, self.role, self.bucket, self.object_key)
 
 
 class Check:
@@ -160,18 +245,51 @@ class Check:
 
 
 def _default_runner(argv: list[str], env: dict[str, str]):
-    """A failure to run the CLI is an outcome, not an exception.
+    """A failure to run a client is an outcome, not an exception.
 
     An exception escaping here skips `cleanup()`, which leaves probe objects in
-    a production bucket. Both failures are returned in the shape `classify`
-    already refuses to read as a denial, so they surface as INCONCLUSIVE.
+    a production bucket. Both failures are returned in the shape the
+    classifiers already refuse to read as a denial, so they surface as
+    INCONCLUSIVE -- including a `curl` too old for `--aws-sigv4`, which exits
+    non-zero with the option name on stderr and no error document at all.
     """
+    client = argv[0] if argv else "the client"
     try:
-        return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
+        # `errors="replace"` because an object read now returns the object's
+        # own bytes on stdout, and strict decoding would raise out of the one
+        # function whose contract is that it never does.
+        return subprocess.run(
+            argv, env=env, capture_output=True, text=True, errors="replace", timeout=120
+        )
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(argv, 1, "", "the aws CLI did not return within 120s")
+        return subprocess.CompletedProcess(argv, 1, "", f"{client} did not return within 120s")
     except FileNotFoundError:
-        return subprocess.CompletedProcess(argv, 1, "", "the aws CLI is not on PATH")
+        return subprocess.CompletedProcess(argv, 1, "", f"{client} is not on PATH")
+
+
+def _one_line(text: str, limit: int = 200) -> str:
+    """Flatten external text before it becomes a reason on a report line.
+
+    `report()` prints one row per line, so a response body or a client's stderr
+    containing a newline would render as extra lines -- and text arriving from
+    the far end of the connection is exactly what must not be able to write a
+    line that reads like a verdict.
+    """
+    return " ".join(text.split())[:limit]
+
+
+def _from_error_code(code: str) -> tuple[str, str]:
+    """Turn one S3 error code into a verdict. The only place that happens.
+
+    Both transports end here rather than each deciding for itself what counts
+    as a denial, because two definitions are two chances for one of them to
+    widen.
+    """
+    if code in DENIAL_CODES:
+        return "denied", code
+    if code in NOT_A_DENIAL:
+        return "error", f"{code}: {NOT_A_DENIAL[code]}"
+    return "error", f"{code}: not a denial and not a success"
 
 
 def classify(returncode: int, stderr: str) -> tuple[str, str]:
@@ -185,13 +303,146 @@ def classify(returncode: int, stderr: str) -> tuple[str, str]:
         return "allowed", ""
     match = ERROR_CODE.search(stderr)
     if not match:
-        return "error", f"no S3 error code in the CLI output: {stderr.strip()[:200]}"
-    code = match.group(1)
-    if code in DENIAL_CODES:
-        return "denied", code
-    if code in NOT_A_DENIAL:
-        return "error", f"{code}: {NOT_A_DENIAL[code]}"
-    return "error", f"{code}: not a denial and not a success"
+        return "error", f"no S3 error code in the CLI output: {_one_line(stderr)}"
+    return _from_error_code(match.group(1))
+
+
+def _split_status(stdout: str) -> tuple[str, int | None]:
+    """Separate the response body from the trailing `--write-out` status line.
+
+    `000` is what curl writes when no HTTP response arrived at all. It is not a
+    status and must not be read as one, or a connection that never happened
+    becomes a response that has to be interpreted.
+    """
+    body, separator, tail = stdout.rpartition("\n")
+    if not separator or not tail.strip().isdigit():
+        return stdout, None
+    status = int(tail.strip())
+    return (body, status) if 100 <= status <= 599 else (body, None)
+
+
+def _s3_error_code(body: str) -> str | None:
+    """The `Code` of an S3 error document, or None if this is not one.
+
+    Parsed rather than pattern-matched, so that a body which is not an error
+    document -- an HTML page from something sitting in front of the endpoint, a
+    truncated response, an object whose own contents mention a code -- yields
+    nothing to act on rather than a code lifted out of prose.
+
+    The result is held to the same shape `ERROR_CODE` allows on the CLI side.
+    An error code is a short identifier; anything else in that element is not
+    one, and passing it through would put attacker-influenced text of arbitrary
+    length into a reason the report prints as a line of its own. The body is
+    capped before parsing for the same reason -- ElementTree expands internal
+    entities, so a small document can otherwise become a large string.
+    """
+    try:
+        root = ET.fromstring(body.strip()[:_MAX_ERROR_BODY])
+    except ET.ParseError:
+        return None
+    if root.tag.rsplit("}", 1)[-1] != "Error":
+        return None
+    for child in root:
+        if child.tag.rsplit("}", 1)[-1] != "Code":
+            continue
+        code = (child.text or "").strip()
+        return code if S3_ERROR_CODE.fullmatch(code) else None
+    return None
+
+
+def classify_object_read(returncode: int, stdout: str, stderr: str) -> tuple[str, str]:
+    """Map one signed object read onto `allowed` / `denied` / `error`.
+
+    THE HTTP STATUS ALONE NEVER PRODUCES A DENIAL. This endpoint answers
+    `AccessDenied`, `InvalidAccessKeyId` and `SignatureDoesNotMatch` with the
+    same 403 -- a fence, a key that does not exist, and a key signed for the
+    wrong region are one status code, and reading that code as a denial is the
+    substitution the controls in this file exist to prevent. The verdict comes
+    from the `Code` inside the error document and from nothing else, so a
+    response with no error document in it is an `error` whatever its status.
+    """
+    if returncode != 0:
+        return (
+            "error",
+            f"the signed object read did not complete: {_one_line(stderr or stdout)}",
+        )
+    body, status = _split_status(stdout)
+    if status is None:
+        return "error", f"no HTTP status in the object-read output: {_one_line(stdout)}"
+    if 200 <= status < 300:
+        return "allowed", ""
+    code = _s3_error_code(body)
+    if code is None:
+        return (
+            "error",
+            f"HTTP {status} with no S3 error document to read a code from: {_one_line(body)}",
+        )
+    return _from_error_code(code)
+
+
+# curl's config parser takes `\\`, `\"`, `\t`, `\n`, `\r` and `\v` inside a
+# quoted value. Escaping is not cosmetic: an unescaped newline in a secret
+# would end the `user` line and turn whatever followed into further options.
+_CURL_ESCAPES = {"\\": "\\\\", '"': '\\"', "\t": "\\t", "\n": "\\n", "\r": "\\r", "\v": "\\v"}
+
+
+def _curl_quote(value: str) -> str:
+    return "".join(_CURL_ESCAPES.get(character, character) for character in value)
+
+
+def _curl_credential_file(access_key: str, secret_key: str) -> str:
+    """Write the credential to a 0600 config file, so argv does not carry it.
+
+    `--user <key>:<secret>` would put the secret where every other process on
+    the workstation can read it out of the process table. `mkstemp` is 0600 and
+    owned by the operator; the caller unlinks it as soon as curl returns.
+    """
+    handle, path = tempfile.mkstemp(suffix=".curlrc")
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(f'user = "{_curl_quote(access_key)}:{_curl_quote(secret_key)}"\n')
+    return path
+
+
+def _curl_argv(*, endpoint: str, region: str, bucket: str, key: str, config_path: str) -> list[str]:
+    """A signed GET of one object, path-style.
+
+    Path-style addressing is mandatory on this endpoint: a dotted bucket name
+    falls outside its one-label wildcard certificate.
+
+    `--location` is deliberately absent. Following a redirect would send the
+    signature computed for the original URL to somewhere else, which fails for
+    a reason that has nothing to do with the fence; unfollowed, the 3xx reaches
+    the classifier carrying no error document and comes out as an error, which
+    is the honest answer.
+    """
+    path = urllib.parse.quote(f"/{bucket}/{key}", safe="/~")
+    return [
+        "curl",
+        # `-q` FIRST, or it does not apply: without it curl reads ~/.curlrc,
+        # where a `proxy`, `insecure` or `location` line would redirect this
+        # probe, disable certificate checking, or follow a redirect the code
+        # below documents as deliberately not followed. The same reasoning as
+        # clearing the ambient AWS_* variables: a probe that quietly obeyed
+        # some other configuration is the failure with no symptom, and here it
+        # could put an `AccessDenied` from something that is not the storage
+        # backend in front of a denial check.
+        "-q",
+        # Proxy settings arrive by environment as well as by file, and `-q`
+        # does not cover those.
+        "--noproxy",
+        "*",
+        "--silent",
+        "--show-error",
+        "--config",
+        config_path,
+        "--aws-sigv4",
+        f"aws:amz:{region}:s3",
+        # Nothing else reports the status: curl exits 0 for a 403 exactly as it
+        # does for a 200.
+        "--write-out",
+        "\n%{http_code}",
+        f"{endpoint.rstrip('/')}{path}",
+    ]
 
 
 class Verifier:
@@ -222,15 +473,50 @@ class Verifier:
         env["AWS_EC2_METADATA_DISABLED"] = "true"
         return env
 
+    def read_object(self, role: str, bucket: str, key: str) -> tuple[str, str]:
+        """One signed object read, as one role."""
+        if role == "anonymous":
+            # No probe asks for this, and an unsigned read that silently went
+            # out signed as the last role would be a false pass.
+            return "error", "an unsigned object read has no credential to sign with"
+        access_key, secret_key = self.credentials[role]
+        config_path = _curl_credential_file(access_key, secret_key)
+        try:
+            completed = self.runner(
+                _curl_argv(
+                    endpoint=self.endpoint,
+                    region=self.region,
+                    bucket=bucket,
+                    key=key,
+                    config_path=config_path,
+                ),
+                # curl reads no AWS_* variable -- its credential arrives in the
+                # config file. The environment is still built by `env_for`, so
+                # role selection and the clearing of ambient credentials have
+                # one implementation across both transports rather than two.
+                self.env_for(role),
+            )
+        finally:
+            try:
+                os.unlink(config_path)
+            except OSError:
+                pass
+        return classify_object_read(
+            completed.returncode, completed.stdout or "", completed.stderr or ""
+        )
+
     def run(self, probe: Probe) -> tuple[str, str]:
         cached = self._outcomes.get(probe.key())
         if cached is not None:
             return cached
-        argv = ["aws", "--endpoint-url", self.endpoint, "s3api"] + probe.args
-        if probe.role == "anonymous":
-            argv.append("--no-sign-request")
-        completed = self.runner(argv, self.env_for(probe.role))
-        outcome = classify(completed.returncode, completed.stderr or "")
+        if probe.kind == "object-read":
+            outcome = self.read_object(probe.role, probe.bucket, probe.object_key)
+        else:
+            argv = ["aws", "--endpoint-url", self.endpoint, "s3api"] + probe.args
+            if probe.role == "anonymous":
+                argv.append("--no-sign-request")
+            completed = self.runner(argv, self.env_for(probe.role))
+            outcome = classify(completed.returncode, completed.stderr or "")
         self._outcomes[probe.key()] = outcome
         return outcome
 
@@ -305,11 +591,7 @@ def build_checks(
             # restore and nowhere earlier, and on a Pulumi state bucket is a
             # checkpoint written and then unreadable.
             "workload can read an object back",
-            Probe(
-                "workload",
-                "read the probe object",
-                ["get-object", "--bucket", bucket, "--key", probe_key, os.devnull],
-            ),
+            ObjectRead("workload", "read the probe object", bucket=bucket, key=probe_key),
             "allow",
         ),
         Check(
@@ -324,11 +606,7 @@ def build_checks(
         ),
         Check(
             "foreign key cannot read an object",
-            Probe(
-                "foreign",
-                "read the probe object",
-                ["get-object", "--bucket", bucket, "--key", probe_key, os.devnull],
-            ),
+            ObjectRead("foreign", "read the probe object", bucket=bucket, key=probe_key),
             "deny",
             control=foreign_control,
         ),
@@ -435,7 +713,7 @@ def compare_stored_policy(verifier, bucket: str, policy_file: str) -> tuple[str,
     ]
     completed = verifier.runner(argv, verifier.env_for("operator"))
     if completed.returncode != 0:
-        return INCONCLUSIVE, f"could not read the stored policy: {(completed.stderr or '').strip()[:200]}"
+        return INCONCLUSIVE, f"could not read the stored policy: {_one_line(completed.stderr or '')}"
     try:
         stored = json.loads(completed.stdout or "")
         with open(policy_file, "r", encoding="utf-8") as handle:
@@ -479,7 +757,7 @@ def cleanup(verifier: Verifier, bucket: str) -> list[str]:
     env = verifier.env_for("operator")
     completed = verifier.runner(argv, env)
     if completed.returncode != 0:
-        return [f"could not list probe object versions: {(completed.stderr or '').strip()[:200]}"]
+        return [f"could not list probe object versions: {_one_line(completed.stderr or '')}"]
     try:
         listing = json.loads(completed.stdout or "{}")
     except json.JSONDecodeError as error:
@@ -528,7 +806,7 @@ def account_of(verifier, role: str) -> tuple[str | None, str]:
     ]
     completed = verifier.runner(argv, verifier.env_for(role))
     if completed.returncode != 0:
-        return None, (completed.stderr or "").strip()[:200]
+        return None, _one_line(completed.stderr or "")
     account = (completed.stdout or "").strip()
     return (account, "") if account else (None, "no Owner.ID in the response")
 
@@ -730,24 +1008,17 @@ def probe_notprincipal(verifier, *, bucket: str, replace_existing: bool) -> list
             (
                 "the probe object is written",
                 INCONCLUSIVE,
-                (put_object.stderr or "").strip()[:200],
+                _one_line(put_object.stderr or ""),
                 "",
                 True,
             )
         ]
 
     with _temporary_policy(verifier, bucket, policy, rows):
-        operator_read = verifier.runner(
-            _argv(verifier, ["get-object", "--bucket", bucket, "--key", probe_key, os.devnull]),
-            verifier.env_for("operator"),
-        )
-        foreign_read = verifier.runner(
-            _argv(verifier, ["get-object", "--bucket", bucket, "--key", probe_key, os.devnull]),
-            verifier.env_for("foreign"),
-        )
-
-    operator_outcome, operator_reason = classify(operator_read.returncode, operator_read.stderr or "")
-    foreign_outcome, foreign_reason = classify(foreign_read.returncode, foreign_read.stderr or "")
+        # Both reads happen inside the block, so the probe policy is removed
+        # whatever either of them does.
+        operator_outcome, operator_reason = verifier.read_object("operator", bucket, probe_key)
+        foreign_outcome, foreign_reason = verifier.read_object("foreign", bucket, probe_key)
 
     rows.append(
         (
@@ -813,7 +1084,7 @@ class _temporary_policy:
                     "the probe policy is accepted",
                     INCONCLUSIVE,
                     f"this engine rejected a NotPrincipal document outright: "
-                    f"{(applied.stderr or '').strip()[:200]}",
+                    f"{_one_line(applied.stderr or '')}",
                     "",
                     True,
                 )
@@ -904,7 +1175,7 @@ def apply_fence(verifier, *, bucket: str, policy_file: str) -> tuple[list[tuple]
         (
             "the policy is applied",
             PASS if first.returncode == 0 else FAIL,
-            "" if first.returncode == 0 else (first.stderr or "").strip()[:200],
+            "" if first.returncode == 0 else _one_line(first.stderr or ""),
             "",
             False,
         )
@@ -920,7 +1191,7 @@ def apply_fence(verifier, *, bucket: str, policy_file: str) -> tuple[list[tuple]
         (
             "THE BUCKET IS STILL ADMINISTRABLE",
             PASS if second.returncode == 0 else FAIL,
-            "" if second.returncode == 0 else (second.stderr or "").strip()[:200],
+            "" if second.returncode == 0 else _one_line(second.stderr or ""),
             "a no-op when it succeeds; a permanent lockout when it does not",
             True,
         )
