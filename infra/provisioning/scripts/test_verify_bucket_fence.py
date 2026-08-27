@@ -1824,8 +1824,8 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
         # spares another, so this compares the report against the world it ran
         # in rather than against the diagnostic's own verdict table. A
         # classifier that swapped `RESOLVES_PER_KEY` for `NAME_IS_DECORATION`
-        # -- telling Rob a fence is possible in exactly the world where a fence
-        # is an outage -- passes every mapping test and fails this one.
+        # -- reporting a buildable fence in exactly the world where a fence is
+        # an outage -- passes every mapping test and fails this one.
         for name, rule in self.WORLDS.items():
             with self.subTest(world=name):
                 code, output = diagnose(Engine(rule))
