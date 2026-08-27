@@ -45,14 +45,28 @@ _spec.loader.exec_module(verify)
 FENCED = "branchleft-db-backups"
 CONTROL = "branchleft-tenant-pulumi-state"
 
+# The diagnostic pauses between the two reads that have to agree, and between
+# attempts to remove a probe policy. Captured before it is overridden, so
+# `TestSettleIsRealInProduction` can assert the SHIPPED value is a real pause --
+# a suite that patches the wait away and never checks it would pass just as
+# happily against a build that had dropped the wait entirely.
+PRODUCTION_SETTLE_SECONDS = verify.SETTLE_SECONDS
+verify.SETTLE_SECONDS = 0
+verify._sleep = lambda _seconds: None
+
 OPERATOR_KEY = "O" * 20
 WORKLOAD_KEY = "W" * 20
 FOREIGN_KEY = "F" * 20
-PROJECT_ID = "00000000"
+# Deliberately not all zeroes: `verify.ABSENT_PRINCIPAL` names an all-zeroes
+# account precisely because no real project has one, and a fixture that shared
+# it would make window D's "a principal that is definitely not us" name this
+# suite's own account.
+PROJECT_ID = "12345678"
 ACCOUNT = f"p{PROJECT_ID}"
 
 OPERATOR_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{OPERATOR_KEY}"
 WORKLOAD_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{WORKLOAD_KEY}"
+FOREIGN_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{FOREIGN_KEY}"
 
 ROLE_OF_KEY = {OPERATOR_KEY: "operator", WORKLOAD_KEY: "workload", FOREIGN_KEY: "foreign"}
 
@@ -1235,6 +1249,32 @@ class TestNotPrincipalProbe(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("NotPrincipal DENIES everyone else", output)
 
+    def test_the_operator_read_alone_is_never_reported_as_an_exemption(self):
+        # THE MISREADING THIS ROW HAS ALREADY PRODUCED ONCE. A live run reported
+        # `NotPrincipal EXEMPTS the named key -- PASS` beside a foreign key that
+        # was also allowed, and it was recorded as proof the exemption works. It
+        # never was: a statement the engine ignores entirely produces exactly
+        # that operator read. Only the pair separates the two, so the pair
+        # decides this row, and an operator allowed alongside a foreign key that
+        # was also allowed is INCONCLUSIVE here rather than a pass.
+        code, output, _ = self._run(OBJECT_BYTES, OBJECT_BYTES)
+        self.assertEqual(code, 1)
+        exempts = [
+            line for line in output.splitlines() if "NotPrincipal EXEMPTS" in line
+        ]
+        self.assertEqual(len(exempts), 1)
+        self.assertTrue(exempts[0].startswith(verify.INCONCLUSIVE), exempts[0])
+        self.assertIn("the statement reached nobody", output)
+        self.assertIn("--diagnose-policy-engine", output)
+
+    def test_the_exemption_only_passes_when_the_foreign_key_was_actually_denied(self):
+        # The other half of the same rule: a pass here needs both reads, and the
+        # engine that produces them is the only one it can describe.
+        code, output, _ = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        self.assertEqual(code, 0, output)
+        exempts = [line for line in output.splitlines() if "NotPrincipal EXEMPTS" in line]
+        self.assertTrue(exempts[0].startswith(verify.PASS), exempts[0])
+
     def test_the_two_reads_that_decide_it_are_signed_as_different_roles(self):
         _, _, transport = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
         reads = [call for call in transport.calls if call[1] == "get-object"]
@@ -1502,6 +1542,850 @@ class TestNotPrincipalProbe(unittest.TestCase):
         self.assertIn(verify.probe_policy_id(FENCED), output)
         self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
         self.assertNotIn(verify.PASS, output)
+
+
+STORED_POLICY_ECHO = (
+    "constructed: GetBucketPolicy returning the document that was PUT, which is what a "
+    "bucket holding a policy answers"
+)
+
+
+def _principal_names(statement: dict) -> object:
+    """The access key ids one statement's `Principal` names, or `"*"`."""
+    principal = statement["Principal"]["AWS"]
+    if principal == "*":
+        return "*"
+    return {arn.rsplit(":", 1)[-1] for arn in principal}
+
+
+# THE ENGINES. Each is one coherent answer to "what does a bucket policy do
+# here", written as the rule that decides a single read. They exist so the
+# diagnostic can be run against several of them and its verdicts compared: a
+# probe that reports the same thing in two worlds is worth nothing, and asserting
+# that these produce different verdicts is the only way to know it does not.
+#
+# `key` is the access key id the read was signed with; `statement` is the one
+# statement the live policy carries, or None when the bucket has no policy.
+PROJECT_KEYS = frozenset({OPERATOR_KEY, WORKLOAD_KEY, FOREIGN_KEY})
+
+
+def engine_per_key(key, statement):
+    """Principals resolve per key. What S3 itself does."""
+    names = _principal_names(statement)
+    return names == "*" or key in names
+
+
+def engine_wildcard_unimplemented(key, statement):
+    """Named ARNs resolve per key; `Principal: "*"` denies nobody.
+
+    A FENCE IS FULLY BUILDABLE HERE. This engine exists because the first shape
+    of this diagnostic gated the whole run on a wildcard Deny reaching the
+    subject key, and would have reported this world as
+    `BUCKET POLICIES ARE NOT ENFORCED` -- sending the estate to per-tenant
+    Hetzner projects while the two windows that show the fence works were never
+    sent.
+    """
+    names = _principal_names(statement)
+    return names != "*" and key in names
+
+
+def engine_enforces_nothing(key, statement):
+    """Policies are stored and evaluated against nobody."""
+    return False
+
+
+def engine_one_principal_per_project(key, statement):
+    """Every credential in the project is one RGW user, and an ARN resolves to it.
+
+    The tracker issue's hypothesis 1, and the reason window D exists. The name
+    IS read -- it just resolves to the single storage user every key in the
+    project shares, so a Deny naming one of them denies all of them. A principal
+    in another account still resolves to something else, which is what tells
+    this apart from `engine_ignores_principal` below.
+    """
+    names = _principal_names(statement)
+    return names == "*" or bool(names & PROJECT_KEYS)
+
+
+def engine_ignores_the_arn_format(key, statement):
+    """Only `*` matches: an ARN in this form resolves to nothing at all.
+
+    Distinct from `engine_one_principal_per_project` -- there the ARN resolves
+    and names everybody, here it resolves to nobody, and the two differ on
+    whether a principal deny discriminates across projects.
+    """
+    return _principal_names(statement) == "*"
+
+
+def engine_ignores_principal(key, statement):
+    """The Principal element is decoration: the statement matches every caller."""
+    return True
+
+
+def engine_inverts_principal(key, statement):
+    """The statement matches everyone EXCEPT the principal it names."""
+    names = _principal_names(statement)
+    return True if names == "*" else key not in names
+
+
+def engine_exempts_the_owner(key, statement):
+    """Principals resolve, but the bucket owner is never denied by its own policy."""
+    return key != OPERATOR_KEY and engine_per_key(key, statement)
+
+
+def _separates_two_keys(rule) -> bool:
+    """Whether this engine can fence one credential from another, asked of IT.
+
+    Derived by running the engine rather than by looking a verdict up, so a test
+    comparing this against the report is checking the diagnostic against the
+    world it was run in and not against the diagnostic's own table.
+    """
+    aimed_at_the_subject = {"Principal": {"AWS": [f"arn:aws:iam:::user/{ACCOUNT}:{FOREIGN_KEY}"]}}
+    return rule(FOREIGN_KEY, aimed_at_the_subject) and not rule(WORKLOAD_KEY, aimed_at_the_subject)
+
+
+class Engine(Transport):
+    """A stand-in storage engine that holds a policy and answers reads under it.
+
+    The fixed `answers` map every other test uses cannot express this: the whole
+    question is what changes about one read when the policy under it changes, so
+    the transport has to carry the policy rather than a table of outcomes.
+    """
+
+    def __init__(self, rule, *, stores=True, removable=True, accepts=True):
+        super().__init__({(role, "list-buckets", None): OWNER for role in ROLE_OF_KEY.values()})
+        self.rule = rule
+        self.stores = stores
+        self.removable = removable
+        self.accepts = accepts
+        self.policy = None
+
+    def __call__(self, url, headers, payload, method):
+        parts = urllib.parse.urlsplit(url)
+        path = parts.path.lstrip("/")
+        bucket = path.split("/", 1)[0] or None
+        key = path.split("/", 1)[1] if "/" in path else None
+        query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
+        operation = _operation(method, bucket, key, query)
+        role = _role(headers)
+        self.calls.append((role, operation, bucket))
+        self.sent.append(Sent(role, operation, bucket, key, url, headers, payload, method))
+
+        if operation == "put-bucket-policy":
+            if not self.accepts:
+                return REJECTED_POLICY.status, REJECTED_POLICY.body
+            # `stores=False` is this backend's recorded habit of accepting a
+            # configuration and silently dropping part of it.
+            self.policy = payload if self.stores else b'{"Version": "2012-10-17", "Statement": []}'
+            return OK_EMPTY.status, OK_EMPTY.body
+        if operation == "get-bucket-policy":
+            if self.policy is None:
+                return NO_SUCH_BUCKET_POLICY.status, NO_SUCH_BUCKET_POLICY.body
+            return 200, Response(STORED_POLICY_ECHO, 200, self.policy).body
+        if operation == "delete-bucket-policy":
+            if not self.removable:
+                return ACCESS_DENIED_WRITE.status, ACCESS_DENIED_WRITE.body
+            self.policy = None
+            return NO_CONTENT.status, NO_CONTENT.body
+        if operation == "get-object":
+            access_key = re.search(r"Credential=([^/]+)/", headers["Authorization"]).group(1)
+            statement = json.loads(self.policy)["Statement"][0] if self.policy else None
+            if statement is not None and self.rule(access_key, statement):
+                return ACCESS_DENIED_OBJECT.status, ACCESS_DENIED_OBJECT.body
+            return OBJECT_BYTES.status, OBJECT_BYTES.body
+        if operation == "put-object":
+            return OK_EMPTY.status, OK_EMPTY.body
+        if operation == "delete-object":
+            return NO_CONTENT.status, NO_CONTENT.body
+        if operation == "list-object-versions":
+            return EMPTY_VERSIONS.status, EMPTY_VERSIONS.body
+        return super().__call__(url, headers, payload, method)
+
+
+def diagnose(engine, extra=()):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = verify.main(
+            ["--bucket", FENCED, "--diagnose-policy-engine", *extra],
+            transport=engine,
+            environ=dict(ENVIRONMENT),
+        )
+    return code, out.getvalue()
+
+
+class TestPolicyEngineDiagnostic(unittest.TestCase):
+    """Which world we are in, and the proof that the probes can tell them apart.
+
+    A live `Deny` carrying `NotPrincipal` was enforced against nobody. An engine
+    that enforces no policy, an engine on which every credential in a project is
+    one principal, and an engine that does not implement `NotPrincipal` all
+    produce that observation, and they have opposite consequences. These tests
+    are about the diagnostic returning a DIFFERENT answer in each of those
+    worlds -- because a probe that answers the same in two of them is exactly
+    what was mistaken for evidence before.
+    """
+
+    WORLDS = {
+        "per-key principals resolve": engine_per_key,
+        "named ARNs resolve and `*` does not": engine_wildcard_unimplemented,
+        "policies are not enforced": engine_enforces_nothing,
+        "every credential is one RGW user": engine_one_principal_per_project,
+        "the ARN form resolves to nobody": engine_ignores_the_arn_format,
+        "the principal element is decoration": engine_ignores_principal,
+        "the principal match is inverted": engine_inverts_principal,
+    }
+
+    def _headline(self, output):
+        lines = [line for line in output.splitlines() if line.isupper() and line.endswith(".")]
+        self.assertTrue(lines, f"no verdict headline in the output:\n{output}")
+        return lines[0]
+
+    def test_an_engine_that_resolves_principals_says_a_fence_is_rebuildable(self):
+        code, output = diagnose(Engine(engine_per_key))
+        self.assertEqual(code, 0, output)
+        self.assertIn("PER-KEY PRINCIPALS RESOLVE", output)
+        # Even the good world does not license applying the fence in this
+        # repository: that one fences by `NotPrincipal`, which this mode never
+        # sends and which was observed live denying nobody.
+        self.assertIn("do not apply it anywhere else", output)
+
+    def test_an_engine_that_does_not_implement_the_wildcard_still_reports_a_fence(self):
+        # THE WORLD A WILDCARD GATE WOULD HAVE THROWN AWAY. Named ARNs resolve
+        # per key here, so a fence is fully buildable -- but `Principal: "*"`
+        # denies nobody, and a run that stopped on that would have reported no
+        # policy works at all and sent the estate to per-tenant projects.
+        engine = Engine(engine_wildcard_unimplemented)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 0, output)
+        self.assertIn("PER-KEY PRINCIPALS RESOLVE", output)
+        self.assertNotIn("BUCKET POLICIES ARE NOT ENFORCED", output)
+
+    def test_the_wildcard_window_is_not_sent_when_the_reading_does_not_turn_on_it(self):
+        # It is the only document that denies the operator by construction, so
+        # it is the one window worth not sending.
+        engine = Engine(engine_per_key)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 0, output)
+        sids = [
+            json.loads(sent.payload)["Statement"][0]["Sid"]
+            for sent in engine.sent
+            if sent.operation == "put-bucket-policy"
+        ]
+        self.assertEqual(sids, ["ProbeDenyTheSubjectKey", "ProbeDenyTheOtherKey", "ProbeDenyAnAbsentPrincipal"])
+        self.assertNotIn("ProbeDenyEveryPrincipal", sids)
+        self.assertIn("was not needed", output)
+
+    def test_nothing_is_enforced_needs_every_window_to_have_denied_nobody(self):
+        # The claim is about the whole account and it sends the estate to
+        # per-tenant projects, so it is the last thing that may be drawn from
+        # one document shape.
+        engine = Engine(engine_enforces_nothing)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT", output)
+        puts = [call for call in engine.calls if call[1] == "put-bucket-policy"]
+        self.assertEqual(len(puts), 4)
+
+    def test_hypothesis_one_is_told_apart_from_an_engine_that_ignores_the_principal(self):
+        # THE COLLISION WINDOW D EXISTS TO REMOVE. On both engines a Deny naming
+        # either real key denies both of them; only a name that can resolve to
+        # nothing separates them, and they differ on whether a project per
+        # tenant is a mechanism that would work.
+        one_user = self._headline(diagnose(Engine(engine_one_principal_per_project))[1])
+        decoration = self._headline(diagnose(Engine(engine_ignores_principal))[1])
+        self.assertIn("EVERY CREDENTIAL IN THIS PROJECT IS ONE PRINCIPAL", one_user)
+        self.assertIn("THE PRINCIPAL ELEMENT IS DECORATION", decoration)
+        self.assertNotEqual(one_user, decoration)
+
+    def test_only_the_one_user_reading_offers_a_project_per_tenant_as_a_way_out(self):
+        # The two readings differ in exactly the consequence that matters: a
+        # principal deny still discriminates across projects under one and not
+        # under the other, and that decides the replacement design.
+        _, one_user = diagnose(Engine(engine_one_principal_per_project))
+        _, decoration = diagnose(Engine(engine_ignores_principal))
+        self.assertIn("a project per tenant is the mechanism that remains", " ".join(one_user.split()))
+        self.assertIn("does not rescue this either", " ".join(decoration.split()))
+
+    def test_an_engine_that_ignores_the_principal_is_told_apart_from_a_working_one(self):
+        # Window B alone cannot: a Deny naming the subject key denies it in both
+        # worlds. Window C is what separates them, by naming the OTHER key.
+        code, output = diagnose(Engine(engine_ignores_principal))
+        self.assertEqual(code, 1)
+        self.assertIn("THE PRINCIPAL ELEMENT IS DECORATION", output)
+
+    def test_an_engine_that_inverts_the_match_is_named_rather_than_guessed_at(self):
+        code, output = diagnose(Engine(engine_inverts_principal))
+        self.assertEqual(code, 1)
+        self.assertIn("MATCHES THE COMPLEMENT OF THE PRINCIPAL", output)
+
+    def test_the_report_says_a_fence_is_possible_exactly_when_the_engine_separates_keys(self):
+        # THE NON-TAUTOLOGICAL ONE. `_separates_two_keys` asks the simulated
+        # engine directly whether a Deny naming one key denies that key and
+        # spares another, so this compares the report against the world it ran
+        # in rather than against the diagnostic's own verdict table. A
+        # classifier that swapped `RESOLVES_PER_KEY` for `NAME_IS_DECORATION`
+        # -- reporting a buildable fence in exactly the world where a fence is
+        # an outage -- passes every mapping test and fails this one.
+        for name, rule in self.WORLDS.items():
+            with self.subTest(world=name):
+                code, output = diagnose(Engine(rule))
+                headline = "A BUCKET POLICY CAN FENCE ONE KEY FROM ANOTHER HERE"
+                row = [line for line in output.splitlines() if headline in line]
+                self.assertEqual(len(row), 1, output)
+                self.assertEqual(
+                    row[0].startswith(verify.PASS), _separates_two_keys(rule), output
+                )
+                self.assertEqual(code == 0, _separates_two_keys(rule))
+
+    def test_no_two_worlds_produce_the_same_verdict(self):
+        # THE MUTATION CHECK ON THE WHOLE DIAGNOSTIC. A probe set that reported
+        # the same thing in two of these worlds would be worthless -- which is
+        # precisely what the withdrawn NotPrincipal result was, so this is
+        # asserted rather than argued.
+        # Compared on the HEADLINE alone. Pairing it with the exit code would
+        # let two worlds sharing a verdict pass on differing exit codes, which
+        # is a collision the test is supposed to catch rather than tolerate.
+        verdicts = {}
+        for name, rule in self.WORLDS.items():
+            verdicts[name] = self._headline(diagnose(Engine(rule))[1])
+        # Two of these seven SHOULD share a reading: an engine that resolves
+        # named ARNs reads the same whether or not it implements `*`, because
+        # the wildcard changes nothing about whether a fence can be built. Every
+        # other pair must differ.
+        expected_collisions = 1
+        self.assertEqual(
+            len(set(verdicts.values())), len(self.WORLDS) - expected_collisions, verdicts
+        )
+        self.assertEqual(
+            verdicts["per-key principals resolve"],
+            verdicts["named ARNs resolve and `*` does not"],
+        )
+
+    def test_an_engine_that_exempts_the_bucket_owner_is_caught_without_the_wildcard(self):
+        # The reason the subject of every window is the OTHER key. This engine
+        # answers the operator `allowed` under every statement, so an operator's
+        # read is not evidence about the engine anywhere in this file. The
+        # exemption is still detected: window C names the operator, and window B
+        # has already shown that names resolve, so an operator reading through
+        # window C's Deny is one the engine spares -- no wildcard needed.
+        engine = Engine(engine_exempts_the_owner)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("exempts the bucket owner", output)
+        self.assertIn("PER-KEY PRINCIPALS RESOLVE", output)
+        self.assertNotIn("BUCKET POLICIES ARE NOT ENFORCED", output)
+        sids = [
+            json.loads(sent.payload)["Statement"][0]["Sid"]
+            for sent in engine.sent
+            if sent.operation == "put-bucket-policy"
+        ]
+        self.assertNotIn("ProbeDenyEveryPrincipal", sids)
+
+    def test_a_document_the_engine_did_not_store_yields_no_reads_at_all(self):
+        # Ruling out "accepted but not stored". A 2xx on the PUT is not evidence
+        # a document is in force, and reads taken against a policy that was
+        # never stored measure some other fence.
+        engine = Engine(engine_per_key, stores=False)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("the bucket stores the document that was sent", output)
+        self.assertIn("not the document that was sent", output)
+        reads = [call for call in engine.calls if call[1] == "get-object"]
+        # The eight baseline reads -- two roles on each of four objects -- and
+        # not one taken under a probe policy.
+        self.assertEqual(len(reads), 8)
+
+    def test_a_rejected_document_produces_no_verdict(self):
+        engine = Engine(engine_per_key, accepts=False)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("NO SINGLE READING EXPLAINS", output)
+        self.assertNotIn(("operator", "delete-bucket-policy", FENCED), engine.calls)
+
+    def test_a_probe_policy_that_could_not_be_removed_stops_the_run_there(self):
+        engine = Engine(engine_per_key, removable=False)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("THE PROBE POLICY IS REMOVED", output)
+        puts = [call for call in engine.calls if call[1] == "put-bucket-policy"]
+        self.assertEqual(len(puts), 1)
+
+    def test_the_removal_of_a_probe_policy_is_retried_before_it_is_given_up_on(self):
+        # One transient 503 leaving a document on the estate's only offsite
+        # backup bucket is not an acceptable failure mode for a probe.
+        engine = Engine(engine_per_key, removable=False)
+        diagnose(engine)
+        deletes = [call for call in engine.calls if call[1] == "delete-bucket-policy"]
+        self.assertEqual(len(deletes), verify._REMOVAL_ATTEMPTS)
+
+    def test_a_removal_that_succeeds_on_a_retry_lets_the_run_continue(self):
+        class Flaky(Engine):
+            refusals = 1
+
+            def __call__(self, url, headers, payload, method):
+                if method == "DELETE" and "policy=" in url and self.refusals:
+                    self.refusals -= 1
+                    self.calls.append(("operator", "delete-bucket-policy", FENCED))
+                    return ACCESS_DENIED_WRITE.status, ACCESS_DENIED_WRITE.body
+                return super().__call__(url, headers, payload, method)
+
+        engine = Flaky(engine_per_key)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("THE PROBE POLICY IS REMOVED", output)
+
+    def test_every_window_reads_a_key_of_its_own_rather_than_a_cached_verdict(self):
+        # `Verifier.run` caches by probe, and the same read under a different
+        # policy is a different fact. A cached answer would report a later
+        # window's verdict from an earlier window's policy.
+        engine = Engine(engine_per_key)
+        diagnose(engine)
+        reads = [sent for sent in engine.sent if sent.operation == "get-object"]
+        # Eight baseline, then two roles read twice in each of three windows.
+        self.assertEqual(len(reads), 8 + 3 * 4)
+        self.assertEqual(len({sent.key for sent in reads}), 4)
+
+    def test_the_verdict_is_the_last_thing_printed_and_the_evidence_the_first(self):
+        code, output = diagnose(Engine(engine_ignores_the_arn_format))
+        self.assertLess(output.index("RAW EVIDENCE"), output.index("A NAMED PRINCIPAL"))
+        self.assertIn("BASELINE -- no policy on the bucket", output)
+        self.assertIn("WINDOW B -- sent:", output)
+        self.assertIn("WINDOW B -- stored:", output)
+
+    def test_a_read_that_changes_between_two_attempts_yields_no_verdict(self):
+        # THE CONSISTENCY HAZARD. Reading the policy back proves it reached the
+        # node that answered GetBucketPolicy, not the one answering GetObject,
+        # and every way that can fail biases a read towards `allowed` -- the
+        # direction that produces the loudest readings in this file. A read that
+        # did not settle is one no reading may be drawn from.
+        class Drifting(Engine):
+            seen = 0
+
+            def __call__(self, url, headers, payload, method):
+                if verify.PROBE_PREFIX in url and method == "GET" and self.policy:
+                    self.seen += 1
+                    if self.seen == 1:
+                        self.calls.append(("foreign", "get-object", FENCED))
+                        return OBJECT_BYTES.status, OBJECT_BYTES.body
+                return super().__call__(url, headers, payload, method)
+
+        code, output = diagnose(Drifting(engine_per_key))
+        self.assertEqual(code, 1)
+        self.assertIn("did not settle on one answer", " ".join(output.split()))
+        self.assertIn("NO SINGLE READING EXPLAINS", output)
+
+    def test_the_confirming_read_is_a_second_request_and_not_a_cached_answer(self):
+        engine = Engine(engine_per_key)
+        diagnose(engine)
+        under_policy = [
+            sent
+            for sent in engine.sent
+            if sent.operation == "get-object" and sent.role == "foreign"
+        ]
+        # One baseline read plus two under the policy, on each of the three
+        # objects the run actually opened a window for.
+        by_key = {}
+        for sent in under_policy:
+            by_key.setdefault(sent.key, 0)
+            by_key[sent.key] += 1
+        self.assertEqual(sorted(by_key.values()), [1, 3, 3, 3])
+
+    def test_the_evidence_block_carries_no_access_key_id(self):
+        # This repository is public and the block exists to be pasted into the
+        # issue that asked the question. An id nobody can paste does not get
+        # recorded, and a recorded id is one this repo published.
+        _, output = diagnose(Engine(engine_per_key))
+        for key in (OPERATOR_KEY, WORKLOAD_KEY, FOREIGN_KEY):
+            with self.subTest(key=key[:4]):
+                self.assertNotIn(key, output)
+        self.assertIn(f"...{FOREIGN_KEY[-4:]}", output)
+
+
+class TestPolicyEngineProbesAreSafe(unittest.TestCase):
+    """Nothing this diagnostic sends can lock a bucket or strand an object."""
+
+    def _documents(self):
+        engine = Engine(engine_per_key)
+        diagnose(engine)
+        return [
+            json.loads(sent.payload)
+            for sent in engine.sent
+            if sent.operation == "put-bucket-policy"
+        ]
+
+    def _every_document(self):
+        """All four, whether or not a given run sends them."""
+        return [
+            verify.diagnostic_policy(FENCED, sid, principal)
+            for _, sid, principal in verify._diagnostic_plan(OPERATOR_ARN, FOREIGN_ARN)
+        ]
+
+    def test_every_document_it_sends_passes_the_reversibility_assertion(self):
+        documents = self._every_document()
+        self.assertEqual(len(documents), 4)
+        for document in documents:
+            with self.subTest(sid=document["Statement"][0]["Sid"]):
+                verify.assert_probe_policy_is_reversible(document, FENCED)
+
+    def test_no_document_names_the_bucket_resource_or_any_other_action(self):
+        # The bucket resource is what `PutBucketPolicy` and `DeleteBucketPolicy`
+        # are asked at, so a statement naming it could deny its own removal.
+        # Window A denies the operator by construction, which is exactly why.
+        for document in self._documents():
+            statement = document["Statement"][0]
+            with self.subTest(sid=statement["Sid"]):
+                self.assertEqual(statement["Effect"], "Deny")
+                self.assertEqual(statement["Action"], "s3:GetObject")
+                self.assertEqual(
+                    statement["Resource"], f"arn:aws:s3:::{FENCED}/{verify.PROBE_PREFIX}*"
+                )
+
+    def test_a_probe_that_denied_the_delete_of_its_own_object_is_refused(self):
+        # A guard that has quietly stopped refusing anything passes everything,
+        # so prove this one still fires. `s3:DeleteObject` under the probe
+        # prefix would refuse the cleanup that removes the probe object.
+        for action in ("s3:DeleteObject", "s3:*", ["s3:GetObject", "s3:DeleteObject"]):
+            with self.subTest(action=action):
+                document = verify.diagnostic_policy(FENCED, "Probe", {"AWS": "*"})
+                document["Statement"][0]["Action"] = action
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify.assert_probe_policy_is_reversible(document, FENCED)
+                self.assertIn("could refuse the delete", str(raised.exception))
+
+    def test_a_statement_naming_no_action_at_all_is_refused(self):
+        document = verify.diagnostic_policy(FENCED, "Probe", {"AWS": "*"})
+        del document["Statement"][0]["Action"]
+        with self.assertRaises(verify.VerifierError):
+            verify.assert_probe_policy_is_reversible(document, FENCED)
+
+    def test_the_bucket_is_left_with_no_policy_and_no_probe_object(self):
+        engine = Engine(engine_per_key)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 0, output)
+        self.assertIsNone(engine.policy)
+        deletes = [call for call in engine.calls if call == ("operator", "delete-bucket-policy", FENCED)]
+        self.assertEqual(len(deletes), 3)
+        self.assertIn(("operator", "list-object-versions", FENCED), engine.calls)
+
+    def test_every_probe_object_is_written_before_any_policy_exists(self):
+        # A write refused by a live Deny would look like an endpoint problem,
+        # and a probe object created under one policy and read under another is
+        # not the same experiment.
+        engine = Engine(engine_per_key)
+        diagnose(engine)
+        writes = [i for i, call in enumerate(engine.calls) if call[1] == "put-object"]
+        first_policy = engine.calls.index(("operator", "put-bucket-policy", FENCED))
+        self.assertEqual(len(writes), 4)
+        self.assertLess(max(writes), first_policy)
+
+    def test_an_unsendable_document_is_refused_before_a_single_object_is_written(self):
+        # `assert_probe_policy_is_reversible` raises, and a VerifierError
+        # escaping the diagnostic skips the cleanup that removes probe objects.
+        # Asserting every document up front means the raise cannot happen after
+        # anything exists to clean up.
+        engine = Engine(engine_per_key)
+        with mock.patch.object(verify, "PROBE_ACTIONS", frozenset({"s3:NoSuchAction"})):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = verify.main(
+                    ["--bucket", FENCED, "--diagnose-policy-engine"],
+                    transport=engine,
+                    environ=dict(ENVIRONMENT),
+                )
+        self.assertEqual(code, 2)
+        self.assertNotIn(("operator", "put-object", FENCED), engine.calls)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_the_absent_principal_is_not_one_of_the_credentials_in_use(self):
+        # Window D's whole job is naming a principal that is definitely not us.
+        # One that happened to name a real key would report the decoration
+        # reading for an engine that resolves per key -- "no fence is possible"
+        # for a world where one is.
+        self.assertNotIn(ACCOUNT, verify.ABSENT_PRINCIPAL)
+        for key in (OPERATOR_KEY, WORKLOAD_KEY, FOREIGN_KEY):
+            self.assertNotIn(key, verify.ABSENT_PRINCIPAL)
+
+    def test_an_absent_principal_that_named_a_live_credential_stops_the_run(self):
+        engine = Engine(engine_per_key)
+        with mock.patch.object(
+            verify, "ABSENT_PRINCIPAL", f"arn:aws:iam:::user/{ACCOUNT}:{FOREIGN_KEY}"
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = verify.main(
+                    ["--bucket", FENCED, "--diagnose-policy-engine"],
+                    transport=engine,
+                    environ=dict(ENVIRONMENT),
+                )
+        self.assertEqual(code, 2)
+        self.assertIn("absent principal", err.getvalue())
+        self.assertNotIn(("operator", "put-object", FENCED), engine.calls)
+
+    def test_it_refuses_a_bucket_that_already_carries_a_policy(self):
+        engine = Engine(engine_per_key)
+        engine.policy = POLICY_DOCUMENT
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("already carries a policy", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_a_leftover_diagnostic_policy_is_replaceable_and_named_as_such(self):
+        engine = Engine(engine_per_key)
+        engine.policy = json.dumps(
+            verify.diagnostic_policy(FENCED, "ProbeDenyEveryPrincipal", {"AWS": "*"})
+        ).encode()
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("left its own probe policy", output)
+        code, output = diagnose(engine, extra=["--replace-existing-policy"])
+        self.assertEqual(code, 0, output)
+
+    def test_a_key_that_cannot_read_its_object_with_no_policy_stops_the_run(self):
+        # THE CONTROL. Without it a denial in a window could be the key, the
+        # object or the endpoint, and a denial whose cause is unknown recorded
+        # as a fence is the mistake this whole file exists to prevent.
+        class Unreadable(Engine):
+            def __call__(self, url, headers, payload, method):
+                if verify.PROBE_PREFIX in url and FOREIGN_KEY in headers.get("Authorization", ""):
+                    if method == "GET":
+                        self.calls.append(("foreign", "get-object", FENCED))
+                        return ACCESS_DENIED_OBJECT.status, ACCESS_DENIED_OBJECT.body
+                return super().__call__(url, headers, payload, method)
+
+        engine = Unreadable(engine_per_key)
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("with NO policy in force", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_two_credentials_in_different_accounts_stop_it_before_it_writes(self):
+        engine = Engine(engine_per_key)
+        engine.answers[("foreign", "list-buckets", None)] = OTHER_OWNER
+        code, output = diagnose(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("would be that boundary and not the policy", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_the_dry_run_prints_every_document_and_sends_nothing(self):
+        engine = Engine(engine_per_key)
+        code, output = diagnose(engine, extra=["--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertEqual(engine.calls, [])
+        for sid in (
+            "ProbeDenyTheSubjectKey",
+            "ProbeDenyTheOtherKey",
+            "ProbeDenyAnAbsentPrincipal",
+            "ProbeDenyEveryPrincipal",
+        ):
+            self.assertIn(sid, output)
+
+    def test_the_operator_and_the_foreign_key_may_not_be_the_same_credential(self):
+        # Windows B and C would then be the same document with the same name in
+        # it, so the pair that decides the whole verdict would be one
+        # observation counted twice.
+        environment = dict(ENVIRONMENT)
+        environment["FENCE_FOREIGN_ACCESS_KEY_ID"] = OPERATOR_KEY
+        engine = Engine(engine_per_key)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = verify.main(
+                ["--bucket", FENCED, "--diagnose-policy-engine"],
+                transport=engine,
+                environ=environment,
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("the same access key", err.getvalue())
+        self.assertEqual(engine.calls, [])
+
+    def test_the_workload_credential_is_not_required_for_this_mode(self):
+        # Every argument or variable an operator does not have to supply is one
+        # they cannot supply wrongly, and this mode never signs as the workload.
+        environment = {
+            name: value
+            for name, value in ENVIRONMENT.items()
+            if "WORKLOAD" not in name
+        }
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = verify.main(
+                ["--bucket", FENCED, "--diagnose-policy-engine"],
+                transport=Engine(engine_per_key),
+                environ=environment,
+            )
+        self.assertEqual(code, 0, out.getvalue())
+
+    def test_this_mode_needs_no_policy_file_and_no_control_bucket(self):
+        # Every argument an operator does not have to type is one they cannot
+        # mistype into a production bucket -- and rendering a fence to ask
+        # whether a fence is possible is backwards.
+        code, output = diagnose(Engine(engine_per_key))
+        self.assertEqual(code, 0, output)
+
+
+class TestPolicyEngineVerdicts(unittest.TestCase):
+    """The readings, as pure functions, one cell at a time."""
+
+    READS = ("allowed", "denied")
+
+    def _cells(self):
+        for named in self.READS:
+            for other in self.READS:
+                for absent in self.READS:
+                    yield named, other, absent
+
+    def test_the_wildcard_window_reports_what_it_saw_and_never_a_reading(self):
+        # It names no engine and ends no run. `WILDCARD_DENIES_NOBODY` is
+        # deliberately not `NOT_ENFORCED`: the same observation comes from an
+        # engine that resolves named ARNs and does not implement `*`, where a
+        # fence is fully buildable.
+        self.assertEqual(
+            verify.wildcard_observation("denied", "denied"), verify.WILDCARD_DENIES_BOTH
+        )
+        self.assertEqual(
+            verify.wildcard_observation("denied", "allowed"), verify.WILDCARD_SPARES_THE_OWNER
+        )
+        self.assertEqual(
+            verify.wildcard_observation("allowed", "allowed"), verify.WILDCARD_DENIES_NOBODY
+        )
+        self.assertEqual(verify.wildcard_observation("allowed", "denied"), verify.UNEXPLAINED)
+        self.assertNotIn(
+            verify.WILDCARD_DENIES_NOBODY, verify.FENCE_IS_POSSIBLE,
+        )
+
+    def test_an_unreadable_response_never_becomes_an_engine_verdict(self):
+        for reads in (
+            ("error", "denied", "allowed"),
+            ("denied", "error", "allowed"),
+            ("denied", "allowed", "error"),
+            ("error", "error", "error"),
+        ):
+            with self.subTest(reads=reads):
+                self.assertEqual(verify.principal_verdict(*reads, "denied"), verify.UNEXPLAINED)
+        for foreign, operator in (("error", "denied"), ("denied", "error")):
+            self.assertEqual(verify.wildcard_observation(foreign, operator), verify.UNEXPLAINED)
+
+    def test_a_fence_is_reported_possible_only_where_a_deny_hit_the_key_it_named_alone(self):
+        # THE ASSERTION THAT IS NOT THE MAPPING RESTATED. "A fence is possible"
+        # means one thing: naming a key denied that key, and denied nobody else.
+        # A classifier that swapped `RESOLVES_PER_KEY` with `NAME_IS_DECORATION`
+        # -- reporting a buildable fence in exactly the world where a fence is
+        # an outage -- is a bijection and passes every injectivity check, and
+        # fails this.
+        for named, other, absent in self._cells():
+            for wildcard in self.READS:
+                with self.subTest(named=named, other=other, absent=absent, wildcard=wildcard):
+                    separates = (named, other, absent) == ("denied", "allowed", "allowed")
+                    verdict = verify.principal_verdict(named, other, absent, wildcard)
+                    self.assertEqual(verify.FENCE_IS_POSSIBLE[verdict], separates)
+
+    def test_a_reading_is_named_only_where_the_reads_are_self_consistent(self):
+        # Every cell that IS named must be explained by an engine that could
+        # produce all three reads. The mixtures no coherent principal semantics
+        # produces get no name at all, because naming one would be a guess.
+        coherent = {
+            ("denied", "allowed", "allowed"),
+            ("denied", "denied", "allowed"),
+            ("denied", "denied", "denied"),
+            ("allowed", "denied", "denied"),
+            ("allowed", "allowed", "allowed"),
+        }
+        for reads in self._cells():
+            with self.subTest(reads=reads):
+                verdict = verify.principal_verdict(*reads, "denied")
+                self.assertEqual(verdict != verify.UNEXPLAINED, reads in coherent)
+
+    def test_the_absent_principal_read_is_what_separates_two_named_readings(self):
+        # Window D, stated as the thing it buys. Without it these two cells are
+        # one observation, and they differ on whether a project per tenant is a
+        # mechanism that would work.
+        one_user = verify.principal_verdict("denied", "denied", "allowed", "denied")
+        decoration = verify.principal_verdict("denied", "denied", "denied", "denied")
+        self.assertEqual(one_user, verify.ONE_PRINCIPAL_PER_PROJECT)
+        self.assertEqual(decoration, verify.NAME_IS_DECORATION)
+        self.assertNotEqual(one_user, decoration)
+
+    def test_the_wildcard_read_is_consulted_in_exactly_one_cell(self):
+        # It costs the only document that denies the operator, so it is sent
+        # only where it changes the answer -- and `needs_wildcard` has to agree
+        # with the classifier about which cell that is.
+        for reads in self._cells():
+            with self.subTest(reads=reads):
+                differs = verify.principal_verdict(*reads, "denied") != verify.principal_verdict(
+                    *reads, "allowed"
+                )
+                self.assertEqual(differs, verify.needs_wildcard(*reads))
+
+    def test_a_missing_wildcard_read_in_the_cell_that_needs_one_names_no_reading(self):
+        self.assertEqual(
+            verify.principal_verdict("allowed", "allowed", "allowed", ""), verify.UNEXPLAINED
+        )
+        self.assertEqual(
+            verify.principal_verdict("allowed", "allowed", "allowed", "denied"),
+            verify.NAME_MATCHES_NOBODY,
+        )
+        self.assertEqual(
+            verify.principal_verdict("allowed", "allowed", "allowed", "allowed"),
+            verify.NOT_ENFORCED,
+        )
+
+    def test_only_one_reading_leaves_a_fence_possible(self):
+        possible = [name for name, ok in verify.FENCE_IS_POSSIBLE.items() if ok]
+        self.assertEqual(possible, [verify.RESOLVES_PER_KEY])
+
+    def test_every_reading_the_classifier_can_return_has_prose_and_a_consequence(self):
+        # A reading added without an entry in either mapping would otherwise
+        # reach the report as a KeyError, or worse, default to "a fence is fine".
+        returned = {
+            verify.principal_verdict(*reads, wildcard)
+            for reads in self._cells()
+            for wildcard in ("", *self.READS)
+        }
+        self.assertEqual(returned, set(verify.FENCE_IS_POSSIBLE))
+        self.assertEqual(returned, set(verify.VERDICT_TEXT))
+
+    def test_every_reading_has_prose_that_says_what_to_do_next(self):
+        # A verdict an operator has to interpret is a verdict that gets
+        # interpreted wrongly, which is the whole history here. Every one of
+        # them opens with a headline, tells the operator what not to apply, and
+        # asks for the output to be recorded.
+        for verdict in verify.FENCE_IS_POSSIBLE:
+            with self.subTest(verdict=verdict):
+                text = " ".join(verify.VERDICT_TEXT[verdict].split())
+                self.assertTrue(verify.VERDICT_TEXT[verdict].splitlines()[0].isupper())
+                self.assertIn("not apply", text)
+                self.assertIn("Record", text)
+
+    def test_the_settle_pause_that_ships_is_a_real_one(self):
+        # This suite sets it to zero so the tests do not wait. A suite that
+        # patched the wait away and never checked the shipped value would pass
+        # against a build that had dropped the wait entirely -- and the wait is
+        # what stops a consistency artefact becoming the loudest reading here.
+        self.assertGreaterEqual(PRODUCTION_SETTLE_SECONDS, 1)
+        self.assertGreaterEqual(verify._REMOVAL_ATTEMPTS, 2)
+
+    def test_the_runbook_documents_every_verdict_this_tool_can_print(self):
+        # The runbook is what an operator reads under pressure, and a verdict
+        # the tool can print but the runbook does not list is one they meet with
+        # nothing to act on. Adding a seventh reading and forgetting the table
+        # is the drift this catches.
+        runbook = (
+            pathlib.Path(__file__).parents[3] / "RUNBOOK-bucket-fencing.md"
+        ).read_text(encoding="utf-8")
+        for verdict, text in verify.VERDICT_TEXT.items():
+            headline = text.splitlines()[0].rstrip(".")
+            with self.subTest(verdict=verdict):
+                self.assertIn(headline, runbook)
+
+    def test_the_plan_the_dry_run_prints_is_the_plan_the_run_sends(self):
+        plan = verify._diagnostic_plan("operator-arn", "foreign-arn")
+        # A last: it is the only document that denies the operator, so it is
+        # sent only where the reading turns on it.
+        self.assertEqual([window for window, _, _ in plan], ["B", "C", "D", "A"])
+        principals = [principal for _, _, principal in plan]
+        self.assertEqual(principals[0], {"AWS": ["foreign-arn"]})
+        self.assertEqual(principals[1], {"AWS": ["operator-arn"]})
+        self.assertEqual(principals[2], {"AWS": [verify.ABSENT_PRINCIPAL]})
+        self.assertEqual(principals[3], {"AWS": "*"})
 
 
 class TestApplyMode(unittest.TestCase):
