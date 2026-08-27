@@ -37,6 +37,26 @@ ACCESS_KEY_PATTERN = re.compile(r"\A[A-Za-z0-9]{16,64}\Z")
 BUCKET_NAME_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\Z")
 
 
+# What each role must still be able to do once a fence is applied. These are
+# the questions `decide()` is asked before a policy is written, by the renderer
+# on its way out and by `verify-bucket-fence.py`'s pre-flight on its way in.
+#
+# Whether a credential is locked out is an EVALUATION question, and only
+# `decide()` answers it. A structural scan of `NotPrincipal` lists cannot: a
+# fence deliberately contains Deny statements that name only the operator --
+# `DenyObjectMutationsExceptOperator` withholds the version-destroying actions
+# from the workload on purpose -- so "this Deny does not name the workload" is
+# what a working fence looks like, not a lockout.
+RECOVERY_ACTIONS = ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]
+
+# The whole of what a workload key does with its bucket: the two backup
+# pipelines write, `prune_backups.py` lists and deletes, a restore reads, and
+# Pulumi's S3 backend on the state bucket does the same four. Nothing here
+# includes an action the fence withholds by design.
+WORKLOAD_BUCKET_ACTIONS = ["s3:ListBucket"]
+WORKLOAD_OBJECT_ACTIONS = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+
+
 class PolicyInputError(ValueError):
     """A value that would produce a policy naming the wrong thing."""
 

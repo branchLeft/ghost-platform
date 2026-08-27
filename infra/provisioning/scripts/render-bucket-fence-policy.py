@@ -93,7 +93,13 @@ import argparse
 import json
 import sys
 
-from bucketpolicy import PolicyInputError, decide, key_principal, validate_bucket_name
+from bucketpolicy import (
+    RECOVERY_ACTIONS,
+    PolicyInputError,
+    decide,
+    key_principal,
+    validate_bucket_name,
+)
 
 # Every bucket-resource action a workload key keeps. All reads, none of them a
 # disclosure of the fence itself: `GetBucketPolicy` is deliberately absent, so
@@ -104,9 +110,6 @@ WORKLOAD_BUCKET_READ_ACTIONS = [
     "s3:ListBucketMultipartUploads",
     "s3:GetBucketLocation",
 ]
-
-# Actions the operator must retain for the bucket to be recoverable at all.
-RECOVERY_ACTIONS = ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]
 
 # Object actions withheld from the workload keys, operator only. Each one
 # defeats a layer that exists specifically to survive a compromise of the host

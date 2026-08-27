@@ -7,27 +7,34 @@ is a variation on that: a denial arriving for the wrong reason must never come
 out of this file as a pass.
 
 There is a second mistake recorded here, and it belongs to this file. Every
-object-read test once fed `classify()` a hand-written
-`An error occurred (AccessDenied)` stderr, which is the shape the CLI renders
-for most commands -- but not for `get-object` against this endpoint, which
-cannot render an error response for that command at all. The suite passed while
-the probe it covered could not reach a verdict. So responses here are not
-"the real shapes" on assertion: each fixture states whether it was observed on
-the wire or written, and `TestFixtureProvenance` refuses an unlabelled one.
+object-read test once fed the classifier a hand-written
+`An error occurred (AccessDenied)` stderr, which is the shape the `aws` CLI
+renders for most commands -- but not for anything against this endpoint, whose
+storage engine returns error documents the CLI cannot render at all. The suite
+passed while the probes it covered could not reach a verdict. So responses here
+are not "the real shapes" on assertion: each fixture states whether it was
+observed on the wire or written, and `TestFixtureProvenance` refuses an
+unlabelled one.
 """
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import io
 import json
 import os
 import pathlib
+import re
+import subprocess
 import tempfile
+import time
 import unittest
 import urllib.parse
 from unittest import mock
+
+from bucketpolicy import decide
 
 _MODULE_PATH = pathlib.Path(__file__).with_name("verify-bucket-fence.py")
 _spec = importlib.util.spec_from_file_location("verify_bucket_fence", _MODULE_PATH)
@@ -41,34 +48,39 @@ CONTROL = "branchleft-tenant-pulumi-state"
 OPERATOR_KEY = "O" * 20
 WORKLOAD_KEY = "W" * 20
 FOREIGN_KEY = "F" * 20
-ACCOUNT = "p00000000"
+PROJECT_ID = "00000000"
+ACCOUNT = f"p{PROJECT_ID}"
 
 OPERATOR_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{OPERATOR_KEY}"
 WORKLOAD_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{WORKLOAD_KEY}"
 
-POLICY = {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "DenyBucketConfigurationExceptOperator",
-            "Effect": "Deny",
-            "NotPrincipal": {"AWS": [OPERATOR_ARN]},
-            "NotAction": ["s3:ListBucket"],
-            "Resource": f"arn:aws:s3:::{FENCED}",
-        },
-        {
-            "Sid": "DenyObjectAccessExceptNamedKeys",
-            "Effect": "Deny",
-            "NotPrincipal": {"AWS": [WORKLOAD_ARN, OPERATOR_ARN]},
-            "Action": "s3:*",
-            "Resource": f"arn:aws:s3:::{FENCED}/*",
-        },
-    ],
-}
+ROLE_OF_KEY = {OPERATOR_KEY: "operator", WORKLOAD_KEY: "workload", FOREIGN_KEY: "foreign"}
+
+# THE POLICY UNDER TEST IS THE ONE THE TOOL WILL BE POINTED AT. It comes from
+# `render-bucket-fence-policy.py`, not from a stub written here, because a
+# hand-written policy is a fixture built to the assumptions of whoever wrote
+# it: a two-statement stub omits `DenyObjectMutationsExceptOperator`, which is
+# the statement that distinguishes "this Deny does not name the workload"
+# (correct, by design) from "this policy locks the workload out" (an outage).
+# A suite that never evaluates the real document can be entirely green while
+# the only input the tool ever receives is refused.
+_render_spec = importlib.util.spec_from_file_location(
+    "render_bucket_fence_policy", pathlib.Path(__file__).with_name("render-bucket-fence-policy.py")
+)
+render = importlib.util.module_from_spec(_render_spec)
+_render_spec.loader.exec_module(render)
+
+POLICY = render.render_policy(
+    bucket=FENCED,
+    project_id=PROJECT_ID,
+    workload_access_keys=[WORKLOAD_KEY],
+    admin_access_key=OPERATOR_KEY,
+)
+POLICY_DOCUMENT = json.dumps(POLICY).encode()
 
 _TEMP = tempfile.TemporaryDirectory()
 POLICY_FILE = str(pathlib.Path(_TEMP.name) / "policy.json")
-pathlib.Path(POLICY_FILE).write_text(json.dumps(POLICY))
+pathlib.Path(POLICY_FILE).write_bytes(POLICY_DOCUMENT)
 
 ENVIRONMENT = {
     "FENCE_OPERATOR_ACCESS_KEY_ID": OPERATOR_KEY,
@@ -79,232 +91,314 @@ ENVIRONMENT = {
     "FENCE_FOREIGN_SECRET_ACCESS_KEY": "foreign-secret",
 }
 
+ENDPOINT_HOST = "hel1.your-objectstorage.com"
+ENDPOINT = f"https://{ENDPOINT_HOST}"
 
-class Completed:
-    def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
+# Every `observed:` fixture below was captured against the live endpoint with
+# NO CREDENTIAL -- unsigned, or signed with a deliberately invalid key id -- so
+# none of them required, or could have exposed, a real key. `RequestId` and
+# `HostId` are replaced with the `N/A` this endpoint itself returns on the
+# gateway paths: they name one request on Hetzner's side and carry nothing a
+# fixture needs.
+UNSIGNED = "observed: unsigned request to " + ENDPOINT_HOST
+INVALID_KEY_REQUEST = "observed: request to " + ENDPOINT_HOST + " signed with an invalid key id"
 
 
-class Response(Completed):
-    """A `CompletedProcess`-shaped fixture, with where it came from attached.
+class Response:
+    """One HTTP response, with where it came from attached.
 
     `source` opens with `observed:` or `constructed:` and nothing else. A
     fixture observed on the wire constrains the code; one written here
-    constrains only what its author expected, which is how the object-read
-    probes shipped unable to reach a verdict.
+    constrains only what its author expected, and a probe covered by a fixture
+    nobody checked against the wire can be green and unable to reach a verdict.
+
+    Every instance registers itself, for the body checks in `tearDownModule`
+    that need the actual bytes. The label check is static -- see
+    `_fixture_labels` for why a registry cannot answer it.
     """
 
-    def __init__(self, source: str, returncode: int, stdout: str = "", stderr: str = ""):
-        super().__init__(returncode, stdout, stderr)
+    every: list["Response"] = []
+
+    def __init__(self, source: str, status: int, body: bytes = b""):
         self.source = source
+        self.status = status
+        self.body = body
+        Response.every.append(self)
 
 
-ENDPOINT_HOST = "hel1.your-objectstorage.com"
-AWS_CLI = "observed: aws-cli/2.36.25 against " + ENDPOINT_HOST
-CURL = "observed: curl 8.4.0 against " + ENDPOINT_HOST
-
-# botocore's documented rendering, which `classify` is written against.
-#
-# THIS ENDPOINT DOES NOT PRODUCE IT FOR A DENIAL. Its storage engine returns
-# errors with an empty `<Message></Message>` and the client crashes rather than
-# render them -- see `AWS_ACCESS_DENIED_CRASH` below, which is what actually
-# comes back. These three stay because they are the contract `classify` has to
-# keep for any response that IS rendered (the gateway's `NoSuchBucket` is one),
-# and because the checks built on them are about control logic rather than
-# about wire format. They are labelled here rather than left to be mistaken for
-# observations, which is the whole failure this file is recording.
-ACCESS_DENIED = (
-    "\nAn error occurred (AccessDenied) when calling the ListObjectsV2 operation: Access Denied\n"
-)
-INVALID_KEY = (
-    "\nAn error occurred (InvalidAccessKeyId) when calling the ListObjectsV2 operation: "
-    "The AWS Access Key Id you provided does not exist in our records.\n"
-)
-NO_SUCH_BUCKET_POLICY = (
-    "\nAn error occurred (NoSuchBucketPolicy) when calling the GetBucketPolicy operation: "
-    "The bucket policy does not exist\n"
+# THE DOCUMENT THIS WHOLE PROGRAMME TURNS ON. Empty `<Message></Message>`, which
+# is what `aws s3api` v2 exits 255 rather than render -- for every operation,
+# which is why moving one command onto a signed transport was not the fix.
+# Captured from an unsigned `GET /branchleft-db-backups?list-type=2`.
+ACCESS_DENIED = Response(
+    UNSIGNED + " (list-objects-v2 on a bucket that exists)",
+    403,
+    b'<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message></Message>'
+    b"<BucketName>branchleft-db-backups</BucketName><RequestId>N/A</RequestId>"
+    b"<HostId>N/A</HostId></Error>",
 )
 
-# The defect, and it is wider than one command. This endpoint's storage engine
-# returns errors with an empty `<Message></Message>`, and the client exits 255
-# with a client-internal message and an empty stdout rather than render one.
-# The same crash was captured from `get-object`, `list-objects-v2`,
-# `get-bucket-policy`, `put-object` and `list-buckets`, for `AccessDenied` and
-# `InvalidAccessKeyId` alike -- unsigned in the first case, with a deliberately
-# invalid key in the second, so no real credential produced any of them.
-AWS_GET_OBJECT_CRASH = Response(
-    AWS_CLI + " (get-object)",
-    255,
-    stderr="\naws: [ERROR]: argument of type 'NoneType' is not a container or iterable\n",
+# The same refusal for an object read, captured separately rather than assumed
+# to be the same document.
+ACCESS_DENIED_OBJECT = Response(
+    UNSIGNED + " (get-object)",
+    403,
+    b'<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message></Message>'
+    b"<BucketName>branchleft-db-backups</BucketName><RequestId>N/A</RequestId>"
+    b"<HostId>N/A</HostId></Error>",
 )
 
-# The same crash, from the command the runbook's denial probes actually use.
-# This is why `classify` cannot reach a verdict for those probes either, and
-# why section 1f cannot come back clean on the CLI transport.
-AWS_ACCESS_DENIED_CRASH = Response(
-    AWS_CLI + " (list-objects-v2, unsigned, on a bucket that exists)",
-    255,
-    stderr="\naws: [ERROR]: argument of type 'NoneType' is not a container or iterable\n",
+# And for the two bucket sub-resources the denial probes use. Captured because
+# a sub-resource request signs its query string, and a refusal that arrived in
+# some other shape from `?policy` than from a plain GET would be a hole.
+ACCESS_DENIED_POLICY = Response(
+    UNSIGNED + " (get-bucket-policy, ?policy=)",
+    403,
+    b'<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message></Message>'
+    b"<BucketName>branchleft-db-backups</BucketName><RequestId>N/A</RequestId>"
+    b"<HostId>N/A</HostId></Error>",
 )
 
-# What renders, and why the failure reads at first as one broken command: the
-# gateway's own `NoSuchBucket` carries a real message.
-AWS_NO_SUCH_BUCKET_RENDERS = Response(
-    AWS_CLI + " (list-objects-v2, unsigned, on a bucket that does not exist)",
-    254,
-    stderr="\naws: [ERROR]: An error occurred (NoSuchBucket) when calling the "
-    "ListObjectsV2 operation: The specified bucket does not exist.\n",
+ACCESS_DENIED_VERSIONS = Response(
+    UNSIGNED + " (list-object-versions, ?versions=)",
+    403,
+    b'<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message></Message>'
+    b"<BucketName>branchleft-db-backups</BucketName><RequestId>N/A</RequestId>"
+    b"<HostId>N/A</HostId></Error>",
 )
 
-# Why `head-object` is not the fix. It renders its error cleanly, and renders a
-# refusal as the code `403` -- an HTTP status, not an S3 error code, so
-# `DENIAL_CODES` cannot match it and every denial would arrive as INCONCLUSIVE
-# by a second route.
-AWS_HEAD_OBJECT_FORBIDDEN = Response(
-    AWS_CLI,
-    254,
-    stderr="\naws: [ERROR]: An error occurred (403) when calling the HeadObject "
-    "operation: Forbidden\n",
+# A write refusal. The document is the one captured above, byte for byte apart
+# from the identifiers -- this endpoint returned it unchanged for five
+# different read operations -- but it is labelled constructed because no write
+# refusal was captured: sending an unsigned PUT at a live production bucket to
+# find out is not a thing this work is permitted to do, and guessing that it
+# would be denied is the assumption a probe is supposed to test rather than
+# make.
+ACCESS_DENIED_WRITE = Response(
+    "constructed: the AccessDenied document captured from five read operations against "
+    f"{ENDPOINT_HOST}, reused for a write. No unsigned write was sent at a live bucket",
+    403,
+    ACCESS_DENIED.body,
 )
 
-# The signed-HTTP transport. `stdout` is the response body, then the status on
-# its own line, which is what `--write-out '\n%{http_code}'` produces.
-#
-# `RequestId` and `HostId` are replaced with the `N/A` this endpoint itself
-# returns on some paths: they name one request on Hetzner's side and carry
-# nothing a fixture needs.
-CURL_ACCESS_DENIED = Response(
-    CURL + ", UNSIGNED, so no credential was involved. A signed read refused by a "
-    "fence is expected to carry this same code; that is the part only a live "
-    "run with real credentials can confirm",
-    0,
-    stdout='<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code>'
-    f"<Message></Message><BucketName>{FENCED}</BucketName>"
-    "<RequestId>N/A</RequestId><HostId>N/A</HostId></Error>\n403",
+# The pair that makes an HTTP status useless on its own: the same 403, from a
+# credential that does not exist.
+INVALID_ACCESS_KEY = Response(
+    INVALID_KEY_REQUEST + " (get-object)",
+    403,
+    b'<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidAccessKeyId</Code>'
+    b"<Message></Message><RequestId>N/A</RequestId><HostId>N/A</HostId></Error>",
 )
 
-# The same 403 as a denial, carrying a code that is not one. This is the pair
-# that makes an HTTP status useless on its own.
-CURL_INVALID_ACCESS_KEY = Response(
-    CURL + ", signed with a deliberately invalid key",
-    0,
-    stdout='<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidAccessKeyId</Code>'
-    "<Message></Message><RequestId>N/A</RequestId><HostId>N/A</HostId></Error>\n403",
+# What renders through any client, and why the defect looked at first like one
+# broken command: the gateway's own error, with a real message, pretty-printed
+# and with a different element set from the engine's.
+NO_SUCH_BUCKET = Response(
+    UNSIGNED + " (list-objects-v2 on a bucket that does not exist)",
+    404,
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<Error>\n    <Code>NoSuchBucket</Code>\n'
+    b"    <Message>The specified bucket does not exist.</Message>\n"
+    b"    <RequestId>N/A</RequestId>\n    <HostId>N/A</HostId>\n</Error>",
 )
 
-# A third rendering from the same endpoint: pretty-printed, with a different
-# element set. The verdict is parsed out of the document rather than matched in
-# the text because these do not agree on whitespace, and the next one need not
-# either.
-CURL_NO_SUCH_BUCKET = Response(
-    CURL + ", unsigned",
-    0,
-    stdout='<?xml version="1.0" encoding="UTF-8"?>\n<Error>\n    <Code>NoSuchBucket</Code>\n'
-    "    <Message>The specified bucket does not exist.</Message>\n"
-    "    <RequestId>N/A</RequestId>\n    <HostId>N/A</HostId>\n</Error>\n404",
+# THE TRAP UNDER `account_of`. This endpoint answers an UNSIGNED ListAllMyBuckets
+# with HTTP 200 and an owner id of `anonymous` rather than refusing, so a
+# request that lost its signature resolves an "account" that a policy principal
+# could then be built from -- naming a principal that cannot exist, which is
+# the unrecoverable mistake pre-flight exists to catch.
+ANONYMOUS_OWNER = Response(
+    UNSIGNED + " (ListAllMyBuckets)",
+    200,
+    b'<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult '
+    b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>anonymous</ID>'
+    b"<DisplayName></DisplayName></Owner><Buckets></Buckets></ListAllMyBucketsResult>",
 )
 
-CURL_NO_SUCH_KEY = Response(
-    "constructed: the owner observed `<Error><Code>NoSuchKey</Code><BucketName>...` "
-    f"against {ENDPOINT_HOST} but transcribed it truncated, so the closing elements "
-    "and the status line here are written rather than captured",
-    0,
-    stdout=f"<Error><Code>NoSuchKey</Code><BucketName>{FENCED}</BucketName></Error>\n404",
+OWNER = Response(
+    "constructed: the ListAllMyBuckets shape captured above, with a real account id in "
+    "place of `anonymous`. Only a credentialed request returns one",
+    200,
+    b'<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult '
+    b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>' + ACCOUNT.encode() + b"</ID>"
+    b"<DisplayName>" + ACCOUNT.encode() + b"</DisplayName></Owner><Buckets>"
+    b"<Bucket><Name>branchleft-db-backups</Name>"
+    b"<CreationDate>2026-08-01T00:00:00.000Z</CreationDate></Bucket>"
+    b"</Buckets></ListAllMyBucketsResult>",
 )
 
-CURL_OK = Response(
-    "constructed: a successful read needs a credential that reaches the bucket. Only "
-    "the status is load-bearing -- a 2xx is `allowed` and the body is never read on "
-    "success -- and the body-then-status framing it relies on was observed",
-    0,
-    stdout="\n200",
+OTHER_OWNER = Response(
+    "constructed: the same shape under a different account id",
+    200,
+    ANONYMOUS_OWNER.body.replace(b"anonymous", b"p99999999"),
 )
 
-CURL_403_NO_DOCUMENT = Response(
-    "constructed: a refusal carrying no error document. The fail-safe case, which "
-    "nothing observed can be relied on to keep producing",
-    0,
-    stdout="\n403",
+EMPTY_LISTING = Response(
+    "constructed: a successful listing needs a credential that reaches the bucket",
+    200,
+    b'<?xml version="1.0" encoding="UTF-8"?><ListBucketResult '
+    b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>branchleft-db-backups</Name>'
+    b"<IsTruncated>false</IsTruncated></ListBucketResult>",
 )
 
-CURL_BAD_GATEWAY_HTML = Response(
+EMPTY_VERSIONS = Response(
+    "constructed: an empty ?versions listing, which needs a credential",
+    200,
+    b'<?xml version="1.0" encoding="UTF-8"?><ListVersionsResult '
+    b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>branchleft-db-backups</Name>'
+    b"<IsTruncated>false</IsTruncated></ListVersionsResult>",
+)
+
+OK_EMPTY = Response(
+    "constructed: a 2xx with no body, as a PUT or DELETE returns",
+    200,
+)
+
+NO_CONTENT = Response("constructed: the 204 a DELETE returns", 204)
+
+OBJECT_BYTES = Response(
+    "constructed: a successful object read. Only the status is load-bearing -- a 2xx is "
+    "`allowed` and the body is never read on success",
+    200,
+    b"probe\n",
+)
+
+FORBIDDEN_NO_DOCUMENT = Response(
+    "constructed: a refusal carrying no error document. The fail-safe case, which nothing "
+    "observed can be relied on to keep producing",
+    403,
+)
+
+BAD_GATEWAY_HTML = Response(
     "constructed: an HTML error page from something sitting in front of the endpoint",
-    0,
-    stdout="<html><head><title>502 Bad Gateway</title></head></html>\n502",
+    502,
+    b"<html><head><title>502 Bad Gateway</title></head></html>",
 )
 
-CURL_CONNECTION_REFUSED = Response(
-    "observed: curl 8.4.0 against a closed port",
-    7,
-    stdout="\n000",
-    stderr="curl: (7) Failed to connect to 127.0.0.1 port 1 after 0 ms: "
-    "Couldn't connect to server\n",
+NO_SUCH_KEY = Response(
+    "constructed: a missing object. A read that finds nothing proves nothing about a fence",
+    404,
+    b"<Error><Code>NoSuchKey</Code><BucketName>" + FENCED.encode() + b"</BucketName></Error>",
 )
 
-# How a curl older than 7.75 fails on `--aws-sigv4`: it never sends a request,
-# so there is no status and no document to read a verdict out of.
-CURL_OPTION_UNKNOWN = Response(
-    "observed: curl 8.4.0 rejecting an option it does not have",
-    2,
-    stderr="curl: option --not-a-real-option: is unknown\n",
+NO_SUCH_BUCKET_POLICY = Response(
+    "constructed: what a bucket with no policy returns to get-bucket-policy",
+    404,
+    b"<Error><Code>NoSuchBucketPolicy</Code></Error>",
+)
+
+# Case 4 in RUNBOOK-bucket-fencing.md's list of ways this engine can differ
+# from its documentation: it rejects the NotPrincipal document outright. An
+# anticipated outcome, and the one where a probe that applied nothing must not
+# then delete anything.
+REJECTED_POLICY = Response(
+    "constructed: an engine refusing a NotPrincipal document. Whether this endpoint accepts "
+    "one is the open question the probe exists to settle, so a refusal cannot be captured "
+    "without applying a policy to a live bucket",
+    400,
+    b"<Error><Code>MalformedPolicy</Code></Error>",
 )
 
 
-class Runner:
-    """Answers each probe by (role, operation, bucket), recording every call.
+class Unreachable(Exception):
+    """Stands in for a transport that never got a response."""
 
-    Two clients reach this: `aws s3api ...` and the signed `curl` used for
-    object reads. Both are keyed the same way, so a test says what a probe
-    asked of the bucket without saying how it was sent.
+
+def _operation(method: str, bucket: str | None, key: str | None, query: dict) -> str:
+    if not bucket:
+        return "list-buckets"
+    if "policy" in query:
+        return {"GET": "get-bucket-policy", "PUT": "put-bucket-policy", "DELETE": "delete-bucket-policy"}[method]
+    if "versioning" in query:
+        return {"GET": "get-bucket-versioning", "PUT": "put-bucket-versioning"}[method]
+    if "versions" in query:
+        return "list-object-versions"
+    if key is None:
+        return "list-objects-v2"
+    return {"GET": "get-object", "PUT": "put-object", "DELETE": "delete-object"}[method]
+
+
+def _role(headers: dict) -> str:
+    authorization = headers.get("Authorization")
+    if not authorization:
+        return "anonymous"
+    match = re.search(r"Credential=([^/]+)/", authorization)
+    return ROLE_OF_KEY.get(match.group(1), "unrecognised-key") if match else "unsigned-authorization"
+
+
+class Sent:
+    def __init__(self, role, operation, bucket, key, url, headers, payload, method):
+        self.role = role
+        self.operation = operation
+        self.bucket = bucket
+        self.key = key
+        self.url = url
+        self.headers = headers
+        self.payload = payload
+        self.method = method
+
+
+class Transport:
+    """Answers each request by `(role, operation, bucket)`, recording every one.
+
+    The role is read out of the `Authorization` header rather than taken from
+    the caller, so a test says which credential a request was SIGNED with, not
+    which one the code meant to use. A probe that lost its signature comes back
+    as `anonymous` here, and a mis-keyed one as `unrecognised-key`; neither has
+    an answer configured, so neither can quietly pass.
     """
 
-    def __init__(self, answers: dict, default=None):
+    def __init__(self, answers: dict, default: Response | None = None):
         self.answers = answers
-        self.default = default or Completed(0)
+        self.default = default or OK_EMPTY
         self.calls: list[tuple] = []
+        self.sent: list[Sent] = []
 
-    def __call__(self, argv, env):
-        if argv[0] == "curl":
-            operation = "get-object"
-            path = urllib.parse.urlsplit(argv[-1]).path.lstrip("/")
-            bucket = path.split("/", 1)[0]
-        else:
-            operation = argv[argv.index("s3api") + 1]
-            bucket = argv[argv.index("--bucket") + 1] if "--bucket" in argv else None
-        role = {
-            OPERATOR_KEY: "operator",
-            WORKLOAD_KEY: "workload",
-            FOREIGN_KEY: "foreign",
-        }.get(env.get("AWS_ACCESS_KEY_ID"), "anonymous")
+    def __call__(self, url, headers, payload, method):
+        parts = urllib.parse.urlsplit(url)
+        path = parts.path.lstrip("/")
+        bucket = path.split("/", 1)[0] or None
+        key = path.split("/", 1)[1] if "/" in path else None
+        query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
+        operation = _operation(method, bucket, key, query)
+        role = _role(headers)
         self.calls.append((role, operation, bucket))
-        return self.answers.get((role, operation, bucket), self.default)
+        self.sent.append(Sent(role, operation, bucket, key, url, headers, payload, method))
+        response = self.answers.get((role, operation, bucket), self.default)
+        if isinstance(response, Exception):
+            raise response
+        return response.status, response.body
 
 
 def a_fully_working_fence() -> dict:
     """Every probe answering the way a correct, live fence answers."""
-    denied = Completed(1, stderr=ACCESS_DENIED)
     return {
-        ("workload", "get-bucket-policy", FENCED): denied,
-        ("workload", "put-bucket-policy", FENCED): denied,
-        ("workload", "put-bucket-versioning", FENCED): denied,
-        ("foreign", "list-objects-v2", FENCED): denied,
-        ("foreign", "put-object", FENCED): denied,
-        ("anonymous", "list-objects-v2", FENCED): denied,
-        # The object reads, over the signed transport.
-        ("workload", "get-object", FENCED): CURL_OK,
-        ("foreign", "get-object", FENCED): CURL_ACCESS_DENIED,
-        ("operator", "list-object-versions", FENCED): Completed(0, stdout="{}"),
-        ("operator", "get-bucket-policy", FENCED): Completed(0, stdout=json.dumps(POLICY)),
-        ("operator", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
-        ("workload", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
-        ("foreign", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
+        ("operator", "list-buckets", None): OWNER,
+        ("workload", "list-buckets", None): OWNER,
+        ("foreign", "list-buckets", None): OWNER,
+        ("operator", "get-bucket-policy", FENCED): Response(
+            "constructed: GetBucketPolicy returns the stored document itself",
+            200,
+            POLICY_DOCUMENT,
+        ),
+        ("operator", "put-bucket-policy", FENCED): OK_EMPTY,
+        ("operator", "list-object-versions", FENCED): EMPTY_VERSIONS,
+        ("workload", "list-objects-v2", FENCED): EMPTY_LISTING,
+        ("workload", "put-object", FENCED): OK_EMPTY,
+        ("workload", "get-object", FENCED): OBJECT_BYTES,
+        ("workload", "delete-object", FENCED): NO_CONTENT,
+        ("workload", "get-bucket-policy", FENCED): ACCESS_DENIED_POLICY,
+        ("workload", "put-bucket-policy", FENCED): ACCESS_DENIED_WRITE,
+        ("workload", "put-bucket-versioning", FENCED): ACCESS_DENIED_WRITE,
+        ("foreign", "list-objects-v2", CONTROL): EMPTY_LISTING,
+        ("foreign", "list-objects-v2", FENCED): ACCESS_DENIED,
+        ("foreign", "get-object", FENCED): ACCESS_DENIED_OBJECT,
+        ("foreign", "put-object", FENCED): ACCESS_DENIED_WRITE,
+        ("anonymous", "list-objects-v2", FENCED): ACCESS_DENIED,
     }
 
 
-def run(answers, environment=None, extra_args=()):
-    runner = Runner(answers)
+def run(answers, environment=None, extra_args=(), transport=None):
+    transport = transport or Transport(answers)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         code = verify.main(
@@ -317,34 +411,310 @@ def run(answers, environment=None, extra_args=()):
                 POLICY_FILE,
                 *extra_args,
             ],
-            runner=runner,
+            transport=transport,
             environ=dict(environment or ENVIRONMENT),
         )
-    return code, out.getvalue(), runner
+    return code, out.getvalue(), transport
+
+
+def checks(**kwargs):
+    return verify.build_checks(
+        bucket=FENCED,
+        foreign_control_bucket=CONTROL,
+        policy_document=POLICY_DOCUMENT,
+        probe_key=f"{verify.PROBE_PREFIX}x.txt",
+        **kwargs,
+    )
 
 
 class TestClassification(unittest.TestCase):
-    def test_a_clean_exit_is_allowed(self):
-        self.assertEqual(verify.classify(0, "")[0], "allowed")
+    def test_a_2xx_is_allowed(self):
+        self.assertEqual(verify.classify(200, b"")[0], "allowed")
 
-    def test_the_real_access_denied_rendering_is_a_denial(self):
-        self.assertEqual(verify.classify(255, ACCESS_DENIED)[0], "denied")
+    def test_the_real_access_denied_document_is_a_denial(self):
+        outcome, reason = verify.classify(ACCESS_DENIED.status, ACCESS_DENIED.body)
+        self.assertEqual(outcome, "denied")
+        self.assertEqual(reason, "AccessDenied")
 
-    def test_a_dead_credential_is_an_error_and_never_a_denial(self):
-        # This is the whole point: a key that reaches nothing fails exactly
-        # like a fenced key does, to anyone reading the exit code.
-        outcome, reason = verify.classify(255, INVALID_KEY)
+    def test_a_dead_credential_is_an_error_despite_arriving_as_the_same_403(self):
+        # This is the whole point: a key that reaches nothing fails with the
+        # same status a fenced key does.
+        self.assertEqual(ACCESS_DENIED.status, INVALID_ACCESS_KEY.status)
+        outcome, reason = verify.classify(INVALID_ACCESS_KEY.status, INVALID_ACCESS_KEY.body)
         self.assertEqual(outcome, "error")
         self.assertIn("says nothing about the fence", reason)
 
     def test_an_unrecognised_service_error_is_an_error(self):
-        outcome, reason = verify.classify(255, NO_SUCH_BUCKET_POLICY)
+        outcome, reason = verify.classify(NO_SUCH_BUCKET.status, NO_SUCH_BUCKET.body)
         self.assertEqual(outcome, "error")
-        self.assertIn("NoSuchBucketPolicy", reason)
+        self.assertIn("NoSuchBucket", reason)
 
-    def test_output_with_no_service_error_at_all_is_an_error(self):
-        outcome, _ = verify.classify(1, "Unable to locate credentials\n")
+    def test_a_missing_object_is_an_error_and_never_a_denial(self):
+        self.assertEqual(verify.classify(NO_SUCH_KEY.status, NO_SUCH_KEY.body)[0], "error")
+
+    def test_a_refusal_with_no_error_document_is_an_error(self):
+        outcome, reason = verify.classify(
+            FORBIDDEN_NO_DOCUMENT.status, FORBIDDEN_NO_DOCUMENT.body
+        )
         self.assertEqual(outcome, "error")
+        self.assertIn("no S3 error document", reason)
+
+    def test_a_body_that_is_not_an_error_document_yields_no_verdict(self):
+        self.assertEqual(verify.classify(BAD_GATEWAY_HTML.status, BAD_GATEWAY_HTML.body)[0], "error")
+
+    def test_a_pretty_printed_document_is_read_the_same_as_a_flat_one(self):
+        # This endpoint emits both. A verdict that depended on the whitespace
+        # would hold until the day the other renderer answered.
+        self.assertIn(b"\n    <Code>", NO_SUCH_BUCKET.body)
+        self.assertIn(b"<Error><Code>", ACCESS_DENIED.body)
+        self.assertEqual(verify.s3_error_code(NO_SUCH_BUCKET.body), "NoSuchBucket")
+        self.assertEqual(verify.s3_error_code(ACCESS_DENIED.body), "AccessDenied")
+
+    def test_a_request_that_never_reached_the_endpoint_is_an_error(self):
+        outcome, reason = verify.classify(None, b"", "connection refused")
+        self.assertEqual(outcome, "error")
+        self.assertIn("did not complete", reason)
+
+    def test_an_object_whose_own_contents_look_like_a_denial_is_still_allowed(self):
+        # The body is not consulted on success, and a 2xx is a successful read
+        # whatever it returned.
+        self.assertEqual(
+            verify.classify(200, b"<Error><Code>AccessDenied</Code></Error>")[0], "allowed"
+        )
+
+    def test_a_code_element_that_is_not_a_code_yields_no_verdict(self):
+        # `report()` prints a reason as a line of its own, so text of arbitrary
+        # length or containing newlines would forge report lines.
+        for text in (
+            "Nope\nPASS          foreign key cannot read an object",
+            "A" * 65,
+            "Access Denied",
+            "Access-Denied",
+            "<b>AccessDenied</b>",
+        ):
+            with self.subTest(text=text[:30]):
+                body = f"<Error><Code>{text}</Code></Error>".encode()
+                outcome, reason = verify.classify(403, body)
+                self.assertEqual(outcome, "error")
+                self.assertNotIn("\n", reason)
+
+    def test_a_code_element_outside_an_error_document_yields_no_verdict(self):
+        # A `<Code>AccessDenied</Code>` can appear inside any XML this endpoint
+        # -- or anything in front of it -- returns. Only a document whose root
+        # is `Error` is an S3 error, and without that guard a 403 carrying some
+        # other envelope becomes a `denied` verdict, which is a fence proven by
+        # a response that was not a refusal.
+        for body in (
+            b"<ListBucketResult><Code>AccessDenied</Code></ListBucketResult>",
+            b"<Response><Error><Code>AccessDenied</Code></Error></Response>",
+            b'<html><body><Code>AccessDenied</Code></body></html>',
+        ):
+            with self.subTest(body=body[:30]):
+                self.assertIsNone(verify.s3_error_code(body))
+                self.assertEqual(verify.classify(403, body)[0], "error")
+        # The same code inside a real error document still is one, so the guard
+        # is not simply refusing everything.
+        self.assertEqual(verify.classify(403, b"<Error><Code>AccessDenied</Code></Error>")[0], "denied")
+
+    def test_an_expensive_document_is_refused_before_it_is_expanded(self):
+        # CAPPING THE INPUT DOES NOT CAP THE WORK. ElementTree expands internal
+        # entities, so a body well under the input cap becomes a string that is
+        # not: this one is 605 KB and expands to a gigabyte. Python 3.13 refuses
+        # it; 3.9 is a supported target and does not, so the bound has to be
+        # here rather than in the interpreter.
+        #
+        # The response body is the one input an attacker on the far end of the
+        # connection chooses, and it is parsed on the path that decides whether
+        # a bucket is fenced.
+        entity = '<!DOCTYPE r [<!ENTITY a "' + "A" * 5000 + '">]>'
+        body = (entity + "<Error><Code>" + "&a;" * 200000 + "</Code></Error>").encode()
+        self.assertGreaterEqual(5000 * 200000, 10**9)
+        started = time.monotonic()
+        outcome, reason = verify.classify(403, body)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(outcome, "error")
+        self.assertLess(len(reason), 500)
+
+    def test_a_doctype_is_never_treated_as_an_error_document(self):
+        # Internal entities are the only route from a small body to a large
+        # one, and they need a doctype. No S3 error document carries one.
+        self.assertIsNone(
+            verify.s3_error_code(
+                b'<!DOCTYPE Error><Error><Code>AccessDenied</Code></Error>'
+            )
+        )
+        self.assertEqual(
+            verify.classify(403, b'<!DOCTYPE Error><Error><Code>AccessDenied</Code></Error>')[0],
+            "error",
+        )
+
+    def test_the_classifier_never_raises_even_if_the_parser_does(self):
+        # `s3_error_code`'s contract is that it never raises, and `classify`
+        # being total is what keeps `cleanup()` reachable: `run()` calls
+        # `classify(*self.request(probe))`, so the parse of the untrusted body
+        # happens outside the guard in `request`, and an exception escaping
+        # there strands probe objects in a production bucket. Asserted against
+        # the contract rather than against the exceptions this parser happens
+        # to raise today.
+        for failure in (MemoryError("out of memory"), RecursionError(), ValueError("nope")):
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.object(verify.ET, "fromstring", side_effect=failure):
+                    outcome, _ = verify.classify(403, b"<Error><Code>AccessDenied</Code></Error>")
+                self.assertEqual(outcome, "error")
+
+    def test_the_classifier_never_raises_whatever_the_body_is(self):
+        # `run()` calls `classify(*self.request(probe))`, so the parse of the
+        # untrusted body happens outside the guard in `request`. An exception
+        # escaping there skips `cleanup()` and strands probe objects in a
+        # production bucket.
+        for body in (
+            b"\xff\xfe\x00 not utf-8 at all",
+            b"<Error><Code>" + b"\x00" * 100 + b"</Code></Error>",
+            b"<" * 10000,
+            b"<Error>" + b"<a>" * 5000,
+            b'<?xml version="1.0" encoding="NOT-A-CHARSET"?><Error/>',
+        ):
+            with self.subTest(body=body[:20]):
+                outcome, _ = verify.classify(403, body)
+                self.assertEqual(outcome, "error")
+
+    def test_a_non_utf8_body_does_not_raise(self):
+        # An object read returns the object's own bytes. An exception escaping
+        # the classifier skips `cleanup()` and leaves probe objects in a
+        # production bucket.
+        outcome, _ = verify.classify(403, b"\xff\xfe not utf-8")
+        self.assertEqual(outcome, "error")
+
+    def test_denied_is_reachable_only_through_the_two_denial_codes(self):
+        # The property the file exists for, asserted exhaustively rather than
+        # by example: across every status and every code this endpoint might
+        # return, `denied` comes out for `AccessDenied` and `AllAccessDisabled`
+        # and for nothing else.
+        codes = sorted(
+            verify.DENIAL_CODES
+            | set(verify.NOT_A_DENIAL)
+            | {"NoSuchKey", "NoSuchBucketPolicy", "InternalError", "SlowDown", "403", ""}
+        )
+        for status in (200, 204, 206, 301, 400, 403, 404, 405, 500, 502, 503):
+            for code in codes:
+                body = (
+                    f"<Error><Code>{code}</Code></Error>" if code else "<Error></Error>"
+                ).encode()
+                outcome, _ = verify.classify(status, body)
+                with self.subTest(status=status, code=code):
+                    if 200 <= status < 300:
+                        self.assertEqual(outcome, "allowed")
+                    elif code in verify.DENIAL_CODES:
+                        self.assertEqual(outcome, "denied")
+                    else:
+                        self.assertEqual(outcome, "error")
+
+
+class TestEveryDenialProbeReachesAVerdict(unittest.TestCase):
+    """Replaces `test_the_cli_denial_probes_cannot_yet_reach_a_verdict_on_this_endpoint`.
+
+    That test asserted the limitation this work removes: every denial probe
+    running through `aws s3api` came back INCONCLUSIVE against a correctly
+    fenced bucket, because the CLI exits 255 rather than render this backend's
+    error documents. It was written so that the change moving those probes onto
+    a signed transport would have to come back here and say so. This is that
+    statement, in the same place, asserting the opposite.
+    """
+
+    def test_every_denial_probe_reaches_a_verdict_on_this_endpoints_error_documents(self):
+        # Every denial is answered with the document this endpoint actually
+        # returns -- empty `<Message></Message>`, the shape no CLI could read.
+        answers = a_fully_working_fence()
+        code, output, transport = run(answers, extra_args=["--versioning-already-enabled"])
+        self.assertEqual(code, 0, output)
+        self.assertNotIn(verify.INCONCLUSIVE, output)
+        self.assertNotIn(verify.FAIL, output)
+
+        denials = [check for check in checks(versioning_already_enabled=True) if check.expect == "deny"]
+        self.assertGreaterEqual(len(denials), 6)
+        for check in denials:
+            with self.subTest(check=check.name):
+                self.assertIn(f"{verify.PASS}          {check.name}", output)
+
+    def test_the_document_every_denial_probe_is_answered_with_is_the_captured_one(self):
+        # The assertion above is only worth anything if the fixtures behind it
+        # are the endpoint's own error documents rather than a shape that
+        # happens to classify. Each carries an empty Message, which is the
+        # element the CLI could not render.
+        for response in (
+            ACCESS_DENIED,
+            ACCESS_DENIED_OBJECT,
+            ACCESS_DENIED_POLICY,
+            ACCESS_DENIED_VERSIONS,
+            ACCESS_DENIED_WRITE,
+        ):
+            with self.subTest(source=response.source[:40]):
+                self.assertIn(b"<Message></Message>", response.body)
+                self.assertEqual(verify.classify(response.status, response.body)[0], "denied")
+
+
+class TestNoExternalClient(unittest.TestCase):
+    def test_a_whole_verification_runs_without_starting_a_process(self):
+        # Asserted on behaviour rather than on the import list: a subprocess
+        # started anywhere under `main` fails this test. No client this file
+        # could shell out to can render this backend's denials, so a probe that
+        # reached one could not reach a verdict.
+        with mock.patch.object(
+            subprocess, "run", side_effect=AssertionError("a subprocess was started")
+        ), mock.patch.object(
+            subprocess, "Popen", side_effect=AssertionError("a subprocess was started")
+        ):
+            code, output, _ = run(a_fully_working_fence())
+        self.assertEqual(code, 0, output)
+
+    def test_the_module_does_not_import_subprocess(self):
+        self.assertNotIn("subprocess", vars(verify))
+        self.assertNotIn("tempfile", vars(verify))
+
+    def test_a_missing_signing_source_is_refused_with_the_fix(self):
+        # A checkout without `db/provision/` can prove nothing. Both the
+        # missing and the corrupt case have to refuse, and they have to refuse
+        # differently: the likely cause of a missing file is someone working
+        # from the scripts directory alone, and that is a fix an operator can
+        # act on. A bare `FileNotFoundError` re-raised from the loader is not.
+        import shared_objectstorage
+
+        missing = pathlib.Path("/nonexistent/objectstorage.py")
+        with mock.patch.object(shared_objectstorage, "_SOURCE", missing):
+            with self.assertRaises(ImportError) as raised:
+                shared_objectstorage._load()
+        message = str(raised.exception)
+        self.assertIn(str(missing), message)
+        self.assertIn("Check out the whole of", message)
+        self.assertNotIn("could not be executed", message)
+
+    def test_a_corrupt_signing_source_is_refused_rather_than_traced_back(self):
+        # SyntaxError is not ImportError, and the caller refuses on ImportError
+        # alone. Both mean the same thing to an operator -- the signing is not
+        # usable -- and both must produce the one-line refusal.
+        import shared_objectstorage
+
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+            handle.write("def broken(:\n")
+            corrupt = pathlib.Path(handle.name)
+        try:
+            with mock.patch.object(shared_objectstorage, "_SOURCE", corrupt):
+                with self.assertRaises(ImportError) as raised:
+                    shared_objectstorage._load()
+            self.assertIn("could not be executed", str(raised.exception))
+            self.assertIn("SyntaxError", str(raised.exception))
+        finally:
+            corrupt.unlink()
+
+    def test_the_signing_is_the_one_the_backup_pipeline_uses(self):
+        # Not a second copy. `db/provision/objectstorage.py` signs db1's dumps
+        # and binlog shipments against this same endpoint; a divergent copy
+        # here would keep passing its own tests while drifting from the
+        # implementation that is actually proven in production.
+        source = verify.storage.SOURCE
+        self.assertEqual(source.name, "objectstorage.py")
+        self.assertEqual(source.parent.name, "provision")
+        self.assertTrue(source.is_file())
 
 
 class TestBothDirections(unittest.TestCase):
@@ -358,9 +728,7 @@ class TestBothDirections(unittest.TestCase):
         # A foreign key listing the backup bucket returned 200 with binlog
         # object keys. Nothing else about the estate looked wrong.
         answers = a_fully_working_fence()
-        answers[("foreign", "list-objects-v2", FENCED)] = Completed(
-            0, stdout='{"Contents": [{"Key": "binlogs/..."}]}'
-        )
+        answers[("foreign", "list-objects-v2", FENCED)] = EMPTY_LISTING
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn("FAIL", output)
@@ -370,7 +738,7 @@ class TestBothDirections(unittest.TestCase):
         # A policy that denies everybody is an outage, not a boundary, and on
         # the backup bucket it is silent until the next restore.
         answers = a_fully_working_fence()
-        answers[("workload", "put-object", FENCED)] = Completed(1, stderr=ACCESS_DENIED)
+        answers[("workload", "put-object", FENCED)] = ACCESS_DENIED_WRITE
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn("the key that must keep working is denied", output)
@@ -380,22 +748,16 @@ class TestBothDirections(unittest.TestCase):
         # that succeeds says nothing about the read, and a backup nobody can
         # read back is not a backup.
         answers = a_fully_working_fence()
-        answers[("workload", "get-object", FENCED)] = CURL_ACCESS_DENIED
+        answers[("workload", "get-object", FENCED)] = ACCESS_DENIED_OBJECT
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn("workload can read an object back", output)
         self.assertIn(verify.FAIL, output)
 
     def test_the_workload_read_probe_is_always_in_the_check_set(self):
-        checks = verify.build_checks(
-            bucket=FENCED,
-            foreign_control_bucket=CONTROL,
-            policy_file=POLICY_FILE,
-            probe_key="fence-probe/x.txt",
-        )
         reads = [
             check
-            for check in checks
+            for check in checks()
             if check.probe.role == "workload"
             and check.expect == "allow"
             and check.probe.operation == "get-object"
@@ -410,8 +772,8 @@ class TestStoredPolicy(unittest.TestCase):
         # measuring a different fence.
         answers = a_fully_working_fence()
         trimmed = {"Version": POLICY["Version"], "Statement": POLICY["Statement"][:1]}
-        answers[("operator", "get-bucket-policy", FENCED)] = Completed(
-            0, stdout=json.dumps(trimmed)
+        answers[("operator", "get-bucket-policy", FENCED)] = Response(
+            "constructed: a stored policy missing one statement", 200, json.dumps(trimmed).encode()
         )
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
@@ -423,11 +785,36 @@ class TestStoredPolicy(unittest.TestCase):
             "Version": POLICY["Version"],
             "Statement": list(reversed(POLICY["Statement"])),
         }
-        answers[("operator", "get-bucket-policy", FENCED)] = Completed(
-            0, stdout=json.dumps(reordered)
+        answers[("operator", "get-bucket-policy", FENCED)] = Response(
+            "constructed: the same policy with its statements reordered",
+            200,
+            json.dumps(reordered).encode(),
         )
         code, output, _ = run(answers)
         self.assertEqual(code, 0, output)
+
+    def test_a_policy_that_cannot_be_read_back_is_inconclusive(self):
+        answers = a_fully_working_fence()
+        answers[("operator", "get-bucket-policy", FENCED)] = NO_SUCH_BUCKET_POLICY
+        code, output, _ = run(answers)
+        self.assertEqual(code, 1)
+        self.assertIn("could not read the stored policy", output)
+
+    def test_a_stored_policy_under_a_different_version_is_a_mismatch(self):
+        # `Version` selects the grammar the whole document is evaluated under.
+        # An engine that stored the statements and rewrote that would be
+        # enforcing something other than what was sent, and every probe would
+        # still pass because they measure the fence that is there.
+        answers = a_fully_working_fence()
+        rewritten = {"Version": "2008-10-17", "Statement": POLICY["Statement"]}
+        answers[("operator", "get-bucket-policy", FENCED)] = Response(
+            "constructed: the same statements stored under a different policy Version",
+            200,
+            json.dumps(rewritten).encode(),
+        )
+        code, output, _ = run(answers)
+        self.assertEqual(code, 1)
+        self.assertIn("the stored policy is not the document that was sent", output)
 
 
 class TestPreflight(unittest.TestCase):
@@ -438,11 +825,14 @@ class TestPreflight(unittest.TestCase):
         # exemption exempts nobody and the bucket becomes unrecoverable.
         answers = a_fully_working_fence()
         for role in ("operator", "workload", "foreign"):
-            answers[(role, "list-buckets", None)] = Completed(0, stdout="p99999999\n")
+            answers[(role, "list-buckets", None)] = OTHER_OWNER
         code, output, _ = run(answers, extra_args=["--preflight"])
         self.assertEqual(code, 1)
         self.assertIn("DO NOT APPLY THIS POLICY", output)
-        self.assertIn("the policy exempts THIS operator credential", output)
+        self.assertIn("THIS operator credential able to replace it", output)
+        # The ARN under the wrong account names a principal that does not
+        # exist, so the operator loses recovery along with everyone else.
+        self.assertIn("s3:PutBucketPolicy", output)
 
     def test_a_correctly_rendered_policy_passes_preflight(self):
         code, output, _ = run(a_fully_working_fence(), extra_args=["--preflight"])
@@ -450,29 +840,290 @@ class TestPreflight(unittest.TestCase):
         self.assertIn("safe to apply", output)
 
     def test_preflight_writes_nothing(self):
-        _, _, runner = run(a_fully_working_fence(), extra_args=["--preflight"])
-        mutations = [
-            call
-            for call in runner.calls
-            if call[1].startswith("put-") or call[1].startswith("delete-")
-        ]
-        self.assertEqual(mutations, [])
+        _, _, transport = run(a_fully_working_fence(), extra_args=["--preflight"])
+        self.assertEqual([sent for sent in transport.sent if sent.method != "GET"], [])
+
+    def test_preflight_exercises_the_transport_every_probe_uses(self):
+        # A transport that does not work has to surface where nothing has been
+        # written yet. The mode that discovers it otherwise is
+        # --probe-notprincipal, which applies a policy to a production bucket
+        # and removes it again. Pre-flight now signs and sends a
+        # real request on each of the three credentials.
+        _, output, transport = run(a_fully_working_fence(), extra_args=["--preflight"])
+        self.assertIn("the signed transport reaches the endpoint", output)
+        signed = {sent.role for sent in transport.sent}
+        self.assertEqual(signed, {"operator", "workload", "foreign"})
+        for sent in transport.sent:
+            self.assertIn("Authorization", sent.headers)
+
+    def test_an_endpoint_that_answers_nothing_says_so_once_rather_than_three_times(self):
+        def unreachable(url, headers, payload, method):
+            raise verify.storage.ObjectStorageError(f"{method} {url} failed to complete: refused")
+
+        code, output, _ = run({}, extra_args=["--preflight"], transport=unreachable)
+        self.assertEqual(code, 1)
+        self.assertIn("no request reached the endpoint at all", output)
+        self.assertIn("Nothing has been written", output)
 
     def test_a_foreign_key_in_another_account_fails_preflight(self):
         # Its denials would be the account boundary, which is precisely the
         # substitution that made a project boundary look like a fence.
         answers = a_fully_working_fence()
-        answers[("foreign", "list-buckets", None)] = Completed(0, stdout="p99999999\n")
+        answers[("foreign", "list-buckets", None)] = OTHER_OWNER
         code, output, _ = run(answers, extra_args=["--preflight"])
         self.assertEqual(code, 1)
         self.assertIn("all three credentials are in one account", output)
 
     def test_a_credential_that_cannot_resolve_its_account_is_inconclusive(self):
         answers = a_fully_working_fence()
-        answers[("operator", "list-buckets", None)] = Completed(1, stderr=INVALID_KEY)
+        answers[("operator", "list-buckets", None)] = INVALID_ACCESS_KEY
         code, output, _ = run(answers, extra_args=["--preflight"])
         self.assertEqual(code, 1)
         self.assertIn(verify.INCONCLUSIVE, output)
+
+    def _preflight_rows(self, policy_document):
+        return verify.preflight(
+            verify.Verifier(
+                endpoint=ENDPOINT,
+                region="hel1",
+                credentials={
+                    "operator": (OPERATOR_KEY, "s"),
+                    "workload": (WORKLOAD_KEY, "s"),
+                    "foreign": (FOREIGN_KEY, "s"),
+                },
+                transport=Transport(a_fully_working_fence()),
+            ),
+            bucket=FENCED,
+            policy_document=policy_document,
+        )
+
+    def _row(self, rows, role):
+        return [row for row in rows if f"THIS {role} credential" in row[0]][0]
+
+    def test_the_policy_this_repository_renders_passes_and_is_applied(self):
+        # THE ONLY DOCUMENT THIS TOOL WILL EVER BE POINTED AT. A fence contains
+        # Deny statements that name only the operator -- the version-destroying
+        # object actions are withheld from the workload deliberately -- so a
+        # check that read `NotPrincipal` lists structurally would condemn the
+        # correct policy, `apply_fence` would refuse to write, and the runbook
+        # could not terminate: re-rendering against the same account id changes
+        # nothing, leaving a hand-run PUT that skips the in-process guard.
+        rows = self._preflight_rows(POLICY_DOCUMENT)
+        for role in ("operator", "workload"):
+            with self.subTest(role=role):
+                self.assertEqual(self._row(rows, role)[1], verify.PASS, self._row(rows, role))
+        self.assertNotIn(verify.FAIL, [row[1] for row in rows])
+
+        _, wrote = verify.apply_fence(
+            verify.Verifier(
+                endpoint=ENDPOINT,
+                region="hel1",
+                credentials={
+                    "operator": (OPERATOR_KEY, "s"),
+                    "workload": (WORKLOAD_KEY, "s"),
+                    "foreign": (FOREIGN_KEY, "s"),
+                },
+                transport=Transport(a_fully_working_fence()),
+            ),
+            bucket=FENCED,
+            policy_document=POLICY_DOCUMENT,
+        )
+        self.assertTrue(wrote)
+
+    def test_the_workload_keeps_exactly_what_it_needs_and_loses_the_rest(self):
+        # The claim the workload row makes, asserted against the evaluator
+        # rather than against the row. `DenyObjectMutationsExceptOperator` is
+        # the statement a structural check misreads, and it is doing its job.
+        arn = lambda key: f"arn:aws:iam:::user/{ACCOUNT}:{key}"
+        objects, bucket = f"arn:aws:s3:::{FENCED}/dumps/x.age", f"arn:aws:s3:::{FENCED}"
+        for action, resource in (
+            ("s3:PutObject", objects), ("s3:GetObject", objects),
+            ("s3:DeleteObject", objects), ("s3:ListBucket", bucket),
+        ):
+            with self.subTest(keeps=action):
+                self.assertEqual(decide(POLICY, arn(WORKLOAD_KEY), action, resource), "allow")
+        for action in ("s3:DeleteObjectVersion", "s3:PutObjectAcl", "s3:BypassGovernanceRetention"):
+            with self.subTest(loses=action):
+                self.assertEqual(decide(POLICY, arn(WORKLOAD_KEY), action, objects), "deny")
+        for action in ("s3:PutBucketPolicy", "s3:PutBucketVersioning", "s3:DeleteBucket"):
+            with self.subTest(loses=action):
+                self.assertEqual(decide(POLICY, arn(WORKLOAD_KEY), action, bucket), "deny")
+
+    def test_a_policy_that_really_does_lock_a_credential_out_fails(self):
+        # The other direction. Each of these takes away an action the role
+        # cannot do its job without, and `--apply` gates on the rows.
+        for role, key, extra in (
+            ("operator", OPERATOR_KEY, {
+                "Sid": "NoRecovery", "Effect": "Deny",
+                "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
+                "Action": "s3:PutBucketPolicy", "Resource": f"arn:aws:s3:::{FENCED}"}),
+            # Recovery is both actions. A bucket whose policy can be replaced
+            # but not removed is one whose fence cannot be taken off.
+            ("operator", OPERATOR_KEY, {
+                "Sid": "NoDelete", "Effect": "Deny",
+                "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
+                "Action": "s3:DeleteBucketPolicy", "Resource": f"arn:aws:s3:::{FENCED}"}),
+            ("workload", WORKLOAD_KEY, {
+                "Sid": "NoWrites", "Effect": "Deny",
+                "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                "Action": "s3:PutObject", "Resource": f"arn:aws:s3:::{FENCED}/*"}),
+            ("workload", WORKLOAD_KEY, {
+                "Sid": "NoList", "Effect": "Deny",
+                "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                "Action": "s3:ListBucket", "Resource": f"arn:aws:s3:::{FENCED}"}),
+        ):
+            with self.subTest(role=role, sid=extra["Sid"]):
+                broken = {"Version": POLICY["Version"], "Statement": POLICY["Statement"] + [extra]}
+                row = self._row(self._preflight_rows(json.dumps(broken).encode()), role)
+                self.assertEqual(row[1], verify.FAIL, row)
+                self.assertIn(extra["Action"], row[2])
+                self.assertIn(f"arn:aws:iam:::user/{ACCOUNT}:{key}", row[2])
+
+    def test_a_deny_scoped_to_the_probe_prefix_is_not_a_workload_lockout(self):
+        # `--probe-notprincipal` applies exactly this policy: reads under the
+        # probe prefix denied to everyone but the operator. Evaluated at a
+        # concrete key under that prefix the workload looks locked out of the
+        # bucket, which is false -- nothing it does lives there.
+        probe_on_bucket = {
+            "Version": POLICY["Version"],
+            "Statement": POLICY["Statement"]
+            + [verify.probe_policy(FENCED, OPERATOR_ARN)["Statement"][0]],
+        }
+        row = self._row(self._preflight_rows(json.dumps(probe_on_bucket).encode()), "workload")
+        self.assertEqual(row[1], verify.PASS, row)
+
+    def test_a_deny_on_every_resource_is_not_invisible(self):
+        # `Resource: "*"` reaches this bucket as surely as a named ARN does.
+        broken = {
+            "Version": POLICY["Version"],
+            "Statement": POLICY["Statement"] + [
+                {"Sid": "DenyAll", "Effect": "Deny", "NotPrincipal": {"AWS": [WORKLOAD_ARN]},
+                 "Action": "s3:*", "Resource": "*"}
+            ],
+        }
+        row = self._row(self._preflight_rows(json.dumps(broken).encode()), "operator")
+        self.assertEqual(row[1], verify.FAIL, row)
+
+    def test_a_document_the_evaluator_cannot_walk_is_inconclusive_not_safe(self):
+        # `--policy-file` takes any file. A document nothing can reason about
+        # is not the same as one that is safe to apply.
+        for document in (
+            b'{"Statement": [{"Effect": "Deny"}]}',
+            b'{"Statement": [{"Effect": "Deny", "Resource": "*"}]}',
+            b'{"Statement": "not a list"}',
+            b'{"Statement": [null]}',
+        ):
+            with self.subTest(document=document[:40]):
+                rows = self._preflight_rows(document)
+                statuses = [row[1] for row in rows]
+                self.assertIn(verify.INCONCLUSIVE, statuses)
+                self.assertNotIn(verify.PASS, [r[1] for r in rows if "THIS " in r[0]])
+
+    def test_an_owner_of_anonymous_is_refused_whatever_its_case(self):
+        # The one unrecoverable path: an account id that cannot exist, named in
+        # a policy principal. Nothing guarantees the endpoint keeps spelling it
+        # the way it does today.
+        for spelling in (b"anonymous", b"Anonymous", b"ANONYMOUS"):
+            with self.subTest(spelling=spelling):
+                answers = a_fully_working_fence()
+                answers[("operator", "list-buckets", None)] = Response(
+                    "constructed: the captured anonymous ListAllMyBuckets, recased",
+                    200,
+                    ANONYMOUS_OWNER.body.replace(b"anonymous", spelling),
+                )
+                code, output, _ = run(answers, extra_args=["--preflight"])
+                self.assertEqual(code, 1)
+                self.assertIn("saw this request as unsigned", output)
+
+    def test_an_owner_of_anonymous_is_refused_rather_than_named_in_a_principal(self):
+        # This endpoint answers an unsigned ListAllMyBuckets with 200 and
+        # `anonymous`. Accepting it would build a policy principal naming an
+        # account that cannot exist -- the exact unrecoverable mistake this
+        # pre-flight exists to catch, arriving through the check meant to catch
+        # it.
+        answers = a_fully_working_fence()
+        answers[("operator", "list-buckets", None)] = ANONYMOUS_OWNER
+        code, output, _ = run(answers, extra_args=["--preflight"])
+        self.assertEqual(code, 1)
+        self.assertIn("saw this request as unsigned", output)
+        self.assertNotIn("anonymous:", output)
+
+
+class TestShowAccount(unittest.TestCase):
+    """The value `--project-id` is rendered from, read from the credential."""
+
+    def test_it_prints_each_credentials_account_and_writes_nothing(self):
+        transport = Transport(a_fully_working_fence())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = verify.main(
+                ["--bucket", FENCED, "--foreign-control-bucket", CONTROL, "--show-account"],
+                transport=transport,
+                environ=dict(ENVIRONMENT),
+            )
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn(ACCOUNT, out.getvalue())
+        self.assertEqual([sent for sent in transport.sent if sent.method != "GET"], [])
+
+    def test_only_this_mode_may_omit_the_bucket_and_the_policy(self):
+        # Every other mode reaches a verdict about a fence, and a verdict about
+        # a fence is a statement about which credentials it separates.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            verify.main([], transport=Transport({}), environ=dict(ENVIRONMENT))
+        for flag in ("--bucket", "--foreign-control-bucket", "--policy-file"):
+            self.assertIn(flag, err.getvalue())
+
+    def test_one_credential_is_enough_for_this_mode_and_for_no_other(self):
+        # The project id has to be confirmed before a policy is rendered, which
+        # is before the runbook has exported the other two credentials.
+        environment = {
+            "FENCE_OPERATOR_ACCESS_KEY_ID": OPERATOR_KEY,
+            "FENCE_OPERATOR_SECRET_ACCESS_KEY": "operator-secret",
+        }
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = verify.main(
+                ["--show-account"],
+                transport=Transport(a_fully_working_fence()),
+                environ=environment,
+            )
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("operator credential resolves its account", out.getvalue())
+        self.assertIn(ACCOUNT, out.getvalue())
+        self.assertNotIn("workload", out.getvalue())
+
+        with self.assertRaises(verify.VerifierError):
+            verify.read_credentials(environment)
+
+    def test_a_clean_run_does_not_claim_a_policy_is_safe_to_apply(self):
+        # It read no policy. `report`'s pre-flight wording here would be a
+        # verdict about a document nobody passed it.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            verify.main(
+                ["--show-account"],
+                transport=Transport(a_fully_working_fence()),
+                environ=dict(ENVIRONMENT),
+            )
+        self.assertNotIn("safe to apply", out.getvalue())
+        self.assertIn("--project-id", out.getvalue())
+
+    def test_it_does_not_shout_about_a_policy_nobody_is_applying(self):
+        # `report` raises the lockout banner for a critical row. Nothing in
+        # this mode is a decision about a policy, so no row here is critical.
+        answers = a_fully_working_fence()
+        answers[("operator", "list-buckets", None)] = INVALID_ACCESS_KEY
+        transport = Transport(answers)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = verify.main(
+                ["--bucket", FENCED, "--foreign-control-bucket", CONTROL, "--show-account"],
+                transport=transport,
+                environ=dict(ENVIRONMENT),
+            )
+        self.assertEqual(code, 1)
+        self.assertNotIn("DO NOT APPLY", out.getvalue())
 
 
 class TestControlsMakeDenialsMeanSomething(unittest.TestCase):
@@ -480,7 +1131,7 @@ class TestControlsMakeDenialsMeanSomething(unittest.TestCase):
         # The exact historical mistake: an AccessDenied recorded as proof, from
         # a key whose entitlement was never established.
         answers = a_fully_working_fence()
-        answers[("foreign", "list-objects-v2", CONTROL)] = Completed(1, stderr=ACCESS_DENIED)
+        answers[("foreign", "list-objects-v2", CONTROL)] = ACCESS_DENIED
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn(verify.INCONCLUSIVE, output)
@@ -488,45 +1139,54 @@ class TestControlsMakeDenialsMeanSomething(unittest.TestCase):
 
     def test_a_denial_from_a_mistyped_key_is_inconclusive(self):
         answers = a_fully_working_fence()
-        answers[("foreign", "list-objects-v2", CONTROL)] = Completed(1, stderr=INVALID_KEY)
+        answers[("foreign", "list-objects-v2", CONTROL)] = INVALID_ACCESS_KEY
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn(verify.INCONCLUSIVE, output)
 
     def test_an_inconclusive_run_never_exits_zero(self):
         answers = a_fully_working_fence()
-        answers[("workload", "get-bucket-policy", FENCED)] = Completed(
-            1, stderr=NO_SUCH_BUCKET_POLICY
-        )
+        answers[("workload", "get-bucket-policy", FENCED)] = NO_SUCH_BUCKET_POLICY
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn("An inconclusive check is not a pass", output)
 
     def test_the_anonymous_check_declares_that_it_has_no_control(self):
-        checks = verify.build_checks(
-            bucket=FENCED,
-            foreign_control_bucket=CONTROL,
-            policy_file=POLICY_FILE,
-            probe_key="fence-probe/x.txt",
-        )
-        anonymous = [check for check in checks if check.probe.role == "anonymous"]
+        anonymous = [check for check in checks() if check.probe.role == "anonymous"]
         self.assertEqual(len(anonymous), 1)
         self.assertIsNone(anonymous[0].control)
         self.assertIn("no control exists", anonymous[0].note)
 
     def test_every_other_denial_check_carries_a_control_on_its_own_credential(self):
-        checks = verify.build_checks(
-            bucket=FENCED,
-            foreign_control_bucket=CONTROL,
-            policy_file=POLICY_FILE,
-            probe_key="fence-probe/x.txt",
-        )
-        for check in checks:
+        for check in checks(versioning_already_enabled=True):
             if check.expect != "deny" or check.probe.role == "anonymous":
                 continue
             with self.subTest(check=check.name):
                 self.assertIsNotNone(check.control)
                 self.assertEqual(check.control.role, check.probe.role)
+
+    def test_every_control_travels_the_same_transport_as_the_probe_it_licenses(self):
+        # A control on a different transport licenses nothing: it establishes
+        # that some other client worked for that credential, which is not the
+        # question the probe beside it is answering.
+        for check in checks(versioning_already_enabled=True):
+            if check.control is None:
+                continue
+            with self.subTest(check=check.name):
+                self.assertIs(type(check.control), type(check.probe))
+
+    def test_a_control_and_the_probe_it_licenses_are_signed_the_same_way(self):
+        # Asserted on what went out, not on the check set: both requests carry
+        # an Authorization header naming the same access key.
+        _, _, transport = run(a_fully_working_fence())
+        by_role = {}
+        for sent in transport.sent:
+            if sent.role == "anonymous":
+                continue
+            by_role.setdefault(sent.role, set()).add(sent.headers["Authorization"].split("/")[0])
+        for role, credentials in by_role.items():
+            with self.subTest(role=role):
+                self.assertEqual(len(credentials), 1)
 
 
 class TestNotPrincipalProbe(unittest.TestCase):
@@ -541,16 +1201,14 @@ class TestNotPrincipalProbe(unittest.TestCase):
 
     def _answers(self, operator_read, foreign_read):
         return {
-            ("operator", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
-            ("operator", "get-bucket-policy", FENCED): Completed(
-                1, stderr=NO_SUCH_BUCKET_POLICY
-            ),
-            ("operator", "put-object", FENCED): Completed(0),
-            ("operator", "put-bucket-policy", FENCED): Completed(0),
-            ("operator", "delete-bucket-policy", FENCED): Completed(0),
+            ("operator", "list-buckets", None): OWNER,
+            ("operator", "get-bucket-policy", FENCED): NO_SUCH_BUCKET_POLICY,
+            ("operator", "put-object", FENCED): OK_EMPTY,
+            ("operator", "put-bucket-policy", FENCED): OK_EMPTY,
+            ("operator", "delete-bucket-policy", FENCED): NO_CONTENT,
             ("operator", "get-object", FENCED): operator_read,
             ("foreign", "get-object", FENCED): foreign_read,
-            ("operator", "list-object-versions", FENCED): Completed(0, stdout="{}"),
+            ("operator", "list-object-versions", FENCED): EMPTY_VERSIONS,
         }
 
     def _run(self, operator_read, foreign_read, extra=()):
@@ -560,12 +1218,12 @@ class TestNotPrincipalProbe(unittest.TestCase):
         )
 
     def test_an_engine_that_exempts_the_named_key_passes(self):
-        code, output, _ = self._run(CURL_OK, CURL_ACCESS_DENIED)
+        code, output, _ = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
         self.assertEqual(code, 0, output)
 
     def test_an_engine_that_denies_the_named_key_fails_loudly(self):
         # The finding that would otherwise arrive as a locked bucket.
-        code, output, _ = self._run(CURL_ACCESS_DENIED, CURL_ACCESS_DENIED)
+        code, output, _ = self._run(ACCESS_DENIED_OBJECT, ACCESS_DENIED_OBJECT)
         self.assertEqual(code, 1)
         self.assertIn("WOULD HAVE LOCKED THE BUCKET", output)
         self.assertIn("DO NOT APPLY", output)
@@ -573,17 +1231,16 @@ class TestNotPrincipalProbe(unittest.TestCase):
     def test_an_engine_that_ignores_the_statement_fails(self):
         # Stored and not enforced: a fence that fences nothing, while every
         # other signal says it worked.
-        code, output, _ = self._run(CURL_OK, CURL_OK)
+        code, output, _ = self._run(OBJECT_BYTES, OBJECT_BYTES)
         self.assertEqual(code, 1)
         self.assertIn("NotPrincipal DENIES everyone else", output)
 
-    def test_the_probe_reads_the_object_over_the_signed_transport(self):
-        # The two reads that decide this probe are the ones `aws s3api
-        # get-object` could not answer. If either went back through the CLI
-        # both rows would report INCONCLUSIVE and the runbook would stop here.
-        _, _, runner = self._run(CURL_OK, CURL_ACCESS_DENIED)
-        argvs = [call for call in runner.calls if call[1] == "get-object"]
-        self.assertEqual(argvs, [("operator", "get-object", FENCED), ("foreign", "get-object", FENCED)])
+    def test_the_two_reads_that_decide_it_are_signed_as_different_roles(self):
+        _, _, transport = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        reads = [call for call in transport.calls if call[1] == "get-object"]
+        self.assertEqual(
+            reads, [("operator", "get-object", FENCED), ("foreign", "get-object", FENCED)]
+        )
 
     def test_a_read_the_transport_cannot_interpret_is_inconclusive_not_a_denial(self):
         # A refusal carrying no error document. The operator row must not read
@@ -591,7 +1248,7 @@ class TestNotPrincipalProbe(unittest.TestCase):
         # `WOULD HAVE LOCKED THE BUCKET`, and the foreign row must not read as
         # "denied" either, which would be a pass bought with an unreadable
         # response.
-        code, output, _ = self._run(CURL_403_NO_DOCUMENT, CURL_403_NO_DOCUMENT)
+        code, output, _ = self._run(FORBIDDEN_NO_DOCUMENT, FORBIDDEN_NO_DOCUMENT)
         self.assertEqual(code, 1)
         self.assertIn(verify.INCONCLUSIVE, output)
         self.assertNotIn("WOULD HAVE LOCKED THE BUCKET", output)
@@ -622,8 +1279,15 @@ class TestNotPrincipalProbe(unittest.TestCase):
                 }
             ]
         }
-        with self.assertRaises(verify.VerifierError):
+        with self.assertRaises(verify.VerifierError) as raised:
             verify.assert_probe_policy_is_reversible(locking, FENCED)
+        # The two refusals guard different outcomes and the message has to say
+        # which one fired: naming the bucket resource is the unrecoverable
+        # case, because `PutBucketPolicy` is a bucket-resource action, so the
+        # document could deny its own removal. "Outside the probe prefix" is
+        # the broader hygiene rule and does not tell an operator that.
+        self.assertIn("names the bucket resource", str(raised.exception))
+        self.assertIn("unremovable", str(raised.exception))
 
     def test_a_probe_policy_reaching_outside_the_probe_prefix_is_refused(self):
         broad = {
@@ -637,44 +1301,207 @@ class TestNotPrincipalProbe(unittest.TestCase):
                 }
             ]
         }
-        with self.assertRaises(verify.VerifierError):
+        with self.assertRaises(verify.VerifierError) as raised:
             verify.assert_probe_policy_is_reversible(broad, FENCED)
+        self.assertIn("outside the probe prefix", str(raised.exception))
 
     def test_the_probe_policy_is_removed_even_when_the_reads_fail(self):
-        _, _, runner = self._run(CURL_CONNECTION_REFUSED, CURL_CONNECTION_REFUSED)
-        self.assertIn(("operator", "delete-bucket-policy", FENCED), runner.calls)
+        _, _, transport = self._run(FORBIDDEN_NO_DOCUMENT, FORBIDDEN_NO_DOCUMENT)
+        self.assertIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
 
     def test_a_probe_policy_left_behind_is_shouted_about_with_the_fix(self):
-        answers = self._answers(CURL_OK, CURL_ACCESS_DENIED)
-        answers[("operator", "delete-bucket-policy", FENCED)] = Completed(
-            1, stderr=ACCESS_DENIED
-        )
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "delete-bucket-policy", FENCED)] = ACCESS_DENIED_WRITE
         code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
         self.assertEqual(code, 1)
         self.assertIn("THE PROBE POLICY IS REMOVED", output)
         self.assertIn("delete-bucket-policy", output)
 
-    def test_it_refuses_a_bucket_that_already_carries_a_policy(self):
-        # Replacing a live fence with the probe would un-fence the bucket for
-        # the duration of the probe.
-        answers = self._answers(CURL_OK, CURL_ACCESS_DENIED)
-        answers[("operator", "get-bucket-policy", FENCED)] = Completed(
-            0, stdout=json.dumps(POLICY)
+    def _leftover_probe(self):
+        return Response(
+            "constructed: the probe policy this file writes, left behind by an interrupted run",
+            200,
+            json.dumps(verify.probe_policy(FENCED, OPERATOR_ARN)).encode(),
         )
-        code, output, runner = run(answers, extra_args=["--probe-notprincipal"])
+
+    def _real_fence(self):
+        return Response(
+            "constructed: a bucket already carrying its real fence", 200, POLICY_DOCUMENT
+        )
+
+    def test_it_refuses_a_bucket_that_already_carries_a_policy(self):
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._real_fence()
+        code, output, transport = run(answers, extra_args=["--probe-notprincipal"])
         self.assertEqual(code, 1)
-        self.assertIn("already has a policy", output)
-        self.assertNotIn(("operator", "put-bucket-policy", FENCED), runner.calls)
+        self.assertIn("already carries a policy", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+
+    def test_replace_existing_policy_does_not_authorise_displacing_a_real_fence(self):
+        # NOTHING HERE RESTORES A DISPLACED DOCUMENT. The probe is applied and
+        # then deleted, so a fence it replaced is gone for good and the bucket
+        # is unfenced from that moment on. The flag therefore covers exactly
+        # one case -- a probe policy this file wrote itself -- and a real
+        # document is refused with the flag exactly as it is without it.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._real_fence()
+        code, output, transport = run(
+            answers, extra_args=["--probe-notprincipal", "--replace-existing-policy"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("did not write", output)
+        self.assertIn("does not cover this", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+        self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
+
+    def test_a_real_fence_and_a_leftover_probe_get_different_advice(self):
+        # Both are "this bucket already has a policy", and the right next step
+        # is opposite in each case. The document is already in hand, so the
+        # message says which one this is rather than leaving both to be weighed.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._leftover_probe()
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertIn("left its own probe policy", output)
+        self.assertIn("--replace-existing-policy", output)
+        self.assertNotIn("did not write", output)
+
+    def test_replace_existing_policy_lets_the_probe_run_over_a_leftover_probe(self):
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._leftover_probe()
+        code, output, transport = run(
+            answers, extra_args=["--probe-notprincipal", "--replace-existing-policy"]
+        )
+        self.assertEqual(code, 0, output)
+        self.assertIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
 
     def test_an_engine_that_rejects_the_document_is_inconclusive_not_a_pass(self):
-        answers = self._answers(CURL_OK, CURL_ACCESS_DENIED)
-        answers[("operator", "put-bucket-policy", FENCED)] = Completed(
-            1, stderr="\nAn error occurred (MalformedPolicy) when calling the "
-            "PutBucketPolicy operation: Invalid policy\n"
-        )
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "put-bucket-policy", FENCED)] = REJECTED_POLICY
         code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
         self.assertEqual(code, 1)
         self.assertIn("the probe policy is accepted", output)
+
+    def test_a_refused_put_does_not_delete_the_policy_that_is_already_there(self):
+        # `DeleteBucketPolicy` removes whatever is on the bucket, not the
+        # document this block meant to put there. Deleting after a refused PUT
+        # therefore removes a policy this run never displaced -- and the engine
+        # rejecting a NotPrincipal document outright is case 4 in the runbook's
+        # own list of ways this engine can differ from its documentation, not
+        # an exotic outcome.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "get-bucket-policy", FENCED)] = self._leftover_probe()
+        answers[("operator", "put-bucket-policy", FENCED)] = REJECTED_POLICY
+        code, output, transport = run(
+            answers, extra_args=["--probe-notprincipal", "--replace-existing-policy"]
+        )
+        self.assertEqual(code, 1)
+        self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
+
+    def test_a_refused_put_yields_no_engine_verdict_from_the_reads(self):
+        # The reads would answer about whatever policy IS on the bucket, or
+        # about none. `PASS NotPrincipal EXEMPTS the named key` drawn from a
+        # document the engine never saw is the runbook's gate passing on
+        # evidence that does not exist.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        answers[("operator", "put-bucket-policy", FENCED)] = REJECTED_POLICY
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertNotIn(verify.PASS, output)
+        self.assertIn("says nothing about how this engine evaluates NotPrincipal", " ".join(output.split()))
+
+    def test_the_banner_does_not_claim_a_policy_is_waiting_to_be_re_rendered(self):
+        # This mode writes no fence, so neither "the bucket may be locked" nor
+        # "re-render it against the account id" is a true sentence about what
+        # happened here.
+        answers = self._answers(ACCESS_DENIED_OBJECT, ACCESS_DENIED_OBJECT)
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertNotIn("Re-render it", output)
+        self.assertNotIn("THE BUCKET MAY BE LOCKED", output)
+        self.assertIn("DO NOT APPLY THE REAL FENCE", output)
+
+    def test_a_policy_read_that_did_not_succeed_stops_the_probe_before_it_writes(self):
+        # THE ONE THAT DESTROYS A FENCE. "There is definitely a policy" is not
+        # the only case that must stop this step -- "we could not find out" has
+        # to as well. Applying the probe replaces whatever is on the bucket and
+        # removing it afterwards leaves nothing, so a transient 503, a reset
+        # connection, a truncated body or an AccessDenied on the policy read
+        # would each end with a live fence overwritten and then deleted, on the
+        # strength of a request that failed.
+        for label, answer in (
+            ("a transient 503", Response(
+                "constructed: a gateway 503 on the policy read",
+                503,
+                b"<Error><Code>ServiceUnavailable</Code></Error>",
+            )),
+            ("a refused read", ACCESS_DENIED_POLICY),
+            ("a body that is not an error document", BAD_GATEWAY_HTML),
+        ):
+            with self.subTest(case=label):
+                answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+                answers[("operator", "get-bucket-policy", FENCED)] = answer
+                code, output, transport = run(answers, extra_args=["--probe-notprincipal"])
+                self.assertEqual(code, 1)
+                self.assertIn("the bucket's current policy is known", output)
+                self.assertIn("Nothing has been written", output)
+                self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+                self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
+
+    def test_a_connection_that_never_answered_stops_the_probe_too(self):
+        # `status is None` reaches the same call site as a 503 and means even
+        # less about what is on the bucket.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        reads = {"n": 0}
+
+        class Flaky(Transport):
+            def __call__(self, url, headers, payload, method):
+                if method == "GET" and "policy=" in url:
+                    reads["n"] += 1
+                    raise verify.storage.ObjectStorageError("GET ... failed to complete: reset")
+                return super().__call__(url, headers, payload, method)
+
+        transport = Flaky(answers)
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"], transport=transport)
+        self.assertEqual(code, 1)
+        self.assertEqual(reads["n"], 1)
+        self.assertIn("the bucket's current policy is known", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+
+    def test_only_an_affirmative_no_such_bucket_policy_lets_it_proceed(self):
+        # The affirmative answer, and the only one: this bucket has no policy.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        self.assertEqual(
+            verify.s3_error_code(answers[("operator", "get-bucket-policy", FENCED)].body),
+            "NoSuchBucketPolicy",
+        )
+        code, output, transport = run(answers, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 0, output)
+        self.assertIn(("operator", "put-bucket-policy", FENCED), transport.calls)
+
+    def test_a_put_that_got_no_response_leaves_the_policy_alone_and_says_so(self):
+        # The genuine dilemma: the PUT may have reached the engine. Deleting
+        # would be a DELETE on a bucket whose state this run cannot establish;
+        # not deleting may leave the probe behind. The safer half is taken, and
+        # the operator is told which way it went rather than left with a row
+        # that reads like a clean refusal.
+        answers = self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+
+        class Silent(Transport):
+            def __call__(self, url, headers, payload, method):
+                if method == "PUT" and "policy=" in url:
+                    raise verify.storage.ObjectStorageError(
+                        "PUT ... failed to complete: timed out"
+                    )
+                return super().__call__(url, headers, payload, method)
+
+        transport = Silent(answers)
+        code, output, _ = run(answers, extra_args=["--probe-notprincipal"], transport=transport)
+        self.assertEqual(code, 1)
+        self.assertIn("THE PROBE POLICY'S FATE IS UNKNOWN", output)
+        self.assertIn(verify.probe_policy_id(FENCED), output)
+        self.assertNotIn(("operator", "delete-bucket-policy", FENCED), transport.calls)
+        self.assertNotIn(verify.PASS, output)
 
 
 class TestApplyMode(unittest.TestCase):
@@ -682,469 +1509,386 @@ class TestApplyMode(unittest.TestCase):
 
     def _answers(self):
         return {
-            ("operator", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
-            ("workload", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
-            ("foreign", "list-buckets", None): Completed(0, stdout=f"{ACCOUNT}\n"),
-            ("operator", "put-bucket-policy", FENCED): Completed(0),
-            ("operator", "get-bucket-policy", FENCED): Completed(0, stdout=json.dumps(POLICY)),
+            ("operator", "list-buckets", None): OWNER,
+            ("workload", "list-buckets", None): OWNER,
+            ("foreign", "list-buckets", None): OWNER,
+            ("operator", "put-bucket-policy", FENCED): OK_EMPTY,
+            ("operator", "get-bucket-policy", FENCED): Response(
+                "constructed: GetBucketPolicy returns the stored document itself",
+                200,
+                POLICY_DOCUMENT,
+            ),
         }
 
     def test_a_clean_apply_puts_the_policy_twice(self):
-        code, output, runner = run(self._answers(), extra_args=["--apply"])
+        code, output, transport = run(self._answers(), extra_args=["--apply"])
         self.assertEqual(code, 0, output)
-        puts = [c for c in runner.calls if c == ("operator", "put-bucket-policy", FENCED)]
+        puts = [c for c in transport.calls if c == ("operator", "put-bucket-policy", FENCED)]
         self.assertEqual(len(puts), 2)
 
     def test_a_failed_preflight_makes_the_put_unreachable(self):
         # The whole reason this is one process rather than two commands.
         answers = self._answers()
         for role in ("operator", "workload", "foreign"):
-            answers[(role, "list-buckets", None)] = Completed(0, stdout="p99999999\n")
-        code, output, runner = run(answers, extra_args=["--apply"])
+            answers[(role, "list-buckets", None)] = OTHER_OWNER
+        code, output, transport = run(answers, extra_args=["--apply"])
         self.assertEqual(code, 1)
         self.assertIn("DO NOT APPLY THIS POLICY", output)
-        self.assertNotIn(("operator", "put-bucket-policy", FENCED), runner.calls)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), transport.calls)
 
     def test_a_second_put_that_is_denied_reports_a_lockout(self):
-        calls = {"n": 0}
-        answers = self._answers()
+        seen = {"n": 0}
 
-        class Sequenced(Runner):
-            def __call__(self, argv, env):
-                result = super().__call__(argv, env)
-                if argv[argv.index("s3api") + 1] == "put-bucket-policy":
-                    calls["n"] += 1
-                    if calls["n"] == 2:
-                        return Completed(1, stderr=ACCESS_DENIED)
-                return result
+        class Sequenced(Transport):
+            def __call__(self, url, headers, payload, method):
+                if method == "PUT" and "policy" in url:
+                    seen["n"] += 1
+                    if seen["n"] == 2:
+                        self.calls.append(("operator", "put-bucket-policy", FENCED))
+                        return ACCESS_DENIED_WRITE.status, ACCESS_DENIED_WRITE.body
+                return super().__call__(url, headers, payload, method)
 
-        runner = Sequenced(answers)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = verify.main(
-                [
-                    "--bucket",
-                    FENCED,
-                    "--foreign-control-bucket",
-                    CONTROL,
-                    "--policy-file",
-                    POLICY_FILE,
-                    "--apply",
-                ],
-                runner=runner,
-                environ=dict(ENVIRONMENT),
-            )
+        code, output, _ = run(self._answers(), extra_args=["--apply"], transport=Sequenced(self._answers()))
         self.assertEqual(code, 1)
-        self.assertIn("THE BUCKET MAY BE LOCKED", out.getvalue())
+        self.assertIn("THE BUCKET MAY BE LOCKED", output)
 
 
-class TestObjectReadsDoNotUseTheAwsCli(unittest.TestCase):
-    """The defect: `aws s3api get-object` cannot reach a verdict on this endpoint."""
-
-    def test_the_client_crash_carries_no_error_code_to_classify(self):
-        # Against this endpoint the command exits 255 with a client-internal
-        # message and empty stdout, for EVERY failure -- including a plain
-        # missing object on a bucket the credential can read, so a denial is
-        # not required to produce it. `classify` finds nothing, which is
-        # correct and fail-safe, and is also why the probe could never pass.
-        outcome, reason = verify.classify(
-            AWS_GET_OBJECT_CRASH.returncode, AWS_GET_OBJECT_CRASH.stderr
-        )
-        self.assertEqual(outcome, "error")
-        self.assertIn("no S3 error code", reason)
-
-    def test_the_crash_is_the_error_document_shape_not_the_command(self):
-        # The scope of the defect, recorded because getting it wrong is what
-        # made this look like a one-command problem. The SAME crash comes back
-        # from `list-objects-v2` -- the command four denial probes use -- when
-        # the answer is `AccessDenied`, while the gateway's `NoSuchBucket`
-        # renders fine from the same command. The difference is the empty
-        # `<Message></Message>` in the engine's own error documents.
-        self.assertEqual(
-            verify.classify(
-                AWS_ACCESS_DENIED_CRASH.returncode, AWS_ACCESS_DENIED_CRASH.stderr
-            )[0],
-            "error",
-        )
-        outcome, reason = verify.classify(
-            AWS_NO_SUCH_BUCKET_RENDERS.returncode, AWS_NO_SUCH_BUCKET_RENDERS.stderr
-        )
-        self.assertEqual(outcome, "error")
-        self.assertIn("NoSuchBucket", reason)
-
-    def test_the_cli_denial_probes_cannot_yet_reach_a_verdict_on_this_endpoint(self):
-        # The state of the world, asserted rather than described, so that the
-        # change which moves these probes onto the signed transport has to come
-        # back here and say so. Every denial probe still on the CLI answers
-        # INCONCLUSIVE against a correctly fenced bucket -- fail-safe, and not
-        # a pass, but not proof either.
-        answers = a_fully_working_fence()
-        for probe in (
-            ("foreign", "list-objects-v2", FENCED),
-            ("foreign", "put-object", FENCED),
-            ("workload", "get-bucket-policy", FENCED),
-            ("workload", "put-bucket-policy", FENCED),
-            ("anonymous", "list-objects-v2", FENCED),
-        ):
-            answers[probe] = AWS_ACCESS_DENIED_CRASH
-        code, output, _ = run(answers)
-        self.assertEqual(code, 1)
-        self.assertIn(verify.INCONCLUSIVE, output)
-        self.assertNotIn(verify.FAIL, output)
-        # The object read is the one denial that still reaches a verdict.
-        self.assertIn(f"{verify.PASS}          foreign key cannot read an object", output)
-
-    def test_head_object_is_not_the_substitute(self):
-        # It renders its error cleanly and calls a refusal `403`, which is an
-        # HTTP status rather than an S3 error code. Swapping to it would turn
-        # every denial into INCONCLUSIVE by a second route.
-        outcome, reason = verify.classify(
-            AWS_HEAD_OBJECT_FORBIDDEN.returncode, AWS_HEAD_OBJECT_FORBIDDEN.stderr
-        )
-        self.assertEqual(outcome, "error")
-        self.assertIn("403", reason)
-        self.assertNotIn("403", verify.DENIAL_CODES)
-
-    def test_no_check_reads_an_object_through_the_cli(self):
-        checks = verify.build_checks(
-            bucket=FENCED,
-            foreign_control_bucket=CONTROL,
-            policy_file=POLICY_FILE,
-            probe_key=f"{verify.PROBE_PREFIX}x.txt",
-            versioning_already_enabled=True,
-        )
-        reads = [check for check in checks if check.probe.operation == "get-object"]
-        self.assertEqual(len(reads), 2)
-        for check in reads:
-            with self.subTest(check=check.name):
-                self.assertEqual(check.probe.kind, "object-read")
-                self.assertEqual(check.probe.args, [])
-
-    def test_a_whole_run_sends_no_get_object_to_the_cli(self):
-        # Asserted on what actually went out, not on the check set: the object
-        # reads happened, and no `aws s3api` invocation was one of them.
-        sent: list[list[str]] = []
-
-        def recording(argv, env):
-            sent.append(argv)
-            return Runner(a_fully_working_fence())(argv, env)
-
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            verify.main(
-                ["--bucket", FENCED, "--foreign-control-bucket", CONTROL,
-                 "--policy-file", POLICY_FILE],
-                runner=recording,
-                environ=dict(ENVIRONMENT),
-            )
-        s3api = [argv for argv in sent if "s3api" in argv]
-        self.assertTrue(s3api)
-        for argv in s3api:
-            self.assertNotIn("get-object", argv)
-        self.assertEqual(len([argv for argv in sent if argv[0] == "curl"]), 2)
-
-
-class TestObjectReadClassification(unittest.TestCase):
-    """The signed transport's verdicts, and the one route to `denied`."""
-
-    def _classify(self, response):
-        return verify.classify_object_read(
-            response.returncode, response.stdout, response.stderr
-        )
-
-    def test_a_2xx_is_allowed(self):
-        self.assertEqual(self._classify(CURL_OK)[0], "allowed")
-
-    def test_an_access_denied_document_is_a_denial(self):
-        outcome, reason = self._classify(CURL_ACCESS_DENIED)
-        self.assertEqual(outcome, "denied")
-        self.assertEqual(reason, "AccessDenied")
-
-    def test_a_dead_key_is_an_error_despite_arriving_as_the_same_403(self):
-        # The pair that makes an HTTP status useless on its own, and the reason
-        # this transport never reads one. Both fixtures were observed against
-        # the live endpoint and both are 403.
-        self.assertEqual(
-            verify._split_status(CURL_ACCESS_DENIED.stdout)[1],
-            verify._split_status(CURL_INVALID_ACCESS_KEY.stdout)[1],
-        )
-        outcome, reason = self._classify(CURL_INVALID_ACCESS_KEY)
-        self.assertEqual(outcome, "error")
-        self.assertIn("says nothing about the fence", reason)
-
-    def test_a_missing_object_is_an_error_and_never_a_denial(self):
-        # A read that finds nothing proves nothing about the fence.
-        self.assertEqual(self._classify(CURL_NO_SUCH_KEY)[0], "error")
-
-    def test_a_pretty_printed_document_is_read_the_same_as_a_flat_one(self):
-        # This endpoint emits both. A verdict that depended on the whitespace
-        # would hold until the day the other renderer answered.
-        outcome, reason = self._classify(CURL_NO_SUCH_BUCKET)
-        self.assertEqual(outcome, "error")
-        self.assertIn("NoSuchBucket", reason)
-
-    def test_a_refusal_with_no_error_document_is_an_error(self):
-        outcome, reason = self._classify(CURL_403_NO_DOCUMENT)
-        self.assertEqual(outcome, "error")
-        self.assertIn("no S3 error document", reason)
-
-    def test_a_body_that_is_not_an_error_document_yields_no_verdict(self):
-        outcome, _ = self._classify(CURL_BAD_GATEWAY_HTML)
-        self.assertEqual(outcome, "error")
-
-    def test_a_code_element_that_is_not_a_code_yields_no_verdict(self):
-        # `report()` prints a reason as a line of its own, so text of arbitrary
-        # length or containing newlines would forge report lines. An S3 error
-        # code is a short identifier and anything else in that element is not
-        # one -- held to the same shape the CLI side already enforces.
-        for text in (
-            "Nope\nPASS          foreign key cannot read an object",
-            "A" * 65,
-            "Access Denied",
-            "Access-Denied",
-            "<b>AccessDenied</b>",
-        ):
-            with self.subTest(text=text[:30]):
-                body = f"<Error><Code>{text}</Code></Error>"
-                outcome, reason = verify.classify_object_read(0, f"{body}\n403", "")
-                self.assertEqual(outcome, "error")
-                self.assertNotIn("\n", reason)
-
-    def test_an_expensive_document_cannot_produce_an_expensive_reason(self):
-        # ElementTree expands internal entities, so a small body can become a
-        # very large string. The body is capped before parsing and the code is
-        # capped after it.
-        entity = "<!DOCTYPE r [<!ENTITY a \"" + "A" * 5000 + "\">]>"
-        body = entity + "<Error><Code>" + "&a;" * 2000 + "</Code></Error>"
-        outcome, reason = verify.classify_object_read(0, f"{body}\n403", "")
-        self.assertEqual(outcome, "error")
-        self.assertLess(len(reason), 500)
-
-    def test_a_request_that_never_reached_the_endpoint_is_an_error(self):
-        outcome, reason = self._classify(CURL_CONNECTION_REFUSED)
-        self.assertEqual(outcome, "error")
-        self.assertIn("did not complete", reason)
-
-    def test_a_curl_too_old_for_aws_sigv4_is_an_error(self):
-        # `--aws-sigv4` arrived in curl 7.75. An older one exits before
-        # sending anything, so there is no status and no document.
-        outcome, _ = self._classify(CURL_OPTION_UNKNOWN)
-        self.assertEqual(outcome, "error")
-
-    def test_an_object_whose_own_contents_look_like_a_denial_is_still_allowed(self):
-        # The body is not consulted on success, and a 2xx is a successful read
-        # whatever it returned.
-        response = Response(
-            "constructed: an object whose bytes happen to be an S3 error document",
-            0,
-            stdout="<Error><Code>AccessDenied</Code></Error>\n200",
-        )
-        self.assertEqual(self._classify(response)[0], "allowed")
-
-    def test_denied_is_reachable_only_through_the_two_denial_codes(self):
-        # The property the file exists for, asserted exhaustively rather than
-        # by example: across every status and every code this endpoint might
-        # return, `denied` comes out for `AccessDenied` and `AllAccessDisabled`
-        # and for nothing else.
-        codes = sorted(
-            verify.DENIAL_CODES
-            | set(verify.NOT_A_DENIAL)
-            | {"NoSuchKey", "NoSuchBucketPolicy", "InternalError", "SlowDown", "403", ""}
-        )
-        for status in (200, 204, 206, 301, 400, 403, 404, 405, 500, 502, 503):
-            for code in codes:
-                body = f"<Error><Code>{code}</Code></Error>" if code else "<Error></Error>"
-                outcome, _ = verify.classify_object_read(0, f"{body}\n{status}", "")
-                with self.subTest(status=status, code=code):
-                    if 200 <= status < 300:
-                        self.assertEqual(outcome, "allowed")
-                    elif code in verify.DENIAL_CODES:
-                        self.assertEqual(outcome, "denied")
-                    else:
-                        self.assertEqual(outcome, "error")
-
-
-class TestObjectReadTransport(unittest.TestCase):
-    def _verifier(self, runner):
+class TestSignedTransport(unittest.TestCase):
+    def _verifier(self, transport):
         return verify.Verifier(
-            endpoint="https://hel1.your-objectstorage.com",
+            endpoint=ENDPOINT,
             region="hel1",
-            credentials={"workload": (WORKLOAD_KEY, "workload-secret")},
-            runner=runner,
-            environ=dict(ENVIRONMENT),
+            credentials={
+                "workload": (WORKLOAD_KEY, "workload-secret"),
+                "operator": (OPERATOR_KEY, "operator-secret"),
+            },
+            transport=transport,
         )
 
-    def _argv_for(self, key=f"{verify.PROBE_PREFIX}x.txt"):
+    def _send(self, probe):
         captured: dict = {}
 
-        def runner(argv, env):
-            captured["argv"] = argv
-            captured["env"] = env
-            captured["config"] = pathlib.Path(argv[argv.index("--config") + 1]).read_text()
-            return CURL_OK
+        def transport(url, headers, payload, method):
+            captured.update(url=url, headers=headers, payload=payload, method=method)
+            return OBJECT_BYTES.status, OBJECT_BYTES.body
 
-        self._verifier(runner).read_object("workload", FENCED, key)
+        self._verifier(transport).request(probe)
         return captured
 
-    def test_the_request_is_a_path_style_signed_get(self):
-        captured = self._argv_for()
-        self.assertEqual(captured["argv"][0], "curl")
-        self.assertIn("--aws-sigv4", captured["argv"])
-        self.assertEqual(
-            captured["argv"][captured["argv"].index("--aws-sigv4") + 1], "aws:amz:hel1:s3"
-        )
+    def test_an_object_read_is_a_path_style_signed_get(self):
+        captured = self._send(verify._read(FENCED, "workload", f"{verify.PROBE_PREFIX}x.txt"))
+        self.assertEqual(captured["method"], "GET")
         # Path-style: a dotted bucket name falls outside this endpoint's
         # one-label wildcard certificate, so the bucket never becomes a
         # hostname.
         self.assertEqual(
-            captured["argv"][-1],
-            f"https://hel1.your-objectstorage.com/{FENCED}/{verify.PROBE_PREFIX}x.txt",
+            captured["url"], f"{ENDPOINT}/{FENCED}/{verify.PROBE_PREFIX}x.txt"
         )
+        self.assertTrue(captured["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256 "))
+        self.assertIn(f"Credential={WORKLOAD_KEY}/", captured["headers"]["Authorization"])
+        self.assertEqual(captured["headers"]["host"], ENDPOINT_HOST)
 
-    def test_the_probe_obeys_no_configuration_but_its_own(self):
-        # curl reads ~/.curlrc unless `-q` comes FIRST, and takes proxy
-        # settings from the environment whether or not it does. A `proxy` line
-        # there would put a response from something that is not the storage
-        # backend in front of a denial check -- a generic 403 answering the
-        # foreign read reads as PASS -- and an `insecure` line would drop
-        # certificate checking on a probe carrying a live credential. Same
-        # reasoning as clearing the ambient AWS_* variables, which this file
-        # already does.
-        captured = self._argv_for()
-        self.assertEqual(captured["argv"][1], "-q")
-        self.assertEqual(
-            captured["argv"][captured["argv"].index("--noproxy") + 1], "*"
-        )
+    def test_the_secret_is_never_sent_anywhere_a_reader_could_take_it(self):
+        # It never leaves this process except as an HMAC. No argument vector
+        # carries it either, which matters because argv is readable out of the
+        # process table by every other process on the workstation.
+        captured = self._send(verify._read(FENCED, "workload", "fence-probe/x.txt"))
+        rendered = captured["url"] + json.dumps(captured["headers"]) + repr(captured["payload"])
+        self.assertNotIn("workload-secret", rendered)
 
-    def test_the_status_is_asked_for_explicitly(self):
-        # curl exits 0 for a 403 exactly as it does for a 200, so without this
-        # every refusal would arrive looking like a successful read.
-        captured = self._argv_for()
-        self.assertEqual(captured["argv"][captured["argv"].index("--write-out") + 1], "\n%{http_code}")
+    def test_the_unsigned_probe_carries_no_authorization_at_all(self):
+        # The check it backs proves the bucket is not world-readable. Signed by
+        # accident, it would prove nothing and pass.
+        probe = [check.probe for check in checks() if check.probe.role == "anonymous"][0]
+        captured = self._send(probe)
+        self.assertEqual(captured["headers"], {})
+        self.assertIn("list-type=2", captured["url"])
 
-    def test_the_secret_never_appears_in_the_argument_vector(self):
-        # argv is readable out of the process table by every other process on
-        # the workstation.
-        captured = self._argv_for()
-        self.assertNotIn("workload-secret", " ".join(captured["argv"]))
-        self.assertIn('user = "', captured["config"])
-        self.assertIn("workload-secret", captured["config"])
+    def test_a_credential_exported_in_the_environment_cannot_reach_a_probe(self):
+        # An operator arrives at this script with a key already exported, from
+        # the step immediately before it. Nothing here reads the environment
+        # when it sends: the credential comes from the role table and from
+        # nowhere else, so an ambient key cannot become the signer.
+        ambient = {
+            "AWS_ACCESS_KEY_ID": OPERATOR_KEY,
+            "AWS_SECRET_ACCESS_KEY": "operator-secret",
+            "AWS_PROFILE": "default",
+        }
+        with mock.patch.dict(os.environ, ambient, clear=False):
+            captured = self._send(verify._read(FENCED, "workload", "fence-probe/x.txt"))
+        self.assertIn(f"Credential={WORKLOAD_KEY}/", captured["headers"]["Authorization"])
 
-    def test_the_credential_file_is_removed_even_when_the_read_raises(self):
-        paths: list[str] = []
+    def test_a_transport_failure_is_an_error_and_never_a_denial(self):
+        def refused(url, headers, payload, method):
+            raise verify.storage.ObjectStorageError("GET ... failed to complete: refused")
 
-        def runner(argv, env):
-            paths.append(argv[argv.index("--config") + 1])
-            raise RuntimeError("the client blew up")
-
-        with self.assertRaises(RuntimeError):
-            self._verifier(runner).read_object("workload", FENCED, "fence-probe/x.txt")
-        self.assertFalse(pathlib.Path(paths[0]).exists())
-
-    def test_a_credential_carrying_a_newline_cannot_inject_a_curl_option(self):
-        # An unescaped newline would end the `user` line and turn whatever
-        # followed into further options for curl to obey.
-        captured: dict = {}
-
-        def runner(argv, env):
-            captured["config"] = pathlib.Path(argv[argv.index("--config") + 1]).read_text()
-            return CURL_OK
-
-        verifier = verify.Verifier(
-            endpoint="https://hel1.your-objectstorage.com",
-            region="hel1",
-            credentials={"workload": (WORKLOAD_KEY, 'sec\nproxy = "http://attacker"')},
-            runner=runner,
-            environ=dict(ENVIRONMENT),
-        )
-        verifier.read_object("workload", FENCED, "fence-probe/x.txt")
-        # One physical line, opening and closing on the quote that makes the
-        # whole thing one option value. curl reads `\n` and `\"` as characters
-        # of that value, so the injected text never becomes an option -- which
-        # is what a real curl does with this file, not only what it should.
-        self.assertEqual(captured["config"].count("\n"), 1)
-        self.assertTrue(captured["config"].startswith('user = "'))
-        self.assertTrue(captured["config"].endswith('"\n'))
-        self.assertIn("\\n", captured["config"])
-
-    def test_an_unsigned_object_read_is_refused_rather_than_sent(self):
-        # There is no anonymous object-read probe, and one that silently went
-        # out signed as whichever role ran last would be a false pass.
-        sent: list = []
-        verifier = self._verifier(lambda argv, env: sent.append(argv))
-        outcome, reason = verifier.read_object("anonymous", FENCED, "fence-probe/x.txt")
+        outcome, reason = self._verifier(refused).run(verify._read(FENCED, "workload", "k"))
         self.assertEqual(outcome, "error")
-        self.assertEqual(sent, [])
+        self.assertIn("did not complete", reason)
 
-    def test_the_read_runs_with_no_ambient_credential(self):
-        # Same clearing as every s3api probe gets, from the same code: an
-        # object read is the probe most likely to be run straight after a
-        # `put-bucket-policy` that left a key exported.
-        with mock.patch.dict(os.environ, {"AWS_PROFILE": "default"}, clear=False):
-            captured = self._argv_for()
-        self.assertNotIn("AWS_PROFILE", captured["env"])
+    def test_an_unexpected_exception_is_an_error_rather_than_escaping(self):
+        # An exception escaping the request skips `cleanup()`, which leaves
+        # probe objects in a production bucket.
+        def broken(url, headers, payload, method):
+            raise ValueError("unknown url type")
+
+        outcome, reason = self._verifier(broken).run(verify._read(FENCED, "workload", "k"))
+        self.assertEqual(outcome, "error")
+        self.assertIn("ValueError", reason)
+
+    def test_a_plaintext_endpoint_is_refused_rather_than_signed_for(self):
+        # Every request carries a live credential in an Authorization header.
+        with self.assertRaises(verify.VerifierError):
+            verify.Verifier(
+                endpoint="http://hel1.your-objectstorage.com",
+                region="hel1",
+                credentials={},
+            )
+
+    def test_a_bucket_subresource_is_addressed_as_a_query_parameter(self):
+        captured = self._send(verify._policy_probe("operator", FENCED, "GET"))
+        self.assertEqual(captured["url"], f"{ENDPOINT}/{FENCED}?policy=")
+
+    def test_two_probes_differing_only_in_body_do_not_share_a_cached_verdict(self):
+        # `_policy_probe` builds PUTs that are identical except for the
+        # document they carry, and the outcome cache is keyed on the probe. A
+        # key that ignored the payload would answer the second PUT with the
+        # first one's verdict -- so a policy the engine would have refused
+        # reports the verdict of one it accepted, from a request never sent.
+        one = verify._policy_probe("operator", FENCED, "PUT", b'{"Version":"2012-10-17"}')
+        two = verify._policy_probe("operator", FENCED, "PUT", b'{"Version":"2008-10-17"}')
+        self.assertNotEqual(one.cache_key(), two.cache_key())
+
+        sent = []
+
+        def transport(url, headers, payload, method):
+            sent.append(payload)
+            return 200, b""
+
+        verifier = self._verifier(transport)
+        verifier.run(one)
+        verifier.run(two)
+        verifier.run(one)  # the cache is real: this one does not go out again
+        self.assertEqual(sent, [one.payload, two.payload])
+
+
+def _fixture_labels():
+    """Every `Response(...)` in this file, read from its source.
+
+    Static rather than runtime, because a runtime registry only ever holds the
+    fixtures constructed so far: `unittest` runs classes in alphabetical order,
+    so a registry inspected from a test class sees nothing built by the classes
+    that sort after it, and `Response.every` starts empty in every process.
+    Roughly half the fixtures here are built inside test methods.
+
+    A label has to be resolvable from the source -- a literal, a module
+    constant, or a concatenation of those. One computed at run time cannot be
+    checked here and is refused on that basis.
+    """
+    tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    labels = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Name) and node.func.id == "Response"):
+            continue
+        argument = node.args[0] if node.args else None
+        labels.append((node.lineno, _resolve(argument)))
+    return labels
+
+
+def _resolve(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        value = globals().get(node.id)
+        return value if isinstance(value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _resolve(node.left), _resolve(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr) and node.values:
+        # An f-string: only the literal head decides the prefix.
+        return _resolve(node.values[0])
+    return None
 
 
 class TestFixtureProvenance(unittest.TestCase):
-    def test_every_fixture_says_whether_it_was_observed_or_written(self):
-        # The failure this file is fixing was a fixture nobody had checked
-        # against the wire. An unlabelled one is how that happens again.
-        fixtures = [value for value in globals().values() if isinstance(value, Response)]
-        self.assertGreaterEqual(len(fixtures), 8)
-        for fixture in fixtures:
-            with self.subTest(source=fixture.source[:40]):
-                self.assertTrue(fixture.source.startswith(("observed:", "constructed:")))
+    """Every fixture states whether it was seen on the wire or written here.
 
-    def test_no_fixture_carries_a_live_request_identifier(self):
-        # RequestId and HostId name one request on Hetzner's side. Harmless,
-        # and pointless to commit.
-        for fixture in [value for value in globals().values() if isinstance(value, Response)]:
-            with self.subTest(source=fixture.source[:40]):
-                self.assertNotIn("-hel1-prod1-", fixture.stdout)
+    One observed on the wire constrains the code; one written here constrains
+    only what its author expected, and a fixture built to an assumption is the
+    defect this whole file exists to stop shipping.
+    """
 
+    LABELS = ("observed:", "constructed:")
 
-class TestRunnerFailuresNeverStrand(unittest.TestCase):
-    def test_a_missing_client_is_an_error_not_a_denial(self):
-        outcome, reason = verify.classify(1, "aws is not on PATH")
-        self.assertEqual(outcome, "error")
-        self.assertIn("not on PATH", reason)
+    # A Ceph RGW transaction id, which is what this endpoint puts in RequestId
+    # and HostId. Matched by shape rather than by a `-hel1-prod1-` substring,
+    # so a response captured from another region or cluster is caught too.
+    REQUEST_ID = re.compile(rb"tx[0-9a-f]{10,}|-prod\d+-")
 
-    def test_a_timeout_is_an_error_not_a_denial(self):
-        outcome, _ = verify.classify(1, "curl did not return within 120s")
-        self.assertEqual(outcome, "error")
+    def test_every_fixture_in_this_file_says_where_it_came_from(self):
+        labels = _fixture_labels()
+        self.assertGreaterEqual(len(labels), 25)
+        for line, label in labels:
+            with self.subTest(line=line):
+                self.assertIsNotNone(label, f"line {line}: provenance label is not a literal")
+                self.assertTrue(
+                    label.startswith(self.LABELS), f"line {line}: {label[:60]!r}"
+                )
 
-    def test_a_non_utf8_response_body_does_not_raise_out_of_the_runner(self):
-        # An object read returns the object's own bytes on stdout, where the
-        # CLI only ever returned JSON. An exception escaping the runner skips
-        # `cleanup()` and leaves probe objects in a production bucket, which is
-        # the one thing this function must never do.
-        completed = verify._default_runner(
-            ["/bin/sh", "-c", "printf '\\377\\376 not utf-8'"], dict(os.environ)
+    def test_the_scan_reaches_fixtures_built_inside_test_methods(self):
+        # The half a runtime registry inspected from here cannot see. The class
+        # definitions all begin after the module-level fixtures, so a scan that
+        # found only those would report nothing past that line.
+        labels = _fixture_labels()
+        first_class = min(
+            node.lineno
+            for node in ast.walk(ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8")))
+            if isinstance(node, ast.ClassDef)
         )
-        self.assertEqual(completed.returncode, 0)
-        self.assertIsInstance(completed.stdout, str)
+        self.assertGreaterEqual(len([line for line, _ in labels if line > first_class]), 8)
 
-    def test_the_runner_names_the_client_it_could_not_start(self):
-        # One runner now starts two different binaries, and "the aws CLI is not
-        # on PATH" printed for a missing curl sends the reader to the wrong fix.
-        completed = verify._default_runner(["curl-that-is-not-installed"], {})
-        self.assertEqual(verify.classify(completed.returncode, completed.stderr)[0], "error")
-        self.assertIn("curl-that-is-not-installed", completed.stderr)
+    def test_the_scan_refuses_an_unlabelled_fixture(self):
+        # A guard that has quietly stopped covering anything passes every
+        # fixture, so prove it still refuses one.
+        tree = ast.parse('Response("I AM UNLABELLED", 200)\nResponse(observed_name, 200)\n')
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Response":
+                found.append(_resolve(node.args[0] if node.args else None))
+        self.assertEqual(len(found), 2)
+        self.assertFalse(found[0].startswith(self.LABELS))
+        self.assertIsNone(found[1])
+
+    def test_the_request_identifier_matcher_still_matches_a_real_one(self):
+        for real in (
+            b"<RequestId>tx0000043296e609d7694e1-006a8eb7bf-1a7ba04d-hel1-prod1-ceph4</RequestId>",
+            b"<HostId>1a7ba04d-hel1-prod1-ceph4-hel1</HostId>",
+        ):
+            with self.subTest(real=real[:20]):
+                self.assertIsNotNone(self.REQUEST_ID.search(real))
+        self.assertIsNone(self.REQUEST_ID.search(b"<RequestId>N/A</RequestId>"))
+
+    def test_the_body_checks_refuse_what_must_not_be_committed(self):
+        # `tearDownModule` runs these over every fixture, and a check that has
+        # quietly stopped refusing anything passes them all. This repository is
+        # public, so each of these lands in git if the check is asleep.
+        #
+        # Built as stand-ins rather than as `Response`s: a real one would be
+        # registered and scanned like any other fixture, and the static label
+        # check would refuse the unlabelled case here -- correctly, which is
+        # itself the point.
+        bad = [
+            _Fixture("observed: real shape", b"<RequestId>tx0000043296e609d7694e1-hel1-prod1-ceph4</RequestId>"),
+            _Fixture("observed: real shape", b"AWS4-HMAC-SHA256 Signature=deadbeef"),
+            _Fixture("observed: real shape", b"aws_secret_access_key=..."),
+            _Fixture("no label at all", b""),
+        ]
+        self.assertEqual(len(fixture_body_problems(bad)), 4)
+        self.assertEqual(fixture_body_problems(Response.every), [])
+
+    def test_module_teardown_actually_fails_the_run_on_a_bad_fixture(self):
+        # The wiring, not just the helper: `tearDownModule` is the only thing
+        # that sees every fixture, so it is the only place a bad body can be
+        # refused, and a teardown that collects problems and drops them is
+        # indistinguishable from a clean run.
+        mark = len(Response.every)
+        Response.every.append(
+            _Fixture("observed: real shape", b"<HostId>1a7ba04d-hel1-prod1-ceph4-hel1</HostId>")
+        )
+        try:
+            with self.assertRaises(AssertionError) as raised:
+                tearDownModule()
+            self.assertIn("live request identifier", str(raised.exception))
+        finally:
+            del Response.every[mark:]
+        tearDownModule()
+
+
+class _Fixture:
+    """A `source`/`body` pair for exercising `fixture_body_problems` itself."""
+
+    def __init__(self, source, body):
+        self.source = source
+        self.body = body
+
+
+def fixture_body_problems(fixtures):
+    """What must not be committed, found in the bytes of a fixture.
+
+    This repository is public, so an unscrubbed `RequestId` or anything
+    credential-shaped in a fixture body lands in git.
+    """
+    problems = []
+    for fixture in fixtures:
+        source = fixture.source[:50]
+        if not fixture.source.startswith(TestFixtureProvenance.LABELS):
+            problems.append(f"unlabelled fixture: {source!r}")
+        if TestFixtureProvenance.REQUEST_ID.search(fixture.body):
+            problems.append(f"live request identifier in {source!r}")
+        if b"secret" in fixture.body.lower() or b"Signature=" in fixture.body:
+            problems.append(f"credential-shaped bytes in {source!r}")
+    return problems
+
+
+def tearDownModule():
+    """The body checks, after every test has run and built its fixtures.
+
+    Module teardown rather than a test method, because these need the actual
+    bytes and `Response.every` is only complete once nothing else will add to
+    it -- `unittest` runs classes in alphabetical order, so a test method
+    cannot see the fixtures built by the classes that sort after it. The label
+    check is static and does not need this.
+    """
+    problems = fixture_body_problems(Response.every)
+    if problems:
+        raise AssertionError("; ".join(problems))
+
+
+class TestSigningIsARequirement(unittest.TestCase):
+    def test_every_mode_refuses_before_writing_when_the_signing_is_missing(self):
+        # The dependency the transport has. It is checked before any mode runs,
+        # rather than at the first request -- which is where an operator used
+        # to discover a missing `curl`: part-way through --probe-notprincipal,
+        # with a probe policy already applied to a production bucket.
+        transport = Transport(a_fully_working_fence())
+        for extra in ([], ["--preflight"], ["--apply"], ["--probe-notprincipal"], ["--show-account"]):
+            with self.subTest(mode=extra or ["(verify)"]):
+                with mock.patch.object(verify, "SIGNING_UNAVAILABLE", "objectstorage.py is missing"):
+                    err = io.StringIO()
+                    with contextlib.redirect_stderr(err):
+                        code = verify.main(
+                            [
+                                "--bucket",
+                                FENCED,
+                                "--foreign-control-bucket",
+                                CONTROL,
+                                "--policy-file",
+                                POLICY_FILE,
+                                *extra,
+                            ],
+                            transport=transport,
+                            environ=dict(ENVIRONMENT),
+                        )
+                self.assertEqual(code, 2)
+                self.assertIn("objectstorage.py is missing", err.getvalue())
+        self.assertEqual(transport.calls, [])
 
 
 class TestLockout(unittest.TestCase):
     def test_a_bucket_that_cannot_be_re_administered_is_shouted_about(self):
         answers = a_fully_working_fence()
-        answers[("operator", "put-bucket-policy", FENCED)] = Completed(1, stderr=ACCESS_DENIED)
+        answers[("operator", "put-bucket-policy", FENCED)] = ACCESS_DENIED_WRITE
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn("THE BUCKET MAY BE LOCKED", output)
         self.assertIn("Hetzner support request", output)
 
     def test_the_recoverability_check_runs_before_anything_touches_the_bucket(self):
-        _, _, runner = run(a_fully_working_fence())
-        put_policy = runner.calls.index(("operator", "put-bucket-policy", FENCED))
-        put_object = runner.calls.index(("workload", "put-object", FENCED))
+        _, _, transport = run(a_fully_working_fence())
+        put_policy = transport.calls.index(("operator", "put-bucket-policy", FENCED))
+        put_object = transport.calls.index(("workload", "put-object", FENCED))
         self.assertLess(put_policy, put_object)
 
 
@@ -1166,14 +1910,7 @@ class TestProbesAreNonDestructive(unittest.TestCase):
     GATED_ON_ASSERTED_STATE = {"put-bucket-versioning"}
 
     def _denial_probes(self, **kwargs):
-        checks = verify.build_checks(
-            bucket=FENCED,
-            foreign_control_bucket=CONTROL,
-            policy_file=POLICY_FILE,
-            probe_key=f"{verify.PROBE_PREFIX}x.txt",
-            **kwargs,
-        )
-        return [check.probe for check in checks if check.expect == "deny"]
+        return [check.probe for check in checks(**kwargs) if check.expect == "deny"]
 
     def test_every_default_denial_probe_is_a_no_op_on_success(self):
         for probe in self._denial_probes():
@@ -1201,47 +1938,129 @@ class TestProbesAreNonDestructive(unittest.TestCase):
         for probe in self._denial_probes(versioning_already_enabled=True):
             self.assertNotEqual(probe.operation, "put-bucket-acl")
 
-    def test_the_workload_write_probes_stay_under_the_probe_prefix(self):
+    def test_the_write_probes_stay_under_the_probe_prefix(self):
         # prune_backups.py reads `dumps/` and `binlogs/`; a probe object under
         # either would enter the retention decision. Asserted on the object the
         # probe names rather than on its arguments, so a probe that changes
-        # transport cannot drop out of the check by losing a `--key` flag.
-        checks = verify.build_checks(
-            bucket=FENCED,
-            foreign_control_bucket=CONTROL,
-            policy_file=POLICY_FILE,
-            probe_key=f"{verify.PROBE_PREFIX}x.txt",
-        )
-        keyed = [check for check in checks if check.probe.object_key is not None]
+        # transport cannot drop out of the check by losing a flag.
+        keyed = [check for check in checks() if check.probe.object_key is not None]
         self.assertGreaterEqual(len(keyed), 4)
         for check in keyed:
             with self.subTest(check=check.name):
                 self.assertTrue(check.probe.object_key.startswith(verify.PROBE_PREFIX))
 
+    def test_the_re_put_probes_send_the_document_that_is_already_stored(self):
+        # A `put-bucket-policy` probe is a no-op only because its payload is
+        # the policy the bucket already carries. A probe sending anything else
+        # would rewrite a live fence on success.
+        for check in checks():
+            if check.probe.operation != "put-bucket-policy":
+                continue
+            with self.subTest(check=check.name):
+                self.assertEqual(check.probe.payload, POLICY_DOCUMENT)
+
 
 class TestCleanup(unittest.TestCase):
+    def _versions_page(self, entries, *, truncated=False, markers=True):
+        body = [
+            b'<?xml version="1.0" encoding="UTF-8"?><ListVersionsResult '
+            b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+        ]
+        for tag, key, version in entries:
+            body.append(
+                f"<{tag}><Key>{key}</Key><VersionId>{version}</VersionId></{tag}>".encode()
+            )
+        body.append(f"<IsTruncated>{'true' if truncated else 'false'}</IsTruncated>".encode())
+        if truncated and markers:
+            body.append(b"<NextKeyMarker>fence-probe/a.txt</NextKeyMarker>")
+            body.append(b"<NextVersionIdMarker>v9</NextVersionIdMarker>")
+        body.append(b"</ListVersionsResult>")
+        return b"".join(body)
+
     def test_every_probe_object_version_and_delete_marker_is_removed(self):
         # A plain delete on a versioned bucket leaves the prior version
         # readable at ?versionId=, so the workload's delete is a check, not a
         # cleanup.
         answers = a_fully_working_fence()
-        answers[("operator", "list-object-versions", FENCED)] = Completed(
-            0,
-            stdout='{"Versions": [{"Key": "fence-probe/a.txt", "VersionId": "v1"}],'
-            ' "DeleteMarkers": [{"Key": "fence-probe/a.txt", "VersionId": "v2"}]}',
+        answers[("operator", "list-object-versions", FENCED)] = Response(
+            "constructed: a ?versions page carrying one version and one delete marker",
+            200,
+            self._versions_page(
+                [("Version", "fence-probe/a.txt", "v1"), ("DeleteMarker", "fence-probe/a.txt", "v2")]
+            ),
         )
-        _, _, runner = run(answers)
-        deletes = [call for call in runner.calls if call == ("operator", "delete-object", FENCED)]
+        _, _, transport = run(answers)
+        deletes = [
+            sent
+            for sent in transport.sent
+            if sent.operation == "delete-object" and sent.role == "operator"
+        ]
         self.assertEqual(len(deletes), 2)
+        self.assertEqual(
+            sorted(urllib.parse.urlsplit(sent.url).query for sent in deletes),
+            ["versionId=v1", "versionId=v2"],
+        )
 
     def test_a_probe_object_left_behind_fails_the_run(self):
         answers = a_fully_working_fence()
-        answers[("operator", "list-object-versions", FENCED)] = Completed(
-            1, stderr=ACCESS_DENIED
-        )
+        answers[("operator", "list-object-versions", FENCED)] = ACCESS_DENIED_VERSIONS
         code, output, _ = run(answers)
         self.assertEqual(code, 1)
         self.assertIn("CLEANUP", output)
+
+    def test_a_truncated_listing_is_paged_rather_than_taken_as_the_whole_bucket(self):
+        # `aws s3api` paginated on the caller's behalf and nothing does that
+        # here. A first page read as the whole listing leaves probe objects in
+        # a production bucket and reports the run clean.
+        pages = [
+            self._versions_page([("Version", "fence-probe/a.txt", "v1")], truncated=True),
+            self._versions_page([("Version", "fence-probe/b.txt", "v2")]),
+        ]
+
+        class Paged(Transport):
+            def __call__(self, url, headers, payload, method):
+                if "versions=" in url:
+                    self.calls.append(("operator", "list-object-versions", FENCED))
+                    self.sent.append(
+                        Sent("operator", "list-object-versions", FENCED, None, url, headers, payload, method)
+                    )
+                    return 200, pages.pop(0) if pages else self._versions_page([])
+                return super().__call__(url, headers, payload, method)
+
+        transport = Paged(a_fully_working_fence())
+        code, output, _ = run(a_fully_working_fence(), transport=transport)
+        self.assertEqual(code, 0, output)
+        listings = [sent for sent in transport.sent if sent.operation == "list-object-versions"]
+        self.assertEqual(len(listings), 2)
+        self.assertIn("key-marker=fence-probe%2Fa.txt", listings[1].url)
+        deletes = [call for call in transport.calls if call[1] == "delete-object" and call[0] == "operator"]
+        self.assertEqual(len(deletes), 2)
+
+    def test_a_truncated_listing_with_no_marker_is_reported_rather_than_trusted(self):
+        # This backend is recorded accepting a request and silently dropping an
+        # element of the response. Read as complete, that page says the bucket
+        # is clean when it is not.
+        answers = a_fully_working_fence()
+        answers[("operator", "list-object-versions", FENCED)] = Response(
+            "constructed: a truncated page with no marker to resume from",
+            200,
+            self._versions_page([], truncated=True, markers=False),
+        )
+        code, output, _ = run(answers)
+        self.assertEqual(code, 1)
+        self.assertIn("truncated with no marker", output)
+
+    def test_a_listing_that_never_finishes_stops_rather_than_spinning(self):
+        forever = self._versions_page([("Version", "fence-probe/a.txt", "v1")], truncated=True)
+        answers = a_fully_working_fence()
+        answers[("operator", "list-object-versions", FENCED)] = Response(
+            "constructed: a page whose marker never advances", 200, forever
+        )
+        code, output, transport = run(answers)
+        self.assertEqual(code, 1)
+        self.assertIn("did not finish within", output)
+        listings = [call for call in transport.calls if call[1] == "list-object-versions"]
+        self.assertEqual(len(listings), verify._MAX_LIST_PAGES)
 
 
 class TestSetupRefusals(unittest.TestCase):
@@ -1260,7 +2079,7 @@ class TestSetupRefusals(unittest.TestCase):
             verify.read_credentials(environment)
 
     def test_dry_run_lists_the_matrix_and_touches_nothing(self):
-        runner = Runner({})
+        transport = Transport({})
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = verify.main(
@@ -1273,37 +2092,30 @@ class TestSetupRefusals(unittest.TestCase):
                     POLICY_FILE,
                     "--dry-run",
                 ],
-                runner=runner,
+                transport=transport,
                 environ={},
             )
         self.assertEqual(code, 0)
-        self.assertEqual(runner.calls, [])
+        self.assertEqual(transport.calls, [])
         self.assertIn("workload can read an object back", out.getvalue())
 
-    def test_probes_never_inherit_an_ambient_credential(self):
-        # An operator arrives at this script with a key already exported, from
-        # the put-bucket-policy step immediately before it. A probe that
-        # silently ran as that key is the failure with no symptom: the
-        # anonymous check would pass as the operator, and the workload denials
-        # would all report FAIL on a correct bucket.
-        verifier = verify.Verifier(
-            endpoint="https://hel1.your-objectstorage.com",
-            region="hel1",
-            credentials={"workload": (WORKLOAD_KEY, "workload-secret")},
-            runner=Runner({}),
-        )
-        ambient = {
-            "AWS_ACCESS_KEY_ID": OPERATOR_KEY,
-            "AWS_SECRET_ACCESS_KEY": "operator-secret",
-            "AWS_PROFILE": "default",
-        }
-        with mock.patch.dict(os.environ, ambient, clear=False):
-            anonymous = verifier.env_for("anonymous")
-            workload = verifier.env_for("workload")
-        self.assertNotIn("AWS_ACCESS_KEY_ID", anonymous)
-        self.assertNotIn("AWS_PROFILE", anonymous)
-        self.assertEqual(workload["AWS_ACCESS_KEY_ID"], WORKLOAD_KEY)
-        self.assertNotIn("AWS_PROFILE", workload)
+    def test_an_unreadable_policy_file_stops_the_run(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = verify.main(
+                [
+                    "--bucket",
+                    FENCED,
+                    "--foreign-control-bucket",
+                    CONTROL,
+                    "--policy-file",
+                    "/nonexistent/policy.json",
+                ],
+                transport=Transport({}),
+                environ=dict(ENVIRONMENT),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("could not read --policy-file", err.getvalue())
 
 
 if __name__ == "__main__":
