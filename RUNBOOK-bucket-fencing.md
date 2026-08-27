@@ -255,9 +255,10 @@ each of its three documents carries one `Deny`, on `s3:GetObject` only, confined
 to the `fence-probe/` object prefix, and **no statement names the bucket
 resource** — so `PutBucketPolicy` and `DeleteBucketPolicy` stay available to
 every key throughout and no probe can lock a bucket. The script asserts that
-before it sends anything. Its second window denies the operator by construction,
-which is exactly why no probe may name a bucket-resource action: the key that
-removes the document is one of the keys the document denies.
+before it sends anything. Its first window denies **every** principal, the
+operator's included, which is exactly why no probe may name a bucket-resource
+action: the key that has to remove the document is one of the keys the document
+denies.
 
 It writes no fence, needs no rendered policy, and takes two credentials:
 
@@ -281,7 +282,7 @@ anywhere. This is a question about the account that gets asked once; the run
 that is not recorded is a run that gets repeated against a production bucket.
 
 The last block of the output is the verdict, in prose, and it says what to do
-next. There are five, and they are not degrees of the same answer:
+next. There are six, and they are not degrees of the same answer:
 
 | Verdict | What it means | What happens next |
 |---|---|---|
@@ -289,6 +290,7 @@ next. There are five, and they are not degrees of the same answer:
 | `A NAMED PRINCIPAL MATCHES NOBODY ON THIS ENGINE` | `Principal: "*"` denied the foreign key, so policies are enforced — but that key's own ARN denied nothing. Every credential in the project is one principal. | No bucket policy can separate two credentials inside a project. Do not apply any fence. The boundary becomes a separate Hetzner project, which is the platform owner's decision. |
 | `THE PRINCIPAL ELEMENT IS DECORATION ON THIS ENGINE` | A `Deny` naming one key denied the key it named **and** the key it did not. | A fence aimed at a stranger takes the workload down with it. Applying one would be an outage, not a control. Do not apply any fence. |
 | `BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT` | A `Deny` on `Principal: "*"` was stored verbatim and the read it denies succeeded anyway. | Nothing a bucket policy says is enforced here. Do not apply any fence, and stop reading a successful `PutBucketPolicy` as evidence of anything. |
+| `THIS ENGINE MATCHES THE COMPLEMENT OF THE PRINCIPAL IT IS GIVEN` | A `Deny` naming a key left **that** key reading and denied the key it did not name. | Not a documented S3 behaviour, and nothing may be built on it. Do not apply any policy to any bucket — a fence written against this reading inverts the day the engine is fixed. Record the output verbatim. |
 | `NO SINGLE READING EXPLAINS WHAT THIS ENGINE DID` | The observations fit none of the above. | Nothing was applied. Record the evidence and stop — an engine answering incoherently is itself the finding, and guessing which world it is is the exact mistake this diagnostic exists to prevent. |
 
 Rows that stop it before it reaches a verdict, and what each means:

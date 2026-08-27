@@ -2019,6 +2019,19 @@ class TestPolicyEngineVerdicts(unittest.TestCase):
                 self.assertIn("not apply", text)
                 self.assertIn("Record", text)
 
+    def test_the_runbook_documents_every_verdict_this_tool_can_print(self):
+        # The runbook is what an operator reads under pressure, and a verdict
+        # the tool can print but the runbook does not list is one they meet with
+        # nothing to act on. Adding a seventh reading and forgetting the table
+        # is the drift this catches.
+        runbook = (
+            pathlib.Path(__file__).parents[3] / "RUNBOOK-bucket-fencing.md"
+        ).read_text(encoding="utf-8")
+        for verdict, text in verify.VERDICT_TEXT.items():
+            headline = text.splitlines()[0].rstrip(".")
+            with self.subTest(verdict=verdict):
+                self.assertIn(headline, runbook)
+
     def test_the_plan_the_dry_run_prints_is_the_plan_the_run_sends(self):
         plan = verify._diagnostic_plan("operator-arn", "foreign-arn")
         self.assertEqual([window for window, _, _ in plan], ["A", "B", "C"])
