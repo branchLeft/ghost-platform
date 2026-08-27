@@ -5,73 +5,61 @@ bucket to the keys that legitimately use it.
 
 ---
 
-## STOP — do not apply a fence from this runbook yet
-
-**A bucket policy this repository wrote was accepted by the endpoint and then
-enforced against nobody.** Its single statement was a `Deny s3:GetObject` under
-the probe prefix, exempting the operator by `NotPrincipal`. The operator read
-the object — and so did a key that statement should have denied. The `Deny`
-reached neither of them.
-
-**Whether a bucket policy can fence anything at all on this provider is
-therefore an open question**, and until section 0 below has answered it, every
-apply step in this runbook is a step that may write a control that controls
-nothing. Sections 1e, 2c and "Adding a new operational bucket later" are gated
-on it explicitly.
-
-**Section 0 has run, and its answer is narrower than its wording was.** It found
-that no shape constrains the bucket-owning project's own keys, and printed that
-as "not enforced on this account" — an overclaim, because every reader in the
-experiment was a key in that project. Whether policies are evaluated for
-principals *outside* it is a separate question with its own section (0b) and its
-own tracking issue,
-[branchLeft/workspace#304](https://github.com/branchLeft/workspace/issues/304).
-The verdict text has been rescoped to what it measures; the fence remains
-unbuildable either way, because it fences two keys inside one project.
-
-**Three other paths reach an apply, and only one of them is gated.**
-
-- `db/RUNBOOK-db.md`'s "The backup bucket" step is gated, with the same gate.
-  An operator rebuilding db1 follows that file and never opens this one.
-- `db/provision/configure_backup_bucket.py` refuses to apply until it is told
-  the diagnostic has run, and prints this file's section 0 when it refuses.
-- **`RUNBOOK-tenant-onboarding.md`'s media-bucket policy is NOT gated.** It
-  still walks an operator through applying a policy built on the same
-  mechanism, and this runbook cannot gate a file it does not own without
-  widening the change that carries it. Tracked on
-  [branchLeft/workspace#292](https://github.com/branchLeft/workspace/issues/292),
-  which also has to have its framing inverted: as filed it describes a lockout
-  risk, and the live evidence points the opposite way — an applied policy that
-  fences nothing while every signal says otherwise.
-
-**A prior conclusion is withdrawn.** An earlier run of the same probe reported
-`NotPrincipal EXEMPTS the named key — PASS`, and that was recorded — here, in
-the doc set and in an operator handover — as proof that Hetzner honours
-`NotPrincipal`. **It was never proof.** A statement the engine ignores
-*entirely* produces exactly that observation: the operator's read succeeds
-either way. Only the pair of reads discriminates, and the second half of the
-pair could not be classified on that run. The probe was right to report
-`INCONCLUSIVE`; reading the other row as an answer was the mistake, and
-`--probe-notprincipal` no longer reports that row as a pass unless the foreign
-key was actually denied.
-
-**Nothing here is deleted, because the fencing procedure becomes correct again
-under one of the possible answers.** If section 0 finds that this engine
-resolves per-key principals and only `NotPrincipal` is unimplemented, a fence is
-rebuildable out of explicit `Principal` denials and everything below applies to
-it with the rendered documents changed. If it finds anything else, no bucket
-policy can separate two credentials inside a Hetzner project, and the boundary
-becomes a separate project — which is an architecture decision for the platform
-owner, not a change to make in this file.
-
-Tracked as branchLeft/workspace#301.
-
----
-
 **Read the lockout section before running anything.** A bucket policy is not a
 configuration that a control reads — it *is* the control, and it governs the
 API call that would edit it. A policy that fails to exempt the operator's own
 key locks the bucket permanently, and there is no undo inside the account.
+
+---
+
+## The verification tooling's read path is cached — a stale `allowed` is not a fresh one
+
+**Bucket policies on this engine are enforced.** An earlier run of this
+runbook's own diagnostic read a just-applied `Deny` as reaching nobody, and
+that was recorded — here, in the doc set, and in an operator handover — as
+evidence that policies might be inert on this provider. **It was not
+evidence of that.** It was evidence of a cache: this endpoint's policy
+decision for a `GetObject` read lags a `PUT`/`DELETE` of the bucket policy by
+roughly 15-20 seconds, and every probe in `verify-bucket-fence.py` used to take
+its confirming read inside that window.
+
+Two manual measurements against production `branchleft-db-backups`, using
+nothing but `curl --aws-sigv4` — no tooling from this repository involved —
+settle it:
+
+- **A read taken before the policy exists poisons the window that follows.**
+  Read the probe object with no policy on the bucket (`200`). `PUT` a `Deny
+  s3:GetObject` naming everybody. Read immediately: `200` — the false result
+  this file used to record. Read at t+90s: `403`. `DELETE` the policy;
+  `NoSuchBucketPolicy` confirmed.
+- **With no such prior read, enforcement is instant.** `PUT` the object, `PUT`
+  the same `Deny`, read immediately: `403` at t+0s. `DELETE` the policy, then
+  poll: t+0s `403`, t+10s `403`, t+20s `200`.
+
+Write-side propagation would have made the `DELETE` release access as fast as
+the `PUT` denied it. It did not — the delay sits on the read path, in both
+directions, symmetrically. Multiple gateways answer these requests (differing
+`HostId` values), so which one serves a given read also matters; a single read
+is not a reliable sample regardless of timing.
+
+`verify-bucket-fence.py` now holds a read that could still be explained by the
+state before the change — the direction staleness always favours — for a full
+dwell (`--dwell-seconds`, 120s by default) before drawing anything from it, and
+a read that could not be so explained counts at once. **Any verdict this
+runbook or an operator handover recorded before that fix landed was drawn from
+reads taken inside the cache window and does not settle anything** — re-run the
+relevant step before relying on it. `db/provision/configure_backup_bucket.py`'s
+confirming second `put-bucket-policy` has the same fix, for the same reason:
+PUTting the policy twice with no gap authorises the second PUT against the
+first PUT's own stale decision, which is a false pass on the one control
+standing between an operator and an unrecoverable lockout.
+
+**One probe in this file does not yet have this fix.** Step 1c
+(`--probe-notprincipal`) takes its confirming read once, immediately after the
+policy is applied, with no dwell of any kind — more exposed to this cache than
+anything above, not less. Treat a `FAIL` there as provisional: read the object
+again by hand after at least 30 seconds have passed before concluding
+`NotPrincipal` does not exempt.
 
 ---
 
@@ -145,8 +133,11 @@ first and why nothing below substitutes for either.
    below passes and the fence still locks the bucket. Step 1c settles it with a
    policy that names no bucket-resource action, so it cannot lock anything, and
    removes it again. Read its two rows as a pair: the operator's read succeeding
-   on its own is consistent with a statement that was ignored entirely, and
-   reading it otherwise is the withdrawn conclusion at the top of this file.
+   on its own is consistent with a statement that was ignored entirely, and an
+   earlier run that reported `NotPrincipal EXEMPTS the named key — PASS` from
+   the operator's row alone, with the foreign key's row not classified, was
+   withdrawn for exactly that reason. `--probe-notprincipal` no longer reports
+   that row as a pass unless the foreign key was actually denied.
 3. `render-bucket-fence-policy.py` re-evaluates every policy it builds and
    refuses to emit one that denies the operator `PutBucketPolicy`.
 4. **The pre-flight resolves the account from the credential itself.** Every
@@ -160,12 +151,15 @@ first and why nothing below substitutes for either.
    against the full ARN of the credential in the environment, before it sends
    anything — and refuses a policy that names another bucket, that opens the
    bucket to everyone, or that denies nothing at all.
-6. **Every path that applies a fence PUTs the policy twice** — the two runbook
-   sections, `configure_backup_bucket.py`, and
-   `verify-bucket-fence.py --apply`. The second PUT is a no-op when the
-   exemption works and the only warning that exists when it does not, so it
-   belongs in the code rather than only in the prose: an operator who rebuilds
-   db1 and follows `db/RUNBOOK-db.md` never reads this file.
+6. **Every path that applies a fence PUTs the policy twice, with a dwell in
+   between.** The two runbook sections, `configure_backup_bucket.py`, and
+   `verify-bucket-fence.py --apply` all wait past this engine's own read-path
+   cache (see above) before the confirming PUT, so a green second PUT is
+   authorised against the policy actually in force rather than against a
+   cached pre-PUT decision. It is a no-op when the exemption works and the
+   only warning that exists when it does not, so it belongs in the code rather
+   than only in the prose: an operator who rebuilds db1 and follows
+   `db/RUNBOOK-db.md` never reads this file.
 
 ---
 
@@ -203,12 +197,18 @@ makes the verification controls work in both directions.
 Everything else below is filled in. These are access key **ids** and secrets —
 never pasted into a file that gets committed.
 
-| Placeholder | Where it comes from |
-|---|---|
-| `<operator key id>` | Hetzner Cloud Console → project `15766609` → Object Storage → Credentials. Must be a credential that is **not** either workload key. |
-| `<operator secret>` | shown once when that credential was generated; from the password manager |
-| `<db1 backup key id>` / `<db1 backup secret>` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in `/etc/branchleft/db.env` on db1, or the password manager |
-| `<tenant-state key id>` / `<tenant-state secret>` | the values behind `TENANT_STATE_S3_ACCESS_KEY_ID` / `TENANT_STATE_S3_SECRET_ACCESS_KEY` on the `tenant-provisioning` environment; GitHub secrets are write-only, so read them from the password manager |
+The four `FENCE_*` env vars name the ROLE a credential plays in a given probe,
+not the credential itself, and two buckets swap which credential plays
+`FENCE_WORKLOAD`/`FENCE_FOREIGN` between section 1 and section 2 (see 2b). Look
+the credential up in the Hetzner Cloud Console **by the name in this table**,
+not by the env var:
+
+| Placeholder | Console credential | Console project | Where it comes from |
+|---|---|---|---|
+| `<operator key id>` / `<operator secret>` | `fence-operator` | `15766609` | Hetzner Cloud Console → project `15766609` (the project holding the buckets this runbook fences) → Object Storage → Credentials → `fence-operator`. Secret shown once at creation; from the password manager. Must be a credential that is **not** either workload key. |
+| `<db-backups key id>` / `<db-backups secret>` | `db-backups` | `15766609` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in `/etc/branchleft/db.env` on db1, the password manager, or Console credential `db-backups` directly |
+| `<tenant-state key id>` / `<tenant-state secret>` | `tenant-state` | `15766609` | the values behind `TENANT_STATE_S3_ACCESS_KEY_ID` / `TENANT_STATE_S3_SECRET_ACCESS_KEY` on the `tenant-provisioning` environment (GitHub secrets are write-only, so read them from the password manager), or Console credential `tenant-state` directly |
+| `<pulumi-state key id>` / `<pulumi-state secret>` | `pulumi-state` | `15636438` ("branchLeft prod" — a **different** project from the other three) | password manager, or Console credential `pulumi-state` under project `15636438` |
 
 **If the operator key and a workload key are the same credential, stop.** The
 fence would leave that workload able to rewrite the policy that constrains it,
@@ -278,10 +278,19 @@ exits 2 with `no credentials in the environment` before sending anything.
 ## 0. Settle what a bucket policy does on this engine
 
 **This is the gate for the whole runbook. Nothing below it runs until it has
-printed a verdict.** It asks the two questions everything else assumes the
-answers to — is a bucket policy enforced here at all, and does naming one access
-key in a statement separate that key from another one — and it answers them with
-probes whose result only one engine could produce.
+printed a verdict.** Bucket policies on this engine are enforced — see "The
+verification tooling's read path is cached" above — so this diagnostic is not
+asking whether the engine exists. It asks the narrower, still-open question:
+does naming one access key in a `Deny` separate that key from another one, or
+does every key in the project answer as a single principal. Answering it takes
+probes whose result only one engine behaviour could produce.
+
+**If the last run of this step predates the read-path fix above, it has not
+answered anything and must be re-run.** Before that fix, `--diagnose-policy-engine`
+drew its verdict from a read taken seconds after the `Deny` was applied, with
+no dwell to tell a genuine `allowed` apart from a stale one — exactly the
+failure mode that produces `BUCKET POLICIES ARE NOT ENFORCED` and `THE
+PRINCIPAL ELEMENT IS DECORATION` below from an engine that enforces both.
 
 It is reversible by construction, and it is the same safety property as before:
 each of its documents carries one `Deny`, on `s3:GetObject` only, confined to
@@ -311,6 +320,8 @@ for corroboration. When it is skipped the report says so.
 It writes no fence, needs no rendered policy, and takes two credentials:
 
 ```bash
+# FENCE_OPERATOR_* -- Console credential "fence-operator", project 15766609
+# FENCE_FOREIGN_*  -- Console credential "tenant-state", project 15766609
 export FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>'
 export FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>'
 export FENCE_FOREIGN_ACCESS_KEY_ID='<tenant-state key id>'
@@ -430,10 +441,13 @@ before any decision about per-tenant isolation and before any media design.
 
 ### 0b-i. The grantee credential
 
-The grantee is the **estate-project** Object Storage credential — the key pair
-for the project that holds `branchleft-pulumi-state`, not the one that holds the
-buckets. Read it from the password manager. There is zero third-party exposure by
-construction: the key that gains access is ours.
+The grantee is the Object Storage credential named **`pulumi-state`** in the
+Hetzner Cloud Console, under project **`15636438`** ("branchLeft prod") — a
+**different** project from the `15766609` that holds the buckets this runbook
+fences, and from the `branchleft-tenant-pulumi-state` *bucket* section 2 fences
+(a bucket name and a credential name that happen to echo each other, in
+different projects). Read the secret from the password manager. There is zero
+third-party exposure by construction: the key that gains access is ours.
 
 Confirm it resolves to a different project before anything else. This writes
 nothing:
@@ -441,8 +455,8 @@ nothing:
 ```bash
 FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>' \
 FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>' \
-FENCE_GRANTEE_ACCESS_KEY_ID='<estate-project key id>' \
-FENCE_GRANTEE_SECRET_ACCESS_KEY='<estate-project secret>' \
+FENCE_GRANTEE_ACCESS_KEY_ID='<pulumi-state key id>' \
+FENCE_GRANTEE_SECRET_ACCESS_KEY='<pulumi-state secret>' \
   python3 infra/provisioning/scripts/verify-bucket-fence.py --show-account
 ```
 
@@ -468,10 +482,13 @@ from inside the tool — the Console is the control.
 ### 0b-ii. The run
 
 ```bash
+# FENCE_OPERATOR_* -- Console credential "fence-operator", project 15766609
+# FENCE_GRANTEE_*  -- Console credential "pulumi-state", project 15636438
+#                     ("branchLeft prod" -- a DIFFERENT project from the one above)
 export FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>'
 export FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>'
-export FENCE_GRANTEE_ACCESS_KEY_ID='<estate-project key id>'
-export FENCE_GRANTEE_SECRET_ACCESS_KEY='<estate-project secret>'
+export FENCE_GRANTEE_ACCESS_KEY_ID='<pulumi-state key id>'
+export FENCE_GRANTEE_SECRET_ACCESS_KEY='<pulumi-state secret>'
 
 python3 infra/provisioning/scripts/verify-bucket-fence.py --probe-foreign-grant \
   --bucket branchleft-db-backups --grantee-is-ours
@@ -489,8 +506,8 @@ the grantee's ARN and writing nothing. **What you are acknowledging is *who*, no
 
 | Window | Document | Worst case if the engine ignores `Resource` scoping |
 |---|---|---|
-| `G1` | `Allow s3:GetObject` to the grantee's ARN on `arn:aws:s3:::branchleft-db-backups/fence-probe/*` | our own estate-project key can read every object in our own backup bucket, for the seconds the window is open |
-| `G2` | Hetzner's documented shape verbatim — principal as a **string**, `s3:*`, and **both** `arn:aws:s3:::branchleft-db-backups` and `.../*` | nothing worse: `G2` already names the whole bucket, so `Resource` scoping is not what is holding it back. It grants our own estate-project key full control of the backup bucket while the window is open |
+| `G1` | `Allow s3:GetObject` to the grantee's ARN on `arn:aws:s3:::branchleft-db-backups/fence-probe/*` | our own `pulumi-state` key can read every object in our own backup bucket, for the seconds the window is open |
+| `G2` | Hetzner's documented shape verbatim — principal as a **string**, `s3:*`, and **both** `arn:aws:s3:::branchleft-db-backups` and `.../*` | nothing worse: `G2` already names the whole bucket, so `Resource` scoping is not what is holding it back. It grants our own `pulumi-state` key full control of the backup bucket while the window is open |
 
 **`G2` is acceptable for one reason: the grantee is our own key.** Point it at a
 third party's ARN and the same document hands them the bucket. The tool refuses
@@ -555,17 +572,19 @@ this mode can print, so a row you meet under pressure is one you can look up:
   operator could not write the object each window reads. Nothing further was
   applied. Check the operator credential and re-run.
 - **`the baseline reads are attributable` — `INCONCLUSIVE`.** With nothing on the
-  bucket, the operator must read every probe object and the grantee's answer must
-  be classifiable **and the same twice**. One was not, so a read under a grant
-  would be unattributable. Nothing further was applied.
+  bucket, the operator must read every probe object, and the grantee's answer
+  must classify as allowed or denied even after being held against a stale
+  `allowed` for the full dwell. One did not, so a read under a grant would be
+  unattributable. Nothing further was applied.
 - **`probe <G1|G2>: the bucket stores the document that was sent` — `FAIL`.** The PUT
   returned 2xx and what came back off the bucket is not what went on it. This backend is
   on record accepting a configuration and silently dropping part of it, so no read taken
   under that document means anything. No verdict is reported and none should be inferred.
-- **`probe <G1|G2>: the same read twice, 2s apart, agrees` — `INCONCLUSIVE`.** The
-  grantee's two reads under the live document disagreed, so the read had not
-  settled. The window is dropped; the bucket is left clean, so the other window
-  still runs.
+- **`probe <G1|G2>: each read counts once it cannot be a stale answer` — always
+  `PASS`.** This row is evidentiary, not a gate: it records that the grantee's
+  read under the live document was held against the pre-grant `denied` answer
+  for up to the configured dwell (120s by default) before it was trusted. See
+  "The verification tooling's read path is cached" above.
 - **`probe <G1|G2>: the grant is gone once its document is removed` — `FAIL`.**
   The grantee still read the object after the document came off, so whatever
   allowed the read was not the grant and the window shows nothing.
@@ -611,7 +630,7 @@ From a checkout of `branchLeft/ghost-platform` on `main`.
 python3 infra/provisioning/scripts/render-bucket-fence-policy.py \
   --bucket branchleft-db-backups \
   --project-id 15766609 \
-  --workload-access-key '<db1 backup key id>' \
+  --workload-access-key '<db-backups key id>' \
   --admin-access-key '<operator key id>' \
   > /tmp/branchleft-db-backups-policy.json
 ```
@@ -628,10 +647,14 @@ sets the region itself, so no step can silently run as whatever key was last
 exported or fail on a missing region.
 
 ```bash
+# For THIS bucket (branchleft-db-backups):
+# FENCE_OPERATOR_* -- Console credential "fence-operator", project 15766609
+# FENCE_WORKLOAD_* -- Console credential "db-backups", project 15766609
+# FENCE_FOREIGN_*  -- Console credential "tenant-state", project 15766609
 export FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>'
 export FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>'
-export FENCE_WORKLOAD_ACCESS_KEY_ID='<db1 backup key id>'
-export FENCE_WORKLOAD_SECRET_ACCESS_KEY='<db1 backup secret>'
+export FENCE_WORKLOAD_ACCESS_KEY_ID='<db-backups key id>'
+export FENCE_WORKLOAD_SECRET_ACCESS_KEY='<db-backups secret>'
 export FENCE_FOREIGN_ACCESS_KEY_ID='<tenant-state key id>'
 export FENCE_FOREIGN_SECRET_ACCESS_KEY='<tenant-state secret>'
 ```
@@ -665,7 +688,8 @@ first row reports `PASS` only when the operator's read succeeded *and* the
 foreign key's read was denied. An operator allowed alongside a foreign key that
 was also allowed is `INCONCLUSIVE` — because a statement the engine ignores
 entirely produces that exact operator read, and reading it as an exemption is
-the withdrawn conclusion at the top of this file.
+the withdrawn conclusion described in "Six things reduce the chance of ever
+getting here," above.
 
 - **`NotPrincipal EXEMPTS the named key` — `FAIL`.** Stop. This engine does not
   read `NotPrincipal` as an exemption — it denied the operator, whom the
@@ -919,15 +943,21 @@ including the double `put-bucket-policy`. Read it before running it.
 ### 2b. Export the three credentials — the roles swap
 
 db1's backup key is now the foreign key, and its control bucket is
-`branchleft-db-backups`, which section 1 fenced and which names it.
+`branchleft-db-backups`, which section 1 fenced and which names it. Same
+project (`15766609`) as section 1b, same three credentials — only which
+`FENCE_*` role each plays has swapped:
 
 ```bash
+# For THIS bucket (branchleft-tenant-pulumi-state), the roles have swapped:
+# FENCE_OPERATOR_* -- Console credential "fence-operator", project 15766609 (unchanged)
+# FENCE_WORKLOAD_* -- Console credential "tenant-state", project 15766609 (was FOREIGN in 1b)
+# FENCE_FOREIGN_*  -- Console credential "db-backups", project 15766609 (was WORKLOAD in 1b)
 export FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>'
 export FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>'
 export FENCE_WORKLOAD_ACCESS_KEY_ID='<tenant-state key id>'
 export FENCE_WORKLOAD_SECRET_ACCESS_KEY='<tenant-state secret>'
-export FENCE_FOREIGN_ACCESS_KEY_ID='<db1 backup key id>'
-export FENCE_FOREIGN_SECRET_ACCESS_KEY='<db1 backup secret>'
+export FENCE_FOREIGN_ACCESS_KEY_ID='<db-backups key id>'
+export FENCE_FOREIGN_SECRET_ACCESS_KEY='<db-backups secret>'
 ```
 
 Neither section 0 nor step 1c repeats here. Both test the engine — what a bucket
@@ -1015,13 +1045,12 @@ rm -f /tmp/branchleft-tenant-pulumi-state-policy.json
 
 ## If Hetzner's engine does not do what its documentation implies
 
-No policy of this shape has been observed working against a live Hetzner bucket,
-and **one has been observed doing nothing at all** — see the finding at the top
-of this file. Hetzner documents `NotPrincipal` verbatim but publishes no list of
-supported Actions, Principal formats or Conditions, and says nothing about
-`NotAction`. There are **four** ways it can go wrong. They are listed worst
-first, because the worst one is the one you will be reading this under. Which of
-them is live is what section 0 settles, and it is the only thing that does.
+Hetzner documents `NotPrincipal` verbatim but publishes no list of supported
+Actions, Principal formats or Conditions, and says nothing about `NotAction`.
+There are **four** ways it can go wrong, and they are listed worst first. Which
+of them is live is what section 0 and step 1c settle — provided their reads are
+taken past this engine's read-path cache; see "The verification tooling's read
+path is cached" above before trusting either of their past runs.
 
 **1. `NotPrincipal` is enforced against everybody, including the operator.**
 This is the one that ends the estate: the fence applies cleanly, and the bucket
@@ -1040,10 +1069,14 @@ bucket.
 
 **2. The PUT succeeds, the stored document matches, and the foreign probes
 still succeed.** The engine stores `NotPrincipal` and does not enforce it at
-all. Every signal except the probes says the bucket is fenced. **This is the one
-that has been observed live.** Step 1c catches it as `NotPrincipal DENIES
-everyone else — FAIL`, and section 1f catches it after the fact — but neither
-says *why*, and the two possible reasons have opposite consequences. If the
+all. Every signal except the probes says the bucket is fenced. **A run of step
+1c reported exactly this before the read-path cache above was understood, with
+no dwell at all on its confirming read — so it is not yet known whether this is
+what the engine does or what a read taken too soon looks like. Re-run 1c with a
+deliberate wait before treating it as settled.** When it is genuinely this
+case, step 1c catches it as `NotPrincipal DENIES everyone else — FAIL`, and
+section 1f catches it after the fact — but neither says *why*, and the two
+possible reasons have opposite consequences. If the
 engine simply does not implement `NotPrincipal`, a fence is rebuildable out of
 explicit `Principal` denials. If no named principal resolves at all, bucket
 policies cannot fence anything in this account and the remaining boundary is

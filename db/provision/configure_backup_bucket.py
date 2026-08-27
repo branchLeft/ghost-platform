@@ -46,6 +46,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 
 from objectstorage import ObjectStorageError, owner_id, put_bucket_subresource
 
@@ -55,6 +56,18 @@ S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 # depends on, without an unbounded lifetime for a version this pipeline no
 # longer needs current.
 NONCURRENT_VERSION_EXPIRATION_DAYS = 35
+
+# How long to hold between the fence policy's first PUT and its confirming
+# second one. This endpoint's own policy-decision cache was measured live
+# holding the PRE-PUT decision for roughly 15-20 seconds after a PUT that
+# changed it, so a second PUT sent sooner is authorised against that same
+# stale decision rather than against the document the first PUT actually
+# landed -- the exact failure the second PUT exists to catch. This margin
+# clears the measured window with room to spare.
+FENCE_ENGINE_DWELL_SECONDS = 30.0
+
+# Indirected so tests can run the dwell without waiting.
+_sleep = time.sleep
 
 
 class BucketConfigError(Exception):
@@ -223,6 +236,27 @@ def load_policy(path: str) -> tuple[dict, bytes]:
     return policy, body
 
 
+def _await_engine_catchup(dwell_seconds: float) -> None:
+    """Hold until the policy engine's read path can no longer be serving the pre-PUT decision.
+
+    Silent for the whole dwell during a production apply reads as a hang, not
+    a wait, so this narrates what it is doing and polls in short steps rather
+    than sleeping the total in one call.
+    """
+    if dwell_seconds <= 0:
+        return
+    print(
+        f"configure_backup_bucket: waiting {dwell_seconds:g}s for the policy engine's read "
+        f"path to settle before the confirming PUT -- this pause is deliberate, not a hang",
+        file=sys.stderr,
+    )
+    remaining = dwell_seconds
+    while remaining > 0:
+        step = min(10.0, remaining)
+        _sleep(step)
+        remaining -= step
+
+
 def configure_backup_bucket(
     *,
     bucket: str,
@@ -232,6 +266,7 @@ def configure_backup_bucket(
     secret_key: str,
     policy_body: bytes,
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
+    fence_dwell_seconds: float = FENCE_ENGINE_DWELL_SECONDS,
     put=put_bucket_subresource,
 ) -> None:
     put(
@@ -272,7 +307,16 @@ def configure_backup_bucket(
     # when the exemption works and the only signal that exists when it does
     # not. It lives here rather than only in the runbook because the operator
     # path for a rebuilt db1 (db/RUNBOOK-db.md) runs this script and stops.
-    for _ in range(2):
+    #
+    # THE SECOND PUT IS ONLY A CONTROL ONCE THE DWELL HAS RUN. Sent right after
+    # the first, it is authorised against the same cached pre-PUT decision the
+    # first PUT was -- so it returns 2xx whether the lockout landed or not, and
+    # an operator who reads that 2xx as confirmation walks away from a bucket
+    # that locks itself out seconds later. `_await_engine_catchup` is what
+    # makes the second PUT mean anything.
+    for attempt in range(2):
+        if attempt:
+            _await_engine_catchup(fence_dwell_seconds)
         put(
             bucket=bucket,
             endpoint=endpoint,
@@ -306,20 +350,21 @@ def main(argv: list[str]) -> int:
 
     # THIS SCRIPT IS A SECOND PATH TO AN APPLY, and the operator who reaches it
     # is rebuilding db1 from db/RUNBOOK-db.md and never opens
-    # RUNBOOK-bucket-fencing.md. A policy this repository wrote was accepted by
-    # this endpoint and then enforced against nobody, so applying a fence here
-    # may write a control that controls nothing while every signal -- a 2xx on
-    # the PUT, a matching stored document, a green second PUT -- says it worked.
-    # The flag is a claim the operator makes, not a check this script can run:
-    # the diagnostic needs three credentials and a bucket this script has no
-    # business touching. It exists so that applying a fence is a decision rather
-    # than the default.
+    # RUNBOOK-bucket-fencing.md. A fence that locks the operator out is
+    # unrecoverable from inside the account -- a support request against the
+    # storage cluster, with the bucket unreachable meanwhile -- so this script
+    # does not let that shape ship on the strength of a rendered document
+    # alone. The flag is a claim the operator makes, not a check this script
+    # can run: the diagnostic needs three credentials and a bucket this script
+    # has no business touching. It exists so that applying a fence is a
+    # decision, confirmed once and deliberately, rather than the default.
     if not args.engine_diagnostic_passed:
         print(
             "configure_backup_bucket: refusing to apply a fence until the engine question is "
-            "settled. A bucket policy this repository wrote was accepted by this endpoint and "
-            "then enforced against nobody -- neither the key it exempted nor a key it should "
-            "have denied. Run section 0 of RUNBOOK-bucket-fencing.md first:\n\n"
+            "settled. Applying a bucket policy here is the one step in this pipeline that "
+            "cannot be undone from inside the account if this engine does not separate "
+            "credentials the way the fence assumes, so it is confirmed once, deliberately, "
+            "before any bucket gets one. Run section 0 of RUNBOOK-bucket-fencing.md first:\n\n"
             "    python3 infra/provisioning/scripts/verify-bucket-fence.py "
             "--diagnose-policy-engine --bucket <this bucket>\n\n"
             "It is reversible, writes no fence, and prints a verdict in prose. Re-run this "
