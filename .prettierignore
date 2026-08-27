@@ -10,3 +10,8 @@
 
 # Pulumi's tsc output directory. Untracked, so .gitignore does not list it.
 bin/
+
+# CI-written only (graphify.yml); a PR must leave it byte-for-byte untouched.
+# Already listed in the shared ignore set above -- this repo-owned copy is
+# what keeps that true if the shared package's list ever changes.
+graphify-out/

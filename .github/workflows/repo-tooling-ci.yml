@@ -67,6 +67,13 @@ jobs:
       - name: Lint
         run: npm run lint:check
 
+      # `format:check` above only proves today's committed bytes happen to
+      # match Prettier's output; it says nothing about the ignore
+      # configuration itself. This proves graphify-out/ is actually excluded,
+      # not just coincidentally unformatted.
+      - name: Root guard tests
+        run: npm test
+
       # Self-test first: a matcher that has quietly stopped matching passes
       # every file, so prove it still works before trusting a pass. The scan
       # then walks the tree rather than taking a list of changed files --
