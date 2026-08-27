@@ -45,13 +45,14 @@ _spec.loader.exec_module(verify)
 FENCED = "branchleft-db-backups"
 CONTROL = "branchleft-tenant-pulumi-state"
 
-# The diagnostic pauses between the two reads that have to agree, and between
-# attempts to remove a probe policy. Captured before it is overridden, so
-# `TestSettleIsRealInProduction` can assert the SHIPPED value is a real pause --
-# a suite that patches the wait away and never checks it would pass just as
-# happily against a build that had dropped the wait entirely.
-PRODUCTION_SETTLE_SECONDS = verify.SETTLE_SECONDS
-verify.SETTLE_SECONDS = 0
+# The diagnostic holds a read that matches the pre-change state for up to this
+# long before it counts, and separately backs off between attempts to remove a
+# probe policy. Captured before `_sleep` is neutralised, so a test can still
+# assert the SHIPPED value is a real dwell -- a suite that patches the wait
+# away and never checks the shipped constant would pass just as happily against
+# a build that had dropped the dwell entirely.
+PRODUCTION_DWELL_SECONDS = verify.DWELL_SECONDS
+PRODUCTION_DWELL_POLL_SECONDS = verify.DWELL_POLL_SECONDS
 verify._sleep = lambda _seconds: None
 
 OPERATOR_KEY = "O" * 20
@@ -1273,6 +1274,24 @@ class TestNotPrincipalProbe(unittest.TestCase):
         code, output, _ = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
         self.assertEqual(code, 0, output)
 
+    def test_the_evidence_transcript_is_printed_not_discarded(self):
+        # This step can now hold for close to the full dwell, and the reads
+        # taken while it held used to be built and then thrown away -- leaving
+        # the step this docstring calls "THE STEP AN OPERATOR ACTUALLY RUNS"
+        # with no record of what it actually saw.
+        code, output, _ = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        self.assertIn("RAW EVIDENCE", output)
+        self.assertIn("read as operator", output)
+        self.assertIn("read as foreign", output)
+
+    def test_no_evidence_block_when_the_probe_never_ran(self):
+        # Refused before any read happened -- the operator's account never
+        # resolves against an unmapped transport -- so printing an empty "RAW
+        # EVIDENCE" header would be noise, not a transcript.
+        code, output, _ = run({}, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertNotIn("RAW EVIDENCE", output)
+
     def test_an_engine_that_denies_the_named_key_fails_loudly(self):
         # The finding that would otherwise arrive as a locked bucket.
         code, output, _ = self._run(ACCESS_DENIED_OBJECT, ACCESS_DENIED_OBJECT)
@@ -1314,11 +1333,54 @@ class TestNotPrincipalProbe(unittest.TestCase):
         self.assertTrue(exempts[0].startswith(verify.PASS), exempts[0])
 
     def test_the_two_reads_that_decide_it_are_signed_as_different_roles(self):
+        # The operator's `allowed` is indistinguishable, in one read, from a
+        # read path still serving the no-policy state -- a working exemption
+        # looks the same as a stale cache here, so it is held for the full
+        # dwell before it counts. The foreign key's `denied` cannot be a stale
+        # echo of a bucket that had no policy moments ago, and counts at once.
         _, _, transport = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
         reads = [call for call in transport.calls if call[1] == "get-object"]
+        held = int(verify.DWELL_SECONDS // verify.DWELL_POLL_SECONDS) + 1
         self.assertEqual(
-            reads, [("operator", "get-object", FENCED), ("foreign", "get-object", FENCED)]
+            reads,
+            [("operator", "get-object", FENCED)] * held + [("foreign", "get-object", FENCED)],
         )
+
+    def test_a_transiently_stale_foreign_read_still_reaches_the_right_verdict(self):
+        # THE FAILURE MODE ITSELF. Read too soon, a working exemption and a
+        # read path still serving the no-policy state are the same observation
+        # on the foreign key's side: `allowed`. Undwelled, this reproduced the
+        # original failure exactly -- both reads land inside the cache and
+        # both read `allowed`, scoring INCONCLUSIVE on the run this step
+        # exists to answer. Now the later, correct `denied` is what counts.
+        class TransientlyAllowed(Transport):
+            def __init__(self, answers):
+                super().__init__(answers)
+                self.foreign_reads = 0
+
+            def __call__(self, url, headers, payload, method):
+                if (
+                    method == "GET"
+                    and verify.PROBE_PREFIX in url
+                    and FOREIGN_KEY in headers.get("Authorization", "")
+                ):
+                    self.foreign_reads += 1
+                    if self.foreign_reads == 1:
+                        self.calls.append(("foreign", "get-object", FENCED))
+                        return OBJECT_BYTES.status, OBJECT_BYTES.body
+                return super().__call__(url, headers, payload, method)
+
+        # `_run` builds its own plain `Transport`, so the drifting one is
+        # passed straight to `run`.
+        transport = TransientlyAllowed(self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT))
+        code, output, _ = run(
+            self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT),
+            extra_args=["--probe-notprincipal"],
+            transport=transport,
+        )
+        self.assertEqual(code, 0, output)
+        exempts = [line for line in output.splitlines() if "NotPrincipal EXEMPTS" in line]
+        self.assertTrue(exempts[0].startswith(verify.PASS), exempts[0])
 
     def test_a_read_the_transport_cannot_interpret_is_inconclusive_not_a_denial(self):
         # A refusal carrying no error document. The operator row must not read
@@ -1775,6 +1837,121 @@ def diagnose(engine, extra=()):
     return code, out.getvalue()
 
 
+class TestDwell(unittest.TestCase):
+    """The asymmetric hold every timing-sensitive read in this file is built on.
+
+    Staleness always biases an observation towards the pre-change state, so a
+    reading that matches it might be genuine or might be an echo of what came
+    before; a reading that differs cannot be an echo of anything. These drive
+    `_dwell` directly, with a scripted sequence of outcomes and a fake clock,
+    rather than through a live-looking transport -- the property under test is
+    the hold-and-release logic itself, not any one probe's use of it.
+    """
+
+    @staticmethod
+    def _reader(outcomes):
+        """A `read` callable returning one scripted Observation per call.
+
+        Repeats the last outcome past the end of the script, so a test whose
+        own arithmetic under-counts calls fails on an assertion about the
+        result rather than an `IndexError` from this helper.
+        """
+        calls = []
+
+        def read():
+            outcome = outcomes[min(len(calls), len(outcomes) - 1)]
+            calls.append(outcome)
+            return verify.Observation("window", "role", 200, None, outcome, "")
+
+        read.calls = calls
+        return read
+
+    def test_a_reading_that_differs_from_pre_change_counts_on_the_first_attempt(self):
+        # POST-CHANGE MATCH: nothing stale can manufacture it.
+        sleeps = []
+        reader = self._reader(["denied"])
+        with mock.patch.object(verify, "_sleep", sleeps.append):
+            observation = verify._dwell(
+                reader, pre_change="allowed", evidence=[], dwell_seconds=120.0, poll_seconds=10.0
+            )
+        self.assertEqual(observation.outcome, "denied")
+        self.assertEqual(len(reader.calls), 1)
+        self.assertEqual(sleeps, [])
+
+    def test_a_reading_that_matches_pre_change_is_held_for_the_full_dwell(self):
+        # PRE-CHANGE MATCH, HELD THE WHOLE WAY: exactly what a stale read path
+        # produces, and it does not stop looking stale just because it never
+        # changes -- it becomes trustworthy only by outlasting the dwell.
+        sleeps = []
+        reader = self._reader(["allowed"])
+        with mock.patch.object(verify, "_sleep", sleeps.append):
+            observation = verify._dwell(
+                reader, pre_change="allowed", evidence=[], dwell_seconds=30.0, poll_seconds=10.0
+            )
+        self.assertEqual(observation.outcome, "allowed")
+        # One read at t+0, then a poll at t+10, t+20 and t+30.
+        self.assertEqual(len(reader.calls), 4)
+        self.assertEqual(sleeps, [10.0, 10.0, 10.0])
+
+    def test_a_reading_that_flips_partway_through_the_dwell_ends_it_early(self):
+        # A change at any point ends the dwell early and yields the new
+        # answer -- it does not need to survive to the end of the window once
+        # it has already stopped being the pre-change one.
+        sleeps = []
+        reader = self._reader(["allowed", "allowed", "denied", "allowed"])
+        with mock.patch.object(verify, "_sleep", sleeps.append):
+            observation = verify._dwell(
+                reader, pre_change="allowed", evidence=[], dwell_seconds=120.0, poll_seconds=10.0
+            )
+        self.assertEqual(observation.outcome, "denied")
+        self.assertEqual(len(reader.calls), 3)
+        self.assertEqual(sleeps, [10.0, 10.0])
+
+    def test_a_dwell_shorter_than_the_poll_interval_still_takes_exactly_that_long(self):
+        # `--dwell-seconds` has to support a fast-path re-run, including one
+        # shorter than the default poll step.
+        sleeps = []
+        reader = self._reader(["allowed"])
+        with mock.patch.object(verify, "_sleep", sleeps.append):
+            verify._dwell(reader, pre_change="allowed", evidence=[], dwell_seconds=4.0, poll_seconds=10.0)
+        self.assertEqual(sleeps, [4.0])
+
+    def test_a_zero_dwell_takes_the_first_reading_with_no_sleep_at_all(self):
+        sleeps = []
+        reader = self._reader(["allowed"])
+        with mock.patch.object(verify, "_sleep", sleeps.append):
+            observation = verify._dwell(
+                reader, pre_change="allowed", evidence=[], dwell_seconds=0, poll_seconds=10.0
+            )
+        self.assertEqual(observation.outcome, "allowed")
+        self.assertEqual(len(reader.calls), 1)
+        self.assertEqual(sleeps, [])
+
+    def test_every_attempt_is_recorded_in_evidence_in_order(self):
+        reader = self._reader(["allowed", "allowed", "denied"])
+        evidence = []
+        with mock.patch.object(verify, "_sleep", lambda _seconds: None):
+            verify._dwell(
+                reader, pre_change="allowed", evidence=evidence, dwell_seconds=120.0, poll_seconds=10.0
+            )
+        # Three read lines, then one line stating how long it held -- and the
+        # hold line comes last, so a pasted transcript reads chronologically.
+        self.assertEqual(len(evidence), 4)
+        for line in evidence[:3]:
+            self.assertIn("window", line)
+        self.assertIn("held", evidence[3])
+        self.assertIn("20", evidence[3])
+
+    def test_no_hold_line_is_added_when_the_first_reading_already_counts(self):
+        reader = self._reader(["denied"])
+        evidence = []
+        with mock.patch.object(verify, "_sleep", lambda _seconds: None):
+            verify._dwell(
+                reader, pre_change="allowed", evidence=evidence, dwell_seconds=120.0, poll_seconds=10.0
+            )
+        self.assertEqual(len(evidence), 1)
+
+
 class TestPolicyEngineDiagnostic(unittest.TestCase):
     """Which world we are in, and the proof that the probes can tell them apart.
 
@@ -2043,8 +2220,17 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
         engine = Engine(engine_per_key)
         diagnose(engine)
         reads = [sent for sent in engine.sent if sent.operation == "get-object"]
-        # Eight baseline, then two roles read twice in each of three windows.
-        self.assertEqual(len(reads), 8 + 3 * 4)
+        # Eight baseline reads (four windows' probe objects, both roles) with
+        # no dwell of their own. Under a per-key engine, window B denies the
+        # subject and window C denies the operator -- each of those reads
+        # differs from the no-policy `allowed` baseline and counts at once.
+        # Every other role/window pairing here reads `allowed`, matching that
+        # baseline, and is held for the full dwell before it counts: window
+        # B's operator, window C's subject, and both roles in window D, which
+        # names a principal that resolves to neither key.
+        held = int(verify.DWELL_SECONDS // verify.DWELL_POLL_SECONDS) + 1
+        confirming = (1 + held) + (held + 1) + (held + held)
+        self.assertEqual(len(reads), 8 + confirming)
         self.assertEqual(len({sent.key for sent in reads}), 4)
 
     def test_the_verdict_is_the_last_thing_printed_and_the_evidence_the_first(self):
@@ -2054,12 +2240,14 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
         self.assertIn("WINDOW B -- sent:", output)
         self.assertIn("WINDOW B -- stored:", output)
 
-    def test_a_read_that_changes_between_two_attempts_yields_no_verdict(self):
-        # THE CONSISTENCY HAZARD. Reading the policy back proves it reached the
-        # node that answered GetBucketPolicy, not the one answering GetObject,
-        # and every way that can fail biases a read towards `allowed` -- the
-        # direction that produces the loudest readings in this file. A read that
-        # did not settle is one no reading may be drawn from.
+    def test_a_read_that_drifts_from_the_pre_change_answer_still_reaches_a_verdict(self):
+        # THE FIX ITSELF. This is the exact shape of the false reading that
+        # produced the withdrawn "not enforced" conclusion: the very first
+        # read under a live Deny comes back `allowed`, echoing the no-policy
+        # state a stale read path was still serving. It used to end the run
+        # with "did not settle on one answer"; now a read that later differs
+        # from that pre-change answer is exactly the one `_dwell` waits for,
+        # and the run reaches the correct verdict instead of giving up on it.
         class Drifting(Engine):
             seen = 0
 
@@ -2072,9 +2260,8 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
                 return super().__call__(url, headers, payload, method)
 
         code, output = diagnose(Drifting(engine_per_key))
-        self.assertEqual(code, 1)
-        self.assertIn("did not settle on one answer", " ".join(output.split()))
-        self.assertIn("NO SINGLE READING EXPLAINS", output)
+        self.assertEqual(code, 0, output)
+        self.assertIn("PER-KEY PRINCIPALS RESOLVE", output)
 
     def test_the_confirming_read_is_a_second_request_and_not_a_cached_answer(self):
         engine = Engine(engine_per_key)
@@ -2084,13 +2271,17 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
             for sent in engine.sent
             if sent.operation == "get-object" and sent.role == "foreign"
         ]
-        # One baseline read plus two under the policy, on each of the three
-        # objects the run actually opened a window for.
         by_key = {}
         for sent in under_policy:
             by_key.setdefault(sent.key, 0)
             by_key[sent.key] += 1
-        self.assertEqual(sorted(by_key.values()), [1, 3, 3, 3])
+        held = int(verify.DWELL_SECONDS // verify.DWELL_POLL_SECONDS) + 1
+        # One baseline read on every probe object; window A's is never opened.
+        # Window B denies the subject outright, so its confirming read differs
+        # from the baseline and counts at once. Windows C and D spare the
+        # subject, so its `allowed` reading matches that baseline and is held
+        # for the full dwell before it counts.
+        self.assertEqual(sorted(by_key.values()), sorted([1, 1 + 1, 1 + held, 1 + held]))
 
     def test_the_evidence_block_carries_no_access_key_id(self):
         # This repository is public and the block exists to be pasted into the
@@ -2241,6 +2432,36 @@ class TestPolicyEngineProbesAreSafe(unittest.TestCase):
         self.assertIn("left its own probe policy", output)
         code, output = diagnose(engine, extra=["--replace-existing-policy"])
         self.assertEqual(code, 0, output)
+
+    def test_a_baseline_read_that_starts_denied_still_reaches_a_verdict(self):
+        # THE LEFTOVER-CLEANUP CASE. A leftover Deny from an interrupted run is
+        # removed right before this baseline, and a read path still serving
+        # that removal answers `denied`, not `allowed`. Undwelled, that would
+        # abort the whole diagnostic as unattributable on a bucket that
+        # genuinely carries no policy; held, it self-corrects.
+        class TransientlyDenied(Engine):
+            served_stale_denial = False
+
+            def __call__(self, url, headers, payload, method):
+                if (
+                    verify.PROBE_PREFIX in url
+                    and method == "GET"
+                    and self.policy is None
+                    and FOREIGN_KEY in headers.get("Authorization", "")
+                    and not self.served_stale_denial
+                ):
+                    self.served_stale_denial = True
+                    self.calls.append(("foreign", "get-object", FENCED))
+                    return ACCESS_DENIED_OBJECT.status, ACCESS_DENIED_OBJECT.body
+                return super().__call__(url, headers, payload, method)
+
+        engine = TransientlyDenied(engine_per_key)
+        code, output = diagnose(engine)
+        # code == 0 already rules out the INCONCLUSIVE abort this stale
+        # reading used to cause -- `report()` only returns 0 when nothing
+        # failed or was left unproven.
+        self.assertEqual(code, 0, output)
+        self.assertIn("PER-KEY PRINCIPALS RESOLVE", output)
 
     def test_a_key_that_cannot_read_its_object_with_no_policy_stops_the_run(self):
         # THE CONTROL. Without it a denial in a window could be the key, the
@@ -2457,12 +2678,15 @@ class TestPolicyEngineVerdicts(unittest.TestCase):
                 self.assertIn("not apply", text)
                 self.assertIn("Record", text)
 
-    def test_the_settle_pause_that_ships_is_a_real_one(self):
-        # This suite sets it to zero so the tests do not wait. A suite that
-        # patched the wait away and never checked the shipped value would pass
-        # against a build that had dropped the wait entirely -- and the wait is
-        # what stops a consistency artefact becoming the loudest reading here.
-        self.assertGreaterEqual(PRODUCTION_SETTLE_SECONDS, 1)
+    def test_the_dwell_that_ships_clears_the_measured_cache_window(self):
+        # This suite neutralises `_sleep` so the tests do not wait in real
+        # time, but the dwell still has to run its full iteration count -- a
+        # suite that shortened the constant itself and never checked the
+        # shipped value would pass against a build that had dropped the dwell
+        # back to something the measured ~15-20s cache can outlast.
+        self.assertGreaterEqual(PRODUCTION_DWELL_SECONDS, 60.0)
+        self.assertGreater(PRODUCTION_DWELL_POLL_SECONDS, 0)
+        self.assertLessEqual(PRODUCTION_DWELL_POLL_SECONDS, PRODUCTION_DWELL_SECONDS)
         self.assertGreaterEqual(verify._REMOVAL_ATTEMPTS, 2)
 
     def test_the_runbook_documents_every_verdict_this_tool_can_print(self):
@@ -2830,31 +3054,32 @@ class TestForeignGrantProbe(unittest.TestCase):
         self.assertIn("it was error", output)
         self.assertIn("THIS RUN PROVED NOTHING ABOUT A CROSS-PROJECT GRANT", output)
 
-    def test_the_grantee_baseline_read_is_taken_twice_and_has_to_agree(self):
-        # THE ONLY SINGLE READ IN THE MODE WAS THE PREMISE. A spurious `denied`
-        # here establishes a boundary that is not there, and the verdict built
-        # on it is the loudest wrong answer available.
-        class Flapping(GrantEngine):
+    def test_a_transient_allowed_baseline_read_does_not_become_a_false_boundary_finding(self):
+        # THE DIRECTION THAT MATTERS. Staleness can only echo a just-removed
+        # leftover grant's `allowed`; it cannot manufacture a `denied` that was
+        # never there. So a `denied` baseline reading needs no repeat, and an
+        # `allowed` one -- the loudest finding this mode can print -- is held
+        # for the full dwell before the run may draw anything from it. This is
+        # the read path still serving a just-removed leftover grant's decision
+        # on its very first answer, settling within one poll.
+        class TransientlyAllowed(GrantEngine):
             def __init__(self, rule):
                 super().__init__(rule)
-                self.grantee_reads = 0
+                self.stale_read_served = False
 
             def _refuses_the_read(self, access_key, statement, object_arn):
                 if access_key == GRANTEE_KEY and statement is None:
-                    self.grantee_reads += 1
-                    # Denied on the first read of each object, allowed on the
-                    # second: exactly the transient the pairing exists to catch.
-                    return self.grantee_reads <= len(self.policy_targets)
+                    if not self.stale_read_served:
+                        self.stale_read_served = True
+                        return False  # allowed once, as a just-removed grant would echo
+                    return True  # denied from then on -- the true, no-policy state
                 return super()._refuses_the_read(access_key, statement, object_arn)
 
-            policy_targets = ("G1", "G2")
-
-        engine = Flapping(grant_engine_honours_any_allow)
+        engine = TransientlyAllowed(grant_engine_honours_any_allow)
         code, output = grant_probe(engine)
-        self.assertEqual(code, 1)
-        self.assertIn("the baseline reads are attributable", output)
-        self.assertIn("read denied and then allowed", output)
-        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+        self.assertEqual(code, 0, output)
+        self.assertIn("the grantee is denied with NO policy in force", output)
+        self.assertNotIn("the baseline reads are attributable", output)
 
     def test_a_grantee_still_reading_after_the_removal_yields_no_verdict(self):
         # WITHOUT THIS READ, "the grant worked" and "it was never what allowed
@@ -2892,9 +3117,13 @@ class TestForeignGrantProbe(unittest.TestCase):
             for sent in engine.sent
             if sent.operation == "get-object" and sent.role == "grantee"
         ]
-        # Per window: two baseline reads that have to agree, two paired reads
-        # under the live document, and one after the removal.
-        self.assertEqual(len(reads), 10)
+        # Per window, on this engine: one baseline read (denied at once -- it
+        # cannot echo an `allowed` this bucket never had), one confirming read
+        # under the live grant (allowed at once -- it differs from that
+        # `denied` baseline), and one after the document is removed (denied at
+        # once -- it differs from the `allowed` the live grant just showed).
+        # None of these three has a reason to be held, so none loops.
+        self.assertEqual(len(reads), 2 * 3)
 
 
 class TestForeignGrantProbeIsSafe(unittest.TestCase):
@@ -3607,7 +3836,6 @@ class TestForeignGrantVerdicts(unittest.TestCase):
         "the probe object for window",
         "the baseline reads are attributable",
         "the bucket stores the document that was sent",
-        "the same read twice",
         "the grant is gone once its document is removed",
         "the probe policy is accepted",
         "THE PROBE POLICY IS REMOVED",
@@ -3717,6 +3945,38 @@ class TestApplyMode(unittest.TestCase):
         code, output, _ = run(self._answers(), extra_args=["--apply"], transport=Sequenced(self._answers()))
         self.assertEqual(code, 1)
         self.assertIn("THE BUCKET MAY BE LOCKED", output)
+
+    def test_apply_waits_a_dwell_between_the_two_puts(self):
+        # THE CRITICAL GAP: `--apply` used to send both PUTs back to back, with
+        # no dwell at all -- exactly the bug this whole file exists to fix, on
+        # the path `configure_backup_bucket.py` does not cover
+        # (`branchleft-tenant-pulumi-state`, step 2c).
+        events = []
+
+        class Sequenced(Transport):
+            def __call__(self, url, headers, payload, method):
+                if method == "PUT" and "policy" in url:
+                    events.append(("put", None))
+                return super().__call__(url, headers, payload, method)
+
+        def fake_sleep(seconds):
+            events.append(("sleep", seconds))
+
+        transport = Sequenced(self._answers())
+        with mock.patch.object(verify, "_sleep", fake_sleep):
+            code, output, _ = run(
+                self._answers(),
+                extra_args=["--apply", "--dwell-seconds", "20"],
+                transport=transport,
+            )
+        self.assertEqual(code, 0, output)
+        put_indices = [i for i, event in enumerate(events) if event[0] == "put"]
+        self.assertEqual(len(put_indices), 2)
+        between = events[put_indices[0] + 1 : put_indices[1]]
+        self.assertTrue(between, "nothing was waited between the two policy PUTs")
+        self.assertTrue(all(event[0] == "sleep" for event in between))
+        self.assertEqual(sum(event[1] for event in between), 20.0)
+
 
 
 class TestSignedTransport(unittest.TestCase):
@@ -4265,6 +4525,27 @@ class TestSetupRefusals(unittest.TestCase):
         environment["FENCE_FOREIGN_ACCESS_KEY_ID"] = WORKLOAD_KEY
         with self.assertRaises(verify.VerifierError):
             verify.read_credentials(environment)
+
+    def test_a_zero_dwell_seconds_is_rejected(self):
+        # Zero does not mean "skip the wait" here -- it collapses every dwell
+        # in this file back to the single untrusted read that produced the
+        # withdrawn conclusion. Checked before any credential is even read.
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                verify.main(
+                    ["--bucket", FENCED, "--probe-notprincipal", "--dwell-seconds", "0"],
+                    transport=Transport({}),
+                    environ=dict(ENVIRONMENT),
+                )
+
+    def test_a_negative_dwell_seconds_is_rejected(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                verify.main(
+                    ["--bucket", FENCED, "--probe-notprincipal", "--dwell-seconds", "-5"],
+                    transport=Transport({}),
+                    environ=dict(ENVIRONMENT),
+                )
 
     def test_dry_run_lists_the_matrix_and_touches_nothing(self):
         transport = Transport({})

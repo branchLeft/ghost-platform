@@ -20,8 +20,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import configure_backup_bucket as cbb
+
+# Neutralised so every test that reaches the fence's double PUT runs instantly
+# regardless of FENCE_ENGINE_DWELL_SECONDS's production value. Saved first so
+# a test can still assert that value is a real margin over the measured
+# read-path cache, not just that the code compiles.
+PRODUCTION_FENCE_ENGINE_DWELL_SECONDS = cbb.FENCE_ENGINE_DWELL_SECONDS
+cbb._sleep = lambda _seconds: None
 
 BUCKET = "branchleft-db-backups"
 BUCKET_ARN = f"arn:aws:s3:::{BUCKET}"
@@ -238,6 +246,105 @@ class ConfigureBackupBucketTests(unittest.TestCase):
                 put=fake_put,
             )
         self.assertEqual([call["subresource"] for call in calls], ["versioning", "lifecycle"])
+
+
+class EngineCatchupDwellTests(unittest.TestCase):
+    """The second PUT is only a control once the dwell has actually run.
+
+    Sent immediately, it is authorised against the same cached pre-PUT
+    decision the first PUT was, and a green run tells the operator nothing
+    about whether the fence just locked them out. These tests are on the
+    security-sensitive path this bug lived on, so they check the dwell's
+    timing and its threading through `configure_backup_bucket`, not just that
+    two PUTs happen.
+    """
+
+    def test_production_dwell_matches_the_verifiers_own_unmeasured_margin(self):
+        # The PUT-side propagation window was never measured below "cleared by
+        # t+90s" -- there is no smaller figure to assert here, so this floor
+        # tracks the verifier's own DWELL_SECONDS rather than undercutting it.
+        # A future edit that drops below it has to bring new evidence, not
+        # just a smaller number.
+        self.assertGreaterEqual(PRODUCTION_FENCE_ENGINE_DWELL_SECONDS, 100.0)
+
+    def test_await_engine_catchup_sleeps_the_full_dwell_in_short_steps(self):
+        waits = []
+        with mock.patch.object(cbb, "_sleep", waits.append):
+            cbb._await_engine_catchup(30.0)
+        self.assertEqual(sum(waits), 30.0)
+        self.assertTrue(all(step <= 10.0 for step in waits))
+
+    def test_await_engine_catchup_does_nothing_for_a_non_positive_dwell(self):
+        with mock.patch.object(cbb, "_sleep") as sleep:
+            cbb._await_engine_catchup(0)
+        sleep.assert_not_called()
+
+    def test_the_second_put_is_sent_only_after_the_dwell_completes(self):
+        events = []
+
+        def fake_put(**kwargs):
+            events.append(("put", kwargs["subresource"]))
+
+        def fake_sleep(seconds):
+            events.append(("sleep", seconds))
+
+        with mock.patch.object(cbb, "_sleep", fake_sleep):
+            cbb.configure_backup_bucket(
+                bucket="b",
+                endpoint="hel1.your-objectstorage.com",
+                region="hel1",
+                access_key="AK",
+                secret_key="SECRET",
+                policy_body=b"{}",
+                fence_dwell_seconds=20.0,
+                put=fake_put,
+            )
+        policy_events = [event for event in events if event[0] in ("put", "sleep")]
+        first_policy = next(i for i, e in enumerate(policy_events) if e == ("put", "policy"))
+        second_policy = len(policy_events) - 1 - next(
+            i for i, e in enumerate(reversed(policy_events)) if e == ("put", "policy")
+        )
+        self.assertLess(first_policy, second_policy)
+        between = policy_events[first_policy + 1 : second_policy]
+        self.assertTrue(between, "nothing was waited between the two policy PUTs")
+        self.assertTrue(all(event[0] == "sleep" for event in between))
+        self.assertEqual(sum(seconds for _, seconds in between), 20.0)
+
+    def test_a_zero_dwell_sends_the_second_put_with_no_wait(self):
+        calls = []
+
+        def fake_put(**kwargs):
+            calls.append(kwargs)
+
+        with mock.patch.object(cbb, "_sleep") as sleep:
+            cbb.configure_backup_bucket(
+                bucket="b",
+                endpoint="hel1.your-objectstorage.com",
+                region="hel1",
+                access_key="AK",
+                secret_key="SECRET",
+                policy_body=b"{}",
+                fence_dwell_seconds=0,
+                put=fake_put,
+            )
+        sleep.assert_not_called()
+        policy_calls = [call for call in calls if call["subresource"] == "policy"]
+        self.assertEqual(len(policy_calls), 2)
+
+    def test_a_custom_dwell_is_threaded_through_from_configure_backup_bucket(self):
+        waits = []
+        with mock.patch.object(cbb, "_sleep", waits.append):
+            cbb.configure_backup_bucket(
+                bucket="b",
+                endpoint="hel1.your-objectstorage.com",
+                region="hel1",
+                access_key="AK",
+                secret_key="SECRET",
+                policy_body=b"{}",
+                fence_dwell_seconds=5.0,
+                put=lambda **_kwargs: None,
+            )
+        self.assertEqual(sum(waits), 5.0)
 
 
 class PolicyRefusalTests(unittest.TestCase):
@@ -466,10 +573,10 @@ class MainTests(unittest.TestCase):
         # THE SECOND PATH TO AN APPLY. An operator rebuilding db1 follows
         # db/RUNBOOK-db.md and reaches this script without ever opening
         # RUNBOOK-bucket-fencing.md, so the gate has to be in the script and not
-        # only in the prose. A bucket policy this repository wrote was accepted
-        # by this endpoint and then enforced against nobody, and every signal
-        # this script can see -- a 2xx on the PUT, a green second PUT -- looks
-        # identical whether the fence works or does nothing at all.
+        # only in the prose. A fence that locks the operator out is
+        # unrecoverable from inside the account, and every signal this script
+        # can see -- a 2xx on the PUT, a green second PUT -- looks identical
+        # whether the fence works or locks the account out.
         import contextlib
         import io
         import os

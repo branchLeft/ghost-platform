@@ -26,18 +26,27 @@ not a fence, it is an outage -- on the backup bucket, a silent one that surfaces
 at the next restore.
 
 THE CHECK THAT MATTERS MOST IS REVERSIBLE, AND RUNS FIRST.
-`--diagnose-policy-engine` asks the live engine the questions every other check
-assumes the answers to: is a bucket policy enforced here at all, and does naming
-one access key in a statement separate that key from another one? A live run
-found a `Deny` this file wrote enforced against nobody -- neither the key it
-exempted nor the key it should have refused -- and that single observation fits
-an engine that enforces no policy, an engine on which every credential in a
-project is one principal, and an engine that simply does not implement
-`NotPrincipal`. Those have opposite consequences: the last leaves a fence
-rebuildable, the first two leave no bucket policy able to separate anything and
-put the boundary at a separate Hetzner project. So the mode is built around one
-rule -- a probe whose result only ONE of those engines could produce -- and the
-long comment above `diagnose_policy_engine` sets out how each window earns it.
+Bucket policies on this engine ARE enforced -- proven directly, live, with
+nothing but `curl --aws-sigv4`, in the finding `DWELL_SECONDS` below exists to
+act on. A live run once read a `Deny` this file wrote as reaching nobody --
+neither the key it exempted nor the key it should have refused -- and that
+observation was recorded as the opposite finding. It was not one: the read was
+taken inside this engine's own read-path cache, seconds after the `Deny` was
+applied, which is exactly the reading a stale cache produces regardless of
+whether the policy is enforced.
+
+So the open question `--diagnose-policy-engine` asks is narrower than "is
+anything enforced at all": does naming one access key in a statement separate
+that key from another one, once every read is held past that cache? An engine
+that enforces no policy, an engine on which every credential in a project is
+one principal, and an engine that simply does not implement `NotPrincipal` can
+still each produce a `Deny` that appears to reach nobody, even correctly
+dwelled, if the statement genuinely denies neither key -- and those three have
+opposite consequences: the last leaves a fence rebuildable, the first two leave
+no bucket policy able to separate anything and put the boundary at a separate
+Hetzner project. So the mode is built around one rule -- a probe whose result
+only ONE of those engines could produce -- and the long comment above
+`diagnose_policy_engine` sets out how each window earns it.
 
 `--probe-notprincipal` is the narrower question, kept because it is the one the
 fence in this repository is actually built on: does this backend read
@@ -220,23 +229,59 @@ PROBE_PREFIX = "fence-probe/"
 # every probe recoverable by construction rather than by argument.
 PROBE_ACTIONS = frozenset({"s3:GetObject"})
 
-# How long to leave between the two reads that have to agree before an
-# observation counts, and between attempts to remove a probe policy.
+# How long a read that matches the state a change is moving AWAY FROM must be
+# held before the run may draw anything from it, and how often it is re-polled
+# while held.
 #
 # NOTHING HERE ESTABLISHES THIS ENDPOINT'S CONSISTENCY GUARANTEES, and that is
-# the reason the pause exists rather than a reason to skip it. A policy PUT is
-# confirmed by reading the document back, which proves it reached the node that
-# answered `GetBucketPolicy`; an object read may be served by another. Every
-# way that can go wrong biases a read towards `allowed` -- an unenforced-looking
-# result -- which is the direction that produces the most consequential
-# readings in this file from a timing artefact rather than from the engine.
-SETTLE_SECONDS = 2.0
+# the reason the dwell exists rather than a reason to skip it. A policy PUT or
+# DELETE is confirmed by reading the document back, which proves it reached the
+# node that answered `GetBucketPolicy`; an object read may be served by
+# another, and every way that read path can lag biases it towards the state
+# that held BEFORE the change -- `allowed`, for most windows in this file --
+# which is the direction that produces the most consequential readings here
+# from a timing artefact rather than from the engine.
+#
+# A READ MATCHING THE PRE-CHANGE STATE IS WHAT STALENESS PRODUCES; ONE THAT
+# DIFFERS IS NOT KNOWN TO BE. So the rule is asymmetric, not a blanket wait: a
+# read that matches the state a change is moving FROM is exactly what a stale
+# read path produces, and only counts once it has outlasted that read path's
+# own cache. A read that differs counts at once -- this is a working
+# assumption, not a proven law: it holds if the cache lags by at most one
+# change, but a cache still serving a document from TWO changes ago (this
+# window's predecessor, not this window's own pre-change state) would also
+# read as "differs from pre_change" and be trusted wrongly. Nothing measured
+# here rules that out; every fresh probe object in this file exists partly to
+# keep that risk as small as a single prior state can make it. Measured live
+# against this endpoint at roughly 15-20 seconds, so the dwell below is
+# roughly 6x the top of that range rather than a guess.
+DWELL_SECONDS = 120.0
+DWELL_POLL_SECONDS = 10.0
 
 _REMOVAL_ATTEMPTS = 3
+
+# The backoff between attempts to remove a probe policy a prior DELETE did not
+# clear. This retries a failed write; it is not waiting out a stale read, so it
+# has no reason to survive the read-path cache above.
+_REMOVAL_RETRY_SECONDS = 2.0
 
 # Indirected so the tests can run the whole diagnostic without waiting. Nothing
 # else should reach past this.
 _sleep = time.sleep
+
+
+def _narrate(message: str) -> None:
+    """Reassure an operator watching a dwell that it is waiting, not hung.
+
+    Gated on an interactive stderr rather than printed unconditionally: a
+    dwell held for its full duration polls a dozen times, and printing on
+    every one of them would turn a CI log or a test run into noise nobody
+    reads without ever reaching the human this exists for. The permanent
+    record of what was waited lives in `evidence` regardless of this check.
+    """
+    if sys.stderr.isatty():
+        print(message, file=sys.stderr)
+
 
 S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
@@ -1327,17 +1372,33 @@ def _existing_policy_refusal(
     )
 
 
-def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: bool) -> list[tuple]:
-    """Ask the live engine whether `NotPrincipal` exempts, reversibly.
+def probe_notprincipal(
+    verifier: Verifier,
+    *,
+    bucket: str,
+    replace_existing: bool,
+    dwell_seconds: float = DWELL_SECONDS,
+) -> tuple[list[tuple], list[str]]:
+    """Ask the live engine whether `NotPrincipal` exempts, reversibly. Returns rows, evidence.
 
     Ordering is the whole safety argument: the object is written before the
     probe policy exists, the probe policy is removed before this returns
     whatever the answer was, and the probe policy can never deny the removal.
+
+    THIS IS THE STEP AN OPERATOR ACTUALLY RUNS, and the render-bucket-fence and
+    render-media-bucket generators both depend on its answer: if `NotPrincipal`
+    does not exempt the operator, applying either policy denies the operator
+    `PutBucketPolicy` and `DeleteBucket`, and the bucket is unrecoverable from
+    inside the account. A read taken without a dwell reproduces the original
+    failure exactly -- both roles land inside the read-path cache, both read
+    `allowed`, and the pair scores `INCONCLUSIVE` -- which is not a false PASS,
+    but it means this step can never answer the question it exists to answer.
     """
     rows: list[tuple] = []
+    evidence: list[str] = []
     account, reason = account_of(verifier, "operator")
     if account is None:
-        return [("operator credential resolves its account", INCONCLUSIVE, reason, "", True)]
+        return [("operator credential resolves its account", INCONCLUSIVE, reason, "", True)], evidence
     operator_arn = f"arn:aws:iam:::user/{account}:{verifier.credentials['operator'][0]}"
 
     free, refusal, _ = _policy_slot_is_free(
@@ -1347,7 +1408,7 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
         own_ids=probe_family_ids(bucket),
     )
     if not free:
-        return [refusal]
+        return [refusal], evidence
 
     policy = probe_policy(bucket, operator_arn)
     assert_probe_policy_is_reversible(policy, bucket)
@@ -1363,14 +1424,35 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
     )
     outcome, reason = classify(*verifier.request(write))
     if outcome != "allowed":
-        return [("the probe object is written", INCONCLUSIVE, reason, "", True)]
+        return [("the probe object is written", INCONCLUSIVE, reason, "", True)], evidence
 
     with _temporary_policy(verifier, bucket, policy, rows) as probe:
         if probe.applied:
             # Both reads happen inside the block, so the probe policy is
             # removed whatever either of them does.
-            operator_outcome, operator_reason = verifier.run(_read(bucket, "operator", probe_key))
-            foreign_outcome, foreign_reason = verifier.run(_read(bucket, "foreign", probe_key))
+            #
+            # `allowed` IS BOTH THE PRE-CHANGE ANSWER AND THE HOPED-FOR
+            # POST-CHANGE ONE FOR THE OPERATOR, and a single read cannot tell
+            # them apart: a read path still serving the no-policy state
+            # answers `allowed`, and a working `NotPrincipal` exemption also
+            # answers `allowed`. So the operator's reading is held across the
+            # dwell before it counts, the same as the foreign key's: a
+            # `denied` reading cannot be a stale echo of a bucket that had no
+            # policy moments ago and counts at once, on either role.
+            operator_observation = _dwell(
+                lambda: _observe(verifier, bucket, "notprincipal", "operator", probe_key),
+                pre_change="allowed",
+                evidence=evidence,
+                dwell_seconds=dwell_seconds,
+            )
+            foreign_observation = _dwell(
+                lambda: _observe(verifier, bucket, "notprincipal", "foreign", probe_key),
+                pre_change="allowed",
+                evidence=evidence,
+                dwell_seconds=dwell_seconds,
+            )
+            operator_outcome, operator_reason = operator_observation.outcome, operator_observation.reason
+            foreign_outcome, foreign_reason = foreign_observation.outcome, foreign_observation.reason
         else:
             # Whatever these reads returned would be the bucket answering about
             # some other policy, or about none. Reporting PASS from them would
@@ -1433,7 +1515,7 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
         )
     )
     rows.extend(("probe object removed: " + problem, FAIL, "", "", False) for problem in cleanup(verifier, bucket))
-    return rows
+    return rows, evidence
 
 
 def _read(bucket: str, role: str, key: str) -> Probe:
@@ -1581,7 +1663,7 @@ class _temporary_policy:
             if self.removed:
                 return False
             if attempt + 1 < _REMOVAL_ATTEMPTS:
-                _sleep(SETTLE_SECONDS)
+                _sleep(_REMOVAL_RETRY_SECONDS)
         self.rows.append(
             (
                 "THE PROBE POLICY IS REMOVED" + self.label,
@@ -1608,10 +1690,15 @@ class _temporary_policy:
 # A live run applied a policy whose single statement was a `Deny s3:GetObject`
 # under the probe prefix, exempting the operator by `NotPrincipal`. The endpoint
 # accepted it. The operator then read the object -- and so did a key the
-# statement should have denied. The `Deny` reached nobody.
+# statement should have denied. That reading was taken inside this engine's own
+# read-path cache, seconds after the `Deny` was applied, which produces exactly
+# this observation whether or not the statement is enforced. It is not evidence
+# the `Deny` reached nobody; it is evidence the read was taken too soon.
 #
-# THAT ONE OBSERVATION HAS AT LEAST THREE EXPLANATIONS WITH OPPOSITE
-# CONSEQUENCES, so on its own it settles nothing:
+# A FOURTH EXPLANATION THE ORIGINAL THREE DID NOT NAME. That live run reasoned
+# over only these three, all of which are still live once reads are properly
+# held past the cache -- a genuinely dwelled read CAN still come back
+# `allowed` for real, if the engine actually behaves like one of them:
 #
 #   1. This engine stores bucket policies and enforces none of them.
 #   2. It enforces them, but every credential in a project is one principal --
@@ -1999,6 +2086,62 @@ def _key_label(role: str, access_key: str) -> str:
     return f"<{role} key ...{access_key[-4:]}>"
 
 
+def _dwell(
+    read,
+    *,
+    pre_change: str,
+    evidence: list[str],
+    dwell_seconds: float = DWELL_SECONDS,
+    poll_seconds: float = DWELL_POLL_SECONDS,
+) -> Observation:
+    """One read, held until it cannot be explained by a stale read path.
+
+    STALENESS ALWAYS BIASES AN OBSERVATION TOWARDS THE PRE-CHANGE STATE. So a
+    reading that matches `pre_change` -- the answer this exact read gave before
+    whatever just changed -- is exactly what a stale read path would also
+    produce, and is retaken until it stops matching or `dwell_seconds` have
+    passed. A reading that differs from `pre_change` counts on the very first
+    attempt: nothing stale can manufacture a reading the prior state did not
+    have.
+
+    Every attempt is appended to `evidence` as it happens, and a dwell that
+    ran at all leaves one more line stating how long it held -- so a
+    transcript pasted from this run records what was actually waited, not
+    just what was concluded.
+
+    A DWELL THAT HOLDS IS SILENT OTHERWISE, and `--diagnose-policy-engine` can
+    hold several of these back to back -- minutes of nothing on the terminal,
+    while the run keeps a live probe policy on a production bucket. Silence
+    there reads as a hang, not a wait, so a held reading narrates itself to
+    stderr, once when the hold starts and once per poll.
+    """
+    observation = read()
+    evidence.append(observation.line())
+    elapsed = 0.0
+    if observation.outcome == pre_change and elapsed < dwell_seconds:
+        _narrate(
+            f"verify-bucket-fence: {observation.window} read as {observation.role} is "
+            f"`{pre_change}`, which cannot be trusted yet -- holding for up to "
+            f"{dwell_seconds:g}s. This is not a hang."
+        )
+    while observation.outcome == pre_change and elapsed < dwell_seconds:
+        step = min(poll_seconds, dwell_seconds - elapsed)
+        _sleep(step)
+        elapsed += step
+        observation = read()
+        evidence.append(observation.line())
+        _narrate(
+            f"verify-bucket-fence:   {elapsed:g}s of {dwell_seconds:g}s elapsed, still "
+            f"{observation.outcome}"
+        )
+    if elapsed:
+        evidence.append(
+            f"  held {observation.window} read as {observation.role} for {elapsed:g}s "
+            f"before it counted"
+        )
+    return observation
+
+
 def _window(
     verifier: Verifier,
     bucket: str,
@@ -2010,6 +2153,8 @@ def _window(
     evidence: list[str],
     masks: dict[str, str],
     roles: tuple = ("foreign", "operator"),
+    pre_change: dict[str, str] | None = None,
+    dwell_seconds: float = DWELL_SECONDS,
     assertion=None,
     consequence: str = "",
     state: dict | None = None,
@@ -2070,7 +2215,8 @@ def _window(
             if status == PASS:
                 observations = _confirmed_reads(
                     verifier, bucket, window=window, probe_key=probe_key,
-                    rows=rows, evidence=evidence, roles=roles,
+                    evidence=evidence, roles=roles,
+                    pre_change=pre_change, dwell_seconds=dwell_seconds,
                 )
     if state is not None:
         state["applied"] = applied
@@ -2083,59 +2229,39 @@ def _confirmed_reads(
     *,
     window: str,
     probe_key: str,
-    rows: list[tuple],
     evidence: list[str],
     roles: tuple = ("foreign", "operator"),
+    pre_change: dict[str, str] | None = None,
+    dwell_seconds: float = DWELL_SECONDS,
 ) -> dict[str, Observation]:
-    """Both roles' reads, taken twice and required to agree.
+    """Both roles' reads, each held until it cannot be a stale answer.
 
     THE READBACK PROVES THE DOCUMENT REACHED THE NODE THAT ANSWERED
-    `GetBucketPolicy`. It does not prove the node answering `GetObject` has it.
-    Nothing here establishes this endpoint's consistency guarantees, and the
-    direction of the risk is why that is not a reason to skip the check: every
-    way a just-applied policy can fail to be visible yet biases a read toward
-    `allowed`, and `allowed` is what the strongest readings in this file are
-    drawn from. A read that has not settled is an observation this run cannot
-    use, so a disagreement yields no observations rather than the second answer.
+    `GetBucketPolicy`. It does not prove the node answering `GetObject` has it,
+    and nothing here establishes this endpoint's consistency guarantees. Each
+    role has its own pre-change answer -- `allowed` for a same-project key
+    reading a bucket that carried no policy a moment ago, `denied` for the
+    foreign-project grantee `_grant_baseline` established -- and `_dwell` holds
+    a read that still matches it, because that is exactly what a read path
+    still serving the state before this window's PUT would produce. A read
+    that differs needs no holding: nothing stale can manufacture it.
     """
-    first = {
-        role: _observe(verifier, bucket, f"window {window}", role, probe_key)
-        for role in roles
-    }
-    for observation in first.values():
-        evidence.append(observation.line())
-
-    _sleep(SETTLE_SECONDS)
-
-    second = {
-        role: _observe(verifier, bucket, f"window {window} again", role, probe_key)
-        for role in roles
-    }
-    for observation in second.values():
-        evidence.append(observation.line())
-
-    unsettled = [
-        f"{role} read {first[role].outcome} and then {second[role].outcome}"
-        for role in first
-        if first[role].outcome != second[role].outcome
-    ]
-    rows.append(
-        (
-            f"probe {window}: the same read twice, {SETTLE_SECONDS:g}s apart, agrees",
-            PASS if not unsettled else INCONCLUSIVE,
-            ""
-            if not unsettled
-            else "the policy was applied and read back, but the object reads under it did "
-            "not settle on one answer (" + "; ".join(unsettled) + "). A read that changed "
-            "between two attempts says nothing about the policy, and the way it changes is "
-            "towards `allowed`, which is the direction that produces the loudest readings "
-            "here. No verdict is drawn from this window.",
-            "the readback proves the document reached the node that served it, not the one "
-            "serving the object",
-            bool(unsettled),
+    pre_change = pre_change or {role: "allowed" for role in roles}
+    # There is no disagreement case to report here any more: a role's reading
+    # either differed from its own pre-change answer, or survived the full
+    # dwell. Both are usable, so nothing here is a pass/fail gate on what
+    # `_window` returns -- `_dwell` already wrote the per-read and per-hold
+    # detail into `evidence`, and a row that can only ever read PASS would add
+    # nothing but an inflated count to a report where PASS is read as evidence.
+    return {
+        role: _dwell(
+            lambda role=role: _observe(verifier, bucket, f"window {window}", role, probe_key),
+            pre_change=pre_change[role],
+            evidence=evidence,
+            dwell_seconds=dwell_seconds,
         )
-    )
-    return {} if unsettled else first
+        for role in roles
+    }
 
 
 def _cleanup_rows(verifier: Verifier, bucket: str) -> list[tuple]:
@@ -2146,7 +2272,11 @@ def _cleanup_rows(verifier: Verifier, bucket: str) -> list[tuple]:
 
 
 def diagnose_policy_engine(
-    verifier: Verifier, *, bucket: str, replace_existing: bool
+    verifier: Verifier,
+    *,
+    bucket: str,
+    replace_existing: bool,
+    dwell_seconds: float = DWELL_SECONDS,
 ) -> tuple[list[tuple], list[str], str]:
     """Settle what a bucket policy does on this engine. Returns rows, evidence, verdict.
 
@@ -2269,12 +2399,27 @@ def diagnose_policy_engine(
     # both keys must be able to read every probe object. Without it a denial in
     # a window could be the key, the object or the endpoint, and a denial whose
     # cause is unknown is the substitution that produced this whole programme.
+    #
+    # THIS READ IS ALSO ONE A STALE CACHE CAN POISON. When `leftover` above was
+    # true, a Deny probe from an interrupted run was just removed -- and a read
+    # path still serving that removal answers `denied`, not `allowed`. So each
+    # read here is held against `pre_change="denied"` rather than trusted on
+    # the first attempt, whether or not a leftover was actually found: an
+    # `allowed` reading cannot be a stale echo of a just-removed Deny and
+    # counts at once; a `denied` one is exactly what that echo looks like, and
+    # is held before it is allowed to abort the run below as unattributable.
     evidence.append("BASELINE -- no policy on the bucket")
     unattributable = []
     for name, key in keys.items():
         for role in ("foreign", "operator"):
-            observation = _observe(verifier, bucket, f"baseline {name}", role, key)
-            evidence.append(observation.line())
+            observation = _dwell(
+                lambda name=name, role=role, key=key: _observe(
+                    verifier, bucket, f"baseline {name}", role, key
+                ),
+                pre_change="denied",
+                evidence=evidence,
+                dwell_seconds=dwell_seconds,
+            )
             if observation.outcome != "allowed":
                 unattributable.append(f"{role} on the window {name} object ({observation.outcome})")
     if unattributable:
@@ -2312,6 +2457,7 @@ def diagnose_policy_engine(
             rows=rows,
             evidence=evidence,
             masks=masks,
+            dwell_seconds=dwell_seconds,
         )
     finally:
         rows.extend(_cleanup_rows(verifier, bucket))
@@ -2332,6 +2478,7 @@ def _read_the_engine(
     rows: list[tuple],
     evidence: list[str],
     masks: dict[str, str],
+    dwell_seconds: float = DWELL_SECONDS,
 ) -> str:
     """Windows B, C and D, then A only where the answer turns on it.
 
@@ -2354,6 +2501,7 @@ def _read_the_engine(
             rows=rows,
             evidence=evidence,
             masks=masks,
+            dwell_seconds=dwell_seconds,
         )
         if not observations:
             return UNEXPLAINED
@@ -2405,6 +2553,7 @@ def _read_the_engine(
             rows=rows,
             evidence=evidence,
             masks=masks,
+            dwell_seconds=dwell_seconds,
         )
         if not observations:
             return UNEXPLAINED
@@ -3070,7 +3219,13 @@ BASELINE_UNUSABLE = "baseline-unusable"
 
 
 def _grant_baseline(
-    verifier: Verifier, bucket: str, *, keys: dict, rows: list[tuple], evidence: list[str]
+    verifier: Verifier,
+    bucket: str,
+    *,
+    keys: dict,
+    rows: list[tuple],
+    evidence: list[str],
+    dwell_seconds: float = DWELL_SECONDS,
 ) -> str:
     """With no policy on the bucket: the grantee is denied, the operator is not.
 
@@ -3088,43 +3243,39 @@ def _grant_baseline(
     Collapsing them into `False` and recovering the difference by reading the
     rows back would make the verdict depend on a row's wording.
 
-    THE GRANTEE'S BASELINE READ IS TAKEN TWICE AND HAS TO AGREE, and it is the
-    only read here that is. Every other read in this mode is either a control
-    whose failure direction is safe -- the operator's, which produces
-    INCONCLUSIVE -- or already paired by `_confirmed_reads`. This one is the
-    PREMISE: a spurious `denied` establishes a boundary that is not there, and
-    the verdict built on top of it is the loudest wrong answer available. The
-    after-removal read would still catch that case, so a false positive needs
-    two independent transients rather than one; taking this read twice makes it
-    three, for the cost of one request and one pause on a run that happens once.
+    THIS READ IS ALSO THE ONE A STALE CACHE MOST WANTS TO POISON. It runs right
+    after this run's own leftover-grant cleanup, when one was found, and a read
+    path still serving that grant's decision answers `allowed` -- the loudest
+    wrong verdict this mode can print. So the grantee's read is held by
+    `_dwell` against `pre_change="allowed"` rather than trusted on the first
+    attempt, whether or not a leftover was actually found: the operator read
+    above is a genuine control, this one is also the exact read a stale answer
+    would poison, and treating it as ordinary would let the poisoning back in.
+    A `denied` reading needs no holding -- it is the premise this mode is built
+    on, and nothing stale can manufacture it from a bucket that, moments ago,
+    may have been granting the same key access.
     """
     evidence.append("BASELINE -- no policy on the bucket")
     unattributable = []
     reachable = []
-    first: dict = {}
     for window, key in keys.items():
         operator = _observe(verifier, bucket, f"baseline {window}", "operator", key)
-        grantee = _observe(verifier, bucket, f"baseline {window}", GRANT_SUBJECT, key)
         evidence.append(operator.line())
-        evidence.append(grantee.line())
-        first[window] = grantee.outcome
         if operator.outcome != "allowed":
             unattributable.append(f"operator on the window {window} object ({operator.outcome})")
+
+        grantee = _dwell(
+            lambda window=window, key=key: _observe(
+                verifier, bucket, f"baseline {window}", GRANT_SUBJECT, key
+            ),
+            pre_change="allowed",
+            evidence=evidence,
+            dwell_seconds=dwell_seconds,
+        )
         if grantee.outcome not in ("allowed", "denied"):
             unattributable.append(f"grantee on the window {window} object ({grantee.outcome})")
-
-    if not unattributable:
-        _sleep(SETTLE_SECONDS)
-        for window, key in keys.items():
-            again = _observe(verifier, bucket, f"baseline {window} again", GRANT_SUBJECT, key)
-            evidence.append(again.line())
-            if again.outcome != first[window]:
-                unattributable.append(
-                    f"grantee on the window {window} object read {first[window]} and then "
-                    f"{again.outcome}"
-                )
-            elif again.outcome == "allowed":
-                reachable.append(f"window {window}")
+        elif grantee.outcome == "allowed":
+            reachable.append(f"window {window}")
 
     if unattributable:
         rows.append(
@@ -3132,8 +3283,7 @@ def _grant_baseline(
                 "the baseline reads are attributable",
                 INCONCLUSIVE,
                 "with nothing on the bucket the operator must read every probe object, and "
-                "the grantee's answer must be classifiable and the same twice. These were "
-                "not: "
+                "the grantee's answer must classify as allowed or denied. These did not: "
                 + "; ".join(unattributable)
                 + ". A read under a grant would then be unattributable, so no window below "
                 "could mean anything. Nothing further was applied.",
@@ -3151,12 +3301,14 @@ def _grant_baseline(
             if not reachable
             else "a credential in another project read this bucket with no policy on it ("
             + ", ".join(reachable)
-            + "). The project boundary this whole probe is built on does not hold, so no "
-            "grant below could be shown to have granted anything. Nothing further was "
-            "applied",
+            + "), and that reading held for the full dwell rather than reverting. The "
+            "project boundary this whole probe is built on does not hold, so no grant "
+            "below could be shown to have granted anything. Nothing further was applied",
             "the premise: a grant can only be shown to grant what was not already there. "
-            "The operator read every one of these objects as the control, and the grantee's "
-            f"read was taken twice, {SETTLE_SECONDS:g}s apart",
+            "The operator read every one of these objects as the control; an `allowed` "
+            f"grantee reading is held for up to {dwell_seconds:g}s before it counts, because "
+            "a read path still serving a just-removed leftover grant's decision produces "
+            "exactly that answer",
             bool(reachable),
         )
     )
@@ -3174,6 +3326,7 @@ def _grant_window(
     rows: list[tuple],
     evidence: list[str],
     masks: dict[str, str],
+    dwell_seconds: float = DWELL_SECONDS,
 ) -> tuple[str, bool]:
     """One grant window: `(outcome, clean)`.
 
@@ -3211,6 +3364,8 @@ def _grant_window(
         evidence=evidence,
         masks=masks,
         roles=(GRANT_SUBJECT, "operator"),
+        pre_change={GRANT_SUBJECT: "denied", "operator": "allowed"},
+        dwell_seconds=dwell_seconds,
         assertion=lambda document, name: assert_probe_policy_grants_only(
             document, name, grantee_arn
         ),
@@ -3226,13 +3381,19 @@ def _grant_window(
         return "", clean
 
     # The document is off the bucket by now -- `_window` returns observations
-    # only when it removed the policy. The pause is the same one the paired
-    # reads use, and for the same reason: every way a just-removed policy can
-    # still be visible biases this read towards `allowed`, which is the
-    # direction that would turn a real grant into an unexplained one.
-    _sleep(SETTLE_SECONDS)
-    after = _observe(verifier, bucket, f"window {window} after removal", GRANT_SUBJECT, probe_key)
-    evidence.append(after.line())
+    # only when it removed the policy. `pre_change` here is whatever the live
+    # window just showed: if the grant read as `allowed`, that is exactly what
+    # a read path still serving the removed document would echo, so an
+    # `allowed` reading afterwards is held rather than trusted; a `denied`
+    # reading is not something that state could produce and counts at once.
+    # (If the live window read `denied`, the roles invert, and the dwell still
+    # holds only the reading the removal did not change.)
+    after = _dwell(
+        lambda: _observe(verifier, bucket, f"window {window} after removal", GRANT_SUBJECT, probe_key),
+        pre_change=observations[GRANT_SUBJECT].outcome,
+        evidence=evidence,
+        dwell_seconds=dwell_seconds,
+    )
     rows.append(
         (
             f"probe {window}: the grant is gone once its document is removed",
@@ -3254,7 +3415,12 @@ def _grant_window(
 
 
 def probe_foreign_grant(
-    verifier: Verifier, *, bucket: str, replace_existing: bool, grantee_is_ours: bool
+    verifier: Verifier,
+    *,
+    bucket: str,
+    replace_existing: bool,
+    grantee_is_ours: bool,
+    dwell_seconds: float = DWELL_SECONDS,
 ) -> tuple[list[tuple], list[str], str]:
     """Settle whether a cross-project `Allow` grants access. Rows, evidence, verdict.
 
@@ -3428,6 +3594,7 @@ def probe_foreign_grant(
             rows=rows,
             evidence=evidence,
             masks=masks,
+            dwell_seconds=dwell_seconds,
         )
     finally:
         rows.extend(_cleanup_rows(verifier, bucket))
@@ -3444,6 +3611,7 @@ def _read_the_grant(
     rows: list[tuple],
     evidence: list[str],
     masks: dict[str, str],
+    dwell_seconds: float = DWELL_SECONDS,
 ) -> str:
     """The baseline, then both windows, then the reading drawn from the pair.
 
@@ -3464,7 +3632,9 @@ def _read_the_grant(
     because layering G2 onto a bucket that may still carry G1's grant is the one
     thing that is unsafe rather than merely inconclusive.
     """
-    baseline = _grant_baseline(verifier, bucket, keys=keys, rows=rows, evidence=evidence)
+    baseline = _grant_baseline(
+        verifier, bucket, keys=keys, rows=rows, evidence=evidence, dwell_seconds=dwell_seconds
+    )
     if baseline == BASELINE_NO_BOUNDARY:
         return NO_PROJECT_BOUNDARY
     if baseline != BASELINE_HOLDS:
@@ -3482,6 +3652,7 @@ def _read_the_grant(
             rows=rows,
             evidence=evidence,
             masks=masks,
+            dwell_seconds=dwell_seconds,
         )
         reads[window] = outcome
         if not clean:
@@ -3604,7 +3775,36 @@ def read_credentials(
     return credentials
 
 
-def apply_fence(verifier: Verifier, *, bucket: str, policy_document: bytes) -> tuple[list[tuple], bool]:
+def _await_policy_settle(dwell_seconds: float) -> None:
+    """Hold until the policy engine's read path can no longer be serving the pre-PUT decision.
+
+    Silent for the whole dwell during a production apply reads as a hang, not
+    a wait, so this narrates what it is doing and polls in short steps rather
+    than sleeping the total in one call.
+    """
+    if dwell_seconds <= 0:
+        return
+    _narrate(
+        f"verify-bucket-fence: waiting {dwell_seconds:g}s for the policy engine's read path to "
+        f"settle before the confirming PUT -- this pause is deliberate, not a hang"
+    )
+    remaining = dwell_seconds
+    elapsed = 0.0
+    while remaining > 0:
+        step = min(DWELL_POLL_SECONDS, remaining)
+        _sleep(step)
+        remaining -= step
+        elapsed += step
+        _narrate(f"verify-bucket-fence:   {elapsed:g}s of {dwell_seconds:g}s elapsed")
+
+
+def apply_fence(
+    verifier: Verifier,
+    *,
+    bucket: str,
+    policy_document: bytes,
+    dwell_seconds: float = DWELL_SECONDS,
+) -> tuple[list[tuple], bool]:
     """Pre-flight and the double PUT, in one process.
 
     Split across two commands these are two decisions an operator makes
@@ -3612,6 +3812,17 @@ def apply_fence(verifier: Verifier, *, bucket: str, policy_document: bytes) -> t
     riskier bucket was the one whose apply had no in-process guard at all --
     `configure_backup_bucket.py` covers the backup bucket and nothing covered
     the state bucket. Here the PUT is unreachable unless the pre-flight passed.
+
+    THE SECOND PUT IS ONLY A CONTROL ONCE THE DWELL HAS RUN. Sent right after
+    the first, it is authorised against the same cached pre-PUT decision the
+    first PUT was, and returns 2xx whether the exemption held or the operator
+    has already lost `PutBucketPolicy` -- the exact failure mode
+    `configure_backup_bucket.py` had, on the bucket that holds every tenant's
+    Pulumi state. `_await_policy_settle` is what makes the second PUT mean
+    anything, and by the time it returns, `dwell_seconds` has elapsed since the
+    fence was actually written -- which is also why the plain verify mode this
+    `--apply` run is normally followed by (steps 1f/2d) does not need a dwell
+    of its own: it never reads sooner than this one already waited.
     """
     rows = preflight(verifier, bucket=bucket, policy_document=policy_document)
     if any(status in (FAIL, INCONCLUSIVE) for _, status, _, _, _ in rows):
@@ -3648,6 +3859,7 @@ def apply_fence(verifier: Verifier, *, bucket: str, policy_document: bytes) -> t
     # The identical document again. A no-op when it succeeds, and the only
     # signal available if the engine has just denied the operator the ability
     # to edit the statement doing the denying.
+    _await_policy_settle(dwell_seconds)
     second_outcome, second_reason = classify(*verifier.request(put))
     rows.append(
         (
@@ -3835,7 +4047,24 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="print the probe matrix and run nothing"
     )
+    parser.add_argument(
+        "--dwell-seconds",
+        type=float,
+        default=DWELL_SECONDS,
+        help=f"how long a read matching the pre-change state is held before it counts, for "
+        f"--probe-notprincipal, --diagnose-policy-engine and --probe-foreign-grant, and how "
+        f"long --apply pauses between its two PUTs (default {DWELL_SECONDS:g}, comfortably "
+        f"above this endpoint's measured read-path cache); lower it for a fast-path re-run "
+        f"once the engine's behaviour is already known -- it must stay above zero, because "
+        f"zero is the one value that turns every dwell in this file back into the pause that "
+        f"produced the withdrawn conclusion this tool exists to prevent",
+    )
     args = parser.parse_args(argv)
+    if args.dwell_seconds <= 0:
+        # Zero does not mean "no wait needed" here -- it means every dwell in
+        # this file degenerates to a single, untrusted read, which is the
+        # exact shape of the bug this tool was built to stop reproducing.
+        parser.error("--dwell-seconds must be greater than 0")
 
     # Before any mode runs, and therefore before any mode writes. The transport
     # every probe uses is this repository's own signing implementation; a
@@ -3991,6 +4220,7 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
                 bucket=args.bucket,
                 replace_existing=args.replace_existing_policy,
                 grantee_is_ours=args.grantee_is_ours,
+                dwell_seconds=args.dwell_seconds,
             )
         except VerifierError as error:
             print(f"error: {error}", file=sys.stderr)
@@ -4020,7 +4250,10 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
     if args.diagnose_policy_engine:
         try:
             rows, evidence, verdict = diagnose_policy_engine(
-                verifier, bucket=args.bucket, replace_existing=args.replace_existing_policy
+                verifier,
+                bucket=args.bucket,
+                replace_existing=args.replace_existing_policy,
+                dwell_seconds=args.dwell_seconds,
             )
         except VerifierError as error:
             print(f"error: {error}", file=sys.stderr)
@@ -4058,12 +4291,28 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
 
     if args.probe_notprincipal:
         try:
-            rows = probe_notprincipal(
-                verifier, bucket=args.bucket, replace_existing=args.replace_existing_policy
+            rows, evidence = probe_notprincipal(
+                verifier,
+                bucket=args.bucket,
+                replace_existing=args.replace_existing_policy,
+                dwell_seconds=args.dwell_seconds,
             )
         except VerifierError as error:
             print(f"error: {error}", file=sys.stderr)
             return 2
+        # This step can now hold for most of --dwell-seconds, and the reads
+        # taken while it held are exactly the transcript an operator needs if
+        # the verdict is INCONCLUSIVE -- discarding them here would leave the
+        # one step this docstring calls "THE STEP AN OPERATOR ACTUALLY RUNS"
+        # with no record of what it actually saw.
+        if evidence:
+            print(
+                "RAW EVIDENCE -- record this block verbatim. It carries no secret key, and "
+                "every access key id it names is shown by its last four characters.\n"
+            )
+            for line in evidence:
+                print(line)
+            print("")
         return report(
             rows,
             [],
@@ -4084,7 +4333,12 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         )
 
     if args.apply:
-        rows, wrote = apply_fence(verifier, bucket=args.bucket, policy_document=policy_document)
+        rows, wrote = apply_fence(
+            verifier,
+            bucket=args.bucket,
+            policy_document=policy_document,
+            dwell_seconds=args.dwell_seconds,
+        )
         return report(rows, [], sys.stdout, applied=wrote)
 
     rows = [
