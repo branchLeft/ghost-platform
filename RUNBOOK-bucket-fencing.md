@@ -3,6 +3,46 @@
 Applying and proving a bucket policy that restricts a Hetzner Object Storage
 bucket to the keys that legitimately use it.
 
+---
+
+## STOP — do not apply a fence from this runbook yet
+
+**A bucket policy this repository wrote was accepted by the endpoint and then
+enforced against nobody.** Its single statement was a `Deny s3:GetObject` under
+the probe prefix, exempting the operator by `NotPrincipal`. The operator read
+the object — and so did a key that statement should have denied. The `Deny`
+reached neither of them.
+
+**Whether a bucket policy can fence anything at all on this provider is
+therefore an open question**, and until section 0 below has answered it, every
+apply step in this runbook is a step that may write a control that controls
+nothing. Sections 1e and 2c are gated on it explicitly, and so is
+`RUNBOOK-tenant-onboarding.md`'s media-bucket policy.
+
+**A prior conclusion is withdrawn.** An earlier run of the same probe reported
+`NotPrincipal EXEMPTS the named key — PASS`, and that was recorded — here, in
+the doc set and in an operator handover — as proof that Hetzner honours
+`NotPrincipal`. **It was never proof.** A statement the engine ignores
+*entirely* produces exactly that observation: the operator's read succeeds
+either way. Only the pair of reads discriminates, and the second half of the
+pair could not be classified on that run. The probe was right to report
+`INCONCLUSIVE`; reading the other row as an answer was the mistake, and
+`--probe-notprincipal` no longer reports that row as a pass unless the foreign
+key was actually denied.
+
+**Nothing here is deleted, because the fencing procedure becomes correct again
+under one of the possible answers.** If section 0 finds that this engine
+resolves per-key principals and only `NotPrincipal` is unimplemented, a fence is
+rebuildable out of explicit `Principal` denials and everything below applies to
+it with the rendered documents changed. If it finds anything else, no bucket
+policy can separate two credentials inside a Hetzner project, and the boundary
+becomes a separate project — which is an architecture decision for the platform
+owner, not a change to make in this file.
+
+Tracked as branchLeft/workspace#301.
+
+---
+
 **Read the lockout section before running anything.** A bucket policy is not a
 configuration that a control reads — it *is* the control, and it governs the
 API call that would edit it. A policy that fails to exempt the operator's own
@@ -28,8 +68,8 @@ the procedure below is how that state is reached and confirmed.
 | `branchleft-db-backups` | `age`-encrypted nightly dumps and shipped binlogs | db1's backup credential, from `/etc/branchleft/db.env` |
 | `branchleft-tenant-pulumi-state` | every tenant's Pulumi checkpoint | `TENANT_STATE_S3_ACCESS_KEY_ID`, on the `tenant-provisioning` environment |
 
-Section 1c and section 1f both read the live bucket, so the current state of any
-bucket is something to check rather than something to read here.
+Section 0, section 1c and section 1f all read the live bucket, so the current
+state of any bucket is something to check rather than something to read here.
 
 ---
 
@@ -64,31 +104,38 @@ days. Do not rebuild, resize or destroy db1.
 write to the checkpoint that is unreachable, and a write that half-succeeds is
 worse than a blocked one.
 
-Five things reduce the chance of ever getting here. The first is the only one
-that tests the live engine rather than a model of it, which is why it runs
-first and why nothing below substitutes for it.
+Six things reduce the chance of ever getting here. The first two are the only
+ones that test the live engine rather than a model of it, which is why they run
+first and why nothing below substitutes for either.
 
-1. **Step 1c asks the engine whether `NotPrincipal` exempts, reversibly.**
+1. **Section 0 asks what a bucket policy does on this engine at all,
+   reversibly.** Whether one is enforced, and whether naming an access key in a
+   statement separates that key from another one. Three of its five verdicts
+   mean no fence can exist here by any document, and every check further down
+   this file passes in all three.
+2. **Step 1c asks the narrower question — does `NotPrincipal` exempt.**
    Everything else here validates a document against an assumption about how
    S3 policies evaluate. Hetzner does not document that, and if its engine
    matches every principal instead of exempting the named one, then every check
    below passes and the fence still locks the bucket. Step 1c settles it with a
    policy that names no bucket-resource action, so it cannot lock anything, and
-   removes it again.
-2. `render-bucket-fence-policy.py` re-evaluates every policy it builds and
+   removes it again. Read its two rows as a pair: the operator's read succeeding
+   on its own is consistent with a statement that was ignored entirely, and
+   reading it otherwise is the withdrawn conclusion at the top of this file.
+3. `render-bucket-fence-policy.py` re-evaluates every policy it builds and
    refuses to emit one that denies the operator `PutBucketPolicy`.
-3. **The pre-flight resolves the account from the credential itself.** Every
+4. **The pre-flight resolves the account from the credential itself.** Every
    principal in a rendered policy is built from the `--project-id` you typed, so
    the generator's own check compares a fabricated ARN against itself and passes
    for any value at all — while live, an ARN carrying the right access key under
    the wrong account names a principal that does not exist, the operator's
    exemption exempts nobody, and the bucket is gone. One mistyped digit is
    enough.
-4. `configure_backup_bucket.py` re-checks the same invariant structurally,
+5. `configure_backup_bucket.py` re-checks the same invariant structurally,
    against the full ARN of the credential in the environment, before it sends
    anything — and refuses a policy that names another bucket, that opens the
    bucket to everyone, or that denies nothing at all.
-5. **Every path that applies a fence PUTs the policy twice** — the two runbook
+6. **Every path that applies a fence PUTs the policy twice** — the two runbook
    sections, `configure_backup_bucket.py`, and
    `verify-bucket-fence.py --apply`. The second PUT is a no-op when the
    exemption works and the only warning that exists when it does not, so it
@@ -98,6 +145,12 @@ first and why nothing below substitutes for it.
 ---
 
 ## Order of work
+
+**Section 0 comes before everything, and nothing below it runs until it has
+answered.** It asks whether a bucket policy on this engine does anything at all,
+and three of its five possible answers mean no fence can be built here by any
+document. Running section 1 first would apply a control whose effect is unknown
+to the bucket holding the estate's only offsite backups.
 
 **Fence `branchleft-db-backups` first, and only start the second bucket once
 the first has passed verification.** Losing write access to Pulumi state is
@@ -189,7 +242,107 @@ exits 2 with `no credentials in the environment` before sending anything.
 
 ---
 
+## 0. Settle what a bucket policy does on this engine
+
+**This is the gate for the whole runbook. Nothing below it runs until it has
+printed a verdict.** It asks the two questions everything else assumes the
+answers to — is a bucket policy enforced here at all, and does naming one access
+key in a statement separate that key from another one — and it answers them with
+probes whose result only one engine could produce.
+
+It is reversible by construction, and it is the same safety property as before:
+each of its three documents carries one `Deny`, on `s3:GetObject` only, confined
+to the `fence-probe/` object prefix, and **no statement names the bucket
+resource** — so `PutBucketPolicy` and `DeleteBucketPolicy` stay available to
+every key throughout and no probe can lock a bucket. The script asserts that
+before it sends anything. Its second window denies the operator by construction,
+which is exactly why no probe may name a bucket-resource action: the key that
+removes the document is one of the keys the document denies.
+
+It writes no fence, needs no rendered policy, and takes two credentials:
+
+```bash
+export FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>'
+export FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>'
+export FENCE_FOREIGN_ACCESS_KEY_ID='<tenant-state key id>'
+export FENCE_FOREIGN_SECRET_ACCESS_KEY='<tenant-state secret>'
+
+python3 infra/provisioning/scripts/verify-bucket-fence.py --diagnose-policy-engine \
+  --bucket branchleft-db-backups
+```
+
+Add `--dry-run` to that command to print the three documents it would send,
+sending nothing and reading no credential.
+
+**Copy the whole output — the `RAW EVIDENCE` block included — onto
+branchLeft/workspace#301.** Access key ids are printed by their last four
+characters only, so the block names no identifier and is safe to paste
+anywhere. This is a question about the account that gets asked once; the run
+that is not recorded is a run that gets repeated against a production bucket.
+
+The last block of the output is the verdict, in prose, and it says what to do
+next. There are five, and they are not degrees of the same answer:
+
+| Verdict | What it means | What happens next |
+|---|---|---|
+| `PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE` | A `Deny` naming one key denied that key and left the other one reading. Only `NotPrincipal` is broken. | A fence is rebuildable — out of explicit `Principal` denials, which is **not** the document `render-bucket-fence-policy.py` emits today. Hand this back; do not apply the current fence. |
+| `A NAMED PRINCIPAL MATCHES NOBODY ON THIS ENGINE` | `Principal: "*"` denied the foreign key, so policies are enforced — but that key's own ARN denied nothing. Every credential in the project is one principal. | No bucket policy can separate two credentials inside a project. Do not apply any fence. The boundary becomes a separate Hetzner project, which is the platform owner's decision. |
+| `THE PRINCIPAL ELEMENT IS DECORATION ON THIS ENGINE` | A `Deny` naming one key denied the key it named **and** the key it did not. | A fence aimed at a stranger takes the workload down with it. Applying one would be an outage, not a control. Do not apply any fence. |
+| `BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT` | A `Deny` on `Principal: "*"` was stored verbatim and the read it denies succeeded anyway. | Nothing a bucket policy says is enforced here. Do not apply any fence, and stop reading a successful `PutBucketPolicy` as evidence of anything. |
+| `NO SINGLE READING EXPLAINS WHAT THIS ENGINE DID` | The observations fit none of the above. | Nothing was applied. Record the evidence and stop — an engine answering incoherently is itself the finding, and guessing which world it is is the exact mistake this diagnostic exists to prevent. |
+
+Rows that stop it before it reaches a verdict, and what each means:
+
+- **`both keys read the probe objects with NO policy in force` — `INCONCLUSIVE`.**
+  With nothing on the bucket, both keys must be able to read the objects the run
+  just wrote. One of them could not, so a denial under a probe policy would be
+  unattributable — the key, the object, the endpoint and the policy would be one
+  observation, which is the substitution this whole tool exists to prevent.
+  Nothing further was applied. Check the credentials and re-run.
+- **`probe <A|B|C>: the bucket stores the document that was sent` — `FAIL` or
+  `INCONCLUSIVE`.** The PUT returned 2xx and what came back off the bucket is
+  not what went on it. This backend is on record accepting a configuration and
+  silently dropping part of it, so no read taken under that document means
+  anything. No verdict is reported and none should be inferred.
+- **`the probe policy is accepted` — `INCONCLUSIVE`.** The engine rejected the
+  document outright. Nothing was applied, and nothing was deleted either —
+  deleting after a refused PUT would remove a policy this run never displaced.
+- **`THE PROBE POLICY IS REMOVED (probe <A|B|C>)` — `FAIL`.** A probe document is
+  still on the bucket and the run stopped there rather than putting another one
+  on top of it. It denies only reads under `fence-probe/`, so nothing real is
+  affected, but do not leave it: that row carries the exact command.
+- **`THE PROBE POLICY'S FATE IS UNKNOWN` — `INCONCLUSIVE`.** The PUT got no
+  response, so the document may or may not have reached the engine. Nothing was
+  deleted, because a delete here removes whatever is on the bucket rather than
+  only the probe. Check by hand before anything else; a policy whose `Id` is
+  `engine-diagnostic-probe-branchleft-db-backups` is this probe and is safe to
+  delete.
+- **`both credentials are in one account` — `FAIL`.** The two keys are in
+  different projects, so every denial below would be the project boundary rather
+  than the policy. Nothing was written.
+- **`the bucket carries no policy to displace` — `INCONCLUSIVE`.** Read it
+  exactly as section 1c below says to. A leftover document from this diagnostic
+  carries the `Id` above and is cleared by re-running with
+  `--replace-existing-policy`; anything else is refused whether or not that flag
+  is passed.
+
+This tests the **engine**, not the bucket, so its answer holds for the whole
+account: it is run once, against `branchleft-db-backups`, and section 2 does not
+repeat it.
+
+**Do not go past this section on anything but
+`PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE`** — and on that verdict the next
+step is still not section 1: the fence this repository renders is built on
+`NotPrincipal`, which the same finding says denies nobody, so it has to be
+rebuilt out of explicit `Principal` denials first. Hand the output back.
+
+---
+
 ## 1. Fence `branchleft-db-backups`
+
+**Gated on section 0.** Every step from 1a on assumes a bucket policy can fence
+one credential from another on this provider, which is the question section 0
+answers and which is currently open.
 
 From a checkout of `branchLeft/ghost-platform` on `main`.
 
@@ -248,16 +401,27 @@ python3 infra/provisioning/scripts/verify-bucket-fence.py --probe-notprincipal \
   --policy-file /tmp/branchleft-db-backups-policy.json
 ```
 
-Both lines must read `PASS`.
+Both lines must read `PASS`, **and neither one is an answer on its own.** The
+first row reports `PASS` only when the operator's read succeeded *and* the
+foreign key's read was denied. An operator allowed alongside a foreign key that
+was also allowed is `INCONCLUSIVE` — because a statement the engine ignores
+entirely produces that exact operator read, and reading it as an exemption is
+the withdrawn conclusion at the top of this file.
 
 - **`NotPrincipal EXEMPTS the named key` — `FAIL`.** Stop. This engine does not
   read `NotPrincipal` as an exemption, and applying the real fence would have
   locked the bucket permanently. Nothing has been applied. Record the output and
   hand it back: bucket policies cannot fence anything in this account, and the
   remaining boundary is separate Hetzner projects.
+- **`NotPrincipal EXEMPTS the named key` — `INCONCLUSIVE`.** The operator's read
+  succeeded and so did the foreign key's, so the statement reached nobody and
+  this row cannot tell an exemption from an ignored statement. **This is what
+  the live run produced.** Section 0 is what separates them.
 - **`NotPrincipal DENIES everyone else` — `FAIL`.** The statement is stored and
   not enforced. A fence built from it would fence nothing while every other
-  signal said it had worked.
+  signal said it had worked. Which of the engines in section 0's table this is
+  decides whether any fence is possible; run section 0 before concluding
+  anything from it.
 - **`the probe policy is accepted` — `INCONCLUSIVE`.** The engine rejected a
   `NotPrincipal` document outright. Nothing was applied.
 - **`THE PROBE POLICY IS REMOVED` — `FAIL`.** The probe is still on the bucket.
@@ -312,7 +476,11 @@ Both lines must read `PASS`.
   ```
 
 This tests the *engine*, not the bucket, so its answer holds for the whole
-account — section 2 does not repeat it.
+account — section 2 does not repeat it. It asks a narrower question than section
+0: only whether `NotPrincipal` behaves, which is what the fence this repository
+renders today is built on. Section 0 asks whether any principal-based policy
+behaves at all, and its answer is the one that decides whether a fence can exist
+here in any form.
 
 **The priced alternative, if you would rather not test this on a bucket holding
 real backups:** create a throwaway bucket, run the probe against that, and
@@ -346,6 +514,17 @@ APPLY THIS POLICY`, do not apply it** — re-render step 1a with the account id
 it printed and run the pre-flight again.
 
 ### 1e. Apply versioning, lifecycle and the fence, in that order
+
+> **GATE — this step writes the fence, and it does not run yet.** It is
+> unreachable until section 0 has printed
+> `PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE` *and* the fence has been rebuilt
+> out of explicit `Principal` denials, because the document
+> `render-bucket-fence-policy.py` emits today fences by `NotPrincipal` and
+> `NotPrincipal` was observed live denying nobody. On any other section 0
+> verdict, no bucket policy can fence anything here and this step never runs at
+> all. A green section 1c and a green 1d do **not** substitute: both validate a
+> document against a model of S3 evaluation, and the question is what this
+> engine does.
 
 Run as the **operator**, not as db1's backup key. The fence withholds every
 bucket-configuration action from db1's key, so after this runs that key can no
@@ -487,11 +666,18 @@ export FENCE_FOREIGN_ACCESS_KEY_ID='<db1 backup key id>'
 export FENCE_FOREIGN_SECRET_ACCESS_KEY='<db1 backup secret>'
 ```
 
-Step 1c does not repeat here. It tests the engine's `NotPrincipal` semantics,
-which is a property of the account rather than of a bucket, and section 1
-settled it.
+Neither section 0 nor step 1c repeats here. Both test the engine — what a bucket
+policy does, and what `NotPrincipal` does — which is a property of the account
+rather than of a bucket, and section 1 settled both.
 
 ### 2c. Pre-flight and apply, in one command
+
+> **GATE — the same one as 1e, and this is the bucket where getting it wrong
+> stops every tenant deploy.** This step does not run until section 0 has
+> printed `PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE`, the fence has been
+> rebuilt out of explicit `Principal` denials, and section 1 has passed in full
+> against the rebuilt document. On any other section 0 verdict this step never
+> runs.
 
 **This bucket is the more dangerous of the two, so its apply gets the stronger
 guard, not the weaker one.** `--apply` runs the pre-flight and the two policy
@@ -565,11 +751,13 @@ rm -f /tmp/branchleft-tenant-pulumi-state-policy.json
 
 ## If Hetzner's engine does not do what its documentation implies
 
-No policy of this shape has been observed working against a live Hetzner
-bucket. Hetzner documents `NotPrincipal` verbatim but publishes no list of
+No policy of this shape has been observed working against a live Hetzner bucket,
+and **one has been observed doing nothing at all** — see the finding at the top
+of this file. Hetzner documents `NotPrincipal` verbatim but publishes no list of
 supported Actions, Principal formats or Conditions, and says nothing about
 `NotAction`. There are **four** ways it can go wrong. They are listed worst
-first, because the worst one is the one you will be reading this under.
+first, because the worst one is the one you will be reading this under. Which of
+them is live is what section 0 settles, and it is the only thing that does.
 
 **1. `NotPrincipal` is enforced against everybody, including the operator.**
 This is the one that ends the estate: the fence applies cleanly, and the bucket
@@ -588,12 +776,17 @@ bucket.
 
 **2. The PUT succeeds, the stored document matches, and the foreign probes
 still succeed.** The engine stores `NotPrincipal` and does not enforce it at
-all. Every signal except the probes says the bucket is fenced. Step 1c catches
-this too, as `NotPrincipal DENIES everyone else — FAIL`, and section 1f catches
-it after the fact. Bucket policies then cannot fence anything in this account,
-and the remaining boundary is putting the buckets in separate Hetzner projects,
-where the project boundary is enforced. That is a different decision with its
-own migration and is not part of this work; file it and stop.
+all. Every signal except the probes says the bucket is fenced. **This is the one
+that has been observed live.** Step 1c catches it as `NotPrincipal DENIES
+everyone else — FAIL`, and section 1f catches it after the fact — but neither
+says *why*, and the two possible reasons have opposite consequences. If the
+engine simply does not implement `NotPrincipal`, a fence is rebuildable out of
+explicit `Principal` denials. If no named principal resolves at all, bucket
+policies cannot fence anything in this account and the remaining boundary is
+putting the buckets in separate Hetzner projects, where the project boundary is
+enforced — a different decision with its own migration, which is not part of
+this work. **Section 0 is what tells the two apart.** Do not decide it from a
+step-1c FAIL.
 
 **3. The PUT succeeds but the stored document differs.** Reported by section 1f
 or 2d as `the stored policy is the one that was sent — FAIL`. The engine
@@ -610,6 +803,10 @@ catch-all that makes an unenumerated action fall closed.
 ---
 
 ## Adding a new operational bucket later
+
+**Gated on section 0, exactly as 1e and 2c are.** A bucket created with a policy
+that fences nothing is an unfenced bucket that reads as fenced, which is worse
+than one nobody claimed anything about.
 
 Fence it at creation, not afterwards. A bucket created unfenced is reachable by
 every key in the project for as long as the gap lasts, and a bucket that *can*

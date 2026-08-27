@@ -25,9 +25,23 @@ is supposed to keep working must still work. A policy that denies everybody is
 not a fence, it is an outage -- on the backup bucket, a silent one that surfaces
 at the next restore.
 
-THE CHECK THAT MATTERS MOST IS REVERSIBLE, AND RUNS FIRST. `--probe-notprincipal`
-asks the live engine the one question every other check assumes the answer to:
-does this backend read `NotPrincipal` as an exemption, or as decoration?
+THE CHECK THAT MATTERS MOST IS REVERSIBLE, AND RUNS FIRST.
+`--diagnose-policy-engine` asks the live engine the questions every other check
+assumes the answers to: is a bucket policy enforced here at all, and does naming
+one access key in a statement separate that key from another one? A live run
+found a `Deny` this file wrote enforced against nobody -- neither the key it
+exempted nor the key it should have refused -- and that single observation fits
+an engine that enforces no policy, an engine on which every credential in a
+project is one principal, and an engine that simply does not implement
+`NotPrincipal`. Those have opposite consequences: the last leaves a fence
+rebuildable, the first two leave no bucket policy able to separate anything and
+put the boundary at a separate Hetzner project. So the mode is built around one
+rule -- a probe whose result only ONE of those engines could produce -- and the
+long comment above `diagnose_policy_engine` sets out how each window earns it.
+
+`--probe-notprincipal` is the narrower question, kept because it is the one the
+fence in this repository is actually built on: does this backend read
+`NotPrincipal` as an exemption, or as decoration?
 
 Every other guard here, and both guards outside this file, validate a document
 against a MODEL of S3 evaluation. None of them touches Hetzner's implementation,
@@ -41,13 +55,17 @@ by the same statement, and every offline guard will have passed on the way in.
 
 So this mode applies a policy whose only `Deny` is scoped to an unused object
 prefix and names no bucket-resource action at all, then reads an object back as
-the operator. Denied means `NotPrincipal` does not exempt on this engine and the
-real fence would have locked the bucket. Allowed, with a foreign key denied on
-the same object, means the exemption works. The probe policy cannot lock
-anything, because it contains no statement on the bucket resource -- so
-`PutBucketPolicy` and `DeleteBucketPolicy` stay available to every key
-throughout, and the probe is removed at the end. That reversibility is asserted
-in code before the policy is sent, not assumed.
+the operator AND as a foreign key. Denied for the operator means `NotPrincipal`
+does not exempt on this engine and the real fence would have locked the bucket.
+Allowed for the operator means nothing on its own -- a statement the engine
+ignores entirely produces that same read -- so only the pair decides it, and a
+foreign key that was also allowed is INCONCLUSIVE here, never a pass. That
+misreading has already been made once and recorded as an answer.
+
+The probe policy cannot lock anything, because it contains no statement on the
+bucket resource -- so `PutBucketPolicy` and `DeleteBucketPolicy` stay available
+to every key throughout, and the probe is removed at the end. That reversibility
+is asserted in code before the policy is sent, not assumed.
 
 AND THEN `--preflight`, which resolves each credential's own storage account and
 then evaluates the policy against the ARN built from it. Nothing else can:
@@ -126,6 +144,12 @@ accepted as arguments:
 The foreign role is any real key in the same project that has no business in
 this bucket. It must be a live key with an entitlement somewhere, named by
 `--foreign-control-bucket`, or its denials prove nothing.
+
+`--diagnose-policy-engine` takes the operator and foreign pairs only. It reaches
+no verdict about a fence -- a verdict about a fence is a statement about which
+credentials it separates and needs all three -- and it establishes the foreign
+key is live by reading an object it just wrote with no policy on the bucket,
+which is a stronger control than an entitlement in some other bucket.
 """
 
 from __future__ import annotations
@@ -158,6 +182,13 @@ else:
     SIGNING_UNAVAILABLE = ""
 
 PROBE_PREFIX = "fence-probe/"
+
+# The only action any probe policy is allowed to deny. A Deny on anything else
+# under the probe prefix could refuse the delete that removes the probe object,
+# so if the removal of the policy also failed the object would sit under a Deny
+# with nothing left to lift it. One action, and a resource check beside it, keep
+# every probe recoverable by construction rather than by argument.
+PROBE_ACTIONS = frozenset({"s3:GetObject"})
 
 S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
@@ -679,6 +710,21 @@ def build_checks(
     return checks
 
 
+def read_stored_policy(verifier: Verifier, bucket: str) -> tuple[str, str, bytes]:
+    """`(status, reason, body)` for the document the bucket is actually holding.
+
+    A PUT returning 2xx says the endpoint accepted a request, not that the
+    document is in force -- this backend is on record accepting a configuration
+    and silently dropping part of it. Every verdict drawn from a policy has to
+    be able to confirm its own premise, which is what this reads back.
+    """
+    status, body, failure = verifier.request(_policy_probe("operator", bucket, "GET"))
+    outcome, reason = classify(status, body, failure)
+    if outcome != "allowed":
+        return INCONCLUSIVE, f"could not read the stored policy: {reason or _one_line(failure)}", b""
+    return PASS, "", body
+
+
 def compare_stored_policy(verifier: Verifier, bucket: str, policy_document: bytes) -> tuple[str, str]:
     """Prove the bucket stores the document that was sent.
 
@@ -688,20 +734,21 @@ def compare_stored_policy(verifier: Verifier, bucket: str, policy_document: byte
     measuring a different fence. Statements are compared as a sorted set, so an
     engine that reorders them is not reported as a mismatch.
     """
-    probe = Probe(
-        "operator",
-        "get the policy",
-        operation="get-bucket-policy",
-        method="GET",
-        bucket=bucket,
-        query={"policy": ""},
-    )
-    status, body, failure = verifier.request(probe)
-    outcome, reason = classify(status, body, failure)
-    if outcome != "allowed":
-        return INCONCLUSIVE, f"could not read the stored policy: {reason or _one_line(failure)}"
+    status, reason, body = read_stored_policy(verifier, bucket)
+    if status != PASS:
+        return status, reason
+    return compare_policy_bytes(body, policy_document)
+
+
+def compare_policy_bytes(stored_body: bytes, policy_document: bytes) -> tuple[str, str]:
+    """The comparison itself, over bytes already in hand.
+
+    Separate from the read so a caller holding the stored document -- the engine
+    diagnostic prints it as evidence -- compares the bytes it printed rather
+    than fetching the policy a second time and reasoning about a third one.
+    """
     try:
-        stored = json.loads(body.decode("utf-8"))
+        stored = json.loads(stored_body.decode("utf-8"))
         sent = json.loads(policy_document.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         return INCONCLUSIVE, f"could not compare the policies: {error}"
@@ -1032,14 +1079,23 @@ def probe_policy(bucket: str, operator_arn: str) -> dict:
 def assert_probe_policy_is_reversible(policy: dict, bucket: str) -> None:
     """Refuse to send a probe that could take `PutBucketPolicy` away.
 
-    The probe exists because the engine's `NotPrincipal` semantics are unknown.
-    It would be self-defeating to establish that with a document that becomes
+    The probe exists because the engine's principal semantics are unknown. It
+    would be self-defeating to establish that with a document that becomes
     unremovable under the very reading it is testing for, so the check assumes
-    the worst case -- `NotPrincipal` matches everybody -- and requires that even
-    then, nothing on the bucket resource is denied.
+    the worst case -- the statement matches every principal -- and requires that
+    even then, nothing on the bucket resource is denied.
+
+    The action check is the second half of that. `PROBE_ACTIONS` holds one entry
+    because a Deny on any other object action could refuse the delete that
+    removes the probe object: a run whose policy removal also failed would then
+    have left an object under a Deny with nothing able to lift it.
     """
     bucket_arn = f"arn:aws:s3:::{bucket}"
     for statement in policy.get("Statement", []):
+        # THE RESOURCE CHECK RUNS FIRST, and the order is load-bearing. Naming
+        # the bucket resource is the unrecoverable case, so a document that does
+        # both must be refused with the message that says so; the action rule is
+        # the narrower one and would otherwise mask it.
         resource = statement.get("Resource", [])
         resources = [resource] if isinstance(resource, str) else list(resource)
         if not resources:
@@ -1056,6 +1112,18 @@ def assert_probe_policy_is_reversible(policy: dict, bucket: str) -> None:
                     f"probe policy reaches {entry!r}, outside the probe prefix"
                 )
 
+        action = statement.get("Action", [])
+        actions = [action] if isinstance(action, str) else list(action)
+        if not actions:
+            raise VerifierError("probe policy statement names no Action")
+        for entry in actions:
+            if entry not in PROBE_ACTIONS:
+                raise VerifierError(
+                    f"probe policy denies {entry!r}, which is not one of "
+                    f"{sorted(PROBE_ACTIONS)} -- a Deny on any other object action could "
+                    f"refuse the delete that removes the probe object"
+                )
+
 
 def stored_policy_id(body: bytes) -> str | None:
     """The `Id` of a policy document, or None if there is not one to read."""
@@ -1066,7 +1134,48 @@ def stored_policy_id(body: bytes) -> str | None:
     return stored.get("Id") if isinstance(stored, dict) else None
 
 
-def _existing_policy_refusal(bucket: str, stored_id: str | None, replace_existing: bool) -> tuple:
+def _policy_slot_is_free(
+    verifier: Verifier, bucket: str, *, replace_existing: bool, own_ids: tuple
+) -> tuple[bool, tuple | None, bool]:
+    """Whether a probe may write this bucket's policy slot, or the row refusing.
+
+    THE ONLY ANSWER THAT LETS A PROBE PROCEED IS AN AFFIRMATIVE "THERE IS NO
+    POLICY". A probe replaces whatever is on the bucket and removes it at the
+    end, so a bucket whose policy could not be READ must not be written to: a
+    transient 503, a reset connection, a truncated body and `AccessDenied` are
+    one outcome here, and treating "unknown" as "empty" destroys a fence on the
+    strength of a failed request.
+
+    The third value says a leftover probe policy of this file's own is sitting
+    there. It matters to a caller that measures the bucket before writing:
+    reading a "with no policy in force" baseline while a leftover Deny is still
+    on the bucket measures the leftover.
+    """
+    status, body, failure = verifier.request(_policy_probe("operator", bucket, "GET"))
+    outcome, reason = classify(status, body, failure)
+    if outcome == "allowed":
+        stored_id = stored_policy_id(body)
+        if stored_id in own_ids and replace_existing:
+            return True, None, True
+        return False, _existing_policy_refusal(bucket, stored_id, replace_existing, own_ids), False
+    if s3_error_code(body) == "NoSuchBucketPolicy":
+        return True, None, False
+    return False, (
+        "the bucket's current policy is known",
+        INCONCLUSIVE,
+        f"could not read whether {bucket} carries a policy ({reason}). This step replaces "
+        f"whatever is there and removes it afterwards, so it will not run without an "
+        f"affirmative NoSuchBucketPolicy -- an unreadable answer is not an empty bucket. "
+        f"Nothing has been written. Re-run once the endpoint answers, and if it keeps "
+        f"refusing, that refusal is itself the finding.",
+        "",
+        True,
+    ), False
+
+
+def _existing_policy_refusal(
+    bucket: str, stored_id: str | None, replace_existing: bool, own_ids: tuple
+) -> tuple:
     """The row that stops `--probe-notprincipal` on a bucket that has a policy.
 
     NOTHING HERE RESTORES A DISPLACED DOCUMENT. The probe is applied and then
@@ -1081,7 +1190,7 @@ def _existing_policy_refusal(bucket: str, stored_id: str | None, replace_existin
     already in hand, so the message says which case this is rather than leaving
     the operator to weigh both.
     """
-    if stored_id == probe_policy_id(bucket):
+    if stored_id in own_ids:
         return (
             "the bucket carries no policy to displace",
             INCONCLUSIVE,
@@ -1128,40 +1237,11 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
         return [("operator credential resolves its account", INCONCLUSIVE, reason, "", True)]
     operator_arn = f"arn:aws:iam:::user/{account}:{verifier.credentials['operator'][0]}"
 
-    existing = Probe(
-        "operator",
-        "get the policy",
-        operation="get-bucket-policy",
-        method="GET",
-        bucket=bucket,
-        query={"policy": ""},
+    free, refusal, _ = _policy_slot_is_free(
+        verifier, bucket, replace_existing=replace_existing, own_ids=(probe_policy_id(bucket),)
     )
-    # THE PROBE PROCEEDS ONLY ON AN AFFIRMATIVE "THERE IS NO POLICY".
-    # Applying it replaces whatever is there and removing it afterwards leaves
-    # nothing, so a bucket whose policy could not be READ is one this step must
-    # not write to: a transient 503, a reset connection, a truncated body and
-    # `AccessDenied` are one outcome here, and treating "unknown" as "empty"
-    # destroys a fence on the strength of a failed request.
-    status, body, failure = verifier.request(existing)
-    outcome, reason = classify(status, body, failure)
-    if outcome == "allowed":
-        stored_id = stored_policy_id(body)
-        if stored_id != probe_policy_id(bucket) or not replace_existing:
-            return [_existing_policy_refusal(bucket, stored_id, replace_existing)]
-    elif s3_error_code(body) != "NoSuchBucketPolicy":
-        return [
-            (
-                "the bucket's current policy is known",
-                INCONCLUSIVE,
-                f"could not read whether {bucket} carries a policy ({reason}). This step "
-                f"replaces whatever is there and removes it afterwards, so it will not run "
-                f"without an affirmative NoSuchBucketPolicy -- an unreadable answer is not "
-                f"an empty bucket. Nothing has been written. Re-run once the endpoint "
-                f"answers, and if it keeps refusing, that refusal is itself the finding.",
-                "",
-                True,
-            )
-        ]
+    if not free:
+        return [refusal]
 
     policy = probe_policy(bucket, operator_arn)
     assert_probe_policy_is_reversible(policy, bucket)
@@ -1195,16 +1275,35 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
                 "this engine evaluates NotPrincipal"
             )
 
+    # THE ROW THAT WAS MISREAD ONCE, AND THE READING THAT MADE IT POSSIBLE.
+    # The operator's read succeeding is not evidence that the exemption works:
+    # a statement the engine ignores entirely produces exactly that observation.
+    # Only the PAIR of reads separates the two, so the pair decides this row.
+    # An operator allowed alongside a foreign key that was also allowed is
+    # INCONCLUSIVE here, and never a pass.
+    exempts = (
+        FAIL
+        if operator_outcome == "denied"
+        else PASS
+        if operator_outcome == "allowed" and foreign_outcome == "denied"
+        else INCONCLUSIVE
+    )
     rows.append(
         (
             "NotPrincipal EXEMPTS the named key on this engine",
-            PASS if operator_outcome == "allowed" else FAIL if operator_outcome == "denied" else INCONCLUSIVE,
+            exempts,
             ""
-            if operator_outcome == "allowed"
+            if exempts == PASS
             else "the operator was denied by a statement that names it in NotPrincipal. This "
             "engine does not read NotPrincipal as an exemption, and the real fence WOULD "
             "HAVE LOCKED THE BUCKET. Do not apply it."
             if operator_outcome == "denied"
+            else "the operator's read succeeded and so did a read by a key this statement "
+            "should have denied, so the statement reached nobody. An exemption and an "
+            "ignored statement are the same observation from the operator's side alone. "
+            "Which one this is decides whether any fence is possible here: run "
+            "--diagnose-policy-engine."
+            if operator_outcome == "allowed"
             else operator_reason,
             "",
             True,
@@ -1216,8 +1315,11 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
             PASS if foreign_outcome == "denied" else FAIL if foreign_outcome == "allowed" else INCONCLUSIVE,
             ""
             if foreign_outcome == "denied"
-            else "a key not named in NotPrincipal was still allowed, so the statement is not "
-            "being enforced at all and a fence built from it would fence nothing"
+            else "a key not named in NotPrincipal was still allowed, so this statement "
+            "denied nobody and a fence built from it would fence nothing. Run "
+            "--diagnose-policy-engine before concluding anything further: whether that is "
+            "NotPrincipal alone or every principal-based policy on this account is the "
+            "difference between a rebuildable fence and none"
             if foreign_outcome == "allowed"
             else foreign_reason,
             "",
@@ -1268,12 +1370,19 @@ class _temporary_policy:
     its documentation.
     """
 
-    def __init__(self, verifier: Verifier, bucket: str, policy: dict, rows: list[tuple]):
+    def __init__(
+        self, verifier: Verifier, bucket: str, policy: dict, rows: list[tuple], label: str = ""
+    ):
         self.verifier = verifier
         self.bucket = bucket
         self.document = json.dumps(policy).encode("utf-8")
         self.rows = rows
+        self.label = label
         self.applied = False
+        # Whether the bucket is back to carrying no policy. A run that could not
+        # take its own document off must not put another one on top of it: the
+        # next window would then be measuring a bucket whose state nobody knows.
+        self.removed = False
 
     def __enter__(self):
         status, body, failure = self.verifier.request(
@@ -1292,7 +1401,7 @@ class _temporary_policy:
             # operator has to be told which way it went.
             self.rows.append(
                 (
-                    "THE PROBE POLICY'S FATE IS UNKNOWN",
+                    "THE PROBE POLICY'S FATE IS UNKNOWN" + self.label,
                     INCONCLUSIVE,
                     f"the PUT of the probe policy got no response ({reason}), so it may or "
                     f"may not be on {self.bucket}. Nothing was deleted, because a DELETE "
@@ -1308,9 +1417,9 @@ class _temporary_policy:
             return self
         self.rows.append(
             (
-                "the probe policy is accepted",
+                "the probe policy is accepted" + self.label,
                 INCONCLUSIVE,
-                f"this engine rejected a NotPrincipal document outright: {reason}",
+                f"this engine rejected the probe document outright: {reason}",
                 "",
                 True,
             )
@@ -1323,10 +1432,11 @@ class _temporary_policy:
         outcome, reason = classify(
             *self.verifier.request(_policy_probe("operator", self.bucket, "DELETE"))
         )
+        self.removed = outcome == "allowed"
         if outcome != "allowed":
             self.rows.append(
                 (
-                    "THE PROBE POLICY IS REMOVED",
+                    "THE PROBE POLICY IS REMOVED" + self.label,
                     FAIL,
                     f"the probe policy is still on {self.bucket} and denies reads under "
                     f"{PROBE_PREFIX} to every key but the operator ({reason}). Re-run this "
@@ -1343,23 +1453,623 @@ class _temporary_policy:
         return False
 
 
+# --------------------------------------------------------------------------
+# WHICH WORLD ARE WE IN: what a bucket policy on this engine actually does.
+#
+# A live run applied a policy whose single statement was a `Deny s3:GetObject`
+# under the probe prefix, exempting the operator by `NotPrincipal`. The endpoint
+# accepted it. The operator then read the object -- and so did a key the
+# statement should have denied. The `Deny` reached nobody.
+#
+# THAT ONE OBSERVATION HAS AT LEAST THREE EXPLANATIONS WITH OPPOSITE
+# CONSEQUENCES, so on its own it settles nothing:
+#
+#   1. This engine stores bucket policies and enforces none of them.
+#   2. It enforces them, but every credential in a project is one principal --
+#      so a `NotPrincipal` naming any key exempts all of them, and no policy can
+#      ever separate two credentials inside a project.
+#   3. It enforces them and resolves principals per key, and `NotPrincipal`
+#      alone is unimplemented -- in which case a fence is rebuildable out of
+#      explicit `Principal` denials.
+#
+# Under (3) the estate keeps a fence. Under (1) and (2) it has none, and the
+# only isolation boundary left is a separate Hetzner project.
+#
+# A PROBE THAT ONLY ONE WORLD EXPLAINS IS THE ONLY KIND WORTH RUNNING HERE.
+# That is the property the earlier probe lacked, and the reason its `PASS` was
+# read as an answer when it was not one. Four things give it to these:
+#
+#   - EVERY WINDOW HAS A BASELINE. Each probe object is read by both keys with
+#     NO policy on the bucket first. Without that, a denial later could be the
+#     key, the object, the endpoint or the policy, and this file's whole
+#     doctrine is that those must not be one verdict.
+#   - EVERY WINDOW CONFIRMS ITS OWN PREMISE. The stored document is read back
+#     while the policy is live and compared to what was sent. A 2xx on the PUT
+#     is not evidence a document is in force, and reads taken against a policy
+#     that was never stored measure nothing.
+#   - THE SUBJECT IS THE SAME KEY IN EVERY WINDOW. The foreign key is read in
+#     all three; what changes between windows is only whether the statement
+#     names it, names the other key, or names everyone. The operator's reads are
+#     kept as corroboration, never as the deciding evidence -- an engine that
+#     exempts the bucket owner would otherwise answer every window the same way
+#     from the operator's side and hide the entire question.
+#   - THE VERDICT IS DRAWN FROM A PAIR, NOT A ROW. A single read is consistent
+#     with several worlds; it is the combination across windows that has one
+#     reading.
+#
+# Window A -- `Principal: "*"`. Is anything enforced at all? If the foreign key
+#   still reads the object with a Deny naming everyone stored verbatim on the
+#   bucket, no bucket policy constrains anything here and nothing below can
+#   mean anything. The run stops.
+# Window B -- `Principal: [foreign key]`. Does a Deny naming a key deny THAT key?
+# Window C -- `Principal: [operator key]`. Does a Deny naming a key deny the
+#   OTHER key? B and C are the same experiment with the name swapped, and their
+#   two foreign reads are the whole answer:
+#
+#       B denied, C allowed -> the name resolves, per key.
+#       B denied, C denied  -> the name is decoration; a Deny reaches every key.
+#       B allowed, C allowed -> a named key matches nobody; only `*` matches.
+#       B allowed, C denied -> the engine matches the complement of the name.
+#
+# Every probe policy here carries the same safety property as the earlier one
+# and goes through the same assertion: one `Deny`, `s3:GetObject` only, confined
+# to the probe prefix, and NO statement on the bucket resource -- so
+# `PutBucketPolicy` and `DeleteBucketPolicy` stay available to every key
+# throughout and no window can lock a bucket. Window A denies the operator by
+# construction, and that is exactly why it may not name a bucket-resource
+# action: the key that has to remove it is one of the keys it denies.
+# --------------------------------------------------------------------------
+
+WINDOW_A = "A"
+WINDOW_B = "B"
+WINDOW_C = "C"
+
+# Verdicts about whether a policy reaches anybody, from window A.
+ENFORCED = "enforced"
+ENFORCED_OWNER_EXEMPT = "enforced-owner-exempt"
+NOT_ENFORCED = "not-enforced"
+
+# Verdicts about how a named principal matches, from windows B and C.
+RESOLVES_PER_KEY = "resolves-per-key"
+NAME_IS_DECORATION = "name-is-decoration"
+NAME_MATCHES_NOBODY = "name-matches-nobody"
+NAME_IS_INVERTED = "name-is-inverted"
+
+UNEXPLAINED = "unexplained"
+
+# What each verdict means, and what it leaves the estate able to do. Written out
+# in full because this is the one line an operator reads once, under pressure,
+# and acts on -- and because three of these five say the fence in this
+# repository protects nothing, which is not a sentence to leave implied.
+FENCE_IS_POSSIBLE = {
+    RESOLVES_PER_KEY: True,
+    NAME_IS_DECORATION: False,
+    NAME_MATCHES_NOBODY: False,
+    NAME_IS_INVERTED: False,
+    NOT_ENFORCED: False,
+    UNEXPLAINED: False,
+}
+
+VERDICT_TEXT = {
+    RESOLVES_PER_KEY: (
+        "PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE.\n"
+        "A Deny naming one access key denied that key and left the other one able to read,\n"
+        "so an explicit `Principal` separates two credentials inside this project.\n\n"
+        "A fence is rebuildable -- but NOT the fence this repository renders. That one\n"
+        "fences by `NotPrincipal`, which was observed live denying nobody, and this run\n"
+        "says nothing to rehabilitate it: it never sent a `NotPrincipal` document. Until\n"
+        "the fence is rebuilt out of explicit `Principal` Deny statements, treat every\n"
+        "bucket it was applied to as unfenced, and do not apply it anywhere else.\n"
+        "Record this output on the issue."
+    ),
+    NAME_IS_DECORATION: (
+        "THE PRINCIPAL ELEMENT IS DECORATION ON THIS ENGINE.\n"
+        "A Deny naming one access key denied the key it named AND the key it did not.\n"
+        "The statement applies to every caller whatever principal it carries.\n\n"
+        "Bucket policies cannot fence one credential from another here: a Deny aimed at a\n"
+        "stranger takes the workload down with it. Applying a fence would be an outage,\n"
+        "not a control. Do not apply one. The remaining isolation boundary is a separate\n"
+        "Hetzner project. Record this output on the issue."
+    ),
+    NAME_MATCHES_NOBODY: (
+        "A NAMED PRINCIPAL MATCHES NOBODY ON THIS ENGINE.\n"
+        "A Deny naming `*` denied the foreign key, so policies ARE enforced -- but a Deny\n"
+        "naming that same key by ARN denied nothing, in either direction.\n\n"
+        "Every credential in this project is one principal as far as this engine is\n"
+        "concerned, so no bucket policy can separate two credentials inside a project. The\n"
+        "fence in this repository protects nothing, and neither does the tenant media\n"
+        "policy. Do not apply either. The remaining isolation boundary is a separate\n"
+        "Hetzner project, which is an architecture decision, not a fix to make here.\n"
+        "Record this output on the issue."
+    ),
+    NAME_IS_INVERTED: (
+        "THIS ENGINE MATCHES THE COMPLEMENT OF THE PRINCIPAL IT IS GIVEN.\n"
+        "A Deny naming a key left THAT key able to read and denied the key it did not name.\n\n"
+        "This is not a documented S3 behaviour and nothing here should be built on it.\n"
+        "Do not apply any policy to any bucket. Record this output verbatim on the issue:\n"
+        "a fence written against this reading would invert the moment the engine is fixed."
+    ),
+    NOT_ENFORCED: (
+        "BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT.\n"
+        "A Deny naming `Principal: \"*\"` was stored on the bucket, verbatim, and the read\n"
+        "it denies succeeded anyway.\n\n"
+        "No bucket policy constrains anything here, so the fence in this repository and the\n"
+        "tenant media policy both protect nothing. Do not apply either, and do not read a\n"
+        "successful PUT as a control ever again. The remaining isolation boundary is a\n"
+        "separate Hetzner project. Record this output on the issue."
+    ),
+    UNEXPLAINED: (
+        "NO SINGLE READING EXPLAINS WHAT THIS ENGINE DID.\n"
+        "The observations below do not fit any of the behaviours this diagnostic can name,\n"
+        "so it is not naming one.\n\n"
+        "Nothing has been left on the bucket. Do not apply any fence. Record the RAW\n"
+        "EVIDENCE block above verbatim on the issue -- an engine answering incoherently is\n"
+        "itself the finding, and guessing at which world it is is exactly the mistake this\n"
+        "diagnostic exists to stop."
+    ),
+}
+
+
+class Observation:
+    """One read, kept with the wire facts the verdict was drawn from.
+
+    An engine question settled by a single live run has to be re-readable later
+    by someone who was not in the terminal, so the evidence is printed rather
+    than only the conclusion -- and the conclusion below is a reading OF this,
+    which is the distinction the withdrawn `NotPrincipal` result lost.
+    """
+
+    def __init__(self, window: str, role: str, status, code, outcome: str, reason: str):
+        self.window = window
+        self.role = role
+        self.status = status
+        self.code = code
+        self.outcome = outcome
+        self.reason = reason
+
+    def line(self) -> str:
+        status = "---" if self.status is None else str(self.status)
+        line = (
+            f"  {self.window:<10} read as {self.role:<8}  HTTP {status:<4} "
+            f"code {self.code or '-':<22} {self.outcome}"
+        )
+        return line + (f"  -- {_one_line(self.reason, 120)}" if self.reason else "")
+
+
+def _observe(verifier: Verifier, bucket: str, window: str, role: str, key: str) -> Observation:
+    """One signed read of one probe object, as one role.
+
+    Sent through `request` rather than `run` deliberately: `run` caches by
+    probe, and the same read under three different policies is three different
+    facts. A cached answer here would report a later window's verdict from an
+    earlier window's policy.
+    """
+    status, body, failure = verifier.request(_read(bucket, role, key))
+    outcome, reason = classify(status, body, failure)
+    return Observation(window, role, status, s3_error_code(body), outcome, reason)
+
+
+def diagnostic_policy_id(bucket: str) -> str:
+    return f"engine-diagnostic-probe-{bucket}"
+
+
+def diagnostic_policy(bucket: str, sid: str, principal) -> dict:
+    """One `Deny s3:GetObject` under the probe prefix, aimed at `principal`.
+
+    `principal` is the only thing that differs between windows, which is what
+    makes the comparison between them mean something.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Id": diagnostic_policy_id(bucket),
+        "Statement": [
+            {
+                "Sid": sid,
+                "Effect": "Deny",
+                "Principal": principal,
+                "Action": "s3:GetObject",
+                "Resource": f"arn:aws:s3:::{bucket}/{PROBE_PREFIX}*",
+            }
+        ],
+    }
+
+
+def _diagnostic_plan(
+    operator_arn: str = "<the operator key's ARN>", foreign_arn: str = "<the foreign key's ARN>"
+) -> tuple:
+    """The three windows, in the order they run.
+
+    One definition, so the plan `--dry-run` prints is the plan the run sends.
+    The defaults are placeholders for that dry run, which reads no credential.
+    """
+    return (
+        (WINDOW_A, "ProbeDenyEveryPrincipal", {"AWS": "*"}),
+        (WINDOW_B, "ProbeDenyTheForeignKey", {"AWS": [foreign_arn]}),
+        (WINDOW_C, "ProbeDenyTheOperatorKey", {"AWS": [operator_arn]}),
+    )
+
+
+def enforcement_verdict(foreign: str, operator: str) -> str:
+    """What window A's two reads say about whether a policy reaches anybody.
+
+    THE FOREIGN READ DECIDES IT, not the operator's. An engine that exempts the
+    bucket owner from its own bucket policies would answer the operator
+    `allowed` in every window -- and gating on that read alone would call such
+    an engine "not enforced" and stop, throwing away the answer. The operator's
+    read is kept because whether the owner is exempt is a real finding of its
+    own, but it is never the gate.
+    """
+    if foreign not in ("allowed", "denied") or operator not in ("allowed", "denied"):
+        return UNEXPLAINED
+    if foreign == "allowed":
+        # A Deny naming everyone that denied the operator and not the foreign
+        # key is not a behaviour any reading here covers.
+        return UNEXPLAINED if operator == "denied" else NOT_ENFORCED
+    return ENFORCED if operator == "denied" else ENFORCED_OWNER_EXEMPT
+
+
+def principal_verdict(named: str, unnamed: str) -> str:
+    """How this engine matches a named principal, from the foreign key's two reads.
+
+    `named` is the foreign key's read in window B, where the statement names it.
+    `unnamed` is its read in window C, where the statement names the operator
+    instead. One key, one object, one action, one difference between the two
+    documents -- so the pair has one reading and a single row would have four.
+    """
+    if named not in ("allowed", "denied") or unnamed not in ("allowed", "denied"):
+        return UNEXPLAINED
+    if named == "denied":
+        return RESOLVES_PER_KEY if unnamed == "allowed" else NAME_IS_DECORATION
+    return NAME_MATCHES_NOBODY if unnamed == "allowed" else NAME_IS_INVERTED
+
+
+def _masked(text: str, masks: dict[str, str]) -> str:
+    for value, label in masks.items():
+        text = text.replace(value, label)
+    return text
+
+
+def _key_label(role: str, access_key: str) -> str:
+    """A principal an operator can recognise without it being an identifier.
+
+    The evidence block exists to be pasted into the issue that asked the
+    question, and this repository is public. The last four characters are enough
+    to tell the two keys apart and to check either against the Console; the
+    whole id is not something to publish for that.
+    """
+    return f"<{role} key ...{access_key[-4:]}>"
+
+
+def _window(
+    verifier: Verifier,
+    bucket: str,
+    *,
+    window: str,
+    policy: dict,
+    probe_key: str,
+    rows: list[tuple],
+    evidence: list[str],
+    masks: dict[str, str],
+) -> dict[str, Observation]:
+    """Apply one probe policy, read the object as both keys, remove it again.
+
+    Returns the observations, or an empty mapping when the window produced no
+    interpretable evidence. That covers three cases and they are one answer
+    here: the PUT was refused, what came back off the bucket is not what was
+    sent, or the document could not be taken off again. Reads under the first
+    two would be the bucket answering about some other document; after the third
+    the bucket still carries a policy, so a later window would be measuring a
+    state nobody established. Each has already been reported as its own row by
+    the time this returns.
+    """
+    assert_probe_policy_is_reversible(policy, bucket)
+    observations: dict[str, Observation] = {}
+    label = f" (probe {window})"
+    evidence.append(
+        f"WINDOW {window} -- sent:   {_masked(json.dumps(policy, sort_keys=True), masks)}"
+    )
+
+    with _temporary_policy(verifier, bucket, policy, rows, label) as applied:
+        if applied.applied:
+            status, reason, body = read_stored_policy(verifier, bucket)
+            if status == PASS:
+                evidence.append(
+                    f"WINDOW {window} -- stored: "
+                    + _masked(_one_line(_decoded(body), 1200), masks)
+                )
+                status, reason = compare_policy_bytes(body, applied.document)
+            rows.append(
+                (
+                    f"probe {window}: the bucket stores the document that was sent",
+                    status,
+                    reason,
+                    "a 2xx on the PUT is not evidence the document is in force",
+                    status != PASS,
+                )
+            )
+            if status == PASS:
+                for role in ("foreign", "operator"):
+                    observation = _observe(verifier, bucket, f"window {window}", role, probe_key)
+                    evidence.append(observation.line())
+                    observations[role] = observation
+    return observations if applied.removed else {}
+
+
+def _cleanup_rows(verifier: Verifier, bucket: str) -> list[tuple]:
+    return [
+        ("probe object removed: " + problem, FAIL, "", "", False)
+        for problem in cleanup(verifier, bucket)
+    ]
+
+
+def diagnose_policy_engine(
+    verifier: Verifier, *, bucket: str, replace_existing: bool
+) -> tuple[list[tuple], list[str], str]:
+    """Settle what a bucket policy does on this engine. Returns rows, evidence, verdict.
+
+    Three reversible windows in one process, in an order chosen so that every
+    row below the first is interpretable: window A establishes that a policy
+    reaches anybody at all, and B and C then ask what a NAME in one changes.
+    Run the other way round, B's `allowed` would be unreadable -- a principal
+    that did not match, or an engine that enforces nothing -- and it is exactly
+    that kind of one-sided observation that was recorded as an answer before.
+    """
+    rows: list[tuple] = []
+    evidence: list[str] = []
+
+    accounts = {}
+    for role in ("operator", "foreign"):
+        account, reason = account_of(verifier, role)
+        if account is None:
+            rows.append((f"{role} credential resolves its account", INCONCLUSIVE, reason, "", True))
+            return rows, evidence, VERDICT_TEXT[UNEXPLAINED]
+        accounts[role] = account
+    if accounts["operator"] != accounts["foreign"]:
+        rows.append(
+            (
+                "both credentials are in one account",
+                FAIL,
+                f"the operator is in {accounts['operator']} and the foreign key in "
+                f"{accounts['foreign']}. A key outside this account is denied by the project "
+                f"boundary, so every denial below would be that boundary and not the policy "
+                f"-- which is the exact substitution this whole file exists to prevent. "
+                f"Nothing has been written.",
+                "",
+                True,
+            )
+        )
+        return rows, evidence, VERDICT_TEXT[UNEXPLAINED]
+    rows.append(("both credentials are in one account", PASS, "", accounts["operator"], False))
+
+    account = accounts["operator"]
+    operator_key = verifier.credentials["operator"][0]
+    foreign_key = verifier.credentials["foreign"][0]
+    operator_arn = f"arn:aws:iam:::user/{account}:{operator_key}"
+    foreign_arn = f"arn:aws:iam:::user/{account}:{foreign_key}"
+    masks = {
+        operator_arn: f"arn:aws:iam:::user/{account}:{_key_label('operator', operator_key)}",
+        foreign_arn: f"arn:aws:iam:::user/{account}:{_key_label('foreign', foreign_key)}",
+    }
+
+    free, refusal, leftover = _policy_slot_is_free(
+        verifier, bucket, replace_existing=replace_existing, own_ids=(diagnostic_policy_id(bucket),)
+    )
+    if not free:
+        rows.append(refusal)
+        return rows, evidence, VERDICT_TEXT[UNEXPLAINED]
+    if leftover:
+        # A leftover probe policy from an interrupted run has to come off BEFORE
+        # the baseline below, not when window A replaces it. A baseline read
+        # taken while it is still on the bucket measures the leftover, and the
+        # control every verdict here rests on would be a reading of the wrong
+        # document.
+        outcome, reason = classify(
+            *verifier.request(_policy_probe("operator", bucket, "DELETE"))
+        )
+        rows.append(
+            (
+                "the leftover probe policy is removed before anything is measured",
+                PASS if outcome == "allowed" else INCONCLUSIVE,
+                "" if outcome == "allowed" else reason,
+                "",
+                outcome != "allowed",
+            )
+        )
+        if outcome != "allowed":
+            return rows, evidence, VERDICT_TEXT[UNEXPLAINED]
+
+    # Every object is written before any policy exists, so no window's Deny can
+    # be what refused a write, and the objects are removed after the last policy
+    # has been taken off again.
+    keys = {
+        name: f"{PROBE_PREFIX}engine-{name.lower()}-{uuid.uuid4().hex}.txt"
+        for name in (WINDOW_A, WINDOW_B, WINDOW_C)
+    }
+    for name, key in keys.items():
+        write = Probe(
+            "operator",
+            "write the probe object",
+            operation="put-object",
+            method="PUT",
+            bucket=bucket,
+            key=key,
+        )
+        outcome, reason = classify(*verifier.request(write))
+        if outcome != "allowed":
+            rows.append((f"the probe object for window {name} is written", INCONCLUSIVE, reason, "", True))
+            return rows + _cleanup_rows(verifier, bucket), evidence, VERDICT_TEXT[UNEXPLAINED]
+
+    # THE CONTROL EVERY VERDICT BELOW RESTS ON. With no policy on the bucket,
+    # both keys must be able to read every probe object. Without it a denial in
+    # a window could be the key, the object or the endpoint, and a denial whose
+    # cause is unknown is the substitution that produced this whole programme.
+    evidence.append("BASELINE -- no policy on the bucket")
+    unattributable = []
+    for name, key in keys.items():
+        for role in ("foreign", "operator"):
+            observation = _observe(verifier, bucket, f"baseline {name}", role, key)
+            evidence.append(observation.line())
+            if observation.outcome != "allowed":
+                unattributable.append(f"{role} on the window {name} object ({observation.outcome})")
+    if unattributable:
+        rows.append(
+            (
+                "both keys read the probe objects with NO policy in force",
+                INCONCLUSIVE,
+                "with nothing on the bucket every read must succeed, and these did not: "
+                + "; ".join(unattributable)
+                + ". A denial under a policy would then be unattributable, so no window "
+                "below could mean anything. Nothing further was applied.",
+                "",
+                True,
+            )
+        )
+        return rows + _cleanup_rows(verifier, bucket), evidence, VERDICT_TEXT[UNEXPLAINED]
+    rows.append(
+        (
+            "both keys read the probe objects with NO policy in force",
+            PASS,
+            "",
+            "the control every verdict below rests on",
+            False,
+        )
+    )
+
+    plan = {window: (sid, principal) for window, sid, principal in _diagnostic_plan(operator_arn, foreign_arn)}
+
+    window_a = _window(
+        verifier,
+        bucket,
+        window=WINDOW_A,
+        policy=diagnostic_policy(bucket, *plan[WINDOW_A]),
+        probe_key=keys[WINDOW_A],
+        rows=rows,
+        evidence=evidence,
+        masks=masks,
+    )
+    if not window_a:
+        return rows + _cleanup_rows(verifier, bucket), evidence, VERDICT_TEXT[UNEXPLAINED]
+
+    enforcement = enforcement_verdict(window_a["foreign"].outcome, window_a["operator"].outcome)
+    rows.append(
+        (
+            "probe A: a Deny naming every principal reaches the foreign key",
+            PASS if enforcement in (ENFORCED, ENFORCED_OWNER_EXEMPT) else FAIL,
+            ""
+            if enforcement in (ENFORCED, ENFORCED_OWNER_EXEMPT)
+            else "the foreign key read an object a stored Deny on `Principal: \"*\"` covers, "
+            "so no bucket policy on this account constrains anything"
+            if enforcement == NOT_ENFORCED
+            else "the operator was denied and the foreign key was not, by one statement "
+            "naming every principal. No reading here explains that",
+            "",
+            enforcement not in (ENFORCED, ENFORCED_OWNER_EXEMPT),
+        )
+    )
+    if enforcement == ENFORCED_OWNER_EXEMPT:
+        # A real finding, and the reason the operator's reads are corroboration
+        # rather than evidence: an engine that spares the bucket owner answers
+        # the operator `allowed` in every window, which would look identical in
+        # B and C whatever the principal did.
+        rows.append(
+            (
+                "probe A: the same Deny also reaches the operator",
+                FAIL,
+                "the operator read an object a Deny naming every principal covers, so this "
+                "engine exempts the bucket owner from its own bucket policies. Nothing below "
+                "rests on the operator's reads, so the run continues -- but no fence can ever "
+                "constrain the key that owns the bucket",
+                "",
+                False,
+            )
+        )
+    if enforcement not in (ENFORCED, ENFORCED_OWNER_EXEMPT):
+        return (
+            rows + _cleanup_rows(verifier, bucket),
+            evidence,
+            VERDICT_TEXT[NOT_ENFORCED if enforcement == NOT_ENFORCED else UNEXPLAINED],
+        )
+
+    window_b = _window(
+        verifier,
+        bucket,
+        window=WINDOW_B,
+        policy=diagnostic_policy(bucket, *plan[WINDOW_B]),
+        probe_key=keys[WINDOW_B],
+        rows=rows,
+        evidence=evidence,
+        masks=masks,
+    )
+    if not window_b:
+        return rows + _cleanup_rows(verifier, bucket), evidence, VERDICT_TEXT[UNEXPLAINED]
+    rows.append(
+        (
+            "probe B: a Deny naming the foreign key reaches that key",
+            PASS if window_b["foreign"].outcome == "denied" else FAIL,
+            "" if window_b["foreign"].outcome == "denied" else "it was allowed",
+            "",
+            False,
+        )
+    )
+
+    window_c = _window(
+        verifier,
+        bucket,
+        window=WINDOW_C,
+        policy=diagnostic_policy(bucket, *plan[WINDOW_C]),
+        probe_key=keys[WINDOW_C],
+        rows=rows,
+        evidence=evidence,
+        masks=masks,
+    )
+    if not window_c:
+        return rows + _cleanup_rows(verifier, bucket), evidence, VERDICT_TEXT[UNEXPLAINED]
+    rows.append(
+        (
+            "probe C: a Deny naming the OPERATOR key spares the foreign key",
+            PASS if window_c["foreign"].outcome == "allowed" else FAIL,
+            "" if window_c["foreign"].outcome == "allowed" else "it was denied",
+            "with probe B above, this pair is the whole answer; either row alone fits two "
+            "engines that differ on whether any fence is possible",
+            False,
+        )
+    )
+
+    verdict = principal_verdict(window_b["foreign"].outcome, window_c["foreign"].outcome)
+    rows.append(
+        (
+            "A BUCKET POLICY CAN FENCE ONE KEY FROM ANOTHER HERE",
+            PASS if FENCE_IS_POSSIBLE[verdict] else FAIL,
+            "" if FENCE_IS_POSSIBLE[verdict] else "see the verdict below",
+            "",
+            not FENCE_IS_POSSIBLE[verdict],
+        )
+    )
+    return rows + _cleanup_rows(verifier, bucket), evidence, VERDICT_TEXT[verdict]
+
+
 def read_credentials(
-    environ: dict[str, str], *, require_all: bool = True
+    environ: dict[str, str], *, require_all: bool = True, needed: tuple | None = None
 ) -> dict[str, tuple[str, str]]:
     """The credentials for each role, from the environment and nowhere else.
 
     `require_all` is relaxed only by `--show-account`, which answers a question
-    about one credential at a time and writes nothing. Every mode that reaches
-    a verdict about a fence needs all three, because a verdict about a fence is
-    a statement about which credentials it separates.
+    about one credential at a time and writes nothing. `needed` narrows which
+    roles a mode insists on: a verdict about a FENCE is a statement about which
+    credentials it separates and needs all three, while the engine diagnostic
+    reaches no verdict about a fence and asks its question with two. Demanding a
+    credential a mode never sends is an argument an operator has to find, and
+    every one of those is a chance to paste the wrong value.
     """
     credentials = {}
     missing = []
+    wanted = tuple(ROLE_ENV) if needed is None else needed
     for role, (key_name, secret_name) in ROLE_ENV.items():
         access_key = environ.get(key_name)
         secret_key = environ.get(secret_name)
         if not access_key or not secret_key:
-            missing.append(f"{key_name}/{secret_name}")
+            if role in wanted:
+                missing.append(f"{key_name}/{secret_name}")
             continue
         credentials[role] = (access_key, secret_key)
     if missing and require_all:
@@ -1473,6 +2183,7 @@ def report(
     applied: bool,
     clean_message: str = "",
     banner: str = "",
+    failure_summary: str = "the fence is not doing what it must",
 ) -> int:
     """`rows` are `(name, status, reason, note, critical)`.
 
@@ -1521,7 +2232,7 @@ def report(
                 file=stream,
             )
     if failed:
-        print(f"\n{len(failed)} check(s) FAILED: the fence is not doing what it must.", file=stream)
+        print(f"\n{len(failed)} check(s) FAILED: {failure_summary}.", file=stream)
     if inconclusive:
         print(
             f"\n{len(inconclusive)} check(s) INCONCLUSIVE. An inconclusive check is not a pass "
@@ -1566,9 +2277,16 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         help="ask the live engine whether NotPrincipal exempts, reversibly; run this first",
     )
     parser.add_argument(
+        "--diagnose-policy-engine",
+        action="store_true",
+        help="settle what a bucket policy does on this engine -- whether it is enforced at "
+        "all, and whether a named principal separates one key from another; reversible, "
+        "and needs only --bucket",
+    )
+    parser.add_argument(
         "--replace-existing-policy",
         action="store_true",
-        help="allow --probe-notprincipal on a bucket that already carries a policy",
+        help="allow a probe mode on a bucket that already carries that probe's own policy",
     )
     parser.add_argument(
         "--preflight",
@@ -1625,33 +2343,56 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
             "other account names a principal that does not exist.",
         )
 
-    required = [
-        name
-        for name, value in (
+    # `--diagnose-policy-engine` asks a question about the ENGINE and reads no
+    # policy: it writes its own three documents and removes each one. Requiring
+    # a rendered fence for it would mean rendering the very document the answer
+    # decides whether to build, and every argument an operator does not have to
+    # type is one they cannot mistype into a production bucket.
+    needs = (
+        (("--bucket", args.bucket),)
+        if args.diagnose_policy_engine
+        else (
             ("--bucket", args.bucket),
             ("--foreign-control-bucket", args.foreign_control_bucket),
             ("--policy-file", args.policy_file),
         )
-        if not value
-    ]
+    )
+    required = [name for name, value in needs if not value]
     if required:
-        parser.error(f"{', '.join(required)} required unless --show-account is given")
+        parser.error(f"{', '.join(required)} required for this mode")
 
-    try:
-        with open(args.policy_file, "rb") as handle:
-            policy_document = handle.read()
-    except OSError as error:
-        print(f"error: could not read --policy-file: {error}", file=sys.stderr)
-        return 2
+    policy_document = b""
+    if args.policy_file:
+        try:
+            with open(args.policy_file, "rb") as handle:
+                policy_document = handle.read()
+        except OSError as error:
+            print(f"error: could not read --policy-file: {error}", file=sys.stderr)
+            return 2
 
     probe_key = f"{PROBE_PREFIX}{uuid.uuid4().hex}.txt"
-    checks = build_checks(
-        bucket=args.bucket,
-        foreign_control_bucket=args.foreign_control_bucket,
-        policy_document=policy_document,
-        probe_key=probe_key,
-        versioning_already_enabled=args.versioning_already_enabled,
+    checks = (
+        []
+        if args.diagnose_policy_engine
+        else build_checks(
+            bucket=args.bucket,
+            foreign_control_bucket=args.foreign_control_bucket,
+            policy_document=policy_document,
+            probe_key=probe_key,
+            versioning_already_enabled=args.versioning_already_enabled,
+        )
     )
+
+    if args.dry_run and args.diagnose_policy_engine:
+        # The three documents, with the principals shown as the roles they are
+        # built from. Nothing is sent, no credential is read, and an operator
+        # can read exactly what would reach the bucket before it does.
+        for window, sid, principal in _diagnostic_plan():
+            print(
+                f"window {window}  "
+                + json.dumps(diagnostic_policy(args.bucket, sid, principal), sort_keys=True)
+            )
+        return 0
 
     if args.dry_run:
         for check in checks:
@@ -1667,12 +2408,51 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         verifier = Verifier(
             endpoint=args.endpoint,
             region=args.region,
-            credentials=read_credentials(environ),
+            credentials=read_credentials(
+                environ,
+                needed=("operator", "foreign") if args.diagnose_policy_engine else None,
+            ),
             transport=transport,
         )
     except VerifierError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
+
+    if args.diagnose_policy_engine:
+        try:
+            rows, evidence, verdict = diagnose_policy_engine(
+                verifier, bucket=args.bucket, replace_existing=args.replace_existing_policy
+            )
+        except VerifierError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        # The evidence goes above the rows so the verdict is the last thing on
+        # the screen, and the evidence is a chronological log of what happened
+        # rather than a footnote to a conclusion drawn from it. Access key ids
+        # are shown by their last four characters, so the whole block is safe to
+        # paste into an issue -- which is the only way it gets recorded at all.
+        print("RAW EVIDENCE -- record this block verbatim; it names no secret\n")
+        for line in evidence:
+            print(line)
+        print("")
+        # THE VERDICT IS PRINTED WHATEVER THE ROWS SAY, and printed last.
+        # `report`'s own closing lines are conditional -- the clean message on
+        # nothing having failed, the banner on a CRITICAL row having failed --
+        # and a run can end outside both: an engine that exempts the bucket
+        # owner produces a FAIL row that is a side finding, and the answer to
+        # the question the operator ran this to settle would have gone unprinted.
+        code = report(
+            rows,
+            [],
+            sys.stdout,
+            applied=False,
+            clean_message="\nEvery probe answered and every probe policy came off again.",
+            banner="*** NOTHING WAS APPLIED AND NO FENCE WAS WRITTEN. Read the verdict below.",
+            failure_summary="read the verdict below. Nothing was applied and no fence was "
+            "written; a FAIL here is a finding about the engine, not a broken run",
+        )
+        print(f"\n{verdict}")
+        return code
 
     if args.probe_notprincipal:
         try:
