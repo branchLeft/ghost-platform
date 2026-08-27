@@ -19,6 +19,16 @@ apply step in this runbook is a step that may write a control that controls
 nothing. Sections 1e, 2c and "Adding a new operational bucket later" are gated
 on it explicitly.
 
+**Section 0 has run, and its answer is narrower than its wording was.** It found
+that no shape constrains the bucket-owning project's own keys, and printed that
+as "not enforced on this account" — an overclaim, because every reader in the
+experiment was a key in that project. Whether policies are evaluated for
+principals *outside* it is a separate question with its own section (0b) and its
+own tracking issue,
+[branchLeft/workspace#304](https://github.com/branchLeft/workspace/issues/304).
+The verdict text has been rescoped to what it measures; the fence remains
+unbuildable either way, because it fences two keys inside one project.
+
 **Three other paths reach an apply, and only one of them is gated.**
 
 - `db/RUNBOOK-db.md`'s "The backup bucket" step is gated, with the same gate.
@@ -162,10 +172,18 @@ first and why nothing below substitutes for either.
 ## Order of work
 
 **Section 0 comes before everything, and nothing below it runs until it has
-answered.** It asks whether a bucket policy on this engine does anything at all,
-and three of its five possible answers mean no fence can be built here by any
-document. Running section 1 first would apply a control whose effect is unknown
-to the bucket holding the estate's only offsite backups.
+answered.** It asks whether a bucket policy on this engine does anything at all
+to the keys in the bucket's own project, and three of its five possible answers
+mean no fence can be built here by any document. Running section 1 first would
+apply a control whose effect is unknown to the bucket holding the estate's only
+offsite backups.
+
+**Section 0b is the other half of that question, and it gates nothing below it.**
+It asks whether a policy reaches a principal *outside* the bucket's project, and
+its answer decides the replacement architecture rather than any step in this
+file — a working cross-project grant says nothing about fencing two keys inside
+one project, which is what every apply step here does. Run it once, record the
+output, and hand it back.
 
 **Fence `branchleft-db-backups` first, and only start the second bucket once
 the first has passed verification.** Losing write access to Pulumi state is
@@ -320,7 +338,7 @@ next. There are six, and they are not degrees of the same answer:
 | `EVERY CREDENTIAL IN THIS PROJECT IS ONE PRINCIPAL` | A `Deny` naming **one** of this project's keys denied **both** of them, and one naming another account's principal denied neither. The name resolves — to the single storage user every key in the project shares. | No bucket policy separates two credentials inside one project, so neither the fence nor the tenant media policy protects anything. A principal deny **does** still discriminate across projects, so a project per tenant is the mechanism that remains — an architecture decision for the platform owner. |
 | `THE PRINCIPAL ELEMENT IS DECORATION ON THIS ENGINE` | The subject key was denied whether the statement named it, named the other key, or named a principal in an account that is not ours. | No principal-based control works at any scope, so a project per tenant does not rescue this either. A fence aimed at a stranger takes the workload down with it. Do not apply any fence. |
 | `A NAMED PRINCIPAL MATCHES NOBODY ON THIS ENGINE` | `Principal: "*"` denied the subject key, so policies are enforced — but **no** ARN denied anybody, including the ARN of the key doing the reading. | The ARN form this repo builds is not being resolved. Do not apply any fence. Worth one more experiment on the principal **spelling** before per-tenant projects are treated as the only option. |
-| `BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT` | Every `Deny` was stored verbatim and denied nobody — including one on `Principal: "*"`, which no principal semantics can read as excluding the caller. | Nothing a bucket policy says is enforced here. Do not apply any fence, and stop reading a successful `PutBucketPolicy` as evidence of anything. |
+| `BUCKET POLICIES ARE NOT ENFORCED AGAINST THIS PROJECT'S OWN KEYS` | Every `Deny` was stored verbatim and denied nobody — including one on `Principal: "*"`, which no principal semantics can read as excluding the caller. **Every reader in this mode is a key in the bucket's own project, so that is the whole of what it settles.** | No bucket policy separates two credentials inside one project. Do not apply any fence, and stop reading a successful `PutBucketPolicy` as evidence of anything. Then run **section 0b** — whether policies are evaluated for principals *outside* this project is a different question with a different answer, and this verdict does not touch it. |
 | `THIS ENGINE MATCHES THE COMPLEMENT OF THE PRINCIPAL IT IS GIVEN` | A `Deny` naming the subject key left **that** key reading, and denying anyone else denied it. | Not a documented S3 behaviour, and nothing may be built on it. Do not apply any policy to any bucket — a fence written against this reading inverts the day the engine is fixed. Record the output verbatim. |
 | `NO SINGLE READING EXPLAINS WHAT THIS ENGINE DID` | The observations fit none of the above. | Nothing was applied. Record the evidence and stop — an engine answering incoherently is itself the finding, and guessing which world it is is the exact mistake this diagnostic exists to prevent. |
 
@@ -359,15 +377,223 @@ Rows that stop it before it reaches a verdict, and what each means:
   `--replace-existing-policy`; anything else is refused whether or not that flag
   is passed.
 
-This tests the **engine**, not the bucket, so its answer holds for the whole
-account: it is run once, against `branchleft-db-backups`, and section 2 does not
-repeat it.
+This tests the **engine**, not the bucket, so its answer holds for every bucket
+in this project: it is run once, against `branchleft-db-backups`, and section 2
+does not repeat it.
 
-**Do not go past this section on anything but
-`PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE`** — and on that verdict the next
-step is still not section 1: the fence this repository renders is built on
+**What it does not test, and cannot.** Every credential it signs with belongs to
+the bucket's own project, so its strongest verdict is a statement about *this
+project's own keys* and nothing wider. Section 0b asks the other half.
+
+**Do not APPLY A FENCE — do not go on to section 1 — on anything but
+`PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE`**, and on that verdict the next step
+is still not section 1: the fence this repository renders is built on
 `NotPrincipal`, which the same finding says denies nobody, so it has to be
 rebuilt out of explicit `Principal` denials first. Hand the output back.
+
+**This stop is about applying a fence, not about stopping altogether.** Section
+0b below is read-only and is the sanctioned next step after any verdict here that
+is not `PER-KEY PRINCIPALS RESOLVE` — most of all after
+`BUCKET POLICIES ARE NOT ENFORCED AGAINST THIS PROJECT'S OWN KEYS`, whose whole
+point is that it has NOT settled the account-wide question. Run 0b, record its
+output, and hand that back too.
+
+---
+
+## 0b. Settle whether a policy reaches a principal outside this project
+
+**Section 0 answers what a bucket policy does to the keys in the bucket's own
+project. This answers whether it does anything to a key outside it — and the two
+answers are independent.** An engine that evaluates policies for foreign and
+anonymous callers while bypassing evaluation for the bucket owner's own keys
+produces section 0's loudest verdict word for word, so "no shape constrains our
+keys" and "policies are off" are one observation from inside the project and two
+different worlds outside it.
+
+Hetzner's own documentation says the second world is the likely one, and both
+pages are worth reading before the run:
+
+- The [S3 credentials FAQ](https://docs.hetzner.com/storage/object-storage/faq/s3-credentials/)
+  documents cross-project grants as a supported approach, with the note that in
+  `arn:aws:iam:::user/p<project_id>:<access_key>` you *"Replace `<project_id>`
+  with the ID of the project with your S3 credentials — not the project that
+  contains your Buckets."* That is a documented feature no engine that ignored
+  policies could offer.
+- The [buckets & objects FAQ](https://docs.hetzner.com/storage/object-storage/faq/buckets-objects/)
+  says a public bucket is one where *"we create and apply the access policies for
+  you"*, granting anonymous read while *"file listing remains denied"* — a live
+  policy evaluated for a principal that is not merely foreign but
+  unauthenticated.
+
+**Which world we are in decides the replacement architecture**, so this runs
+before any decision about per-tenant isolation and before any media design.
+
+### 0b-i. The grantee credential
+
+The grantee is the **estate-project** Object Storage credential — the key pair
+for the project that holds `branchleft-pulumi-state`, not the one that holds the
+buckets. Read it from the password manager. There is zero third-party exposure by
+construction: the key that gains access is ours.
+
+Confirm it resolves to a different project before anything else. This writes
+nothing:
+
+```bash
+FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>' \
+FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>' \
+FENCE_GRANTEE_ACCESS_KEY_ID='<estate-project key id>' \
+FENCE_GRANTEE_SECRET_ACCESS_KEY='<estate-project secret>' \
+  python3 infra/provisioning/scripts/verify-bucket-fence.py --show-account
+```
+
+The operator row must print `p15766609`. **The grantee row must print something
+else.** If both print the same account, stop and find the right credential: a
+grantee inside the bucket's own project re-creates the exact blind spot this
+section exists to close, and the probe refuses to run on it — but finding that
+out from `--show-account` costs nothing and finding it out from the probe costs a
+round trip.
+
+**Then confirm the grantee row against the Console.** The grantee's ARN is built
+as `arn:aws:iam:::user/p<project_id>:<access_key>`, and the `<project_id>` is
+read from the grantee's own `ListAllMyBuckets` owner id — which is *assumed* to
+equal the Console project number, proven for the bucket project but not for this
+one. Open the Hetzner Cloud Console, select the project that holds the grantee
+credential, and confirm its project number matches the digits the grantee row
+printed after the `p`. This one glance is the control for the whole run: if the
+number is wrong, both windows will deny and the tool will read that as the
+provider failing to honour its own documented grant, when the real cause is an
+ARN that named a principal that does not exist. There is no way to check this
+from inside the tool — the Console is the control.
+
+### 0b-ii. The run
+
+```bash
+export FENCE_OPERATOR_ACCESS_KEY_ID='<operator key id>'
+export FENCE_OPERATOR_SECRET_ACCESS_KEY='<operator secret>'
+export FENCE_GRANTEE_ACCESS_KEY_ID='<estate-project key id>'
+export FENCE_GRANTEE_SECRET_ACCESS_KEY='<estate-project secret>'
+
+python3 infra/provisioning/scripts/verify-bucket-fence.py --probe-foreign-grant \
+  --bucket branchleft-db-backups --grantee-is-ours
+```
+
+Add `--dry-run` to print both documents, sending nothing and reading no
+credential. Run it that way first: the second document is the one worth looking
+at before agreeing to it.
+
+`--grantee-is-ours` is required, and without it the probe stops after printing
+the grantee's ARN and writing nothing. **What you are acknowledging is *who*, not
+*whether*.**
+
+**What each window grants, and what the worst case is.**
+
+| Window | Document | Worst case if the engine ignores `Resource` scoping |
+|---|---|---|
+| `G1` | `Allow s3:GetObject` to the grantee's ARN on `arn:aws:s3:::branchleft-db-backups/fence-probe/*` | our own estate-project key can read every object in our own backup bucket, for the seconds the window is open |
+| `G2` | Hetzner's documented shape verbatim — principal as a **string**, `s3:*`, and **both** `arn:aws:s3:::branchleft-db-backups` and `.../*` | nothing worse: `G2` already names the whole bucket, so `Resource` scoping is not what is holding it back. It grants our own estate-project key full control of the backup bucket while the window is open |
+
+**`G2` is acceptable for one reason: the grantee is our own key.** Point it at a
+third party's ARN and the same document hands them the bucket. The tool refuses
+any principal that is not the ARN it resolved from the grantee credential itself,
+so this is enforced in code as well as stated here — but do not weaken that guard
+to run the probe against somebody else's key. Each window's document is removed at the
+end of that window, before the next one goes on, and each removal is verified by
+re-reading as the grantee.
+
+**Neither document can expose the bucket publicly, and that is checked twice.**
+Structurally, a `Principal` of `*` and an `Allow` carrying `NotPrincipal` are
+both refused outright — the second because on an `Allow` it grants every
+principal *except* the one named, which includes the anonymous caller. Then the
+whole document is evaluated through `bucketpolicy.decide` and refused if the
+anonymous caller gains read, list or `PutBucketPolicy` on the bucket, on a probe
+object, or on a real backup object under `dumps/`. The two checks are deliberate
+duplication: a structural rule nobody thought to write catches nothing, and the
+evaluator asks who can actually do what rather than what the document says.
+
+> **Do not run this during a restore, a restore drill, or the nightly backup
+> window** — the same caveat as section 0, for the same reason. These documents
+> grant rather than deny, so they cannot break a read in flight; but the run
+> writes probe objects, lists object versions and deletes them, and a run
+> competing with `prune_backups.py` is noise nobody needs while reading evidence.
+
+**Copy the whole output — the `RAW EVIDENCE` block included — onto
+[branchLeft/workspace#304](https://github.com/branchLeft/workspace/issues/304).**
+Access key ids are printed by their last four characters only, so the block names
+no identifier and is safe to paste anywhere. Recording it is what closes the
+issue; there is no PR to carry a trailer.
+
+### 0b-iii. The verdicts
+
+| Verdict | What it means | What happens next |
+|---|---|---|
+| `A BUCKET POLICY REACHES A PRINCIPAL OUTSIDE THIS BUCKET'S PROJECT` | Both shapes granted. Policies **are** evaluated for non-owner principals, and the engine is not merely matching one published template. | Read it next to section 0 rather than instead of it — both hold: evaluation happens, and the bucket owner's own keys bypass it. A project per tenant with a cross-project grant is a documented mechanism that works as deployed, and native public-bucket visibility is the anonymous-read half of the same machinery. **Choosing it is the platform owner's decision.** Nothing here rehabilitates fencing two keys inside one project. |
+| `ONLY THE DOCUMENTED GRANT SHAPE REACHES A FOREIGN PRINCIPAL` | The narrow `Allow s3:GetObject` was inert; Hetzner's documented document granted. The implementation is honouring the **template**, not the semantics. | Every policy written for this provider must be the documented shape verbatim, and a document that merely means the same thing is inert. Which element carries it — principal form, action wildcard, or resource pair — is worth one more experiment before anything is built on it. |
+| `A NARROW GRANT REACHES A FOREIGN PRINCIPAL AND THE DOCUMENTED SHAPE DOES NOT` | The reverse: the narrow grant worked and Hetzner's own published example did not. | Policies are evaluated for foreign principals, so the account-wide "not enforced" claim is wrong — and Hetzner's published example does not work as deployed. Raise it with them carrying this output verbatim. Treat the narrow shape as the only one demonstrated. |
+| `NO CROSS-PROJECT GRANT REACHED THIS BUCKET, IN EITHER SHAPE` | Both documents were stored verbatim, confirmed live, removed — and the grantee was denied throughout. | **First rule out the ARN.** Two causes fit: the provider does not honour its own documented grant, OR the grantee ARN did not resolve because the account id read from `ListAllMyBuckets` is not the Console project number (0b-i's Console glance is exactly this control). Only once the ARN is confirmed right does the finding stand: taken with section 0, no bucket policy this estate can write has been observed doing anything, and native public-bucket visibility becomes **unproven** rather than assumed — test it directly before any media design depends on it. Record verbatim: with the ARN confirmed, this is the reproduction a support request needs. |
+| `THE PROJECT BOUNDARY THIS PROBE ASSUMES DOES NOT EXIST` | With **no** policy on the bucket, a credential in a different account read an object in this one. No window was sent. | The most consequential line in this file if it holds. Check the grantee credential is the one you meant — both accounts are printed above and they differ — and that the object read was this run's own probe object. Do not provision a tenant on the assumption that a project separates anything until it is reproduced or explained. |
+| `THIS RUN PROVED NOTHING ABOUT A CROSS-PROJECT GRANT` | A window produced no readable evidence: the document was refused, the stored document was not the one sent, two reads disagreed, or the document would not come off. | **An unproven run is not a negative result.** The rows say which failure it was. If a probe document is still on the bucket, that row carries the command that removes it and it comes first — a leftover document from this mode is a **grant**. |
+
+Rows that stop it before it reaches a verdict, or that fire mid-run — every one
+this mode can print, so a row you meet under pressure is one you can look up:
+
+- **`operator|grantee credential resolves its account` — `INCONCLUSIVE`.** A
+  `ListAllMyBuckets` did not return an owner id — a bad key, a wrong secret, or a
+  request the endpoint saw as unsigned. Nothing was written. Re-read the
+  credential and re-run.
+- **`the grantee is in a DIFFERENT account from the bucket` — `FAIL`.** Both
+  credentials resolve to the same account. Nothing was written. Go back to
+  0b-i.
+- **`the grantee is acknowledged as ours` — `INCONCLUSIVE`.** `--grantee-is-ours`
+  was not passed. The row prints the ARN this run would grant to; confirm it is
+  a credential in this estate and re-run with the flag. Nothing was written.
+- **`the leftover GRANT is removed before anything is measured` — `PASS` or
+  `INCONCLUSIVE`.** A previous run left its own grant document on the bucket, so
+  a foreign key held access until this removal. `PASS` means it came off cleanly
+  and the run continues; `INCONCLUSIVE` means it would not, and the run stops so
+  it does not measure a bucket that still carries a grant.
+- **`the probe object for window <G1|G2> is written` — `INCONCLUSIVE`.** The
+  operator could not write the object each window reads. Nothing further was
+  applied. Check the operator credential and re-run.
+- **`the baseline reads are attributable` — `INCONCLUSIVE`.** With nothing on the
+  bucket, the operator must read every probe object and the grantee's answer must
+  be classifiable **and the same twice**. One was not, so a read under a grant
+  would be unattributable. Nothing further was applied.
+- **`probe <G1|G2>: the bucket stores the document that was sent` — `FAIL`.** The PUT
+  returned 2xx and what came back off the bucket is not what went on it. This backend is
+  on record accepting a configuration and silently dropping part of it, so no read taken
+  under that document means anything. No verdict is reported and none should be inferred.
+- **`probe <G1|G2>: the same read twice, 2s apart, agrees` — `INCONCLUSIVE`.** The
+  grantee's two reads under the live document disagreed, so the read had not
+  settled. The window is dropped; the bucket is left clean, so the other window
+  still runs.
+- **`probe <G1|G2>: the grant is gone once its document is removed` — `FAIL`.**
+  The grantee still read the object after the document came off, so whatever
+  allowed the read was not the grant and the window shows nothing.
+- **`the probe policy is accepted (probe <G1|G2>)` — `INCONCLUSIVE`.** The engine
+  rejected the grant document outright (`MalformedPolicy` or similar). Nothing
+  was applied and nothing deleted; the bucket is clean, so the other window
+  still runs. **This is expected for G1 if the engine only honours the
+  documented shape — it is why G2 still runs.**
+- **`THE PROBE POLICY IS REMOVED (probe <G1|G2>)` — `FAIL`.** A **grant** document
+  is still on the bucket. That is a credential in another project holding access
+  it should not have: act on that row before anything else. It carries the exact
+  `delete-bucket-policy` command and the document's `Id`.
+- **`THE PROBE POLICY'S FATE IS UNKNOWN (probe <G1|G2>)` — `INCONCLUSIVE`.** The
+  PUT of a **grant** document got no response, so it may or may not be on the
+  bucket, and nothing was deleted (a blind DELETE would remove whatever is there).
+  Check by hand with `get-bucket-policy`; a policy whose `Id` is
+  `foreign-grant-probe-branchleft-db-backups` is this probe, and because it is a
+  grant, removing it is urgent. The run stops — the bucket is not verified clean.
+- **`the bucket carries no policy to displace` — `INCONCLUSIVE`.** A leftover from
+  any of this file's three probe modes carries an `Id` the tool recognises and is
+  cleared by re-running with `--replace-existing-policy`. A leftover whose `Id` is
+  `foreign-grant-probe-branchleft-db-backups` is a **grant** and the message says
+  so.
+
+**Nothing in this section applies a fence, and no verdict here licenses one.** A
+working cross-project grant is good news for a per-tenant architecture and says
+nothing about separating two keys inside one project, which section 0 already
+settled.
 
 ---
 
@@ -442,10 +668,15 @@ entirely produces that exact operator read, and reading it as an exemption is
 the withdrawn conclusion at the top of this file.
 
 - **`NotPrincipal EXEMPTS the named key` — `FAIL`.** Stop. This engine does not
-  read `NotPrincipal` as an exemption, and applying the real fence would have
-  locked the bucket permanently. Nothing has been applied. Record the output and
-  hand it back: bucket policies cannot fence anything in this account, and the
-  remaining boundary is separate Hetzner projects.
+  read `NotPrincipal` as an exemption — it denied the operator, whom the
+  statement names as exempt — so applying the **`NotPrincipal`-based** fence
+  would have locked the bucket permanently. Nothing has been applied. Record the
+  output and hand it back. **Do not read this as "no fence is possible":** a
+  `Deny` that reached the operator is an *enforced* deny, which is evidence the
+  engine evaluates policies against a named key at all — the `PER-KEY PRINCIPALS
+  RESOLVE` world, where a fence rebuilt from explicit `Principal` denials could
+  still work. Which world this is, section 0 decides; this row only rules out
+  the `NotPrincipal` shape.
 - **`NotPrincipal EXEMPTS the named key` — `INCONCLUSIVE`.** The operator's read
   succeeded and so did the foreign key's, so the statement reached nobody and
   this row cannot tell an exemption from an ignored statement. **This is what

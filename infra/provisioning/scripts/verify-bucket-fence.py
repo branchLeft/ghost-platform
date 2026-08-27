@@ -43,6 +43,28 @@ long comment above `diagnose_policy_engine` sets out how each window earns it.
 fence in this repository is actually built on: does this backend read
 `NotPrincipal` as an exemption, or as decoration?
 
+`--probe-foreign-grant` IS THE OTHER HALF OF THE ENGINE QUESTION. Every reader
+in the diagnostic above is a key belonging to the bucket's own project, so "no
+shape constrains the owner's own keys" and "no policy is evaluated at all" are
+one observation from inside that project. They are not one fact. An engine that
+evaluates policies for foreign and anonymous callers while bypassing evaluation
+for the bucket owner's keys produces exactly that output, and this provider
+documents two features only such an engine could provide: cross-project `Allow`
+grants, and public bucket visibility implemented as an automatically applied
+anonymous-read policy with listing denied.
+
+So this mode reads with a credential from ANOTHER project, and refuses to run at
+all if that credential resolves to the bucket's own account -- an owner key as
+grantee would re-create the blind spot the mode exists to close. It grants
+twice: once with a narrow `Allow s3:GetObject` on the probe prefix, and once
+with the provider's documented cross-project shape verbatim, because an
+implementation that pattern-matches a published template would honour the second
+and ignore the first. That difference decides how every policy in this estate
+has to be written, so a run that tested one shape would answer the wrong
+question. Every document it sends is `Allow`-only and asserted to deny nobody
+before it is sent; an `Allow` cannot lock a bucket, and the assertion makes that
+a property of the code rather than of the brief it was written to.
+
 Every other guard here, and both guards outside this file, validate a document
 against a MODEL of S3 evaluation. None of them touches Hetzner's implementation,
 which is undocumented on this point. If its principal match short-circuits
@@ -140,10 +162,17 @@ accepted as arguments:
     FENCE_OPERATOR_ACCESS_KEY_ID / FENCE_OPERATOR_SECRET_ACCESS_KEY
     FENCE_WORKLOAD_ACCESS_KEY_ID / FENCE_WORKLOAD_SECRET_ACCESS_KEY
     FENCE_FOREIGN_ACCESS_KEY_ID  / FENCE_FOREIGN_SECRET_ACCESS_KEY
+    FENCE_GRANTEE_ACCESS_KEY_ID  / FENCE_GRANTEE_SECRET_ACCESS_KEY
 
 The foreign role is any real key in the same project that has no business in
 this bucket. It must be a live key with an entitlement somewhere, named by
 `--foreign-control-bucket`, or its denials prove nothing.
+
+THE GRANTEE ROLE IS THE OPPOSITE OF THE FOREIGN ROLE. `--probe-foreign-grant`
+uses it and nothing else does: it is a key in a DIFFERENT project from the
+bucket, and the one thing that makes the grant probe mean anything. The mode
+resolves its account from the credential itself and stops if it matches the
+bucket's.
 
 `--diagnose-policy-engine` takes the operator and foreign pairs only. It reaches
 no verdict about a fence -- a verdict about a fence is a statement about which
@@ -251,11 +280,36 @@ ROLE_ENV = {
     "operator": ("FENCE_OPERATOR_ACCESS_KEY_ID", "FENCE_OPERATOR_SECRET_ACCESS_KEY"),
     "workload": ("FENCE_WORKLOAD_ACCESS_KEY_ID", "FENCE_WORKLOAD_SECRET_ACCESS_KEY"),
     "foreign": ("FENCE_FOREIGN_ACCESS_KEY_ID", "FENCE_FOREIGN_SECRET_ACCESS_KEY"),
+    "grantee": ("FENCE_GRANTEE_ACCESS_KEY_ID", "FENCE_GRANTEE_SECRET_ACCESS_KEY"),
 }
+
+# Which roles each mode signs as. Stated per mode rather than defaulted to "all
+# of them": the grantee belongs to another project, so a fence verification that
+# demanded one would be asking an operator to export a credential it never
+# sends, and every variable an operator has to find is a chance to paste the
+# wrong value into a production run.
+FENCE_ROLES = ("operator", "workload", "foreign")
+DIAGNOSTIC_ROLES = ("operator", "foreign")
+GRANT_ROLES = ("operator", "grantee")
 
 PASS = "PASS"
 FAIL = "FAIL"
 INCONCLUSIVE = "INCONCLUSIVE"
+
+
+def _finding_status(shown: bool, unproven: bool) -> str:
+    """The status for a headline row asserting a property was or was not shown.
+
+    `PASS` when the property was demonstrated, `FAIL` when its opposite was, and
+    `INCONCLUSIVE` when the run settled nothing. A headline that printed `FAIL`
+    for an unproven run would assert the negative -- "no, a policy does NOT reach
+    a foreign principal" from reads that never classified -- which is the exact
+    substitution `_grant_row` and `classify` exist to prevent, made one level up
+    in the row a skimmer reads first and pastes onto the tracker.
+    """
+    if shown:
+        return PASS
+    return INCONCLUSIVE if unproven else FAIL
 
 
 class VerifierError(Exception):
@@ -1066,6 +1120,18 @@ def probe_policy_id(bucket: str) -> str:
     return f"notprincipal-probe-{bucket}"
 
 
+def probe_family_ids(bucket: str) -> tuple:
+    """Every `Id` this file writes a probe policy under.
+
+    One list, because each probe mode has to recognise the documents the OTHERS
+    leave behind. A document this repository wrote and documents as safe to
+    replace, met by a mode that does not know the Id, is refused as a stranger's
+    -- which sends an operator to remove by hand something the tool would have
+    cleared, on a bucket they were told not to touch by hand.
+    """
+    return (probe_policy_id(bucket), diagnostic_policy_id(bucket), foreign_grant_policy_id(bucket))
+
+
 def probe_policy(bucket: str, operator_arn: str) -> dict:
     """A policy that answers the `NotPrincipal` question and cannot lock anything.
 
@@ -1192,6 +1258,26 @@ def _policy_slot_is_free(
     ), False
 
 
+def _leftover_description(bucket: str, stored_id: str | None) -> str:
+    """What a probe document this tool wrote is doing while it sits there.
+
+    A leftover `Deny` costs nothing and an operator can finish their coffee. A
+    leftover `Allow` is a credential in another project holding access to this
+    bucket, which is the one leftover worth interrupting something for -- so the
+    two cannot share a sentence, and the Id is what tells them apart.
+    """
+    if stored_id == foreign_grant_policy_id(bucket):
+        return (
+            f"IT IS A GRANT, NOT A DENY: it leaves a credential in another project holding "
+            f"read access to {bucket} that it is not meant to have. Removing it is the "
+            f"urgent half of this, and replacing it costs nothing."
+        )
+    return (
+        f"It denies reads under {PROBE_PREFIX} to every key but the operator and constrains "
+        f"nothing else, so replacing it costs nothing."
+    )
+
+
 def _existing_policy_refusal(
     bucket: str, stored_id: str | None, replace_existing: bool, own_ids: tuple
 ) -> tuple:
@@ -1213,11 +1299,9 @@ def _existing_policy_refusal(
         return (
             "the bucket carries no policy to displace",
             INCONCLUSIVE,
-            f"a previous --probe-notprincipal run left its own probe policy on {bucket} "
-            f"(Id {stored_id}). It denies reads under {PROBE_PREFIX} to every key but the "
-            f"operator and constrains nothing else, so replacing it costs nothing: re-run "
-            f"this exact command with --replace-existing-policy added, and it is removed at "
-            f"the end of the run.",
+            f"a previous probe run left its own probe policy on {bucket} (Id {stored_id}). "
+            f"{_leftover_description(bucket, stored_id)} Re-run this exact command with "
+            f"--replace-existing-policy added, and it is removed at the end of the run.",
             "",
             True,
         )
@@ -1256,15 +1340,11 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
         return [("operator credential resolves its account", INCONCLUSIVE, reason, "", True)]
     operator_arn = f"arn:aws:iam:::user/{account}:{verifier.credentials['operator'][0]}"
 
-    # BOTH IDS, because this repository writes probe policies under two of them.
-    # A document left by an interrupted run of the OTHER mode is one this repo
-    # wrote and documents as safe to delete; treating it as a stranger's would
-    # send an operator to remove by hand something the tool can replace.
     free, refusal, _ = _policy_slot_is_free(
         verifier,
         bucket,
         replace_existing=replace_existing,
-        own_ids=(probe_policy_id(bucket), diagnostic_policy_id(bucket)),
+        own_ids=probe_family_ids(bucket),
     )
     if not free:
         return [refusal]
@@ -1394,13 +1474,33 @@ class _temporary_policy:
     anticipated outcome, not an exotic one: it is case 4 in
     `RUNBOOK-bucket-fencing.md`'s own list of ways this engine can differ from
     its documentation.
+
+    `consequence` is the sentence describing what a document left on the bucket
+    would do, and it is an argument rather than a constant because the two probe
+    families leave opposite things behind. A stranded `Deny` refuses reads under
+    an unused prefix and hurts nothing; a stranded `Allow` leaves a credential
+    holding access it is not meant to have. Printing the deny sentence over a
+    leftover grant would tell an operator to relax about the one case that is
+    actually exposure.
     """
 
+    DENY_CONSEQUENCE = (
+        f"It denies s3:GetObject under {PROBE_PREFIX} and nothing else, so no real object "
+        f"is affected -- but do not leave it."
+    )
+
     def __init__(
-        self, verifier: Verifier, bucket: str, policy: dict, rows: list[tuple], label: str = ""
+        self,
+        verifier: Verifier,
+        bucket: str,
+        policy: dict,
+        rows: list[tuple],
+        label: str = "",
+        consequence: str = "",
     ):
         self.verifier = verifier
         self.bucket = bucket
+        self.consequence = consequence or self.DENY_CONSEQUENCE
         self.document = json.dumps(policy).encode("utf-8")
         # Read off the document rather than rebuilt from the bucket name. Two
         # modes here write probe policies under different Ids, and the row that
@@ -1416,6 +1516,11 @@ class _temporary_policy:
         # take its own document off must not put another one on top of it: the
         # next window would then be measuring a bucket whose state nobody knows.
         self.removed = False
+        # Set only when the PUT got no response: the document may or may not be
+        # on the bucket, so the bucket is NOT verified clean even though nothing
+        # is `applied`. A caller deciding whether to run a following window has
+        # to tell this apart from a PUT that was cleanly refused.
+        self.fate_unknown = False
 
     def __enter__(self):
         status, body, failure = self.verifier.request(
@@ -1432,6 +1537,7 @@ class _temporary_policy:
             # which is how a fence gets removed by a probe that never applied
             # one; leaving it is the safer half of a genuine dilemma, and the
             # operator has to be told which way it went.
+            self.fate_unknown = True
             self.rows.append(
                 (
                     "THE PROBE POLICY'S FATE IS UNKNOWN" + self.label,
@@ -1441,8 +1547,8 @@ class _temporary_policy:
                     f"here removes whatever is on the bucket rather than only this probe. "
                     f"Check by hand before doing anything else: aws --endpoint-url "
                     f"https://{self.verifier.host} s3api get-bucket-policy --bucket "
-                    f"{self.bucket}. A policy with Id {self.policy_id} is this probe and is "
-                    f"safe to delete.",
+                    f"{self.bucket}. A policy with Id {self.policy_id} is this probe. "
+                    f"{self.consequence}",
                     "",
                     True,
                 )
@@ -1481,9 +1587,8 @@ class _temporary_policy:
                 "THE PROBE POLICY IS REMOVED" + self.label,
                 FAIL,
                 f"the probe policy (Id {self.policy_id}) is still on {self.bucket} after "
-                f"{_REMOVAL_ATTEMPTS} attempts to remove it ({reason}). It denies "
-                f"s3:GetObject under {PROBE_PREFIX} and nothing else, so no real object is "
-                f"affected -- but do not leave it. Re-run this command with "
+                f"{_REMOVAL_ATTEMPTS} attempts to remove it ({reason}). {self.consequence} "
+                f"Re-run this command with "
                 f"--replace-existing-policy: it replaces the leftover probe and removes the "
                 f"replacement, and needs nothing but python3. Failing that, delete it "
                 f"directly with aws --endpoint-url https://{self.verifier.host} s3api "
@@ -1685,14 +1790,24 @@ VERDICT_TEXT = {
         "a fence written against this reading would invert the moment the engine is fixed."
     ),
     NOT_ENFORCED: (
-        "BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT.\n"
+        "BUCKET POLICIES ARE NOT ENFORCED AGAINST THIS PROJECT'S OWN KEYS.\n"
         "Every Deny this run stored was stored verbatim and denied nobody -- including one\n"
         "naming `Principal: \"*\"`, which no principal semantics can read as excluding the\n"
         "caller.\n\n"
-        "No bucket policy constrains anything here, so the fence in this repository and the\n"
-        "tenant media policy both protect nothing. Do not apply either, and do not read a\n"
-        "successful PUT as a control ever again. The remaining isolation boundary is a\n"
-        "separate Hetzner project. Record this output on the issue."
+        "THAT IS THE WHOLE OF WHAT THIS MODE CAN SETTLE, and the wording matters because an\n"
+        "earlier version of this verdict claimed the account. Every reader in every window\n"
+        "here is a credential belonging to the bucket's own project, so an engine that\n"
+        "evaluates policies for foreign and anonymous principals while bypassing evaluation\n"
+        "for the owner's keys produces exactly this output. Run --probe-foreign-grant, with\n"
+        "a credential from another project, to settle that half; until it has, do not say\n"
+        "policies are off account-wide and do not treat native public-bucket visibility --\n"
+        "which this provider implements as an automatically applied anonymous-read policy --\n"
+        "as broken on the strength of this run.\n\n"
+        "No bucket policy separates two credentials INSIDE one project, so the fence in this\n"
+        "repository and the tenant media policy both protect nothing against a key in the\n"
+        "bucket's own project. Do not apply either, and do not read a successful PUT as a\n"
+        "control ever again. The only demonstrated isolation boundary is a separate Hetzner\n"
+        "project. Record this output on the issue."
     ),
     UNEXPLAINED: (
         "NO SINGLE READING EXPLAINS WHAT THIS ENGINE DID.\n"
@@ -1894,8 +2009,18 @@ def _window(
     rows: list[tuple],
     evidence: list[str],
     masks: dict[str, str],
+    roles: tuple = ("foreign", "operator"),
+    assertion=None,
+    consequence: str = "",
+    state: dict | None = None,
 ) -> dict[str, Observation]:
     """Apply one probe policy, read the object as both keys, remove it again.
+
+    `roles` is `(subject, corroboration)`: the key whose reads decide the
+    reading, and the operator read kept beside it as a control. `assertion` is
+    the safety property the document has to satisfy before it is sent -- a
+    `Deny` probe and an `Allow` probe are safe for different reasons and each
+    has its own, so neither mode can inherit the other's guard by accident.
 
     Returns the observations, or an empty mapping when the window produced no
     interpretable evidence. That covers three cases and they are one answer
@@ -1905,21 +2030,32 @@ def _window(
     the bucket still carries a policy, so a later window would be measuring a
     state nobody established. Each has already been reported as its own row by
     the time this returns.
+
+    An EMPTY RETURN COLLAPSES THOSE THREE, and a caller that has to run a
+    following window needs to know which -- the first two leave the bucket clean,
+    the third does not. `state`, when passed, is filled with the
+    `_temporary_policy` object so that caller can read `applied`/`removed`/
+    `fate_unknown` itself. The diagnostic does not pass it and is unchanged.
     """
-    assert_probe_policy_is_reversible(policy, bucket)
+    (assertion or assert_probe_policy_is_reversible)(policy, bucket)
     observations: dict[str, Observation] = {}
     label = f" (probe {window})"
     evidence.append(
         f"WINDOW {window} -- sent:   {_masked(json.dumps(policy, sort_keys=True), masks)}"
     )
 
-    with _temporary_policy(verifier, bucket, policy, rows, label) as applied:
+    with _temporary_policy(verifier, bucket, policy, rows, label, consequence) as applied:
         if applied.applied:
             status, reason, body = read_stored_policy(verifier, bucket)
             if status == PASS:
+                # MASKED BEFORE IT IS TRUNCATED, and the order is load-bearing.
+                # Truncating first can cut an ARN in half, leaving a fragment
+                # `_masked` no longer matches -- so most of an access key id
+                # prints verbatim into the block the runbook calls safe to paste
+                # anywhere.
                 evidence.append(
                     f"WINDOW {window} -- stored: "
-                    + _masked(_one_line(_decoded(body), 1200), masks)
+                    + _one_line(_masked(_decoded(body), masks), 1200)
                 )
                 status, reason = compare_policy_bytes(body, applied.document)
             rows.append(
@@ -1934,8 +2070,10 @@ def _window(
             if status == PASS:
                 observations = _confirmed_reads(
                     verifier, bucket, window=window, probe_key=probe_key,
-                    rows=rows, evidence=evidence,
+                    rows=rows, evidence=evidence, roles=roles,
                 )
+    if state is not None:
+        state["applied"] = applied
     return observations if applied.removed else {}
 
 
@@ -1947,6 +2085,7 @@ def _confirmed_reads(
     probe_key: str,
     rows: list[tuple],
     evidence: list[str],
+    roles: tuple = ("foreign", "operator"),
 ) -> dict[str, Observation]:
     """Both roles' reads, taken twice and required to agree.
 
@@ -1961,7 +2100,7 @@ def _confirmed_reads(
     """
     first = {
         role: _observe(verifier, bucket, f"window {window}", role, probe_key)
-        for role in ("foreign", "operator")
+        for role in roles
     }
     for observation in first.values():
         evidence.append(observation.line())
@@ -1970,7 +2109,7 @@ def _confirmed_reads(
 
     second = {
         role: _observe(verifier, bucket, f"window {window} again", role, probe_key)
-        for role in ("foreign", "operator")
+        for role in roles
     }
     for observation in second.values():
         evidence.append(observation.line())
@@ -2080,7 +2219,7 @@ def diagnose_policy_engine(
         verifier,
         bucket,
         replace_existing=replace_existing,
-        own_ids=(diagnostic_policy_id(bucket), probe_policy_id(bucket)),
+        own_ids=probe_family_ids(bucket),
     )
     if not free:
         rows.append(refusal)
@@ -2305,13 +2444,18 @@ def _read_the_engine(
         )
 
     verdict = principal_verdict(reads[WINDOW_B], reads[WINDOW_C], reads[WINDOW_D], wildcard)
+    status = _finding_status(FENCE_IS_POSSIBLE[verdict], verdict == UNEXPLAINED)
     rows.append(
         (
             "A BUCKET POLICY CAN FENCE ONE KEY FROM ANOTHER HERE",
-            PASS if FENCE_IS_POSSIBLE[verdict] else FAIL,
-            "" if FENCE_IS_POSSIBLE[verdict] else "see the verdict below",
+            status,
+            ""
+            if status == PASS
+            else "the observations do not fit any engine this can name -- see the verdict below"
+            if status == INCONCLUSIVE
+            else "see the verdict below",
             "",
-            not FENCE_IS_POSSIBLE[verdict],
+            status != PASS,
         )
     )
     return verdict
@@ -2334,6 +2478,1086 @@ def _window_row(window: str, reads: dict, claim: str, expected: str, note: str =
     )
 
 
+# --------------------------------------------------------------------------
+# THE OTHER HALF: is a bucket policy evaluated for a principal OUTSIDE this
+# bucket's project?
+#
+# The diagnostic above answers what a policy does to the bucket-owning project's
+# own keys. Every reader in it is such a key, so its strongest reading -- no
+# document reached anybody -- is equally consistent with two engines:
+#
+#   1. Policies are stored and never evaluated, for anyone.
+#   2. Policies ARE evaluated, and the bucket owner's own keys bypass evaluation.
+#
+# From inside the project those are the same output. They are not the same
+# world: under (2) a separate project per tenant plus a cross-project `Allow` is
+# a working, documented isolation mechanism, and native public bucket visibility
+# is the anonymous-read half of it; under (1) neither exists and this provider's
+# own published examples do not function.
+#
+# THE PROVIDER'S DOCUMENTATION MAKES (2) THE ONE TO TEST. Its S3-credentials FAQ
+# documents cross-project grants as a supported approach, with an example whose
+# principal ARN carries the CREDENTIAL's project id rather than the bucket's.
+# Its buckets FAQ states that a public bucket is implemented by automatically
+# applying access policies that grant anonymous read while leaving listing
+# denied -- a live policy, evaluated for a principal that is not merely foreign
+# but unauthenticated. An engine that ignored policies wholesale could not offer
+# either feature.
+#
+# SO THE SUBJECT HAS TO BE A KEY IN ANOTHER PROJECT, AND THE MODE REFUSES TO RUN
+# WITHOUT ONE. A grantee that resolves to the bucket's own account re-creates the
+# exact blind spot this exists to close, and would do it silently: every row
+# would still print, and the verdict would be about owner keys again.
+#
+# TWO SHAPES, BECAUSE A SHAPE IS A HYPOTHESIS HERE.
+#
+#   Window G1 -- `Allow s3:GetObject` to the grantee's ARN, on the probe prefix
+#     only. The narrowest grant that could answer the question.
+#   Window G2 -- the provider's documented cross-project document verbatim: the
+#     principal as a STRING rather than a list, `s3:*` rather than one action,
+#     and BOTH the bucket ARN and the object ARN in `Resource`.
+#
+# An implementation that pattern-matches its own published template honours G2
+# and ignores G1, and "the documented shape is the only one that works" is a
+# finding that changes how every policy in this estate must be written. A run
+# that sent one shape would report `no grant is possible` for that world, which
+# is the same class of mistake as the wildcard gate this file already removed.
+#
+# BOTH ARE `Allow`-ONLY, AND THAT IS ASSERTED, NOT ARGUED.
+# `assert_probe_policy_grants_only` refuses any statement whose `Effect` is not
+# exactly `Allow` before either document is sent.
+#
+# WHY AN `Allow` CANNOT LOCK THIS BUCKET IS AN EMPIRICAL CLAIM HERE, NOT AN
+# APPEAL TO S3 SEMANTICS. "An Allow grants and never refuses" is how AWS and
+# stock Ceph behave, and this engine is neither -- the whole reason this file
+# exists is that its principal handling matches no documented implementation, so
+# an argument from semantics is worth little on it. What carries the safety case
+# is the live run recorded on the predecessor issue: four `Deny` documents were
+# applied to THIS bucket, including one naming `Principal: "*"`, each stored
+# verbatim and confirmed present, and the operator key kept `PutBucketPolicy`
+# and `DeleteBucketPolicy` through all four PUT/DELETE cycles. A document that
+# denies nobody is strictly weaker than a `Principal: "*"` Deny that was
+# observed constraining nobody. That is the evidence; the `Effect` rule is what
+# keeps the documents inside it.
+#
+# WHAT G2 COSTS, STATED WHERE THE SHAPE IS DEFINED. It grants the grantee `s3:*`
+# on the whole bucket for the seconds the window is open. That is acceptable for
+# one reason and one only: THE GRANTEE IS OUR OWN KEY. Swap a third party's ARN
+# in and the same document hands them full control of the bucket. The guard
+# against that is structural -- the principal must equal the ARN this run
+# resolved from the grantee credential itself -- and on top of it the operator
+# has to acknowledge the grantee explicitly with --grantee-is-ours before
+# anything is written.
+#
+# AND THE REMOVAL IS OBSERVED, NOT ASSUMED. After each window the grantee reads
+# again, and must be denied. Without that read, "the grant worked" and "the
+# grant was never what allowed it" are indistinguishable, and the next run
+# starts from a bucket whose state nobody established.
+# --------------------------------------------------------------------------
+
+GRANT_WINDOW_SCOPED = "G1"
+GRANT_WINDOW_DOCUMENTED = "G2"
+
+# The only two action spellings a grant probe may carry: the narrow window's
+# single read action, and the wildcard the provider's published document uses.
+#
+# `s3:*` SUBSUMES EVERY DESTRUCTIVE ACTION, so this list does not bound what the
+# grantee could do in window G2 -- it bounds what a FUTURE EDIT can write. A
+# document naming `s3:DeleteBucket` or `s3:DeleteObject` explicitly is one
+# nobody has reasoned about, and it would pass every other rule here; `s3:*` is
+# accepted only because it is the published shape verbatim, which is the entire
+# point of that window, and because the grantee is our own key for the seconds
+# it is live.
+GRANT_ACTIONS = frozenset({"s3:GetObject", "s3:*"})
+
+GRANT_SUBJECT = "grantee"
+
+# What a document from this mode does if it is ever left on the bucket. Handed
+# to `_temporary_policy` in place of its default, which describes a Deny.
+GRANT_CONSEQUENCE = (
+    "IT IS A GRANT: it leaves a credential in another project holding access to this "
+    "bucket that it is not meant to have, so removing it is urgent rather than tidy."
+)
+
+# The readings. One per coherent engine, over the two shapes.
+CROSS_PROJECT_ALLOW_GRANTS = "cross-project-allow-grants"
+ONLY_THE_DOCUMENTED_SHAPE_GRANTS = "only-the-documented-shape-grants"
+ONLY_THE_SCOPED_SHAPE_GRANTS = "only-the-scoped-shape-grants"
+NO_CROSS_PROJECT_GRANT = "no-cross-project-grant"
+NO_PROJECT_BOUNDARY = "no-project-boundary"
+GRANT_UNPROVEN = "grant-unproven"
+
+# Whether this run OBSERVED a bucket policy reaching a principal outside the
+# bucket's project. Phrased as what was demonstrated rather than as what is
+# true, so the two readings that establish nothing are `False` here for the same
+# reason an INCONCLUSIVE check is not a pass -- and a reading added without an
+# entry fails loudly rather than defaulting to "yes, it works".
+GRANT_DEMONSTRATED = {
+    CROSS_PROJECT_ALLOW_GRANTS: True,
+    ONLY_THE_DOCUMENTED_SHAPE_GRANTS: True,
+    ONLY_THE_SCOPED_SHAPE_GRANTS: True,
+    NO_CROSS_PROJECT_GRANT: False,
+    NO_PROJECT_BOUNDARY: False,
+    GRANT_UNPROVEN: False,
+}
+
+GRANT_VERDICT_TEXT = {
+    CROSS_PROJECT_ALLOW_GRANTS: (
+        "A BUCKET POLICY REACHES A PRINCIPAL OUTSIDE THIS BUCKET'S PROJECT.\n"
+        "A key in another project could not read this bucket with no policy on it, could\n"
+        "read it under an `Allow` naming its ARN on one object prefix, and could read it\n"
+        "again under the provider's documented cross-project shape. Both shapes granted,\n"
+        "and each grant was withdrawn when its document came off.\n\n"
+        "Bucket policies ARE evaluated here, for principals outside the bucket's project,\n"
+        "and the engine is not merely matching one published template. Read this next to\n"
+        "the earlier finding rather than instead of it: both hold at once -- evaluation\n"
+        "happens, and the bucket owner's own keys bypass it.\n\n"
+        "A project per tenant with a cross-project grant is therefore a documented\n"
+        "mechanism that works as deployed, and native public-bucket visibility is the\n"
+        "anonymous-read half of the same machinery. CHOOSING IT IS AN ARCHITECTURE\n"
+        "DECISION FOR THE PLATFORM OWNER, not something to infer from this output. Nothing\n"
+        "here rehabilitates fencing two keys inside one project: do not apply that fence.\n"
+        "Record this output on the issue."
+    ),
+    ONLY_THE_DOCUMENTED_SHAPE_GRANTS: (
+        "ONLY THE DOCUMENTED GRANT SHAPE REACHES A FOREIGN PRINCIPAL.\n"
+        "An `Allow s3:GetObject` naming the grantee's ARN on one object prefix granted\n"
+        "nothing. The same grantee then read the same object under the provider's\n"
+        "documented cross-project document -- principal as a string, `s3:*`, and both the\n"
+        "bucket and object ARNs in `Resource`.\n\n"
+        "Policies ARE evaluated for principals outside this project, so the account-wide\n"
+        "`not enforced` claim is wrong. But this engine is honouring the published\n"
+        "TEMPLATE rather than the semantics behind it, and a document that merely means\n"
+        "the same thing is inert.\n\n"
+        "EVERY POLICY WRITTEN FOR THIS PROVIDER MUST THEREFORE BE THE DOCUMENTED SHAPE\n"
+        "VERBATIM. Which element carries the difference -- the principal form, the action\n"
+        "wildcard, or the resource pair -- is not settled by this run, and is worth one\n"
+        "more experiment before anything is built on it. Do not apply a fence inside one\n"
+        "project. Record this output on the issue."
+    ),
+    ONLY_THE_SCOPED_SHAPE_GRANTS: (
+        "A NARROW GRANT REACHES A FOREIGN PRINCIPAL AND THE DOCUMENTED SHAPE DOES NOT.\n"
+        "An `Allow s3:GetObject` naming the grantee's ARN on one object prefix granted the\n"
+        "read. The provider's own documented cross-project document, sent to the same\n"
+        "grantee on the same bucket in the same run, did not.\n\n"
+        "Policies ARE evaluated for principals outside this project, so the account-wide\n"
+        "`not enforced` claim is wrong -- and the provider's published example does not\n"
+        "work as deployed on this cluster, which is a defect in their documentation or\n"
+        "their engine.\n\n"
+        "Raise it with the provider carrying this output verbatim: it is a reproduction of\n"
+        "their own example failing beside a narrower one that works. Until it is answered,\n"
+        "treat the narrow shape as the only one demonstrated and do not build on the\n"
+        "documented one. Do not apply a fence inside one project. Record this output on\n"
+        "the issue."
+    ),
+    NO_CROSS_PROJECT_GRANT: (
+        "NO CROSS-PROJECT GRANT REACHED THIS BUCKET, IN EITHER SHAPE.\n"
+        "A key in another project was denied with no policy on the bucket, denied under an\n"
+        "`Allow` naming its ARN on one object prefix, and denied under the provider's own\n"
+        "documented cross-project document. Both documents were stored verbatim, confirmed\n"
+        "present while live, and removed.\n\n"
+        "TWO CAUSES FIT THIS, and this run does not tell them apart. Either the provider's\n"
+        "documented cross-project grant does not work as deployed here -- or the grantee\n"
+        "ARN this run built did not resolve, because the account id read from the grantee's\n"
+        "own `ListAllMyBuckets` is not the Console project id the ARN needs. The tool\n"
+        "cannot check the second from inside; §0b of the runbook has you confirm the\n"
+        "grantee's project id in the Console before trusting this verdict as the provider's\n"
+        "fault. RULE THE ARN OUT FIRST.\n\n"
+        "If the ARN is confirmed right, then taken with the earlier finding that no shape\n"
+        "constrains the bucket owner's own keys, no bucket policy this estate can write has\n"
+        "been observed doing anything at all -- and native public-bucket visibility, which\n"
+        "the same documentation says is an automatically applied anonymous-read policy, is\n"
+        "now UNPROVEN rather than assumed. Test it directly before any media design depends\n"
+        "on it.\n\n"
+        "Do not apply any bucket policy anywhere. Record this output VERBATIM on the\n"
+        "issue: with the ARN confirmed, it is the reproduction a support request needs, of\n"
+        "the provider's own documentation failing on their own cluster."
+    ),
+    NO_PROJECT_BOUNDARY: (
+        "THE PROJECT BOUNDARY THIS PROBE ASSUMES DOES NOT EXIST.\n"
+        "With no policy on the bucket at all, a credential resolving to a DIFFERENT\n"
+        "storage account read an object in this one. No window was sent: a grant cannot be\n"
+        "shown to have granted anything to a principal that already had the access.\n\n"
+        "If this holds up it is the most consequential line in this file, because a\n"
+        "separate project is the one isolation boundary the estate still believes in.\n"
+        "Check first that the grantee credential is the one you meant -- both accounts are\n"
+        "printed above, and they differ, so this is not the same-project refusal -- and\n"
+        "that the object read was this run's own probe object.\n\n"
+        "Do not apply any policy, and do not provision a tenant on the assumption that a\n"
+        "project separates anything, until it has been re-run and either reproduced or\n"
+        "explained. Record this output on the issue."
+    ),
+    GRANT_UNPROVEN: (
+        "THIS RUN PROVED NOTHING ABOUT A CROSS-PROJECT GRANT.\n"
+        "Either the run refused before it sent anything -- an account that would not\n"
+        "resolve, a grantee in the bucket's own project, a grantee nobody acknowledged, or\n"
+        "a bucket already carrying a policy -- or a window produced no evidence that can be\n"
+        "read: the document was refused, what came back off the bucket was not what was\n"
+        "sent, two reads of the same object disagreed, or the document could not be taken\n"
+        "off again. The rows above say which, and that row is the one to act on.\n\n"
+        "AN UNPROVEN RUN IS NOT A NEGATIVE RESULT. Do not record it as one and do not\n"
+        "apply any policy on the strength of it. If a probe document is still on the\n"
+        "bucket, that row carries the command that removes it and it comes before\n"
+        "anything else -- a leftover document from this mode is a GRANT. Record this\n"
+        "output on the issue."
+    ),
+}
+
+
+def foreign_grant_policy_id(bucket: str) -> str:
+    return f"foreign-grant-probe-{bucket}"
+
+
+def scoped_grant_policy(bucket: str, grantee_arn: str) -> dict:
+    """The narrowest grant that could answer the question.
+
+    One action, one object prefix, the principal as a list -- the spelling this
+    repository's own generators use everywhere else. If this grants and the
+    documented shape does not, the engine is honouring semantics; if the
+    reverse, it is matching a template.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Id": foreign_grant_policy_id(bucket),
+        "Statement": [
+            {
+                "Sid": "ProbeGrantScopedRead",
+                "Effect": "Allow",
+                "Principal": {"AWS": [grantee_arn]},
+                "Action": "s3:GetObject",
+                "Resource": f"arn:aws:s3:::{bucket}/{PROBE_PREFIX}*",
+            }
+        ],
+    }
+
+
+def documented_grant_policy(bucket: str, grantee_arn: str) -> dict:
+    """The provider's documented cross-project grant, verbatim.
+
+    Three things are deliberately NOT narrowed, because narrowing any of them
+    would make this a different document from the one the documentation
+    publishes and the window would stop answering its question: the principal is
+    a bare STRING rather than a list, the action is `s3:*`, and `Resource` names
+    the bucket ARN as well as the object ARN.
+
+    THAT MEANS THIS DOCUMENT GRANTS THE GRANTEE FULL CONTROL OF THE BUCKET for
+    the seconds it is live -- object writes, object deletes, and the bucket
+    policy itself. It is acceptable for exactly one reason: the grantee is our
+    own credential, in our own estate, and the run has already refused to
+    proceed unless the ARN below is the one it resolved from that credential.
+    ANYONE POINTING THIS AT A THIRD PARTY'S ARN IS HANDING THEM THE BUCKET, and
+    `assert_probe_policy_grants_only` is what stops it happening by edit rather
+    than by intent.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Id": foreign_grant_policy_id(bucket),
+        "Statement": [
+            {
+                "Sid": "ProbeGrantDocumentedShape",
+                "Effect": "Allow",
+                "Principal": {"AWS": grantee_arn},
+                "Action": "s3:*",
+                "Resource": [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"],
+            }
+        ],
+    }
+
+
+# What `--dry-run` puts where the ARN would be. It reads no credential, so there
+# is no ARN to resolve; named once so the dry run and this module cannot drift
+# into printing different placeholders for the same thing.
+GRANTEE_ARN_PLACEHOLDER = "<the grantee key's ARN>"
+
+
+def _grant_plan() -> tuple:
+    """The windows and their builders, in the order they run.
+
+    One definition, so the plan `--dry-run` prints is the plan the run sends.
+    It takes no ARN: each caller applies its own -- the run the one it resolved
+    from the grantee credential, the dry run `GRANTEE_ARN_PLACEHOLDER` -- and a
+    parameter here would have been threaded through and then ignored.
+
+    The narrow shape goes first: it is the smaller grant, and if the engine
+    honours semantics at all it is the one that answers the question at the
+    lower cost.
+    """
+    return (
+        (GRANT_WINDOW_SCOPED, scoped_grant_policy),
+        (GRANT_WINDOW_DOCUMENTED, documented_grant_policy),
+    )
+
+
+def assert_probe_policy_grants_only(policy: dict, bucket: str, grantee_arn: str = "") -> None:
+    """Refuse a grant probe that could refuse anything, or reach anyone else.
+
+    The parallel of `assert_probe_policy_is_reversible`, and separate from it
+    because the two probe families are safe for opposite reasons. A `Deny` probe
+    is safe when it names no bucket-resource action; an `Allow` probe is safe
+    when it is an `Allow` at all, and dangerous when it names the wrong
+    principal. Sharing one function would mean one set of rules that had to be
+    weak enough for both, which is how a guard stops guarding.
+
+    Four rules, each closing a way this could stop being harmless:
+
+      1. EVERY STATEMENT'S `Effect` IS EXACTLY `Allow`. An `Allow` cannot refuse
+         anything, so no document from this mode can lock a bucket -- and that
+         has to be a property of the code rather than of the two documents that
+         happen to be defined above. A `Deny` refused here is also the brief's
+         "no bucket-resource action in a deny" rule, satisfied by there being no
+         deny to check.
+      2. NO `NotPrincipal`. On AWS semantics an `Allow` with `NotPrincipal`
+         grants to every principal EXCEPT the named one, which includes the
+         anonymous caller: it would make the bucket world-readable for the life
+         of the window. That is the opposite of a scoped grant and it arrives by
+         changing one word.
+      3. THE PRINCIPAL NAMES THE GRANTEE UNDER `AWS` AND CARRIES NO OTHER KEY.
+         No wildcard, no second ARN, no substitute -- and no second principal
+         TYPE beside `AWS`. Both routes here read only `Principal["AWS"]`, so a
+         `{"AWS": [grantee], "CanonicalUser": "*"}` or `{"AWS": grantee,
+         "Service": "*"}` would satisfy the identity check while granting a
+         second principal neither route ever looks at. A `*` under `AWS` is
+         anonymous public access, which this probe is explicitly not for; a
+         different ARN is a grant to somebody who did not consent to it. Checked
+         against the ARN the run resolved from the grantee's own credential, so
+         a hand-edited document is refused by the same rule as a typo.
+      4. EVERY RESOURCE IS THIS BUCKET OR SOMETHING INSIDE IT, AND NONE USES
+         `NotResource`. The blast radius of a `Resource` the engine ignores is
+         our own key reading our own bucket; the blast radius of a `Resource`
+         naming the WRONG bucket is a grant on a bucket nobody was reasoning
+         about. `NotResource` is the third inversion beside `NotPrincipal` and
+         `NotAction` -- `decide` ignores it, so on an engine that honours it an
+         `s3:*` grant would apply to everything EXCEPT the named resource, i.e.
+         to `branchleft-tenant-pulumi-state`.
+      5. EVERY ACTION IS ONE OF `GRANT_ACTIONS`, AND NONE USES `NotAction`. The
+         inversion `NotPrincipal` performs on the noun, `NotAction` performs on
+         the verb. The allow-list bounds what a future edit can write rather
+         than what window G2 can do -- `s3:*` already subsumes every destructive
+         action, and is accepted only because it is the published shape
+         verbatim; see `GRANT_ACTIONS`.
+      6. THE DOCUMENT'S `Id` IS THIS MODE'S OWN. A grant document under any
+         other Id would not be recognised as a leftover by the next run, which
+         reads the Id to tell its own probe from a stranger's fence.
+
+    Then the whole document goes to `_refuse_an_anonymous_grant`, which asks the
+    same property as an evaluation question rather than a structural one. Two
+    independent routes to one invariant is the intent, not redundancy: rules
+    that were never written catch nothing.
+
+    `grantee_arn` is optional only so the shapes can be asserted without a live
+    credential in a test or a dry run. Rule 3's identity half is skipped when it
+    is empty -- its wildcard half is not -- and the run itself always passes it.
+    """
+    bucket_arn = f"arn:aws:s3:::{bucket}"
+    expected_id = foreign_grant_policy_id(bucket)
+    if policy.get("Id") != expected_id:
+        raise VerifierError(
+            f"grant probe document's Id is {policy.get('Id')!r}, not {expected_id!r}; a "
+            f"document under any other Id would not be recognised as this mode's leftover "
+            f"by the next run"
+        )
+    statements = policy.get("Statement", [])
+    # THE SHAPE IS CHECKED BEFORE THE CONTENT, because every rule below reads
+    # elements off a mapping and a document that is not one would make the guard
+    # raise an AttributeError instead of refusing. Both outcomes stop the run
+    # before anything is written, but only one of them tells an operator what
+    # was wrong -- and a guard that crashes on a one-character change to a
+    # bracket is not the property-of-the-code this docstring claims.
+    if not isinstance(statements, list) or not statements:
+        raise VerifierError(
+            f"grant probe policy's Statement is {type(statements).__name__}, not a non-empty "
+            f"list; nothing here can reason about that document"
+        )
+    for statement in statements:
+        if not isinstance(statement, dict):
+            raise VerifierError(
+                f"grant probe statement is {type(statement).__name__}, not a mapping"
+            )
+        if statement.get("Effect") != "Allow":
+            raise VerifierError(
+                f"grant probe statement has Effect {statement.get('Effect')!r}; only 'Allow' "
+                f"is permitted here, because an Allow cannot refuse anything and that is the "
+                f"whole reason this mode is safe to point at a production bucket"
+            )
+        if "NotPrincipal" in statement:
+            raise VerifierError(
+                "grant probe statement uses NotPrincipal, which on an Allow grants every "
+                "principal EXCEPT the one named -- including the anonymous caller. That "
+                "would make the bucket world-readable while the window is open"
+            )
+
+        # THE PRINCIPAL IS PARSED BY TYPE, NOT COERCED. `list()` of a mapping
+        # yields its KEYS, so `{"AWS": {"<the grantee arn>": 1}}` would satisfy
+        # the identity rule below while the document's real principal is a map
+        # no engine resolves -- a document that passed the guard and means
+        # something nobody checked. `list()` of an int raises instead, which
+        # stops the run with a traceback rather than a refusal. Both are shapes
+        # this guard has to name, so both are named.
+        principal = statement.get("Principal")
+        if not isinstance(principal, dict) or set(principal) != {"AWS"}:
+            # `set(principal) != {"AWS"}` refuses BOTH a non-`AWS` type and a
+            # SECOND type beside it. Both routes read only `Principal["AWS"]`, so
+            # a `{"AWS": [grantee], "CanonicalUser": "*"}` would pass the
+            # identity check while granting a principal neither route inspects.
+            raise VerifierError(
+                f"grant probe statement's Principal is {principal!r}; it must be a mapping "
+                f"whose only key is 'AWS', or a second principal type would grant someone "
+                f"neither guard here ever looks at"
+            )
+        named = principal["AWS"]
+        if isinstance(named, str):
+            names = [named]
+        elif isinstance(named, list) and all(isinstance(name, str) for name in named):
+            names = named
+        else:
+            raise VerifierError(
+                f"grant probe statement's Principal.AWS is {named!r}; it must be an ARN or a "
+                f"list of ARNs"
+            )
+        if not names:
+            raise VerifierError("grant probe statement names no Principal")
+        if "*" in names:
+            raise VerifierError(
+                "grant probe statement names Principal '*', which grants anonymous access "
+                "to this bucket. Anonymous grants are not what this mode tests and the "
+                "exposure is not worth the window"
+            )
+        if grantee_arn and names != [grantee_arn]:
+            raise VerifierError(
+                f"grant probe statement names {names!r} rather than the grantee ARN this "
+                f"run resolved. A grant reaches whoever it names, so the only principal "
+                f"that may appear here is the credential the operator confirmed is ours"
+            )
+
+        if "NotResource" in statement:
+            raise VerifierError(
+                "grant probe statement uses NotResource, the third inversion beside "
+                "NotPrincipal and NotAction. `decide` ignores it, so on an engine that "
+                "honours it an s3:* grant would apply to every resource EXCEPT the one "
+                "named -- branchleft-tenant-pulumi-state included"
+            )
+        resource = statement.get("Resource")
+        if isinstance(resource, str):
+            resources = [resource]
+        elif isinstance(resource, list) and all(isinstance(entry, str) for entry in resource):
+            resources = resource
+        else:
+            raise VerifierError(
+                f"grant probe statement's Resource is {resource!r}; it must be an ARN or a "
+                f"list of ARNs"
+            )
+        if not resources:
+            raise VerifierError("grant probe statement names no Resource")
+        for entry in resources:
+            if entry != bucket_arn and not entry.startswith(f"{bucket_arn}/"):
+                raise VerifierError(
+                    f"grant probe reaches {entry!r}, which is not {bucket} or an object in "
+                    f"it -- a grant on a bucket this run is not reasoning about"
+                )
+
+        if "NotAction" in statement:
+            raise VerifierError(
+                "grant probe statement uses NotAction, which grants every action EXCEPT the "
+                "one named -- the same inversion as NotPrincipal, applied to the verb"
+            )
+        action = statement.get("Action")
+        if isinstance(action, str):
+            actions = [action]
+        elif isinstance(action, list) and all(isinstance(entry, str) for entry in action):
+            actions = action
+        else:
+            raise VerifierError(
+                f"grant probe statement's Action is {action!r}; it must be an action or a "
+                f"list of them"
+            )
+        if not actions:
+            raise VerifierError("grant probe statement names no Action")
+        for entry in actions:
+            if entry not in GRANT_ACTIONS:
+                raise VerifierError(
+                    f"grant probe grants {entry!r}, which is not one of "
+                    f"{sorted(GRANT_ACTIONS)}. `s3:*` is permitted only because it is the "
+                    f"provider's published document verbatim; a narrower document naming a "
+                    f"destructive action explicitly is one nobody has reasoned about, and it "
+                    f"would authorise it against the bucket holding the estate's only "
+                    f"offsite backups"
+                )
+
+    _refuse_an_anonymous_grant(policy, bucket)
+
+
+# What the anonymous caller must not gain from any document this mode sends.
+# Read and list ARE the exposure a public bucket is; the policy actions are the
+# only way an exposure could outlive the window it was opened in.
+GRANT_EXPOSURE_ACTIONS = ("s3:GetObject", "s3:ListBucket", "s3:PutBucketPolicy")
+
+
+def _refuse_an_anonymous_grant(policy: dict, bucket: str) -> None:
+    """The same property asked as an EVALUATION question, not a structural one.
+
+    The rules above read elements. This asks `decide` -- the repository's model
+    of S3 evaluation, and the same function the pre-flight uses to decide
+    lockout -- who can actually do what under this document. It reaches the
+    refusals above by a different route, which is the point: a structural rule
+    that was never written catches nothing, and a shape nobody anticipated then
+    has two chances to be stopped rather than one. `Principal: "*"` and an
+    `Allow` carrying `NotPrincipal` both grant the anonymous caller, both are
+    already refused above, and both are caught again here.
+
+    THE ANONYMOUS CALLER IS THE ONLY PRINCIPAL THIS CAN BE ASKED ABOUT, and the
+    reason is in `decide` itself: its default for any `arn:aws:iam:::user/`
+    principal is `allow`, because this provider grants every key in a project
+    access to every bucket in it. So asking about a stranger's ARN returns
+    `allow` for an empty document as readily as for a hostile one, and a check
+    built on it would refuse everything. `anonymous` defaults to `deny`, so an
+    `allow` here can only have come from a statement in this document.
+
+    THE RESOURCES ASKED ABOUT ARE CONCRETE, and that is not a detail. `decide`
+    matches a statement's `Resource` PATTERN against the resource it is given,
+    so asking about `arn:aws:s3:::<bucket>/*` asks "does this document cover an
+    object literally named `*`" -- which a statement scoped to `fence-probe/*`
+    does not, and the check would pass a document that grants the world every
+    probe object. One real object inside the probe prefix and one outside it
+    are the two places an exposure lands: the prefix this mode writes to, and
+    the backups the bucket exists for.
+
+    It is a model rather than the live engine, and it is asked about a document
+    that has not been sent -- so it can refuse, and it can never license.
+    """
+    bucket_arn = f"arn:aws:s3:::{bucket}"
+    probed = (
+        bucket_arn,
+        f"{bucket_arn}/{PROBE_PREFIX}probe.txt",
+        f"{bucket_arn}/dumps/a-real-backup.sql.age",
+    )
+    for resource in probed:
+        for action in GRANT_EXPOSURE_ACTIONS:
+            if decide(policy, ANONYMOUS_OWNER, action, resource) != "allow":
+                continue
+            raise VerifierError(
+                f"evaluated against this document, the anonymous caller gains {action} on "
+                f"{resource}. That is a public {bucket} for as long as the window is open, "
+                f"and no probe here is permitted to expose a bucket to anyone. The "
+                f"structural rules did not catch it, so treat this as a shape nobody has "
+                f"reasoned about rather than a rule to relax"
+            )
+
+
+def grant_verdict(scoped: str, documented: str) -> str:
+    """How this engine treats a cross-project grant, per shape.
+
+    Both arguments are the SAME key -- one in another project -- reading the
+    same object under two documents that differ only in how the grant is
+    spelled. Neither row is a verdict on its own: a single `allowed` says the
+    engine evaluated something, and which shapes it evaluated is what decides
+    whether a policy written by this estate would work at all.
+    """
+    reads = (scoped, documented)
+    if any(read not in ("allowed", "denied") for read in reads):
+        return GRANT_UNPROVEN
+    if reads == ("allowed", "allowed"):
+        return CROSS_PROJECT_ALLOW_GRANTS
+    if reads == ("denied", "allowed"):
+        return ONLY_THE_DOCUMENTED_SHAPE_GRANTS
+    if reads == ("allowed", "denied"):
+        return ONLY_THE_SCOPED_SHAPE_GRANTS
+    return NO_CROSS_PROJECT_GRANT
+
+
+BASELINE_HOLDS = "baseline-holds"
+BASELINE_NO_BOUNDARY = "baseline-no-boundary"
+BASELINE_UNUSABLE = "baseline-unusable"
+
+
+def _grant_baseline(
+    verifier: Verifier, bucket: str, *, keys: dict, rows: list[tuple], evidence: list[str]
+) -> str:
+    """With no policy on the bucket: the grantee is denied, the operator is not.
+
+    TWO FACTS, AND THE RUN NEEDS BOTH, on every probe object rather than on one
+    of them. The operator's read is the control -- a grantee denial means
+    nothing if the object is unreadable to everybody, which is what a mistyped
+    key, a missing object and an unreachable endpoint all look like from the
+    grantee's side alone. The grantee's denial is the premise: a grant can only
+    be shown to have granted something to a principal that did not already have
+    it.
+
+    Returns which of the three outcomes this is, rather than a boolean. A
+    grantee that reads the bucket with nothing on it is a FINDING and the
+    loudest one this mode can print; a control that failed is a broken run.
+    Collapsing them into `False` and recovering the difference by reading the
+    rows back would make the verdict depend on a row's wording.
+
+    THE GRANTEE'S BASELINE READ IS TAKEN TWICE AND HAS TO AGREE, and it is the
+    only read here that is. Every other read in this mode is either a control
+    whose failure direction is safe -- the operator's, which produces
+    INCONCLUSIVE -- or already paired by `_confirmed_reads`. This one is the
+    PREMISE: a spurious `denied` establishes a boundary that is not there, and
+    the verdict built on top of it is the loudest wrong answer available. The
+    after-removal read would still catch that case, so a false positive needs
+    two independent transients rather than one; taking this read twice makes it
+    three, for the cost of one request and one pause on a run that happens once.
+    """
+    evidence.append("BASELINE -- no policy on the bucket")
+    unattributable = []
+    reachable = []
+    first: dict = {}
+    for window, key in keys.items():
+        operator = _observe(verifier, bucket, f"baseline {window}", "operator", key)
+        grantee = _observe(verifier, bucket, f"baseline {window}", GRANT_SUBJECT, key)
+        evidence.append(operator.line())
+        evidence.append(grantee.line())
+        first[window] = grantee.outcome
+        if operator.outcome != "allowed":
+            unattributable.append(f"operator on the window {window} object ({operator.outcome})")
+        if grantee.outcome not in ("allowed", "denied"):
+            unattributable.append(f"grantee on the window {window} object ({grantee.outcome})")
+
+    if not unattributable:
+        _sleep(SETTLE_SECONDS)
+        for window, key in keys.items():
+            again = _observe(verifier, bucket, f"baseline {window} again", GRANT_SUBJECT, key)
+            evidence.append(again.line())
+            if again.outcome != first[window]:
+                unattributable.append(
+                    f"grantee on the window {window} object read {first[window]} and then "
+                    f"{again.outcome}"
+                )
+            elif again.outcome == "allowed":
+                reachable.append(f"window {window}")
+
+    if unattributable:
+        rows.append(
+            (
+                "the baseline reads are attributable",
+                INCONCLUSIVE,
+                "with nothing on the bucket the operator must read every probe object, and "
+                "the grantee's answer must be classifiable and the same twice. These were "
+                "not: "
+                + "; ".join(unattributable)
+                + ". A read under a grant would then be unattributable, so no window below "
+                "could mean anything. Nothing further was applied.",
+                "",
+                True,
+            )
+        )
+        return BASELINE_UNUSABLE
+
+    rows.append(
+        (
+            "the grantee is denied with NO policy in force",
+            PASS if not reachable else FAIL,
+            ""
+            if not reachable
+            else "a credential in another project read this bucket with no policy on it ("
+            + ", ".join(reachable)
+            + "). The project boundary this whole probe is built on does not hold, so no "
+            "grant below could be shown to have granted anything. Nothing further was "
+            "applied",
+            "the premise: a grant can only be shown to grant what was not already there. "
+            "The operator read every one of these objects as the control, and the grantee's "
+            f"read was taken twice, {SETTLE_SECONDS:g}s apart",
+            bool(reachable),
+        )
+    )
+    return BASELINE_NO_BOUNDARY if reachable else BASELINE_HOLDS
+
+
+def _grant_window(
+    verifier: Verifier,
+    bucket: str,
+    *,
+    window: str,
+    policy: dict,
+    probe_key: str,
+    grantee_arn: str,
+    rows: list[tuple],
+    evidence: list[str],
+    masks: dict[str, str],
+) -> tuple[str, bool]:
+    """One grant window: `(outcome, clean)`.
+
+    `outcome` is the grantee's read under the live document when the grant's
+    withdrawal was verified -- `"allowed"` or `"denied"` -- and `""` otherwise
+    (a refused PUT, a stored document that is not the one sent, reads that
+    disagreed, or a withdrawal that could not be confirmed). Each of those is
+    already a row by the time this returns.
+
+    `clean` is whether the bucket is verified to carry no policy afterwards, and
+    it is a SEPARATE axis from `outcome`. A window can be inconclusive and clean
+    (G1 rejected outright, bucket untouched) or inconclusive and NOT clean (the
+    removal failed). The caller runs the next window on the first and stops on
+    the second, so collapsing the two into one falsy return -- as an earlier
+    version did -- foreclosed G2 on a clean G1 failure, which is the run where
+    G2's answer matters most. Cleanliness is read from the policy-removal state,
+    never from the after-removal grant read: a DELETE that succeeded leaves no
+    policy on the bucket whatever the grantee then reads.
+
+    THE READ AFTER THE REMOVAL IS NOT BOOKKEEPING. Without it, a grantee allowed
+    under the document and a grantee who was going to be allowed anyway are the
+    same observation. It is taken through `_observe`, which sends rather than
+    reads the outcome cache: the identical read was already made inside the
+    window, and a cached answer here would report the grant's own result as
+    proof the grant had been withdrawn.
+    """
+    state: dict = {}
+    observations = _window(
+        verifier,
+        bucket,
+        window=window,
+        policy=policy,
+        probe_key=probe_key,
+        rows=rows,
+        evidence=evidence,
+        masks=masks,
+        roles=(GRANT_SUBJECT, "operator"),
+        assertion=lambda document, name: assert_probe_policy_grants_only(
+            document, name, grantee_arn
+        ),
+        consequence=GRANT_CONSEQUENCE,
+        state=state,
+    )
+    applied = state["applied"]
+    # Clean iff the bucket carries no policy from this window: the PUT was
+    # removed, or nothing was ever applied and its fate is known (a refused PUT,
+    # not a PUT whose response was lost).
+    clean = applied.removed or (not applied.applied and not applied.fate_unknown)
+    if not observations:
+        return "", clean
+
+    # The document is off the bucket by now -- `_window` returns observations
+    # only when it removed the policy. The pause is the same one the paired
+    # reads use, and for the same reason: every way a just-removed policy can
+    # still be visible biases this read towards `allowed`, which is the
+    # direction that would turn a real grant into an unexplained one.
+    _sleep(SETTLE_SECONDS)
+    after = _observe(verifier, bucket, f"window {window} after removal", GRANT_SUBJECT, probe_key)
+    evidence.append(after.line())
+    rows.append(
+        (
+            f"probe {window}: the grant is gone once its document is removed",
+            PASS if after.outcome == "denied" else FAIL if after.outcome == "allowed" else INCONCLUSIVE,
+            ""
+            if after.outcome == "denied"
+            else "the grantee still read the object after the document came off, so this "
+            "window shows nothing: whatever allowed the read was not the grant. The bucket "
+            "carries no policy, and the next window would be measuring a state nobody has "
+            "established"
+            if after.outcome == "allowed"
+            else after.reason,
+            "without it, `the grant worked` and `it was never needed` are one observation",
+            after.outcome != "denied",
+        )
+    )
+    outcome = observations[GRANT_SUBJECT].outcome if after.outcome == "denied" else ""
+    return outcome, clean
+
+
+def probe_foreign_grant(
+    verifier: Verifier, *, bucket: str, replace_existing: bool, grantee_is_ours: bool
+) -> tuple[list[tuple], list[str], str]:
+    """Settle whether a cross-project `Allow` grants access. Rows, evidence, verdict.
+
+    The order is the safety argument, and every step before the first write is
+    one that can refuse without having touched the bucket: resolve both accounts,
+    refuse a grantee in the bucket's own project, refuse an unacknowledged
+    grantee, assert both documents, then take the policy slot.
+    """
+    rows: list[tuple] = []
+    evidence: list[str] = []
+
+    accounts = {}
+    for role in ("operator", GRANT_SUBJECT):
+        account, reason = account_of(verifier, role)
+        if account is None:
+            rows.append((f"{role} credential resolves its account", INCONCLUSIVE, reason, "", True))
+            return rows, evidence, GRANT_VERDICT_TEXT[GRANT_UNPROVEN]
+        accounts[role] = account
+
+    # THE STRUCTURAL PRECONDITION, AND THE REASON THIS MODE EXISTS. An owner key
+    # as grantee re-creates the blind spot the earlier diagnostic could not see
+    # past, and it would do it silently: every row below would still print and
+    # the verdict would be about owner keys again, under a heading that says
+    # otherwise.
+    #
+    # THE COMPARISON IS OPERATOR-VS-GRANTEE, NOT BUCKET-OWNER-VS-GRANTEE, and it
+    # is sound because the operator IS a bucket-project key -- established, not
+    # assumed. This whole run rests on the operator being able to PUT and DELETE
+    # the bucket's policy, and on Hetzner a key administers a bucket's policy
+    # only from within the bucket's own project. So `operator.account` IS the
+    # bucket's project, and a grantee resolving to it is a grantee in the
+    # bucket's project.
+    if accounts["operator"] == accounts[GRANT_SUBJECT]:
+        rows.append(
+            (
+                "the grantee is in a DIFFERENT account from the bucket",
+                FAIL,
+                f"both credentials resolve to {accounts['operator']}. A grantee inside the "
+                f"bucket's own project is the exact blind spot this mode exists to close: "
+                f"the earlier diagnostic already settled what a policy does to this "
+                f"project's own keys, and repeating it under this heading would answer a "
+                f"different question than the one printed. Supply a credential from another "
+                f"project. Nothing has been written.",
+                "",
+                True,
+            )
+        )
+        return rows, evidence, GRANT_VERDICT_TEXT[GRANT_UNPROVEN]
+    rows.append(
+        (
+            "the grantee is in a DIFFERENT account from the bucket",
+            PASS,
+            "",
+            f"bucket {accounts['operator']}, grantee {accounts[GRANT_SUBJECT]}",
+            False,
+        )
+    )
+
+    grantee_key = verifier.credentials[GRANT_SUBJECT][0]
+    operator_key = verifier.credentials["operator"][0]
+    grantee_arn = f"arn:aws:iam:::user/{accounts[GRANT_SUBJECT]}:{grantee_key}"
+    masks = {
+        f"arn:aws:iam:::user/{accounts['operator']}:{operator_key}": (
+            f"arn:aws:iam:::user/{accounts['operator']}:{_key_label('operator', operator_key)}"
+        ),
+        grantee_arn: (
+            f"arn:aws:iam:::user/{accounts[GRANT_SUBJECT]}:"
+            f"{_key_label('grantee', grantee_key)}"
+        ),
+    }
+
+    # THE ACKNOWLEDGEMENT GATE, and it covers the whole mode rather than the
+    # second window alone. Both documents grant a foreign principal access to a
+    # production bucket, and if this engine ignores `Resource` scoping -- which
+    # is live as a possibility, not theoretical -- the narrow one reaches every
+    # object in the bucket too. The ARN is printed first because the thing being
+    # acknowledged is WHO, not whether.
+    if not grantee_is_ours:
+        rows.append(
+            (
+                "the grantee is acknowledged as ours",
+                INCONCLUSIVE,
+                f"this run would grant {_masked(grantee_arn, masks)} read access to "
+                f"{bucket}, and in window {GRANT_WINDOW_DOCUMENTED} `s3:*` on the whole "
+                f"bucket. That is safe only because the credential is ours. Confirm the ARN "
+                f"above is a credential in this estate and re-run with --grantee-is-ours. "
+                f"Nothing has been written.",
+                "",
+                True,
+            )
+        )
+        return rows, evidence, GRANT_VERDICT_TEXT[GRANT_UNPROVEN]
+    rows.append(
+        (
+            "the grantee is acknowledged as ours",
+            PASS,
+            "",
+            f"granting to {_masked(grantee_arn, masks)}",
+            False,
+        )
+    )
+
+    # EVERY DOCUMENT IS ASSERTED BEFORE ANYTHING IS WRITTEN, for the same reason
+    # the diagnostic does it: a VerifierError raised after the probe objects
+    # exist escapes past the cleanup that removes them.
+    plan = {window: build(bucket, grantee_arn) for window, build in _grant_plan()}
+    for policy in plan.values():
+        assert_probe_policy_grants_only(policy, bucket, grantee_arn)
+
+    free, refusal, leftover = _policy_slot_is_free(
+        verifier,
+        bucket,
+        replace_existing=replace_existing,
+        own_ids=probe_family_ids(bucket),
+    )
+    if not free:
+        rows.append(refusal)
+        return rows, evidence, GRANT_VERDICT_TEXT[GRANT_UNPROVEN]
+    if leftover:
+        # It has to come off before the baseline, not when the first window
+        # replaces it. A baseline read taken while a leftover GRANT is live
+        # would show the grantee allowed and report that the project boundary
+        # does not exist -- the loudest verdict in this file, from a document
+        # this tool wrote.
+        outcome, reason = classify(
+            *verifier.request(_policy_probe("operator", bucket, "DELETE"))
+        )
+        rows.append(
+            (
+                "the leftover GRANT is removed before anything is measured",
+                PASS if outcome == "allowed" else INCONCLUSIVE,
+                # A leftover here is a grant this mode wrote, so until this
+                # DELETE a foreign key held access to the bucket. The neutral
+                # "policy removed" wording would hide that.
+                "a foreign key held access to this bucket until this removal"
+                if outcome == "allowed"
+                else reason,
+                "",
+                outcome != "allowed",
+            )
+        )
+        if outcome != "allowed":
+            return rows, evidence, GRANT_VERDICT_TEXT[GRANT_UNPROVEN]
+
+    keys = {
+        window: f"{PROBE_PREFIX}grant-{window.lower()}-{uuid.uuid4().hex}.txt" for window in plan
+    }
+    for window, key in keys.items():
+        write = Probe(
+            "operator",
+            "write the probe object",
+            operation="put-object",
+            method="PUT",
+            bucket=bucket,
+            key=key,
+        )
+        outcome, reason = classify(*verifier.request(write))
+        if outcome != "allowed":
+            rows.append(
+                (f"the probe object for window {window} is written", INCONCLUSIVE, reason, "", True)
+            )
+            return rows + _cleanup_rows(verifier, bucket), evidence, GRANT_VERDICT_TEXT[GRANT_UNPROVEN]
+
+    try:
+        verdict = _read_the_grant(
+            verifier,
+            bucket,
+            plan=plan,
+            keys=keys,
+            grantee_arn=grantee_arn,
+            rows=rows,
+            evidence=evidence,
+            masks=masks,
+        )
+    finally:
+        rows.extend(_cleanup_rows(verifier, bucket))
+    return rows, evidence, GRANT_VERDICT_TEXT[verdict]
+
+
+def _read_the_grant(
+    verifier: Verifier,
+    bucket: str,
+    *,
+    plan: dict,
+    keys: dict,
+    grantee_arn: str,
+    rows: list[tuple],
+    evidence: list[str],
+    masks: dict[str, str],
+) -> str:
+    """The baseline, then both windows, then the reading drawn from the pair.
+
+    Both windows run even when the first one grants. The question is not `does
+    any grant work` but `which shapes does this engine honour`, and an
+    implementation that matches its own published template while ignoring
+    everything else is a finding that changes how every document in this estate
+    has to be written. Stopping early would answer the easier question.
+
+    AND BOTH RUN EVEN WHEN THE FIRST ONE IS INCONCLUSIVE, as long as the bucket
+    is left clean. G1's PUT being rejected outright (`MalformedPolicy`) or its
+    stored document not matching what was sent are both outcomes this file's own
+    runbook anticipates, and both leave the bucket carrying no policy -- so
+    foreclosing G2, which is the provider's documented shape and the one the
+    architecture question turns on, would answer nothing on exactly the runs
+    that most need G2's answer. Only a window that leaves the bucket NOT verified
+    clean -- a removal that failed, a PUT whose fate is unknown -- stops the run,
+    because layering G2 onto a bucket that may still carry G1's grant is the one
+    thing that is unsafe rather than merely inconclusive.
+    """
+    baseline = _grant_baseline(verifier, bucket, keys=keys, rows=rows, evidence=evidence)
+    if baseline == BASELINE_NO_BOUNDARY:
+        return NO_PROJECT_BOUNDARY
+    if baseline != BASELINE_HOLDS:
+        return GRANT_UNPROVEN
+
+    reads = {}
+    for window, policy in plan.items():
+        outcome, clean = _grant_window(
+            verifier,
+            bucket,
+            window=window,
+            policy=policy,
+            probe_key=keys[window],
+            grantee_arn=grantee_arn,
+            rows=rows,
+            evidence=evidence,
+            masks=masks,
+        )
+        reads[window] = outcome
+        if not clean:
+            # The bucket is not verified clean -- a grant document may still be
+            # on it. The dirty row is already recorded (critical), and running
+            # another window on top of a possibly-live grant is the unsafe case.
+            return GRANT_UNPROVEN
+
+    rows.append(
+        _grant_row(
+            GRANT_WINDOW_SCOPED,
+            reads,
+            "an Allow naming the grantee on one object prefix reaches it",
+        )
+    )
+    rows.append(
+        _grant_row(
+            GRANT_WINDOW_DOCUMENTED,
+            reads,
+            "the provider's documented cross-project shape reaches it",
+            note="the shape a pattern-matching implementation would honour when it ignores "
+            "every equivalent one",
+        )
+    )
+
+    verdict = grant_verdict(reads[GRANT_WINDOW_SCOPED], reads[GRANT_WINDOW_DOCUMENTED])
+    status = _finding_status(GRANT_DEMONSTRATED[verdict], verdict == GRANT_UNPROVEN)
+    rows.append(
+        (
+            "A BUCKET POLICY REACHES A PRINCIPAL OUTSIDE THIS BUCKET'S PROJECT",
+            status,
+            ""
+            if status == PASS
+            else "no window classified a read either way -- see the verdict below"
+            if status == INCONCLUSIVE
+            else "see the verdict below",
+            "",
+            status != PASS,
+        )
+    )
+    return verdict
+
+
+def _grant_row(window: str, reads: dict, claim: str, note: str = "") -> tuple:
+    """One window's contribution, stated as what it observed.
+
+    PASS means the grant reached the grantee. It is not a verdict about the
+    estate -- a grant that works is good news for a per-tenant architecture and
+    says nothing about the fence -- and the reading below is drawn from both
+    rows together.
+
+    THE REASON STATES THE OUTCOME RATHER THAN NAMING A DENIAL, and the status is
+    three-valued for the same reason. `allowed` is a grant reaching the grantee;
+    `denied` is a shape the engine evaluated and did not honour -- a real FAIL
+    against the "a fence is buildable" world. Anything else -- an `error` that
+    `_confirmed_reads` returned because two errors agreed, or the empty string a
+    window left clean but inconclusive returns -- is neither, and calling it FAIL
+    "the grantee was still denied" would print a denial that never happened into
+    the block the runbook tells an operator to paste onto the issue. That is the
+    substitution `classify`'s docstring says this file exists to prevent.
+    """
+    outcome = reads[window]
+    status = PASS if outcome == "allowed" else FAIL if outcome == "denied" else INCONCLUSIVE
+    return (
+        f"probe {window}: {claim}",
+        status,
+        ""
+        if status == PASS
+        else "the grantee was denied under this document"
+        if status == FAIL
+        else f"it was {outcome or 'inconclusive'}; this window settled nothing",
+        note or "one observation; the reading below is drawn from both together",
+        False,
+    )
+
+
 def read_credentials(
     environ: dict[str, str], *, require_all: bool = True, needed: tuple | None = None
 ) -> dict[str, tuple[str, str]]:
@@ -2346,6 +3570,11 @@ def read_credentials(
     reaches no verdict about a fence and asks its question with two. Demanding a
     credential a mode never sends is an argument an operator has to find, and
     every one of those is a chance to paste the wrong value.
+
+    The distinct-key check covers the roles this mode uses and no others. An
+    environment left over from a different mode may well carry a role this one
+    never signs as, and refusing the run because two credentials it will not
+    both send happen to be one key would be a refusal about nothing.
     """
     credentials = {}
     missing = []
@@ -2363,7 +3592,7 @@ def read_credentials(
     if not credentials:
         raise VerifierError("no credentials in the environment: " + ", ".join(missing))
 
-    ids = {role: pair[0] for role, pair in credentials.items()}
+    ids = {role: pair[0] for role, pair in credentials.items() if role in wanted}
     for left in ids:
         for right in ids:
             if left < right and ids[left] == ids[right]:
@@ -2446,7 +3675,7 @@ def show_accounts(verifier: Verifier) -> list[tuple]:
     """
     return [
         (f"{role} credential resolves its account", *_account_row(verifier, role))
-        for role in ("operator", "workload", "foreign")
+        for role in ROLE_ENV
         if role in verifier.credentials
     ]
 
@@ -2565,9 +3794,23 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
     parser.add_argument(
         "--diagnose-policy-engine",
         action="store_true",
-        help="settle what a bucket policy does on this engine -- whether it is enforced at "
-        "all, and whether a named principal separates one key from another; reversible, "
-        "and needs only --bucket",
+        help="settle what a bucket policy does to THIS PROJECT'S OWN KEYS -- whether one is "
+        "enforced against them at all, and whether a named principal separates one from "
+        "another; reversible, and needs only --bucket. For principals outside the project, "
+        "see --probe-foreign-grant",
+    )
+    parser.add_argument(
+        "--probe-foreign-grant",
+        action="store_true",
+        help="settle whether a cross-project Allow grants access, per shape; needs a "
+        "grantee credential in ANOTHER project and --grantee-is-ours, and needs only "
+        "--bucket besides",
+    )
+    parser.add_argument(
+        "--grantee-is-ours",
+        action="store_true",
+        help="acknowledge that FENCE_GRANTEE_* is a credential in this estate. Required by "
+        "--probe-foreign-grant, which grants that ARN access to the bucket",
     )
     parser.add_argument(
         "--replace-existing-policy",
@@ -2625,18 +3868,41 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
             sys.stdout,
             applied=False,
             clean_message="\nEach credential is in the account printed beside it. Render every "
-            "policy with --project-id set to that id WITHOUT its leading `p`; an ARN under any "
-            "other account names a principal that does not exist.",
+            "policy with --project-id set to the OPERATOR's id WITHOUT its leading `p`; an ARN "
+            "under any other account names a principal that does not exist. The grantee role "
+            "is the exception and must NOT match: --probe-foreign-grant refuses to run unless "
+            "its account differs from the operator's.",
         )
 
-    # `--diagnose-policy-engine` asks a question about the ENGINE and reads no
-    # policy: it writes its own three documents and removes each one. Requiring
-    # a rendered fence for it would mean rendering the very document the answer
-    # decides whether to build, and every argument an operator does not have to
-    # type is one they cannot mistype into a production bucket.
+    # `--diagnose-policy-engine` and `--probe-foreign-grant` each ask a question
+    # about the ENGINE and read no policy: each writes its own documents and
+    # removes each one. Requiring a rendered fence for either would mean
+    # rendering the very document the answer decides whether to build, and every
+    # argument an operator does not have to type is one they cannot mistype into
+    # a production bucket.
+    engine_mode = args.diagnose_policy_engine or args.probe_foreign_grant
+    # The three probe modes share one bucket-policy slot and take different
+    # credentials, so two of them named together is an operator expecting an
+    # experiment that is not the one that would run.
+    probes = [
+        name
+        for name, chosen in (
+            ("--probe-notprincipal", args.probe_notprincipal),
+            ("--diagnose-policy-engine", args.diagnose_policy_engine),
+            ("--probe-foreign-grant", args.probe_foreign_grant),
+        )
+        if chosen
+    ]
+    if len(probes) > 1:
+        parser.error(
+            f"{' and '.join(probes)} are separate experiments with different credentials "
+            f"and different documents, sharing one bucket policy slot; run one at a time"
+        )
+    if args.grantee_is_ours and not args.probe_foreign_grant:
+        parser.error("--grantee-is-ours means nothing outside --probe-foreign-grant")
     needs = (
         (("--bucket", args.bucket),)
-        if args.diagnose_policy_engine
+        if engine_mode
         else (
             ("--bucket", args.bucket),
             ("--foreign-control-bucket", args.foreign_control_bucket),
@@ -2659,7 +3925,7 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
     probe_key = f"{PROBE_PREFIX}{uuid.uuid4().hex}.txt"
     checks = (
         []
-        if args.diagnose_policy_engine
+        if engine_mode
         else build_checks(
             bucket=args.bucket,
             foreign_control_bucket=args.foreign_control_bucket,
@@ -2668,6 +3934,17 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
             versioning_already_enabled=args.versioning_already_enabled,
         )
     )
+
+    if args.dry_run and args.probe_foreign_grant:
+        # Both documents, with the principal shown as the role it is built from.
+        # Nothing is sent and no credential is read, so an operator can see the
+        # `s3:*` in window G2 before deciding to acknowledge the grantee.
+        for window, build in _grant_plan():
+            print(
+                f"window {window}  "
+                + json.dumps(build(args.bucket, GRANTEE_ARN_PLACEHOLDER), sort_keys=True)
+            )
+        return 0
 
     if args.dry_run and args.diagnose_policy_engine:
         # The three documents, with the principals shown as the roles they are
@@ -2690,19 +3967,55 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
             print(f"{check.expect:<5} {check.probe.role:<9} {check.name}{control}")
         return 0
 
+    if args.diagnose_policy_engine:
+        needed = DIAGNOSTIC_ROLES
+    elif args.probe_foreign_grant:
+        needed = GRANT_ROLES
+    else:
+        needed = FENCE_ROLES
     try:
         verifier = Verifier(
             endpoint=args.endpoint,
             region=args.region,
-            credentials=read_credentials(
-                environ,
-                needed=("operator", "foreign") if args.diagnose_policy_engine else None,
-            ),
+            credentials=read_credentials(environ, needed=needed),
             transport=transport,
         )
     except VerifierError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
+
+    if args.probe_foreign_grant:
+        try:
+            rows, evidence, verdict = probe_foreign_grant(
+                verifier,
+                bucket=args.bucket,
+                replace_existing=args.replace_existing_policy,
+                grantee_is_ours=args.grantee_is_ours,
+            )
+        except VerifierError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        print(
+            "RAW EVIDENCE -- record this block verbatim. It carries no secret key, and every "
+            "access key id it names is shown by its last four characters.\n"
+        )
+        for line in evidence:
+            print(line)
+        print("")
+        code = report(
+            rows,
+            [],
+            sys.stdout,
+            applied=False,
+            clean_message="\nEvery probe answered and every grant came off again.",
+            banner="*** NOTHING WAS APPLIED AND NO FENCE WAS WRITTEN. Read the verdict below "
+            "-- and if a row above says a probe document is still on the bucket, that "
+            "document is a GRANT and removing it comes first.",
+            failure_summary="read the verdict below. Nothing was applied and no fence was "
+            "written; a FAIL here is a finding about the engine, not a broken run",
+        )
+        print(f"\n{verdict}")
+        return code
 
     if args.diagnose_policy_engine:
         try:
@@ -2717,7 +4030,10 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         # rather than a footnote to a conclusion drawn from it. Access key ids
         # are shown by their last four characters, so the whole block is safe to
         # paste into an issue -- which is the only way it gets recorded at all.
-        print("RAW EVIDENCE -- record this block verbatim; it names no secret\n")
+        print(
+            "RAW EVIDENCE -- record this block verbatim. It carries no secret key, and every "
+            "access key id it names is shown by its last four characters.\n"
+        )
         for line in evidence:
             print(line)
         print("")

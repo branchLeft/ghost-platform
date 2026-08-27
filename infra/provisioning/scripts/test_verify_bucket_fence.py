@@ -34,7 +34,7 @@ import unittest
 import urllib.parse
 from unittest import mock
 
-from bucketpolicy import decide
+from bucketpolicy import decide, matches
 
 _MODULE_PATH = pathlib.Path(__file__).with_name("verify-bucket-fence.py")
 _spec = importlib.util.spec_from_file_location("verify_bucket_fence", _MODULE_PATH)
@@ -57,18 +57,30 @@ verify._sleep = lambda _seconds: None
 OPERATOR_KEY = "O" * 20
 WORKLOAD_KEY = "W" * 20
 FOREIGN_KEY = "F" * 20
+# The grantee lives in ANOTHER project, which is the whole content of the role:
+# `--probe-foreign-grant` refuses to run when it resolves to the bucket's own
+# account, so a fixture that shared `ACCOUNT` would exercise only the refusal.
+GRANTEE_KEY = "G" * 20
 # Deliberately not all zeroes: `verify.ABSENT_PRINCIPAL` names an all-zeroes
 # account precisely because no real project has one, and a fixture that shared
 # it would make window D's "a principal that is definitely not us" name this
 # suite's own account.
 PROJECT_ID = "12345678"
 ACCOUNT = f"p{PROJECT_ID}"
+GRANTEE_PROJECT_ID = "87654321"
+GRANTEE_ACCOUNT = f"p{GRANTEE_PROJECT_ID}"
 
 OPERATOR_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{OPERATOR_KEY}"
 WORKLOAD_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{WORKLOAD_KEY}"
 FOREIGN_ARN = f"arn:aws:iam:::user/{ACCOUNT}:{FOREIGN_KEY}"
+GRANTEE_ARN = f"arn:aws:iam:::user/{GRANTEE_ACCOUNT}:{GRANTEE_KEY}"
 
-ROLE_OF_KEY = {OPERATOR_KEY: "operator", WORKLOAD_KEY: "workload", FOREIGN_KEY: "foreign"}
+ROLE_OF_KEY = {
+    OPERATOR_KEY: "operator",
+    WORKLOAD_KEY: "workload",
+    FOREIGN_KEY: "foreign",
+    GRANTEE_KEY: "grantee",
+}
 
 # THE POLICY UNDER TEST IS THE ONE THE TOOL WILL BE POINTED AT. It comes from
 # `render-bucket-fence-policy.py`, not from a stub written here, because a
@@ -104,6 +116,17 @@ ENVIRONMENT = {
     "FENCE_FOREIGN_ACCESS_KEY_ID": FOREIGN_KEY,
     "FENCE_FOREIGN_SECRET_ACCESS_KEY": "foreign-secret",
 }
+
+# Kept separate rather than folded into `ENVIRONMENT`. The grant probe is the
+# only mode that signs as the grantee, and every other test asserts against an
+# environment holding exactly the roles its mode uses -- an extra pair in the
+# shared dictionary would make `--show-account` print a fourth row in tests that
+# are about the first three.
+GRANT_ENVIRONMENT = dict(
+    ENVIRONMENT,
+    FENCE_GRANTEE_ACCESS_KEY_ID=GRANTEE_KEY,
+    FENCE_GRANTEE_SECRET_ACCESS_KEY="grantee-secret",
+)
 
 ENDPOINT_HOST = "hel1.your-objectstorage.com"
 ENDPOINT = f"https://{ENDPOINT_HOST}"
@@ -244,6 +267,21 @@ OTHER_OWNER = Response(
     "constructed: the same shape under a different account id",
     200,
     ANONYMOUS_OWNER.body.replace(b"anonymous", b"p99999999"),
+)
+
+# The grantee's own ListAllMyBuckets. It answers under a DIFFERENT account, and
+# the buckets it lists are its own project's -- a credential in another project
+# cannot see this one's, which is the boundary the grant probe starts from.
+GRANTEE_OWNER = Response(
+    "constructed: the ListAllMyBuckets shape captured above, under a second account. Only a "
+    "credentialed request returns one, and no credential in a second project was available",
+    200,
+    b'<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult '
+    b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>'
+    + GRANTEE_ACCOUNT.encode()
+    + b"</ID><DisplayName>"
+    + GRANTEE_ACCOUNT.encode()
+    + b"</DisplayName></Owner><Buckets></Buckets></ListAllMyBucketsResult>",
 )
 
 EMPTY_LISTING = Response(
@@ -1633,6 +1671,19 @@ def engine_exempts_the_owner(key, statement):
     return key != OPERATOR_KEY and engine_per_key(key, statement)
 
 
+def engine_incoherent(key, statement):
+    """A rule no coherent principal semantics produces.
+
+    Denies the subject under a statement naming the subject (window B) and under
+    one naming an absent principal (window D), but spares it under one naming the
+    operator (window C) -- reads `(denied, allowed, denied)`, which is in none of
+    `principal_verdict`'s coherent cells, so the verdict is `UNEXPLAINED`. Exists
+    only to reach the "CAN FENCE" headline with that verdict.
+    """
+    names = _principal_names(statement)
+    return True if names == "*" else OPERATOR_KEY not in names
+
+
 def _separates_two_keys(rule) -> bool:
     """Whether this engine can fence one credential from another, asked of IT.
 
@@ -1690,7 +1741,7 @@ class Engine(Transport):
         if operation == "get-object":
             access_key = re.search(r"Credential=([^/]+)/", headers["Authorization"]).group(1)
             statement = json.loads(self.policy)["Statement"][0] if self.policy else None
-            if statement is not None and self.rule(access_key, statement):
+            if self._refuses_the_read(access_key, statement, f"arn:aws:s3:::{bucket}/{key}"):
                 return ACCESS_DENIED_OBJECT.status, ACCESS_DENIED_OBJECT.body
             return OBJECT_BYTES.status, OBJECT_BYTES.body
         if operation == "put-object":
@@ -1700,6 +1751,17 @@ class Engine(Transport):
         if operation == "list-object-versions":
             return EMPTY_VERSIONS.status, EMPTY_VERSIONS.body
         return super().__call__(url, headers, payload, method)
+
+    def _refuses_the_read(self, access_key, statement, object_arn):
+        """Whether this engine refuses one object read.
+
+        A `Deny` probe's rule decides refusal, so it is the answer directly. A
+        GRANT probe's rule decides the opposite -- whether an Allow reached the
+        reader -- and its default is refusal, because the reader is in another
+        project. Two families, one dispatch, and the inversion stated in one
+        place rather than duplicated into a second copy of `__call__`.
+        """
+        return statement is not None and self.rule(access_key, statement)
 
 
 def diagnose(engine, extra=()):
@@ -1776,15 +1838,39 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
         self.assertIn("was not needed", output)
 
     def test_nothing_is_enforced_needs_every_window_to_have_denied_nobody(self):
-        # The claim is about the whole account and it sends the estate to
-        # per-tenant projects, so it is the last thing that may be drawn from
-        # one document shape.
+        # The claim sends the estate to per-tenant projects, so it is the last
+        # thing that may be drawn from one document shape.
         engine = Engine(engine_enforces_nothing)
         code, output = diagnose(engine)
         self.assertEqual(code, 1)
-        self.assertIn("BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT", output)
+        self.assertIn("BUCKET POLICIES ARE NOT ENFORCED AGAINST THIS PROJECT'S OWN KEYS", output)
         puts = [call for call in engine.calls if call[1] == "put-bucket-policy"]
         self.assertEqual(len(puts), 4)
+
+    def test_the_help_text_scopes_the_mode_the_same_way_its_verdict_does(self):
+        # The overclaim lived in two places. Rescoping only the verdict leaves
+        # an operator choosing the mode from `--help` still told it settles
+        # whether policies are enforced at all.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            verify.main(["--help"])
+        help_text = " ".join(out.getvalue().split())
+        self.assertIn("THIS PROJECT'S OWN KEYS", help_text)
+        self.assertNotIn("whether it is enforced at all", help_text)
+        self.assertIn("--probe-foreign-grant", help_text)
+
+    def test_the_strongest_verdict_claims_the_project_and_never_the_account(self):
+        # THE OVERCLAIM THIS TOOL USED TO PRINT. Every reader in every window is
+        # a key in the bucket's own project, so an engine that evaluates
+        # policies for foreign and anonymous principals while bypassing the
+        # owner's keys produces this exact run. Reported as "not enforced on
+        # this account", it settled a question it had not asked -- and the
+        # provider documents two features only the other engine could offer.
+        _, output = diagnose(Engine(engine_enforces_nothing))
+        self.assertNotIn("NOT ENFORCED ON THIS ACCOUNT", output)
+        flattened = " ".join(output.split())
+        self.assertIn("--probe-foreign-grant", flattened)
+        self.assertIn("do not say policies are off account-wide", flattened)
 
     def test_hypothesis_one_is_told_apart_from_an_engine_that_ignores_the_principal(self):
         # THE COLLISION WINDOW D EXISTS TO REMOVE. On both engines a Deny naming
@@ -1817,6 +1903,22 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
         code, output = diagnose(Engine(engine_inverts_principal))
         self.assertEqual(code, 1)
         self.assertIn("MATCHES THE COMPLEMENT OF THE PRINCIPAL", output)
+
+    def test_an_incoherent_engine_headline_is_inconclusive_not_fail(self):
+        # F1's pre-existing instance, in `_read_the_engine`. When
+        # `principal_verdict` returns UNEXPLAINED, the "CAN FENCE" headline must
+        # be INCONCLUSIVE -- printing FAIL there asserts a fence is impossible,
+        # from reads that fit no engine this can name at all.
+        code, output = diagnose(Engine(engine_incoherent))
+        self.assertEqual(code, 1)
+        row = [
+            line
+            for line in output.splitlines()
+            if "A BUCKET POLICY CAN FENCE ONE KEY FROM ANOTHER HERE" in line
+        ]
+        self.assertEqual(len(row), 1, output)
+        self.assertTrue(row[0].startswith(verify.INCONCLUSIVE), output)
+        self.assertIn("NO SINGLE READING EXPLAINS", output)
 
     def test_the_report_says_a_fence_is_possible_exactly_when_the_engine_separates_keys(self):
         # THE NON-TAUTOLOGICAL ONE. `_separates_two_keys` asks the simulated
@@ -2388,6 +2490,1186 @@ class TestPolicyEngineVerdicts(unittest.TestCase):
         self.assertEqual(principals[3], {"AWS": "*"})
 
 
+# THE GRANT ENGINES. Each is one coherent answer to "what does an `Allow`
+# naming a principal in ANOTHER project do here", written as the rule that
+# decides a single read. They exist for the same reason the deny engines do: a
+# probe that reports the same thing in a world where grants work and a world
+# where they do not is worth nothing, and the only way to know it does not is to
+# run it in both and compare.
+#
+# `key` is the access key the read was signed with, `statement` the one statement
+# the live policy carries, and `object_arn` the object being read -- an engine
+# evaluates `Resource` against the object, so a rule that could not see it would
+# be answering a different question from the one the engine is asked.
+#
+# Every rule returns whether the read is GRANTED. That is the inverse of the deny
+# family's convention, and deliberately so: these documents are Allow-only, and
+# a rule phrased as "does this refuse" would have to double-negate in every line.
+PROBE_OBJECT_ARN = f"arn:aws:s3:::{FENCED}/{verify.PROBE_PREFIX}x.txt"
+
+DOCUMENTED_BUCKET_ARNS = [f"arn:aws:s3:::{FENCED}", f"arn:aws:s3:::{FENCED}/*"]
+
+
+def _grant_names(statement) -> set:
+    """The access key ids one Allow statement names, string or list alike."""
+    principal = statement["Principal"]["AWS"]
+    names = [principal] if isinstance(principal, str) else list(principal)
+    return {arn.rsplit(":", 1)[-1] for arn in names}
+
+
+def _covers(statement, object_arn) -> bool:
+    return matches(statement["Resource"], object_arn)
+
+
+def _is_the_documented_shape(statement) -> bool:
+    """Whether this is the provider's published cross-project document.
+
+    All three elements, because which one an implementation keys on is the open
+    question: a string principal rather than a list, `s3:*` rather than one
+    action, and both ARNs in `Resource` rather than the object one alone.
+    """
+    return (
+        isinstance(statement["Principal"]["AWS"], str)
+        and statement["Action"] == "s3:*"
+        and list(statement["Resource"]) == DOCUMENTED_BUCKET_ARNS
+    )
+
+
+def grant_engine_honours_any_allow(key, statement, object_arn):
+    """An Allow naming the reader and covering the object grants, whatever its shape."""
+    return key in _grant_names(statement) and _covers(statement, object_arn)
+
+
+def grant_engine_documented_shape_only(key, statement, object_arn):
+    """Only the published template grants; a document that means the same is inert.
+
+    THE WORLD A ONE-SHAPE PROBE WOULD HAVE MISREAD. Policies are evaluated for
+    foreign principals here and cross-project isolation works -- but a run that
+    sent only the narrow shape would have reported that no grant reaches
+    anybody, which is the reading that says the provider's own documentation is
+    broken.
+    """
+    return (
+        key in _grant_names(statement)
+        and _is_the_documented_shape(statement)
+        and _covers(statement, object_arn)
+    )
+
+
+def grant_engine_scoped_shape_only(key, statement, object_arn):
+    """The narrow grant works and the provider's own published example does not."""
+    return (
+        key in _grant_names(statement)
+        and not _is_the_documented_shape(statement)
+        and _covers(statement, object_arn)
+    )
+
+
+def grant_engine_ignores_allow(key, statement, object_arn):
+    """Policies are stored and no Allow reaches a principal outside the project."""
+    return False
+
+
+def _grants_a_foreign_principal(rule) -> bool:
+    """Whether this engine grants the grantee anything, asked of IT.
+
+    Derived by running the engine over the documents the tool actually sends,
+    rather than by looking a verdict up, so a test comparing this against the
+    report checks the report against the world it ran in and not against the
+    tool's own table.
+    """
+    documents = (
+        verify.scoped_grant_policy(FENCED, GRANTEE_ARN),
+        verify.documented_grant_policy(FENCED, GRANTEE_ARN),
+    )
+    return any(
+        rule(GRANTEE_KEY, document["Statement"][0], PROBE_OBJECT_ARN) for document in documents
+    )
+
+
+class GrantEngine(Engine):
+    """A stand-in engine on which the bucket's project IS a real boundary.
+
+    With no policy the operator reads and the grantee does not, which is the
+    world every finding so far describes. The operator reads through everything,
+    because the earlier diagnostic established that this engine does not apply
+    its own bucket policies to the bucket owner's keys -- so an engine stand-in
+    that denied the operator would be modelling a provider nobody has observed.
+    What each rule decides is the one thing that is open: whether an `Allow`
+    naming the grantee changes the grantee's answer.
+    """
+
+    def __init__(self, rule, **kwargs):
+        super().__init__(rule, **kwargs)
+        self.answers = {
+            ("operator", "list-buckets", None): OWNER,
+            ("grantee", "list-buckets", None): GRANTEE_OWNER,
+        }
+
+    def _refuses_the_read(self, access_key, statement, object_arn):
+        if access_key == OPERATOR_KEY:
+            return False
+        if statement is None:
+            return True
+        return not self.rule(access_key, statement, object_arn)
+
+
+def grant_probe(engine, extra=("--grantee-is-ours",), environment=None):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = verify.main(
+            ["--bucket", FENCED, "--probe-foreign-grant", *extra],
+            transport=engine,
+            environ=dict(environment or GRANT_ENVIRONMENT),
+        )
+    return code, out.getvalue()
+
+
+class TestForeignGrantProbe(unittest.TestCase):
+    """Whether a policy reaches a principal outside the bucket's project.
+
+    The diagnostic above answers what a policy does to the bucket-owning
+    project's own keys, and every reader in it is such a key -- so "no document
+    reached anybody" is equally consistent with an engine that evaluates nothing
+    and one that evaluates everything except the owner. These tests are about
+    the probe returning a DIFFERENT answer in each world, per SHAPE, because a
+    pattern-matching implementation is one of the worlds.
+    """
+
+    WORLDS = {
+        "any Allow naming the grantee grants": grant_engine_honours_any_allow,
+        "only the documented template grants": grant_engine_documented_shape_only,
+        "only the narrow shape grants": grant_engine_scoped_shape_only,
+        "no Allow reaches a foreign principal": grant_engine_ignores_allow,
+    }
+
+    def _headline(self, output):
+        lines = [line for line in output.splitlines() if line.isupper() and line.endswith(".")]
+        self.assertTrue(lines, f"no verdict headline in the output:\n{output}")
+        return lines[0]
+
+    def test_an_engine_that_honours_any_allow_reports_the_boundary_is_crossable(self):
+        code, output = grant_probe(GrantEngine(grant_engine_honours_any_allow))
+        self.assertEqual(code, 0, output)
+        self.assertIn("A BUCKET POLICY REACHES A PRINCIPAL OUTSIDE THIS BUCKET'S PROJECT", output)
+        # The good news here is about a per-tenant architecture, and it licenses
+        # nothing about fencing two keys inside one project.
+        self.assertIn("do not apply that fence", " ".join(output.split()))
+
+    def test_an_engine_that_only_matches_the_published_template_is_named_as_such(self):
+        # THE FINDING THAT CHANGES HOW EVERY POLICY HERE MUST BE WRITTEN. A run
+        # that sent one shape could not produce it.
+        code, output = grant_probe(GrantEngine(grant_engine_documented_shape_only))
+        self.assertIn("ONLY THE DOCUMENTED GRANT SHAPE REACHES A FOREIGN PRINCIPAL", output)
+        self.assertIn("VERBATIM", output)
+        self.assertEqual(code, 1, "the narrow shape was inert, which is a FAIL row")
+
+    def test_an_engine_where_the_published_example_fails_is_told_from_one_where_it_works(self):
+        documented = self._headline(grant_probe(GrantEngine(grant_engine_documented_shape_only))[1])
+        scoped = self._headline(grant_probe(GrantEngine(grant_engine_scoped_shape_only))[1])
+        self.assertIn("ONLY THE DOCUMENTED GRANT SHAPE", documented)
+        self.assertIn("A NARROW GRANT REACHES A FOREIGN PRINCIPAL", scoped)
+        self.assertNotEqual(documented, scoped)
+
+    def test_no_grant_at_all_is_reported_as_the_providers_own_example_failing(self):
+        code, output = grant_probe(GrantEngine(grant_engine_ignores_allow))
+        self.assertEqual(code, 1)
+        self.assertIn("NO CROSS-PROJECT GRANT REACHED THIS BUCKET, IN EITHER SHAPE", output)
+        self.assertIn("Record this output VERBATIM", output)
+
+    def test_every_world_produces_a_different_verdict(self):
+        # THE MUTATION THIS MODE EXISTS TO SURVIVE. A probe that answers the
+        # same in a world where a grant works and one where it does not settles
+        # nothing, and that is precisely what the withdrawn account-wide verdict
+        # was: one observation covering two engines.
+        headlines = {
+            name: self._headline(grant_probe(GrantEngine(rule))[1])
+            for name, rule in self.WORLDS.items()
+        }
+        self.assertEqual(len(set(headlines.values())), len(self.WORLDS), headlines)
+
+    def test_the_report_says_the_boundary_was_crossed_exactly_when_it_was(self):
+        # THE NON-TAUTOLOGICAL ONE. `_grants_a_foreign_principal` asks the
+        # simulated engine directly whether either document reaches the grantee,
+        # so this compares the report against the world it ran in rather than
+        # against the tool's own verdict table. A classifier that swapped
+        # `CROSS_PROJECT_ALLOW_GRANTS` for `NO_CROSS_PROJECT_GRANT` is a
+        # bijection, passes every mapping test, and fails this one.
+        headline = "A BUCKET POLICY REACHES A PRINCIPAL OUTSIDE THIS BUCKET'S PROJECT"
+        for name, rule in self.WORLDS.items():
+            with self.subTest(world=name):
+                _, output = grant_probe(GrantEngine(rule))
+                row = [line for line in output.splitlines() if line.startswith((verify.PASS, verify.FAIL)) and headline in line]
+                self.assertEqual(len(row), 1, output)
+                self.assertEqual(
+                    row[0].startswith(verify.PASS), _grants_a_foreign_principal(rule), output
+                )
+
+    def test_both_shapes_are_sent_even_when_the_first_one_grants(self):
+        # The question is which shapes this engine honours, not whether any of
+        # them does. Stopping on the first success would answer the easier one
+        # and leave "the documented shape is the only one that works" invisible.
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 0, output)
+        sids = [
+            json.loads(sent.payload)["Statement"][0]["Sid"]
+            for sent in engine.sent
+            if sent.operation == "put-bucket-policy"
+        ]
+        self.assertEqual(sids, ["ProbeGrantScopedRead", "ProbeGrantDocumentedShape"])
+
+    def test_a_g1_rejected_outright_does_not_foreclose_g2(self):
+        # THE FORECLOSURE FIX. G1's PUT rejected (MalformedPolicy) leaves the
+        # bucket clean and G1's shape untested -- but G2 is the provider's
+        # documented shape and the one the architecture question turns on, so a
+        # run that stopped here would answer nothing on exactly the runs that
+        # most need G2. G2 must still be sent, and its evidence recorded.
+        class RefusesFirstPut(GrantEngine):
+            def __init__(self, rule):
+                super().__init__(rule)
+                self.policy_puts = 0
+
+            def __call__(self, url, headers, payload, method):
+                if method == "PUT" and "policy" in url:
+                    self.policy_puts += 1
+                    if self.policy_puts == 1:
+                        self.calls.append(("operator", "put-bucket-policy", FENCED))
+                        self.sent.append(
+                            Sent("operator", "put-bucket-policy", FENCED, None, url, headers, payload, method)
+                        )
+                        return REJECTED_POLICY.status, REJECTED_POLICY.body
+                return super().__call__(url, headers, payload, method)
+
+        engine = RefusesFirstPut(grant_engine_honours_any_allow)
+        code, output = grant_probe(engine)
+        puts = [c for c in engine.calls if c == ("operator", "put-bucket-policy", FENCED)]
+        self.assertEqual(len(puts), 2, "G2 was foreclosed by a clean G1 failure")
+        # G2 actually granted; its window row records it.
+        g2_row = [
+            line
+            for line in output.splitlines()
+            if "probe G2: the provider's documented cross-project shape reaches it" in line
+        ]
+        self.assertEqual(len(g2_row), 1, output)
+        self.assertTrue(g2_row[0].startswith(verify.PASS), output)
+        # But the pair could not be classified (G1 never answered), so the
+        # verdict is unproven and the headline is INCONCLUSIVE, never FAIL.
+        self.assertEqual(code, 1)
+        self.assertIn("THIS RUN PROVED NOTHING ABOUT A CROSS-PROJECT GRANT", output)
+        headline = [
+            line
+            for line in output.splitlines()
+            if "A BUCKET POLICY REACHES A PRINCIPAL OUTSIDE THIS BUCKET'S PROJECT" in line
+        ]
+        self.assertEqual(len(headline), 1, output)
+        self.assertTrue(headline[0].startswith(verify.INCONCLUSIVE), output)
+
+    def test_a_g1_that_leaves_the_bucket_dirty_stops_before_g2(self):
+        # The other side of the same decision: a removal that FAILED leaves a
+        # grant possibly still on the bucket, and layering G2 on top of a live
+        # grant is the one thing that is unsafe rather than merely inconclusive.
+        engine = GrantEngine(grant_engine_honours_any_allow, removable=False)
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        puts = [c for c in engine.calls if c == ("operator", "put-bucket-policy", FENCED)]
+        self.assertEqual(len(puts), 1, "G2 must not run on a bucket left dirty by G1")
+        self.assertIn("THE PROBE POLICY IS REMOVED", output)
+        self.assertIn("IT IS A GRANT", output)
+
+    def test_the_headline_is_inconclusive_not_fail_when_both_windows_error(self):
+        # F1, at the headline. Both grantee reads under the live doc return an
+        # unclassifiable 403 that agrees with itself, so `_confirmed_reads`
+        # returns them and the outcome is `error`. The window rows honestly say
+        # so; the headline must not assert FAIL -- "no, a policy does NOT reach a
+        # foreign principal" -- which the observations do not entail.
+        class ErrorsUnderPolicy(GrantEngine):
+            def __call__(self, url, headers, payload, method):
+                if (
+                    method == "GET"
+                    and verify.PROBE_PREFIX in url
+                    and GRANTEE_KEY in headers.get("Authorization", "")
+                    and self.policy is not None
+                ):
+                    self.calls.append(("grantee", "get-object", FENCED))
+                    return FORBIDDEN_NO_DOCUMENT.status, FORBIDDEN_NO_DOCUMENT.body
+                return super().__call__(url, headers, payload, method)
+
+        code, output = grant_probe(ErrorsUnderPolicy(grant_engine_honours_any_allow))
+        self.assertEqual(code, 1)
+        headline = [
+            line
+            for line in output.splitlines()
+            if "A BUCKET POLICY REACHES A PRINCIPAL OUTSIDE THIS BUCKET'S PROJECT" in line
+        ]
+        self.assertEqual(len(headline), 1, output)
+        self.assertTrue(headline[0].startswith(verify.INCONCLUSIVE), output)
+        self.assertFalse(headline[0].startswith(verify.FAIL), output)
+
+    def test_an_unreadable_window_read_is_never_reported_as_a_denial(self):
+        # `_confirmed_reads` returns its observations whenever the two reads
+        # AGREE, and two errors agree -- so `error` reaches the window row. A
+        # row calling that "the grantee was still denied" prints a denial that
+        # never happened, into the block the runbook tells an operator to paste
+        # onto the issue as the evidence that settles this question.
+        class Unreadable(GrantEngine):
+            def __call__(self, url, headers, payload, method):
+                if (
+                    method == "GET"
+                    and verify.PROBE_PREFIX in url
+                    and GRANTEE_KEY in headers.get("Authorization", "")
+                    and self.policy is not None
+                ):
+                    self.calls.append(("grantee", "get-object", FENCED))
+                    return FORBIDDEN_NO_DOCUMENT.status, FORBIDDEN_NO_DOCUMENT.body
+                return super().__call__(url, headers, payload, method)
+
+        code, output = grant_probe(Unreadable(grant_engine_honours_any_allow))
+        self.assertEqual(code, 1)
+        self.assertNotIn("the grantee was still denied", output)
+        self.assertIn("it was error", output)
+        self.assertIn("THIS RUN PROVED NOTHING ABOUT A CROSS-PROJECT GRANT", output)
+
+    def test_the_grantee_baseline_read_is_taken_twice_and_has_to_agree(self):
+        # THE ONLY SINGLE READ IN THE MODE WAS THE PREMISE. A spurious `denied`
+        # here establishes a boundary that is not there, and the verdict built
+        # on it is the loudest wrong answer available.
+        class Flapping(GrantEngine):
+            def __init__(self, rule):
+                super().__init__(rule)
+                self.grantee_reads = 0
+
+            def _refuses_the_read(self, access_key, statement, object_arn):
+                if access_key == GRANTEE_KEY and statement is None:
+                    self.grantee_reads += 1
+                    # Denied on the first read of each object, allowed on the
+                    # second: exactly the transient the pairing exists to catch.
+                    return self.grantee_reads <= len(self.policy_targets)
+                return super()._refuses_the_read(access_key, statement, object_arn)
+
+            policy_targets = ("G1", "G2")
+
+        engine = Flapping(grant_engine_honours_any_allow)
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("the baseline reads are attributable", output)
+        self.assertIn("read denied and then allowed", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_a_grantee_still_reading_after_the_removal_yields_no_verdict(self):
+        # WITHOUT THIS READ, "the grant worked" and "it was never what allowed
+        # the read" are one observation, and the next run starts from a bucket
+        # whose state nobody established.
+        class StillReading(GrantEngine):
+            def __init__(self, rule):
+                super().__init__(rule)
+                self.removals = 0
+
+            def _refuses_the_read(self, access_key, statement, object_arn):
+                if access_key == GRANTEE_KEY and self.removals:
+                    return False
+                return super()._refuses_the_read(access_key, statement, object_arn)
+
+            def __call__(self, url, headers, payload, method):
+                result = super().__call__(url, headers, payload, method)
+                if self.calls[-1][1] == "delete-bucket-policy":
+                    self.removals += 1
+                return result
+
+        code, output = grant_probe(StillReading(grant_engine_honours_any_allow))
+        self.assertEqual(code, 1)
+        self.assertIn("the grant is gone once its document is removed", output)
+        self.assertIn("THIS RUN PROVED NOTHING ABOUT A CROSS-PROJECT GRANT", output)
+
+    def test_the_read_after_removal_is_actually_sent_rather_than_served_from_cache(self):
+        # The identical read was already made inside the window, and the outcome
+        # cache is keyed on the probe. A cached answer here would report the
+        # grant's own result as proof the grant had been withdrawn.
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        grant_probe(engine)
+        reads = [
+            sent
+            for sent in engine.sent
+            if sent.operation == "get-object" and sent.role == "grantee"
+        ]
+        # Per window: two baseline reads that have to agree, two paired reads
+        # under the live document, and one after the removal.
+        self.assertEqual(len(reads), 10)
+
+
+class TestForeignGrantProbeIsSafe(unittest.TestCase):
+    """Nothing this mode sends can lock a bucket or reach anyone but our own key."""
+
+    def _every_document(self):
+        return [build(FENCED, GRANTEE_ARN) for _, build in verify._grant_plan()]
+
+    def test_every_document_it_sends_is_allow_only_and_names_only_the_grantee(self):
+        documents = self._every_document()
+        self.assertEqual(len(documents), 2)
+        for document in documents:
+            with self.subTest(sid=document["Statement"][0]["Sid"]):
+                verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+                self.assertEqual(document["Statement"][0]["Effect"], "Allow")
+
+    def test_a_deny_anywhere_in_a_grant_document_is_refused(self):
+        # An `Allow` cannot lock a bucket, and the guard is what keeps that a
+        # property of the code rather than of the two documents defined today.
+        for effect in ("Deny", "deny", "ALLOW", None, ["Allow"]):
+            with self.subTest(effect=effect):
+                document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+                document["Statement"][0]["Effect"] = effect
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+                self.assertIn("only 'Allow' is permitted", str(raised.exception))
+
+    def test_a_deny_naming_a_bucket_resource_action_cannot_reach_the_bucket(self):
+        # The brief's second rule, satisfied by the first: a Deny on
+        # `s3:PutBucketPolicy` at the bucket ARN is the unrecoverable document,
+        # and it is refused for being a Deny before its Action is ever read.
+        document = verify.documented_grant_policy(FENCED, GRANTEE_ARN)
+        document["Statement"][0]["Effect"] = "Deny"
+        document["Statement"][0]["Action"] = "s3:PutBucketPolicy"
+        with self.assertRaises(verify.VerifierError):
+            verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+
+    def test_a_wildcard_principal_is_refused_because_it_would_be_an_anonymous_grant(self):
+        for principal in ("*", ["*"], [GRANTEE_ARN, "*"]):
+            with self.subTest(principal=principal):
+                document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+                document["Statement"][0]["Principal"] = {"AWS": principal}
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+                self.assertIn("anonymous", str(raised.exception))
+
+    def test_a_notprincipal_in_an_allow_is_refused(self):
+        # On AWS semantics it grants every principal EXCEPT the one named --
+        # which includes the anonymous caller, so it is the world-readable
+        # bucket arriving by a one-word edit.
+        document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        del document["Statement"][0]["Principal"]
+        document["Statement"][0]["NotPrincipal"] = {"AWS": [OPERATOR_ARN]}
+        with self.assertRaises(verify.VerifierError) as raised:
+            verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+        self.assertIn("world-readable", str(raised.exception))
+
+    def test_a_principal_that_is_not_the_grantee_is_refused(self):
+        # THE GUARD AGAINST THE THING THE FLAG ONLY ASKS ABOUT. `s3:*` on a
+        # bucket is safe because the ARN is ours; a third party's ARN in the
+        # same document hands them the bucket, and this refuses it structurally
+        # rather than relying on whoever edits it next reading the comment.
+        stranger = "arn:aws:iam:::user/p11111111:" + "S" * 20
+        for document in self._every_document():
+            with self.subTest(sid=document["Statement"][0]["Sid"]):
+                document["Statement"][0]["Principal"] = {"AWS": stranger}
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+                self.assertIn("rather than the grantee ARN", str(raised.exception))
+
+    def test_a_resource_outside_this_bucket_is_refused(self):
+        for resource in (
+            "arn:aws:s3:::branchleft-tenant-pulumi-state/*",
+            [f"arn:aws:s3:::{FENCED}", "arn:aws:s3:::some-other-bucket/*"],
+            f"arn:aws:s3:::{FENCED}-lookalike/*",
+        ):
+            with self.subTest(resource=resource):
+                document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+                document["Statement"][0]["Resource"] = resource
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+                self.assertIn("not " + FENCED, str(raised.exception))
+
+    def test_a_destructive_action_is_refused_even_though_the_wildcard_is_not(self):
+        # `s3:*` in window G2 already subsumes every destructive action, so the
+        # allow-list does not bound what that window can do -- it bounds what a
+        # future EDIT can write. A document naming `s3:DeleteBucket` explicitly
+        # would authorise it against the bucket holding the estate's only
+        # offsite backups, and would pass every other rule here.
+        for action in ("s3:DeleteBucket", "s3:DeleteObject", "s3:PutObject",
+                       ["s3:GetObject", "s3:DeleteBucket"]):
+            with self.subTest(action=action):
+                document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+                document["Statement"][0]["Action"] = action
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+                self.assertIn("nobody has reasoned about", str(raised.exception))
+        # And the two spellings the real documents use are accepted.
+        self.assertEqual(verify.GRANT_ACTIONS, frozenset({"s3:GetObject", "s3:*"}))
+
+    def test_a_malformed_document_is_refused_rather_than_crashing_the_guard(self):
+        # A guard that raises AttributeError on a one-character change to a
+        # bracket still stops the run, but it stops it with a traceback and no
+        # rows -- and the docstring claims the safety is a property of the code
+        # rather than of the two documents defined above.
+        cases = {
+            "Statement is a mapping": lambda d: d.__setitem__("Statement", {"Effect": "Allow"}),
+            "Statement holds a string": lambda d: d.__setitem__("Statement", ["nope"]),
+            "Resource entry is an int": lambda d: d["Statement"][0].__setitem__("Resource", [123]),
+            "Resource is a mapping": lambda d: d["Statement"][0].__setitem__("Resource", {"a": 1}),
+            "Principal AWS is an int": lambda d: d["Statement"][0].__setitem__(
+                "Principal", {"AWS": 7}
+            ),
+            # `list()` of a mapping yields its KEYS, so this satisfied the
+            # identity rule while the document's real principal is a map no
+            # engine resolves.
+            "Principal AWS is a mapping keyed by the ARN": lambda d: d["Statement"][0].__setitem__(
+                "Principal", {"AWS": {GRANTEE_ARN: 1}}
+            ),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(shape=label):
+                document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+                mutate(document)
+                with self.assertRaises(verify.VerifierError):
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+
+    def test_a_second_principal_type_beside_aws_is_refused(self):
+        # BOTH ROUTES READ ONLY Principal["AWS"], so a second principal type
+        # rides along granting someone neither of them ever looks at. The
+        # composed guard must refuse it, and the reviewer ran each of these
+        # through and found them passing.
+        for extra in ({"CanonicalUser": "*"}, {"Service": "*"}, {"*": "*"}):
+            with self.subTest(extra=extra):
+                document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+                document["Statement"][0]["Principal"] = {"AWS": [GRANTEE_ARN], **extra}
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+                self.assertIn("only key is 'AWS'", str(raised.exception))
+
+    def test_a_notresource_is_refused_as_the_third_inversion(self):
+        # NotResource is to Resource what NotPrincipal is to Principal. `decide`
+        # ignores it, so an `s3:*` grant with NotResource would apply to every
+        # resource EXCEPT the one named -- the tenant state bucket included --
+        # and pass both routes if it were not refused here.
+        document = verify.documented_grant_policy(FENCED, GRANTEE_ARN)
+        document["Statement"][0]["NotResource"] = f"arn:aws:s3:::{FENCED}/keep-out/*"
+        with self.assertRaises(verify.VerifierError) as raised:
+            verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+        self.assertIn("NotResource", str(raised.exception))
+
+    def test_a_document_under_the_wrong_id_is_refused(self):
+        # A grant document the next run would not recognise as this mode's
+        # leftover -- it reads the Id to tell its own probe from a stranger's
+        # fence, and a mismatched Id makes a leftover grant look like a
+        # stranger's document to leave alone.
+        for wrong in (None, "engine-diagnostic-probe-" + FENCED, "some-other-id"):
+            with self.subTest(wrong=wrong):
+                document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+                if wrong is None:
+                    del document["Id"]
+                else:
+                    document["Id"] = wrong
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+                self.assertIn("not 'foreign-grant-probe", str(raised.exception))
+
+    def test_the_composed_guard_actually_invokes_the_anonymous_evaluation_check(self):
+        # GUARD-JOB-IS-NOT-THE-CONTROL. The one mutation of the reviewer's 26
+        # that survived was replacing the `_refuse_an_anonymous_grant(...)` call
+        # with `pass`: all tests stayed green, because the six direct tests
+        # exercise the inner function and nothing asserted the composed guard
+        # still calls it.
+        #
+        # A "the composed guard refuses an anonymous document" test would NOT
+        # catch that mutation: every anonymous-granting shape (`*`, NotPrincipal)
+        # is already refused by a STRUCTURAL rule, so such a document is refused
+        # with or without the call. The evaluation route is a semantic backstop
+        # for a future weakening of those rules, and the only way to pin its
+        # wiring is to assert the call itself happens.
+        called = []
+        original = verify._refuse_an_anonymous_grant
+
+        def spy(policy, bucket):
+            called.append(bucket)
+            return original(policy, bucket)
+
+        with mock.patch.object(verify, "_refuse_an_anonymous_grant", spy):
+            verify.assert_probe_policy_grants_only(
+                verify.scoped_grant_policy(FENCED, GRANTEE_ARN), FENCED, GRANTEE_ARN
+            )
+        self.assertEqual(called, [FENCED])
+
+    def test_a_statement_with_no_action_or_a_notaction_is_refused(self):
+        # `NotAction` is the inversion `NotPrincipal` performs on the noun,
+        # applied to the verb. A statement with no `Action` at all is a document
+        # the evaluation check below cannot reason about, so it must not reach
+        # it. Missing (None) is caught by the shape parse; an empty list by the
+        # emptiness check after it.
+        missing = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        del missing["Statement"][0]["Action"]
+        with self.assertRaises(verify.VerifierError) as raised:
+            verify.assert_probe_policy_grants_only(missing, FENCED, GRANTEE_ARN)
+        self.assertIn("Action is None", str(raised.exception))
+
+        empty = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        empty["Statement"][0]["Action"] = []
+        with self.assertRaises(verify.VerifierError) as raised:
+            verify.assert_probe_policy_grants_only(empty, FENCED, GRANTEE_ARN)
+        self.assertIn("names no Action", str(raised.exception))
+
+        inverted = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        del inverted["Statement"][0]["Action"]
+        inverted["Statement"][0]["NotAction"] = "s3:DeleteBucket"
+        with self.assertRaises(verify.VerifierError) as raised:
+            verify.assert_probe_policy_grants_only(inverted, FENCED, GRANTEE_ARN)
+        self.assertIn("NotAction", str(raised.exception))
+
+    def test_the_evaluation_check_refuses_what_the_structural_rules_refuse(self):
+        # THE SECOND ROUTE, EXERCISED ON ITS OWN. Reached through
+        # `assert_probe_policy_grants_only` these shapes are stopped by a
+        # structural rule first, so calling the evaluator directly is the only
+        # way to know it would have caught them too — and a redundant check
+        # nobody proved still fires is not redundancy, it is decoration.
+        star = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        star["Statement"][0]["Principal"] = {"AWS": "*"}
+        notprincipal = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        del notprincipal["Statement"][0]["Principal"]
+        notprincipal["Statement"][0]["NotPrincipal"] = {"AWS": [OPERATOR_ARN]}
+        for label, document in (("wildcard", star), ("notprincipal", notprincipal)):
+            with self.subTest(shape=label):
+                with self.assertRaises(verify.VerifierError) as raised:
+                    verify._refuse_an_anonymous_grant(document, FENCED)
+                self.assertIn("anonymous caller gains", str(raised.exception))
+
+    def test_the_evaluation_check_passes_the_documents_this_mode_actually_sends(self):
+        # And it must not fire on the real ones, or it would refuse every run.
+        for document in self._every_document():
+            with self.subTest(sid=document["Statement"][0]["Sid"]):
+                verify._refuse_an_anonymous_grant(document, FENCED)
+
+    def test_the_evaluation_check_is_asked_only_about_the_anonymous_caller(self):
+        # `decide`'s default for any `arn:aws:iam:::user/` principal is `allow`,
+        # because this provider grants every key in a project access to every
+        # bucket in it. A check built on a stranger's ARN would therefore refuse
+        # an EMPTY document, and be useless; `anonymous` defaults to `deny`, so
+        # an `allow` can only have come from a statement. This asserts the
+        # asymmetry the check depends on rather than trusting it.
+        empty = {"Version": "2012-10-17", "Statement": []}
+        stranger = "arn:aws:iam:::user/p11111111:" + "S" * 20
+        resource = f"arn:aws:s3:::{FENCED}/{verify.PROBE_PREFIX}x.txt"
+        self.assertEqual(decide(empty, stranger, "s3:GetObject", resource), "allow")
+        self.assertEqual(
+            decide(empty, verify.ANONYMOUS_OWNER, "s3:GetObject", resource), "deny"
+        )
+        verify._refuse_an_anonymous_grant(empty, FENCED)
+
+    def test_the_evaluation_check_asks_about_concrete_objects_not_a_wildcard(self):
+        # THE BUG THIS CHECK SHIPPED WITH FOR ONE ITERATION. `decide` matches a
+        # statement's Resource PATTERN against the resource it is given, so
+        # asking about `arn:aws:s3:::<bucket>/*` asks whether the document
+        # covers an object literally named `*` — which a statement scoped to
+        # `fence-probe/*` does not. The check passed a document granting the
+        # world every probe object, and looked like it was working.
+        world_readable = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        world_readable["Statement"][0]["Principal"] = {"AWS": "*"}
+        self.assertEqual(
+            decide(world_readable, verify.ANONYMOUS_OWNER, "s3:GetObject", f"arn:aws:s3:::{FENCED}/*"),
+            "deny",
+            "a wildcard resource string is not what the statement covers",
+        )
+        self.assertEqual(
+            decide(
+                world_readable,
+                verify.ANONYMOUS_OWNER,
+                "s3:GetObject",
+                f"arn:aws:s3:::{FENCED}/{verify.PROBE_PREFIX}probe.txt",
+            ),
+            "allow",
+            "a concrete object under the prefix is what it covers",
+        )
+        with self.assertRaises(verify.VerifierError):
+            verify._refuse_an_anonymous_grant(world_readable, FENCED)
+
+    def test_the_evaluation_check_reaches_the_objects_the_bucket_exists_for(self):
+        # A whole-bucket grant to the world is the shape that exposes the
+        # backups themselves, not just this mode's own probe objects.
+        exposed = verify.documented_grant_policy(FENCED, GRANTEE_ARN)
+        exposed["Statement"][0]["Principal"] = {"AWS": "*"}
+        self.assertEqual(
+            decide(
+                exposed,
+                verify.ANONYMOUS_OWNER,
+                "s3:GetObject",
+                f"arn:aws:s3:::{FENCED}/dumps/a-real-backup.sql.age",
+            ),
+            "allow",
+        )
+        # The guard refuses at the first resource it reaches, which for a
+        # whole-bucket grant is the bucket itself — so the message names that
+        # rather than the object. The `decide` call above is what proves the
+        # backups are covered; this proves the document does not get sent.
+        with self.assertRaises(verify.VerifierError) as raised:
+            verify._refuse_an_anonymous_grant(exposed, FENCED)
+        self.assertIn(FENCED, str(raised.exception))
+
+    def test_a_grant_reaching_only_the_backups_is_still_refused(self):
+        # The bucket-ARN row would not catch this one: the statement covers
+        # objects and not the bucket, so the object rows are what stop it. A
+        # loop that had quietly lost them would still pass the test above.
+        objects_only = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        objects_only["Statement"][0]["Principal"] = {"AWS": "*"}
+        objects_only["Statement"][0]["Resource"] = f"arn:aws:s3:::{FENCED}/dumps/*"
+        self.assertEqual(
+            decide(objects_only, verify.ANONYMOUS_OWNER, "s3:GetObject", f"arn:aws:s3:::{FENCED}"),
+            "deny",
+        )
+        with self.assertRaises(verify.VerifierError) as raised:
+            verify._refuse_an_anonymous_grant(objects_only, FENCED)
+        self.assertIn("dumps/", str(raised.exception))
+
+    def test_an_empty_or_missing_element_is_refused_rather_than_skipped(self):
+        for element in ("Principal", "Resource"):
+            with self.subTest(element=element):
+                document = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+                del document["Statement"][0][element]
+                with self.assertRaises(verify.VerifierError):
+                    verify.assert_probe_policy_grants_only(document, FENCED, GRANTEE_ARN)
+        empty = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        empty["Statement"] = []
+        with self.assertRaises(verify.VerifierError):
+            verify.assert_probe_policy_grants_only(empty, FENCED, GRANTEE_ARN)
+
+    def test_a_grantee_in_the_buckets_own_project_stops_the_run_before_it_writes(self):
+        # THE STRUCTURAL PRECONDITION. An owner key as grantee re-creates the
+        # exact blind spot this mode exists to close, and it would do it
+        # silently: every row would still print under a heading that says
+        # otherwise.
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        engine.answers[("grantee", "list-buckets", None)] = OWNER
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("the grantee is in a DIFFERENT account from the bucket", output)
+        self.assertIn("blind spot", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+        self.assertNotIn(("operator", "put-object", FENCED), engine.calls)
+
+    def test_a_grantee_the_endpoint_saw_as_unsigned_stops_the_run(self):
+        # `anonymous` is not an account, it is the absence of a signature -- and
+        # a grant naming a principal that cannot exist is a document nobody has
+        # reasoned about.
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        engine.answers[("grantee", "list-buckets", None)] = ANONYMOUS_OWNER
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("saw this request as unsigned", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_an_unacknowledged_grantee_stops_the_run_and_prints_the_arn_first(self):
+        # The thing being acknowledged is WHO, so the ARN has to be on the
+        # screen before the flag can mean anything. Masked to its last four
+        # characters, because this repository is public.
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        code, output = grant_probe(engine, extra=())
+        self.assertEqual(code, 1)
+        self.assertIn("the grantee is acknowledged as ours", output)
+        self.assertIn("--grantee-is-ours", output)
+        self.assertIn(f"<grantee key ...{GRANTEE_KEY[-4:]}>", output)
+        self.assertNotIn(GRANTEE_KEY, output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+        self.assertNotIn(("operator", "put-object", FENCED), engine.calls)
+
+    def test_the_bucket_is_left_with_no_policy_and_no_probe_object(self):
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 0, output)
+        self.assertIsNone(engine.policy)
+        deletes = [
+            call for call in engine.calls if call == ("operator", "delete-bucket-policy", FENCED)
+        ]
+        self.assertEqual(len(deletes), 2)
+        self.assertIn(("operator", "list-object-versions", FENCED), engine.calls)
+
+    def test_every_probe_object_is_written_before_any_policy_exists(self):
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        grant_probe(engine)
+        writes = [i for i, call in enumerate(engine.calls) if call[1] == "put-object"]
+        first_policy = engine.calls.index(("operator", "put-bucket-policy", FENCED))
+        self.assertEqual(len(writes), 2)
+        self.assertLess(max(writes), first_policy)
+
+    def test_an_unsendable_document_is_refused_before_a_single_object_is_written(self):
+        # A VerifierError escaping the mode skips the cleanup that removes probe
+        # objects, so asserting every document up front means the raise cannot
+        # happen after anything exists to clean up.
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        original = verify.documented_grant_policy
+
+        def locks_the_bucket(bucket, grantee_arn):
+            document = original(bucket, grantee_arn)
+            document["Statement"][0]["Effect"] = "Deny"
+            return document
+
+        with mock.patch.object(verify, "documented_grant_policy", locks_the_bucket):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = verify.main(
+                    ["--bucket", FENCED, "--probe-foreign-grant", "--grantee-is-ours"],
+                    transport=engine,
+                    environ=dict(GRANT_ENVIRONMENT),
+                )
+        self.assertEqual(code, 2)
+        self.assertIn("only 'Allow' is permitted", err.getvalue())
+        self.assertNotIn(("operator", "put-object", FENCED), engine.calls)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_a_grantee_that_reads_the_bucket_with_no_policy_stops_the_run(self):
+        # The premise. A grant cannot be shown to have granted anything to a
+        # principal that already had the access -- and if it holds up, the one
+        # isolation boundary the estate still believes in does not exist.
+        class NoBoundary(GrantEngine):
+            def _refuses_the_read(self, access_key, statement, object_arn):
+                return False
+
+        engine = NoBoundary(grant_engine_ignores_allow)
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("the grantee is denied with NO policy in force", output)
+        self.assertIn("THE PROJECT BOUNDARY THIS PROBE ASSUMES DOES NOT EXIST", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_an_operator_that_cannot_read_its_own_probe_object_is_not_a_finding(self):
+        # The control failing and the boundary failing are opposite readings
+        # from the same missing PASS, and only one of them is about the engine.
+        class Unreadable(GrantEngine):
+            def _refuses_the_read(self, access_key, statement, object_arn):
+                return True
+
+        code, output = grant_probe(Unreadable(grant_engine_ignores_allow))
+        self.assertEqual(code, 1)
+        self.assertIn("the baseline reads are attributable", output)
+        self.assertIn("THIS RUN PROVED NOTHING ABOUT A CROSS-PROJECT GRANT", output)
+        self.assertNotIn("THE PROJECT BOUNDARY THIS PROBE ASSUMES DOES NOT EXIST", output)
+
+    def test_it_refuses_a_bucket_that_already_carries_a_policy(self):
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        engine.policy = POLICY_DOCUMENT
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("already carries a policy", output)
+        self.assertNotIn(("operator", "put-bucket-policy", FENCED), engine.calls)
+
+    def test_a_leftover_grant_is_described_as_a_grant_and_not_as_a_deny(self):
+        # A leftover Deny costs nothing and a leftover Allow is a credential in
+        # another project holding access to this bucket. Telling an operator to
+        # relax about the second is the one message here that could do harm.
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        engine.policy = json.dumps(verify.scoped_grant_policy(FENCED, GRANTEE_ARN)).encode()
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("left its own probe policy", output)
+        self.assertIn("IT IS A GRANT, NOT A DENY", output)
+        code, output = grant_probe(engine, extra=("--grantee-is-ours", "--replace-existing-policy"))
+        self.assertEqual(code, 0, output)
+
+    def test_a_leftover_from_either_deny_mode_is_recognised_as_this_tools_own(self):
+        # Three modes write probe policies here. One that did not know the
+        # others' Ids would refuse a document this repository wrote as a
+        # stranger's, sending an operator to remove by hand something the tool
+        # can replace.
+        for policy_id in verify.probe_family_ids(FENCED):
+            with self.subTest(policy_id=policy_id):
+                engine = GrantEngine(grant_engine_honours_any_allow)
+                engine.policy = json.dumps({"Version": "2012-10-17", "Id": policy_id}).encode()
+                _, output = grant_probe(engine)
+                self.assertIn("left its own probe policy", output)
+
+    def test_a_stranded_grant_document_is_reported_as_urgent(self):
+        # `_temporary_policy`'s default consequence describes a Deny. Printed
+        # over a leftover grant it would say no real object is affected, which
+        # is exactly backwards.
+        engine = GrantEngine(grant_engine_honours_any_allow, removable=False)
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("THE PROBE POLICY IS REMOVED", output)
+        self.assertIn("IT IS A GRANT", output)
+        self.assertNotIn("no real object is affected", output)
+
+    def test_the_dry_run_prints_both_documents_and_sends_nothing(self):
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        code, output = grant_probe(engine, extra=("--dry-run",))
+        self.assertEqual(code, 0)
+        self.assertEqual(engine.calls, [])
+        self.assertIn("ProbeGrantScopedRead", output)
+        self.assertIn("ProbeGrantDocumentedShape", output)
+        # The `s3:*` is what an operator is being asked to acknowledge, so it
+        # has to be visible before the acknowledgement rather than after it.
+        self.assertIn("s3:*", output)
+
+    def test_this_mode_needs_no_policy_file_and_no_control_bucket(self):
+        code, output = grant_probe(GrantEngine(grant_engine_honours_any_allow))
+        self.assertEqual(code, 0, output)
+
+    def test_two_probe_modes_at_once_are_refused_whichever_pair_it_is(self):
+        # Different credentials, different documents, and one bucket policy slot
+        # between them. All three pairs, because catching only the pair somebody
+        # thought of is how the third one runs the wrong experiment silently.
+        pairs = (
+            ("--probe-foreign-grant", "--diagnose-policy-engine"),
+            ("--probe-foreign-grant", "--probe-notprincipal"),
+            ("--diagnose-policy-engine", "--probe-notprincipal"),
+        )
+        for pair in pairs:
+            with self.subTest(pair=pair):
+                engine = GrantEngine(grant_engine_honours_any_allow)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                    verify.main(
+                        ["--bucket", FENCED, *pair],
+                        transport=engine,
+                        environ=dict(GRANT_ENVIRONMENT),
+                    )
+                self.assertIn("run one at a time", err.getvalue())
+                self.assertEqual(engine.calls, [])
+
+    def test_the_acknowledgement_flag_is_refused_outside_the_mode_it_belongs_to(self):
+        # It reads as a blanket "yes, proceed" to anyone who has met it once,
+        # and it means one specific thing about one specific credential.
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            verify.main(
+                ["--bucket", FENCED, "--diagnose-policy-engine", "--grantee-is-ours"],
+                transport=engine,
+                environ=dict(GRANT_ENVIRONMENT),
+            )
+        self.assertIn("means nothing outside", err.getvalue())
+        self.assertEqual(engine.calls, [])
+
+    def test_a_missing_grantee_credential_stops_the_run_with_no_verdict(self):
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = verify.main(
+                ["--bucket", FENCED, "--probe-foreign-grant", "--grantee-is-ours"],
+                transport=engine,
+                environ=dict(ENVIRONMENT),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("FENCE_GRANTEE_ACCESS_KEY_ID", err.getvalue())
+        self.assertEqual(engine.calls, [])
+
+    def test_the_workload_and_foreign_credentials_are_not_required_for_this_mode(self):
+        environment = {
+            name: value
+            for name, value in GRANT_ENVIRONMENT.items()
+            if "WORKLOAD" not in name and "FOREIGN" not in name
+        }
+        code, output = grant_probe(
+            GrantEngine(grant_engine_honours_any_allow), environment=environment
+        )
+        self.assertEqual(code, 0, output)
+
+    def test_the_grantee_may_not_be_the_operator_credential(self):
+        # Both windows would then name the key doing the reading, and the run
+        # would report a grant to a principal that owns the bucket anyway.
+        environment = dict(GRANT_ENVIRONMENT, FENCE_GRANTEE_ACCESS_KEY_ID=OPERATOR_KEY)
+        engine = GrantEngine(grant_engine_honours_any_allow)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = verify.main(
+                ["--bucket", FENCED, "--probe-foreign-grant", "--grantee-is-ours"],
+                transport=engine,
+                environ=environment,
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("the same access key", err.getvalue())
+        self.assertEqual(engine.calls, [])
+
+    def test_the_evidence_block_names_no_access_key_id(self):
+        # It exists to be pasted onto a public issue.
+        _, output = grant_probe(GrantEngine(grant_engine_honours_any_allow))
+        self.assertIn("RAW EVIDENCE", output)
+        for key in (GRANTEE_KEY, OPERATOR_KEY):
+            self.assertNotIn(key, output)
+        self.assertIn(f"<grantee key ...{GRANTEE_KEY[-4:]}>", output)
+
+    def test_a_long_stored_document_cannot_leak_half_an_access_key_id(self):
+        # THE ORDERING BUG IN THE EVIDENCE BLOCK. Truncating before masking can
+        # cut an ARN in half, leaving a fragment the mask no longer matches --
+        # so most of an access key id prints verbatim into the block the runbook
+        # calls safe to paste anywhere. Reachability is low (the real documents
+        # are ~300 bytes and a bucket carrying anything else is refused), which
+        # is why only an explicit test finds it.
+        padded = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)
+        padded["Statement"][0]["Sid"] = "P" * 1180
+
+        class LongStore(GrantEngine):
+            def __call__(self, url, headers, payload, method):
+                result = super().__call__(url, headers, payload, method)
+                if self.policy is not None and method == "PUT" and "policy" in url:
+                    self.policy = json.dumps(padded).encode()
+                return result
+
+        _, output = grant_probe(LongStore(grant_engine_honours_any_allow))
+        self.assertIn("WINDOW G1 -- stored:", output)
+        self.assertNotIn(GRANTEE_KEY, output)
+        # Not merely the whole id: no run of the id longer than its masked tail
+        # may survive either.
+        for length in range(5, len(GRANTEE_KEY) + 1):
+            self.assertNotIn(GRANTEE_KEY[:length], output)
+
+    def test_a_document_the_bucket_did_not_store_yields_no_verdict(self):
+        # This backend is on record accepting a configuration and silently
+        # dropping part of it, and a read taken under a document that was never
+        # stored measures a different policy.
+        code, output = grant_probe(GrantEngine(grant_engine_honours_any_allow, stores=False))
+        self.assertEqual(code, 1)
+        self.assertIn("the bucket stores the document that was sent", output)
+        self.assertIn("THIS RUN PROVED NOTHING ABOUT A CROSS-PROJECT GRANT", output)
+
+    def test_a_rejected_document_leaves_the_bucket_policy_untouched(self):
+        # Deleting after a refused PUT removes a policy this run never
+        # displaced, which on a fenced bucket is the fence.
+        engine = GrantEngine(grant_engine_honours_any_allow, accepts=False)
+        code, output = grant_probe(engine)
+        self.assertEqual(code, 1)
+        self.assertIn("the probe policy is accepted", output)
+        self.assertNotIn(("operator", "delete-bucket-policy", FENCED), engine.calls)
+
+
+class TestForeignGrantVerdicts(unittest.TestCase):
+    """The readings, as pure functions, one cell at a time."""
+
+    READS = ("allowed", "denied")
+
+    def _cells(self):
+        for scoped in self.READS:
+            for documented in self.READS:
+                yield scoped, documented
+
+    def test_each_pair_of_reads_names_its_own_engine(self):
+        self.assertEqual(
+            verify.grant_verdict("allowed", "allowed"), verify.CROSS_PROJECT_ALLOW_GRANTS
+        )
+        self.assertEqual(
+            verify.grant_verdict("denied", "allowed"), verify.ONLY_THE_DOCUMENTED_SHAPE_GRANTS
+        )
+        self.assertEqual(
+            verify.grant_verdict("allowed", "denied"), verify.ONLY_THE_SCOPED_SHAPE_GRANTS
+        )
+        self.assertEqual(verify.grant_verdict("denied", "denied"), verify.NO_CROSS_PROJECT_GRANT)
+        self.assertEqual(len({verify.grant_verdict(*cell) for cell in self._cells()}), 4)
+
+    def test_an_unreadable_response_never_becomes_a_grant_verdict(self):
+        for reads in (("error", "denied"), ("allowed", "error"), ("", ""), ("error", "error")):
+            with self.subTest(reads=reads):
+                self.assertEqual(verify.grant_verdict(*reads), verify.GRANT_UNPROVEN)
+
+    def test_the_boundary_is_reported_crossed_only_where_a_grant_actually_reached(self):
+        # THE ASSERTION THAT IS NOT THE MAPPING RESTATED. "A policy reached a
+        # foreign principal" means one thing: at least one document allowed a
+        # read that was denied without it.
+        for scoped, documented in self._cells():
+            with self.subTest(scoped=scoped, documented=documented):
+                reached = "allowed" in (scoped, documented)
+                verdict = verify.grant_verdict(scoped, documented)
+                self.assertEqual(verify.GRANT_DEMONSTRATED[verdict], reached)
+
+    def test_a_run_that_settled_nothing_never_claims_the_boundary_was_crossed(self):
+        # An unproven run and a missing boundary are both `False` here for the
+        # same reason an INCONCLUSIVE check is not a pass: neither demonstrated
+        # a policy reaching anybody.
+        for verdict in (verify.GRANT_UNPROVEN, verify.NO_PROJECT_BOUNDARY):
+            self.assertFalse(verify.GRANT_DEMONSTRATED[verdict])
+
+    def test_every_reading_the_classifier_can_return_has_prose_and_a_consequence(self):
+        returned = {verify.grant_verdict(*cell) for cell in self._cells()}
+        returned.update({verify.GRANT_UNPROVEN, verify.NO_PROJECT_BOUNDARY})
+        self.assertEqual(returned, set(verify.GRANT_DEMONSTRATED))
+        self.assertEqual(returned, set(verify.GRANT_VERDICT_TEXT))
+
+    def test_every_reading_has_prose_that_says_what_to_do_next(self):
+        for verdict in verify.GRANT_DEMONSTRATED:
+            with self.subTest(verdict=verdict):
+                text = " ".join(verify.GRANT_VERDICT_TEXT[verdict].split())
+                self.assertTrue(verify.GRANT_VERDICT_TEXT[verdict].splitlines()[0].isupper())
+                self.assertIn("not apply", text)
+                self.assertIn("Record", text)
+
+    def test_the_runbook_documents_every_grant_verdict_this_tool_can_print(self):
+        runbook = (
+            pathlib.Path(__file__).parents[3] / "RUNBOOK-bucket-fencing.md"
+        ).read_text(encoding="utf-8")
+        for verdict, text in verify.GRANT_VERDICT_TEXT.items():
+            headline = text.splitlines()[0].rstrip(".")
+            with self.subTest(verdict=verdict):
+                self.assertIn(headline, runbook)
+
+    # The row names this mode can print, each a literal in the source and each
+    # a line an operator meets under pressure. The verdict coverage above checks
+    # only the six verdicts; a row that fires mid-run and is absent from the
+    # runbook is one an operator has nothing to act on -- the FATE-UNKNOWN row,
+    # which can mean a live grant, was exactly that.
+    STOP_ROW_FRAGMENTS = (
+        "credential resolves its account",
+        "the grantee is in a DIFFERENT account from the bucket",
+        "the grantee is acknowledged as ours",
+        "the leftover GRANT is removed before anything is measured",
+        "the probe object for window",
+        "the baseline reads are attributable",
+        "the bucket stores the document that was sent",
+        "the same read twice",
+        "the grant is gone once its document is removed",
+        "the probe policy is accepted",
+        "THE PROBE POLICY IS REMOVED",
+        "THE PROBE POLICY'S FATE IS UNKNOWN",
+        "the bucket carries no policy to displace",
+    )
+
+    def test_the_runbook_0b_documents_every_row_this_mode_can_print(self):
+        # F5: extend coverage from verdicts to rows. Tied both ways -- each
+        # fragment must appear in the source (so the list is not documenting a
+        # row the code cannot emit) AND in the runbook's 0b section (so the
+        # operator can look it up).
+        source = _MODULE_PATH.read_text(encoding="utf-8")
+        runbook_text = (
+            pathlib.Path(__file__).parents[3] / "RUNBOOK-bucket-fencing.md"
+        ).read_text(encoding="utf-8")
+        start = runbook_text.index("## 0b.")
+        end = runbook_text.index("\n## ", start)
+        section_0b = runbook_text[start:end]
+        for fragment in self.STOP_ROW_FRAGMENTS:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, source, "no row in the code emits this fragment")
+                self.assertIn(fragment, section_0b, "runbook 0b does not document this row")
+
+    def test_the_plan_the_dry_run_prints_is_the_plan_the_run_sends(self):
+        plan = verify._grant_plan()
+        self.assertEqual(
+            [window for window, _ in plan],
+            [verify.GRANT_WINDOW_SCOPED, verify.GRANT_WINDOW_DOCUMENTED],
+        )
+        self.assertEqual(plan[0][1], verify.scoped_grant_policy)
+        self.assertEqual(plan[1][1], verify.documented_grant_policy)
+
+    def test_the_documented_shape_is_the_providers_published_one_element_for_element(self):
+        # It is a quotation, not a design. Narrowing any of the three elements
+        # would make this a different document from the one the documentation
+        # publishes, and the window would stop answering its question.
+        statement = verify.documented_grant_policy(FENCED, GRANTEE_ARN)["Statement"][0]
+        self.assertEqual(statement["Effect"], "Allow")
+        self.assertEqual(statement["Principal"], {"AWS": GRANTEE_ARN})
+        self.assertEqual(statement["Action"], "s3:*")
+        self.assertEqual(
+            statement["Resource"], [f"arn:aws:s3:::{FENCED}", f"arn:aws:s3:::{FENCED}/*"]
+        )
+        # And the narrow one differs in all three, or the pair discriminates
+        # nothing.
+        scoped = verify.scoped_grant_policy(FENCED, GRANTEE_ARN)["Statement"][0]
+        self.assertEqual(scoped["Principal"], {"AWS": [GRANTEE_ARN]})
+        self.assertEqual(scoped["Action"], "s3:GetObject")
+        self.assertEqual(scoped["Resource"], f"arn:aws:s3:::{FENCED}/{verify.PROBE_PREFIX}*")
+
+    def test_both_documents_carry_the_same_id_so_a_leftover_is_recognisable(self):
+        # An interrupted run leaves one of them behind, and the Id is the only
+        # thing that tells the next run it is this tool's own document.
+        for document in (
+            verify.scoped_grant_policy(FENCED, GRANTEE_ARN),
+            verify.documented_grant_policy(FENCED, GRANTEE_ARN),
+        ):
+            self.assertEqual(document["Id"], verify.foreign_grant_policy_id(FENCED))
+        self.assertIn(verify.foreign_grant_policy_id(FENCED), verify.probe_family_ids(FENCED))
+
+
 class TestApplyMode(unittest.TestCase):
     """Pre-flight and the double PUT in one process, so neither can be skipped."""
 
@@ -2953,6 +4235,28 @@ class TestSetupRefusals(unittest.TestCase):
         del environment["FENCE_FOREIGN_ACCESS_KEY_ID"]
         with self.assertRaises(verify.VerifierError):
             verify.read_credentials(environment)
+
+    def test_the_distinct_key_check_covers_the_roles_a_mode_actually_signs_as(self):
+        # A DELIBERATE BEHAVIOUR CHANGE, pinned so it stays deliberate. Adding
+        # the grantee role meant `needed` had to be stated per mode, and the
+        # distinct-key check follows it: an environment left over from another
+        # mode may carry a role this one never sends, and refusing because two
+        # credentials it will not both use happen to be one key is a refusal
+        # about nothing. The roles a mode DOES sign as are still compared.
+        collided = dict(ENVIRONMENT, FENCE_WORKLOAD_ACCESS_KEY_ID=OPERATOR_KEY)
+        # The diagnostic never signs as the workload, so it proceeds.
+        verify.read_credentials(collided, needed=verify.DIAGNOSTIC_ROLES)
+        # Every mode that does sign as it still refuses.
+        for needed in (verify.FENCE_ROLES, None):
+            with self.subTest(needed=needed):
+                with self.assertRaises(verify.VerifierError):
+                    verify.read_credentials(collided, needed=needed)
+        # And the grant mode's own pair is compared.
+        with self.assertRaises(verify.VerifierError):
+            verify.read_credentials(
+                dict(GRANT_ENVIRONMENT, FENCE_GRANTEE_ACCESS_KEY_ID=OPERATOR_KEY),
+                needed=verify.GRANT_ROLES,
+            )
 
     def test_two_roles_on_one_key_stop_the_run(self):
         # Otherwise every check that distinguishes them is meaningless and the
