@@ -771,9 +771,12 @@ getting here," above.
   still work. Which world this is, section 0 decides; this row only rules out
   the `NotPrincipal` shape.
 - **`NotPrincipal EXEMPTS the named key` — `INCONCLUSIVE`.** The operator's read
-  succeeded and so did the foreign key's, so the statement reached nobody and
-  this row cannot tell an exemption from an ignored statement. **This is what
-  the live run produced.** Section 0 is what separates them.
+  succeeded and so did the foreign key's. Three worlds produce that: the
+  exemption works, the statement is ignored entirely, or both reads were served
+  from the read-path cache and neither saw the statement at all. This row cannot
+  separate them. **The 2026-08-27 run produced this, before the dwell above
+  existed — so it is not evidence for any of the three.** Section 0 is what
+  separates them.
 - **`NotPrincipal DENIES everyone else` — `FAIL`.** The statement is stored and
   not enforced. A fence built from it would fence nothing while every other
   signal said it had worked. Which of the engines in section 0's table this is
