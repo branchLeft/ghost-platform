@@ -10,6 +10,7 @@
     "lint:check": "eslint infra services --ext .ts",
     "format": "prettier --write . --ignore-path .gitignore --ignore-path .prettierignore --ignore-path node_modules/@branchleft/prettier-config/prettierignore",
     "format:check": "prettier --check . --ignore-path .gitignore --ignore-path .prettierignore --ignore-path node_modules/@branchleft/prettier-config/prettierignore",
+    "test": "node --test *.test.js",
     "prepare": "[ \"$CI\" = \"true\" ] || pre-commit install"
   },
   "devDependencies": {
