@@ -1343,12 +1343,27 @@ def _existing_policy_refusal(
     )
 
 
-def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: bool) -> list[tuple]:
+def probe_notprincipal(
+    verifier: Verifier,
+    *,
+    bucket: str,
+    replace_existing: bool,
+    dwell_seconds: float = DWELL_SECONDS,
+) -> list[tuple]:
     """Ask the live engine whether `NotPrincipal` exempts, reversibly.
 
     Ordering is the whole safety argument: the object is written before the
     probe policy exists, the probe policy is removed before this returns
     whatever the answer was, and the probe policy can never deny the removal.
+
+    THIS IS THE STEP AN OPERATOR ACTUALLY RUNS, and the render-bucket-fence and
+    render-media-bucket generators both depend on its answer: if `NotPrincipal`
+    does not exempt the operator, applying either policy denies the operator
+    `PutBucketPolicy` and `DeleteBucket`, and the bucket is unrecoverable from
+    inside the account. A read taken without a dwell reproduces the original
+    failure exactly -- both roles land inside the read-path cache, both read
+    `allowed`, and the pair scores `INCONCLUSIVE` -- which is not a false PASS,
+    but it means this step can never answer the question it exists to answer.
     """
     rows: list[tuple] = []
     account, reason = account_of(verifier, "operator")
@@ -1385,8 +1400,30 @@ def probe_notprincipal(verifier: Verifier, *, bucket: str, replace_existing: boo
         if probe.applied:
             # Both reads happen inside the block, so the probe policy is
             # removed whatever either of them does.
-            operator_outcome, operator_reason = verifier.run(_read(bucket, "operator", probe_key))
-            foreign_outcome, foreign_reason = verifier.run(_read(bucket, "foreign", probe_key))
+            #
+            # `allowed` IS BOTH THE PRE-CHANGE ANSWER AND THE HOPED-FOR
+            # POST-CHANGE ONE FOR THE OPERATOR, and a single read cannot tell
+            # them apart: a read path still serving the no-policy state
+            # answers `allowed`, and a working `NotPrincipal` exemption also
+            # answers `allowed`. So the operator's reading is held across the
+            # dwell before it counts, the same as the foreign key's: a
+            # `denied` reading cannot be a stale echo of a bucket that had no
+            # policy moments ago and counts at once, on either role.
+            _dwell_evidence: list[str] = []
+            operator_observation = _dwell(
+                lambda: _observe(verifier, bucket, "notprincipal", "operator", probe_key),
+                pre_change="allowed",
+                evidence=_dwell_evidence,
+                dwell_seconds=dwell_seconds,
+            )
+            foreign_observation = _dwell(
+                lambda: _observe(verifier, bucket, "notprincipal", "foreign", probe_key),
+                pre_change="allowed",
+                evidence=_dwell_evidence,
+                dwell_seconds=dwell_seconds,
+            )
+            operator_outcome, operator_reason = operator_observation.outcome, operator_observation.reason
+            foreign_outcome, foreign_reason = foreign_observation.outcome, foreign_observation.reason
         else:
             # Whatever these reads returned would be the bucket answering about
             # some other policy, or about none. Reporting PASS from them would
@@ -2324,12 +2361,27 @@ def diagnose_policy_engine(
     # both keys must be able to read every probe object. Without it a denial in
     # a window could be the key, the object or the endpoint, and a denial whose
     # cause is unknown is the substitution that produced this whole programme.
+    #
+    # THIS READ IS ALSO ONE A STALE CACHE CAN POISON. When `leftover` above was
+    # true, a Deny probe from an interrupted run was just removed -- and a read
+    # path still serving that removal answers `denied`, not `allowed`. So each
+    # read here is held against `pre_change="denied"` rather than trusted on
+    # the first attempt, whether or not a leftover was actually found: an
+    # `allowed` reading cannot be a stale echo of a just-removed Deny and
+    # counts at once; a `denied` one is exactly what that echo looks like, and
+    # is held before it is allowed to abort the run below as unattributable.
     evidence.append("BASELINE -- no policy on the bucket")
     unattributable = []
     for name, key in keys.items():
         for role in ("foreign", "operator"):
-            observation = _observe(verifier, bucket, f"baseline {name}", role, key)
-            evidence.append(observation.line())
+            observation = _dwell(
+                lambda name=name, role=role, key=key: _observe(
+                    verifier, bucket, f"baseline {name}", role, key
+                ),
+                pre_change="denied",
+                evidence=evidence,
+                dwell_seconds=dwell_seconds,
+            )
             if observation.outcome != "allowed":
                 unattributable.append(f"{role} on the window {name} object ({observation.outcome})")
     if unattributable:
@@ -3921,9 +3973,9 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         type=float,
         default=DWELL_SECONDS,
         help=f"how long a read matching the pre-change state is held before it counts, for "
-        f"--diagnose-policy-engine and --probe-foreign-grant (default {DWELL_SECONDS:g}, "
-        f"comfortably above this endpoint's measured ~15-20s read-path cache); lower it "
-        f"for a fast-path re-run once the engine's behaviour is already known",
+        f"--probe-notprincipal, --diagnose-policy-engine and --probe-foreign-grant (default "
+        f"{DWELL_SECONDS:g}, comfortably above this endpoint's measured ~15-20s read-path "
+        f"cache); lower it for a fast-path re-run once the engine's behaviour is already known",
     )
     args = parser.parse_args(argv)
 
@@ -4153,7 +4205,10 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
     if args.probe_notprincipal:
         try:
             rows = probe_notprincipal(
-                verifier, bucket=args.bucket, replace_existing=args.replace_existing_policy
+                verifier,
+                bucket=args.bucket,
+                replace_existing=args.replace_existing_policy,
+                dwell_seconds=args.dwell_seconds,
             )
         except VerifierError as error:
             print(f"error: {error}", file=sys.stderr)

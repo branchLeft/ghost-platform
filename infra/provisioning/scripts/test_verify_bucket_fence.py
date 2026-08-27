@@ -1315,11 +1315,54 @@ class TestNotPrincipalProbe(unittest.TestCase):
         self.assertTrue(exempts[0].startswith(verify.PASS), exempts[0])
 
     def test_the_two_reads_that_decide_it_are_signed_as_different_roles(self):
+        # The operator's `allowed` is indistinguishable, in one read, from a
+        # read path still serving the no-policy state -- a working exemption
+        # looks the same as a stale cache here, so it is held for the full
+        # dwell before it counts. The foreign key's `denied` cannot be a stale
+        # echo of a bucket that had no policy moments ago, and counts at once.
         _, _, transport = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
         reads = [call for call in transport.calls if call[1] == "get-object"]
+        held = int(verify.DWELL_SECONDS // verify.DWELL_POLL_SECONDS) + 1
         self.assertEqual(
-            reads, [("operator", "get-object", FENCED), ("foreign", "get-object", FENCED)]
+            reads,
+            [("operator", "get-object", FENCED)] * held + [("foreign", "get-object", FENCED)],
         )
+
+    def test_a_transiently_stale_foreign_read_still_reaches_the_right_verdict(self):
+        # THE FAILURE MODE ITSELF. Read too soon, a working exemption and a
+        # read path still serving the no-policy state are the same observation
+        # on the foreign key's side: `allowed`. Undwelled, this reproduced the
+        # original failure exactly -- both reads land inside the cache and
+        # both read `allowed`, scoring INCONCLUSIVE on the run this step
+        # exists to answer. Now the later, correct `denied` is what counts.
+        class TransientlyAllowed(Transport):
+            def __init__(self, answers):
+                super().__init__(answers)
+                self.foreign_reads = 0
+
+            def __call__(self, url, headers, payload, method):
+                if (
+                    method == "GET"
+                    and verify.PROBE_PREFIX in url
+                    and FOREIGN_KEY in headers.get("Authorization", "")
+                ):
+                    self.foreign_reads += 1
+                    if self.foreign_reads == 1:
+                        self.calls.append(("foreign", "get-object", FENCED))
+                        return OBJECT_BYTES.status, OBJECT_BYTES.body
+                return super().__call__(url, headers, payload, method)
+
+        # `_run` builds its own plain `Transport`, so the drifting one is
+        # passed straight to `run`.
+        transport = TransientlyAllowed(self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT))
+        code, output, _ = run(
+            self._answers(OBJECT_BYTES, ACCESS_DENIED_OBJECT),
+            extra_args=["--probe-notprincipal"],
+            transport=transport,
+        )
+        self.assertEqual(code, 0, output)
+        exempts = [line for line in output.splitlines() if "NotPrincipal EXEMPTS" in line]
+        self.assertTrue(exempts[0].startswith(verify.PASS), exempts[0])
 
     def test_a_read_the_transport_cannot_interpret_is_inconclusive_not_a_denial(self):
         # A refusal carrying no error document. The operator row must not read
@@ -2371,6 +2414,36 @@ class TestPolicyEngineProbesAreSafe(unittest.TestCase):
         self.assertIn("left its own probe policy", output)
         code, output = diagnose(engine, extra=["--replace-existing-policy"])
         self.assertEqual(code, 0, output)
+
+    def test_a_baseline_read_that_starts_denied_still_reaches_a_verdict(self):
+        # THE LEFTOVER-CLEANUP CASE. A leftover Deny from an interrupted run is
+        # removed right before this baseline, and a read path still serving
+        # that removal answers `denied`, not `allowed`. Undwelled, that would
+        # abort the whole diagnostic as unattributable on a bucket that
+        # genuinely carries no policy; held, it self-corrects.
+        class TransientlyDenied(Engine):
+            served_stale_denial = False
+
+            def __call__(self, url, headers, payload, method):
+                if (
+                    verify.PROBE_PREFIX in url
+                    and method == "GET"
+                    and self.policy is None
+                    and FOREIGN_KEY in headers.get("Authorization", "")
+                    and not self.served_stale_denial
+                ):
+                    self.served_stale_denial = True
+                    self.calls.append(("foreign", "get-object", FENCED))
+                    return ACCESS_DENIED_OBJECT.status, ACCESS_DENIED_OBJECT.body
+                return super().__call__(url, headers, payload, method)
+
+        engine = TransientlyDenied(engine_per_key)
+        code, output = diagnose(engine)
+        # code == 0 already rules out the INCONCLUSIVE abort this stale
+        # reading used to cause -- `report()` only returns 0 when nothing
+        # failed or was left unproven.
+        self.assertEqual(code, 0, output)
+        self.assertIn("PER-KEY PRINCIPALS RESOLVE", output)
 
     def test_a_key_that_cannot_read_its_object_with_no_policy_stops_the_run(self):
         # THE CONTROL. Without it a denial in a window could be the key, the

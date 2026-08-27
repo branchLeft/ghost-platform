@@ -54,12 +54,15 @@ PUTting the policy twice with no gap authorises the second PUT against the
 first PUT's own stale decision, which is a false pass on the one control
 standing between an operator and an unrecoverable lockout.
 
-**One probe in this file does not yet have this fix.** Step 1c
-(`--probe-notprincipal`) takes its confirming read once, immediately after the
-policy is applied, with no dwell of any kind — more exposed to this cache than
-anything above, not less. Treat a `FAIL` there as provisional: read the object
-again by hand after at least 30 seconds have passed before concluding
-`NotPrincipal` does not exempt.
+**Step 1c's own confirming read holds too, and it is the least clear-cut case
+in this file.** The operator's `allowed` is simultaneously the stale pre-change
+answer (a read path still serving the no-policy state) and the expected
+post-change one (a working `NotPrincipal` exemption) -- the two are
+indistinguishable in a single read, so that reading is exactly the one that
+must survive the full dwell before it counts. In the ordinary case, where the
+exemption works, **step 1c takes close to the full `--dwell-seconds` (about
+two minutes, by default) to return.** That is expected, not a hang -- do not
+interrupt it.
 
 ---
 
@@ -676,6 +679,14 @@ the bucket resource, `PutBucketPolicy` and `DeleteBucketPolicy` stay available
 to every key throughout. The script asserts that property before it sends
 anything.
 
+**This command normally takes close to two minutes, not seconds — that is
+expected, do not interrupt it.** The operator's own reading has to survive a
+full dwell before it counts (see "The verification tooling's read path is
+cached" above), and in the ordinary case where the exemption works, that
+reading is `allowed` from the first attempt, which is exactly the one that has
+to wait out the whole window. `--dwell-seconds` shortens this for a fast-path
+re-run once the engine's behaviour is already known.
+
 ```bash
 python3 infra/provisioning/scripts/verify-bucket-fence.py --probe-notprincipal \
   --bucket branchleft-db-backups \
@@ -1070,11 +1081,10 @@ bucket.
 **2. The PUT succeeds, the stored document matches, and the foreign probes
 still succeed.** The engine stores `NotPrincipal` and does not enforce it at
 all. Every signal except the probes says the bucket is fenced. **A run of step
-1c reported exactly this before the read-path cache above was understood, with
-no dwell at all on its confirming read — so it is not yet known whether this is
-what the engine does or what a read taken too soon looks like. Re-run 1c with a
-deliberate wait before treating it as settled.** When it is genuinely this
-case, step 1c catches it as `NotPrincipal DENIES everyone else — FAIL`, and
+1c reported exactly this before the read-path cache above was understood and
+fixed, on a read taken with no dwell at all — so that run does not settle
+anything on its own. Re-run 1c under the current tool before treating it as
+settled.** When it is genuinely this case, step 1c catches it as `NotPrincipal DENIES everyone else — FAIL`, and
 section 1f catches it after the fact — but neither says *why*, and the two
 possible reasons have opposite consequences. If the
 engine simply does not implement `NotPrincipal`, a fence is rebuildable out of
