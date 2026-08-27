@@ -1274,6 +1274,24 @@ class TestNotPrincipalProbe(unittest.TestCase):
         code, output, _ = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
         self.assertEqual(code, 0, output)
 
+    def test_the_evidence_transcript_is_printed_not_discarded(self):
+        # This step can now hold for close to the full dwell, and the reads
+        # taken while it held used to be built and then thrown away -- leaving
+        # the step this docstring calls "THE STEP AN OPERATOR ACTUALLY RUNS"
+        # with no record of what it actually saw.
+        code, output, _ = self._run(OBJECT_BYTES, ACCESS_DENIED_OBJECT)
+        self.assertIn("RAW EVIDENCE", output)
+        self.assertIn("read as operator", output)
+        self.assertIn("read as foreign", output)
+
+    def test_no_evidence_block_when_the_probe_never_ran(self):
+        # Refused before any read happened -- the operator's account never
+        # resolves against an unmapped transport -- so printing an empty "RAW
+        # EVIDENCE" header would be noise, not a transcript.
+        code, output, _ = run({}, extra_args=["--probe-notprincipal"])
+        self.assertEqual(code, 1)
+        self.assertNotIn("RAW EVIDENCE", output)
+
     def test_an_engine_that_denies_the_named_key_fails_loudly(self):
         # The finding that would otherwise arrive as a locked bucket.
         code, output, _ = self._run(ACCESS_DENIED_OBJECT, ACCESS_DENIED_OBJECT)
@@ -3818,7 +3836,6 @@ class TestForeignGrantVerdicts(unittest.TestCase):
         "the probe object for window",
         "the baseline reads are attributable",
         "the bucket stores the document that was sent",
-        "each read counts once it cannot be a stale answer",
         "the grant is gone once its document is removed",
         "the probe policy is accepted",
         "THE PROBE POLICY IS REMOVED",
@@ -3928,6 +3945,38 @@ class TestApplyMode(unittest.TestCase):
         code, output, _ = run(self._answers(), extra_args=["--apply"], transport=Sequenced(self._answers()))
         self.assertEqual(code, 1)
         self.assertIn("THE BUCKET MAY BE LOCKED", output)
+
+    def test_apply_waits_a_dwell_between_the_two_puts(self):
+        # THE CRITICAL GAP: `--apply` used to send both PUTs back to back, with
+        # no dwell at all -- exactly the bug this whole file exists to fix, on
+        # the path `configure_backup_bucket.py` does not cover
+        # (`branchleft-tenant-pulumi-state`, step 2c).
+        events = []
+
+        class Sequenced(Transport):
+            def __call__(self, url, headers, payload, method):
+                if method == "PUT" and "policy" in url:
+                    events.append(("put", None))
+                return super().__call__(url, headers, payload, method)
+
+        def fake_sleep(seconds):
+            events.append(("sleep", seconds))
+
+        transport = Sequenced(self._answers())
+        with mock.patch.object(verify, "_sleep", fake_sleep):
+            code, output, _ = run(
+                self._answers(),
+                extra_args=["--apply", "--dwell-seconds", "20"],
+                transport=transport,
+            )
+        self.assertEqual(code, 0, output)
+        put_indices = [i for i, event in enumerate(events) if event[0] == "put"]
+        self.assertEqual(len(put_indices), 2)
+        between = events[put_indices[0] + 1 : put_indices[1]]
+        self.assertTrue(between, "nothing was waited between the two policy PUTs")
+        self.assertTrue(all(event[0] == "sleep" for event in between))
+        self.assertEqual(sum(event[1] for event in between), 20.0)
+
 
 
 class TestSignedTransport(unittest.TestCase):
@@ -4476,6 +4525,27 @@ class TestSetupRefusals(unittest.TestCase):
         environment["FENCE_FOREIGN_ACCESS_KEY_ID"] = WORKLOAD_KEY
         with self.assertRaises(verify.VerifierError):
             verify.read_credentials(environment)
+
+    def test_a_zero_dwell_seconds_is_rejected(self):
+        # Zero does not mean "skip the wait" here -- it collapses every dwell
+        # in this file back to the single untrusted read that produced the
+        # withdrawn conclusion. Checked before any credential is even read.
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                verify.main(
+                    ["--bucket", FENCED, "--probe-notprincipal", "--dwell-seconds", "0"],
+                    transport=Transport({}),
+                    environ=dict(ENVIRONMENT),
+                )
+
+    def test_a_negative_dwell_seconds_is_rejected(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                verify.main(
+                    ["--bucket", FENCED, "--probe-notprincipal", "--dwell-seconds", "-5"],
+                    transport=Transport({}),
+                    environ=dict(ENVIRONMENT),
+                )
 
     def test_dry_run_lists_the_matrix_and_touches_nothing(self):
         transport = Transport({})

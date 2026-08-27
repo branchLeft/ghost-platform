@@ -259,11 +259,13 @@ class EngineCatchupDwellTests(unittest.TestCase):
     two PUTs happen.
     """
 
-    def test_production_dwell_clears_the_measured_cache_window_with_margin(self):
-        # Measured live at roughly 15-20 seconds; this is not a tautology
-        # against the constant, it is a floor a future edit has to justify
-        # dropping below.
-        self.assertGreaterEqual(PRODUCTION_FENCE_ENGINE_DWELL_SECONDS, 25.0)
+    def test_production_dwell_matches_the_verifiers_own_unmeasured_margin(self):
+        # The PUT-side propagation window was never measured below "cleared by
+        # t+90s" -- there is no smaller figure to assert here, so this floor
+        # tracks the verifier's own DWELL_SECONDS rather than undercutting it.
+        # A future edit that drops below it has to bring new evidence, not
+        # just a smaller number.
+        self.assertGreaterEqual(PRODUCTION_FENCE_ENGINE_DWELL_SECONDS, 100.0)
 
     def test_await_engine_catchup_sleeps_the_full_dwell_in_short_steps(self):
         waits = []

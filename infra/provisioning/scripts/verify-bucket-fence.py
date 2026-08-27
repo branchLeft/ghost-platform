@@ -26,18 +26,27 @@ not a fence, it is an outage -- on the backup bucket, a silent one that surfaces
 at the next restore.
 
 THE CHECK THAT MATTERS MOST IS REVERSIBLE, AND RUNS FIRST.
-`--diagnose-policy-engine` asks the live engine the questions every other check
-assumes the answers to: is a bucket policy enforced here at all, and does naming
-one access key in a statement separate that key from another one? A live run
-found a `Deny` this file wrote enforced against nobody -- neither the key it
-exempted nor the key it should have refused -- and that single observation fits
-an engine that enforces no policy, an engine on which every credential in a
-project is one principal, and an engine that simply does not implement
-`NotPrincipal`. Those have opposite consequences: the last leaves a fence
-rebuildable, the first two leave no bucket policy able to separate anything and
-put the boundary at a separate Hetzner project. So the mode is built around one
-rule -- a probe whose result only ONE of those engines could produce -- and the
-long comment above `diagnose_policy_engine` sets out how each window earns it.
+Bucket policies on this engine ARE enforced -- proven directly, live, with
+nothing but `curl --aws-sigv4`, in the finding `DWELL_SECONDS` below exists to
+act on. A live run once read a `Deny` this file wrote as reaching nobody --
+neither the key it exempted nor the key it should have refused -- and that
+observation was recorded as the opposite finding. It was not one: the read was
+taken inside this engine's own read-path cache, seconds after the `Deny` was
+applied, which is exactly the reading a stale cache produces regardless of
+whether the policy is enforced.
+
+So the open question `--diagnose-policy-engine` asks is narrower than "is
+anything enforced at all": does naming one access key in a statement separate
+that key from another one, once every read is held past that cache? An engine
+that enforces no policy, an engine on which every credential in a project is
+one principal, and an engine that simply does not implement `NotPrincipal` can
+still each produce a `Deny` that appears to reach nobody, even correctly
+dwelled, if the statement genuinely denies neither key -- and those three have
+opposite consequences: the last leaves a fence rebuildable, the first two leave
+no bucket policy able to separate anything and put the boundary at a separate
+Hetzner project. So the mode is built around one rule -- a probe whose result
+only ONE of those engines could produce -- and the long comment above
+`diagnose_policy_engine` sets out how each window earns it.
 
 `--probe-notprincipal` is the narrower question, kept because it is the one the
 fence in this repository is actually built on: does this backend read
@@ -233,13 +242,19 @@ PROBE_ACTIONS = frozenset({"s3:GetObject"})
 # which is the direction that produces the most consequential readings here
 # from a timing artefact rather than from the engine.
 #
-# STALENESS CANNOT MANUFACTURE THE OPPOSITE READING. So the rule is asymmetric,
-# not a blanket wait: a read that matches the state a change is moving TO
-# counts at once, because nothing stale can produce it; a read that matches the
-# state it is moving FROM is exactly what a stale read path produces, and only
-# counts once it has outlasted that read path's own cache. Measured live
-# against this endpoint at roughly 15-20 seconds, so the dwell below is an
-# order of magnitude above it rather than a guess.
+# A READ MATCHING THE PRE-CHANGE STATE IS WHAT STALENESS PRODUCES; ONE THAT
+# DIFFERS IS NOT KNOWN TO BE. So the rule is asymmetric, not a blanket wait: a
+# read that matches the state a change is moving FROM is exactly what a stale
+# read path produces, and only counts once it has outlasted that read path's
+# own cache. A read that differs counts at once -- this is a working
+# assumption, not a proven law: it holds if the cache lags by at most one
+# change, but a cache still serving a document from TWO changes ago (this
+# window's predecessor, not this window's own pre-change state) would also
+# read as "differs from pre_change" and be trusted wrongly. Nothing measured
+# here rules that out; every fresh probe object in this file exists partly to
+# keep that risk as small as a single prior state can make it. Measured live
+# against this endpoint at roughly 15-20 seconds, so the dwell below is
+# roughly 6x the top of that range rather than a guess.
 DWELL_SECONDS = 120.0
 DWELL_POLL_SECONDS = 10.0
 
@@ -253,6 +268,20 @@ _REMOVAL_RETRY_SECONDS = 2.0
 # Indirected so the tests can run the whole diagnostic without waiting. Nothing
 # else should reach past this.
 _sleep = time.sleep
+
+
+def _narrate(message: str) -> None:
+    """Reassure an operator watching a dwell that it is waiting, not hung.
+
+    Gated on an interactive stderr rather than printed unconditionally: a
+    dwell held for its full duration polls a dozen times, and printing on
+    every one of them would turn a CI log or a test run into noise nobody
+    reads without ever reaching the human this exists for. The permanent
+    record of what was waited lives in `evidence` regardless of this check.
+    """
+    if sys.stderr.isatty():
+        print(message, file=sys.stderr)
+
 
 S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
@@ -1349,8 +1378,8 @@ def probe_notprincipal(
     bucket: str,
     replace_existing: bool,
     dwell_seconds: float = DWELL_SECONDS,
-) -> list[tuple]:
-    """Ask the live engine whether `NotPrincipal` exempts, reversibly.
+) -> tuple[list[tuple], list[str]]:
+    """Ask the live engine whether `NotPrincipal` exempts, reversibly. Returns rows, evidence.
 
     Ordering is the whole safety argument: the object is written before the
     probe policy exists, the probe policy is removed before this returns
@@ -1366,9 +1395,10 @@ def probe_notprincipal(
     but it means this step can never answer the question it exists to answer.
     """
     rows: list[tuple] = []
+    evidence: list[str] = []
     account, reason = account_of(verifier, "operator")
     if account is None:
-        return [("operator credential resolves its account", INCONCLUSIVE, reason, "", True)]
+        return [("operator credential resolves its account", INCONCLUSIVE, reason, "", True)], evidence
     operator_arn = f"arn:aws:iam:::user/{account}:{verifier.credentials['operator'][0]}"
 
     free, refusal, _ = _policy_slot_is_free(
@@ -1378,7 +1408,7 @@ def probe_notprincipal(
         own_ids=probe_family_ids(bucket),
     )
     if not free:
-        return [refusal]
+        return [refusal], evidence
 
     policy = probe_policy(bucket, operator_arn)
     assert_probe_policy_is_reversible(policy, bucket)
@@ -1394,7 +1424,7 @@ def probe_notprincipal(
     )
     outcome, reason = classify(*verifier.request(write))
     if outcome != "allowed":
-        return [("the probe object is written", INCONCLUSIVE, reason, "", True)]
+        return [("the probe object is written", INCONCLUSIVE, reason, "", True)], evidence
 
     with _temporary_policy(verifier, bucket, policy, rows) as probe:
         if probe.applied:
@@ -1409,17 +1439,16 @@ def probe_notprincipal(
             # dwell before it counts, the same as the foreign key's: a
             # `denied` reading cannot be a stale echo of a bucket that had no
             # policy moments ago and counts at once, on either role.
-            _dwell_evidence: list[str] = []
             operator_observation = _dwell(
                 lambda: _observe(verifier, bucket, "notprincipal", "operator", probe_key),
                 pre_change="allowed",
-                evidence=_dwell_evidence,
+                evidence=evidence,
                 dwell_seconds=dwell_seconds,
             )
             foreign_observation = _dwell(
                 lambda: _observe(verifier, bucket, "notprincipal", "foreign", probe_key),
                 pre_change="allowed",
-                evidence=_dwell_evidence,
+                evidence=evidence,
                 dwell_seconds=dwell_seconds,
             )
             operator_outcome, operator_reason = operator_observation.outcome, operator_observation.reason
@@ -1486,7 +1515,7 @@ def probe_notprincipal(
         )
     )
     rows.extend(("probe object removed: " + problem, FAIL, "", "", False) for problem in cleanup(verifier, bucket))
-    return rows
+    return rows, evidence
 
 
 def _read(bucket: str, role: str, key: str) -> Probe:
@@ -1661,10 +1690,15 @@ class _temporary_policy:
 # A live run applied a policy whose single statement was a `Deny s3:GetObject`
 # under the probe prefix, exempting the operator by `NotPrincipal`. The endpoint
 # accepted it. The operator then read the object -- and so did a key the
-# statement should have denied. The `Deny` reached nobody.
+# statement should have denied. That reading was taken inside this engine's own
+# read-path cache, seconds after the `Deny` was applied, which produces exactly
+# this observation whether or not the statement is enforced. It is not evidence
+# the `Deny` reached nobody; it is evidence the read was taken too soon.
 #
-# THAT ONE OBSERVATION HAS AT LEAST THREE EXPLANATIONS WITH OPPOSITE
-# CONSEQUENCES, so on its own it settles nothing:
+# A FOURTH EXPLANATION THE ORIGINAL THREE DID NOT NAME. That live run reasoned
+# over only these three, all of which are still live once reads are properly
+# held past the cache -- a genuinely dwelled read CAN still come back
+# `allowed` for real, if the engine actually behaves like one of them:
 #
 #   1. This engine stores bucket policies and enforces none of them.
 #   2. It enforces them, but every credential in a project is one principal --
@@ -2074,16 +2108,32 @@ def _dwell(
     ran at all leaves one more line stating how long it held -- so a
     transcript pasted from this run records what was actually waited, not
     just what was concluded.
+
+    A DWELL THAT HOLDS IS SILENT OTHERWISE, and `--diagnose-policy-engine` can
+    hold several of these back to back -- minutes of nothing on the terminal,
+    while the run keeps a live probe policy on a production bucket. Silence
+    there reads as a hang, not a wait, so a held reading narrates itself to
+    stderr, once when the hold starts and once per poll.
     """
     observation = read()
     evidence.append(observation.line())
     elapsed = 0.0
+    if observation.outcome == pre_change and elapsed < dwell_seconds:
+        _narrate(
+            f"verify-bucket-fence: {observation.window} read as {observation.role} is "
+            f"`{pre_change}`, which cannot be trusted yet -- holding for up to "
+            f"{dwell_seconds:g}s. This is not a hang."
+        )
     while observation.outcome == pre_change and elapsed < dwell_seconds:
         step = min(poll_seconds, dwell_seconds - elapsed)
         _sleep(step)
         elapsed += step
         observation = read()
         evidence.append(observation.line())
+        _narrate(
+            f"verify-bucket-fence:   {elapsed:g}s of {dwell_seconds:g}s elapsed, still "
+            f"{observation.outcome}"
+        )
     if elapsed:
         evidence.append(
             f"  held {observation.window} read as {observation.role} for {elapsed:g}s "
@@ -2165,7 +2215,7 @@ def _window(
             if status == PASS:
                 observations = _confirmed_reads(
                     verifier, bucket, window=window, probe_key=probe_key,
-                    rows=rows, evidence=evidence, roles=roles,
+                    evidence=evidence, roles=roles,
                     pre_change=pre_change, dwell_seconds=dwell_seconds,
                 )
     if state is not None:
@@ -2179,7 +2229,6 @@ def _confirmed_reads(
     *,
     window: str,
     probe_key: str,
-    rows: list[tuple],
     evidence: list[str],
     roles: tuple = ("foreign", "operator"),
     pre_change: dict[str, str] | None = None,
@@ -2198,7 +2247,13 @@ def _confirmed_reads(
     that differs needs no holding: nothing stale can manufacture it.
     """
     pre_change = pre_change or {role: "allowed" for role in roles}
-    confirmed = {
+    # There is no disagreement case to report here any more: a role's reading
+    # either differed from its own pre-change answer, or survived the full
+    # dwell. Both are usable, so nothing here is a pass/fail gate on what
+    # `_window` returns -- `_dwell` already wrote the per-read and per-hold
+    # detail into `evidence`, and a row that can only ever read PASS would add
+    # nothing but an inflated count to a report where PASS is read as evidence.
+    return {
         role: _dwell(
             lambda role=role: _observe(verifier, bucket, f"window {window}", role, probe_key),
             pre_change=pre_change[role],
@@ -2207,23 +2262,6 @@ def _confirmed_reads(
         )
         for role in roles
     }
-    # There is no disagreement case to report here any more: a role's reading
-    # either differed from its own pre-change answer -- which cannot be a
-    # stale echo of it -- or survived the full dwell, which is long enough
-    # that it can no longer be one either. Both are usable, so this row is
-    # evidentiary rather than a pass/fail gate on what `_window` returns.
-    rows.append(
-        (
-            f"probe {window}: each read counts once it cannot be a stale answer",
-            PASS,
-            "",
-            f"a read matching the pre-change answer is held for up to {dwell_seconds:g}s "
-            "before it counts; a read that differs counts at once, because staleness "
-            "cannot manufacture it",
-            False,
-        )
-    )
-    return confirmed
 
 
 def _cleanup_rows(verifier: Verifier, bucket: str) -> list[tuple]:
@@ -3737,7 +3775,36 @@ def read_credentials(
     return credentials
 
 
-def apply_fence(verifier: Verifier, *, bucket: str, policy_document: bytes) -> tuple[list[tuple], bool]:
+def _await_policy_settle(dwell_seconds: float) -> None:
+    """Hold until the policy engine's read path can no longer be serving the pre-PUT decision.
+
+    Silent for the whole dwell during a production apply reads as a hang, not
+    a wait, so this narrates what it is doing and polls in short steps rather
+    than sleeping the total in one call.
+    """
+    if dwell_seconds <= 0:
+        return
+    _narrate(
+        f"verify-bucket-fence: waiting {dwell_seconds:g}s for the policy engine's read path to "
+        f"settle before the confirming PUT -- this pause is deliberate, not a hang"
+    )
+    remaining = dwell_seconds
+    elapsed = 0.0
+    while remaining > 0:
+        step = min(DWELL_POLL_SECONDS, remaining)
+        _sleep(step)
+        remaining -= step
+        elapsed += step
+        _narrate(f"verify-bucket-fence:   {elapsed:g}s of {dwell_seconds:g}s elapsed")
+
+
+def apply_fence(
+    verifier: Verifier,
+    *,
+    bucket: str,
+    policy_document: bytes,
+    dwell_seconds: float = DWELL_SECONDS,
+) -> tuple[list[tuple], bool]:
     """Pre-flight and the double PUT, in one process.
 
     Split across two commands these are two decisions an operator makes
@@ -3745,6 +3812,17 @@ def apply_fence(verifier: Verifier, *, bucket: str, policy_document: bytes) -> t
     riskier bucket was the one whose apply had no in-process guard at all --
     `configure_backup_bucket.py` covers the backup bucket and nothing covered
     the state bucket. Here the PUT is unreachable unless the pre-flight passed.
+
+    THE SECOND PUT IS ONLY A CONTROL ONCE THE DWELL HAS RUN. Sent right after
+    the first, it is authorised against the same cached pre-PUT decision the
+    first PUT was, and returns 2xx whether the exemption held or the operator
+    has already lost `PutBucketPolicy` -- the exact failure mode
+    `configure_backup_bucket.py` had, on the bucket that holds every tenant's
+    Pulumi state. `_await_policy_settle` is what makes the second PUT mean
+    anything, and by the time it returns, `dwell_seconds` has elapsed since the
+    fence was actually written -- which is also why the plain verify mode this
+    `--apply` run is normally followed by (steps 1f/2d) does not need a dwell
+    of its own: it never reads sooner than this one already waited.
     """
     rows = preflight(verifier, bucket=bucket, policy_document=policy_document)
     if any(status in (FAIL, INCONCLUSIVE) for _, status, _, _, _ in rows):
@@ -3781,6 +3859,7 @@ def apply_fence(verifier: Verifier, *, bucket: str, policy_document: bytes) -> t
     # The identical document again. A no-op when it succeeds, and the only
     # signal available if the engine has just denied the operator the ability
     # to edit the statement doing the denying.
+    _await_policy_settle(dwell_seconds)
     second_outcome, second_reason = classify(*verifier.request(put))
     rows.append(
         (
@@ -3973,11 +4052,19 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         type=float,
         default=DWELL_SECONDS,
         help=f"how long a read matching the pre-change state is held before it counts, for "
-        f"--probe-notprincipal, --diagnose-policy-engine and --probe-foreign-grant (default "
-        f"{DWELL_SECONDS:g}, comfortably above this endpoint's measured ~15-20s read-path "
-        f"cache); lower it for a fast-path re-run once the engine's behaviour is already known",
+        f"--probe-notprincipal, --diagnose-policy-engine and --probe-foreign-grant, and how "
+        f"long --apply pauses between its two PUTs (default {DWELL_SECONDS:g}, comfortably "
+        f"above this endpoint's measured read-path cache); lower it for a fast-path re-run "
+        f"once the engine's behaviour is already known -- it must stay above zero, because "
+        f"zero is the one value that turns every dwell in this file back into the pause that "
+        f"produced the withdrawn conclusion this tool exists to prevent",
     )
     args = parser.parse_args(argv)
+    if args.dwell_seconds <= 0:
+        # Zero does not mean "no wait needed" here -- it means every dwell in
+        # this file degenerates to a single, untrusted read, which is the
+        # exact shape of the bug this tool was built to stop reproducing.
+        parser.error("--dwell-seconds must be greater than 0")
 
     # Before any mode runs, and therefore before any mode writes. The transport
     # every probe uses is this repository's own signing implementation; a
@@ -4204,7 +4291,7 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
 
     if args.probe_notprincipal:
         try:
-            rows = probe_notprincipal(
+            rows, evidence = probe_notprincipal(
                 verifier,
                 bucket=args.bucket,
                 replace_existing=args.replace_existing_policy,
@@ -4213,6 +4300,19 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         except VerifierError as error:
             print(f"error: {error}", file=sys.stderr)
             return 2
+        # This step can now hold for most of --dwell-seconds, and the reads
+        # taken while it held are exactly the transcript an operator needs if
+        # the verdict is INCONCLUSIVE -- discarding them here would leave the
+        # one step this docstring calls "THE STEP AN OPERATOR ACTUALLY RUNS"
+        # with no record of what it actually saw.
+        if evidence:
+            print(
+                "RAW EVIDENCE -- record this block verbatim. It carries no secret key, and "
+                "every access key id it names is shown by its last four characters.\n"
+            )
+            for line in evidence:
+                print(line)
+            print("")
         return report(
             rows,
             [],
@@ -4233,7 +4333,12 @@ def main(argv: list[str] | None = None, transport=None, environ=None) -> int:
         )
 
     if args.apply:
-        rows, wrote = apply_fence(verifier, bucket=args.bucket, policy_document=policy_document)
+        rows, wrote = apply_fence(
+            verifier,
+            bucket=args.bucket,
+            policy_document=policy_document,
+            dwell_seconds=args.dwell_seconds,
+        )
         return report(rows, [], sys.stdout, applied=wrote)
 
     rows = [

@@ -58,16 +58,35 @@ S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 NONCURRENT_VERSION_EXPIRATION_DAYS = 35
 
 # How long to hold between the fence policy's first PUT and its confirming
-# second one. This endpoint's own policy-decision cache was measured live
-# holding the PRE-PUT decision for roughly 15-20 seconds after a PUT that
-# changed it, so a second PUT sent sooner is authorised against that same
-# stale decision rather than against the document the first PUT actually
-# landed -- the exact failure the second PUT exists to catch. This margin
-# clears the measured window with room to spare.
-FENCE_ENGINE_DWELL_SECONDS = 30.0
+# second one.
+#
+# THIS IS NOT A MEASURED TTL -- treat it as a floor, not a budget. The two live
+# measurements behind this fix bound the DELETE-side release at roughly 15-20
+# seconds (t+10 still denied, t+20 allowed), but the PUT-side sequence never
+# sampled between t+0 and t+90: the read taken immediately after the PUT was
+# already stale, and the next sample, at t+90, had already cleared. So the
+# write-visible-to-read window is bounded only by "cleared by t+90", not
+# measured down to a smaller figure -- and every measurement was a GetObject
+# read decision, while this dwell guards a PutBucketPolicy authorisation
+# decision that has never been measured at all. Extrapolating from one to the
+# other on the path guarding the estate's only database backups is not a place
+# to assert a number the evidence does not carry, so this matches the
+# verifier's own DWELL_SECONDS rather than undercutting it.
+FENCE_ENGINE_DWELL_SECONDS = 120.0
 
 # Indirected so tests can run the dwell without waiting.
 _sleep = time.sleep
+
+
+def _narrate(message: str) -> None:
+    """Reassure an operator watching the dwell that it is waiting, not hung.
+
+    Gated on an interactive stderr so a CI log or a test run does not fill up
+    with a line per poll -- the permanent record of what was waited is the
+    `_sleep` calls themselves, which the tests assert on directly.
+    """
+    if sys.stderr.isatty():
+        print(message, file=sys.stderr)
 
 
 class BucketConfigError(Exception):
@@ -245,16 +264,18 @@ def _await_engine_catchup(dwell_seconds: float) -> None:
     """
     if dwell_seconds <= 0:
         return
-    print(
+    _narrate(
         f"configure_backup_bucket: waiting {dwell_seconds:g}s for the policy engine's read "
-        f"path to settle before the confirming PUT -- this pause is deliberate, not a hang",
-        file=sys.stderr,
+        f"path to settle before the confirming PUT -- this pause is deliberate, not a hang"
     )
     remaining = dwell_seconds
+    elapsed = 0.0
     while remaining > 0:
         step = min(10.0, remaining)
         _sleep(step)
         remaining -= step
+        elapsed += step
+        _narrate(f"configure_backup_bucket:   {elapsed:g}s of {dwell_seconds:g}s elapsed")
 
 
 def configure_backup_bucket(
