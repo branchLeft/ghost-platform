@@ -16,8 +16,23 @@ reached neither of them.
 **Whether a bucket policy can fence anything at all on this provider is
 therefore an open question**, and until section 0 below has answered it, every
 apply step in this runbook is a step that may write a control that controls
-nothing. Sections 1e and 2c are gated on it explicitly, and so is
-`RUNBOOK-tenant-onboarding.md`'s media-bucket policy.
+nothing. Sections 1e, 2c and "Adding a new operational bucket later" are gated
+on it explicitly.
+
+**Three other paths reach an apply, and only one of them is gated.**
+
+- `db/RUNBOOK-db.md`'s "The backup bucket" step is gated, with the same gate.
+  An operator rebuilding db1 follows that file and never opens this one.
+- `db/provision/configure_backup_bucket.py` refuses to apply until it is told
+  the diagnostic has run, and prints this file's section 0 when it refuses.
+- **`RUNBOOK-tenant-onboarding.md`'s media-bucket policy is NOT gated.** It
+  still walks an operator through applying a policy built on the same
+  mechanism, and this runbook cannot gate a file it does not own without
+  widening the change that carries it. Tracked on
+  [branchLeft/workspace#292](https://github.com/branchLeft/workspace/issues/292),
+  which also has to have its framing inverted: as filed it describes a lockout
+  risk, and the live evidence points the opposite way — an applied policy that
+  fences nothing while every signal says otherwise.
 
 **A prior conclusion is withdrawn.** An earlier run of the same probe reported
 `NotPrincipal EXEMPTS the named key — PASS`, and that was recorded — here, in
@@ -251,14 +266,29 @@ key in a statement separate that key from another one — and it answers them wi
 probes whose result only one engine could produce.
 
 It is reversible by construction, and it is the same safety property as before:
-each of its three documents carries one `Deny`, on `s3:GetObject` only, confined
-to the `fence-probe/` object prefix, and **no statement names the bucket
+each of its documents carries one `Deny`, on `s3:GetObject` only, confined to
+the `fence-probe/` object prefix, and **no statement names the bucket
 resource** — so `PutBucketPolicy` and `DeleteBucketPolicy` stay available to
-every key throughout and no probe can lock a bucket. The script asserts that
-before it sends anything. Its first window denies **every** principal, the
-operator's included, which is exactly why no probe may name a bucket-resource
-action: the key that has to remove the document is one of the keys the document
-denies.
+every key throughout and no probe can lock a bucket. The script asserts that of
+every document before it writes anything at all.
+
+It sends up to four documents, each in its own window, and takes each one off
+again before the next goes on. Three of them name a principal — the foreign
+key, the operator, and a key that does not exist in an account that is not ours
+— and it is the combination of what happens to the foreign key under those three
+that decides the answer. **The fourth names every principal, including the
+operator's, and is sent only in the one reading whose answer turns on it**: it is
+the only document that denies the operator by construction, so it is not spent
+for corroboration. When it is skipped the report says so.
+
+> **Do not run this during a restore, a restore drill, or the nightly backup
+> window.** The reversibility argument above assumes the engine honours
+> `Resource`, and this engine's handling of `Principal` is the open question —
+> so if `Resource` scoping is also ignored, then for the seconds each window is
+> open a `Deny s3:GetObject` applies to **every object in the bucket**, for every
+> key. Reads only, and removed either way. But a `mysqlbinlog` fetch or a
+> `restore_drill` run in flight would fail while it lasts. Nothing in the tool
+> can rule this out, because ruling it out is the same assumption.
 
 It writes no fence, needs no rendered policy, and takes two credentials:
 
@@ -286,11 +316,12 @@ next. There are six, and they are not degrees of the same answer:
 
 | Verdict | What it means | What happens next |
 |---|---|---|
-| `PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE` | A `Deny` naming one key denied that key and left the other one reading. Only `NotPrincipal` is broken. | A fence is rebuildable — out of explicit `Principal` denials, which is **not** the document `render-bucket-fence-policy.py` emits today. Hand this back; do not apply the current fence. |
-| `A NAMED PRINCIPAL MATCHES NOBODY ON THIS ENGINE` | `Principal: "*"` denied the foreign key, so policies are enforced — but that key's own ARN denied nothing. Every credential in the project is one principal. | No bucket policy can separate two credentials inside a project. Do not apply any fence. The boundary becomes a separate Hetzner project, which is the platform owner's decision. |
-| `THE PRINCIPAL ELEMENT IS DECORATION ON THIS ENGINE` | A `Deny` naming one key denied the key it named **and** the key it did not. | A fence aimed at a stranger takes the workload down with it. Applying one would be an outage, not a control. Do not apply any fence. |
-| `BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT` | A `Deny` on `Principal: "*"` was stored verbatim and the read it denies succeeded anyway. | Nothing a bucket policy says is enforced here. Do not apply any fence, and stop reading a successful `PutBucketPolicy` as evidence of anything. |
-| `THIS ENGINE MATCHES THE COMPLEMENT OF THE PRINCIPAL IT IS GIVEN` | A `Deny` naming a key left **that** key reading and denied the key it did not name. | Not a documented S3 behaviour, and nothing may be built on it. Do not apply any policy to any bucket — a fence written against this reading inverts the day the engine is fixed. Record the output verbatim. |
+| `PER-KEY PRINCIPALS RESOLVE ON THIS ENGINE` | A `Deny` naming one key denied that key, left the other one reading, and a `Deny` naming a principal in another account denied nobody. | A fence is rebuildable — out of explicit `Principal` denials, which is **not** the document `render-bucket-fence-policy.py` emits today. Hand this back; do not apply the current fence. |
+| `EVERY CREDENTIAL IN THIS PROJECT IS ONE PRINCIPAL` | A `Deny` naming **one** of this project's keys denied **both** of them, and one naming another account's principal denied neither. The name resolves — to the single storage user every key in the project shares. | No bucket policy separates two credentials inside one project, so neither the fence nor the tenant media policy protects anything. A principal deny **does** still discriminate across projects, so a project per tenant is the mechanism that remains — an architecture decision for the platform owner. |
+| `THE PRINCIPAL ELEMENT IS DECORATION ON THIS ENGINE` | The subject key was denied whether the statement named it, named the other key, or named a principal in an account that is not ours. | No principal-based control works at any scope, so a project per tenant does not rescue this either. A fence aimed at a stranger takes the workload down with it. Do not apply any fence. |
+| `A NAMED PRINCIPAL MATCHES NOBODY ON THIS ENGINE` | `Principal: "*"` denied the subject key, so policies are enforced — but **no** ARN denied anybody, including the ARN of the key doing the reading. | The ARN form this repo builds is not being resolved. Do not apply any fence. Worth one more experiment on the principal **spelling** before per-tenant projects are treated as the only option. |
+| `BUCKET POLICIES ARE NOT ENFORCED ON THIS ACCOUNT` | Every `Deny` was stored verbatim and denied nobody — including one on `Principal: "*"`, which no principal semantics can read as excluding the caller. | Nothing a bucket policy says is enforced here. Do not apply any fence, and stop reading a successful `PutBucketPolicy` as evidence of anything. |
+| `THIS ENGINE MATCHES THE COMPLEMENT OF THE PRINCIPAL IT IS GIVEN` | A `Deny` naming the subject key left **that** key reading, and denying anyone else denied it. | Not a documented S3 behaviour, and nothing may be built on it. Do not apply any policy to any bucket — a fence written against this reading inverts the day the engine is fixed. Record the output verbatim. |
 | `NO SINGLE READING EXPLAINS WHAT THIS ENGINE DID` | The observations fit none of the above. | Nothing was applied. Record the evidence and stop — an engine answering incoherently is itself the finding, and guessing which world it is is the exact mistake this diagnostic exists to prevent. |
 
 Rows that stop it before it reaches a verdict, and what each means:

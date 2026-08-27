@@ -295,7 +295,41 @@ def main(argv: list[str]) -> int:
         required=True,
         help="the fence policy, from infra/provisioning/scripts/render-bucket-fence-policy.py",
     )
+    parser.add_argument(
+        "--engine-diagnostic-passed",
+        action="store_true",
+        help="confirm verify-bucket-fence.py --diagnose-policy-engine has reported that a "
+        "bucket policy can fence one key from another on this account; without it this "
+        "script writes nothing",
+    )
     args = parser.parse_args(argv)
+
+    # THIS SCRIPT IS A SECOND PATH TO AN APPLY, and the operator who reaches it
+    # is rebuilding db1 from db/RUNBOOK-db.md and never opens
+    # RUNBOOK-bucket-fencing.md. A policy this repository wrote was accepted by
+    # this endpoint and then enforced against nobody, so applying a fence here
+    # may write a control that controls nothing while every signal -- a 2xx on
+    # the PUT, a matching stored document, a green second PUT -- says it worked.
+    # The flag is a claim the operator makes, not a check this script can run:
+    # the diagnostic needs three credentials and a bucket this script has no
+    # business touching. It exists so that applying a fence is a decision rather
+    # than the default.
+    if not args.engine_diagnostic_passed:
+        print(
+            "configure_backup_bucket: refusing to apply a fence until the engine question is "
+            "settled. A bucket policy this repository wrote was accepted by this endpoint and "
+            "then enforced against nobody -- neither the key it exempted nor a key it should "
+            "have denied. Run section 0 of RUNBOOK-bucket-fencing.md first:\n\n"
+            "    python3 infra/provisioning/scripts/verify-bucket-fence.py "
+            "--diagnose-policy-engine --bucket <this bucket>\n\n"
+            "It is reversible, writes no fence, and prints a verdict in prose. Re-run this "
+            "command with --engine-diagnostic-passed only if that verdict says a bucket "
+            "policy can fence one key from another on this account. Nothing has been written: "
+            "versioning and the lifecycle rule are not applied either, because a bucket "
+            "half-configured by a refused run is worse than one not configured at all.",
+            file=sys.stderr,
+        )
+        return 2
 
     access_key = os.environ.get("AWS_ACCESS_KEY_ID")
     secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")

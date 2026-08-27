@@ -456,10 +456,57 @@ class MainTests(unittest.TestCase):
                             "hel1",
                             "--policy-file",
                             policy_file,
+                            "--engine-diagnostic-passed",
                         ]
                     )
         self.assertEqual(code, 2)
         self.assertIn("AWS_ACCESS_KEY_ID", stderr.getvalue())
+
+    def test_refuses_to_apply_a_fence_until_the_engine_question_is_settled(self):
+        # THE SECOND PATH TO AN APPLY. An operator rebuilding db1 follows
+        # db/RUNBOOK-db.md and reaches this script without ever opening
+        # RUNBOOK-bucket-fencing.md, so the gate has to be in the script and not
+        # only in the prose. A bucket policy this repository wrote was accepted
+        # by this endpoint and then enforced against nobody, and every signal
+        # this script can see -- a 2xx on the PUT, a green second PUT -- looks
+        # identical whether the fence works or does nothing at all.
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = self._policy_file(directory, fence_policy())
+            environment = {
+                "AWS_ACCESS_KEY_ID": OPERATOR_KEY,
+                "AWS_SECRET_ACCESS_KEY": "secret",
+            }
+            with mock.patch.dict(os.environ, environment, clear=False):
+                with mock.patch.object(cbb, "owner_id") as resolve:
+                    with mock.patch.object(
+                        cbb, "put_bucket_subresource"
+                    ) as put:
+                        with contextlib.redirect_stderr(stderr):
+                            code = cbb.main(
+                                [
+                                    "--bucket",
+                                    BUCKET,
+                                    "--endpoint",
+                                    "hel1.your-objectstorage.com",
+                                    "--region",
+                                    "hel1",
+                                    "--policy-file",
+                                    policy_file,
+                                ]
+                            )
+        self.assertEqual(code, 2)
+        self.assertIn("--diagnose-policy-engine", stderr.getvalue())
+        # Nothing at all was sent -- not the policy, and not the versioning or
+        # lifecycle calls either. A bucket half-configured by a refused run is
+        # worse than one nobody touched.
+        resolve.assert_not_called()
+        put.assert_not_called()
 
     def test_refuses_without_a_policy_file(self):
         # There is deliberately no flag to configure a bucket without fencing
@@ -509,6 +556,7 @@ class MainTests(unittest.TestCase):
                                 "hel1",
                                 "--policy-file",
                                 policy_file,
+                                "--engine-diagnostic-passed",
                             ]
                         )
         self.assertEqual(code, 2)
@@ -542,6 +590,7 @@ class MainTests(unittest.TestCase):
                             "hel1",
                             "--policy-file",
                             policy_file,
+                            "--engine-diagnostic-passed",
                         ]
                     )
         self.assertEqual(code, 2)

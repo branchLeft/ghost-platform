@@ -38,6 +38,23 @@ versioning, a lifecycle rule and its fence set — see "The backup bucket" below
 
 ## The backup bucket
 
+> **STOP — the fencing half of this step does not run yet.** A bucket policy
+> this repository wrote was accepted by the endpoint and then enforced against
+> nobody: neither the key it exempted nor a key it should have denied was
+> refused. Whether a bucket policy can fence anything at all on this provider is
+> an open question, and `configure_backup_bucket.py` below will refuse to apply
+> one until it has been answered.
+>
+> Answer it first with section 0 of
+> [`RUNBOOK-bucket-fencing.md`](../RUNBOOK-bucket-fencing.md) — it is reversible,
+> writes no fence, and takes one command. Then follow what its verdict says. On
+> every reading but one, no fence is applied to this bucket at all and the
+> bucket is left as versioning and the lifecycle rule make it; the estate's
+> offsite backups then rest on the project boundary alone, which is a fact for
+> the platform owner to decide about rather than something to work around here.
+>
+> Tracked as branchLeft/workspace#301.
+
 Console-only (no `hcloud` API for Object Storage), one time, before `db.env`
 is written. This repo's PR body carries the exact bucket name, location and
 S3 credential step with a priced estimate; once it exists, run this repo's own
