@@ -14,11 +14,15 @@ import { fileURLToPath } from 'node:url';
 import prettier from 'prettier';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const IGNORE_PATHS = [
-  path.join(ROOT, '.gitignore'),
-  path.join(ROOT, '.prettierignore'),
-  path.join(ROOT, 'node_modules/@branchleft/prettier-config/prettierignore'),
-];
+
+// Deliberately excludes the shared
+// node_modules/@branchleft/prettier-config/prettierignore. That package
+// already lists graphify-out/ unconditionally, so folding it into this set
+// would make these assertions pass even with this repo's own line reverted --
+// which defeats the point: this file exists to prove this repo no longer
+// depends solely on the external package, not to prove the union of all
+// three sources works.
+const REPO_IGNORE_PATHS = [path.join(ROOT, '.gitignore'), path.join(ROOT, '.prettierignore')];
 
 // One file per extension Prettier actually has a printer for in this tree,
 // plus the extensionless cache file -- an extension-based ignore pattern
@@ -30,13 +34,28 @@ const SAMPLE_PATHS = [
 ];
 
 for (const relPath of SAMPLE_PATHS) {
-  test(`${relPath} is ignored by Prettier`, async () => {
+  test(`${relPath} is ignored by this repo's own .prettierignore`, async () => {
     const info = await prettier.getFileInfo(path.join(ROOT, relPath), {
-      ignorePath: IGNORE_PATHS,
+      ignorePath: REPO_IGNORE_PATHS,
     });
     assert.equal(info.ignored, true);
   });
 }
+
+// Belt-and-braces only, not a substitute for the assertions above: the shared
+// package's ignore file lists graphify-out/ unconditionally today, so this
+// passes regardless of this repo's own line and cannot catch that line
+// regressing -- it exists solely to catch the shared package itself
+// regressing, which the tests above cannot see.
+test('graphify-out/graph.json is ignored under the full resolved ignore-path set the npm scripts use', async () => {
+  const info = await prettier.getFileInfo(path.join(ROOT, 'graphify-out/graph.json'), {
+    ignorePath: [
+      ...REPO_IGNORE_PATHS,
+      path.join(ROOT, 'node_modules/@branchleft/prettier-config/prettierignore'),
+    ],
+  });
+  assert.equal(info.ignored, true);
+});
 
 // `.prettierignore` only reaches Prettier. `trailing-whitespace` and
 // `end-of-file-fixer` rewrite file content directly and never consult it --
