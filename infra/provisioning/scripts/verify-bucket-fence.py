@@ -252,9 +252,17 @@ PROBE_ACTIONS = frozenset({"s3:GetObject"})
 # window's predecessor, not this window's own pre-change state) would also
 # read as "differs from pre_change" and be trusted wrongly. Nothing measured
 # here rules that out; every fresh probe object in this file exists partly to
-# keep that risk as small as a single prior state can make it. Measured live
-# against this endpoint at roughly 15-20 seconds, so the dwell below is
-# roughly 6x the top of that range rather than a guess.
+# keep that risk as small as a single prior state can make it.
+#
+# THE TWO DIRECTIONS LAG DIFFERENTLY, and the slower one sets this constant.
+# Removing a policy was measured clearing between t+10s and t+20s. APPLYING one
+# is slower: a diagnostic run against this endpoint held the pre-change
+# `allowed` for 50s in one window and 60s in another before the Deny it had
+# already stored began to answer. A dwell calibrated on the removal figure
+# would have read both of those as "the Deny reached nobody" -- which is the
+# conclusion this whole mechanism exists to stop the tool reaching by accident.
+# 120s is twice the longest application lag observed, not a guess, and not
+# derived from the removal side.
 DWELL_SECONDS = 120.0
 DWELL_POLL_SECONDS = 10.0
 
@@ -1824,11 +1832,16 @@ VERDICT_TEXT = {
         "A Deny naming one access key denied that key, left the other one able to read, and\n"
         "a Deny naming a principal in another account denied nobody. An explicit\n"
         "`Principal` therefore separates two credentials inside this project.\n\n"
-        "A fence is rebuildable -- but NOT the fence this repository renders. That one\n"
-        "fences by `NotPrincipal`, which was observed live denying nobody, and this run\n"
-        "says nothing to rehabilitate it: it never sent a `NotPrincipal` document. Until\n"
-        "the fence is rebuilt out of explicit `Principal` Deny statements, treat every\n"
-        "bucket it was applied to as unfenced, and do not apply it anywhere else.\n"
+        "A fence is rebuildable -- but this run says nothing about the fence this\n"
+        "repository renders, which fences by `NotPrincipal`. It never sent a\n"
+        "`NotPrincipal` document, so that construct is UNPROVEN here -- not disproven.\n"
+        "The earlier run that appeared to show it denying nobody read inside this\n"
+        "engine's policy cache and established neither answer.\n\n"
+        "So there are two ways forward and this run does not choose between them: prove\n"
+        "`NotPrincipal` with --probe-notprincipal, or rebuild the fence out of the\n"
+        "explicit `Principal` Deny statements the rows above just demonstrated. Until one\n"
+        "of those happens, treat any bucket carrying a `NotPrincipal` fence as unfenced,\n"
+        "and do not apply one anywhere else.\n"
         "Record this output on the issue."
     ),
     ONE_PRINCIPAL_PER_PROJECT: (

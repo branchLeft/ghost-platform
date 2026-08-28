@@ -42,18 +42,27 @@ demonstrate the cache on that one configuration:
   the same `Deny`, read immediately: `403` at t+0s. `DELETE` the policy, then
   poll: t+0s `403`, t+10s `403`, t+20s `200`.
 
-**Read the two measurements for what each one actually bounds, not for one
-combined figure.** The DELETE-side sequence (measurement 2) was sampled at
-t+10 and t+20, so "roughly 15-20 seconds" is a real bound on how long a
-`denied` reading can survive a policy's removal. The PUT-side sequence
-(measurement 1) was **not** sampled between t+0 and t+90 — the read taken
-immediately after the `PUT` was already stale, and the next sample, at t+90,
-had already cleared. So the write-visible-to-read window is bounded only by
-"cleared by t+90"; there is no measurement narrower than that, and 15-20
-seconds is not it. Do not carry the DELETE-side figure over to the PUT side —
-that substitution is very likely where an earlier draft of
-`db/provision/configure_backup_bucket.py`'s dwell got its (too small) 30-second
-value from.
+- **The PUT side, sampled properly.** A `--diagnose-policy-engine` run under
+  the 120s dwell polls every 10s and records each attempt, so it measures the
+  application lag directly rather than bracketing it. Two
+  windows caught it: a `Deny` naming the foreign key was stored and then read
+  `allowed` five times before answering `denied` at **t+50s**; a `Deny` naming
+  the operator read `allowed` six times before answering `denied` at **t+60s**.
+
+**Read the measurements for what each one actually bounds, not for one combined
+figure.** The DELETE-side sequence (measurement 2) was sampled at t+10 and t+20,
+so "roughly 15-20 seconds" is a real bound on how long a `denied` reading can
+survive a policy's *removal*. **Applying** a policy is three to four times
+slower: measurement 3 puts it at 50-60 seconds, and measurement 1's PUT side was
+never sampled between t+0 and t+90 so it bounds nothing narrower.
+
+**The two directions are not interchangeable, and the substitution is
+expensive.** Carrying the DELETE-side figure over to the PUT side is where an
+earlier draft of `db/provision/configure_backup_bucket.py` got its 30-second
+dwell. At 30 seconds both denials in measurement 3 would still have read
+`allowed` — so the double-PUT lockout guard on the estate's only database
+backups would have returned a confident PASS on a bucket it could not have
+detected the lockout of. It is 120s now, on both paths, for this reason.
 
 Write-side propagation would have made the `DELETE` release access as fast as
 the `PUT` denied it. It did not — the delay sits on the read path, in both

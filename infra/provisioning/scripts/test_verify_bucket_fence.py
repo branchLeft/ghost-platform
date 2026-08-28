@@ -1985,8 +1985,16 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
         self.assertIn("PER-KEY PRINCIPALS RESOLVE", output)
         # Even the good world does not license applying the fence in this
         # repository: that one fences by `NotPrincipal`, which this mode never
-        # sends and which was observed live denying nobody.
-        self.assertIn("do not apply it anywhere else", output)
+        # sends. The verdict has to withhold on it WITHOUT claiming it fails --
+        # the run that appeared to show it failing read inside the policy cache,
+        # so "unproven" and "disproven" are different states here and the text
+        # asserting the second one is the defect this guards.
+        self.assertIn("UNPROVEN", output)
+        self.assertNotIn("observed live denying nobody", output)
+        # And it must name both ways forward, since it chooses neither.
+        self.assertIn("--probe-notprincipal", output)
+        self.assertIn("rebuild the fence", output)
+        self.assertIn("do not apply one anywhere else", output)
 
     def test_an_engine_that_does_not_implement_the_wildcard_still_reports_a_fence(self):
         # THE WORLD A WILDCARD GATE WOULD HAVE THROWN AWAY. Named ARNs resolve
