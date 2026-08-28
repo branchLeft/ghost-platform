@@ -258,13 +258,24 @@ restart` on an active `RemainAfterExit=yes` unit runs `ExecStop=docker compose
 down` first, so MySQL stops, and the start then fails at `ExecStartPre` with
 nothing to fall back to. Do all four before restarting anything.
 
-1. **Copy the provisioning directory again.** `render_exporter_my_cnf.py` is
-   new, and the drop-in's `ExecStartPre` runs it by absolute path.
+1. **Copy both the provisioning and the stack directory.** They are two
+   separate hand-delivered paths and both changed: `render_exporter_my_cnf.py`
+   is new and the drop-in's `ExecStartPre` runs it by absolute path, and the
+   compose file is what stops requiring `EXPORTER_DATA_SOURCE_NAME`.
 
    ```bash
    JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
    scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
+   scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@10.20.1.20:/opt/branchleft/db
+   ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
+     'grep -c DATA_SOURCE_NAME /opt/branchleft/db/compose.yml'
    ```
+
+   **That `grep` must print `0` before you go on.** Copying only the
+   provisioning half leaves the old compose file in place, and step 3 below
+   removes the variable it still requires -- so the restart fails on its `:?`
+   guard with the stack half-migrated. The trailing `/.` is load-bearing and
+   the destination takes no trailing slash.
 
 2. **Decide whether the existing password survives the new rule.** The old DSN
    form only forbade `@`, `:` and `/`; the rule in step 2 forbids everything
