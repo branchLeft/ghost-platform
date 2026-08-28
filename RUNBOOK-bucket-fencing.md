@@ -42,18 +42,27 @@ demonstrate the cache on that one configuration:
   the same `Deny`, read immediately: `403` at t+0s. `DELETE` the policy, then
   poll: t+0s `403`, t+10s `403`, t+20s `200`.
 
-**Read the two measurements for what each one actually bounds, not for one
-combined figure.** The DELETE-side sequence (measurement 2) was sampled at
-t+10 and t+20, so "roughly 15-20 seconds" is a real bound on how long a
-`denied` reading can survive a policy's removal. The PUT-side sequence
-(measurement 1) was **not** sampled between t+0 and t+90 — the read taken
-immediately after the `PUT` was already stale, and the next sample, at t+90,
-had already cleared. So the write-visible-to-read window is bounded only by
-"cleared by t+90"; there is no measurement narrower than that, and 15-20
-seconds is not it. Do not carry the DELETE-side figure over to the PUT side —
-that substitution is very likely where an earlier draft of
-`db/provision/configure_backup_bucket.py`'s dwell got its (too small) 30-second
-value from.
+- **The PUT side, sampled properly.** A `--diagnose-policy-engine` run under
+  the 120s dwell polls every 10s and records each attempt, so it measures the
+  application lag directly rather than bracketing it. Two
+  windows caught it: a `Deny` naming the foreign key was stored and then read
+  `allowed` five times before answering `denied` at **t+50s**; a `Deny` naming
+  the operator read `allowed` six times before answering `denied` at **t+60s**.
+
+**Read the measurements for what each one actually bounds, not for one combined
+figure.** The DELETE-side sequence (measurement 2) was sampled at t+10 and t+20,
+so "roughly 15-20 seconds" is a real bound on how long a `denied` reading can
+survive a policy's *removal*. **Applying** a policy is three to four times
+slower: measurement 3 puts it at 50-60 seconds, and measurement 1's PUT side was
+never sampled between t+0 and t+90 so it bounds nothing narrower.
+
+**The two directions are not interchangeable, and the substitution is
+expensive.** Carrying the DELETE-side figure over to the PUT side is where an
+earlier draft of `db/provision/configure_backup_bucket.py` got its 30-second
+dwell. At 30 seconds both denials in measurement 3 would still have read
+`allowed` — so the double-PUT lockout guard on the estate's only database
+backups would have returned a confident PASS on a bucket it could not have
+detected the lockout of. It is 120s now, on both paths, for this reason.
 
 Write-side propagation would have made the `DELETE` release access as fast as
 the `PUT` denied it. It did not — the delay sits on the read path, in both
@@ -905,8 +914,19 @@ AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" \
   --bucket branchleft-db-backups \
   --endpoint hel1.your-objectstorage.com \
   --region hel1 \
-  --policy-file /tmp/branchleft-db-backups-policy.json
+  --policy-file /tmp/branchleft-db-backups-policy.json \
+  --engine-diagnostic-passed
 ```
+
+`--engine-diagnostic-passed` is the gate above, asserted on the command line.
+The script cannot run section 0 itself — that needs three credentials and a
+bucket this script has no business touching — so the flag is a claim the
+operator makes, and without it the script writes nothing and exits 2. Pass it
+only once section 0 has actually printed `PER-KEY PRINCIPALS RESOLVE ON THIS
+ENGINE` under the current tool. **This step also pauses for a full dwell
+between its two policy PUTs**, so expect it to sit for two minutes after the
+first one; that pause is the lockout check working, and interrupting it is the
+one thing that turns a recoverable state into an unclear one.
 
 It refuses, before sending anything, if the policy names a different bucket, if
 it would lock out the key in the environment, or if it fences nothing. It then
