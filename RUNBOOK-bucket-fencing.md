@@ -914,8 +914,19 @@ AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" \
   --bucket branchleft-db-backups \
   --endpoint hel1.your-objectstorage.com \
   --region hel1 \
-  --policy-file /tmp/branchleft-db-backups-policy.json
+  --policy-file /tmp/branchleft-db-backups-policy.json \
+  --engine-diagnostic-passed
 ```
+
+`--engine-diagnostic-passed` is the gate above, asserted on the command line.
+The script cannot run section 0 itself — that needs three credentials and a
+bucket this script has no business touching — so the flag is a claim the
+operator makes, and without it the script writes nothing and exits 2. Pass it
+only once section 0 has actually printed `PER-KEY PRINCIPALS RESOLVE ON THIS
+ENGINE` under the current tool. **This step also pauses for a full dwell
+between its two policy PUTs**, so expect it to sit for two minutes after the
+first one; that pause is the lockout check working, and interrupting it is the
+one thing that turns a recoverable state into an unclear one.
 
 It refuses, before sending anything, if the policy names a different bucket, if
 it would lock out the key in the environment, or if it fences nothing. It then
