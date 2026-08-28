@@ -58,15 +58,47 @@ services:
     image: prom/mysqld-exporter:v0.20.0@sha256:abed8dac117b4ae5b70757f988e44795935b9a72c3b58d720c67ba688f8cb79e
     restart: unless-stopped
     network_mode: host
-    environment:
-      # unix(/var/run/mysqld/mysqld.sock)/ form -- the `exporter` account is
-      # `'exporter'@'localhost'`, reachable only over this socket, matching
-      # every other admin/service account in this stack.
-      DATA_SOURCE_NAME: ${EXPORTER_DATA_SOURCE_NAME:?set EXPORTER_DATA_SOURCE_NAME in /etc/branchleft/db.env}
     volumes:
       - ./run/mysqld:/var/run/mysqld
+      # Rendered on the host by db/provision/render_exporter_my_cnf.py, which
+      # the stack's systemd drop-in runs before every start. It carries the
+      # `exporter` password, so it is a mounted file rather than an
+      # environment variable: `docker inspect` shows every variable to
+      # anything that can reach the Docker socket, and shows only this path.
+      #
+      # It lives outside the stack directory deliberately: it has to exist
+      # before `docker compose up` runs, and /opt/branchleft/db is re-copied
+      # wholesale by a deploy. /etc/branchleft is where every other stack
+      # secret on this host already lives.
+      - /etc/branchleft/db-exporter.my.cnf:/etc/mysqld-exporter/.my.cnf:ro
     command:
+      # The socket, not TCP: the `exporter` account is `'exporter'@'localhost'`
+      # like every other admin/service account here, and mysqld's only TCP
+      # listener is for tenant accounts. v0.20.0 accepts a `unix://` address;
+      # the socket is also named in the rendered .my.cnf, which is what
+      # actually forms the DSN.
+      - --config.my-cnf=/etc/mysqld-exporter/.my.cnf
+      - --mysqld.address=unix:///var/run/mysqld/mysqld.sock
       - --web.listen-address=10.20.1.20:9104
+    healthcheck:
+      # `mysql_up 1`, not process liveness and not an HTTP 200. The exporter
+      # serves /metrics perfectly while failing to authenticate, so anything
+      # weaker reports a healthy container that is exporting nothing -- which
+      # is how a dead exporter went four days unnoticed.
+      #
+      # `--wait` in branchleft-compose@.service turns this into the deploy's
+      # own gate, and that cuts both ways: a `branchleft-deploy db` whose
+      # exporter cannot authenticate now fails, and branchleft-deploy rolls
+      # the *MySQL* image pin back on any non-zero restart. That is the
+      # intended trade -- a deploy that leaves the database unmonitored should
+      # not report success -- but it is why the timeout and retry count below
+      # are generous rather than tight: a collector run that overruns under
+      # load must not be mistaken for a broken exporter.
+      test: ['CMD-SHELL', 'wget -qO- http://10.20.1.20:9104/metrics | grep -qx "mysql_up 1"']
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     depends_on:
       mysql:
         condition: service_healthy
