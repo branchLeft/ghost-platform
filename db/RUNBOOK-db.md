@@ -139,7 +139,7 @@ never values:
 | Variable                     | Consumed by                              |
 | ----------------------------- | ------------------------------------------ |
 | `MYSQL_ROOT_PASSWORD`         | `mysql` container, at first start only    |
-| `EXPORTER_DATA_SOURCE_NAME`   | `mysqld-exporter` container -- `exporter:PASSWORD@unix(/var/run/mysqld/mysqld.sock)/` form |
+| `EXPORTER_MYSQL_PWD`          | `render_exporter_my_cnf.py`, which writes the `mysqld-exporter` container's `.my.cnf` (step 3) |
 | `DB_DUMP_MYSQL_PWD`           | `dump_nightly.py` (the `backup` account)  |
 | `DB_BINLOG_MYSQL_PWD`         | `ship_binlogs.py` (the `replicator` account) |
 | `AGE_RECIPIENT_PUBLIC_KEY`    | both pipelines -- the public half of the escrowed keypair |
@@ -154,7 +154,44 @@ install -m 600 /dev/null /etc/branchleft/db.env
 # then edit it in place with the real values
 ```
 
-## 3. Pin the image and start the stack
+**`EXPORTER_MYSQL_PWD` must be at least 20 characters of `A-Za-z0-9._~-` and
+nothing else.** The exporter runs Go's `os.ExpandEnv` over every value it
+parses out of its `.my.cnf`, so a `$` in the password is silently replaced by
+an empty environment variable and the exporter authenticates as a different,
+shorter string; `"`, `#`, `;` and `\` are ini syntax to the same parser. Every
+one of those leaves the container running and serving `/metrics` while
+reporting `mysql_up 0`. `render_exporter_my_cnf.py` refuses the whole class
+rather than trying to escape it, so an unacceptable password fails the stack
+start with a message naming the variable. Generate one with:
+
+```bash
+LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 40
+```
+
+**Never source this file with `bash` to read a value out of it.** A parse
+error makes bash echo the offending line, password included. Read a single
+key with `sed -n 's/^VAR=//p'`, or hand the whole file to a command with
+`systemd-run --property=EnvironmentFile=/etc/branchleft/db.env`.
+
+## 3. Install the stack's systemd drop-in, pin the image, and start
+
+The drop-in goes on **before** the first start. It adds one `ExecStartPre`
+that renders `/etc/branchleft/db-exporter.my.cnf` from `EXPORTER_MYSQL_PWD`,
+and the exporter bind-mounts that file. Docker creates a *directory* at a
+bind-mount source it cannot find, so starting the stack without this produces
+a container that fails naming neither the file nor the password.
+
+```bash
+install -d -m 0755 /etc/systemd/system/branchleft-compose@db.service.d
+# copied from db/systemd/db.override.conf in this repository
+scp -i ~/.ssh/id_ed25519_hetzner db/systemd/db.override.conf \
+  root@<db1>:/etc/systemd/system/branchleft-compose@db.service.d/override.conf
+systemctl daemon-reload
+```
+
+It is installed by hand rather than by shared-infra's
+`install-systemd-drop-ins.sh`: that script globs `hetzner/*/systemd/` inside
+its own checkout, and this stack is committed here.
 
 The first pin is also the first deploy -- there is no separate bootstrap
 path, because `branchleft-compose@.service`'s `EnvironmentFile` for the pin
@@ -165,6 +202,12 @@ branchleft-deploy db mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7
 systemctl enable --now branchleft-compose@db.service
 systemctl status branchleft-compose@db.service
 ```
+
+The exporter declares a healthcheck asserting `mysql_up 1`, and the unit's
+`docker compose up --wait` waits for it, so a `systemctl start` that returns
+zero is now evidence the exporter is authenticating -- not merely that its
+process is alive. On a first start the account below does not exist yet, so
+expect the unit to fail until step 4 has run and the stack has been restarted.
 
 Verify the socket and TLS posture from `db1` itself, over the socket inside
 the `mysql` container (never `-h 10.20.1.20` -- root has no account
@@ -201,7 +244,7 @@ provisioning creates:
 -- REPLICATION CLIENT exist only at global scope and cannot be combined with
 -- a database-scoped grant in one statement (MySQL rejects it with
 -- ERROR 1221) -- SELECT stays scoped to performance_schema in its own grant.
-CREATE USER 'exporter'@'localhost' IDENTIFIED BY '<matches EXPORTER_DATA_SOURCE_NAME>';
+CREATE USER 'exporter'@'localhost' IDENTIFIED BY '<matches EXPORTER_MYSQL_PWD>';
 GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'localhost';
 GRANT SELECT ON performance_schema.* TO 'exporter'@'localhost';
 
