@@ -7,11 +7,10 @@ or an environment variable. An environment variable is visible in `docker
 inspect` to every account that can reach the Docker socket, so this renders a
 file instead, mode 0400 and owned by the uid the container runs as.
 
-The output lives under /etc/branchleft rather than in the stack directory.
-The stack directory is an rsync target and `--delete` would remove a
-host-rendered file from it on the next deploy, leaving the running container
-holding the only copy through its open file handle -- invisible until the next
-recreate.
+The output lives under /etc/branchleft rather than in the stack directory,
+because it has to exist before `docker compose up` runs and /opt/branchleft/db
+is a deploy target that is re-copied wholesale. /etc/branchleft is where every
+other stack secret on this estate already lives, and nothing sweeps it.
 
 Run again after a password rotation, then restart `branchleft-compose@db` to
 pick it up. The stack's systemd drop-in also runs this once before every
@@ -33,9 +32,15 @@ PASSWORD_VAR = "EXPORTER_MYSQL_PWD"
 EXPORTER_USER = "exporter"
 EXPORTER_SOCKET = "/var/run/mysqld/mysqld.sock"
 
-OUTPUT_PATH = pathlib.Path(
-    os.environ.get("EXPORTER_MY_CNF_PATH", "/etc/branchleft/db-exporter.my.cnf")
-)
+DEFAULT_OUTPUT_PATH = pathlib.Path("/etc/branchleft/db-exporter.my.cnf")
+
+
+def output_path(env: dict[str, str]) -> pathlib.Path:
+    """Overridable so the tests can write somewhere harmless. Read from the
+    passed environment rather than at import time: a constant that changes with
+    an inherited variable makes a test fail for a reason unrelated to the code
+    it is testing."""
+    return pathlib.Path(env.get("EXPORTER_MY_CNF_PATH") or DEFAULT_OUTPUT_PATH)
 
 # The exporter runs `os.ExpandEnv` over every value it parses out of this file
 # (config.go's `cfg.ValueMapper`), so a password containing `$` is silently
@@ -62,7 +67,7 @@ GENERATOR_HINT = (
 # "permission denied" on the config path. Ownership moves rather than the mode
 # widening: the file holds a plaintext password and 0444 would expose it to
 # every other account on the host.
-EXPORTER_UID = int(os.environ.get("EXPORTER_UID", "65534"))
+EXPORTER_UID = 65534
 
 
 def render(env: dict[str, str]) -> str:
@@ -90,6 +95,25 @@ def render(env: dict[str, str]) -> str:
     )
 
 
+def clear_bind_mount_stub(path: pathlib.Path) -> None:
+    """Removes a directory or symlink sitting where the rendered file goes.
+
+    Docker creates an empty *directory* at a bind-mount source it cannot find.
+    So a single `docker compose up` run before this renderer was installed --
+    or on a host where the drop-in did not land -- leaves a directory at the
+    output path, and `os.replace` then fails with IsADirectoryError on every
+    subsequent start, MySQL's included, permanently and across reboots.
+
+    An empty directory is that stub and is removed. A non-empty one is
+    somebody's data and `os.rmdir` refuses it, which is the right way round.
+    """
+    if path.is_symlink():
+        path.unlink()
+        return
+    if path.is_dir():
+        path.rmdir()
+
+
 def write(path: pathlib.Path, content: str, uid: int, is_root: bool) -> None:
     """Writes `content` to `path`, never leaving it readable to anyone else.
 
@@ -98,14 +122,24 @@ def write(path: pathlib.Path, content: str, uid: int, is_root: bool) -> None:
     is atomic so a concurrent container start reads either the whole old file
     or the whole new one.
     """
+    clear_bind_mount_stub(path)
     tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o400)
+    clear_bind_mount_stub(tmp)
+    if tmp.exists():
+        tmp.unlink()
+    # O_EXCL after the unlink above, so a symlink planted at the temp path is
+    # refused rather than followed -- this runs as root and would otherwise
+    # write a plaintext password wherever the link pointed.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
     try:
         os.write(fd, content.encode("utf-8"))
+        # Explicit, because os.open's mode is masked by the process umask and
+        # a narrower result locks the container out of its own config.
+        os.fchmod(fd, 0o400)
+        if is_root:
+            os.fchown(fd, uid, uid)
     finally:
         os.close(fd)
-    if is_root:
-        os.chown(tmp, uid, uid)
     os.replace(tmp, path)
 
 
@@ -125,8 +159,27 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
-    write(OUTPUT_PATH, rendered, EXPORTER_UID, os.geteuid() == 0)
-    print(f"render_exporter_my_cnf: wrote {OUTPUT_PATH}")
+    destination = output_path(dict(os.environ))
+    try:
+        write(destination, rendered, EXPORTER_UID, os.geteuid() == 0)
+    except OSError as exc:
+        # Named rather than a traceback: this runs as an ExecStartPre, so its
+        # stderr is the whole of what an operator sees before MySQL fails to
+        # come back with it.
+        print(
+            f"render_exporter_my_cnf: could not write {destination}: {exc}",
+            file=sys.stderr,
+        )
+        if destination.is_dir():
+            print(
+                f"render_exporter_my_cnf: {destination} is a non-empty directory. "
+                "Docker creates one at a bind-mount source it cannot find, so the "
+                "stack has started at least once without this renderer. Inspect it, "
+                "then remove it and retry.",
+                file=sys.stderr,
+            )
+        return 1
+    print(f"render_exporter_my_cnf: wrote {destination}")
     return 0
 
 

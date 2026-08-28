@@ -66,8 +66,10 @@ services:
       # environment variable: `docker inspect` shows every variable to
       # anything that can reach the Docker socket, and shows only this path.
       #
-      # It lives outside the stack directory deliberately -- that directory is
-      # an rsync target and `--delete` would take a host-rendered file with it.
+      # It lives outside the stack directory deliberately: it has to exist
+      # before `docker compose up` runs, and /opt/branchleft/db is re-copied
+      # wholesale by a deploy. /etc/branchleft is where every other stack
+      # secret on this host already lives.
       - /etc/branchleft/db-exporter.my.cnf:/etc/mysqld-exporter/.my.cnf:ro
     command:
       # The socket, not TCP: the `exporter` account is `'exporter'@'localhost'`
@@ -82,13 +84,21 @@ services:
       # `mysql_up 1`, not process liveness and not an HTTP 200. The exporter
       # serves /metrics perfectly while failing to authenticate, so anything
       # weaker reports a healthy container that is exporting nothing -- which
-      # is how a dead exporter went four days unnoticed. `--wait` in
-      # branchleft-compose@.service turns this into the deploy's own gate.
+      # is how a dead exporter went four days unnoticed.
+      #
+      # `--wait` in branchleft-compose@.service turns this into the deploy's
+      # own gate, and that cuts both ways: a `branchleft-deploy db` whose
+      # exporter cannot authenticate now fails, and branchleft-deploy rolls
+      # the *MySQL* image pin back on any non-zero restart. That is the
+      # intended trade -- a deploy that leaves the database unmonitored should
+      # not report success -- but it is why the timeout and retry count below
+      # are generous rather than tight: a collector run that overruns under
+      # load must not be mistaken for a broken exporter.
       test: ['CMD-SHELL', 'wget -qO- http://10.20.1.20:9104/metrics | grep -qx "mysql_up 1"']
       interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     depends_on:
       mysql:
         condition: service_healthy

@@ -178,20 +178,27 @@ key with `sed -n 's/^VAR=//p'`, or hand the whole file to a command with
 The drop-in goes on **before** the first start. It adds one `ExecStartPre`
 that renders `/etc/branchleft/db-exporter.my.cnf` from `EXPORTER_MYSQL_PWD`,
 and the exporter bind-mounts that file. Docker creates a *directory* at a
-bind-mount source it cannot find, so starting the stack without this produces
-a container that fails naming neither the file nor the password.
+bind-mount source it cannot find, so a start without the drop-in loaded leaves
+a stub directory there. The renderer removes an empty one; a non-empty one it
+refuses, and the stack then fails every start until someone clears it by hand.
+
+All three commands run against `db1`, which has no public address -- the same
+`$JUMP` hop through `edge1` as every other remote command in this file:
 
 ```bash
-install -d -m 0755 /etc/systemd/system/branchleft-compose@db.service.d
-# copied from db/systemd/db.override.conf in this repository
-scp -i ~/.ssh/id_ed25519_hetzner db/systemd/db.override.conf \
-  root@<db1>:/etc/systemd/system/branchleft-compose@db.service.d/override.conf
-systemctl daemon-reload
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
+  'install -d -m 0755 /etc/systemd/system/branchleft-compose@db.service.d'
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" db/systemd/db.override.conf \
+  root@10.20.1.20:/etc/systemd/system/branchleft-compose@db.service.d/override.conf
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 'systemctl daemon-reload'
 ```
 
 It is installed by hand rather than by shared-infra's
-`install-systemd-drop-ins.sh`: that script globs `hetzner/*/systemd/` inside
-its own checkout, and this stack is committed here.
+`install-systemd-drop-ins.sh`. That script would match this file if pointed at
+this checkout, but nothing points it here and no host provisioning run does --
+so **a rebuilt db1 does not get this drop-in back**, and this step has to be
+repeated as part of any rebuild.
 
 The first pin is also the first deploy -- there is no separate bootstrap
 path, because `branchleft-compose@.service`'s `EnvironmentFile` for the pin
@@ -199,15 +206,33 @@ is mandatory:
 
 ```bash
 branchleft-deploy db mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+```
+
+**Expect this first run to fail, and expect it to delete the pin.** The
+exporter declares a healthcheck asserting `mysql_up 1`; the unit's
+`docker compose up --wait` waits for it; and the `exporter` account does not
+exist until step 4. So the restart returns non-zero, and `branchleft-deploy`
+-- finding no previous pin to roll back to -- removes
+`/etc/branchleft/db.image.env` and reports *"the stack has never run"*.
+
+Two things about that message. It is **wrong about the containers**: a failed
+oneshot runs `ExecStopPost`, not `ExecStop`, so MySQL is up with an
+initialised data directory. Do not reach for `docker compose down -v` --
+that destroys the datadir. And the missing pin means the next `systemctl`
+command would fail on the `EnvironmentFile` before reaching anything else.
+
+So the order is: run `branchleft-deploy` once as above, complete **step 4**,
+then re-pin and enable:
+
+```bash
+branchleft-deploy db mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
 systemctl enable --now branchleft-compose@db.service
 systemctl status branchleft-compose@db.service
 ```
 
-The exporter declares a healthcheck asserting `mysql_up 1`, and the unit's
-`docker compose up --wait` waits for it, so a `systemctl start` that returns
-zero is now evidence the exporter is authenticating -- not merely that its
-process is alive. On a first start the account below does not exist yet, so
-expect the unit to fail until step 4 has run and the stack has been restarted.
+That second run is the one that must return zero. From here on, a
+`branchleft-deploy db` that returns zero is evidence the exporter is
+authenticating against MySQL -- not merely that its process is alive.
 
 Verify the socket and TLS posture from `db1` itself, over the socket inside
 the `mysql` container (never `-h 10.20.1.20` -- root has no account
@@ -224,6 +249,92 @@ in `docker compose ps` reaching `healthy` is the same proof from inside the
 container -- if it never does, `mysqld-exporter`'s `service_healthy`
 dependency will never start it either, and this command is the first thing
 to run to see why.
+
+### Migrating a db1 that is already running
+
+An already-provisioned host has none of the three preconditions above, and
+**the wrong order is an outage rather than an error message**: `systemctl
+restart` on an active `RemainAfterExit=yes` unit runs `ExecStop=docker compose
+down` first, so MySQL stops, and the start then fails at `ExecStartPre` with
+nothing to fall back to. Do all four before restarting anything.
+
+1. **Copy the provisioning directory again.** `render_exporter_my_cnf.py` is
+   new, and the drop-in's `ExecStartPre` runs it by absolute path.
+
+   ```bash
+   JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
+   scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
+   ```
+
+2. **Decide whether the existing password survives the new rule.** The old DSN
+   form only forbade `@`, `:` and `/`; the rule in step 2 forbids everything
+   outside `A-Za-z0-9._~-` and sets a 20-character floor, so a password
+   generated under the old rule may contain a character that is now fatal.
+   Check without printing it:
+
+   ```bash
+   sed -n 's/^EXPORTER_DATA_SOURCE_NAME=exporter:\(.*\)@unix(.*/\1/p' /etc/branchleft/db.env \
+     | grep -cE '^[A-Za-z0-9._~-]{20,}$'
+   ```
+
+   `1` means it survives; `0` means rotate it in step 3.
+
+3. **Set `EXPORTER_MYSQL_PWD` in `/etc/branchleft/db.env`.** If step 2 printed
+   `1`, carry the existing value across without printing it:
+
+   ```bash
+   sed -n 's/^EXPORTER_DATA_SOURCE_NAME=exporter:\(.*\)@unix(.*/EXPORTER_MYSQL_PWD=\1/p' \
+     /etc/branchleft/db.env >> /etc/branchleft/db.env
+   ```
+
+   If it printed `0`, rotate instead -- generate a new password, write
+   `EXPORTER_MYSQL_PWD=` with it, and change it in MySQL to match (see
+   "Rotating the exporter password" below). Then delete the
+   `EXPORTER_DATA_SOURCE_NAME` line either way: nothing reads it, and it is a
+   password sitting in a file for no reason.
+
+   Confirm by key name only, never by value:
+
+   ```bash
+   cut -d= -f1 /etc/branchleft/db.env | sort
+   ```
+
+4. **Install the drop-in** exactly as in the three commands above.
+
+Only then:
+
+```bash
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
+  'systemctl restart branchleft-compose@db && docker ps --filter label=com.docker.compose.project=db --format "{{.Names}}\t{{.Status}}"'
+```
+
+Expect `db-mysql-1` and `db-mysqld-exporter-1`, both `Up ... (healthy)`. The
+exporter's `start_period` is 60s, so read this again before concluding
+anything from a `starting`.
+
+### Rotating the exporter password
+
+Three places must agree, and the account is reachable only over the socket:
+
+```bash
+# 1. generate, and set it in MySQL. MYSQL_PWD keeps the root password out of
+#    the host's process list; the new value is typed, never echoed.
+NEW=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 40)
+docker exec -i -e MYSQL_PWD="$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' /etc/branchleft/db.env)" \
+  db-mysql-1 mysql --socket=/var/run/mysqld/mysqld.sock -uroot \
+  -e "ALTER USER 'exporter'@'localhost' IDENTIFIED BY '$NEW'; FLUSH PRIVILEGES;"
+
+# 2. put the same value in db.env, replacing any existing line
+sed -i '/^EXPORTER_MYSQL_PWD=/d' /etc/branchleft/db.env
+printf 'EXPORTER_MYSQL_PWD=%s\n' "$NEW" >> /etc/branchleft/db.env
+unset NEW
+
+# 3. re-render and restart -- the drop-in's ExecStartPre does the render
+systemctl restart branchleft-compose@db
+```
+
+Verify with `docker ps`: `db-mysqld-exporter-1` reaching `(healthy)` is the
+proof, because the healthcheck asserts `mysql_up 1` and nothing else does.
 
 ## 4. One-time admin bootstrap: the exporter, dump and binlog-ship accounts
 

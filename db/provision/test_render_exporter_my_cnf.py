@@ -161,15 +161,109 @@ class Write(unittest.TestCase):
         self.assertEqual(self.path.stat().st_uid, os.getuid())
 
 
+class StubAtTheOutputPath(unittest.TestCase):
+    """Docker creates an empty directory at a bind-mount source it cannot find.
+    That happens the first time the stack starts without this renderer, and it
+    then fails every subsequent start -- MySQL's included, and across reboots
+    -- because os.replace cannot rename over a directory. /etc/branchleft is
+    swept by nothing, so it is permanent until somebody removes it by hand."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name)
+        self.path = self.root / "db-exporter.my.cnf"
+
+    def test_an_empty_directory_at_the_target_is_replaced(self) -> None:
+        self.path.mkdir()
+        r.write(self.path, "content\n", uid=65534, is_root=False)
+        self.assertEqual(self.path.read_text(), "content\n")
+
+    def test_a_non_empty_directory_is_refused_rather_than_deleted(self) -> None:
+        # It is not Docker's stub, so it is somebody's data. Failing loudly is
+        # the right way round; the caller turns this into a named message.
+        self.path.mkdir()
+        (self.path / "something").write_text("do not delete me")
+        with self.assertRaises(OSError):
+            r.write(self.path, "content\n", uid=65534, is_root=False)
+        self.assertTrue((self.path / "something").is_file())
+
+    def test_a_stale_temp_file_from_a_crashed_run_does_not_block_a_retry(self) -> None:
+        # 0400 owned by the caller cannot be reopened for writing, so without
+        # the unlink a crashed render would fail every retry.
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        r.write(self.path, "first\n", uid=65534, is_root=False)
+        os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT, 0o400))
+        r.write(self.path, "second\n", uid=65534, is_root=False)
+        self.assertEqual(self.path.read_text(), "second\n")
+
+    def test_a_symlink_at_the_temp_path_is_not_followed(self) -> None:
+        # This runs as root under systemd, so a followed symlink would write a
+        # plaintext password wherever it pointed.
+        victim = self.root / "victim"
+        victim.write_text("untouched")
+        (self.root / "db-exporter.my.cnf.tmp").symlink_to(victim)
+        r.write(self.path, "content\n", uid=65534, is_root=False)
+        self.assertEqual(victim.read_text(), "untouched")
+
+    def test_a_symlink_at_the_target_is_replaced_not_followed(self) -> None:
+        victim = self.root / "victim"
+        victim.write_text("untouched")
+        self.path.symlink_to(victim)
+        r.write(self.path, "content\n", uid=65534, is_root=False)
+        self.assertEqual(victim.read_text(), "untouched")
+        self.assertFalse(self.path.is_symlink())
+        self.assertEqual(self.path.read_text(), "content\n")
+
+
+class Main(unittest.TestCase):
+    """main() is an ExecStartPre. Its stderr is the whole of what an operator
+    sees before MySQL fails to come back with it, so a traceback there is a
+    real cost rather than untidiness."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = pathlib.Path(self.tmp.name) / "db-exporter.my.cnf"
+        for var in (r.PASSWORD_VAR, "EXPORTER_MY_CNF_PATH", "EXPORTER_DATA_SOURCE_NAME"):
+            self.addCleanup(os.environ.pop, var, None)
+        os.environ["EXPORTER_MY_CNF_PATH"] = str(self.path)
+
+    def test_a_good_render_writes_the_file_and_returns_zero(self) -> None:
+        os.environ[r.PASSWORD_VAR] = GOOD
+        self.assertEqual(r.main([]), 0)
+        self.assertIn(f"password = {GOOD}", self.path.read_text())
+
+    def test_a_write_failure_returns_one_instead_of_raising(self) -> None:
+        os.environ[r.PASSWORD_VAR] = GOOD
+        self.path.mkdir()
+        (self.path / "something").write_text("data")
+        self.assertEqual(r.main([]), 1)
+
+    def test_a_bad_password_returns_one_and_writes_nothing(self) -> None:
+        os.environ[r.PASSWORD_VAR] = "short$"
+        self.assertEqual(r.main([]), 1)
+        self.assertFalse(self.path.exists())
+
+
 class HostPath(unittest.TestCase):
     def test_the_default_output_is_outside_the_stack_directory(self) -> None:
-        # /opt/branchleft/db is an rsync --delete target. The alertmanager.yml
-        # equivalent on edge1 is deleted by every deploy for exactly this
-        # reason, and survives only in the running container's file handle.
+        # It has to exist before `docker compose up` runs, and /opt/branchleft/db
+        # is a deploy target that is re-copied wholesale. /etc/branchleft is
+        # where every other stack secret on this estate lives.
         self.assertEqual(
-            str(r.OUTPUT_PATH), "/etc/branchleft/db-exporter.my.cnf"
+            str(r.DEFAULT_OUTPUT_PATH), "/etc/branchleft/db-exporter.my.cnf"
         )
-        self.assertFalse(str(r.OUTPUT_PATH).startswith("/opt/branchleft/db"))
+        self.assertFalse(str(r.DEFAULT_OUTPUT_PATH).startswith("/opt/branchleft/db"))
+
+    def test_the_default_stands_when_no_override_is_set(self) -> None:
+        # Read from the environment at call time rather than at import, so an
+        # inherited variable on a CI runner cannot fail an unrelated assertion.
+        self.assertEqual(r.output_path({}), r.DEFAULT_OUTPUT_PATH)
+        self.assertEqual(r.output_path({"EXPORTER_MY_CNF_PATH": ""}), r.DEFAULT_OUTPUT_PATH)
+        self.assertEqual(
+            r.output_path({"EXPORTER_MY_CNF_PATH": "/tmp/x"}), pathlib.Path("/tmp/x")
+        )
 
     def test_the_uid_matches_the_user_the_exporter_image_runs_as(self) -> None:
         # prom/mysqld-exporter:v0.20.0 declares USER nobody = 65534. A

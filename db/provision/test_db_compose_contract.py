@@ -109,9 +109,8 @@ class TheExporterIsConfiguredByFile(unittest.TestCase):
         self.assertIn("--config.my-cnf=/etc/mysqld-exporter/.my.cnf", block)
 
     def test_the_config_is_mounted_from_outside_the_stack_directory(self) -> None:
-        # The stack directory is an rsync `--delete` target. A host-rendered
-        # file inside it survives only until the next deploy, and then only in
-        # the running container's open file handle.
+        # It has to exist before `docker compose up` runs, and
+        # /opt/branchleft/db is re-copied wholesale by a deploy.
         block = "\n".join(uncommented(service_blocks()["mysqld-exporter"]))
         self.assertIn(f"{RENDERED_CNF_HOST_PATH}:/etc/mysqld-exporter/.my.cnf:ro", block)
 
@@ -129,6 +128,26 @@ class TheExporterIsConfiguredByFile(unittest.TestCase):
         self.assertEqual(RENDERER.name, pathlib.PurePosixPath(RENDERER_HOST_PATH).name)
 
 
+class TheRendererAndTheStackAgree(unittest.TestCase):
+    """The socket path is a constant in the renderer and a flag in the compose
+    file, written in two repositories' worth of separate places. If they drift
+    the exporter falls back to TCP on 127.0.0.1:3306, where
+    `'exporter'@'localhost'` does not exist -- an auth failure that reads like
+    a wrong password rather than a wrong path."""
+
+    def test_the_socket_matches_the_compose_mount_and_flag(self) -> None:
+        import render_exporter_my_cnf as renderer
+
+        block = "\n".join(uncommented(service_blocks()["mysqld-exporter"]))
+        self.assertIn(f"--mysqld.address=unix://{renderer.EXPORTER_SOCKET}", block)
+        self.assertIn(f"./run/mysqld:{pathlib.PurePosixPath(renderer.EXPORTER_SOCKET).parent}", block)
+
+    def test_the_renderer_writes_where_the_stack_mounts_from(self) -> None:
+        import render_exporter_my_cnf as renderer
+
+        self.assertEqual(str(renderer.DEFAULT_OUTPUT_PATH), RENDERED_CNF_HOST_PATH)
+
+
 class NothingReachesMysqlOverTcp(unittest.TestCase):
     """The admin and service accounts are `'...'@'localhost'` and the socket is
     the only path to them. A fix that opened a TCP listener for the exporter
@@ -141,6 +160,14 @@ class NothingReachesMysqlOverTcp(unittest.TestCase):
     def test_the_exporter_declares_no_host_port_address(self) -> None:
         block = "\n".join(uncommented(service_blocks()["mysqld-exporter"]))
         self.assertNotRegex(block, r"--mysqld\.address=(?!unix://)")
+
+    def test_the_metrics_listener_stays_on_the_private_address(self) -> None:
+        # `network_mode: host` means this address is the host's. 0.0.0.0 would
+        # be a listener on every interface db1 ever gains, and would satisfy
+        # every other assertion in this class.
+        block = "\n".join(uncommented(service_blocks()["mysqld-exporter"]))
+        self.assertIn("--web.listen-address=10.20.1.20:9104", block)
+        self.assertNotIn("0.0.0.0", block)
 
     def test_no_service_publishes_a_port(self) -> None:
         # `network_mode: host` makes `ports:` a no-op that Compose warns about
@@ -171,6 +198,16 @@ class EveryServiceHasADeploySignal(unittest.TestCase):
         self.assertNotIn("disable: true", text)
         self.assertNotRegex(text, r"'NONE'|\"NONE\"")
 
+    def test_the_healthcheck_probes_the_address_the_exporter_listens_on(self) -> None:
+        # Two independently hard-coded constants one line apart. Asserted as a
+        # pair so a change to the listen address cannot leave the healthcheck
+        # probing a port nothing serves -- which reads as a broken exporter and
+        # rolls back the MySQL image pin.
+        block = "\n".join(uncommented(service_blocks()["mysqld-exporter"]))
+        listen = re.search(r"--web\.listen-address=(\S+)", block)
+        self.assertIsNotNone(listen)
+        self.assertIn(f"http://{listen.group(1)}/metrics", block)
+
     def test_the_exporter_health_signal_is_mysql_up_not_liveness(self) -> None:
         # The failure this stack actually suffered leaves the process running
         # and /metrics answering 200. A liveness or HTTP-status probe reports
@@ -196,6 +233,17 @@ class TheDropInDoesNotDisableTheImagePin(unittest.TestCase):
             if not line.strip().startswith("#")
         ]
         self.assertNotIn("EnvironmentFile=", directives)
+
+    def test_the_drop_in_does_not_reset_execstartpre(self) -> None:
+        # A bare `ExecStartPre=` would drop the template's own
+        # `docker compose pull`, so the stack would start on whatever digest
+        # happened to be in the local image cache.
+        directives = [
+            line.strip()
+            for line in DROP_IN.read_text(encoding="utf-8").splitlines()
+            if not line.strip().startswith("#")
+        ]
+        self.assertNotIn("ExecStartPre=", directives)
 
     def test_the_compose_file_still_resolves_the_image_variable(self) -> None:
         self.assertIn("image: ${IMAGE}", compose_text())
