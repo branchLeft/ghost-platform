@@ -472,11 +472,17 @@ new unit files land, then dry-run before ever deleting anything real:
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
-  cd /opt/branchleft/db/provision &&
-  set -a && . /etc/branchleft/db.env && set +a &&
-  python3 prune_backups.py --dry-run
+  systemd-run --pipe --wait --collect --quiet \
+    --property=EnvironmentFile=/etc/branchleft/db.env \
+    --property=WorkingDirectory=/opt/branchleft/db/provision \
+    -- python3 prune_backups.py --dry-run
 '
 ```
+
+As step 2 warns: never `bash`-source `db.env` to run this. `systemd-run`'s
+`EnvironmentFile=` loads it the same way the compose units do -- parsed as
+`KEY=value` pairs, never evaluated as shell -- so a stray character in a
+value cannot make anything echo it back.
 
 Read the output before doing anything else: `would delete N dump(s), M
 binlog(s)` lists every key by name, and a `REFUSED <uuid>: <reason>` line on
@@ -511,9 +517,10 @@ retained binlog independently:
 
 ```bash
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
-  cd /opt/branchleft/db/provision &&
-  set -a && . /etc/branchleft/db.env && set +a &&
-  python3 prune_backups.py --verify-coverage
+  systemd-run --pipe --wait --collect --quiet \
+    --property=EnvironmentFile=/etc/branchleft/db.env \
+    --property=WorkingDirectory=/opt/branchleft/db/provision \
+    -- python3 prune_backups.py --verify-coverage
 '
 ```
 
