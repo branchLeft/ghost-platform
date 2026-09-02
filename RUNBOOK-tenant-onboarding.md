@@ -6,10 +6,12 @@ run correctly can; everything else here is operator-run, and each of those steps
 is operator-run for a stated reason rather than because nobody automated it yet.
 
 **Provisioning is closed until this runbook has been proven end to end on a real
-host.** `provision-tenant.yml` refuses at step one unless the
+host.** `provision-tenant.yml` refuses unless the
 `TENANT_PROVISIONING_FLOW_HETZNERISED` repository variable on
-`branchLeft/ghost-platform` is `true`. Setting it is the last step of the
-migration, not the first.
+`branchLeft/ghost-platform` is `true`. **Step 0 opens it, immediately before the
+run, and closes it again if the run fails** — until the flow is proven, only for
+a disposable subject. What keeps a failed first run affordable is that the
+subject is disposable, not that the gate is shut while you work.
 
 ## Addresses this runbook uses
 
@@ -183,10 +185,15 @@ reach it.
 
 ### 0. Open the provisioning gate, and be ready to close it
 
-`provision-tenant.yml` exits at its first step unless the
+`provision-tenant.yml` refuses at its first step unless the
 `TENANT_PROVISIONING_FLOW_HETZNERISED` repository variable on
 `branchLeft/ghost-platform` is exactly `true`. Step 4 is that workflow, so
 without this the run stops before anything below matters.
+
+The refusal is not the first thing you see. The job carries
+`environment: tenant-provisioning`, so a dispatch with the gate shut sits
+`waiting`, you approve a deployment, and *then* it refuses — a shut gate costs
+an approval to discover.
 
 ```bash
 gh variable set TENANT_PROVISIONING_FLOW_HETZNERISED \
@@ -202,6 +209,16 @@ gh variable delete TENANT_PROVISIONING_FLOW_HETZNERISED \
   --repo branchLeft/ghost-platform
 ```
 
+**`gh: Not Found (HTTP 404)` here means it was already absent, which is the
+state you wanted.** Deleting an absent variable is an error rather than a
+no-op, so mid-incident that message reads as "the revert failed" at the moment
+certainty matters most. Confirm either way:
+
+```bash
+gh variable list --repo branchLeft/ghost-platform \
+  | grep TENANT_PROVISIONING_FLOW_HETZNERISED || echo CLOSED
+```
+
 The comparison is against the literal string `true`, so any other value is also
 closed — but delete it rather than setting `false`, so its absence and its
 meaning cannot drift apart.
@@ -210,6 +227,11 @@ Until the flow has been proven end to end, the only subject this may be opened
 for is a disposable one. That is what makes a failed first run affordable: what
 it leaves behind is a repository, an identity and a stack that are all thrown
 away, plus a personal access token copy revoked as part of the teardown.
+
+**This step retires once the flow is proven.** After that the variable stays
+`true`, and nobody deletes a live gate before an ordinary onboarding — so the
+set-and-revert protocol above belongs to the proving run, not to tenant
+onboarding in general. Whoever proves the flow deletes this step.
 
 ### 1. Ask the tenant whether their repository is public
 
@@ -687,6 +709,19 @@ Undo in the reverse of the order things were made:
 2. If host-side steps ran, undo them per the teardown section below.
 3. Delete the generated repository. That is also what revokes the provisioning
    PAT's reach into it.
+4. **If step 0 opened the provisioning gate, close it now.** This is the one
+   undo that protects something other than this run: left open after a failure,
+   provisioning stays reachable, unattended, against a flow just demonstrated to
+   be broken.
+
+   ```bash
+   gh variable delete TENANT_PROVISIONING_FLOW_HETZNERISED \
+     --repo branchLeft/ghost-platform
+   gh variable list --repo branchLeft/ghost-platform \
+     | grep TENANT_PROVISIONING_FLOW_HETZNERISED || echo CLOSED
+   ```
+
+   `gh: Not Found (HTTP 404)` on the delete means it was already closed.
 
 **Do not re-dispatch the workflow to retry.** `pulumi stack init` fails outright
 on an existing stack, and that refusal is correct: a retry mints a fresh
