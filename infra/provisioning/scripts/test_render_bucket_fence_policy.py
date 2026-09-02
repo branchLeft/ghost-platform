@@ -135,14 +135,25 @@ class TestTheWorkloadCannotEditItsOwnFence(unittest.TestCase):
     def test_the_workload_cannot_read_back_which_keys_are_named(self):
         self.assertEqual(decide(arn(WORKLOAD), "s3:GetBucketPolicy", BUCKET_ARN), "deny")
 
-    def test_the_bucket_configuration_deny_is_expressed_as_notaction(self):
-        # An enumerated denylist would let an action nobody thought of through
-        # to Hetzner's project-wide default, which is allow.
+    def test_the_bucket_configuration_deny_is_an_enumerated_action_list(self):
+        # Inverted. This test required `NotAction`, which this engine stores
+        # and does not enforce -- leaving the workload key able to read this
+        # policy, rewrite it and change versioning on a bucket that reads as
+        # fenced. Requiring it pinned the defect rather than guarding it.
         statement = next(
             s for s in policy_for()["Statement"] if s["Sid"] == "DenyBucketConfigurationExceptOperator"
         )
-        self.assertIn("NotAction", statement)
-        self.assertNotIn("Action", statement)
+        self.assertNotIn("NotAction", statement)
+        for denied in ("s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:PutBucketVersioning"):
+            self.assertIn(denied, statement["Action"])
+        # The workload's own bucket reads are excluded from the denylist, so
+        # this narrows nothing the backup pipelines rely on.
+        for kept in fence.WORKLOAD_BUCKET_READ_ACTIONS:
+            self.assertNotIn(kept, statement["Action"])
+
+    def test_no_statement_anywhere_uses_notaction(self):
+        for statement in policy_for()["Statement"]:
+            self.assertNotIn("NotAction", statement, statement.get("Sid"))
 
 
 class TestTheBucketStaysAdministrable(unittest.TestCase):

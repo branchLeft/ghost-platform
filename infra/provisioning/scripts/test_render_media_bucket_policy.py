@@ -138,10 +138,24 @@ class TestAppendOnly(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertEqual(decide(TENANT, action, BUCKET_ARN), "deny")
 
-    def test_an_unenumerated_bucket_action_falls_closed_for_the_tenant(self):
-        # `NotAction` is what buys this: a bucket sub-resource nobody listed is
-        # denied rather than allowed by Hetzner's project-wide default.
-        self.assertEqual(decide(TENANT, "s3:PutBucketSomethingNewIn2027", BUCKET_ARN), "deny")
+    def test_an_unenumerated_bucket_action_falls_open_for_the_tenant(self):
+        # The accepted cost of removing `NotAction`, asserted rather than left
+        # in a docstring where nothing checks it. `NotAction` bought exactly
+        # this property and did not deliver it: with the catch-all in place,
+        # the tenant key read this policy and changed versioning on the live
+        # bucket. An enumerated denylist is enforced and lets an unlisted
+        # action through, so the mitigation is the BREADTH of
+        # BUCKET_CONFIGURATION_ACTIONS, not the shape of the statement.
+        #
+        # If this ever starts failing, the catch-all has been restored for the
+        # tenant somehow -- delete this test, do not "fix" the policy.
+        self.assertEqual(decide(TENANT, "s3:PutBucketSomethingNewIn2027", BUCKET_ARN), "allow")
+        # A stranger is still caught. `DenyBucketAccessExceptNamedKeys` can use
+        # `Action: s3:*`, which this engine does enforce, because nothing
+        # anonymous has any business on the bucket resource. The loss above is
+        # bounded to one known principal, not to everybody.
+        self.assertEqual(decide(OTHER_TENANT, "s3:PutBucketSomethingNewIn2027", BUCKET_ARN), "deny")
+        self.assertEqual(decide("*", "s3:PutBucketSomethingNewIn2027", BUCKET_ARN), "deny")
 
     def test_no_statement_ever_allows_a_delete_action(self):
         for statement in policy_for()["Statement"]:
@@ -164,25 +178,54 @@ class TestCredentialIsolation(unittest.TestCase):
         # to close; it is the same fetch any reader makes.
         self.assertEqual(decide(OTHER_TENANT, "s3:GetObject", f"{BUCKET_ARN}/x.png"), "allow")
 
-    def test_the_bucket_deny_is_expressed_as_notaction(self):
-        # Same reasoning as the object-level deny below, and the statement where
-        # getting it wrong cost the most.
+    def test_the_bucket_configuration_deny_is_an_enumerated_action_list(self):
+        # This assertion is inverted from what it used to be. It required
+        # `NotAction`, which this engine stores and does not enforce -- so the
+        # test was pinning the defect in place rather than guarding it.
         bucket_deny = policy_for()["Statement"][1]
         self.assertEqual(bucket_deny["Sid"], "DenyBucketConfigurationExceptOperator")
         self.assertEqual(bucket_deny["Effect"], "Deny")
-        self.assertIn("NotAction", bucket_deny)
-        self.assertNotIn("Action", bucket_deny)
+        self.assertNotIn("NotAction", bucket_deny)
+        self.assertIn("s3:PutBucketPolicy", bucket_deny["Action"])
+        self.assertIn("s3:PutBucketVersioning", bucket_deny["Action"])
+        self.assertIn("s3:PutBucketAcl", bucket_deny["Action"])
+        self.assertIn("s3:PutLifecycleConfiguration", bucket_deny["Action"])
+        # The three the tenant keeps must NOT be in the denylist, or the fence
+        # becomes an outage.
+        for kept in ("s3:ListBucket", "s3:ListBucketMultipartUploads", "s3:GetBucketLocation"):
+            self.assertNotIn(kept, bucket_deny["Action"])
         # Only the operator is exempt. The tenant being here was the defect.
         self.assertEqual(bucket_deny["NotPrincipal"]["AWS"], [ADMIN])
 
-    def test_the_object_deny_is_expressed_as_notaction(self):
-        # A list of denied actions is a denylist: an action nobody enumerated
-        # falls through it and is then allowed by Hetzner's project-wide
-        # default key permission. `NotAction` fails the other way.
+    def test_the_object_deny_is_an_enumerated_action_list(self):
+        # Also inverted. This is the statement that failed live: written as
+        # `NotAction`, it let an unrelated key in the same project PUT an
+        # object into a tenant's media bucket. The object resource is the one
+        # place the catch-all cannot be recovered with `Action: s3:*`, because
+        # anonymous `GetObject` has to survive -- so breadth is the whole of
+        # the mitigation and these members are the point of the test.
         object_deny = policy_for()["Statement"][3]
         self.assertEqual(object_deny["Effect"], "Deny")
-        self.assertIn("NotAction", object_deny)
-        self.assertNotIn("Action", object_deny)
+        self.assertNotIn("NotAction", object_deny)
+        for denied in (
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
+            "s3:PutObjectAcl",
+            "s3:AbortMultipartUpload",
+            "s3:RestoreObject",
+            "s3:BypassGovernanceRetention",
+        ):
+            self.assertIn(denied, object_deny["Action"])
+        # ...and the two that serve a browser must not be, or every image 404s.
+        self.assertNotIn("s3:GetObject", object_deny["Action"])
+        self.assertNotIn("s3:GetObjectVersion", object_deny["Action"])
+
+    def test_no_statement_anywhere_uses_notaction(self):
+        # The structural guard. The two tests above ask about two statements by
+        # index; this one holds for a statement nobody has written yet.
+        for statement in policy_for()["Statement"]:
+            self.assertNotIn("NotAction", statement, statement.get("Sid"))
 
     def test_the_operator_key_keeps_control_of_the_bucket(self):
         # A policy naming only the tenant's key denies `PutBucketPolicy` to the

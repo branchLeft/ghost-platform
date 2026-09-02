@@ -15,9 +15,15 @@ Principal syntax is Hetzner's, not AWS's: `arn:aws:iam:::user/p<project>:<key>`
 
 `decide()` is a MODEL of S3 policy evaluation, not Hetzner's implementation.
 Hetzner documents `NotPrincipal` verbatim but publishes no list of supported
-Actions, Principal formats or Conditions, and says nothing about `NotAction`,
-which both generators rely on. Nothing computed here is evidence about a live
-bucket; only the probes in `verify-bucket-fence.py` are.
+Actions, Principal formats or Conditions. Nothing computed here is evidence
+about a live bucket; only the probes in `verify-bucket-fence.py` are.
+
+`NotAction` is the exception, because it is no longer unknown. This engine does
+not implement it: a statement carrying `NotAction` is accepted, stored, and
+returned by `get-bucket-policy` byte-identical to what was sent, and enforces
+nothing. The model below therefore skips such a statement rather than
+evaluating it, and `assert_enforceable()` refuses to emit one at all -- a
+policy that cannot be modelled honestly must not be written to a bucket.
 """
 
 from __future__ import annotations
@@ -55,6 +61,106 @@ RECOVERY_ACTIONS = ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]
 # includes an action the fence withholds by design.
 WORKLOAD_BUCKET_ACTIONS = ["s3:ListBucket"]
 WORKLOAD_OBJECT_ACTIONS = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+
+
+# Every bucket-resource action that reads or rewrites the fence itself, plus
+# the version listing, which is a read but enumerates superseded objects.
+#
+# Enumerated, and that is a REGRESSION accepted rather than a design choice.
+# The `NotAction` form these lists replace made an action nobody thought of
+# fall closed; a denylist makes it fall open, back to Hetzner's project-wide
+# default. The mitigation is breadth, not cleverness: actions Hetzner
+# currently documents as unsupported are listed too, because the cost is a
+# longer array and the alternative is a hole that opens on the day support
+# lands, silently and in every policy already applied.
+BUCKET_CONFIGURATION_ACTIONS = [
+    "s3:GetBucketPolicy",
+    "s3:PutBucketPolicy",
+    "s3:DeleteBucketPolicy",
+    "s3:GetBucketPolicyStatus",
+    "s3:GetBucketAcl",
+    "s3:PutBucketAcl",
+    "s3:GetBucketPublicAccessBlock",
+    "s3:PutBucketPublicAccessBlock",
+    "s3:DeleteBucketPublicAccessBlock",
+    "s3:GetLifecycleConfiguration",
+    "s3:PutLifecycleConfiguration",
+    "s3:GetBucketVersioning",
+    "s3:PutBucketVersioning",
+    "s3:GetBucketObjectLockConfiguration",
+    "s3:PutBucketObjectLockConfiguration",
+    "s3:GetBucketCORS",
+    "s3:PutBucketCORS",
+    "s3:GetEncryptionConfiguration",
+    "s3:PutEncryptionConfiguration",
+    "s3:CreateBucket",
+    "s3:DeleteBucket",
+    "s3:ListBucketVersions",
+    # Documented by Hetzner as unsupported today. See the note above.
+    "s3:GetBucketNotification",
+    "s3:PutBucketNotification",
+    "s3:GetReplicationConfiguration",
+    "s3:PutReplicationConfiguration",
+    "s3:DeleteReplicationConfiguration",
+    "s3:GetBucketLogging",
+    "s3:PutBucketLogging",
+    "s3:GetBucketTagging",
+    "s3:PutBucketTagging",
+    "s3:DeleteBucketTagging",
+    "s3:GetBucketWebsite",
+    "s3:PutBucketWebsite",
+    "s3:DeleteBucketWebsite",
+    "s3:GetAccelerateConfiguration",
+    "s3:PutAccelerateConfiguration",
+    "s3:GetBucketRequestPayment",
+    "s3:PutBucketRequestPayment",
+    "s3:GetBucketOwnershipControls",
+    "s3:PutBucketOwnershipControls",
+    "s3:DeleteBucketOwnershipControls",
+    "s3:GetAnalyticsConfiguration",
+    "s3:PutAnalyticsConfiguration",
+    "s3:GetInventoryConfiguration",
+    "s3:PutInventoryConfiguration",
+    "s3:GetMetricsConfiguration",
+    "s3:PutMetricsConfiguration",
+    "s3:GetIntelligentTieringConfiguration",
+    "s3:PutIntelligentTieringConfiguration",
+]
+
+# Every object-resource action EXCEPT the two that serve a browser. Only the
+# media policy needs this split: an operational bucket has no anonymous reader
+# to exempt, so its object deny is `Action: s3:*` and needs no enumeration.
+# `s3:GetObject` covers `HeadObject`, which is how Ghost's `exists()` probes a
+# key, so a tenant excluded from this deny keeps that path.
+MEDIA_PUBLIC_OBJECT_ACTIONS = ["s3:GetObject", "s3:GetObjectVersion"]
+
+NON_PUBLIC_OBJECT_ACTIONS = [
+    "s3:PutObject",
+    "s3:DeleteObject",
+    "s3:DeleteObjectVersion",
+    "s3:GetObjectAcl",
+    "s3:PutObjectAcl",
+    "s3:GetObjectVersionAcl",
+    "s3:PutObjectVersionAcl",
+    "s3:GetObjectTagging",
+    "s3:PutObjectTagging",
+    "s3:DeleteObjectTagging",
+    "s3:GetObjectVersionTagging",
+    "s3:PutObjectVersionTagging",
+    "s3:DeleteObjectVersionTagging",
+    "s3:GetObjectRetention",
+    "s3:PutObjectRetention",
+    "s3:GetObjectLegalHold",
+    "s3:PutObjectLegalHold",
+    "s3:BypassGovernanceRetention",
+    "s3:AbortMultipartUpload",
+    "s3:ListMultipartUploadParts",
+    "s3:RestoreObject",
+    "s3:GetObjectAttributes",
+    "s3:GetObjectVersionAttributes",
+    "s3:GetObjectTorrent",
+    "s3:GetObjectVersionTorrent",
+]
 
 
 class PolicyInputError(ValueError):
@@ -104,9 +210,14 @@ def decide(policy: dict, principal: str, action: str, resource: str) -> str:
         if not matches(statement["Resource"], resource):
             continue
         if "NotAction" in statement:
-            if matches(statement["NotAction"], action):
-                continue
-        elif not matches(statement["Action"], action):
+            # Not "evaluate the complement" -- SKIP. This engine does not
+            # implement `NotAction`, so a statement carrying it decides
+            # nothing, whatever it says. Modelling the complement is what
+            # allowed a 21-case decision table to certify a media policy whose
+            # object deny was inert on the live bucket. `assert_enforceable()`
+            # stops such a policy being written; this stops it being believed.
+            continue
+        if not matches(statement["Action"], action):
             continue
         if "NotPrincipal" in statement:
             if matches(statement["NotPrincipal"]["AWS"], principal):
@@ -119,3 +230,27 @@ def decide(policy: dict, principal: str, action: str, resource: str) -> str:
     if allowed:
         return "allow"
     return "allow" if principal.startswith("arn:aws:iam:::user/") else "deny"
+
+
+def assert_enforceable(policy: dict) -> dict:
+    """Refuse a policy whose enforcement this engine will silently decline.
+
+    A `NotAction` statement is accepted by `put-bucket-policy`, stored, and
+    returned by `get-bucket-policy` byte-identical to what was sent -- so a
+    round-trip comparison, which is the check both runbooks perform, passes on
+    a statement that enforces nothing. The failure is visible only to a live
+    probe under a credential the statement is supposed to stop, and only in the
+    permissive direction, which is the direction nobody looks.
+
+    Called by both generators on the way out, so the shape cannot reach a
+    bucket regardless of which one wrote it.
+    """
+    for statement in policy["Statement"]:
+        if "NotAction" in statement:
+            raise PolicyInputError(
+                f"statement {statement.get('Sid', '<unnamed>')!r} uses NotAction, which this "
+                f"engine stores and does not enforce. Express it as an explicit Action list -- "
+                f"and widen that list past what is needed today, because the catch-all property "
+                f"NotAction was chosen for does not survive the change."
+            )
+    return policy
