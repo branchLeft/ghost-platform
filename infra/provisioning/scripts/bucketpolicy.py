@@ -160,6 +160,17 @@ NON_PUBLIC_OBJECT_ACTIONS = [
     "s3:GetObjectVersionAttributes",
     "s3:GetObjectTorrent",
     "s3:GetObjectVersionTorrent",
+    # The replication family. RGW's policy parser recognises these names, so
+    # they are not AWS-only vocabulary, and `ReplicateObject` /
+    # `ReplicateDelete` are a write and a delete. Whether a caller can reach
+    # them without a replication configuration on the bucket -- itself denied
+    # by BUCKET_CONFIGURATION_ACTIONS -- is not established; they are listed
+    # because an unlisted action falls open and the cost of listing is a line.
+    "s3:ReplicateObject",
+    "s3:ReplicateDelete",
+    "s3:ReplicateTags",
+    "s3:GetObjectVersionForReplication",
+    "s3:ObjectOwnerOverrideToBucketOwner",
 ]
 
 

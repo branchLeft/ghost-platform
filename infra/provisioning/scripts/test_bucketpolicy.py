@@ -165,6 +165,109 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
         # named, so reading the fence is withheld as well as writing it.
         self.assertIn("s3:GetBucketPolicy", bucketpolicy.BUCKET_CONFIGURATION_ACTIONS)
 
+    def test_the_object_denylist_is_pinned_member_by_member(self):
+        # A DUPLICATE of the constant, deliberately. Normally two copies of a
+        # rule are a defect -- but the mitigation for losing the `NotAction`
+        # catch-all is the BREADTH of this list, and a subset assertion cannot
+        # defend breadth: removing an unnamed member leaves every other test
+        # green. Pinning the whole set forces a removal to be an explicit edit
+        # here, where a reviewer sees the action being given away.
+        self.assertEqual(
+            set(bucketpolicy.NON_PUBLIC_OBJECT_ACTIONS),
+            {
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:DeleteObjectVersion",
+                "s3:GetObjectAcl",
+                "s3:PutObjectAcl",
+                "s3:GetObjectVersionAcl",
+                "s3:PutObjectVersionAcl",
+                "s3:GetObjectTagging",
+                "s3:PutObjectTagging",
+                "s3:DeleteObjectTagging",
+                "s3:GetObjectVersionTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:DeleteObjectVersionTagging",
+                "s3:GetObjectRetention",
+                "s3:PutObjectRetention",
+                "s3:GetObjectLegalHold",
+                "s3:PutObjectLegalHold",
+                "s3:BypassGovernanceRetention",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts",
+                "s3:RestoreObject",
+                "s3:GetObjectAttributes",
+                "s3:GetObjectVersionAttributes",
+                "s3:GetObjectTorrent",
+                "s3:GetObjectVersionTorrent",
+                "s3:ReplicateObject",
+                "s3:ReplicateDelete",
+                "s3:ReplicateTags",
+                "s3:GetObjectVersionForReplication",
+                "s3:ObjectOwnerOverrideToBucketOwner",
+            },
+        )
+
+    def test_the_configuration_denylist_is_pinned_member_by_member(self):
+        # Same reasoning. The "documented as unsupported today, listed anyway"
+        # half is the part most likely to be trimmed as dead weight, and it is
+        # exactly the half that opens a hole on the day support ships.
+        self.assertEqual(
+            set(bucketpolicy.BUCKET_CONFIGURATION_ACTIONS),
+            {
+                "s3:GetBucketPolicy",
+                "s3:PutBucketPolicy",
+                "s3:DeleteBucketPolicy",
+                "s3:GetBucketPolicyStatus",
+                "s3:GetBucketAcl",
+                "s3:PutBucketAcl",
+                "s3:GetBucketPublicAccessBlock",
+                "s3:PutBucketPublicAccessBlock",
+                "s3:DeleteBucketPublicAccessBlock",
+                "s3:GetLifecycleConfiguration",
+                "s3:PutLifecycleConfiguration",
+                "s3:GetBucketVersioning",
+                "s3:PutBucketVersioning",
+                "s3:GetBucketObjectLockConfiguration",
+                "s3:PutBucketObjectLockConfiguration",
+                "s3:GetBucketCORS",
+                "s3:PutBucketCORS",
+                "s3:GetEncryptionConfiguration",
+                "s3:PutEncryptionConfiguration",
+                "s3:CreateBucket",
+                "s3:DeleteBucket",
+                "s3:ListBucketVersions",
+                "s3:GetBucketNotification",
+                "s3:PutBucketNotification",
+                "s3:GetReplicationConfiguration",
+                "s3:PutReplicationConfiguration",
+                "s3:DeleteReplicationConfiguration",
+                "s3:GetBucketLogging",
+                "s3:PutBucketLogging",
+                "s3:GetBucketTagging",
+                "s3:PutBucketTagging",
+                "s3:DeleteBucketTagging",
+                "s3:GetBucketWebsite",
+                "s3:PutBucketWebsite",
+                "s3:DeleteBucketWebsite",
+                "s3:GetAccelerateConfiguration",
+                "s3:PutAccelerateConfiguration",
+                "s3:GetBucketRequestPayment",
+                "s3:PutBucketRequestPayment",
+                "s3:GetBucketOwnershipControls",
+                "s3:PutBucketOwnershipControls",
+                "s3:DeleteBucketOwnershipControls",
+                "s3:GetAnalyticsConfiguration",
+                "s3:PutAnalyticsConfiguration",
+                "s3:GetInventoryConfiguration",
+                "s3:PutInventoryConfiguration",
+                "s3:GetMetricsConfiguration",
+                "s3:PutMetricsConfiguration",
+                "s3:GetIntelligentTieringConfiguration",
+                "s3:PutIntelligentTieringConfiguration",
+            },
+        )
+
     def test_no_action_is_listed_twice(self):
         for name in ("BUCKET_CONFIGURATION_ACTIONS", "NON_PUBLIC_OBJECT_ACTIONS"):
             actions = getattr(bucketpolicy, name)

@@ -119,6 +119,17 @@ TENANT_BUCKET_READ_ACTIONS = [
     "s3:GetBucketLocation",
 ]
 
+# A bucket that is already fenced to named keys, in the same project. The
+# emitted sequence lists it under the credential the operator is about to name
+# as `--admin-access-key`, BEFORE anything is created: this script refuses a
+# tenant key and an operator key that are the same credential, but cannot
+# detect them being SWAPPED, and a swap puts `PutBucketPolicy` on the new
+# bucket into the key that lives inside the tenant's container while locking
+# the operator out of the statement that would have to be edited to undo it.
+# The property required of this bucket is that an unprivileged key is denied
+# it; an unfenced bucket would list for anyone and prove nothing.
+CONTROL_BUCKET = "branchleft-db-backups"
+
 # Withheld from the tenant's own key. Lifecycle expiry is performed by the
 # storage service rather than by an API caller, so a retention rule still
 # works.
@@ -267,6 +278,7 @@ def render_commands(
 ) -> str:
     """The operator sequence, with every value filled in."""
     bucket = media_bucket_name(slug)
+    control_bucket = CONTROL_BUCKET
     policy = json.dumps(
         render_policy(slug, project_id, tenant_access_key, admin_access_key), indent=2
     )
@@ -281,6 +293,15 @@ export AWS_DEFAULT_REGION='{region}'
 # unquoted parameter expansion, so `S3='aws ... s3api'` then `$S3 ...`
 # fails there with "no such file or directory".
 s3() {{ aws --endpoint-url {endpoint} s3api "$@"; }}
+
+# 0. CONTROL, and it runs before anything is created. If this returns
+#    AccessDenied the key in the environment is not the operator's, which means
+#    the two --*-access-key values went in the wrong way round and every
+#    statement below names the wrong principal. STOP: nothing has been created,
+#    so there is nothing to undo. Running this AFTER the policy is applied
+#    would leave the wrong fence on a real bucket, recoverable only while the
+#    freshly minted tenant secret is still in someone's hands.
+s3 list-objects-v2 --bucket {control_bucket} --max-keys 1
 
 # 1. The bucket. `--acl private` is stated rather than left to the default:
 #    `public-read` is a BUCKET acl and grants LIST, which would publish this

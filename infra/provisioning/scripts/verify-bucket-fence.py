@@ -1080,6 +1080,35 @@ def preflight(verifier: Verifier, *, bucket: str, policy_document: bytes) -> lis
         rows.append(("the policy file is readable", INCONCLUSIVE, str(error), "", True))
         return rows
 
+    # BEFORE any evaluation. `decide` skips a `NotAction` statement outright --
+    # this engine stores that keyword and does not enforce it, so modelling its
+    # complement would describe a boundary that is not there. The consequence
+    # for THIS function is that every answer below becomes more permissive than
+    # the document reads: a lockout expressed in a `NotAction` deny would be
+    # skipped and reported as "the operator can still replace this policy".
+    # That is the one direction this check exists to prevent, so the rows are
+    # refused rather than qualified.
+    notaction = [
+        statement.get("Sid", "<unnamed>")
+        for statement in policy.get("Statement", [])
+        if isinstance(statement, dict) and "NotAction" in statement
+    ]
+    if notaction:
+        rows.append(
+            (
+                "the policy can be evaluated",
+                INCONCLUSIVE,
+                f"statement(s) {', '.join(notaction)} use NotAction, which this engine "
+                f"stores and does not enforce. Nothing here can say whether this document "
+                f"locks a credential out, because the statements that might do so are the "
+                f"ones that cannot be modelled. Re-render it with a generator that emits "
+                f"enumerated Action lists.",
+                "",
+                True,
+            )
+        )
+        return rows
+
     bucket_arn = f"arn:aws:s3:::{bucket}"
     try:
         operator_denied = _denied_actions(policy, operator_arn, bucket_arn, RECOVERY_ACTIONS, [])

@@ -507,6 +507,17 @@ read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY
 # g2. CONTROL FIRST, for the same reason as g1. Expect a listing.
 s3 list-objects-v2 --bucket "$BUCKET" --max-keys 1
 
+# g3. CONTROL ON THE INSTRUMENT, which is a different question from g1 and g2.
+#     Those prove the CREDENTIAL works. Every denial probe below runs through
+#     `signed` instead of `s3`, and a wrong region in the sigv4 string, a
+#     quoting error in --user, or an empty AWS_SECRET_ACCESS_KEY each return
+#     HTTP 403 -- which this block's own summary rule reads as "AccessDenied,
+#     fence proven", and the operator then hands over the tenant credential.
+#     This is the same request through the SAME instrument, expected to
+#     SUCCEED. Expect HTTP 200. On 403, `signed` is broken and every denial it
+#     reports below is uninterpretable -- fix it before reading any of them.
+signed "https://hel1.your-objectstorage.com/$BUCKET?list-type=2&max-keys=1"
+
 # d. Media is append-only for the tenant's own key. Expect 403 AccessDenied.
 signed -X DELETE "https://hel1.your-objectstorage.com/$BUCKET/probe.txt"
 
@@ -523,8 +534,14 @@ signed -X DELETE "https://hel1.your-objectstorage.com/$BUCKET/probe.txt"
 #    the ACL rather than merging into it, so it is a no-op only while the
 #    current ACL is exactly what is sent, which is a thing to assume rather
 #    than to check.
-s3 get-bucket-policy --bucket "$BUCKET"
-s3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
+#    Through `signed`, not `s3`: both of these expect a denial, and the CLI
+#    cannot render one. `put-bucket-versioning` is the probe that found the
+#    original defect -- the tenant key changing versioning on a live bucket --
+#    so leaving it unreadable would retire the check that started all of this.
+signed "https://hel1.your-objectstorage.com/$BUCKET?policy"
+signed -X PUT -H 'Content-Type: application/xml' \
+  --data '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>' \
+  "https://hel1.your-objectstorage.com/$BUCKET?versioning"
 
 # f. The tenant's key does not reach branchleft-db-backups, a FENCED bucket in
 #    THE SAME PROJECT. The bucket named here has to be both: an unfenced one
@@ -552,15 +569,38 @@ none of (c) or (f) proved anything** — a revoked key, a mistyped key id and a
 region mismatch all return the same `AccessDenied` a working fence does. Fix
 the credential and re-run the block rather than recording the denials.
 
-Then remove `foreign.txt` if probe (c) created one — it will exist only on a
-bucket whose fence failed, and it is anonymously readable until it is gone.
-Remove the probe object too, with one exception: while
+Then clean up, as the operator.
+
+**`foreign.txt` first, if probe (c) created one.** It exists only on a bucket
+whose fence failed, and until it is gone it is anonymously readable by anyone
+with the URL — including at `?versionId=`, which a plain delete does not
+touch. This is the object a foreign key demonstrably wrote, so it is the one
+that most needs to leave:
+
+```bash
+export AWS_ACCESS_KEY_ID="$OP_KEY"; export AWS_SECRET_ACCESS_KEY="$OP_SECRET"
+s3 list-object-versions --bucket "$BUCKET" --prefix foreign.txt \
+  --query 'Versions[].VersionId' --output text \
+  | tr '\t' '\n' \
+  | while read -r v; do [ -n "$v" ] && s3 delete-object --bucket "$BUCKET" --key foreign.txt --version-id "$v"; done
+s3 list-object-versions --bucket "$BUCKET" --query 'Versions[].Key' --output text
+```
+
+The second command lists what remains, and is the check — not the delete.
+
+**Then `probe.txt`, unless this bucket holds the lifecycle canary.**
 [branchLeft/ghost-platform#149](https://github.com/branchLeft/ghost-platform/issues/149)
-is open, **leave `probe.txt` in the first bucket provisioned after 2026-09-02**.
-Its `put-object` response carried a current-version `expiry-date` derived from a
-noncurrent-only lifecycle rule, and the object is the canary for whether this
-engine expires current media at 30 days. Delete it in every later tenant's
-bucket as normal.
+names the one bucket where `probe.txt` must stay, and is the only place that
+records it. Open that issue and read it before deleting:
+
+- **Issue closed** → delete `probe.txt` here, as below.
+- **Issue open, and it names this bucket** → leave `probe.txt` in place. It is
+  the canary for whether this engine expires *current* media at 30 days, which
+  is a question only wall-clock answers.
+- **Issue open, naming a different bucket** → delete `probe.txt` here as normal.
+
+Do not try to decide this from the date. "The first bucket provisioned after
+<date>" is not answerable by someone onboarding the fourth tenant in November.
 
 **A plain `delete-object` is not enough on a
 versioned bucket** — it writes a delete marker and leaves the prior version

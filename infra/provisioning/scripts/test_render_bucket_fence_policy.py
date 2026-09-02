@@ -18,6 +18,7 @@ import importlib.util
 import json
 import pathlib
 import unittest
+from unittest import mock
 
 import bucketpolicy
 
@@ -267,6 +268,50 @@ class TestRenderedCommands(unittest.TestCase):
 class TestSelfTest(unittest.TestCase):
     def test_the_shipped_self_test_passes(self):
         fence._self_test()
+
+
+class TestTheGuardIsActuallyWired(unittest.TestCase):
+    """Same wiring gap as the media generator: removing the call was green."""
+
+    def test_render_policy_passes_its_result_through_assert_enforceable(self):
+        seen = []
+        real = fence.assert_enforceable
+
+        def spy(policy):
+            seen.append(policy)
+            return real(policy)
+
+        with mock.patch.object(fence, "assert_enforceable", spy):
+            policy = policy_for()
+
+        self.assertEqual(len(seen), 1, "render_policy did not call assert_enforceable")
+        self.assertIs(seen[0], policy, "the guarded object is not the returned object")
+
+    def test_the_guard_runs_after_the_recoverability_check(self):
+        # Ordering matters and is easy to swap back. `assert_recoverable`
+        # reasons with `decide()`, which SKIPS a NotAction statement -- so a
+        # policy that only stays administrable because of a statement this
+        # engine ignores must fail recoverability on its own terms first.
+        source = _MODULE_PATH.read_text()
+        self.assertLess(
+            source.index("assert_recoverable(policy, admin, bucket_arn)"),
+            source.index("return assert_enforceable(policy)"),
+        )
+
+
+class TestTheStrangerCatchAll(unittest.TestCase):
+    def statement(self) -> dict:
+        return next(
+            s for s in policy_for()["Statement"]
+            if s.get("Sid") == "DenyBucketAccessExceptNamedKeys"
+        )
+
+    def test_it_denies_every_bucket_action_not_just_the_reads(self):
+        self.assertEqual(self.statement()["Action"], "s3:*")
+
+    def test_it_applies_to_the_bucket_and_not_to_its_objects(self):
+        self.assertEqual(self.statement()["Effect"], "Deny")
+        self.assertEqual(self.statement()["Resource"], BUCKET_ARN)
 
 
 if __name__ == "__main__":
