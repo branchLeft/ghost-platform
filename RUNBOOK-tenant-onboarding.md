@@ -181,6 +181,36 @@ ordering constraint of its own: a media bucket exists, briefly, before the
 policy that fences it, and during that window every S3 key in the project can
 reach it.
 
+### 0. Open the provisioning gate, and be ready to close it
+
+`provision-tenant.yml` exits at its first step unless the
+`TENANT_PROVISIONING_FLOW_HETZNERISED` repository variable on
+`branchLeft/ghost-platform` is exactly `true`. Step 4 is that workflow, so
+without this the run stops before anything below matters.
+
+```bash
+gh variable set TENANT_PROVISIONING_FLOW_HETZNERISED \
+  --repo branchLeft/ghost-platform --body true
+```
+
+**Set it immediately before the run and revert it if the run fails.** Leaving
+it open past a failed run is what the gate exists to prevent: provisioning
+stays reachable while the flow is known broken.
+
+```bash
+gh variable delete TENANT_PROVISIONING_FLOW_HETZNERISED \
+  --repo branchLeft/ghost-platform
+```
+
+The comparison is against the literal string `true`, so any other value is also
+closed — but delete it rather than setting `false`, so its absence and its
+meaning cannot drift apart.
+
+Until the flow has been proven end to end, the only subject this may be opened
+for is a disposable one. That is what makes a failed first run affordable: what
+it leaves behind is a repository, an identity and a stack that are all thrown
+away, plus a personal access token copy revoked as part of the teardown.
+
 ### 1. Ask the tenant whether their repository is public
 
 Public is the platform default. Whether it is public is a disclosure about that
