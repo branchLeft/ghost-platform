@@ -6,7 +6,7 @@ be *read*, never *evaluated*. A syntax error partway through -- an unquoted
 `(` in a DSN was the real incident -- makes bash echo the offending line back
 to the terminal, credential included, and sourcing then carries on with the
 remaining variables set: the failure is silent except for the one part that
-matters (branchLeft/workspace#317).
+matters.
 
 The fix is a command *shape*, not a one-off edit: `sed -n 's/^VAR=//p'` for a
 single value, or `systemd-run --property=EnvironmentFile=` when a script
@@ -24,9 +24,13 @@ import unittest
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
 # Directories that hold no runbook of this repo's own and must never be
-# walked into: `.git` for size, `node_modules` because a dependency could
-# ship its own file named RUNBOOK-*.md.
-EXCLUDED_DIR_PARTS = {".git", "node_modules"}
+# walked into: `.git` for size; `node_modules` because a dependency could
+# ship its own file named RUNBOOK-*.md; `worktrees`/`.worktrees` because this
+# workspace's own convention nests other branches' checkouts there, each a
+# full (possibly unfixed, possibly ahead) copy of every file in this repo --
+# scanning them would fail or pass on an unrelated branch's content instead
+# of this one's.
+EXCLUDED_DIR_PARTS = {".git", "node_modules", "worktrees", ".worktrees"}
 
 # A bash dot-command or `source` builtin, evaluating a path that ends in
 # `.env`. Anchored so the token is a standalone command (line start, or after

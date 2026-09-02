@@ -475,14 +475,17 @@ ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
   systemd-run --pipe --wait --collect --quiet \
     --property=EnvironmentFile=/etc/branchleft/db.env \
     --property=WorkingDirectory=/opt/branchleft/db/provision \
-    -- python3 prune_backups.py --dry-run
+    -- /usr/bin/python3 prune_backups.py --dry-run
 '
 ```
 
 As step 2 warns: never `bash`-source `db.env` to run this. `systemd-run`'s
 `EnvironmentFile=` loads it the same way the compose units do -- parsed as
 `KEY=value` pairs, never evaluated as shell -- so a stray character in a
-value cannot make anything echo it back.
+value cannot make anything echo it back. The transient unit resolves
+`python3` through systemd's own default `PATH`, not the SSH login shell's,
+so the binary is named by the same absolute path the backup timers'
+`ExecStart=` already uses rather than relied on to be found.
 
 Read the output before doing anything else: `would delete N dump(s), M
 binlog(s)` lists every key by name, and a `REFUSED <uuid>: <reason>` line on
@@ -520,7 +523,7 @@ ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
   systemd-run --pipe --wait --collect --quiet \
     --property=EnvironmentFile=/etc/branchleft/db.env \
     --property=WorkingDirectory=/opt/branchleft/db/provision \
-    -- python3 prune_backups.py --verify-coverage
+    -- /usr/bin/python3 prune_backups.py --verify-coverage
 '
 ```
 
