@@ -1,9 +1,14 @@
 name: Push tenant image
 
-# Builds the tenant Ghost image and pushes it to this platform's Artifact
-# Registry repository on every merge to `main`, tagged with the git SHA and
-# `latest`, so a tenant's Cloud Run service has a real, pullable image
-# digest to reference.
+# Builds the tenant Ghost image once and pushes it to both registries on every
+# merge to `main`, tagged with the git SHA and `latest`, so a tenant has a real,
+# digest-pinned image to reference wherever it runs.
+#
+# GHCR (`ghcr.io/branchleft/ghost-tenant`) is the one a Hetzner app host pulls
+# from, and is what `provision-tenant.yml` accepts. Artifact Registry is where
+# the still-GCP-served tenant resolves its deploys and is retired by the GCP
+# wind-down, not here -- dropping it now would leave the live tenant unable to
+# take a new image before cutover.
 #
 # Deliberately its own workflow, not a job bolted onto build.yml. build.yml's
 # `build` job runs on every PR, including from forks, and stays completely
@@ -35,12 +40,9 @@ name: Push tenant image
 # Image name within the repository: `ghost`. The
 # unambiguous.
 #
-# Credentials: Workload Identity Federation only, via the same deployer
-# service account and the same three repo variables
-# infra-platform-ci.yml already authenticates with (GCP_PROJECT_ID,
-# GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_DEPLOYER_SA_EMAIL -- set once in
-# infra/platform/RUNBOOK-bootstrap.md step 5). No new identity, no
-# service-account key, ever.
+# Credentials: two, both short-lived and neither stored. Workload Identity
+# Federation for Artifact Registry -- no service-account key, ever -- and this
+# run's own `GITHUB_TOKEN` for GHCR, which expires with the run
 #
 # Permission sufficiency, against the live IAM
 # API, not inferred from the role's name (2026-08-08):
@@ -84,9 +86,16 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      packages: write
 
+    # Two destinations for one build, for the length of the migration. GHCR is
+    # where a Hetzner app host pulls from; Artifact Registry is where the
+    # still-GCP-served tenant resolves its deploys, and is retired by the GCP
+    # wind-down -- dropping it earlier leaves the live tenant unable to take a
+    # new image before cutover.
     env:
-      IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ghost-platform-tenant/ghost
+      IMAGE: ghcr.io/branchleft/ghost-tenant
+      LEGACY_IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ghost-platform-tenant/ghost
       IMAGE_TAG: ${{ github.sha }}
 
     steps:
@@ -114,6 +123,16 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
 
+      # `GITHUB_TOKEN` with `packages: write`, same as mailgun-shim-image.yml.
+      # No stored credential exists for this: the run's own token is the whole
+      # of it, and it expires with the run.
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # Same build as build.yml's `build` job (plain `docker build`, no
       # buildx action) -- this story changes where the image goes, not how
       # it's built. Two tags in one build so there is exactly one image
@@ -124,6 +143,8 @@ jobs:
           docker build \
             --tag "$IMAGE:$IMAGE_TAG" \
             --tag "$IMAGE:latest" \
+            --tag "$LEGACY_IMAGE:$IMAGE_TAG" \
+            --tag "$LEGACY_IMAGE:latest" \
             .
 
       # Same gates build.yml runs on every PR, run again here against the
@@ -139,7 +160,17 @@ jobs:
       # repository (`docker push --help`: "Push all tags of an image to the
       # repository") -- both tags built above, in one push, rather than two
       # separate `docker push` invocations that could observably race.
-      - name: Push
+      # Artifact Registry first, and GHCR on `!cancelled()` rather than on the
+      # previous step succeeding, so neither registry can starve the other.
+      # Ordering alone is not enough in either direction: the live tenant is
+      # still GCP-served, so a GHCR failure must not stop its image landing,
+      # and once this registry is retired its failure must not stop the one
+      # that replaced it. The job still fails if either push does.
+      - name: Push to Artifact Registry
+        run: docker push "$LEGACY_IMAGE" --all-tags
+
+      - name: Push to GHCR
+        if: ${{ !cancelled() }}
         run: docker push "$IMAGE" --all-tags
 
       - name: Write outcome to job summary
@@ -150,5 +181,9 @@ jobs:
             echo
             echo "Commit: \`$IMAGE_TAG\`"
             echo "Image: \`$IMAGE:$IMAGE_TAG\`"
-            echo 'Also tagged `latest`.'
+            echo "Legacy image: \`$LEGACY_IMAGE:$IMAGE_TAG\`"
+            echo 'Both also tagged `latest`.'
+            echo
+            echo 'Provision a tenant with the GHCR reference, digest-pinned:'
+            echo '`docker buildx imagetools inspect '"$IMAGE:$IMAGE_TAG"'`'
           } >> "$GITHUB_STEP_SUMMARY"

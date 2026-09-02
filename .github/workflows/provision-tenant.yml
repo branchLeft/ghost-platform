@@ -381,11 +381,17 @@ jobs:
             fail "app_host_ssh_address is a private address. CI runs on GitHub-hosted runners and cannot reach the private network; this must be the app host's public address."
           fi
 
-          # Digest-pinned, checked here as well as in the tenant program and on
-          # the host. A tag is a mutable pointer, so a stack deployed by tag has
-          # no answer to "what is running".
-          [[ "$IMAGE_REF" =~ @sha256:[0-9a-f]{64}$ ]] \
-            || fail "image_ref must be digest-pinned and end in @sha256:<64 lowercase hex>"
+          # Digest pin and registry both. The app host resolves this reference
+          # (infra/tenant/index.ts's imageEnvPath), not this runner, so a
+          # registry the host cannot pull from provisions a whole tenant before
+          # failing. Same shape as the HETZNER_PULUMI_BACKEND_URL check below.
+          #
+          # In a tested script rather than inline: a rule in this YAML is only
+          # provable by dispatching this workflow, which means provisioning a
+          # tenant.
+          python3 infra/provisioning/scripts/assert-image-ref.py --self-test
+          python3 infra/provisioning/scripts/assert-image-ref.py \
+            --image-ref "$IMAGE_REF"
 
           # Repository configuration rather than an operator's input, so checked
           # for presence and shape. An unset variable expands to '' and would

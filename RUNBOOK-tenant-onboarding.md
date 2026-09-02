@@ -251,8 +251,14 @@ gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
   -f host_port=<port from step 3> \
   -f app_host_private_ip=10.20.1.100 \
   -f app_host_ssh_address=<app1-public-ipv4> \
-  -f image_ref=ghcr.io/branchleft/<image>@sha256:<digest>
+  -f image_ref=ghcr.io/branchleft/ghost-tenant@sha256:<digest>
 ```
+
+The image must be in `ghcr.io/branchleft/`; `provision-tenant.yml` refuses any
+other registry, because the app host is what resolves the reference and an
+Artifact Registry one would need GCP pull credentials on a Hetzner host. Get the
+digest from the most recent `Push tenant image` run's job summary, or with
+`docker buildx imagetools inspect ghcr.io/branchleft/ghost-tenant:latest`.
 
 It pauses on the `tenant-provisioning` environment's required reviewer. Approve
 it, then read the job summary: it carries the escrowed passphrase ciphertext.
