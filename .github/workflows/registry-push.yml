@@ -40,12 +40,9 @@ name: Push tenant image
 # Image name within the repository: `ghost`. The
 # unambiguous.
 #
-# Credentials: Workload Identity Federation only, via the same deployer
-# service account and the same three repo variables
-# infra-platform-ci.yml already authenticates with (GCP_PROJECT_ID,
-# GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_DEPLOYER_SA_EMAIL -- set once in
-# infra/platform/RUNBOOK-bootstrap.md step 5). No new identity, no
-# service-account key, ever.
+# Credentials: two, both short-lived and neither stored. Workload Identity
+# Federation for Artifact Registry -- no service-account key, ever -- and this
+# run's own `GITHUB_TOKEN` for GHCR, which expires with the run
 #
 # Permission sufficiency, against the live IAM
 # API, not inferred from the role's name (2026-08-08):
@@ -91,11 +88,11 @@ jobs:
       id-token: write
       packages: write
 
-    # Two destinations for one build, deliberately, for the length of the
-    # migration. GHCR is where a Hetzner app host pulls from; Artifact Registry
-    # is where the still-GCP-served tenant's deploys resolve. Dropping the
-    # second now would leave the live tenant unable to take a new image before
-    # cutover, so it is retired by the GCP wind-down and not by this change.
+    # Two destinations for one build, for the length of the migration. GHCR is
+    # where a Hetzner app host pulls from; Artifact Registry is where the
+    # still-GCP-served tenant resolves its deploys, and is retired by the GCP
+    # wind-down -- dropping it earlier leaves the live tenant unable to take a
+    # new image before cutover.
     env:
       IMAGE: ghcr.io/branchleft/ghost-tenant
       LEGACY_IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ghost-platform-tenant/ghost
@@ -163,14 +160,18 @@ jobs:
       # repository (`docker push --help`: "Push all tags of an image to the
       # repository") -- both tags built above, in one push, rather than two
       # separate `docker push` invocations that could observably race.
-      # GHCR first. If the Artifact Registry push fails, the reference a new
-      # tenant needs already exists; the reverse ordering would leave the
-      # migration blocked on the registry being retired.
-      - name: Push to GHCR
-        run: docker push "$IMAGE" --all-tags
-
+      # Artifact Registry first, and GHCR on `!cancelled()` rather than on the
+      # previous step succeeding, so neither registry can starve the other.
+      # Ordering alone is not enough in either direction: the live tenant is
+      # still GCP-served, so a GHCR failure must not stop its image landing,
+      # and once this registry is retired its failure must not stop the one
+      # that replaced it. The job still fails if either push does.
       - name: Push to Artifact Registry
         run: docker push "$LEGACY_IMAGE" --all-tags
+
+      - name: Push to GHCR
+        if: ${{ !cancelled() }}
+        run: docker push "$IMAGE" --all-tags
 
       - name: Write outcome to job summary
         if: always()

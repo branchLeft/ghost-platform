@@ -102,7 +102,90 @@ class RefusesEmptyAndWhitespace(unittest.TestCase):
         self.assertIsNotNone(check(" " + GOOD))
 
     def test_trailing_newline(self):
+        """Python's `$` matches before a trailing newline, so a `$`-anchored
+        pattern accepts this -- and a trailing newline is what turns one
+        EnvironmentFile line into two."""
         self.assertIsNotNone(check(GOOD + "\n"))
+
+    def test_a_trailing_newline_with_content_after_it(self):
+        self.assertIsNotNone(check(GOOD + "\nEVIL=1"))
+
+
+class RefusesAnythingThatIsNotAValidImagePath(unittest.TestCase):
+    """The value is written into `/etc/branchleft/<slug>.image.env`, a systemd
+    EnvironmentFile, so what the grammar admits between the registry prefix and
+    the digest suffix ends up in a unit's environment."""
+
+    def test_an_embedded_newline_would_add_a_variable_to_the_unit(self):
+        self.assertIsNotNone(
+            check("ghcr.io/branchleft/x\nEVIL=1@sha256:" + "a" * 64))
+
+    def test_an_embedded_carriage_return(self):
+        self.assertIsNotNone(
+            check("ghcr.io/branchleft/x\rEVIL=1@sha256:" + "a" * 64))
+
+    def test_an_embedded_tab(self):
+        self.assertIsNotNone(
+            check("ghcr.io/branchleft/x\ty@sha256:" + "a" * 64))
+
+    def test_an_interior_space(self):
+        self.assertIsNotNone(check("ghcr.io/branchleft/x y@sha256:" + "a" * 64))
+
+    def test_shell_metacharacters(self):
+        for path in ("x;rm -rf /", "$(whoami)", "`id`", "x|y", "x&y"):
+            with self.subTest(path=path):
+                self.assertIsNotNone(
+                    check("ghcr.io/branchleft/%s@sha256:%s" % (path, "a" * 64)))
+
+    def test_path_traversal_out_of_our_namespace(self):
+        self.assertIsNotNone(
+            check("ghcr.io/branchleft/../evil/x@sha256:" + "a" * 64))
+
+    def test_an_empty_repository_name_after_the_org(self):
+        """Distinct from the no-slash case below: this one has the trailing
+        slash, so a prefix test passes it while nothing is pullable."""
+        self.assertIsNotNone(check("ghcr.io/branchleft/@sha256:" + "a" * 64))
+
+    def test_an_uppercase_path_component(self):
+        """Docker rejects it at pull time; refusing here makes the failure
+        immediate rather than on the host."""
+        self.assertIsNotNone(
+            check("ghcr.io/branchleft/X-UPPER@sha256:" + "a" * 64))
+
+    def test_a_leading_separator(self):
+        self.assertIsNotNone(check("ghcr.io/branchleft/-x@sha256:" + "a" * 64))
+
+    def test_a_doubled_dot(self):
+        self.assertIsNotNone(check("ghcr.io/branchleft/a..b@sha256:" + "a" * 64))
+
+    def test_a_tag_and_a_digest_together(self):
+        """Legal to docker, ambiguous to a reader, and one canonical form is
+        cheaper to reason about than two."""
+        self.assertIsNotNone(
+            check("ghcr.io/branchleft/x:latest@sha256:" + "a" * 64))
+
+    def test_the_separators_docker_does_allow_are_still_accepted(self):
+        for path in ("a_b", "a.b", "a--b", "a/b/c", "a1"):
+            with self.subTest(path=path):
+                self.assertIsNone(
+                    check("ghcr.io/branchleft/%s@sha256:%s" % (path, "a" * 64)))
+
+
+class TheRefusalSaysWhich(unittest.TestCase):
+    """A refusal that cannot be told from a different refusal costs the
+    operator the diagnosis, and this one fires mid-provisioning."""
+
+    def test_a_wrong_registry_is_not_reported_as_malformed(self):
+        reason = check("docker.io/library/ghost@sha256:" + "c" * 64)
+        self.assertIn("ghcr.io/branchleft/", reason)
+
+    def test_a_bad_path_in_our_namespace_is_not_reported_as_wrong_registry(self):
+        reason = check("ghcr.io/branchleft/X-UPPER@sha256:" + "a" * 64)
+        self.assertIn("not a valid image path", reason)
+
+    def test_whitespace_is_named_as_whitespace(self):
+        reason = check("ghcr.io/branchleft/x\nEVIL=1@sha256:" + "a" * 64)
+        self.assertIn("EnvironmentFile", reason)
 
 
 class TheSelfTestIsItselfChecked(unittest.TestCase):
