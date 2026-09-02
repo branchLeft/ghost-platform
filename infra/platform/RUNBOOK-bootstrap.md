@@ -514,6 +514,18 @@ printf '{"reviewers":[{"type":"User","id":%s}]}' "$OWNER_ID" \
   | gh api -X PUT /repos/branchLeft/ghost-platform/environments/tenant-provisioning --input -
 ```
 
+> **Steps V and V2 are a record of what was measured, not a procedure to
+> re-run.** Both dispatch `provision-tenant.yml`, which has since been rewritten
+> for Hetzner: the inputs below (`state_bucket`, `deployer_sa_id`, `wif_pool_id`,
+> `image_digest_or_tag`) no longer exist, the "Report the federation claims"
+> step V2 tells you to read has been removed, and the workflow now refuses at
+> its first step unless `TENANT_PROVISIONING_FLOW_HETZNERISED` is `true` — so a
+> dispatch dies at the gate rather than at the validation or authentication
+> failure these steps describe as expected. The measured `sub` values recorded
+> here are still the values P2 was built from, which is why they are left
+> verbatim. To open that gate deliberately, see
+> `RUNBOOK-tenant-onboarding.md` step 0.
+
 ### Step V — verify the gate before going further
 
 Do not treat the write in P0 as proof. A rule that is configured but not

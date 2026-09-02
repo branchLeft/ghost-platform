@@ -209,14 +209,15 @@ jobs:
       # Fail closed, before anything is created. Half a migrated flow does not
       # produce half a tenant: it produces a created repository and a stack that
       # cannot deploy, with no automatic rollback. The variable that lifts this
-      # is set deliberately by an owner once the flow, the template and the
-      # host-side runbook are all proven together.
+      # is set by an owner immediately before a run and reverted if it fails --
+      # not withheld until the flow is proven, which would make the run that
+      # proves it unreachable.
       - name: Refuse to provision through a half-migrated flow
         env:
           FLOW_READY: ${{ vars.TENANT_PROVISIONING_FLOW_HETZNERISED }}
         run: |
           if [ "$FLOW_READY" != "true" ]; then
-            echo "::error::Tenant provisioning is closed. Set the TENANT_PROVISIONING_FLOW_HETZNERISED repository variable on branchLeft/ghost-platform to 'true' once the rewritten flow, the Hetzner-ised template and RUNBOOK-tenant-onboarding.md have been proven end to end on a real host."
+            echo "::error::Tenant provisioning is closed. RUNBOOK-tenant-onboarding.md step 0 opens it: set the TENANT_PROVISIONING_FLOW_HETZNERISED repository variable on branchLeft/ghost-platform to 'true' immediately before the run, and delete it again if the run fails. Until the flow is proven end to end on a real host, open it only for a disposable subject."
             exit 1
           fi
 
