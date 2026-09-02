@@ -137,17 +137,18 @@ def _run_gate(flow_ready=None, unset=False):
 
 
 class TheGateExistsAndRunsFirst(unittest.TestCase):
+    """Deliberately does not require the gate to be literally the first step
+    in the job. The workflow's own comment on the step immediately after it
+    says moving the credential-free checkout earlier "changes nothing about
+    what 'before anything is created' protects" -- and the issue draws the
+    same line: reordering past checkout, credential-scoping or validation is
+    survivable, only reordering past the first state-creating step is not.
+    A test that required index 0 would fail the moment anyone exercised that
+    documented flexibility, on a property nobody claims matters."""
+
     def test_the_gate_step_exists(self):
         names = _step_names(_steps_block(_read_workflow()))
         self.assertIn(GATE_STEP_NAME, names)
-
-    def test_the_gate_is_the_first_step_in_the_job(self):
-        names = _step_names(_steps_block(_read_workflow()))
-        self.assertEqual(
-            names[0], GATE_STEP_NAME,
-            "the gate must run before every other step, including the "
-            "credential-free checkout -- being anywhere but first is a "
-            "silent regression nothing else would catch")
 
     def test_the_gate_precedes_the_first_step_that_creates_anything(self):
         names = _step_names(_steps_block(_read_workflow()))
