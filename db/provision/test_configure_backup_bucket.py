@@ -39,10 +39,33 @@ OPERATOR_KEY = "OOOOOOOOOOOOOOOOOOOO"
 WORKLOAD_KEY = "WWWWWWWWWWWWWWWWWWWW"
 
 
+# The bucket-configuration actions the real generator denies, trimmed to the
+# three this file's checks turn on. Enumerated, NOT `NotAction` -- see the
+# fixture's docstring.
+FENCE_CONFIGURATION_ACTIONS = [
+    "s3:GetBucketPolicy",
+    "s3:PutBucketPolicy",
+    "s3:DeleteBucketPolicy",
+    "s3:PutBucketAcl",
+    "s3:PutLifecycleConfiguration",
+    "s3:PutBucketVersioning",
+    "s3:DeleteBucket",
+]
+
+
 def fence_policy(bucket: str = BUCKET) -> dict:
     """The shape render-bucket-fence-policy.py emits, trimmed to what is
     checked here: one bucket-configuration deny exempting the operator, and one
-    object deny exempting both named keys."""
+    object deny exempting both named keys.
+
+    A hand-written fixture is a SECOND COPY of the generator's shape, and it
+    drifted: it carried `NotAction` after the generator stopped emitting it,
+    so the lockout-refusal checks below -- the ones guarding a live apply --
+    were reasoning about a document that can no longer exist. It is enumerated
+    now for the same reason the generator is: this engine stores `NotAction`
+    and enforces nothing, so a fixture built on it models an inert statement as
+    a working one. `test_the_fixture_has_not_drifted_back` below is what keeps
+    the two from separating again."""
     bucket_arn = f"arn:aws:s3:::{bucket}"
     return {
         "Version": "2012-10-17",
@@ -58,7 +81,7 @@ def fence_policy(bucket: str = BUCKET) -> dict:
                 "Sid": "DenyBucketConfigurationExceptOperator",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": [OPERATOR_ARN]},
-                "NotAction": ["s3:ListBucket"],
+                "Action": FENCE_CONFIGURATION_ACTIONS,
                 "Resource": bucket_arn,
             },
             {
@@ -70,6 +93,31 @@ def fence_policy(bucket: str = BUCKET) -> dict:
             },
         ],
     }
+
+
+class FixtureFidelityTests(unittest.TestCase):
+    """The fixture above is the input to every lockout-refusal check in this
+    file. If it stops resembling what the generator emits, those checks pass
+    while describing nothing."""
+
+    def test_the_fixture_has_not_drifted_back(self):
+        for statement in fence_policy()["Statement"]:
+            self.assertNotIn(
+                "NotAction",
+                statement,
+                f"{statement.get('Sid')}: this engine stores NotAction and does not "
+                f"enforce it, so a fixture using it models an inert statement as a "
+                f"working one",
+            )
+
+    def test_the_fixture_denies_the_workload_the_actions_the_checks_turn_on(self):
+        config = next(
+            s for s in fence_policy()["Statement"]
+            if s.get("Sid") == "DenyBucketConfigurationExceptOperator"
+        )
+        for action in ("s3:PutBucketPolicy", "s3:PutLifecycleConfiguration", "s3:PutBucketVersioning"):
+            self.assertIn(action, config["Action"])
+        self.assertEqual(config["NotPrincipal"]["AWS"], [OPERATOR_ARN])
 
 
 class DocumentTests(unittest.TestCase):

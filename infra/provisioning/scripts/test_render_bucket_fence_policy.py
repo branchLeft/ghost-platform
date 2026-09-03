@@ -18,6 +18,7 @@ import importlib.util
 import json
 import pathlib
 import unittest
+from unittest import mock
 
 import bucketpolicy
 
@@ -135,14 +136,25 @@ class TestTheWorkloadCannotEditItsOwnFence(unittest.TestCase):
     def test_the_workload_cannot_read_back_which_keys_are_named(self):
         self.assertEqual(decide(arn(WORKLOAD), "s3:GetBucketPolicy", BUCKET_ARN), "deny")
 
-    def test_the_bucket_configuration_deny_is_expressed_as_notaction(self):
-        # An enumerated denylist would let an action nobody thought of through
-        # to Hetzner's project-wide default, which is allow.
+    def test_the_bucket_configuration_deny_is_an_enumerated_action_list(self):
+        # Inverted. This test required `NotAction`, which this engine stores
+        # and does not enforce -- leaving the workload key able to read this
+        # policy, rewrite it and change versioning on a bucket that reads as
+        # fenced. Requiring it pinned the defect rather than guarding it.
         statement = next(
             s for s in policy_for()["Statement"] if s["Sid"] == "DenyBucketConfigurationExceptOperator"
         )
-        self.assertIn("NotAction", statement)
-        self.assertNotIn("Action", statement)
+        self.assertNotIn("NotAction", statement)
+        for denied in ("s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:PutBucketVersioning"):
+            self.assertIn(denied, statement["Action"])
+        # The workload's own bucket reads are excluded from the denylist, so
+        # this narrows nothing the backup pipelines rely on.
+        for kept in fence.WORKLOAD_BUCKET_READ_ACTIONS:
+            self.assertNotIn(kept, statement["Action"])
+
+    def test_no_statement_anywhere_uses_notaction(self):
+        for statement in policy_for()["Statement"]:
+            self.assertNotIn("NotAction", statement, statement.get("Sid"))
 
 
 class TestTheBucketStaysAdministrable(unittest.TestCase):
@@ -256,6 +268,50 @@ class TestRenderedCommands(unittest.TestCase):
 class TestSelfTest(unittest.TestCase):
     def test_the_shipped_self_test_passes(self):
         fence._self_test()
+
+
+class TestTheGuardIsActuallyWired(unittest.TestCase):
+    """Same wiring gap as the media generator: removing the call was green."""
+
+    def test_render_policy_passes_its_result_through_assert_enforceable(self):
+        seen = []
+        real = fence.assert_enforceable
+
+        def spy(policy):
+            seen.append(policy)
+            return real(policy)
+
+        with mock.patch.object(fence, "assert_enforceable", spy):
+            policy = policy_for()
+
+        self.assertEqual(len(seen), 1, "render_policy did not call assert_enforceable")
+        self.assertIs(seen[0], policy, "the guarded object is not the returned object")
+
+    def test_the_guard_runs_after_the_recoverability_check(self):
+        # Ordering matters and is easy to swap back. `assert_recoverable`
+        # reasons with `decide()`, which SKIPS a NotAction statement -- so a
+        # policy that only stays administrable because of a statement this
+        # engine ignores must fail recoverability on its own terms first.
+        source = _MODULE_PATH.read_text()
+        self.assertLess(
+            source.index("assert_recoverable(policy, admin, bucket_arn)"),
+            source.index("return assert_enforceable(policy)"),
+        )
+
+
+class TestTheStrangerCatchAll(unittest.TestCase):
+    def statement(self) -> dict:
+        return next(
+            s for s in policy_for()["Statement"]
+            if s.get("Sid") == "DenyBucketAccessExceptNamedKeys"
+        )
+
+    def test_it_denies_every_bucket_action_not_just_the_reads(self):
+        self.assertEqual(self.statement()["Action"], "s3:*")
+
+    def test_it_applies_to_the_bucket_and_not_to_its_objects(self):
+        self.assertEqual(self.statement()["Effect"], "Deny")
+        self.assertEqual(self.statement()["Resource"], BUCKET_ARN)
 
 
 if __name__ == "__main__":

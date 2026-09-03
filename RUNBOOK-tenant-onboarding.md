@@ -387,14 +387,27 @@ served by the policy's `s3:GetObject` grant on the object path alone.
 #### Verify the policy against the live bucket
 
 Hetzner documents `NotPrincipal` verbatim but publishes no list of supported
-policy actions, principals or conditions — it defers to Amazon's documentation —
-and says nothing about `NotAction`, which both of the policy's blanket denies
-rely on. A successful `put-bucket-policy` is therefore not proof of anything.
+policy actions, principals or conditions — it defers to Amazon's documentation.
+A successful `put-bucket-policy` is therefore not proof of anything, and neither
+is reading the policy back: **this engine stores constructs it will not
+enforce.** On 2026-09-02 a live run of this block found both of the policy's
+`NotAction` denies inert while the `Action` denies in the same document, on the
+same read, held — an unrelated key in the project wrote an object into the
+tenant's media bucket, and the tenant's own key read the policy and changed
+versioning. The generator no longer emits `NotAction` anywhere and refuses to,
+but the reason this block exists is that the *next* such construct will look
+exactly as convincing on a round trip.
 
 **Each probe states which credential it runs under, and the block switches them
 explicitly.** Running the tenant probes under the operator key is the mistake
 this ordering exists to prevent: (d) and (e) would succeed and read as "the
 policy did not land", failing a bucket that is in fact correct.
+
+**Every credential's control runs before its probes** — g1 before (c), g2
+before (d)–(f), and the operator's `branchleft-db-backups` listing before
+anything is written. A denial from a key that reaches nothing is not evidence
+about a fence, and the three ways to get one for free (a revoked key, a
+mistyped id, a region mismatch) are indistinguishable from the fence working.
 
 **Probe (f) has a prerequisite.** It expects `branchleft-db-backups` to already
 carry its own fence, per
@@ -411,11 +424,49 @@ there with `no such file or directory: aws --endpoint-url …`.
 s3() { aws --endpoint-url https://hel1.your-objectstorage.com s3api "$@"; }
 BUCKET=branchleft-media-<slug>
 
+# `aws s3api` v2 renders a Hetzner error response as "argument of type
+# 'NoneType' is not a container or iterable" -- no code, no status, nothing to
+# read. Every probe below whose whole result is a denial is therefore
+# unreadable through the CLI. `signed` issues the same request with curl, which
+# prints the real code, and is what any denial must be classified with.
+signed() {
+  curl -sS --aws-sigv4 "aws:amz:hel1:s3" \
+    --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+    -w '\nHTTP %{http_code}\n' "$@"
+}
+
 # ---- as the OPERATOR ------------------------------------------------------
+# Issue the `read` line ON ITS OWN. It takes its input from the terminal, so
+# anything pasted below it in the same block is swallowed as the secret instead
+# of being run -- silently, and the rest of the block then executes with an
+# empty credential.
 export AWS_ACCESS_KEY_ID='<operator access key id>'
-export AWS_SECRET_ACCESS_KEY='<operator secret access key>'
+read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY
+
+# Stash it. This block switches credentials three times and returns here to
+# clean up; re-typing a secret at the end is how the wrong key does the
+# cleanup. `${#VAR}` catches the empty read the note above warns about.
+OP_KEY="$AWS_ACCESS_KEY_ID"; OP_SECRET="$AWS_SECRET_ACCESS_KEY"
+echo "operator secret: ${#OP_SECRET} chars"
+
+# CONTROL, and it runs FIRST. It identifies the key positively rather than
+# taking on trust that the id typed into `--admin-access-key` is the operator's
+# -- `render-media-bucket-policy.py` refuses a tenant key and an operator key
+# that are the SAME credential, but cannot detect them being SWAPPED, and a
+# swap puts PutBucketPolicy on the bucket into the container-resident key while
+# locking the operator out. branchleft-db-backups is fenced to named keys, so
+# only the operator's reaches it. Expect a listing; on AccessDenied, STOP --
+# the policy just applied names the wrong principals.
+s3 list-objects-v2 --bucket branchleft-db-backups --max-keys 1
+
 echo hello > /tmp/probe.txt
 s3 put-object --bucket "$BUCKET" --key probe.txt --body /tmp/probe.txt
+
+# Hetzner's policy read path is cached for 15-20s (INC-5). Every probe below
+# expects a denial, so a read taken inside that window returns the PRE-policy
+# answer and reads as "the fence did not land" -- which this block's own rule
+# then turns into an aborted onboarding of a correct bucket.
+sleep 30
 
 # a. Public read works, with no credential at all. If this needs one, cdnUrl is
 #    broken for every reader of every post.
@@ -426,43 +477,71 @@ curl -fsS "https://hel1.your-objectstorage.com/$BUCKET/probe.txt"
 curl -sS "https://hel1.your-objectstorage.com/$BUCKET?list-type=2"
 
 # ---- as a THIRD key: neither the tenant's nor the operator's ---------------
-#    This is the only probe that exercises the object-level `NotAction` deny,
-#    and it is the dangerous direction. If Hetzner ignores `NotAction`
-#    permissively, every probe except this one still passes while every key in
-#    the project can write over this tenant's media. Use the tenant-state
-#    credential (TENANT_STATE_S3_ACCESS_KEY_ID) -- it exists today, and it is a
-#    real non-tenant, non-operator key in the same project.
+#    Use the tenant-state credential (TENANT_STATE_S3_ACCESS_KEY_ID) -- it
+#    exists today, and it is a real non-tenant, non-operator key in the same
+#    project. Again: the `read` goes on its own line.
 export AWS_ACCESS_KEY_ID='<tenant-state access key id>'
-export AWS_SECRET_ACCESS_KEY='<tenant-state secret access key>'
+read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY
 
-# c. A foreign key cannot write into this bucket. Expect AccessDenied.
-s3 put-object --bucket "$BUCKET" --key foreign.txt --body /tmp/probe.txt
+# g1. CONTROL FIRST. A revoked key, a mistyped key id and a region mismatch all
+#     return the same AccessDenied a working fence returns, so (c) means
+#     nothing until this has shown the credential works at all. Expect a
+#     listing; on failure, fix the credential -- do NOT record (c) as a pass.
+s3 list-objects-v2 --bucket branchleft-tenant-pulumi-state --max-keys 1
+
+# c. A foreign key cannot write into this bucket. Expect 403 AccessDenied.
+#    This is the probe that matters most: the only one exercising the
+#    object-level deny, and the direction that fails silently -- if it fails
+#    permissively, every other probe still passes while every key in the
+#    project can overwrite this tenant's media, and every other tenant's.
+#    On 2026-09-02 this probe failed exactly that way, which is why the policy
+#    no longer uses `NotAction` anywhere. A success here means the fence is
+#    absent: stop, and do not hand over the credential.
+signed -X PUT --upload-file /tmp/probe.txt \
+  "https://hel1.your-objectstorage.com/$BUCKET/foreign.txt"
 
 # ---- as the TENANT --------------------------------------------------------
 export AWS_ACCESS_KEY_ID='<this tenant access key id>'
-export AWS_SECRET_ACCESS_KEY='<this tenant secret access key>'
+read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY
 
-# d. Media is append-only for the tenant's own key. Expect AccessDenied.
-s3 delete-object --bucket "$BUCKET" --key probe.txt
+# g2. CONTROL FIRST, for the same reason as g1. Expect a listing.
+s3 list-objects-v2 --bucket "$BUCKET" --max-keys 1
+
+# g3. CONTROL ON THE INSTRUMENT, which is a different question from g1 and g2.
+#     Those prove the CREDENTIAL works. Every denial probe below runs through
+#     `signed` instead of `s3`, and a wrong region in the sigv4 string, a
+#     quoting error in --user, or an empty AWS_SECRET_ACCESS_KEY each return
+#     HTTP 403 -- which this block's own summary rule reads as "AccessDenied,
+#     fence proven", and the operator then hands over the tenant credential.
+#     This is the same request through the SAME instrument, expected to
+#     SUCCEED. Expect HTTP 200. On 403, `signed` is broken and every denial it
+#     reports below is uninterpretable -- fix it before reading any of them.
+signed "https://hel1.your-objectstorage.com/$BUCKET?list-type=2&max-keys=1"
+
+# d. Media is append-only for the tenant's own key. Expect 403 AccessDenied.
+signed -X DELETE "https://hel1.your-objectstorage.com/$BUCKET/probe.txt"
 
 # e. The tenant cannot edit the fence that constrains it. Expect AccessDenied
-#    on all three. This key sits inside the tenant's own container, so without
-#    these the tenant can replace the policy, publish the listing with a
-#    bucket ACL, or expire every object with a lifecycle rule -- destroying its
-#    media without ever calling delete.
+#    on both. This key sits inside the tenant's own container, so without these
+#    the tenant can replace the policy, publish the listing with a bucket ACL,
+#    or expire every object with a lifecycle rule -- destroying its media
+#    without ever calling delete.
 #    Both are deliberately a no-op if they SUCCEED: reading the policy changes
 #    nothing, and `Enabled` is the versioning state step 2 of the rendered
 #    sequence just set. A probe whose success is itself the damage cannot be
-#    run against a live bucket.
-#    There is deliberately no `put-bucket-acl` probe. `put-bucket-acl`
-#    REPLACES the ACL rather than merging into it, so it is a no-op only while
-#    the current ACL is exactly what is sent -- a thing to assume, not to
-#    check. Nothing is lost: the policy withholds bucket configuration in a
-#    single `NotAction` statement, so any one of these actions being denied is
-#    that statement being enforced. verify-bucket-fence.py states the same
-#    rule for the estate's buckets and omits the probe for the same reason.
-s3 get-bucket-policy --bucket "$BUCKET"
-s3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
+#    run against a live bucket -- which is why there is no `put-bucket-policy`
+#    probe here, and no `put-bucket-acl` one either: `put-bucket-acl` REPLACES
+#    the ACL rather than merging into it, so it is a no-op only while the
+#    current ACL is exactly what is sent, which is a thing to assume rather
+#    than to check.
+#    Through `signed`, not `s3`: both of these expect a denial, and the CLI
+#    cannot render one. `put-bucket-versioning` is the probe that found the
+#    original defect -- the tenant key changing versioning on a live bucket --
+#    so leaving it unreadable would retire the check that started all of this.
+signed "https://hel1.your-objectstorage.com/$BUCKET?policy"
+signed -X PUT -H 'Content-Type: application/xml' \
+  --data '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>' \
+  "https://hel1.your-objectstorage.com/$BUCKET?versioning"
 
 # f. The tenant's key does not reach branchleft-db-backups, a FENCED bucket in
 #    THE SAME PROJECT. The bucket named here has to be both: an unfenced one
@@ -470,37 +549,60 @@ s3 put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=En
 #    project, so its AccessDenied would be the project boundary and would say
 #    nothing whatever about this policy. That substitution is exactly how a
 #    project boundary once got recorded as per-bucket key scoping, which this
-#    backend does not have. This probes that bucket's fence as much
-#    as this one's, and it does NOT establish that the tenant key reaches no
-#    other bucket in the project -- every unfenced bucket there is still open
-#    to it. Expect AccessDenied.
-s3 list-objects-v2 --bucket branchleft-db-backups
+#    backend does not have. This probes that bucket's fence as much as this
+#    one's, and it does NOT establish that the tenant key reaches no other
+#    bucket in the project -- every unfenced bucket there is still open to it.
+#    Expect 403 AccessDenied.
+signed "https://hel1.your-objectstorage.com/branchleft-db-backups?list-type=2&max-keys=1"
 
-# g. The control for (c) and (f), and the reason either one means anything: the
-#    same credentials must SUCCEED where they are entitled. A denial from a key
-#    that reaches nothing is not evidence about a fence. Expect a listing.
-export AWS_ACCESS_KEY_ID='<tenant-state access key id>'
-export AWS_SECRET_ACCESS_KEY='<tenant-state secret access key>'
-s3 list-objects-v2 --bucket branchleft-tenant-pulumi-state --max-keys 1
-export AWS_ACCESS_KEY_ID='<this tenant access key id>'
-export AWS_SECRET_ACCESS_KEY='<this tenant secret access key>'
-s3 list-objects-v2 --bucket "$BUCKET" --max-keys 1
-
-# ---- back to the OPERATOR, to clean up ------------------------------------
-export AWS_ACCESS_KEY_ID='<operator access key id>'
-export AWS_SECRET_ACCESS_KEY='<operator secret access key>'
+# ---- back to the OPERATOR, from the stash rather than by re-typing --------
+export AWS_ACCESS_KEY_ID="$OP_KEY"; export AWS_SECRET_ACCESS_KEY="$OP_SECRET"
 ```
 
 **Every one of (b) through (f) must return `AccessDenied`, (a) must return
-`hello`, and both listings in (g) must succeed.** If any tenant probe succeeds,
+`hello`, and all three controls — the operator's `branchleft-db-backups`
+listing, g1 and g2 — must succeed.** If any tenant probe succeeds,
 stop and do not hand over the credential: none of these failures is visible
 from the tenant's side, and (c) in particular fails silently for every other
-tenant on the platform, not just this one. **If either listing in (g) fails,
+tenant on the platform, not just this one. **If either control listing fails,
 none of (c) or (f) proved anything** — a revoked key, a mistyped key id and a
 region mismatch all return the same `AccessDenied` a working fence does. Fix
 the credential and re-run the block rather than recording the denials.
 
-Then remove the probe object. **A plain `delete-object` is not enough on a
+Then clean up, as the operator.
+
+**`foreign.txt` first, if probe (c) created one.** It exists only on a bucket
+whose fence failed, and until it is gone it is anonymously readable by anyone
+with the URL — including at `?versionId=`, which a plain delete does not
+touch. This is the object a foreign key demonstrably wrote, so it is the one
+that most needs to leave:
+
+```bash
+export AWS_ACCESS_KEY_ID="$OP_KEY"; export AWS_SECRET_ACCESS_KEY="$OP_SECRET"
+s3 list-object-versions --bucket "$BUCKET" --prefix foreign.txt \
+  --query 'Versions[].VersionId' --output text \
+  | tr '\t' '\n' \
+  | while read -r v; do [ -n "$v" ] && s3 delete-object --bucket "$BUCKET" --key foreign.txt --version-id "$v"; done
+s3 list-object-versions --bucket "$BUCKET" --query 'Versions[].Key' --output text
+```
+
+The second command lists what remains, and is the check — not the delete.
+
+**Then `probe.txt`, unless this bucket holds the lifecycle canary.**
+[branchLeft/ghost-platform#149](https://github.com/branchLeft/ghost-platform/issues/149)
+names the one bucket where `probe.txt` must stay, and is the only place that
+records it. Open that issue and read it before deleting:
+
+- **Issue closed** → delete `probe.txt` here, as below.
+- **Issue open, and it names this bucket** → leave `probe.txt` in place. It is
+  the canary for whether this engine expires *current* media at 30 days, which
+  is a question only wall-clock answers.
+- **Issue open, naming a different bucket** → delete `probe.txt` here as normal.
+
+Do not try to decide this from the date. "The first bucket provisioned after
+<date>" is not answerable by someone onboarding the fourth tenant in November.
+
+**A plain `delete-object` is not enough on a
 versioned bucket** — it writes a delete marker and leaves the prior version
 readable anonymously at `?versionId=`, because the policy grants
 `s3:GetObjectVersion` to everyone. The same is true of any real takedown:

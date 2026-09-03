@@ -934,6 +934,54 @@ class TestPreflight(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(verify.INCONCLUSIVE, output)
 
+    def test_a_notaction_policy_is_inconclusive_rather_than_passing(self):
+        # The dangerous direction. `decide` skips a NotAction statement, so a
+        # lockout hidden in one would be skipped too and the run would report
+        # that the operator can still replace the policy. Every currently
+        # deployed fence in the estate still has this shape, so this is the
+        # document an operator is most likely to point this tool at.
+        document = json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "DenyBucketConfigurationExceptOperator",
+                        "Effect": "Deny",
+                        "NotPrincipal": {"AWS": [f"arn:aws:iam:::user/{OWNER}:{WORKLOAD_KEY}"]},
+                        "NotAction": ["s3:ListBucket"],
+                        "Resource": f"arn:aws:s3:::{FENCED}",
+                    }
+                ],
+            }
+        ).encode()
+        rows = self._preflight_rows(document)
+        verdicts = {row[0]: row[1] for row in rows}
+        self.assertEqual(verdicts.get("the policy can be evaluated"), verify.INCONCLUSIVE)
+        # And crucially it must NOT have gone on to reassure anyone.
+        self.assertNotIn(
+            "the policy leaves THIS operator credential able to replace it", verdicts
+        )
+
+    def test_an_enumerated_policy_is_still_evaluated(self):
+        # The control for the test above: the refusal must be specific to the
+        # construct, not a blanket bail-out that would make the tool useless.
+        document = json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "DenyBucketConfigurationExceptOperator",
+                        "Effect": "Deny",
+                        "NotPrincipal": {"AWS": [f"arn:aws:iam:::user/{OWNER}:{OPERATOR_KEY}"]},
+                        "Action": ["s3:PutBucketAcl"],
+                        "Resource": f"arn:aws:s3:::{FENCED}",
+                    }
+                ],
+            }
+        ).encode()
+        verdicts = {row[0]: row[1] for row in self._preflight_rows(document)}
+        self.assertIn("the policy leaves THIS operator credential able to replace it", verdicts)
+
     def _preflight_rows(self, policy_document):
         return verify.preflight(
             verify.Verifier(
