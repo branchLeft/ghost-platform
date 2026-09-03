@@ -196,15 +196,8 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
                 "s3:AbortMultipartUpload",
                 "s3:ListMultipartUploadParts",
                 "s3:RestoreObject",
-                "s3:GetObjectAttributes",
-                "s3:GetObjectVersionAttributes",
                 "s3:GetObjectTorrent",
                 "s3:GetObjectVersionTorrent",
-                "s3:ReplicateObject",
-                "s3:ReplicateDelete",
-                "s3:ReplicateTags",
-                "s3:GetObjectVersionForReplication",
-                "s3:ObjectOwnerOverrideToBucketOwner",
             },
         )
 
@@ -232,8 +225,6 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
                 "s3:PutBucketObjectLockConfiguration",
                 "s3:GetBucketCORS",
                 "s3:PutBucketCORS",
-                "s3:GetEncryptionConfiguration",
-                "s3:PutEncryptionConfiguration",
                 "s3:CreateBucket",
                 "s3:DeleteBucket",
                 "s3:ListBucketVersions",
@@ -246,7 +237,6 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
                 "s3:PutBucketLogging",
                 "s3:GetBucketTagging",
                 "s3:PutBucketTagging",
-                "s3:DeleteBucketTagging",
                 "s3:GetBucketWebsite",
                 "s3:PutBucketWebsite",
                 "s3:DeleteBucketWebsite",
@@ -256,6 +246,25 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
                 "s3:PutBucketRequestPayment",
                 "s3:GetBucketOwnershipControls",
                 "s3:PutBucketOwnershipControls",
+            },
+        )
+
+    def test_parser_rejects_is_pinned_member_by_member(self):
+        """The set itself, not just the lists it guards.
+
+        Emptying PARSER_REJECTS passed every other test in this file: the
+        disjointness check below is vacuous against an empty set, and the guard
+        in assert_enforceable then refuses nothing. A constant table that only
+        asserts itself is not a control. This is the measurement -- 19 names,
+        rejected one at a time against a live bucket -- so it is pinned like
+        one.
+        """
+        self.assertEqual(
+            bucketpolicy.PARSER_REJECTS,
+            frozenset({
+                "s3:GetEncryptionConfiguration",
+                "s3:PutEncryptionConfiguration",
+                "s3:DeleteBucketTagging",
                 "s3:DeleteBucketOwnershipControls",
                 "s3:GetAnalyticsConfiguration",
                 "s3:PutAnalyticsConfiguration",
@@ -265,8 +274,43 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
                 "s3:PutMetricsConfiguration",
                 "s3:GetIntelligentTieringConfiguration",
                 "s3:PutIntelligentTieringConfiguration",
-            },
+                "s3:GetObjectAttributes",
+                "s3:GetObjectVersionAttributes",
+                "s3:ReplicateObject",
+                "s3:ReplicateDelete",
+                "s3:ReplicateTags",
+                "s3:GetObjectVersionForReplication",
+                "s3:ObjectOwnerOverrideToBucketOwner",
+            }),
         )
+
+    def test_no_emitted_action_is_one_the_parser_refuses(self):
+        """The whole point of PARSER_REJECTS existing as data.
+
+        A refused name does not sit inert in the document -- it makes the
+        entire policy unacceptable, so the bucket silently keeps its previous
+        one and the operator gets an HTTP 503 with an empty message mid-apply.
+        Re-adding any of these on "it costs nothing to list it" reasoning must
+        fail here, not there.
+        """
+        for name in ("BUCKET_CONFIGURATION_ACTIONS", "NON_PUBLIC_OBJECT_ACTIONS",
+                     "MEDIA_PUBLIC_OBJECT_ACTIONS", "WORKLOAD_BUCKET_ACTIONS",
+                     "WORKLOAD_OBJECT_ACTIONS", "RECOVERY_ACTIONS"):
+            overlap = set(getattr(bucketpolicy, name)) & bucketpolicy.PARSER_REJECTS
+            self.assertEqual(overlap, set(), f"{name} names actions the parser refuses: {overlap}")
+
+    def test_assert_enforceable_refuses_a_parser_rejected_action(self):
+        with self.assertRaises(PolicyInputError) as caught:
+            assert_enforceable({"Statement": [
+                {"Sid": "X", "Action": ["s3:GetObject", "s3:ReplicateObject"]}]})
+        self.assertIn("s3:ReplicateObject", str(caught.exception))
+
+    def test_a_string_action_is_checked_too(self):
+        # `Action: "s3:*"` is a bare string in the stranger catch-all, so the
+        # guard has to handle both shapes or it inspects nothing there.
+        with self.assertRaises(PolicyInputError):
+            assert_enforceable({"Statement": [{"Sid": "X", "Action": "s3:ReplicateObject"}]})
+        assert_enforceable({"Statement": [{"Sid": "X", "Action": "s3:*"}]})
 
     def test_no_action_is_listed_twice(self):
         for name in ("BUCKET_CONFIGURATION_ACTIONS", "NON_PUBLIC_OBJECT_ACTIONS"):
