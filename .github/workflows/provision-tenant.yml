@@ -236,8 +236,12 @@ jobs:
       # reason that one was worth having: it is the only thing standing between
       # this workflow's credentials and any run of it.
       #
-      # Two properties, both fail-closed:
+      # Three properties, all fail-closed:
       #
+      #   - the token carries every OAuth scope this run needs, checked
+      #     first: a scope missing here is knowable from one API response,
+      #     before the environment or secret checks below have any subject
+      #     to examine, and before this workflow creates anything;
       #   - the `tenant-provisioning` environment carries at least one
       #     protection rule. An environment with none runs straight through
       #     without pausing and reports nothing;
@@ -247,9 +251,9 @@ jobs:
       #     workflow working while making it readable by every other run in this
       #     repo, including one from a branch. Nothing else would report that.
       #
-      # A failure to read either is also a refusal. This is a rare, reviewed,
-      # owner-run action; "the check could not run" is not a reason to proceed
-      # past the control it replaces.
+      # A failure to read any of them is also a refusal. This is a rare,
+      # reviewed, owner-run action; "the check could not run" is not a reason
+      # to proceed past the control it replaces.
       - name: Verify the provisioning gate and its credential scoping
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
@@ -260,6 +264,35 @@ jobs:
             echo "::error::GH_PAT_TENANT_PROVISIONING is empty or unset. It must be an environment secret on the $ENVIRONMENT environment."
             exit 1
           fi
+
+          # GitHub echoes a classic PAT's own scopes on any authenticated
+          # response as the X-OAuth-Scopes header -- one read, before this
+          # run creates a repository, mints a passphrase, initialises a
+          # stack or publishes a secret, all of which a prior run found
+          # already done by the time a missing `workflow` scope rejected
+          # this workflow's own last push. Never printed whole: only the
+          # scope names it carries are pulled out of it below, and a
+          # failure to read it at all is a refusal, not an assumption that
+          # the token is fine.
+          scope_headers=$(gh api "repos/${GITHUB_REPOSITORY}" --include --silent) || {
+            echo "::error::could not read an authenticated response from the GitHub API to determine GH_PAT_TENANT_PROVISIONING's OAuth scopes. Refusing: whether this token can finish the run is knowable from this one response, and an unreadable one is not a passed check."
+            exit 1
+          }
+          scopes_header=$(printf '%s\n' "$scope_headers" \
+            | grep -i '^x-oauth-scopes:' | head -n1 \
+            | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
+
+          # The set logic -- which scopes this run needs and why, and the
+          # exact-token comparison that refuses a superstring like
+          # `workflow_dispatch` standing in for `workflow` -- lives in a
+          # plain Python script with its own unit tests
+          # (infra/provisioning/scripts/test_assert_tenant_provisioning_token_scopes.py)
+          # rather than here, so it stays provable offline instead of only
+          # by dispatching this workflow for real and watching it fail on
+          # its last step.
+          python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py --self-test
+          python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py \
+            --scopes-header "$scopes_header"
 
           rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}" \
             --jq '[.protection_rules[].type] | join(",")') || {
