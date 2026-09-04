@@ -2347,6 +2347,57 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
         # held for the full dwell before it counts.
         self.assertEqual(sorted(by_key.values()), sorted([1, 1 + 1, 1 + 1, 1 + held]))
 
+    def test_window_a_receives_window_d_own_settled_reading_not_a_fallback(self):
+        # WINDOW A IS THE ONE WINDOW NO FIXTURE ABOVE FORCES. Every engine in
+        # `WORLDS` that reaches window A also happens to leave window D's
+        # operator reading at "allowed" -- the same value the pre-fix
+        # hardcoded fallback would supply -- so a read-count assertion built
+        # from one of those engines cannot tell threaded `pre_change` apart
+        # from a dropped one at this call site specifically. This drives
+        # `_read_the_engine` directly, with `_window` mocked to return a
+        # scripted reading per window and record what it was called with, so
+        # the property under test is the `pre_change` argument itself: window
+        # D's operator reading is "denied" here, and only a caller that
+        # actually threads window D's own settled reading forward passes that
+        # to window A rather than the "allowed" every role defaults to.
+        def observation(role, outcome):
+            return verify.Observation("W", role, 200, None, outcome, "")
+
+        scripted = {
+            verify.WINDOW_B: {
+                "foreign": observation("foreign", "allowed"),
+                "operator": observation("operator", "allowed"),
+            },
+            verify.WINDOW_C: {
+                "foreign": observation("foreign", "allowed"),
+                "operator": observation("operator", "allowed"),
+            },
+            verify.WINDOW_D: {
+                "foreign": observation("foreign", "allowed"),
+                "operator": observation("operator", "denied"),
+            },
+            verify.WINDOW_A: {
+                "foreign": observation("foreign", "allowed"),
+                "operator": observation("operator", "allowed"),
+            },
+        }
+        pre_change_by_window = {}
+
+        def fake_window(verifier, bucket, *, window, pre_change=None, **kwargs):
+            pre_change_by_window[window] = pre_change
+            return scripted[window]
+
+        plan = {window: {} for window in scripted}
+        keys = {window: f"probe-{window}" for window in scripted}
+        with mock.patch.object(verify, "_window", fake_window):
+            verify._read_the_engine(
+                None, FENCED, plan=plan, keys=keys, rows=[], evidence=[], masks={}
+            )
+        self.assertEqual(
+            pre_change_by_window[verify.WINDOW_A],
+            {"foreign": "allowed", "operator": "denied"},
+        )
+
     def test_the_evidence_block_carries_no_access_key_id(self):
         # This repository is public and the block exists to be pasted into the
         # issue that asked the question. An id nobody can paste does not get
