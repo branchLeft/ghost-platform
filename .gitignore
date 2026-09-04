@@ -7,3 +7,22 @@ services/*/dist
 services/*/coverage
 __pycache__/
 *.pyc
+
+# Written by every local `graphify query`. CI's own extract step never reads
+# or writes it, so a fresh query here is disposable state, not part of the
+# graph CI commits.
+#
+# NOTE: this repo's initial public-release commit accidentally committed a
+# copy, so this line alone does not stop `git status` reporting it modified
+# after a query -- .gitignore has no effect on an already-tracked path. The
+# matching `git rm --cached` is a separate, blocked follow-up (see
+# branchLeft/workspace#303 and its linked hook-guard issue): the PreToolUse
+# guard that keeps an agent from ever committing graphify-out/ content has no
+# carve-out for a deliberate untrack, so the commit gets refused. This line
+# is forward-prep -- it takes effect the moment that untrack lands.
+graphify-out/cache/last_query_stamp
+
+# This repo tracks package-lock.json (seven of them) and CI runs `npm ci`; a
+# pnpm install here is a mistake, and its lockfile must not get committed.
+pnpm-lock.yaml
+pnpm-workspace.yaml
