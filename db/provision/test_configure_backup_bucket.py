@@ -849,3 +849,81 @@ class MainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheCheckerRequiresWhatTheGeneratorActuallyDenies(unittest.TestCase):
+    """Round-2 review findings: three ways a policy passed the fence check
+    while leaving the bucket reachable through Hetzner's project-wide default.
+
+    All three were reproduced against the real function before being fixed, and
+    each test here fails if its fix is reverted."""
+
+    def test_a_deny_narrowed_to_the_checkers_own_list_still_leaves_the_bucket_deletable(self):
+        """The checker's required list and the generator's emitted list must
+        not diverge. They did: the checker asked for four actions where the
+        generator denies seven, so a Deny narrowed to exactly the checker's
+        four read as fenced while `s3:DeleteBucket` stayed available to every
+        credential in the project -- destruction of the backup bucket itself,
+        which is the worst outcome in this threat model."""
+        policy = fence_policy()
+        for statement in policy["Statement"]:
+            if statement["Sid"] == "DenyBucketConfigurationExceptOperator":
+                statement["Action"] = list(cbb.CRITICAL_BUCKET_CONFIGURATION_ACTIONS)
+        # The fixture is the generator's shape; anything it denies and the
+        # checker does not require is a hole the checker cannot see.
+        self.assertEqual(
+            set(),
+            set(FENCE_CONFIGURATION_ACTIONS) - set(cbb.CRITICAL_BUCKET_CONFIGURATION_ACTIONS),
+            "the generator denies an action the checker does not require, so a Deny "
+            "narrowed to the checker's list would certify a bucket this fence does not cover",
+        )
+        cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+
+    def test_an_allow_carrying_notprincipal_is_refused(self):
+        """`Allow` + `NotPrincipal` grants everyone it does not name. It is
+        `Principal: "*"` written the other way round, and the guard for that
+        keyed only on `Principal`, so this passed."""
+        policy = fence_policy()
+        policy["Statement"].append(
+            {
+                "Sid": "AllowEveryoneButOperator",
+                "Effect": "Allow",
+                "NotPrincipal": {"AWS": [OPERATOR_ARN]},
+                "Action": "s3:*",
+                "Resource": f"{BUCKET_ARN}/*",
+            }
+        )
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn("AllowEveryoneButOperator", str(caught.exception))
+
+    def test_an_unrelated_allow_does_not_account_for_a_notprincipal_exemption(self):
+        """The correspondence check asked only whether *some* Allow existed for
+        the exempted principal on the resource. A trivial companion Allow for
+        an action the Deny does not even cover therefore laundered a full
+        exemption from Get/Put/DeleteObject."""
+        foreign = "arn:aws:iam:::user/p1231234:FFFFFFFFFFFFFFFFFFFF"
+        policy = fence_policy()
+        policy["Statement"].append(
+            {
+                "Sid": "AllowForeignTrivial",
+                "Effect": "Allow",
+                "Principal": {"AWS": [foreign]},
+                "Action": "s3:ListBucket",
+                "Resource": f"{BUCKET_ARN}/*",
+            }
+        )
+        for statement in policy["Statement"]:
+            if statement["Sid"] == "DenyObjectAccessExceptNamedKeys":
+                statement["NotPrincipal"]["AWS"].append(foreign)
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        message = str(caught.exception)
+        self.assertIn(foreign, message)
+        self.assertIn("s3:GetObject", message)
+
+    def test_a_matching_allow_still_accounts_for_an_exemption(self):
+        """The check must not become so strict that the generator's own output
+        fails: the named workload key is exempted from the object Deny and does
+        hold `s3:*` on the objects, so it is accounted for."""
+        cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, OPERATOR_ARN)

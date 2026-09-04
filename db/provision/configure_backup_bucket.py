@@ -144,10 +144,13 @@ def _principals(statement: dict, field: str):
 # publish the bucket ACL, expire the backups via a lifecycle rule, or
 # suspend the versioning that makes an overwrite recoverable.
 CRITICAL_BUCKET_CONFIGURATION_ACTIONS = [
+    "s3:GetBucketPolicy",
     "s3:PutBucketPolicy",
+    "s3:DeleteBucketPolicy",
     "s3:PutBucketAcl",
     "s3:PutLifecycleConfiguration",
     "s3:PutBucketVersioning",
+    "s3:DeleteBucket",
 ]
 
 # The whole of what a workload credential legitimately does with an object --
@@ -219,8 +222,12 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
     # Collected in its own pass, from every Allow regardless of where it sits
     # in the document, so a Deny earlier in the list can still be checked
     # against an Allow that appears after it.
-    allowed_bucket_principals: set = set()
-    allowed_object_principals: set = set()
+    # principal -> the Action patterns some Allow grants it on that resource
+    # class. Actions are kept, not just the principal: an exemption is only
+    # accounted for if the Allow covers the actions being exempted, and an
+    # unrelated low-value Allow on the same resource must not launder one.
+    allowed_bucket_principals: dict = {}
+    allowed_object_principals: dict = {}
     for statement in statements:
         if statement.get("Effect") != "Allow":
             continue
@@ -228,10 +235,13 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
         if principals is _MISSING:
             continue
         resources = _string_list(statement.get("Resource"))
+        actions = _string_list(statement.get("Action"))
         if bucket_arn in resources:
-            allowed_bucket_principals.update(principals)
+            for arn in principals:
+                allowed_bucket_principals.setdefault(arn, set()).update(actions)
         if any(resource.startswith(objects_prefix) for resource in resources):
-            allowed_object_principals.update(principals)
+            for arn in principals:
+                allowed_object_principals.setdefault(arn, set()).update(actions)
 
     denies_bucket = False
     denies_objects = False
@@ -274,6 +284,13 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
                     f"bucket has no anonymous-read requirement, and applying it would "
                     f"publish the bucket rather than fence it."
                 )
+            if not_principals is not _MISSING:
+                raise BucketConfigError(
+                    f"policy statement {sid!r} is an Allow carrying NotPrincipal, which "
+                    f"grants every principal it does not name. That is the same exposure as "
+                    f"Principal \"*\" written the other way round, and it reaches every "
+                    f"credential in the project through Hetzner's project-wide default."
+                )
             continue
         if effect != "Deny":
             raise BucketConfigError(f"policy statement {sid!r} has no usable Effect")
@@ -282,19 +299,32 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
         covers_objects = any(resource.startswith(objects_prefix) for resource in resources)
 
         if not_principals is not _MISSING:
-            allowed_here: set = set()
+            required_here: set = set()
             if covers_bucket:
-                allowed_here |= allowed_bucket_principals
+                required_here |= set(CRITICAL_BUCKET_CONFIGURATION_ACTIONS)
             if covers_objects:
-                allowed_here |= allowed_object_principals
+                required_here |= set(CRITICAL_OBJECT_ACTIONS)
             for arn in not_principals:
-                if arn != operator_principal and arn not in allowed_here:
+                if arn == operator_principal:
+                    continue
+                granted: set = set()
+                if covers_bucket:
+                    granted |= allowed_bucket_principals.get(arn, set())
+                if covers_objects:
+                    granted |= allowed_object_principals.get(arn, set())
+                unaccounted = {
+                    action
+                    for action in required_here
+                    if not any(_action_covers(p, action) for p in granted)
+                }
+                if unaccounted:
                     raise BucketConfigError(
                         f"policy statement {sid!r} exempts {arn!r} from a Deny on "
-                        f"{bucket!r}, but no Allow statement in this policy grants that "
-                        f"principal access to the same resource. An exemption nothing else "
-                        f"in the policy accounts for reaches this bucket only through "
-                        f"Hetzner's project-wide default, invisibly."
+                        f"{bucket!r}, but no Allow in this policy grants that principal "
+                        f"{sorted(unaccounted)} on the same resource. An exemption nothing "
+                        f"else in the policy accounts for reaches this bucket only through "
+                        f"Hetzner's project-wide default, invisibly -- and an Allow for "
+                        f"some unrelated action does not account for it."
                     )
 
         actions = _string_list(statement.get("Action"))
