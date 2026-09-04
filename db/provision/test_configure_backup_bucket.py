@@ -55,7 +55,10 @@ FENCE_CONFIGURATION_ACTIONS = [
 
 def fence_policy(bucket: str = BUCKET) -> dict:
     """The shape render-bucket-fence-policy.py emits, trimmed to what is
-    checked here: one bucket-configuration deny exempting the operator, and one
+    checked here: one Allow granting the named workload key object access
+    (mirroring the generator's AllowNamedKeysObjectAccess -- present so the
+    checks below can tell a legitimately-exempted principal from one that
+    isn't), one bucket-configuration deny exempting the operator, and one
     object deny exempting both named keys.
 
     A hand-written fixture is a SECOND COPY of the generator's shape, and it
@@ -76,6 +79,13 @@ def fence_policy(bucket: str = BUCKET) -> dict:
                 "Principal": {"AWS": [OPERATOR_ARN]},
                 "Action": "s3:*",
                 "Resource": [bucket_arn, f"{bucket_arn}/*"],
+            },
+            {
+                "Sid": "AllowNamedKeysObjectAccess",
+                "Effect": "Allow",
+                "Principal": {"AWS": [WORKLOAD_ARN, OPERATOR_ARN]},
+                "Action": "s3:*",
+                "Resource": f"{bucket_arn}/*",
             },
             {
                 "Sid": "DenyBucketConfigurationExceptOperator",
@@ -532,7 +542,11 @@ class PolicyRefusalTests(unittest.TestCase):
 
     def test_an_object_only_deny_never_blocks_the_run(self):
         # A Deny on `<bucket>/*` cannot deny PutBucketPolicy, which is an
-        # action on the bucket resource, so it is not a lockout risk.
+        # action on the bucket resource, so exempting only the workload key --
+        # not the operator -- from an object-only Deny is not a lockout risk.
+        # The bucket-resource Deny here is renamed and reordered relative to
+        # the fixture's own, to prove the checks key on Resource/Action/
+        # Principal content rather than a Sid string.
         policy = fence_policy()
         policy["Statement"] = [
             statement
@@ -540,10 +554,10 @@ class PolicyRefusalTests(unittest.TestCase):
             if statement["Sid"] != "DenyBucketConfigurationExceptOperator"
         ] + [
             {
-                "Sid": "DenyBucketReads",
+                "Sid": "DenyBucketConfigurationRenamed",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": [OPERATOR_ARN]},
-                "Action": "s3:ListBucket",
+                "Action": FENCE_CONFIGURATION_ACTIONS,
                 "Resource": BUCKET_ARN,
             },
             {
@@ -555,6 +569,87 @@ class PolicyRefusalTests(unittest.TestCase):
             },
         ]
         cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+
+    def test_a_notaction_bucket_deny_fences_nothing(self):
+        # Hetzner Object Storage accepts, stores and returns NotAction
+        # byte-identical to what was sent, and enforces none of it -- a Deny
+        # expressed this way withholds nothing, however complete it reads.
+        policy = fence_policy()
+        for statement in policy["Statement"]:
+            if statement["Sid"] == "DenyBucketConfigurationExceptOperator":
+                del statement["Action"]
+                statement["NotAction"] = ["s3:ListBucket"]
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn("NotAction", str(caught.exception))
+
+    def test_a_notaction_object_deny_fences_nothing(self):
+        policy = fence_policy()
+        for statement in policy["Statement"]:
+            if statement["Sid"] == "DenyObjectAccessExceptNamedKeys":
+                del statement["Action"]
+                statement["NotAction"] = ["s3:PutBucketPolicy"]
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn("NotAction", str(caught.exception))
+
+    def test_narrowing_the_bucket_configuration_denys_actions_is_refused(self):
+        # "Tightening" a catch-all into an enumerated list that omits one of
+        # the actions that matters leaves that action to fall back to
+        # Hetzner's project-wide default, which is allow.
+        policy = fence_policy()
+        for statement in policy["Statement"]:
+            if statement["Sid"] == "DenyBucketConfigurationExceptOperator":
+                statement["Action"] = ["s3:PutBucketPolicy"]  # drops PutBucketAcl etc.
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn("s3:PutBucketAcl", str(caught.exception))
+
+    def test_narrowing_the_object_denys_actions_to_a_read_list_is_refused(self):
+        # branchLeft/ghost-platform#154's confirmed finding: narrowing this
+        # statement's Action from `s3:*` to a read-only list converts the
+        # catch-all into a denylist, and PutObject/DeleteObject fall open.
+        policy = fence_policy()
+        for statement in policy["Statement"]:
+            if statement["Sid"] == "DenyObjectAccessExceptNamedKeys":
+                statement["Action"] = ["s3:GetObject"]
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn("s3:PutObject", str(caught.exception))
+        self.assertIn("s3:DeleteObject", str(caught.exception))
+
+    def test_widening_the_object_denys_notprincipal_to_an_unallowed_key_is_refused(self):
+        # branchLeft/ghost-platform#154's other confirmed finding: widening
+        # this statement's NotPrincipal to also exempt a foreign credential
+        # grants that credential full read/write/delete on every backup
+        # object -- and nothing else in the policy accounts for it, since no
+        # Allow statement names it either.
+        foreign_arn = "arn:aws:iam:::user/p1231234:FFFFFFFFFFFFFFFFFFFF"
+        policy = fence_policy()
+        for statement in policy["Statement"]:
+            if statement["Sid"] == "DenyObjectAccessExceptNamedKeys":
+                statement["NotPrincipal"]["AWS"].append(foreign_arn)
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn(foreign_arn, str(caught.exception))
+
+    def test_widening_the_bucket_configuration_denys_notprincipal_is_also_refused(self):
+        # The same widening on the bucket-resource statement is refused too --
+        # not only on the object side.
+        foreign_arn = "arn:aws:iam:::user/p1231234:FFFFFFFFFFFFFFFFFFFF"
+        policy = fence_policy()
+        for statement in policy["Statement"]:
+            if statement["Sid"] == "DenyBucketConfigurationExceptOperator":
+                statement["NotPrincipal"]["AWS"].append(foreign_arn)
+        with self.assertRaises(cbb.BucketConfigError) as caught:
+            cbb.assert_policy_fences_this_bucket(policy, BUCKET, OPERATOR_ARN)
+        self.assertIn(foreign_arn, str(caught.exception))
+
+    def test_a_notprincipal_exemption_backed_by_an_allow_is_accepted(self):
+        # The converse of the two tests above: exempting a principal the
+        # policy also grants an explicit Allow for is exactly what the real
+        # generator's shape does, and must not be refused.
+        cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, OPERATOR_ARN)
 
 
 class LoadPolicyTests(unittest.TestCase):

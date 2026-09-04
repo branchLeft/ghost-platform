@@ -139,8 +139,43 @@ def _principals(statement: dict, field: str):
     return []
 
 
+# The bucket-configuration actions a workload credential must never hold:
+# each one alone lets a compromised pipeline credential rewrite this fence,
+# publish the bucket ACL, expire the backups via a lifecycle rule, or
+# suspend the versioning that makes an overwrite recoverable.
+CRITICAL_BUCKET_CONFIGURATION_ACTIONS = [
+    "s3:PutBucketPolicy",
+    "s3:PutBucketAcl",
+    "s3:PutLifecycleConfiguration",
+    "s3:PutBucketVersioning",
+]
+
+# The whole of what a workload credential legitimately does with an object --
+# read, write, delete. This bucket has no anonymous-read requirement, so
+# nothing needs a narrower exemption than these three withheld from every
+# principal but the operator and the named workload keys.
+CRITICAL_OBJECT_ACTIONS = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+
+
+def _action_covers(pattern: str, action: str) -> bool:
+    """True if a statement's Action entry `pattern` matches `action`.
+
+    Mirrors infra/provisioning/scripts/bucketpolicy.py's own wildcard
+    handling rather than importing across the two scripts' independent
+    evaluation models: `s3:*` matches everything after the prefix, anything
+    else must match literally.
+    """
+    return pattern == action or (pattern.endswith("*") and action.startswith(pattern[:-1]))
+
+
+def _withheld(actions: list[str], required: list[str]) -> set[str]:
+    """Which of `required` a Deny naming `actions` actually withholds."""
+    return {action for action in required if any(_action_covers(p, action) for p in actions)}
+
+
 def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_principal: str) -> None:
-    """Refuse a policy that names another bucket, locks out the caller, or fences nothing.
+    """Refuse a policy that names another bucket, locks out the caller, fences
+    nothing, or fences something other than what matters.
 
     Applying a bucket policy is the one operation here that can be
     irreversible. Every `Deny` in the policy governs the very API call that
@@ -158,6 +193,19 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
     a rendered policy is self-consistent with whatever account id it was built
     from.
 
+    Reaching a resource is not the same as withholding anything on it. A
+    `Deny` that reaches the bucket or object resource but is expressed with
+    `NotAction` fences nothing at all: Hetzner Object Storage accepts,
+    stores and returns that construct byte-identical to what was sent, and
+    enforces none of it. And a `Deny` expressed with `Action` still has to
+    actually cover `CRITICAL_BUCKET_CONFIGURATION_ACTIONS` /
+    `CRITICAL_OBJECT_ACTIONS` for its resource class -- a narrowed list reads
+    as a fence while leaving the actions it omits to Hetzner's project-wide
+    default, which is allow. Nor may a `NotPrincipal` exemption name a
+    principal this policy grants no `Allow` for on the same resource: an
+    exemption nothing else in the document accounts for reaches this bucket
+    only through that same project-wide default, invisibly.
+
     Anything this checker cannot bound is refused rather than passed. A `Deny`
     with no `Resource`, or with neither `Principal` nor `NotPrincipal`, has a
     scope that depends on how the engine reads an absent field, and "probably
@@ -166,11 +214,41 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
     bucket_arn = f"arn:aws:s3:::{bucket}"
     objects_prefix = f"{bucket_arn}/"
 
+    statements = policy.get("Statement", [])
+
+    # Collected in its own pass, from every Allow regardless of where it sits
+    # in the document, so a Deny earlier in the list can still be checked
+    # against an Allow that appears after it.
+    allowed_bucket_principals: set = set()
+    allowed_object_principals: set = set()
+    for statement in statements:
+        if statement.get("Effect") != "Allow":
+            continue
+        principals = _principals(statement, "Principal")
+        if principals is _MISSING:
+            continue
+        resources = _string_list(statement.get("Resource"))
+        if bucket_arn in resources:
+            allowed_bucket_principals.update(principals)
+        if any(resource.startswith(objects_prefix) for resource in resources):
+            allowed_object_principals.update(principals)
+
     denies_bucket = False
     denies_objects = False
+    bucket_actions_withheld: set = set()
+    object_actions_withheld: set = set()
 
-    for statement in policy.get("Statement", []):
+    for statement in statements:
         sid = statement.get("Sid", "<no Sid>")
+
+        if "NotAction" in statement:
+            raise BucketConfigError(
+                f"policy statement {sid!r} uses NotAction. Hetzner Object Storage accepts, "
+                f"stores and returns this construct byte-identical to what was sent, and "
+                f"enforces none of it -- a statement built on it withholds nothing, however "
+                f"complete it reads."
+            )
+
         effect = statement.get("Effect")
         resources = _string_list(statement.get("Resource"))
 
@@ -200,15 +278,37 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
         if effect != "Deny":
             raise BucketConfigError(f"policy statement {sid!r} has no usable Effect")
 
-        if bucket_arn in resources:
+        covers_bucket = bucket_arn in resources
+        covers_objects = any(resource.startswith(objects_prefix) for resource in resources)
+
+        if not_principals is not _MISSING:
+            allowed_here: set = set()
+            if covers_bucket:
+                allowed_here |= allowed_bucket_principals
+            if covers_objects:
+                allowed_here |= allowed_object_principals
+            for arn in not_principals:
+                if arn != operator_principal and arn not in allowed_here:
+                    raise BucketConfigError(
+                        f"policy statement {sid!r} exempts {arn!r} from a Deny on "
+                        f"{bucket!r}, but no Allow statement in this policy grants that "
+                        f"principal access to the same resource. An exemption nothing else "
+                        f"in the policy accounts for reaches this bucket only through "
+                        f"Hetzner's project-wide default, invisibly."
+                    )
+
+        actions = _string_list(statement.get("Action"))
+        if covers_bucket:
             denies_bucket = True
-        if any(resource.startswith(objects_prefix) for resource in resources):
+            bucket_actions_withheld |= _withheld(actions, CRITICAL_BUCKET_CONFIGURATION_ACTIONS)
+        if covers_objects:
             denies_objects = True
+            object_actions_withheld |= _withheld(actions, CRITICAL_OBJECT_ACTIONS)
 
         # Only a Deny reaching the BUCKET resource can withhold
         # `PutBucketPolicy`; a Deny confined to `<bucket>/*` covers object
         # actions and cannot lock anything.
-        if bucket_arn not in resources:
+        if not covers_bucket:
             continue
 
         if not_principals is not _MISSING:
@@ -240,6 +340,24 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
             f"Hetzner's default is that every key pair in a project reaches every bucket in "
             f"it, so a policy without both denials leaves {bucket!r} open to every credential "
             f"in the project while reporting success."
+        )
+
+    missing_bucket = [a for a in CRITICAL_BUCKET_CONFIGURATION_ACTIONS if a not in bucket_actions_withheld]
+    if missing_bucket:
+        raise BucketConfigError(
+            f"the policy denies something on the bucket resource, but not "
+            f"{', '.join(missing_bucket)}. A Deny that reaches this resource without "
+            f"withholding these leaves a workload credential able to rewrite the fence, "
+            f"widen it, or disable the recovery layers this bucket depends on, while the "
+            f"policy still reads as fenced."
+        )
+    missing_objects = [a for a in CRITICAL_OBJECT_ACTIONS if a not in object_actions_withheld]
+    if missing_objects:
+        raise BucketConfigError(
+            f"the policy denies something on the object resource, but not "
+            f"{', '.join(missing_objects)}. This bucket has no anonymous-read requirement, "
+            f"so nothing needs a narrower exemption than these withheld from every "
+            f"principal but the operator and the named workload keys."
         )
 
 
