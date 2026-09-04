@@ -28,14 +28,30 @@ a document whose only number is misapplied to the wrong version class read
 back identically. The two readings differ in what the storage engine DOES
 over time, which only elapsed wall-clock time against a real object can show.
 
-THE CHEAP DECISIVE TEST. Put one object into a bucket carrying this exact rule
-shape with `NoncurrentDays` set low (default 1, so a daily lifecycle pass
-settles it in 24-48h rather than the real 30), never overwrite it -- an object
-that is never superseded never acquires a noncurrent version under EITHER
-reading, so nothing about this test depends on versioning behaving any
-particular way -- and come back after the wait to see whether the object
-survives. Surviving is READING A. Gone is READING B, and READING B means every
-tenant's media is being deleted a fixed number of days after upload right now.
+THE CHEAP DECISIVE TEST, AND WHY IT NEEDS TWO OBJECTS NOT ONE. Put one "probe"
+object, under a key the rule's `Filter` covers, into a bucket carrying this
+exact rule shape with `NoncurrentDays` set low (default 1, so a daily
+lifecycle pass settles it in 24-48h rather than the real 30); never overwrite
+it, so it never acquires a noncurrent version under EITHER reading and the
+test does not depend on versioning behaving any particular way. Alongside it,
+put a "control" object under a key the rule's `Filter` does NOT cover -- so no
+reading of this rule, optimistic or pessimistic, predicts the control's
+removal.
+
+A single object's disappearance is not proof by itself: a 404 is equally
+consistent with the bucket having been deleted out from under the probe, a
+credential or permission change between the two runs, or unrelated manual
+cleanup -- exactly the "a negative result cannot identify which boundary
+produced it" trap this whole item is about, and a tool meant to resolve that
+ambiguity must not reintroduce it. The control is the discriminator:
+
+  - probe gone, control survives -> only the rule could have done that,
+    because the control was never in its scope. READING B, confirmed.
+  - probe gone, control ALSO gone -> something removed both, and the rule
+    only covers one of them -- attribute nothing to the rule. INCONCLUSIVE.
+  - probe survives -> READING A, regardless of the control (which is expected
+    to survive too; if it does not, that is its own anomaly, reported as
+    INCONCLUSIVE rather than folded into a verdict about the probe).
 
 USAGE, two runs against a THROWAWAY bucket -- never a tenant's media bucket,
 never `branchleft-db-backups`, never anything with real content:
@@ -60,47 +76,91 @@ never `branchleft-db-backups`, never anything with real content:
 
     # 24-48 hours later, same receipt file, same credential:
     python3 infra/provisioning/scripts/probe-media-lifecycle-expiration.py check \\
-      --endpoint hel1.your-objectstorage.com --region hel1 \\
       --receipt /tmp/media-lifecycle-probe-receipt.json
 
-INTERPRETATION GUIDE, read from `check`'s own printed verdict:
+    # A SECOND run, against a SEPARATE throwaway bucket, tests the shape
+    # branchleft-db-backups actually carries -- no AbortIncompleteMultipartUpload,
+    # and its own 35-day NoncurrentDays (the low default is still fine for a
+    # fast answer; only the ELEMENT SET is what needs to match). See "THE
+    # BACKUP BUCKET IS A SEPARATE CLAIM" below for why this is not optional:
+    python3 infra/provisioning/scripts/probe-media-lifecycle-expiration.py setup \\
+      --bucket branchleft-lifecycle-probe-<yyyymmdd>-backup-shape \\
+      --endpoint hel1.your-objectstorage.com --region hel1 \\
+      --rule-shape backup \\
+      --receipt /tmp/backup-lifecycle-probe-receipt.json
 
-  SURVIVES (HTTP 200, ETag matches the receipt) -- READING A. The rule shape
-  `render-media-bucket-policy.py` emits does not expire a current, never-
-  superseded object. Record this in `14-hetzner-migration-programme.md`
-  section 16 as Observed; the register's own words already say this needs
-  exactly this kind of run to close. No code change is implied.
+INTERPRETATION GUIDE, read from `check`'s own printed verdict. Each names
+exactly what it does and does not rule out -- there is no ETag or version-id
+comparison anywhere in this script: `signed_request`'s transport returns only
+`(status, body)`, no headers, so nothing here claims to verify object
+identity beyond "a HEAD to this key returned 200 or 404". The control object
+is what supplies the missing discriminator instead.
 
-  GONE (HTTP 404 / NoSuchKey) -- READING B. Confirmed: this exact rule shape
-  deletes a tenant's media a fixed number of days after upload, and every
-  tenant provisioned since the rule started being applied has media at risk
-  right now. This is not a finding to record and move on from -- stop
-  provisioning new tenants under this rule shape, and escalate to Rob before
-  doing anything else, because the next action (freezing the lifecycle rule
-  on every live tenant bucket, or removing it, is itself a live-infrastructure
-  change on production media buckets and is exactly the kind of action this
-  script's own author was barred from taking unattended.
+  SURVIVES (probe HTTP 200) -- READING A. The rule shape under test does not
+  expire a current, never-superseded object. Record this in
+  `14-hetzner-migration-programme.md` section 16 as Observed for the rule
+  shape tested (media or backup, per the receipt); the register's own words
+  already say this needs exactly this kind of run to close. No code change
+  is implied. Does NOT by itself rule out some other object-identity mixup
+  (there is no version id or ETag check here) -- it rules out the object at
+  this key being gone.
 
-  ANYTHING ELSE (a transport error, a non-200/404 status, a credential that
-  cannot reach the bucket) -- INCONCLUSIVE, not a pass. A negative result here
-  cannot even be trusted at face value: a disposable bucket used for nothing
-  else makes an accidental delete by something unrelated unlikely, but a 404
-  from a credential problem or a mistyped bucket name is indistinguishable
-  from one at the wire level, and only re-running once the transport question
-  is fixed tells them apart. Report the raw status and body; do not guess.
+  GONE, CONTROL SURVIVES (probe HTTP 404, control HTTP 200) -- READING B,
+  CONFIRMED. The control was never in the rule's `Filter` scope under either
+  reading, so its survival while the probe vanished attributes the loss to
+  this rule specifically, not to the bucket, credential or account in
+  general. Every bucket carrying the SAME rule shape (media or backup, named
+  in the receipt) is losing content on the same schedule, right now. Stop
+  provisioning new tenants under this rule shape and escalate to Rob before
+  touching any live bucket -- freezing or replacing the lifecycle rule on a
+  live bucket is itself a production infrastructure change, outside what
+  this script or its author may do unattended.
 
-WHY THE RULE SHAPE HERE MUST STAY IDENTICAL TO PRODUCTION'S. This script's
-lifecycle document uses exactly the two elements
-`render-media-bucket-policy.py` emits -- `NoncurrentVersionExpiration` and
-`AbortIncompleteMultipartUpload` -- and nothing else. Adding a current-version
-`Expiration` element to "help" would answer a different question: whether an
-EXPLICIT current-version expiry is honoured, which nobody doubts, not whether
-the ambiguous rule this platform actually ships is. Inventing any element or
-action name not already proven acceptable elsewhere in this repository is
-exactly the mistake that made a bucket policy unrenderable in a previous
-incident here -- this file uses nothing that
-`render-media-bucket-policy.py` and `configure_backup_bucket.py` have not
-already had accepted.
+  GONE, CONTROL ALSO GONE (both HTTP 404) -- INCONCLUSIVE, not READING B.
+  Something removed both objects, but the rule under test only covers the
+  probe's key -- its scope cannot explain the control's disappearance, so
+  this result cannot be attributed to the rule. Investigate the bucket
+  itself (deleted? a broader credential change? manual cleanup?) before
+  drawing any conclusion, and re-run once that is understood.
+
+  PROBE SURVIVES, CONTROL GONE (probe 200, control 404) -- INCONCLUSIVE. No
+  reading of this rule predicts the control disappearing while the probe
+  does not; this pattern does not match the question this script asks.
+  Investigate rather than trust either half.
+
+  ANYTHING ELSE (a transport error, a non-200/404 status on either key, a
+  credential that cannot reach the bucket) -- INCONCLUSIVE. Report the raw
+  status and body for both keys; do not guess.
+
+THE BACKUP BUCKET IS A SEPARATE CLAIM, NOT AN ASSUMED TRANSFER. A run of this
+script proves a result about the rule shape it actually applied.
+`branchleft-db-backups` (`db/provision/configure_backup_bucket.py`) carries
+`NoncurrentVersionExpiration` alone, at 35 days, with NO
+`AbortIncompleteMultipartUpload` element -- a narrower rule than the media
+default this script applies. `--rule-shape backup` reproduces that narrower
+shape (element set only; `--noncurrent-days` is still yours to lower for a
+fast answer). Whether `AbortIncompleteMultipartUpload`'s mere presence
+changes how RGW's lifecycle engine reads the sibling
+`NoncurrentVersionExpiration` element is not established either way by a
+single run -- it is a small, plausible-sounding claim ("an unrelated sibling
+element changes this one's interpretation") that nobody has tested, so it is
+not assumed here. A media-shape SURVIVES or GONE verdict is evidence, not
+proof, about the backup bucket; run `--rule-shape backup` separately for a
+claim about it specifically. See branchLeft/ghost-platform#165 for why this
+matters: that bucket's current-object retention already depends on
+`prune_backups.py`'s own pruning running before anything else deletes the
+object it is about to evaluate.
+
+WHY THIS SCRIPT USES NO VOCABULARY BEYOND WHAT IS ALREADY PROVEN. Both rule
+shapes here use only elements `render-media-bucket-policy.py` or
+`configure_backup_bucket.py` already have accepted: `NoncurrentVersionExpiration`,
+`AbortIncompleteMultipartUpload`, `Filter`/`Prefix`, `ID`, `Status`. Adding a
+current-version `Expiration` element to "help" would answer a different
+question -- whether an EXPLICIT current-version expiry is honoured, which
+nobody doubts -- not whether the ambiguous rule this platform actually ships
+is safe. Inventing any element or action name not already proven acceptable
+elsewhere in this repository is exactly the mistake that made a bucket policy
+unrenderable in a previous incident here.
 
 WHY THIS SCRIPT NEVER RUNS ITSELF. It is written to be executed by a human
 with a live credential and a throwaway bucket, on a 24-48h cadence it cannot
@@ -131,6 +191,13 @@ from shared_objectstorage import ObjectStorageError, signed_request  # noqa: E40
 # is refused before a single request is signed, because the object this
 # script uploads is deliberately never protected by a bucket policy and the
 # whole point of the test is to let a lifecycle rule run unopposed on it.
+#
+# `check()` calls this too, on the bucket named in the RECEIPT rather than an
+# operator-typed flag -- a stale or hand-edited receipt naming a real bucket
+# is exactly the half-awake, days-later mistake this guard exists to survive,
+# and `check` only ever reads, so the mistake it prevents is pointing a
+# credential's read at a bucket it should never have reached at all, days
+# after the operator's attention was on something else.
 PROBE_BUCKET_PREFIX = "branchleft-lifecycle-probe-"
 
 # Named explicitly, belt-and-braces on top of the prefix check above: these
@@ -139,17 +206,35 @@ PROBE_BUCKET_PREFIX = "branchleft-lifecycle-probe-"
 NEVER_PROBE_BUCKETS = frozenset({"branchleft-db-backups", "branchleft-pulumi-state"})
 
 # The rule shape under test -- byte-for-byte what render-media-bucket-policy.py
-# emits, with only NoncurrentDays parametrised so the same ambiguity can be
-# settled in 24-48h instead of 30 days. See the module docstring: adding any
-# other element answers a different, easier question.
+# emits by default, with NoncurrentDays parametrised so the same ambiguity can
+# be settled in 24-48h instead of 30 days, and the element set switchable to
+# match configure_backup_bucket.py's narrower shape. See the module docstring:
+# adding any element neither generator emits answers a different, easier
+# question.
 DEFAULT_NONCURRENT_DAYS = 1
 ABORT_MULTIPART_DAYS = 7
 
-# Never overwritten. An object that is superseded acquires a noncurrent
-# version under either reading, which is a question this test does not need
-# to ask; the whole probe rests on this key staying at exactly one version.
-PROBE_OBJECT_KEY = "probe-canary"
+# media: render-media-bucket-policy.py's shape (NoncurrentVersionExpiration +
+# AbortIncompleteMultipartUpload). backup: configure_backup_bucket.py's
+# narrower shape (NoncurrentVersionExpiration alone). Whether the difference
+# is material is exactly what running both shapes separately is for -- see
+# "THE BACKUP BUCKET IS A SEPARATE CLAIM" above.
+RULE_SHAPES = {"media": True, "backup": False}
+
+# The probe key is covered by the rule's Filter; the control key deliberately
+# is not, by prefix -- it is the discriminator between "the rule did this" and
+# "something else touched the bucket". Neither is ever overwritten: an object
+# that is superseded acquires a noncurrent version under either reading,
+# which is a question this test does not need to ask.
+PROBE_OBJECT_PREFIX = "probe/"
+CONTROL_OBJECT_PREFIX = "control/"
+PROBE_OBJECT_KEY = f"{PROBE_OBJECT_PREFIX}canary"
+CONTROL_OBJECT_KEY = f"{CONTROL_OBJECT_PREFIX}canary"
 PROBE_OBJECT_BODY = b"branchleft media-lifecycle expiration probe -- do not delete by hand\n"
+CONTROL_OBJECT_BODY = (
+    b"branchleft media-lifecycle expiration probe CONTROL -- outside the rule's Filter "
+    b"on purpose; do not delete by hand\n"
+)
 
 
 class ProbeInputError(ValueError):
@@ -196,17 +281,25 @@ def _versioning_document() -> bytes:
     )
 
 
-def lifecycle_document(noncurrent_days: int) -> bytes:
-    # Every element here is one `render-media-bucket-policy.py` or
-    # `configure_backup_bucket.py` already emits successfully. Nothing new.
+def lifecycle_document(noncurrent_days: int, include_abort_multipart_upload: bool = True) -> bytes:
+    # Every element here is one render-media-bucket-policy.py or
+    # configure_backup_bucket.py already emits successfully. Nothing new.
+    # `Filter/Prefix` is PROBE_OBJECT_PREFIX, not empty -- scoping the rule to
+    # the probe key on purpose, so the control key is provably outside it
+    # regardless of which reading is true.
+    abort_multipart = (
+        f"<AbortIncompleteMultipartUpload><DaysAfterInitiation>{ABORT_MULTIPART_DAYS}"
+        "</DaysAfterInitiation></AbortIncompleteMultipartUpload>"
+        if include_abort_multipart_upload
+        else ""
+    )
     return (
         '<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
         "<Rule><ID>branchleft-lifecycle-probe</ID><Status>Enabled</Status>"
-        "<Filter><Prefix></Prefix></Filter>"
+        f"<Filter><Prefix>{PROBE_OBJECT_PREFIX}</Prefix></Filter>"
         f"<NoncurrentVersionExpiration><NoncurrentDays>{noncurrent_days}</NoncurrentDays>"
         "</NoncurrentVersionExpiration>"
-        f"<AbortIncompleteMultipartUpload><DaysAfterInitiation>{ABORT_MULTIPART_DAYS}"
-        "</DaysAfterInitiation></AbortIncompleteMultipartUpload>"
+        f"{abort_multipart}"
         "</Rule></LifecycleConfiguration>"
     ).encode()
 
@@ -236,14 +329,30 @@ def _put_bucket_subresource(
         )
 
 
+def _put_object(
+    *, bucket: str, endpoint: str, region: str, access_key: str, secret_key: str,
+    key: str, body: bytes,
+) -> None:
+    status, response_body = signed_request(
+        method="PUT", endpoint=endpoint, region=region, access_key=access_key,
+        secret_key=secret_key, bucket=bucket, key=key, payload=body, content_type="text/plain",
+    )
+    if not 200 <= status < 300:
+        raise ObjectStorageError(f"PUT {bucket}/{key} failed: HTTP {status}: {response_body!r}")
+
+
 def setup(
     *, bucket: str, endpoint: str, region: str, access_key: str, secret_key: str,
-    noncurrent_days: int, receipt_path: pathlib.Path,
+    noncurrent_days: int, receipt_path: pathlib.Path, rule_shape: str = "media",
 ) -> str:
-    """Enable versioning, apply the rule under test, upload the one canary
-    object, and write a receipt `check` reads back. Returns the report
-    printed to the operator."""
+    """Enable versioning, apply the rule under test, upload the probe and
+    control objects, and write a receipt `check` reads back. Returns the
+    report printed to the operator."""
     assert_bucket_is_disposable(bucket)
+    if rule_shape not in RULE_SHAPES:
+        raise ProbeInputError(
+            f"--rule-shape {rule_shape!r} is not one of {sorted(RULE_SHAPES)}"
+        )
     if receipt_path.exists():
         raise ProbeInputError(
             f"{receipt_path} already exists -- this script does not overwrite a receipt, "
@@ -258,20 +367,21 @@ def setup(
         secret_key=secret_key, subresource="versioning", body=_versioning_document(),
         needs_content_md5=False,
     )
-    lifecycle_body = lifecycle_document(noncurrent_days)
+    lifecycle_body = lifecycle_document(noncurrent_days, RULE_SHAPES[rule_shape])
     _put_bucket_subresource(
         bucket=bucket, endpoint=host, region=region, access_key=access_key,
         secret_key=secret_key, subresource="lifecycle", body=lifecycle_body,
         needs_content_md5=True,
     )
 
-    put_status, put_body = signed_request(
-        method="PUT", endpoint=host, region=region, access_key=access_key,
-        secret_key=secret_key, bucket=bucket, key=PROBE_OBJECT_KEY,
-        payload=PROBE_OBJECT_BODY, content_type="text/plain",
+    _put_object(
+        bucket=bucket, endpoint=host, region=region, access_key=access_key,
+        secret_key=secret_key, key=PROBE_OBJECT_KEY, body=PROBE_OBJECT_BODY,
     )
-    if not 200 <= put_status < 300:
-        raise ObjectStorageError(f"PUT {bucket}/{PROBE_OBJECT_KEY} failed: HTTP {put_status}: {put_body!r}")
+    _put_object(
+        bucket=bucket, endpoint=host, region=region, access_key=access_key,
+        secret_key=secret_key, key=CONTROL_OBJECT_KEY, body=CONTROL_OBJECT_BODY,
+    )
 
     uploaded_at = datetime.datetime.now(datetime.timezone.utc)
     earliest_decisive_check = uploaded_at + datetime.timedelta(days=noncurrent_days + 1)
@@ -279,7 +389,9 @@ def setup(
         "bucket": bucket,
         "endpoint": endpoint,
         "region": region,
-        "key": PROBE_OBJECT_KEY,
+        "probe_key": PROBE_OBJECT_KEY,
+        "control_key": CONTROL_OBJECT_KEY,
+        "rule_shape": rule_shape,
         "noncurrent_days": noncurrent_days,
         "uploaded_at": uploaded_at.isoformat(),
         "earliest_decisive_check": earliest_decisive_check.isoformat(),
@@ -287,9 +399,11 @@ def setup(
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
 
     return (
-        f"setup complete on {bucket}: versioning enabled, lifecycle rule applied "
-        f"(NoncurrentDays={noncurrent_days}, no current-version Expiration), "
-        f"{PROBE_OBJECT_KEY!r} uploaded at {uploaded_at.isoformat()}.\n"
+        f"setup complete on {bucket}: versioning enabled, {rule_shape}-shaped lifecycle rule "
+        f"applied (NoncurrentDays={noncurrent_days}, "
+        f"AbortIncompleteMultipartUpload={'present' if RULE_SHAPES[rule_shape] else 'absent'}, "
+        f"no current-version Expiration), {PROBE_OBJECT_KEY!r} and {CONTROL_OBJECT_KEY!r} "
+        f"uploaded at {uploaded_at.isoformat()}.\n"
         f"Receipt written to {receipt_path}.\n"
         f"Run `check` no earlier than {earliest_decisive_check.isoformat()} -- "
         f"before that, RGW's daily lifecycle pass has not necessarily run yet and "
@@ -297,50 +411,81 @@ def setup(
     )
 
 
+def _head(*, host: str, region: str, access_key: str, secret_key: str, bucket: str, key: str):
+    return signed_request(
+        method="HEAD", endpoint=host, region=region, access_key=access_key,
+        secret_key=secret_key, bucket=bucket, key=key,
+    )
+
+
 def check(*, receipt_path: pathlib.Path, access_key: str, secret_key: str) -> str:
     if not receipt_path.exists():
         raise ProbeInputError(f"{receipt_path} does not exist -- run `setup` first")
     receipt = json.loads(receipt_path.read_text())
+    # The receipt names the bucket this credential is about to read -- refuse
+    # BEFORE any request is signed, exactly as `setup` refuses before its
+    # first write. A receipt is a plain JSON file an operator can hand-edit
+    # or mix up with another run's; nothing about `check` running read-only
+    # licenses skipping the same guard `setup` applies.
+    assert_bucket_is_disposable(receipt["bucket"])
     host = _bare_host(receipt["endpoint"])
     now = datetime.datetime.now(datetime.timezone.utc)
     earliest = datetime.datetime.fromisoformat(receipt["earliest_decisive_check"])
     elapsed = now - datetime.datetime.fromisoformat(receipt["uploaded_at"])
+    rule_shape = receipt.get("rule_shape", "media")
 
-    status, body = signed_request(
-        method="HEAD",
-        endpoint=host,
-        region=receipt["region"],
-        access_key=access_key,
-        secret_key=secret_key,
-        bucket=receipt["bucket"],
-        key=receipt["key"],
+    probe_status, probe_body = _head(
+        host=host, region=receipt["region"], access_key=access_key, secret_key=secret_key,
+        bucket=receipt["bucket"], key=receipt["probe_key"],
+    )
+    control_status, control_body = _head(
+        host=host, region=receipt["region"], access_key=access_key, secret_key=secret_key,
+        bucket=receipt["bucket"], key=receipt["control_key"],
     )
 
     early_warning = "" if now >= earliest else (
         f"\nWARNING: this is {elapsed} after upload, before the earliest decisive check time "
         f"{receipt['earliest_decisive_check']}. A SURVIVES verdict this early is not yet "
-        f"decisive -- the daily lifecycle pass may not have run. A GONE verdict this early is "
-        f"still decisive; nothing legitimate deletes this object sooner than the rule allows."
+        f"decisive -- the daily lifecycle pass may not have run. A GONE-with-control-surviving "
+        f"verdict this early is still decisive; nothing legitimate deletes the probe sooner "
+        f"than the rule allows."
     )
+    detail = f"probe={receipt['probe_key']!r} HTTP {probe_status}, control={receipt['control_key']!r} HTTP {control_status}"
 
-    if status == 200:
+    if probe_status == 200 and control_status == 200:
         return (
-            f"SURVIVES ({elapsed} after upload, HTTP 200) -- READING A. The rule shape "
-            f"render-media-bucket-policy.py emits does not expire a current, never-superseded "
-            f"object on {receipt['bucket']}/{receipt['key']}.{early_warning}"
+            f"SURVIVES ({elapsed} after upload, {detail}) -- READING A for the {rule_shape!r} "
+            f"rule shape. Neither object was removed; the rule does not expire a current, "
+            f"never-superseded object.{early_warning}"
         )
-    if status == 404:
+    if probe_status == 404 and control_status == 200:
         return (
-            f"GONE ({elapsed} after upload, HTTP 404) -- READING B, CONFIRMED. This rule shape "
-            f"deletes a current object {receipt['noncurrent_days']} day(s) after upload. Every "
-            f"tenant media bucket carrying this rule is losing content on the same schedule. "
-            f"Stop here and escalate to Rob before touching any live tenant bucket.{early_warning}"
+            f"GONE, CONTROL SURVIVES ({elapsed} after upload, {detail}) -- READING B, CONFIRMED "
+            f"for the {rule_shape!r} rule shape. The control was never in this rule's Filter "
+            f"scope, so its survival attributes the probe's loss to the rule itself, not to the "
+            f"bucket or credential. Every bucket carrying this rule shape is losing content on "
+            f"the same schedule, right now. Stop here and escalate to Rob before touching any "
+            f"live bucket.{early_warning}"
+        )
+    if probe_status == 404 and control_status == 404:
+        return (
+            f"INCONCLUSIVE ({elapsed} after upload, {detail}): both objects are gone, but the "
+            f"rule under test does not cover the control's key -- its scope cannot explain the "
+            f"control's disappearance, so this cannot be attributed to the rule. Investigate the "
+            f"bucket (deleted? a broader credential change? manual cleanup?) before drawing any "
+            f"conclusion.{early_warning}"
+        )
+    if probe_status == 200 and control_status == 404:
+        return (
+            f"INCONCLUSIVE ({elapsed} after upload, {detail}): the probe survives but the control "
+            f"-- outside the rule's scope -- is gone. No reading of this rule predicts that "
+            f"pattern; investigate rather than trust either half.{early_warning}"
         )
     return (
-        f"INCONCLUSIVE ({elapsed} after upload, HTTP {status}): {body!r}. Not a pass and not a "
-        f"confirmed GONE -- a transport or credential problem is indistinguishable from a "
-        f"deleted object at this layer. Fix the transport question and re-run before drawing "
-        f"any conclusion.{early_warning}"
+        f"INCONCLUSIVE ({elapsed} after upload, {detail}, probe body={probe_body!r}, "
+        f"control body={control_body!r}): not a clean 200/404 pair on both keys. A transport or "
+        f"credential problem is indistinguishable from a deleted object at this layer. Fix the "
+        f"transport question and re-run before drawing any conclusion.{early_warning}"
     )
 
 
@@ -348,18 +493,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    setup_parser = subparsers.add_parser("setup", help="apply the rule and upload the canary")
+    setup_parser = subparsers.add_parser("setup", help="apply the rule and upload the canaries")
     setup_parser.add_argument("--bucket", required=True)
     setup_parser.add_argument("--endpoint", default="https://hel1.your-objectstorage.com")
     setup_parser.add_argument("--region", default="hel1")
     setup_parser.add_argument("--noncurrent-days", type=int, default=DEFAULT_NONCURRENT_DAYS)
+    setup_parser.add_argument(
+        "--rule-shape", choices=sorted(RULE_SHAPES), default="media",
+        help="'media' matches render-media-bucket-policy.py (with AbortIncompleteMultipartUpload); "
+        "'backup' matches configure_backup_bucket.py's narrower shape (without it)",
+    )
     setup_parser.add_argument("--receipt", required=True, type=pathlib.Path)
 
-    check_parser = subparsers.add_parser("check", help="read back the canary and give a verdict")
+    check_parser = subparsers.add_parser("check", help="read back both canaries and give a verdict")
     check_parser.add_argument("--receipt", required=True, type=pathlib.Path)
-    # --endpoint/--region are not accepted here: they are read from the
-    # receipt `setup` wrote, so `check` cannot be pointed at a bucket other
-    # than the one it uploaded to by a mistyped flag.
+    # --bucket/--endpoint/--region are not accepted here: they are read from
+    # the receipt `setup` wrote, so `check` cannot be pointed at a bucket
+    # other than the one it uploaded to by a mistyped flag.
 
     args = parser.parse_args(argv)
 
@@ -375,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
                 bucket=args.bucket, endpoint=args.endpoint, region=args.region,
                 access_key=access_key, secret_key=secret_key,
                 noncurrent_days=args.noncurrent_days, receipt_path=args.receipt,
+                rule_shape=args.rule_shape,
             )
         else:
             report = check(receipt_path=args.receipt, access_key=access_key, secret_key=secret_key)
