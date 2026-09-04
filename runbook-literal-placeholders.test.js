@@ -1,9 +1,9 @@
-// branchLeft/ghost-platform#139: `<edge1-ipv4>` was pasted verbatim into two
-// runbooks' fenced commands instead of edge1's real, permanently fixed
-// address. Because db1 is private-only, every command in a runbook proxied
-// through that placeholder failed identically -- quietly, with no error
-// pointing at the cause -- and it was invisible until someone pasted it at
-// 11pm. This is a regression test for that defect class, not a ban on every
+// A placeholder standing in for an address-shaped, permanently fixed host
+// (e.g. `<edge1-ipv4>`) pasted into a fenced command silently breaks every
+// command proxied through it: db1 is private-only, so every remote command
+// in these runbooks hops through edge1 to reach it, and a placeholder that
+// cannot resolve fails each of them identically rather than loudly on the
+// first. This guards against that defect class, not against every
 // angle-bracket token in a runbook.
 //
 // Scope, deliberately narrower than "no <...> anywhere in a fenced block":
@@ -219,8 +219,7 @@ test('self-test: the scanner does not scan a non-command fence language', () => 
 
 // Self-test: a per-invocation credential id that merely names a fixed host
 // -- db/RUNBOOK-db.md's `<db1 backup key id>` -- is not an address and must
-// not be flagged. Written against exactly the false positive this scanner
-// produced on the real tree during development.
+// not be flagged.
 test('self-test: the scanner leaves a non-address placeholder that merely names a fixed host alone', () => {
   const sample = [
     '```bash',
