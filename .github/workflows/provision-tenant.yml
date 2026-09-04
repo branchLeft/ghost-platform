@@ -270,29 +270,32 @@ jobs:
           # run creates a repository, mints a passphrase, initialises a
           # stack or publishes a secret, all of which a prior run found
           # already done by the time a missing `workflow` scope rejected
-          # this workflow's own last push. Never printed whole: only the
-          # scope names it carries are pulled out of it below, and a
-          # failure to read it at all is a refusal, not an assumption that
-          # the token is fine.
-          scope_headers=$(gh api "repos/${GITHUB_REPOSITORY}" --include --silent) || {
+          # this workflow's own last push. The raw response is written to a
+          # file and handed to the script below whole, rather than reduced
+          # to one value with a shell pipeline here: a `grep` that finds no
+          # match exits non-zero, and under this step's `pipefail` that
+          # would abort the step on this line -- before the refusal below
+          # ever runs -- for exactly the case (no such header at all, e.g. a
+          # fine-grained PAT) this check most needs to catch. Never printed
+          # whole: only the scope names the script extracts are ever
+          # written to a message, and a failure to read the response at all
+          # is a refusal, not an assumption that the token is fine.
+          gh api "repos/${GITHUB_REPOSITORY}" --include --silent > /tmp/scope-check-headers.txt || {
             echo "::error::could not read an authenticated response from the GitHub API to determine GH_PAT_TENANT_PROVISIONING's OAuth scopes. Refusing: whether this token can finish the run is knowable from this one response, and an unreadable one is not a passed check."
             exit 1
           }
-          scopes_header=$(printf '%s\n' "$scope_headers" \
-            | grep -i '^x-oauth-scopes:' | head -n1 \
-            | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
 
-          # The set logic -- which scopes this run needs and why, and the
-          # exact-token comparison that refuses a superstring like
-          # `workflow_dispatch` standing in for `workflow` -- lives in a
+          # The extraction, the set logic -- which scopes this run needs and
+          # why -- and the exact-token comparison that refuses a superstring
+          # like `workflow_dispatch` standing in for `workflow` all live in a
           # plain Python script with its own unit tests
           # (infra/provisioning/scripts/test_assert_tenant_provisioning_token_scopes.py)
-          # rather than here, so it stays provable offline instead of only
-          # by dispatching this workflow for real and watching it fail on
-          # its last step.
+          # rather than here, so all three stay provable offline instead of
+          # only by dispatching this workflow for real and watching it fail
+          # on its last step.
           python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py --self-test
           python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py \
-            --scopes-header "$scopes_header"
+            --headers-file /tmp/scope-check-headers.txt
 
           rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}" \
             --jq '[.protection_rules[].type] | join(",")') || {
