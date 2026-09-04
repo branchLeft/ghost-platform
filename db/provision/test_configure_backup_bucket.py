@@ -847,10 +847,6 @@ class MainTests(unittest.TestCase):
         self.assertIn("lock this bucket permanently", stderr.getvalue())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TheCheckerRequiresWhatTheGeneratorActuallyDenies(unittest.TestCase):
     """Round-2 review findings: three ways a policy passed the fence check
     while leaving the bucket reachable through Hetzner's project-wide default.
@@ -927,3 +923,7 @@ class TheCheckerRequiresWhatTheGeneratorActuallyDenies(unittest.TestCase):
         fails: the named workload key is exempted from the object Deny and does
         hold `s3:*` on the objects, so it is accounted for."""
         cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, OPERATOR_ARN)
+
+
+if __name__ == "__main__":
+    unittest.main()
