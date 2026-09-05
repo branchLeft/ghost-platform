@@ -124,7 +124,8 @@ not ten more fields on a dispatch form — `workflow_dispatch` also caps inputs 
 ten.
 
 ```bash
-gh variable set PLATFORM_DB_PRIVATE_IP     --repo branchLeft/ghost-platform --body '10.20.1.20'
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+gh variable set PLATFORM_DB_PRIVATE_IP     --repo branchLeft/ghost-platform --body "$DB1_PRIVATE_IP"
 gh variable set PLATFORM_MEDIA_ENDPOINT    --repo branchLeft/ghost-platform --body 'https://hel1.your-objectstorage.com'
 gh variable set PLATFORM_MEDIA_REGION      --repo branchLeft/ghost-platform --body 'hel1'
 gh variable set HETZNER_PULUMI_BACKEND_URL --repo branchLeft/ghost-platform --body 's3://<tenant-state-bucket>?endpoint=<region>.your-objectstorage.com&s3ForcePathStyle=true&region=<region>'
@@ -249,26 +250,29 @@ goes through `edge1`. An earlier draft of this runbook invoked all of them from
 one invented path.
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 
 # a. db1's own scripts, from branchLeft/ghost-platform. Destination fixed by
 #    db/RUNBOOK-db.md -- the systemd units installed from there reference it.
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r \
-  db/provision root@10.20.1.20:/opt/branchleft/db/
+  db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
 
 # b. The app host's per-tenant volume step, also from branchLeft/ghost-platform.
 #    No runbook placed this anywhere before; it goes beside the host-provisioning
 #    scripts so that one directory on an app host holds everything root runs.
 scp -i ~/.ssh/id_ed25519_hetzner -r \
-  app/provision/. root@<app1-public-ipv4>:/root/platform-provision/
+  app/provision/. root@"$APP1_IPV4":/root/platform-provision/
 
 # c. The host-provisioning scripts, from branchLeft/shared-infra. This is what
 #    installs provision_deploy_slot.py and the branchleft-deploy wrapper that
 #    understands --slot; a host provisioned before slot keys existed needs the
 #    wrapper refreshed or every slot deploy fails with `invalid stack name`.
 scp -i ~/.ssh/id_ed25519_hetzner -r \
-  hetzner/provision/. root@<app1-public-ipv4>:/root/platform-provision
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+  hetzner/provision/. root@"$APP1_IPV4":/root/platform-provision
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   '/root/platform-provision/30-install-deploy-tooling.sh'
 ```
 
@@ -279,7 +283,8 @@ changes; a stale half is a script that runs and disagrees with its neighbour.
 ### 3. Allocate the UID on the app host
 
 ```bash
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   '/root/platform-provision/provision_tenant_volume.py --list-claims'
 ```
 
@@ -294,6 +299,8 @@ Pick the host port the same way, distinct per tenant on that host.
 ### 4. Dispatch the provisioning workflow
 
 ```bash
+APP1_PRIVATE_IP=$(hcloud server describe app1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
 gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
   -f tenant_visibility=public \
   -f tenant_name=<slug> \
@@ -301,8 +308,8 @@ gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
   -f site_url=https://<hostname> \
   -f tenant_uid=<uid from step 3> \
   -f host_port=<port from step 3> \
-  -f app_host_private_ip=10.20.1.100 \
-  -f app_host_ssh_address=<app1-public-ipv4> \
+  -f app_host_private_ip="$APP1_PRIVATE_IP" \
+  -f app_host_ssh_address="$APP1_IPV4" \
   -f image_ref=ghcr.io/branchleft/ghost-tenant@sha256:<digest>
 ```
 
@@ -326,8 +333,10 @@ tenant's stack.
 `db1` has no public address, so this goes through `edge1`:
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
   'MYSQL_PWD=<mysql root password> python3 /opt/branchleft/db/provision/provision_tenant_db.py <slug>'
 ```
 
@@ -657,12 +666,13 @@ over your own root session — never `ssh-keyscan`, which is trust-on-first-use
 and would record whatever answered:
 
 ```bash
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   'cat /etc/ssh/ssh_host_ed25519_key.pub'
 ```
 
-Write one line into `known_hosts`: `<app1-public-ipv4> ` followed by that whole
-output. Commit and push, but do not merge yet.
+Write one line into `known_hosts`: `$APP1_IPV4` (the value the lookup above
+printed) followed by that whole output. Commit and push, but do not merge yet.
 
 The salt is not in the escrow ciphertext: it is in the tenant repository's
 `PULUMI_ENCRYPTION_SALT` environment secret, which is write-only. If you no
@@ -672,30 +682,32 @@ longer have it, read it out of the stack's checkpoint —
 ### 8. Provision the host side, in this order
 
 ```bash
+APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
+
 # a. The volumes and the UID claim. The rendered stack declares both volumes
 #    external, so skipping this fails the unit start loudly rather than coming
 #    up on a volume Docker seeded world-writable from the image.
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "/root/platform-provision/provision_tenant_volume.py --uid <uid> <slug>"
 
 # b. The secrets file, from the stack's own output. Root-owned 0600. No
 #    automated path may write it -- branchleft-deploy writes only
 #    /etc/branchleft/<slug>.image.env.
 pulumi stack output --show-secrets secretsEnvFile --stack <slug> \
-  | ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+  | ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
       "install -m 0600 -o root -g root /dev/stdin /etc/branchleft/<slug>.env"
 
 # c. The Compose file, also from the stack's output, also root-owned. Every line
 #    of it is a runtime-isolation control, which is why nothing automated writes
 #    it either: a stack that silently loses one still starts and still serves.
 pulumi stack output composeFile --stack <slug> \
-  | ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+  | ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
       "mkdir -p /opt/branchleft/<slug> && install -m 0644 -o root -g root /dev/stdin /opt/branchleft/<slug>/compose.yml"
 
 # d. Enable the unit -- WITHOUT --now. It has no image pin yet, and the unit's
 #    EnvironmentFile for that file carries no leading dash, so starting it now
 #    would fail. The tenant repo's first deploy pins the digest and restarts it.
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "systemctl enable branchleft-compose@<slug>"
 
 # e. The deploy slot. Generate the keypair on the workstation first: one per
@@ -708,13 +720,13 @@ ssh-keygen -t ed25519 -N '' -C 'unused' -f ~/.ssh/id_ed25519_slot_<slug>
 #    check. Passing the flag up front suppresses the message entirely, so a
 #    mistyped slug would grant that stack's deploy slot to this tenant with no
 #    signal at all.
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "/root/platform-provision/provision_deploy_slot.py --public-key-file /dev/stdin <slug>" \
   < ~/.ssh/id_ed25519_slot_<slug>.pub
 
 #    Read the refusal. It must name the slug you are onboarding, and nothing
 #    else. Only then re-run with the flag.
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "/root/platform-provision/provision_deploy_slot.py --public-key-file /dev/stdin --adopt-existing-stack <slug>" \
   < ~/.ssh/id_ed25519_slot_<slug>.pub
 
@@ -754,8 +766,9 @@ slot key takes — sshd forced command → `$SHELL -c` → `sudo -n` with no
 controlling terminal → stdin → wrapper — so this is the proof gate:
 
 ```bash
+APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
 printf '%s\n' 'not-an-image' \
-  | ssh -T -i ~/.ssh/id_ed25519_slot_<slug> deploy@<app1-public-ipv4>
+  | ssh -T -i ~/.ssh/id_ed25519_slot_<slug> deploy@"$APP1_IPV4"
 ```
 
 Expect `branchleft-deploy: image reference must be digest-pinned`. That message
@@ -837,13 +850,15 @@ it under a value the tenant repository's secret does not hold.
 Order matters, and two steps are unrecoverable in the wrong one.
 
 ```bash
+APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
+
 # 1. Revoke the slot first, so nothing can redeploy while the rest is
 #    dismantled. Immediate: the stack keeps running, and nothing can change it.
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "/root/platform-provision/provision_deploy_slot.py --revoke <slug>"
 
 # 2. Stop and disable the unit.
-ssh -i ~/.ssh/id_ed25519_hetzner root@<app1-public-ipv4> \
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "systemctl disable --now branchleft-compose@<slug>"
 ```
 

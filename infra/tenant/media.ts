@@ -28,21 +28,13 @@ export const MEDIA_BUCKET_PREFIX = 'branchleft-media-';
 
 /**
  * S3 requires a bucket name's last character to be alphanumeric, and the slug
- * is the tail of the name. The slug grammar permits a trailing hyphen, so this
- * is refused here rather than assumed away.
+ * is the tail of the name. `validateTenantSlug` enforces that same
+ * start/end-alphanumeric rule on the slug grammar itself, so a slug that
+ * reaches this line can never end in a hyphen — there is nothing left for
+ * this function to check on its own.
  */
-const SLUG_LAST_CHARACTER = /[a-z0-9]$/;
-
-/** This tenant's own media bucket. */
 export function mediaBucketName(slug: string): string {
   validateTenantSlug(slug);
-  if (!SLUG_LAST_CHARACTER.test(slug)) {
-    throw new Error(
-      `GhostTenant: tenant slug "${slug}" ends in a hyphen, so its media bucket name ` +
-        `"${MEDIA_BUCKET_PREFIX}${slug}" would end in one too. S3 requires the last character of a ` +
-        `bucket name to be a letter or a digit.`
-    );
-  }
   return `${MEDIA_BUCKET_PREFIX}${slug}`;
 }
 
