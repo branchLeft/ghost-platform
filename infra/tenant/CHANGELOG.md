@@ -2,6 +2,45 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## 3.0.1
+
+**Every tenant's healthcheck followed Ghost's HTTPS redirect and could never
+pass, so every tenant deploy reported failure for a tenant that was serving.**
+Observed on the first Hetzner-native tenant: Ghost booted in 20.3s and
+answered the public hostname with 200, while `docker ps` held the container
+`unhealthy` indefinitely and `branchleft-compose@<slug>` — whose `ExecStart`
+is `docker compose up -d --wait` — failed the deploy job with it.
+
+- The probe now sends `X-Forwarded-Proto: https`. Ghost's
+  `getFrontendRedirectUrl` 301s any request where the configured `url` is
+  HTTPS and `req.secure` is false, and Express derives `req.secure` from that
+  header for a loopback client (`app.set('trust proxy', ...)` in Ghost's
+  `shared/express.js`, both branches of which trust loopback). This is the
+  header the edge proxy sets on every real request, so the probe now takes the
+  path production traffic takes rather than one picked for not redirecting.
+- **The redirect target was local, not remote.** Ghost redirects to
+  `https://<requested host>`, which for a loopback probe is
+  `https://127.0.0.1:2368` — TLS against a plaintext port. The probe therefore
+  failed on every app host regardless of egress policy, rather than only on
+  one with restricted egress.
+- The header is passed as two argv elements (`'--header'`, `'<value>'`) rather
+  than the glued `--header=<value>`. The image is Alpine-based, so the probe
+  runs under BusyBox `wget`; the separated form is the one both it and GNU
+  `wget` accept.
+- `assertRuntimePosture` now refuses a service whose healthcheck is missing,
+  empty, or does not carry that header. A probe that cannot pass is worse than
+  no probe: `--wait` fails on it, so the deploy signal stops carrying
+  information — the same defect class as a healthcheck that has never been
+  green. This makes it a construction-time refusal in the tenant's own Pulumi
+  program instead of something found on a host. A caller that only uses
+  `GhostTenant` or `renderComposeStack` cannot trip it, since both render the
+  header themselves; a caller invoking `assertRuntimePosture` on a
+  hand-built document can, which is why it is called out here.
+- Nothing in this release changes a running tenant. The rendered `compose.yml`
+  is written to the app host by an operator (`RUNBOOK-tenant-onboarding.md`
+  §8c), so a tenant keeps its old probe until that file is re-placed from
+  `pulumi stack output composeFile` and its stack restarted.
+
 ## 3.0.0
 
 **Breaking: `GhostTenant` registered no inputs (`{}`), so the delete guard's

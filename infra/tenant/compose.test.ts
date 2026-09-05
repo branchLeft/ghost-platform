@@ -4,6 +4,7 @@ import { DEFAULT_RESOURCE_CAPS, uploadLimits } from './runtime';
 import type { YamlValue } from './yaml';
 
 const APP_HOST = '10.20.1.100';
+const URL = 'http://127.0.0.1:2368/';
 
 function args(overrides: Partial<ComposeStackArgs> = {}): ComposeStackArgs {
   return {
@@ -35,6 +36,7 @@ function compliantService(): Record<string, YamlValue> {
     logging: { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '3' } },
     ports: [`${APP_HOST}:2368:2368`],
     volumes: ['ghost-blog-content:/var/lib/ghost/content'],
+    healthcheck: { test: ['CMD', 'wget', '--header', 'X-Forwarded-Proto: https', URL] },
   };
 }
 
@@ -91,6 +93,22 @@ describe('renderComposeStack', () => {
   it('declares both volumes external', () => {
     expect(rendered).toContain('ghost-blog-content:\n    external: true');
     expect(rendered).toContain('ghost-blog-adapters:\n    external: true');
+  });
+
+  // Ghost 301s a request it does not consider secure to `https://<requested
+  // host>`, so the unadorned probe this replaced asked for TLS on a plaintext
+  // port and failed every interval on a tenant that was serving perfectly.
+  // The header is what the edge proxy sends, so the probe now takes the same
+  // path a real request does.
+  it('probes over loopback with the header the edge proxy sends', () => {
+    expect(rendered).toMatch(/- '--header'\n\s+- 'X-Forwarded-Proto: https'/);
+    expect(rendered).toContain("- 'http://127.0.0.1:2368/'");
+  });
+
+  // `--header=<value>` is GNU wget's form; the image is Alpine, so the probe
+  // runs under BusyBox wget, which takes the value as its own argument.
+  it('passes the header as two argv elements rather than a glued long option', () => {
+    expect(rendered).not.toContain('--header=');
   });
 
   it('carries none of the forbidden runtime options', () => {
@@ -237,6 +255,33 @@ describe('assertRuntimePosture — the negative space', () => {
         { appHostPrivateIp: APP_HOST }
       )
     ).toThrow(/hostPort/);
+  });
+
+  // The failure this rejects shipped and reached a host: a probe Ghost
+  // answers with a 301 makes `docker compose up --wait` fail, so every deploy
+  // of a working tenant reports failure.
+  it('refuses a probe that omits the forwarded-proto header', () => {
+    expect(() =>
+      assertRuntimePosture(
+        documentWith({
+          ...compliantService(),
+          healthcheck: { test: ['CMD', 'wget', '-q', '-O', '/dev/null', URL] },
+        }),
+        { appHostPrivateIp: APP_HOST }
+      )
+    ).toThrow(/301/);
+  });
+
+  it.each([
+    ['no healthcheck at all', undefined],
+    ['a healthcheck with no test', {}],
+    ['an empty test', { test: [] }],
+  ])('refuses %s', (_name, healthcheck) => {
+    const service = { ...compliantService(), healthcheck } as Record<string, YamlValue>;
+    if (healthcheck === undefined) delete service.healthcheck;
+    expect(() =>
+      assertRuntimePosture(documentWith(service), { appHostPrivateIp: APP_HOST })
+    ).toThrow(/healthcheck\.test/);
   });
 
   it('refuses any bind mount, not only the socket', () => {

@@ -32,6 +32,18 @@ import { toYaml } from './yaml';
  * wrapper maps `$PORT` onto `server__port` and defaults to this. */
 export const GHOST_CONTAINER_PORT = 2368;
 
+/**
+ * Ghost redirects any request it does not consider secure to
+ * `https://<requested host>` whenever the configured `url` is HTTPS, so an
+ * unadorned probe of `/` is answered with a 301 to `https://127.0.0.1:2368` —
+ * TLS against a plaintext port — which `wget` follows and fails on, every
+ * interval, forever. Express derives `req.secure` from this header for a
+ * loopback client, and the edge proxy sets it on every real request, so a
+ * probe carrying it exercises the path production traffic takes rather than
+ * one chosen for being redirect-free.
+ */
+const HEALTHCHECK_FORWARDED_PROTO = 'X-Forwarded-Proto: https';
+
 const CONTENT_MOUNT_PATH = '/var/lib/ghost/content';
 /** Ghost's adapter manager `require()`s JavaScript out of this directory, and
  * it sits inside the volume a theme upload can write to. Left writable, an
@@ -144,6 +156,9 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
         ports: [`${args.appHostPrivateIp}:${args.hostPort}:${GHOST_CONTAINER_PORT}`],
         environment: args.environment as YamlValue,
         volumes: [`${content}:${CONTENT_MOUNT_PATH}`, `${adapters}:${ADAPTERS_MOUNT_PATH}:ro`],
+        // Two argv elements rather than `--header=<value>`: the image is
+        // Alpine-based, so this is BusyBox `wget`, and the separated form is
+        // the one both it and GNU `wget` accept.
         healthcheck: {
           test: [
             'CMD',
@@ -151,6 +166,8 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
             '-q',
             '-O',
             '/dev/null',
+            '--header',
+            HEALTHCHECK_FORWARDED_PROTO,
             `http://127.0.0.1:${GHOST_CONTAINER_PORT}/`,
           ],
           interval: '30s',
@@ -280,6 +297,22 @@ export function assertRuntimePosture(
       } catch (error) {
         at((error as Error).message);
       }
+    }
+
+    // A probe that can never pass is worse than no probe at all: the unit's
+    // `docker compose up --wait` fails on it, so every deploy of a perfectly
+    // healthy tenant reports failure and the signal stops carrying anything.
+    // Asserting the header here is what makes that a construction-time
+    // refusal rather than something found on a host.
+    const healthcheck = service.healthcheck as Record<string, YamlValue> | undefined;
+    const probe = Array.isArray(healthcheck?.test) ? healthcheck.test : [];
+    if (probe.length === 0) {
+      at('must declare a `healthcheck.test`');
+    } else if (!probe.includes(HEALTHCHECK_FORWARDED_PROTO)) {
+      at(
+        `must send \`${HEALTHCHECK_FORWARDED_PROTO}\` in its healthcheck, or Ghost ` +
+          `answers the probe with a 301 to HTTPS that it cannot follow`
+      );
     }
 
     const volumes = Array.isArray(service.volumes) ? service.volumes : [];
