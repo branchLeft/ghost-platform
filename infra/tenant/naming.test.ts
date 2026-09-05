@@ -15,7 +15,7 @@ import {
 } from './naming';
 
 describe('validateTenantSlug', () => {
-  it.each(['blog', 'a', 'example-news', 'news2', 'a1-b2-c3'])('accepts %s', (slug) => {
+  it.each(['blog', 'a', 'example-news', 'news2', 'a1-b2-c3', 'blog-x'])('accepts %s', (slug) => {
     expect(() => validateTenantSlug(slug)).not.toThrow();
   });
 
@@ -28,6 +28,11 @@ describe('validateTenantSlug', () => {
     ['blog one', 'must not carry a space'],
     ['', 'must not be empty'],
     ['blog/../website', 'must not carry a path traversal'],
+    // A slug ending in a hyphen turns into an S3-incompatible media-bucket
+    // name two functions later (`mediaBucketName`); the boundary belongs
+    // here, before `GhostTenant`'s constructor calls `super()`, not there.
+    ['blog-', 'must not end with a hyphen'],
+    ['-', 'a bare hyphen is both a leading and a trailing hyphen'],
   ])('rejects %s (%s)', (slug) => {
     expect(() => validateTenantSlug(slug)).toThrow(/lowercase letter/);
   });
@@ -38,6 +43,14 @@ describe('validateTenantSlug', () => {
     expect(() => validateTenantSlug('a'.repeat(MAX_TENANT_SLUG_LENGTH + 1))).toThrow(
       /32-character account-name limit/
     );
+  });
+
+  it('rejects a trailing hyphen even when the slug is otherwise at the length limit', () => {
+    // Exactly `MAX_TENANT_SLUG_LENGTH` characters, so only the trailing
+    // hyphen -- not the length check -- can be what rejects this.
+    const atLimitWithTrailingHyphen = `${'a'.repeat(MAX_TENANT_SLUG_LENGTH - 1)}-`;
+    expect(atLimitWithTrailingHyphen.length).toBe(MAX_TENANT_SLUG_LENGTH);
+    expect(() => validateTenantSlug(atLimitWithTrailingHyphen)).toThrow(/lowercase letter/);
   });
 
   // A tenant slugged `website` would land on top of the marketing site's
