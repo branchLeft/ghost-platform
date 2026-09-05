@@ -4,6 +4,8 @@ import { DEFAULT_RESOURCE_CAPS, uploadLimits } from './runtime';
 import type { YamlValue } from './yaml';
 
 const APP_HOST = '10.20.1.100';
+const URL = 'http://127.0.0.1:2368/';
+const HEADER = 'X-Forwarded-Proto: https';
 
 function args(overrides: Partial<ComposeStackArgs> = {}): ComposeStackArgs {
   return {
@@ -35,6 +37,7 @@ function compliantService(): Record<string, YamlValue> {
     logging: { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '3' } },
     ports: [`${APP_HOST}:2368:2368`],
     volumes: ['ghost-blog-content:/var/lib/ghost/content'],
+    healthcheck: { test: ['CMD', 'wget', '--header', HEADER, URL] },
   };
 }
 
@@ -91,6 +94,16 @@ describe('renderComposeStack', () => {
   it('declares both volumes external', () => {
     expect(rendered).toContain('ghost-blog-content:\n    external: true');
     expect(rendered).toContain('ghost-blog-adapters:\n    external: true');
+  });
+
+  // Ghost 301s a request it does not consider secure to `https://<requested
+  // host>`, so the unadorned probe this replaced asked for TLS on a plaintext
+  // port and failed every interval on a tenant that was serving perfectly.
+  // The header is what the edge proxy sends, so the probe now takes the same
+  // path a real request does.
+  it('probes over loopback with the header the edge proxy sends', () => {
+    expect(rendered).toMatch(/- '--header'\n\s+- 'X-Forwarded-Proto: https'/);
+    expect(rendered).toContain("- 'http://127.0.0.1:2368/'");
   });
 
   it('carries none of the forbidden runtime options', () => {
@@ -237,6 +250,130 @@ describe('assertRuntimePosture — the negative space', () => {
         { appHostPrivateIp: APP_HOST }
       )
     ).toThrow(/hostPort/);
+  });
+
+  // The failure this rejects shipped and reached a host: a probe Ghost
+  // answers with a 301 makes `docker compose up --wait` fail, so every deploy
+  // of a working tenant reports failure.
+  it('refuses a probe that omits the forwarded-proto header', () => {
+    expect(() =>
+      assertRuntimePosture(
+        documentWith({
+          ...compliantService(),
+          healthcheck: { test: ['CMD', 'wget', '-q', '-O', '/dev/null', URL] },
+        }),
+        { appHostPrivateIp: APP_HOST }
+      )
+    ).toThrow(/301/);
+  });
+
+  it.each([
+    ['no healthcheck at all', undefined],
+    ['a healthcheck with no test', {}],
+    ['an empty test', { test: [] }],
+    ['an empty string test', { test: '   ' }],
+    ['a CMD form with no command', { test: ['CMD'] }],
+    ['a CMD-SHELL form with no command', { test: ['CMD-SHELL', '  '] }],
+  ])('refuses %s', (_name, healthcheck) => {
+    const service = { ...compliantService(), healthcheck } as Record<string, YamlValue>;
+    if (healthcheck === undefined) delete service.healthcheck;
+    expect(() =>
+      assertRuntimePosture(documentWith(service), { appHostPrivateIp: APP_HOST })
+    ).toThrow(/healthcheck\.test/);
+  });
+
+  // `test: [NONE]` is how Compose *disables* an inherited probe. It declares
+  // a `test` key, so a check looking only for presence accepts it.
+  it('refuses a probe disabled with NONE rather than treating it as declared', () => {
+    expect(() =>
+      assertRuntimePosture(
+        documentWith({ ...compliantService(), healthcheck: { test: ['NONE'] } }),
+        { appHostPrivateIp: APP_HOST }
+      )
+    ).toThrow(/NONE/);
+  });
+
+  it.each([
+    ['a non-object healthcheck', 'wget'],
+    ['a non-array, non-string test', { test: 42 }],
+    ['an unrecognised first element', { test: ['SHELL', 'wget'] }],
+    ['a non-string element', { test: ['CMD', 'wget', 7] }],
+  ])('refuses %s', (_name, healthcheck) => {
+    expect(() =>
+      assertRuntimePosture(
+        documentWith({ ...compliantService(), healthcheck } as Record<string, YamlValue>),
+        { appHostPrivateIp: APP_HOST }
+      )
+    ).toThrow(/healthcheck\.test/);
+  });
+
+  // The header has to be *bound* to `--header`. Attached to any other option
+  // it is still sent somewhere, so a membership test on the argv passes while
+  // Ghost goes on answering 301 — the check would then certify the exact
+  // defect it exists to catch.
+  it.each([
+    ['bound to -U, which sends it as the user agent', ['-U', 'X-Forwarded-Proto: https']],
+    ['loose in the argv, bound to nothing', ['true', 'X-Forwarded-Proto: https']],
+    ['named without its value following', ['--header', '-q', 'X-Forwarded-Proto: https']],
+  ])('refuses a probe carrying the header %s', (_name, argv) => {
+    expect(() =>
+      assertRuntimePosture(
+        documentWith({
+          ...compliantService(),
+          healthcheck: { test: ['CMD', 'wget', ...argv, URL] },
+        }),
+        { appHostPrivateIp: APP_HOST }
+      )
+    ).toThrow(/--header/);
+  });
+
+  // Compose accepts four shapes for `test`. A check that reads only the `CMD`
+  // array refuses correct stacks, which is worse than useless: it makes the
+  // component reject a document Docker would run perfectly.
+  it.each([
+    ['a glued CMD long option', { test: ['CMD', 'wget', `--header=${HEADER}`, URL] }],
+    ['a bare string, the implicit CMD-SHELL form', { test: `wget --header '${HEADER}' ${URL}` }],
+    ['an explicit CMD-SHELL', { test: ['CMD-SHELL', `wget --header='${HEADER}' ${URL}`] }],
+    ['a double-quoted shell value', { test: ['CMD-SHELL', `wget --header "${HEADER}" ${URL}`] }],
+  ])('accepts %s', (_name, healthcheck) => {
+    expect(() =>
+      assertRuntimePosture(documentWith({ ...compliantService(), healthcheck }), {
+        appHostPrivateIp: APP_HOST,
+      })
+    ).not.toThrow();
+  });
+
+  // Unquoted, the shell splits the value: `wget` gets `--header`,
+  // `X-Forwarded-Proto:` and a bare `https` it reads as a URL.
+  it('refuses an unquoted header in a shell-form probe', () => {
+    expect(() =>
+      assertRuntimePosture(
+        documentWith({
+          ...compliantService(),
+          healthcheck: { test: ['CMD-SHELL', `wget --header ${HEADER} ${URL}`] },
+        }),
+        { appHostPrivateIp: APP_HOST }
+      )
+    ).toThrow(/--header/);
+  });
+
+  // The header is Ghost's requirement, not every container's. A sidecar still
+  // has to declare a probe that works; it must not have to lie about this one.
+  it('requires a probe of every service but the Ghost header only of Ghost', () => {
+    const sidecar = {
+      ...compliantService(),
+      healthcheck: { test: ['CMD', 'nc', '-z', '127.0.0.1', '9100'] },
+    };
+    const document = {
+      name: 'blog',
+      services: { ghost: compliantService(), exporter: sidecar },
+    } as Record<string, YamlValue>;
+    expect(() => assertRuntimePosture(document, { appHostPrivateIp: APP_HOST })).not.toThrow();
+
+    delete (document.services as Record<string, Record<string, YamlValue>>).exporter.healthcheck;
+    expect(() => assertRuntimePosture(document, { appHostPrivateIp: APP_HOST })).toThrow(
+      /"exporter".*healthcheck\.test/
+    );
   });
 
   it('refuses any bind mount, not only the socket', () => {
