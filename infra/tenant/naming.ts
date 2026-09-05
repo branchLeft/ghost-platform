@@ -13,8 +13,18 @@
  * deliberately: the same string becomes a MySQL account name there and a
  * systemd instance name here, and a slug that is valid in one place and not
  * the other produces a tenant that half-exists.
+ *
+ * The trailing character is restricted to a letter or digit — stricter than
+ * MySQL, Compose or systemd need on their own — because `mediaBucketName`
+ * below turns this same slug into an S3-compatible bucket name, and bucket
+ * naming rules (AWS S3's "Bucket naming rules", which Hetzner Object Storage
+ * follows as an S3-compatible provider) require a bucket name to both start
+ * and end with a lowercase letter or digit. Catching that here, before
+ * `GhostTenant`'s constructor calls `super()`, is what keeps a hyphen-ending
+ * slug from registering a partial component with the engine only to fail
+ * later inside `mediaBucketName`.
  */
-const TENANT_SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
+const TENANT_SLUG_PATTERN = /^[a-z]([a-z0-9-]*[a-z0-9])?$/;
 
 /** Mirrors `db/provision/naming.py`'s `TENANT_DB_PREFIX`. */
 export const TENANT_DB_PREFIX = 'ghost_';
@@ -46,8 +56,9 @@ export const RESERVED_STACK_NAMES: readonly string[] = ['website', 'edge', 'db',
 export function validateTenantSlug(slug: string): void {
   if (!TENANT_SLUG_PATTERN.test(slug)) {
     throw new Error(
-      `GhostTenant: tenant slug "${slug}" must start with a lowercase letter and contain only ` +
-        `lowercase letters, digits and hyphens.`
+      `GhostTenant: tenant slug "${slug}" must start with a lowercase letter, end with a ` +
+        `lowercase letter or digit, and contain only lowercase letters, digits and hyphens in ` +
+        `between.`
     );
   }
   if (slug.length > MAX_TENANT_SLUG_LENGTH) {
