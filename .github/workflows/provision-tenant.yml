@@ -112,6 +112,10 @@ jobs:
   provision:
     name: Provision
     runs-on: ubuntu-latest
+    # Only 2 successful runs exist (observed 1.2-4.9min) -- too few to
+    # establish a real basis, and this provisions live tenant infrastructure,
+    # so the bound is deliberately generous rather than data-derived.
+    timeout-minutes: 45
 
     # The reviewer gate, and now the only one. Do not remove without reading the
     # header: the run does not pause if the environment carries no protection

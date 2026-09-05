@@ -27,6 +27,8 @@ jobs:
   typecheck:
     name: Tenant type check
     runs-on: ubuntu-latest
+    # Observed 0.25-1.72min over the last 20 successful runs (p95 0.5min).
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: infra/tenant
