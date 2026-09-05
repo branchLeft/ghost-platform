@@ -2277,15 +2277,20 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
         diagnose(engine)
         reads = [sent for sent in engine.sent if sent.operation == "get-object"]
         # Eight baseline reads (four windows' probe objects, both roles) with
-        # no dwell of their own. Under a per-key engine, window B denies the
-        # subject and window C denies the operator -- each of those reads
-        # differs from the no-policy `allowed` baseline and counts at once.
-        # Every other role/window pairing here reads `allowed`, matching that
-        # baseline, and is held for the full dwell before it counts: window
-        # B's operator, window C's subject, and both roles in window D, which
-        # names a principal that resolves to neither key.
+        # no dwell of their own. Each window's `pre_change` is the PRIOR
+        # window's own settled reading, not a hardcoded "allowed" -- so only
+        # window B is still moving away from the no-policy baseline. Under a
+        # per-key engine: window B's subject (denied) and operator (allowed)
+        # both differ from that baseline and count at once; window B's
+        # operator answer of `allowed` is held. Window C moves away from
+        # window B's readings -- its subject (allowed, vs B's `denied`) and
+        # operator (denied, vs B's `allowed`) both differ and count at once.
+        # Window D moves away from window C's readings -- its operator
+        # (allowed, vs C's `denied`) differs and counts at once, but its
+        # subject (allowed) matches C's subject (also `allowed`) and is held
+        # for the full dwell before it counts.
         held = int(verify.DWELL_SECONDS // verify.DWELL_POLL_SECONDS) + 1
-        confirming = (1 + held) + (held + 1) + (held + held)
+        confirming = (1 + held) + (1 + 1) + (held + 1)
         self.assertEqual(len(reads), 8 + confirming)
         self.assertEqual(len({sent.key for sent in reads}), 4)
 
@@ -2333,11 +2338,65 @@ class TestPolicyEngineDiagnostic(unittest.TestCase):
             by_key[sent.key] += 1
         held = int(verify.DWELL_SECONDS // verify.DWELL_POLL_SECONDS) + 1
         # One baseline read on every probe object; window A's is never opened.
-        # Window B denies the subject outright, so its confirming read differs
-        # from the baseline and counts at once. Windows C and D spare the
-        # subject, so its `allowed` reading matches that baseline and is held
-        # for the full dwell before it counts.
-        self.assertEqual(sorted(by_key.values()), sorted([1, 1 + 1, 1 + held, 1 + held]))
+        # Window B's subject reading (denied) differs from the no-policy
+        # baseline and counts at once. Window C's subject reading (allowed)
+        # differs from window B's own settled subject reading (denied) -- the
+        # state C is actually moving away from -- and also counts at once.
+        # Window D's subject reading (allowed) matches window C's settled
+        # subject reading (also allowed, since C spares this key), so it is
+        # held for the full dwell before it counts.
+        self.assertEqual(sorted(by_key.values()), sorted([1, 1 + 1, 1 + 1, 1 + held]))
+
+    def test_window_a_receives_window_d_own_settled_reading_not_a_fallback(self):
+        # WINDOW A IS THE ONE WINDOW NO FIXTURE ABOVE FORCES. Every engine in
+        # `WORLDS` that reaches window A also happens to leave window D's
+        # operator reading at "allowed" -- the same value the pre-fix
+        # hardcoded fallback would supply -- so a read-count assertion built
+        # from one of those engines cannot tell threaded `pre_change` apart
+        # from a dropped one at this call site specifically. This drives
+        # `_read_the_engine` directly, with `_window` mocked to return a
+        # scripted reading per window and record what it was called with, so
+        # the property under test is the `pre_change` argument itself: window
+        # D's operator reading is "denied" here, and only a caller that
+        # actually threads window D's own settled reading forward passes that
+        # to window A rather than the "allowed" every role defaults to.
+        def observation(role, outcome):
+            return verify.Observation("W", role, 200, None, outcome, "")
+
+        scripted = {
+            verify.WINDOW_B: {
+                "foreign": observation("foreign", "allowed"),
+                "operator": observation("operator", "allowed"),
+            },
+            verify.WINDOW_C: {
+                "foreign": observation("foreign", "allowed"),
+                "operator": observation("operator", "allowed"),
+            },
+            verify.WINDOW_D: {
+                "foreign": observation("foreign", "allowed"),
+                "operator": observation("operator", "denied"),
+            },
+            verify.WINDOW_A: {
+                "foreign": observation("foreign", "allowed"),
+                "operator": observation("operator", "allowed"),
+            },
+        }
+        pre_change_by_window = {}
+
+        def fake_window(verifier, bucket, *, window, pre_change=None, **kwargs):
+            pre_change_by_window[window] = pre_change
+            return scripted[window]
+
+        plan = {window: {} for window in scripted}
+        keys = {window: f"probe-{window}" for window in scripted}
+        with mock.patch.object(verify, "_window", fake_window):
+            verify._read_the_engine(
+                None, FENCED, plan=plan, keys=keys, rows=[], evidence=[], masks={}
+            )
+        self.assertEqual(
+            pre_change_by_window[verify.WINDOW_A],
+            {"foreign": "allowed", "operator": "denied"},
+        )
 
     def test_the_evidence_block_carries_no_access_key_id(self):
         # This repository is public and the block exists to be pasted into the

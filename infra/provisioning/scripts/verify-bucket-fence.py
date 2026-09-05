@@ -2156,6 +2156,20 @@ def _dwell(
     while the run keeps a live probe policy on a production bucket. Silence
     there reads as a hang, not a wait, so a held reading narrates itself to
     stderr, once when the hold starts and once per poll.
+
+    THE GRANULARITY PREMISE. `pre_change` is only a valid stand-in for "what a
+    stale read path would echo" if the read path being probed can serve a stale
+    answer for THIS read at all -- which holds if the cache is scoped to the
+    bucket policy as a whole, and does not hold for a probe object no read has
+    touched yet under a per-object cache. This file does not establish which of
+    the two is true and assumes the former, the more dangerous one to get
+    wrong: on a per-object cache, a `pre_change` carried forward from a
+    different probe key's last reading can only ever cost an unneeded hold,
+    because a fresh object's first read is already live and a match against a
+    stale-looking `pre_change` is then coincidence, not staleness -- holding it
+    out does not change what the read settles on. It is never asked to explain
+    away a read that is real; it is only ever asked to wait out one that might
+    not be.
     """
     observation = read()
     evidence.append(observation.line())
@@ -2287,6 +2301,13 @@ def _confirmed_reads(
     a read that still matches it, because that is exactly what a read path
     still serving the state before this window's PUT would produce. A read
     that differs needs no holding: nothing stale can manufacture it.
+
+    THE `allowed` DEFAULT BELOW IS ONLY CORRECT FOR A WINDOW FOLLOWING THE
+    CLEAN BASELINE. A caller chaining windows back to back -- as
+    `_read_the_engine` does across B, C and D -- moves away from the PRIOR
+    window's own settled reading on every window after the first, not away
+    from the no-policy baseline again, and must pass that reading as
+    `pre_change` rather than rely on this fallback.
     """
     pre_change = pre_change or {role: "allowed" for role in roles}
     # There is no disagreement case to report here any more: a role's reading
@@ -2531,8 +2552,19 @@ def _read_the_engine(
     from one document shape, and an engine that resolves named ARNs while
     ignoring `Principal: "*"` is a world where the fence is fully buildable and
     would have been reported as one where no policy works at all.
+
+    EACH WINDOW'S `pre_change` IS THE PRIOR WINDOW'S OWN SETTLED READING, not a
+    hardcoded "allowed". `_temporary_policy.__exit__` removes the prior
+    window's Deny and this window's PUT follows immediately, so what a stale
+    read path echoes here is the state the prior window settled on, not the
+    no-policy baseline this function started from -- and only window B is
+    still moving away from that baseline. Window C moves away from window B's
+    Deny, so a `denied` reading at C is the prior window's stale echo and has
+    to be held, not counted on sight because it happens to differ from
+    "allowed".
     """
     observed: dict[str, dict] = {}
+    pre_change: dict[str, str] | None = None
     for window in (WINDOW_B, WINDOW_C, WINDOW_D):
         observations = _window(
             verifier,
@@ -2543,11 +2575,13 @@ def _read_the_engine(
             rows=rows,
             evidence=evidence,
             masks=masks,
+            pre_change=pre_change,
             dwell_seconds=dwell_seconds,
         )
         if not observations:
             return UNEXPLAINED
         observed[window] = observations
+        pre_change = {role: observation.outcome for role, observation in observations.items()}
     reads = {window: observations[_SUBJECT].outcome for window, observations in observed.items()}
 
     rows.append(_window_row(WINDOW_B, reads, "reaches the key it names", "denied"))
@@ -2595,6 +2629,7 @@ def _read_the_engine(
             rows=rows,
             evidence=evidence,
             masks=masks,
+            pre_change=pre_change,
             dwell_seconds=dwell_seconds,
         )
         if not observations:
