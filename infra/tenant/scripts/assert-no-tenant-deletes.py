@@ -473,6 +473,12 @@ _CAPTURED_VACUOUS_REGRESSION: dict = {"steps": [_captured_same_stack_step()]}
 # Confidence: high on structure -- both source facts were read from the tagged
 # commits, not recalled -- but this is still a derived shape, not a substitute
 # for a genuine capture once a `2.0.0`-pinned tenant exists to take one from.
+#
+# Every identity field, not just one, is varied against this shape below: the
+# old identity here is reachable only through `outputs` and the new one only
+# through `inputs`, a combination none of the fixtures above exercise, and a
+# comparison that quietly narrowed to a single field for that combination
+# would still look correct against a fixture that only ever changed `uid`.
 def _upgrade_from_2_0_0_step(*, new_identity: dict | None = None) -> dict:
     """An `update` step in the exact shape a `2.0.0`-deployed tenant presents
     the first time it previews under `3.0.0`: old identity resolvable only
@@ -495,9 +501,14 @@ def _upgrade_from_2_0_0_step(*, new_identity: dict | None = None) -> dict:
 
 
 _UPGRADE_FROM_2_0_0_UNCHANGED: dict = {"steps": [_captured_same_stack_step(), _upgrade_from_2_0_0_step()]}
-_UPGRADE_FROM_2_0_0_UID_CHANGED: dict = {
-    "steps": [_captured_same_stack_step(), _upgrade_from_2_0_0_step(new_identity=_identity(uid=30099))]
-}
+
+
+def _upgrade_from_2_0_0_changed(**overrides) -> dict:
+    """The same 2.0.0-shaped upgrade step, with one or more identity fields
+    changed in the new state. A separate function rather than a second module
+    constant, because the self-test below needs one of these per field -- see
+    its comment for why every field, not just one, has to be exercised here."""
+    return {"steps": [_captured_same_stack_step(), _upgrade_from_2_0_0_step(new_identity=_identity(**overrides))]}
 
 
 def _self_test() -> int:
@@ -554,17 +565,26 @@ def _self_test() -> int:
 
     # Derived (see the comment above the fixtures): the 2.0.0-shaped upgrade
     # state, where old identity lives only in outputs and new identity only
-    # in inputs. An unchanged tenant must still pass in this shape, and a
-    # real per-field difference must still be caught rather than lost in the
-    # outputs-to-inputs handoff.
+    # in inputs. An unchanged tenant must still pass in this shape, and every
+    # field -- not just one -- must still be caught as a difference rather
+    # than lost in the outputs-to-inputs handoff.
     expect(
         check_plan(_UPGRADE_FROM_2_0_0_UNCHANGED) == [],
         "an unchanged tenant upgrading from a 2.0.0-shaped state must pass",
     )
-    expect(
-        check_plan(_UPGRADE_FROM_2_0_0_UID_CHANGED) != [],
-        "a changed uid on a 2.0.0-shaped upgrade must be refused",
-    )
+    for field, changed in (
+        ("slug", "news"),
+        ("uid", 30002),
+        ("stackName", "news"),
+        ("contentVolume", "ghost-news-content"),
+        ("adaptersVolume", "ghost-news-adapters"),
+        ("databaseName", "ghost_news"),
+        ("appHostPrivateIp", "10.20.1.101"),
+    ):
+        expect(
+            check_plan(_upgrade_from_2_0_0_changed(**{field: changed})) != [],
+            f"a changed {field} on a 2.0.0-shaped upgrade must be refused",
+        )
 
     # The guard must not be silently vacuous. A plan carrying no step at all
     # for the component cannot be compared and must be refused, not passed --
