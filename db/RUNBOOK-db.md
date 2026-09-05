@@ -25,7 +25,7 @@ jump host. That is a platform-owner-only step (root SSH); this repo's own
 PR states the exact command. Confirm it completed before anything below:
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
   systemctl is-active fail2ban unattended-upgrades docker &&
   test -x /usr/local/sbin/branchleft-deploy &&
@@ -108,7 +108,7 @@ below, after the timers that enforce it.
 ## 1. Create the socket directory, copy the stack, install host prerequisites
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 'mkdir -p /opt/branchleft/db/run/mysqld && chmod 777 /opt/branchleft/db/run/mysqld'
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@10.20.1.20:/opt/branchleft/db
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
@@ -186,7 +186,7 @@ All three commands run against `db1`, which has no public address -- the same
 `$JUMP` hop through `edge1` as every other remote command in this file:
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
   'install -d -m 0755 /etc/systemd/system/branchleft-compose@db.service.d'
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" db/systemd/db.override.conf \
@@ -264,7 +264,7 @@ nothing to fall back to. Do all four before restarting anything.
    compose file is what stops requiring `EXPORTER_DATA_SOURCE_NAME`.
 
    ```bash
-   JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
+   JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
    scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
    scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@10.20.1.20:/opt/branchleft/db
    ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
@@ -469,7 +469,7 @@ listing before deciding is the only shape that can hold the invariant above.
 new unit files land, then dry-run before ever deleting anything real:
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
   cd /opt/branchleft/db/provision &&
