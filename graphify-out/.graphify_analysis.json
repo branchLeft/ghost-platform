@@ -1,6 +1,91 @@
 {
   "communities": {
     "0": [
+      "infra_provisioning_scripts_bucketpolicy_matches",
+      "infra_provisioning_scripts_test_verify_bucket_fence_covers",
+      "infra_provisioning_scripts_test_verify_bucket_fence_grant_engine_documented_shape_only",
+      "infra_provisioning_scripts_test_verify_bucket_fence_grant_engine_honours_any_allow",
+      "infra_provisioning_scripts_test_verify_bucket_fence_grant_engine_ignores_allow",
+      "infra_provisioning_scripts_test_verify_bucket_fence_grant_engine_scoped_shape_only",
+      "infra_provisioning_scripts_test_verify_bucket_fence_grant_names",
+      "infra_provisioning_scripts_test_verify_bucket_fence_grant_probe",
+      "infra_provisioning_scripts_test_verify_bucket_fence_grantengine",
+      "infra_provisioning_scripts_test_verify_bucket_fence_grants_a_foreign_principal",
+      "infra_provisioning_scripts_test_verify_bucket_fence_is_the_documented_shape",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2853",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2864",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2878",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2883",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2899",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2908",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2913",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2930",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2968",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_3245",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_headline",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_a_g1_rejected_outright_does_not_foreclose_g2",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_a_g1_that_leaves_the_bucket_dirty_stops_before_g2",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_a_grantee_still_reading_after_the_removal_yields_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_a_transient_allowed_baseline_read_does_not_become_a_false_boundary_finding",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_an_engine_that_honours_any_allow_reports_the_boundary_is_crossable",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_an_engine_that_only_matches_the_published_template_is_named_as_such",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_an_engine_where_the_published_example_fails_is_told_from_one_where_it_works",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_an_unreadable_window_read_is_never_reported_as_a_denial",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_both_shapes_are_sent_even_when_the_first_one_grants",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_every_world_produces_a_different_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_no_grant_at_all_is_reported_as_the_providers_own_example_failing",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_the_headline_is_inconclusive_not_fail_when_both_windows_error",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_the_read_after_removal_is_actually_sent_rather_than_served_from_cache",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_the_report_says_the_boundary_was_crossed_exactly_when_it_was",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_every_document",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_deny_anywhere_in_a_grant_document_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_deny_naming_a_bucket_resource_action_cannot_reach_the_bucket",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_destructive_action_is_refused_even_though_the_wildcard_is_not",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_document_the_bucket_did_not_store_yields_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_document_under_the_wrong_id_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_grant_reaching_only_the_backups_is_still_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_grantee_in_the_buckets_own_project_stops_the_run_before_it_writes",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_grantee_that_reads_the_bucket_with_no_policy_stops_the_run",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_grantee_the_endpoint_saw_as_unsigned_stops_the_run",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_leftover_from_either_deny_mode_is_recognised_as_this_tools_own",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_leftover_grant_is_described_as_a_grant_and_not_as_a_deny",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_long_stored_document_cannot_leak_half_an_access_key_id",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_malformed_document_is_refused_rather_than_crashing_the_guard",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_missing_grantee_credential_stops_the_run_with_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_notprincipal_in_an_allow_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_notresource_is_refused_as_the_third_inversion",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_principal_that_is_not_the_grantee_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_rejected_document_leaves_the_bucket_policy_untouched",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_resource_outside_this_bucket_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_second_principal_type_beside_aws_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_statement_with_no_action_or_a_notaction_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_stranded_grant_document_is_reported_as_urgent",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_wildcard_principal_is_refused_because_it_would_be_an_anonymous_grant",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_an_empty_or_missing_element_is_refused_rather_than_skipped",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_an_operator_that_cannot_read_its_own_probe_object_is_not_a_finding",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_an_unacknowledged_grantee_stops_the_run_and_prints_the_arn_first",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_an_unsendable_document_is_refused_before_a_single_object_is_written",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_every_document_it_sends_is_allow_only_and_names_only_the_grantee",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_every_probe_object_is_written_before_any_policy_exists",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_it_refuses_a_bucket_that_already_carries_a_policy",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_acknowledgement_flag_is_refused_outside_the_mode_it_belongs_to",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_bucket_is_left_with_no_policy_and_no_probe_object",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_dry_run_prints_both_documents_and_sends_nothing",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_asks_about_concrete_objects_not_a_wildcard",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_is_asked_only_about_the_anonymous_caller",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_passes_the_documents_this_mode_actually_sends",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_reaches_the_objects_the_bucket_exists_for",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_refuses_what_the_structural_rules_refuse",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evidence_block_names_no_access_key_id",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_grantee_may_not_be_the_operator_credential",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_workload_and_foreign_credentials_are_not_required_for_this_mode",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_this_mode_needs_no_policy_file_and_no_control_bucket",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_two_probe_modes_at_once_are_refused_whichever_pair_it_is",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyengineprobesaresafe_test_every_document_it_sends_passes_the_reversibility_assertion"
+    ],
+    "1": [
       "infra_tenant_compose",
       "infra_tenant_compose_assertruntimeposture",
       "infra_tenant_compose_composedocument",
@@ -84,86 +169,6 @@
       "infra_tenant_yaml_toyaml",
       "infra_tenant_yaml_yamlvalue"
     ],
-    "1": [
-      "infra_provisioning_scripts_test_verify_bucket_fence_covers",
-      "infra_provisioning_scripts_test_verify_bucket_fence_grant_engine_documented_shape_only",
-      "infra_provisioning_scripts_test_verify_bucket_fence_grant_engine_honours_any_allow",
-      "infra_provisioning_scripts_test_verify_bucket_fence_grant_engine_ignores_allow",
-      "infra_provisioning_scripts_test_verify_bucket_fence_grant_engine_scoped_shape_only",
-      "infra_provisioning_scripts_test_verify_bucket_fence_grant_names",
-      "infra_provisioning_scripts_test_verify_bucket_fence_grant_probe",
-      "infra_provisioning_scripts_test_verify_bucket_fence_grantengine",
-      "infra_provisioning_scripts_test_verify_bucket_fence_grants_a_foreign_principal",
-      "infra_provisioning_scripts_test_verify_bucket_fence_is_the_documented_shape",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2794",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2805",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2819",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2824",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2840",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2849",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2854",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2871",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2909",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_3186",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_headline",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_a_g1_rejected_outright_does_not_foreclose_g2",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_a_g1_that_leaves_the_bucket_dirty_stops_before_g2",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_a_grantee_still_reading_after_the_removal_yields_no_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_a_transient_allowed_baseline_read_does_not_become_a_false_boundary_finding",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_an_engine_that_honours_any_allow_reports_the_boundary_is_crossable",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_an_engine_that_only_matches_the_published_template_is_named_as_such",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_an_engine_where_the_published_example_fails_is_told_from_one_where_it_works",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_an_unreadable_window_read_is_never_reported_as_a_denial",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_both_shapes_are_sent_even_when_the_first_one_grants",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_every_world_produces_a_different_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_no_grant_at_all_is_reported_as_the_providers_own_example_failing",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_the_headline_is_inconclusive_not_fail_when_both_windows_error",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_the_read_after_removal_is_actually_sent_rather_than_served_from_cache",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobe_test_the_report_says_the_boundary_was_crossed_exactly_when_it_was",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_every_document",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_deny_anywhere_in_a_grant_document_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_deny_naming_a_bucket_resource_action_cannot_reach_the_bucket",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_destructive_action_is_refused_even_though_the_wildcard_is_not",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_document_the_bucket_did_not_store_yields_no_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_document_under_the_wrong_id_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_grantee_in_the_buckets_own_project_stops_the_run_before_it_writes",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_grantee_that_reads_the_bucket_with_no_policy_stops_the_run",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_grantee_the_endpoint_saw_as_unsigned_stops_the_run",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_leftover_from_either_deny_mode_is_recognised_as_this_tools_own",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_leftover_grant_is_described_as_a_grant_and_not_as_a_deny",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_long_stored_document_cannot_leak_half_an_access_key_id",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_malformed_document_is_refused_rather_than_crashing_the_guard",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_missing_grantee_credential_stops_the_run_with_no_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_notprincipal_in_an_allow_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_notresource_is_refused_as_the_third_inversion",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_principal_that_is_not_the_grantee_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_rejected_document_leaves_the_bucket_policy_untouched",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_resource_outside_this_bucket_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_second_principal_type_beside_aws_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_statement_with_no_action_or_a_notaction_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_stranded_grant_document_is_reported_as_urgent",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_wildcard_principal_is_refused_because_it_would_be_an_anonymous_grant",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_an_empty_or_missing_element_is_refused_rather_than_skipped",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_an_operator_that_cannot_read_its_own_probe_object_is_not_a_finding",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_an_unacknowledged_grantee_stops_the_run_and_prints_the_arn_first",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_an_unsendable_document_is_refused_before_a_single_object_is_written",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_every_document_it_sends_is_allow_only_and_names_only_the_grantee",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_every_probe_object_is_written_before_any_policy_exists",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_it_refuses_a_bucket_that_already_carries_a_policy",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_acknowledgement_flag_is_refused_outside_the_mode_it_belongs_to",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_bucket_is_left_with_no_policy_and_no_probe_object",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_dry_run_prints_both_documents_and_sends_nothing",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_passes_the_documents_this_mode_actually_sends",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_refuses_what_the_structural_rules_refuse",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evidence_block_names_no_access_key_id",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_grantee_may_not_be_the_operator_credential",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_workload_and_foreign_credentials_are_not_required_for_this_mode",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_this_mode_needs_no_policy_file_and_no_control_bucket",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_two_probe_modes_at_once_are_refused_whichever_pair_it_is",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyengineprobesaresafe_test_every_document_it_sends_passes_the_reversibility_assertion"
-    ],
     "2": [
       "app_provision_test_provision_tenant_volume",
       "app_provision_test_provision_tenant_volume_claimparsingtests",
@@ -230,66 +235,6 @@
       "app_provision_test_provision_tenant_volume_validationtests_test_volume_names_match_the_component"
     ],
     "3": [
-      "db_provision_naming",
-      "db_provision_naming_database_and_user_name",
-      "db_provision_naming_invalidtenantname",
-      "db_provision_naming_rationale_34",
-      "db_provision_naming_rationale_52",
-      "db_provision_naming_rationale_57",
-      "db_provision_naming_sql_identifier",
-      "db_provision_naming_validate_tenant_name",
-      "db_provision_provision_tenant_db",
-      "db_provision_provision_tenant_db_main",
-      "db_provision_provision_tenant_db_provision_tenant_database",
-      "db_provision_provision_tenant_db_provisionerror",
-      "db_provision_provision_tenant_db_provisionresult",
-      "db_provision_provision_tenant_db_provisionresult_init",
-      "db_provision_provision_tenant_db_py_exception",
-      "db_provision_provision_tenant_db_rationale_55",
-      "db_provision_provision_tenant_db_run_sql",
-      "db_provision_provision_tenant_db_user_exists",
-      "db_provision_test_provision_tenant_db",
-      "db_provision_test_provision_tenant_db_fakerun",
-      "db_provision_test_provision_tenant_db_fakerun_call",
-      "db_provision_test_provision_tenant_db_fakerun_init",
-      "db_provision_test_provision_tenant_db_invalidtenantnametests",
-      "db_provision_test_provision_tenant_db_invalidtenantnametests_test_refuses_a_sql_injection_attempt",
-      "db_provision_test_provision_tenant_db_invalidtenantnametests_test_refuses_before_running_any_sql",
-      "db_provision_test_provision_tenant_db_maintests",
-      "db_provision_test_provision_tenant_db_maintests_test_refuses_to_run_without_mysql_pwd_set",
-      "db_provision_test_provision_tenant_db_mysqlfailuretests",
-      "db_provision_test_provision_tenant_db_mysqlfailuretests_test_a_failed_statement_batch_raises_rather_than_reporting_success",
-      "db_provision_test_provision_tenant_db_provisionexistingtenanttests",
-      "db_provision_test_provision_tenant_db_provisionexistingtenanttests_test_does_not_rotate_the_password_or_reissue_create_user",
-      "db_provision_test_provision_tenant_db_provisionexistingtenanttests_test_still_reapplies_a_raised_connection_cap",
-      "db_provision_test_provision_tenant_db_provisionnewtenanttests",
-      "db_provision_test_provision_tenant_db_provisionnewtenanttests_setup",
-      "db_provision_test_provision_tenant_db_provisionnewtenanttests_test_creates_database_user_grants_and_cap",
-      "db_provision_test_provision_tenant_db_provisionnewtenanttests_test_folds_a_hyphenated_tenant_name",
-      "db_provision_test_provision_tenant_db_provisionnewtenanttests_test_never_passes_the_admin_password_as_an_argument",
-      "db_provision_test_provision_tenant_db_rationale_18",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_2xx_is_allowed",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_body_that_is_not_an_error_document_yields_no_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_code_element_outside_an_error_document_yields_no_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_code_element_that_is_not_a_code_yields_no_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_dead_credential_is_an_error_despite_arriving_as_the_same_403",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_doctype_is_never_treated_as_an_error_document",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_missing_object_is_an_error_and_never_a_denial",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_non_utf8_body_does_not_raise",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_pretty_printed_document_is_read_the_same_as_a_flat_one",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_refusal_with_no_error_document_is_an_error",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_request_that_never_reached_the_endpoint_is_an_error",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_an_expensive_document_is_refused_before_it_is_expanded",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_an_object_whose_own_contents_look_like_a_denial_is_still_allowed",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_an_unrecognised_service_error_is_an_error",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_denied_is_reachable_only_through_the_two_denial_codes",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_the_classifier_never_raises_even_if_the_parser_does",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_the_classifier_never_raises_whatever_the_body_is",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_the_real_access_denied_document_is_a_denial",
-      "valueerror"
-    ],
-    "4": [
       "db_provision_test_install_host_prereqs",
       "db_provision_test_install_host_prereqs_ensurealltests",
       "db_provision_test_install_host_prereqs_ensurealltests_setup",
@@ -349,65 +294,7 @@
       "db_provision_test_install_host_prereqs_verifytests_test_mysqlbinlog_from_a_newer_client_is_still_flagged_even_though_it_would_work",
       "db_provision_test_install_host_prereqs_verifytests_test_passes_when_age_present_and_both_tools_report_8_0_x"
     ],
-    "5": [
-      "infra_provisioning_scripts_bucketpolicy",
-      "infra_provisioning_scripts_bucketpolicy_assert_enforceable",
-      "infra_provisioning_scripts_bucketpolicy_decide",
-      "infra_provisioning_scripts_bucketpolicy_key_principal",
-      "infra_provisioning_scripts_bucketpolicy_matches",
-      "infra_provisioning_scripts_bucketpolicy_policyinputerror",
-      "infra_provisioning_scripts_bucketpolicy_rationale_178",
-      "infra_provisioning_scripts_bucketpolicy_rationale_211",
-      "infra_provisioning_scripts_bucketpolicy_rationale_247",
-      "infra_provisioning_scripts_bucketpolicy_validate_bucket_name",
-      "infra_provisioning_scripts_render_bucket_fence_policy",
-      "infra_provisioning_scripts_render_bucket_fence_policy_assert_recoverable",
-      "infra_provisioning_scripts_render_bucket_fence_policy_main",
-      "infra_provisioning_scripts_render_bucket_fence_policy_rationale_143",
-      "infra_provisioning_scripts_render_bucket_fence_policy_rationale_270",
-      "infra_provisioning_scripts_render_bucket_fence_policy_rationale_298",
-      "infra_provisioning_scripts_render_bucket_fence_policy_rationale_379",
-      "infra_provisioning_scripts_render_bucket_fence_policy_render_commands",
-      "infra_provisioning_scripts_render_bucket_fence_policy_render_policy",
-      "infra_provisioning_scripts_render_bucket_fence_policy_self_test",
-      "infra_provisioning_scripts_render_media_bucket_policy",
-      "infra_provisioning_scripts_render_media_bucket_policy_main",
-      "infra_provisioning_scripts_render_media_bucket_policy_media_bucket_name",
-      "infra_provisioning_scripts_render_media_bucket_policy_rationale_161",
-      "infra_provisioning_scripts_render_media_bucket_policy_rationale_279",
-      "infra_provisioning_scripts_render_media_bucket_policy_rationale_359",
-      "infra_provisioning_scripts_render_media_bucket_policy_render_commands",
-      "infra_provisioning_scripts_render_media_bucket_policy_render_policy",
-      "infra_provisioning_scripts_render_media_bucket_policy_self_test",
-      "infra_provisioning_scripts_test_bucketpolicy",
-      "infra_provisioning_scripts_test_bucketpolicy_principal",
-      "infra_provisioning_scripts_test_bucketpolicy_rationale_128",
-      "infra_provisioning_scripts_test_bucketpolicy_rationale_29",
-      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable",
-      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable_test_an_empty_notaction_is_refused_too",
-      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable_test_names_the_offending_statement",
-      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable_test_refuses_a_notaction_statement",
-      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable_test_returns_a_clean_policy_unchanged",
-      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert",
-      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_notaction_deny",
-      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_test_a_notaction_deny_decides_nothing",
-      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_test_a_notaction_deny_does_not_even_deny_its_own_complement",
-      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_test_a_star_action_deny_is_enforced",
-      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_test_an_equivalent_action_deny_is_enforced",
-      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover",
-      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_no_action_is_listed_twice",
-      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_reading_the_fence_is_denied_not_just_writing_it",
-      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_configuration_denylist_covers_every_way_to_unfence_a_bucket",
-      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_configuration_denylist_is_pinned_member_by_member",
-      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_object_denylist_covers_every_way_to_write_or_publish",
-      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_object_denylist_is_pinned_member_by_member",
-      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_public_reads_are_absent_from_the_object_denylist",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_a_grant_reaching_only_the_backups_is_still_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_asks_about_concrete_objects_not_a_wildcard",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_is_asked_only_about_the_anonymous_caller",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_evaluation_check_reaches_the_objects_the_bucket_exists_for"
-    ],
-    "6": [
+    "4": [
       "db_provision_install_host_prereqs",
       "db_provision_install_host_prereqs_apt_get",
       "db_provision_install_host_prereqs_atomic_write_bytes",
@@ -458,9 +345,63 @@
       "infra_provisioning_scripts_test_verify_bucket_fence_testdwell_test_a_zero_dwell_takes_the_first_reading_with_no_sleep_at_all",
       "infra_provisioning_scripts_test_verify_bucket_fence_testdwell_test_every_attempt_is_recorded_in_evidence_in_order",
       "infra_provisioning_scripts_test_verify_bucket_fence_testdwell_test_no_hold_line_is_added_when_the_first_reading_already_counts",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_composed_guard_actually_invokes_the_anonymous_evaluation_check"
+      "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantprobeissafe_test_the_composed_guard_actually_invokes_the_anonymous_evaluation_check",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_window_a_receives_window_d_own_settled_reading_not_a_fallback"
     ],
-    "7": [
+    "5": [
+      "infra_provisioning_scripts_bucketpolicy",
+      "infra_provisioning_scripts_bucketpolicy_assert_enforceable",
+      "infra_provisioning_scripts_bucketpolicy_decide",
+      "infra_provisioning_scripts_bucketpolicy_key_principal",
+      "infra_provisioning_scripts_bucketpolicy_policyinputerror",
+      "infra_provisioning_scripts_bucketpolicy_rationale_178",
+      "infra_provisioning_scripts_bucketpolicy_rationale_211",
+      "infra_provisioning_scripts_bucketpolicy_rationale_247",
+      "infra_provisioning_scripts_bucketpolicy_validate_bucket_name",
+      "infra_provisioning_scripts_render_bucket_fence_policy",
+      "infra_provisioning_scripts_render_bucket_fence_policy_assert_recoverable",
+      "infra_provisioning_scripts_render_bucket_fence_policy_main",
+      "infra_provisioning_scripts_render_bucket_fence_policy_rationale_143",
+      "infra_provisioning_scripts_render_bucket_fence_policy_rationale_270",
+      "infra_provisioning_scripts_render_bucket_fence_policy_rationale_298",
+      "infra_provisioning_scripts_render_bucket_fence_policy_rationale_379",
+      "infra_provisioning_scripts_render_bucket_fence_policy_render_commands",
+      "infra_provisioning_scripts_render_bucket_fence_policy_render_policy",
+      "infra_provisioning_scripts_render_bucket_fence_policy_self_test",
+      "infra_provisioning_scripts_render_media_bucket_policy",
+      "infra_provisioning_scripts_render_media_bucket_policy_main",
+      "infra_provisioning_scripts_render_media_bucket_policy_media_bucket_name",
+      "infra_provisioning_scripts_render_media_bucket_policy_rationale_161",
+      "infra_provisioning_scripts_render_media_bucket_policy_rationale_279",
+      "infra_provisioning_scripts_render_media_bucket_policy_rationale_359",
+      "infra_provisioning_scripts_render_media_bucket_policy_render_commands",
+      "infra_provisioning_scripts_render_media_bucket_policy_render_policy",
+      "infra_provisioning_scripts_render_media_bucket_policy_self_test",
+      "infra_provisioning_scripts_test_bucketpolicy",
+      "infra_provisioning_scripts_test_bucketpolicy_principal",
+      "infra_provisioning_scripts_test_bucketpolicy_rationale_128",
+      "infra_provisioning_scripts_test_bucketpolicy_rationale_29",
+      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable",
+      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable_test_an_empty_notaction_is_refused_too",
+      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable_test_names_the_offending_statement",
+      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable_test_refuses_a_notaction_statement",
+      "infra_provisioning_scripts_test_bucketpolicy_testassertenforceable_test_returns_a_clean_policy_unchanged",
+      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert",
+      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_notaction_deny",
+      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_test_a_notaction_deny_decides_nothing",
+      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_test_a_notaction_deny_does_not_even_deny_its_own_complement",
+      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_test_a_star_action_deny_is_enforced",
+      "infra_provisioning_scripts_test_bucketpolicy_testnotactionismodelledasinert_test_an_equivalent_action_deny_is_enforced",
+      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover",
+      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_no_action_is_listed_twice",
+      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_reading_the_fence_is_denied_not_just_writing_it",
+      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_configuration_denylist_covers_every_way_to_unfence_a_bucket",
+      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_configuration_denylist_is_pinned_member_by_member",
+      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_object_denylist_covers_every_way_to_write_or_publish",
+      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_object_denylist_is_pinned_member_by_member",
+      "infra_provisioning_scripts_test_bucketpolicy_testtheenumeratedlistscoverwhattheymustcover_test_the_public_reads_are_absent_from_the_object_denylist"
+    ],
+    "6": [
       "infra_provisioning_scripts_test_render_bucket_fence_policy",
       "infra_provisioning_scripts_test_render_bucket_fence_policy_arn",
       "infra_provisioning_scripts_test_render_bucket_fence_policy_decide",
@@ -512,7 +453,7 @@
       "infra_provisioning_scripts_test_render_bucket_fence_policy_testtheworkloadkeepsworking_test_the_workload_is_still_denied_on_a_neighbouring_bucket_name",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_the_workload_keeps_exactly_what_it_needs_and_loses_the_rest"
     ],
-    "8": [
+    "7": [
       "busboy",
       "express",
       "express_rate_limit",
@@ -562,7 +503,7 @@
       "types_smtp_server",
       "vitest_coverage_v8"
     ],
-    "9": [
+    "8": [
       "infra_platform_apis",
       "infra_platform_apis_enabledapis",
       "infra_platform_apis_requiredservices",
@@ -611,7 +552,7 @@
       "infra_platform_workloadidentity_provider",
       "infra_platform_workloadidentity_workloadidentityprovider"
     ],
-    "10": [
+    "9": [
       "db_provision_test_render_exporter_my_cnf",
       "db_provision_test_render_exporter_my_cnf_acceptedpasswords",
       "db_provision_test_render_exporter_my_cnf_acceptedpasswords_test_the_documented_generator_alphabet_is_accepted",
@@ -659,52 +600,7 @@
       "db_provision_test_render_exporter_my_cnf_write_test_the_file_is_written_with_the_rendered_content",
       "db_provision_test_render_exporter_my_cnf_write_test_the_mode_is_never_wider_even_briefly"
     ],
-    "11": [
-      "db_provision_dump_nightly",
-      "db_provision_dump_nightly_dumperror",
-      "db_provision_dump_nightly_encrypt_with_age",
-      "db_provision_dump_nightly_get_server_uuid",
-      "db_provision_dump_nightly_main",
-      "db_provision_dump_nightly_object_key_for",
-      "db_provision_dump_nightly_py_datetime",
-      "db_provision_dump_nightly_py_exception",
-      "db_provision_dump_nightly_rationale_134",
-      "db_provision_dump_nightly_rationale_55",
-      "db_provision_dump_nightly_require_env",
-      "db_provision_dump_nightly_run_dump",
-      "db_provision_dump_nightly_run_mysql",
-      "db_provision_dump_nightly_run_mysqldump",
-      "db_provision_test_dump_nightly",
-      "db_provision_test_dump_nightly_fakerun",
-      "db_provision_test_dump_nightly_fakerun_call",
-      "db_provision_test_dump_nightly_fakerun_init",
-      "db_provision_test_dump_nightly_getserveruuidtests",
-      "db_provision_test_dump_nightly_getserveruuidtests_test_never_passes_the_password_as_an_argument",
-      "db_provision_test_dump_nightly_getserveruuidtests_test_raises_on_empty_output",
-      "db_provision_test_dump_nightly_getserveruuidtests_test_reads_the_server_uuid",
-      "db_provision_test_dump_nightly_objectkeytests",
-      "db_provision_test_dump_nightly_objectkeytests_test_different_server_incarnations_never_collide",
-      "db_provision_test_dump_nightly_objectkeytests_test_format",
-      "db_provision_test_dump_nightly_rationale_21",
-      "db_provision_test_dump_nightly_requireenvtests",
-      "db_provision_test_dump_nightly_requireenvtests_test_raises_when_missing",
-      "db_provision_test_dump_nightly_rundumptests",
-      "db_provision_test_dump_nightly_rundumptests_fake_upload",
-      "db_provision_test_dump_nightly_rundumptests_run_dump",
-      "db_provision_test_dump_nightly_rundumptests_setup",
-      "db_provision_test_dump_nightly_rundumptests_test_a_failed_encrypt_never_reaches_upload",
-      "db_provision_test_dump_nightly_rundumptests_test_a_failed_mysqldump_never_reaches_encrypt_or_upload",
-      "db_provision_test_dump_nightly_rundumptests_test_a_failed_server_uuid_lookup_never_reaches_mysqldump",
-      "db_provision_test_dump_nightly_rundumptests_test_happy_path_uploads_the_encrypted_dump_under_the_uuid_namespaced_key",
-      "db_provision_test_dump_nightly_rundumptests_test_the_tempdir_is_gone_once_run_dump_returns",
-      "db_provision_test_dump_nightly_runmysqldumptests",
-      "db_provision_test_dump_nightly_runmysqldumptests_test_connects_over_the_socket_not_tcp",
-      "db_provision_test_dump_nightly_runmysqldumptests_test_never_passes_the_password_as_an_argument",
-      "db_provision_test_dump_nightly_runmysqldumptests_test_raises_on_a_nonzero_exit",
-      "db_provision_test_dump_nightly_runmysqldumptests_test_writes_stdout_to_the_target_path",
-      "db_provision_test_dump_nightly_runmysqldumptests_tmp_path"
-    ],
-    "12": [
+    "10": [
       "db_provision_test_prune_backups",
       "db_provision_test_prune_backups_binlog",
       "db_provision_test_prune_backups_buildandapplyplantests",
@@ -749,7 +645,7 @@
       "db_provision_test_prune_backups_planprunerefusaltests_test_refuses_to_delete_every_shipped_binlog_when_that_would_strand_the_anchor",
       "db_provision_test_prune_backups_planprunerefusaltests_test_refuses_when_binlog_sequence_order_does_not_track_ship_time"
     ],
-    "13": [
+    "11": [
       "infra_provisioning_scripts_test_assert_tenant_provisioning_token_scopes",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_token_scopes_checktests",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_token_scopes_checktests_test_a_scope_that_is_a_prefix_of_a_required_one_does_not_satisfy_it",
@@ -792,50 +688,7 @@
       "infra_provisioning_scripts_test_assert_tenant_provisioning_token_scopes_selftesttests",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_token_scopes_selftesttests_test_self_test_passes"
     ],
-    "14": [
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1294",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_3958",
-      "infra_provisioning_scripts_test_verify_bucket_fence_run",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_answers",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_test_a_clean_apply_puts_the_policy_twice",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_test_a_failed_preflight_makes_the_put_unreachable",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_test_a_second_put_that_is_denied_reports_a_lockout",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_test_apply_waits_a_dwell_between_the_two_puts",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_answers",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_leftover_probe",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_real_fence",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_run",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_connection_that_never_answered_stops_the_probe_too",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_policy_read_that_did_not_succeed_stops_the_probe_before_it_writes",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_probe_policy_left_behind_is_shouted_about_with_the_fix",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_probe_policy_reaching_outside_the_probe_prefix_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_probe_policy_touching_the_bucket_resource_is_refused",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_put_that_got_no_response_leaves_the_policy_alone_and_says_so",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_read_the_transport_cannot_interpret_is_inconclusive_not_a_denial",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_real_fence_and_a_leftover_probe_get_different_advice",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_refused_put_does_not_delete_the_policy_that_is_already_there",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_refused_put_yields_no_engine_verdict_from_the_reads",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_transiently_stale_foreign_read_still_reaches_the_right_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_an_engine_that_denies_the_named_key_fails_loudly",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_an_engine_that_exempts_the_named_key_passes",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_an_engine_that_ignores_the_statement_fails",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_an_engine_that_rejects_the_document_is_inconclusive_not_a_pass",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_it_refuses_a_bucket_that_already_carries_a_policy",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_no_evidence_block_when_the_probe_never_ran",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_only_an_affirmative_no_such_bucket_policy_lets_it_proceed",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_replace_existing_policy_does_not_authorise_displacing_a_real_fence",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_replace_existing_policy_lets_the_probe_run_over_a_leftover_probe",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_banner_does_not_claim_a_policy_is_waiting_to_be_re_rendered",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_evidence_transcript_is_printed_not_discarded",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_exemption_only_passes_when_the_foreign_key_was_actually_denied",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_operator_read_alone_is_never_reported_as_an_exemption",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_probe_policy_can_never_deny_its_own_removal",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_probe_policy_is_removed_even_when_the_reads_fail",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_two_reads_that_decide_it_are_signed_as_different_roles"
-    ],
-    "15": [
+    "12": [
       "infra_provisioning_scripts_test_restore_stack_secrets_config",
       "infra_provisioning_scripts_test_restore_stack_secrets_config_deployment",
       "infra_provisioning_scripts_test_restore_stack_secrets_config_load_module",
@@ -877,7 +730,49 @@
       "infra_provisioning_scripts_test_restore_stack_secrets_config_tempdircase_setup",
       "infra_provisioning_scripts_test_restore_stack_secrets_config_tempdircase_write_deployment"
     ],
-    "16": [
+    "13": [
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1294",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4017",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_answers",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_test_a_clean_apply_puts_the_policy_twice",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_test_a_failed_preflight_makes_the_put_unreachable",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_test_a_second_put_that_is_denied_reports_a_lockout",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testapplymode_test_apply_waits_a_dwell_between_the_two_puts",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_answers",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_leftover_probe",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_real_fence",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_run",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_connection_that_never_answered_stops_the_probe_too",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_policy_read_that_did_not_succeed_stops_the_probe_before_it_writes",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_probe_policy_left_behind_is_shouted_about_with_the_fix",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_probe_policy_reaching_outside_the_probe_prefix_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_probe_policy_touching_the_bucket_resource_is_refused",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_put_that_got_no_response_leaves_the_policy_alone_and_says_so",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_read_the_transport_cannot_interpret_is_inconclusive_not_a_denial",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_real_fence_and_a_leftover_probe_get_different_advice",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_refused_put_does_not_delete_the_policy_that_is_already_there",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_refused_put_yields_no_engine_verdict_from_the_reads",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_a_transiently_stale_foreign_read_still_reaches_the_right_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_an_engine_that_denies_the_named_key_fails_loudly",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_an_engine_that_exempts_the_named_key_passes",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_an_engine_that_ignores_the_statement_fails",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_an_engine_that_rejects_the_document_is_inconclusive_not_a_pass",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_it_refuses_a_bucket_that_already_carries_a_policy",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_no_evidence_block_when_the_probe_never_ran",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_only_an_affirmative_no_such_bucket_policy_lets_it_proceed",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_replace_existing_policy_does_not_authorise_displacing_a_real_fence",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_replace_existing_policy_lets_the_probe_run_over_a_leftover_probe",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_banner_does_not_claim_a_policy_is_waiting_to_be_re_rendered",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_evidence_transcript_is_printed_not_discarded",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_exemption_only_passes_when_the_foreign_key_was_actually_denied",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_operator_read_alone_is_never_reported_as_an_exemption",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_probe_policy_can_never_deny_its_own_removal",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_probe_policy_is_removed_even_when_the_reads_fail",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testnotprincipalprobe_test_the_two_reads_that_decide_it_are_signed_as_different_roles"
+    ],
+    "14": [
       "db_provision_test_ship_binlogs",
       "db_provision_test_ship_binlogs_connectsoversockettests",
       "db_provision_test_ship_binlogs_connectsoversockettests_test_fetch_raw_binlog_uses_socket_not_host",
@@ -918,7 +813,7 @@
       "db_provision_test_ship_binlogs_runshiptests_test_object_keys_are_namespaced_under_binlogs_and_the_server_uuid",
       "db_provision_test_ship_binlogs_runshiptests_test_the_next_run_resumes_at_the_failed_log_not_after_it"
     ],
-    "17": [
+    "15": [
       "infra_provisioning_scripts_test_probe_media_lifecycle_expiration",
       "infra_provisioning_scripts_test_probe_media_lifecycle_expiration_rationale_1",
       "infra_provisioning_scripts_test_probe_media_lifecycle_expiration_rationale_91",
@@ -959,7 +854,47 @@
       "infra_provisioning_scripts_test_probe_media_lifecycle_expiration_testtheruleshapematchesproduction_test_the_media_shape_carries_noncurrent_version_expiration_and_abort_multipart",
       "infra_provisioning_scripts_test_probe_media_lifecycle_expiration_testtheruleshapematchesproduction_test_the_rule_filter_scopes_to_the_probe_prefix_not_the_whole_bucket"
     ],
-    "18": [
+    "16": [
+      "db_provision_naming",
+      "db_provision_naming_database_and_user_name",
+      "db_provision_naming_invalidtenantname",
+      "db_provision_naming_rationale_34",
+      "db_provision_naming_rationale_52",
+      "db_provision_naming_rationale_57",
+      "db_provision_naming_sql_identifier",
+      "db_provision_naming_validate_tenant_name",
+      "db_provision_provision_tenant_db",
+      "db_provision_provision_tenant_db_main",
+      "db_provision_provision_tenant_db_provision_tenant_database",
+      "db_provision_provision_tenant_db_provisionerror",
+      "db_provision_provision_tenant_db_provisionresult",
+      "db_provision_provision_tenant_db_provisionresult_init",
+      "db_provision_provision_tenant_db_py_exception",
+      "db_provision_provision_tenant_db_rationale_55",
+      "db_provision_provision_tenant_db_run_sql",
+      "db_provision_provision_tenant_db_user_exists",
+      "db_provision_test_provision_tenant_db",
+      "db_provision_test_provision_tenant_db_fakerun",
+      "db_provision_test_provision_tenant_db_fakerun_call",
+      "db_provision_test_provision_tenant_db_fakerun_init",
+      "db_provision_test_provision_tenant_db_invalidtenantnametests",
+      "db_provision_test_provision_tenant_db_invalidtenantnametests_test_refuses_a_sql_injection_attempt",
+      "db_provision_test_provision_tenant_db_invalidtenantnametests_test_refuses_before_running_any_sql",
+      "db_provision_test_provision_tenant_db_maintests",
+      "db_provision_test_provision_tenant_db_maintests_test_refuses_to_run_without_mysql_pwd_set",
+      "db_provision_test_provision_tenant_db_mysqlfailuretests",
+      "db_provision_test_provision_tenant_db_mysqlfailuretests_test_a_failed_statement_batch_raises_rather_than_reporting_success",
+      "db_provision_test_provision_tenant_db_provisionexistingtenanttests",
+      "db_provision_test_provision_tenant_db_provisionexistingtenanttests_test_does_not_rotate_the_password_or_reissue_create_user",
+      "db_provision_test_provision_tenant_db_provisionexistingtenanttests_test_still_reapplies_a_raised_connection_cap",
+      "db_provision_test_provision_tenant_db_provisionnewtenanttests",
+      "db_provision_test_provision_tenant_db_provisionnewtenanttests_setup",
+      "db_provision_test_provision_tenant_db_provisionnewtenanttests_test_creates_database_user_grants_and_cap",
+      "db_provision_test_provision_tenant_db_provisionnewtenanttests_test_folds_a_hyphenated_tenant_name",
+      "db_provision_test_provision_tenant_db_provisionnewtenanttests_test_never_passes_the_admin_password_as_an_argument",
+      "db_provision_test_provision_tenant_db_rationale_18"
+    ],
+    "17": [
       "db_provision_test_db_compose_contract",
       "db_provision_test_db_compose_contract_compose_text",
       "db_provision_test_db_compose_contract_everyservicehasadeploysignal",
@@ -999,7 +934,7 @@
       "db_provision_test_db_compose_contract_therendererandthestackagree_test_the_socket_matches_the_compose_mount_and_flag",
       "db_provision_test_db_compose_contract_uncommented"
     ],
-    "19": [
+    "18": [
       "infra_provisioning_scripts_assert_no_provisioning_deletes",
       "infra_provisioning_scripts_assert_no_provisioning_deletes_coverage_self_test",
       "infra_provisioning_scripts_assert_no_provisioning_deletes_declaration_pattern_literal",
@@ -1037,7 +972,7 @@
       "infra_scripts_assert_no_hetzner_deletes_verify_coverage",
       "pattern"
     ],
-    "20": [
+    "19": [
       "infra_provisioning_scripts_verify_bucket_fence",
       "infra_provisioning_scripts_verify_bucket_fence_await_policy_settle",
       "infra_provisioning_scripts_verify_bucket_fence_build_checks",
@@ -1058,15 +993,15 @@
       "infra_provisioning_scripts_verify_bucket_fence_rationale_2038",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_2061",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_2072",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2525",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2656",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_2546",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_2691",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_282",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3238",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3273",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_354",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3658",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3742",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3821",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3957",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3693",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3777",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3856",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3992",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_870",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_896",
       "infra_provisioning_scripts_verify_bucket_fence_read_the_engine",
@@ -1075,43 +1010,42 @@
       "infra_provisioning_scripts_verify_bucket_fence_wildcard_observation",
       "infra_provisioning_scripts_verify_bucket_fence_window_row"
     ],
-    "21": [
+    "20": [
       "infra_provisioning_scripts_test_verify_bucket_fence_a_fully_working_fence",
       "infra_provisioning_scripts_test_verify_bucket_fence_rationale_426",
+      "infra_provisioning_scripts_test_verify_bucket_fence_run",
       "infra_provisioning_scripts_test_verify_bucket_fence_testbothdirections",
       "infra_provisioning_scripts_test_verify_bucket_fence_testbothdirections_test_a_correct_fence_passes_every_check",
       "infra_provisioning_scripts_test_verify_bucket_fence_testbothdirections_test_a_fence_that_denies_the_workload_fails_rather_than_passing",
       "infra_provisioning_scripts_test_verify_bucket_fence_testbothdirections_test_a_workload_that_can_write_but_not_read_fails",
       "infra_provisioning_scripts_test_verify_bucket_fence_testbothdirections_test_the_finding_that_opened_the_issue_fails",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_a_listing_that_never_finishes_stops_rather_than_spinning",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_a_probe_object_left_behind_fails_the_run",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_a_truncated_listing_is_paged_rather_than_taken_as_the_whole_bucket",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_a_truncated_listing_with_no_marker_is_reported_rather_than_trusted",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_every_probe_object_version_and_delete_marker_is_removed",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_versions_page",
       "infra_provisioning_scripts_test_verify_bucket_fence_testlockout",
       "infra_provisioning_scripts_test_verify_bucket_fence_testlockout_test_a_bucket_that_cannot_be_re_administered_is_shouted_about",
       "infra_provisioning_scripts_test_verify_bucket_fence_testlockout_test_the_recoverability_check_runs_before_anything_touches_the_bucket",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_preflight_rows",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_row",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_correctly_rendered_policy_passes_preflight",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_credential_that_cannot_resolve_its_account_is_inconclusive",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_deny_on_every_resource_is_not_invisible",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_deny_scoped_to_the_probe_prefix_is_not_a_workload_lockout",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_document_the_evaluator_cannot_walk_is_inconclusive_not_safe",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_foreign_key_in_another_account_fails_preflight",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_notaction_policy_is_inconclusive_rather_than_passing",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_policy_rendered_against_the_wrong_account_is_caught_before_the_put",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_policy_that_really_does_lock_a_credential_out_fails",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_an_endpoint_that_answers_nothing_says_so_once_rather_than_three_times",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_an_enumerated_policy_is_still_evaluated",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_an_owner_of_anonymous_is_refused_rather_than_named_in_a_principal",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_an_owner_of_anonymous_is_refused_whatever_its_case",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_preflight_exercises_the_transport_every_probe_uses",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_preflight_writes_nothing",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_the_policy_this_repository_renders_passes_and_is_applied",
       "infra_provisioning_scripts_test_verify_bucket_fence_teststoredpolicy",
       "infra_provisioning_scripts_test_verify_bucket_fence_teststoredpolicy_test_a_policy_that_cannot_be_read_back_is_inconclusive",
       "infra_provisioning_scripts_test_verify_bucket_fence_teststoredpolicy_test_a_reordered_statement_list_is_not_a_mismatch",
       "infra_provisioning_scripts_test_verify_bucket_fence_teststoredpolicy_test_a_stored_policy_that_differs_from_the_sent_one_fails",
       "infra_provisioning_scripts_test_verify_bucket_fence_teststoredpolicy_test_a_stored_policy_under_a_different_version_is_a_mismatch"
     ],
-    "22": [
+    "21": [
       "infra_hosts_index",
       "infra_hosts_index_app1",
       "infra_hosts_index_app1privateip",
@@ -1145,19 +1079,19 @@
       "infra_hosts_projectguard_test",
       "infra_hosts_projectguard_verifyestateproject"
     ],
-    "23": [
+    "22": [
       "infra_provisioning_scripts_test_verify_bucket_fence_diagnose",
       "infra_provisioning_scripts_test_verify_bucket_fence_engine",
       "infra_provisioning_scripts_test_verify_bucket_fence_engine_per_key",
       "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1721",
       "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1809",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2354",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2413",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_a_document_the_engine_did_not_store_yields_no_reads_at_all",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_a_read_that_drifts_from_the_pre_change_answer_still_reaches_a_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_a_rejected_document_produces_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_a_probe_policy_that_could_not_be_removed_stops_the_run_there",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_a_removal_that_succeeds_on_a_retry_lets_the_run_continue",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_engine_that_resolves_principals_says_a_fence_is_rebuildable",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_evidence_block_carries_no_access_key_id",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_every_window_reads_a_key_of_its_own_rather_than_a_cached_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_confirming_read_is_a_second_request_and_not_a_cached_answer",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_removal_of_a_probe_policy_is_retried_before_it_is_given_up_on",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyengineprobesaresafe",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyengineprobesaresafe_documents",
@@ -1179,7 +1113,7 @@
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyengineprobesaresafe_test_this_mode_needs_no_policy_file_and_no_control_bucket",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyengineprobesaresafe_test_two_credentials_in_different_accounts_stop_it_before_it_writes"
     ],
-    "24": [
+    "23": [
       "app_provision_provision_tenant_volume",
       "app_provision_provision_tenant_volume_adapters_volume_name",
       "app_provision_provision_tenant_volume_assert_uid_available",
@@ -1212,8 +1146,40 @@
       "app_provision_provision_tenant_volume_volume_exists",
       "app_provision_provision_tenant_volume_volume_mountpoint"
     ],
+    "24": [
+      "infra_provisioning_scripts_verify_bucket_fence_account_of",
+      "infra_provisioning_scripts_verify_bucket_fence_account_row",
+      "infra_provisioning_scripts_verify_bucket_fence_apply_fence",
+      "infra_provisioning_scripts_verify_bucket_fence_check_init",
+      "infra_provisioning_scripts_verify_bucket_fence_cleanup",
+      "infra_provisioning_scripts_verify_bucket_fence_cleanup_rows",
+      "infra_provisioning_scripts_verify_bucket_fence_compare_stored_policy",
+      "infra_provisioning_scripts_verify_bucket_fence_main",
+      "infra_provisioning_scripts_verify_bucket_fence_preflight",
+      "infra_provisioning_scripts_verify_bucket_fence_probe",
+      "infra_provisioning_scripts_verify_bucket_fence_probe_cache_key",
+      "infra_provisioning_scripts_verify_bucket_fence_probe_foreign_grant",
+      "infra_provisioning_scripts_verify_bucket_fence_probe_init",
+      "infra_provisioning_scripts_verify_bucket_fence_probe_notprincipal",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_1015",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_1419",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3502",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_373",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3885",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3957",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_543",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_840",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_855",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_923",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_986",
+      "infra_provisioning_scripts_verify_bucket_fence_read_stored_policy",
+      "infra_provisioning_scripts_verify_bucket_fence_show_accounts",
+      "infra_provisioning_scripts_verify_bucket_fence_verifier",
+      "infra_provisioning_scripts_verify_bucket_fence_verifier_check",
+      "infra_provisioning_scripts_verify_bucket_fence_verifier_request",
+      "infra_provisioning_scripts_verify_bucket_fence_verifier_run"
+    ],
     "25": [
-      "datetime",
       "db_provision_objectstorage",
       "db_provision_objectstorage_build_headers",
       "db_provision_objectstorage_canonical_query",
@@ -1246,39 +1212,6 @@
       "db_provision_objectstorage_urllib_request"
     ],
     "26": [
-      "infra_provisioning_scripts_verify_bucket_fence_account_of",
-      "infra_provisioning_scripts_verify_bucket_fence_account_row",
-      "infra_provisioning_scripts_verify_bucket_fence_apply_fence",
-      "infra_provisioning_scripts_verify_bucket_fence_check_init",
-      "infra_provisioning_scripts_verify_bucket_fence_cleanup",
-      "infra_provisioning_scripts_verify_bucket_fence_cleanup_rows",
-      "infra_provisioning_scripts_verify_bucket_fence_compare_stored_policy",
-      "infra_provisioning_scripts_verify_bucket_fence_main",
-      "infra_provisioning_scripts_verify_bucket_fence_preflight",
-      "infra_provisioning_scripts_verify_bucket_fence_probe",
-      "infra_provisioning_scripts_verify_bucket_fence_probe_cache_key",
-      "infra_provisioning_scripts_verify_bucket_fence_probe_foreign_grant",
-      "infra_provisioning_scripts_verify_bucket_fence_probe_init",
-      "infra_provisioning_scripts_verify_bucket_fence_probe_notprincipal",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_1015",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_1419",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3467",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_373",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3850",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3922",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_543",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_840",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_855",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_923",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_986",
-      "infra_provisioning_scripts_verify_bucket_fence_read_stored_policy",
-      "infra_provisioning_scripts_verify_bucket_fence_show_accounts",
-      "infra_provisioning_scripts_verify_bucket_fence_verifier",
-      "infra_provisioning_scripts_verify_bucket_fence_verifier_check",
-      "infra_provisioning_scripts_verify_bucket_fence_verifier_request",
-      "infra_provisioning_scripts_verify_bucket_fence_verifier_run"
-    ],
-    "27": [
       "branchleft_prettier_config",
       "eslint",
       "eslint_config_prettier",
@@ -1309,7 +1242,7 @@
       "prettier",
       "typescript_eslint"
     ],
-    "28": [
+    "27": [
       "db_provision_objectstorage_objectstorageerror",
       "db_provision_objectstorage_py_exception",
       "db_provision_objectstorage_rationale_48",
@@ -1339,6 +1272,37 @@
       "db_provision_prune_backups_refusal",
       "db_provision_prune_backups_require_env",
       "namedtuple"
+    ],
+    "28": [
+      "db_provision_test_dump_nightly",
+      "db_provision_test_dump_nightly_fakerun",
+      "db_provision_test_dump_nightly_fakerun_call",
+      "db_provision_test_dump_nightly_fakerun_init",
+      "db_provision_test_dump_nightly_getserveruuidtests",
+      "db_provision_test_dump_nightly_getserveruuidtests_test_never_passes_the_password_as_an_argument",
+      "db_provision_test_dump_nightly_getserveruuidtests_test_raises_on_empty_output",
+      "db_provision_test_dump_nightly_getserveruuidtests_test_reads_the_server_uuid",
+      "db_provision_test_dump_nightly_objectkeytests",
+      "db_provision_test_dump_nightly_objectkeytests_test_different_server_incarnations_never_collide",
+      "db_provision_test_dump_nightly_objectkeytests_test_format",
+      "db_provision_test_dump_nightly_rationale_21",
+      "db_provision_test_dump_nightly_requireenvtests",
+      "db_provision_test_dump_nightly_requireenvtests_test_raises_when_missing",
+      "db_provision_test_dump_nightly_rundumptests",
+      "db_provision_test_dump_nightly_rundumptests_fake_upload",
+      "db_provision_test_dump_nightly_rundumptests_run_dump",
+      "db_provision_test_dump_nightly_rundumptests_setup",
+      "db_provision_test_dump_nightly_rundumptests_test_a_failed_encrypt_never_reaches_upload",
+      "db_provision_test_dump_nightly_rundumptests_test_a_failed_mysqldump_never_reaches_encrypt_or_upload",
+      "db_provision_test_dump_nightly_rundumptests_test_a_failed_server_uuid_lookup_never_reaches_mysqldump",
+      "db_provision_test_dump_nightly_rundumptests_test_happy_path_uploads_the_encrypted_dump_under_the_uuid_namespaced_key",
+      "db_provision_test_dump_nightly_rundumptests_test_the_tempdir_is_gone_once_run_dump_returns",
+      "db_provision_test_dump_nightly_runmysqldumptests",
+      "db_provision_test_dump_nightly_runmysqldumptests_test_connects_over_the_socket_not_tcp",
+      "db_provision_test_dump_nightly_runmysqldumptests_test_never_passes_the_password_as_an_argument",
+      "db_provision_test_dump_nightly_runmysqldumptests_test_raises_on_a_nonzero_exit",
+      "db_provision_test_dump_nightly_runmysqldumptests_test_writes_stdout_to_the_target_path",
+      "db_provision_test_dump_nightly_runmysqldumptests_tmp_path"
     ],
     "29": [
       "docref_rfc_2822",
@@ -1372,7 +1336,7 @@
       "services_mailgun_shim_test_unit_smtp_test_mocktransport"
     ],
     "30": [
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2605",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2664",
       "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantverdicts",
       "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantverdicts_cells",
       "infra_provisioning_scripts_test_verify_bucket_fence_testforeigngrantverdicts_test_a_run_that_settled_nothing_never_claims_the_boundary_was_crossed",
@@ -1570,29 +1534,29 @@
       "db_provision_test_configure_backup_bucket_rationale_57"
     ],
     "37": [
-      "infra_provisioning_scripts_test_verify_bucket_fence",
-      "infra_provisioning_scripts_test_verify_bucket_fence_engine_ignores_the_arn_format",
-      "infra_provisioning_scripts_test_verify_bucket_fence_engine_incoherent",
-      "infra_provisioning_scripts_test_verify_bucket_fence_engine_inverts_principal",
-      "infra_provisioning_scripts_test_verify_bucket_fence_engine_wildcard_unimplemented",
-      "infra_provisioning_scripts_test_verify_bucket_fence_principal_names",
-      "infra_provisioning_scripts_test_verify_bucket_fence_py_exception",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1154",
       "infra_provisioning_scripts_test_verify_bucket_fence_rationale_146",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1702",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1727",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1759",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1774",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1785",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_356",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_394",
       "infra_provisioning_scripts_test_verify_bucket_fence_response",
       "infra_provisioning_scripts_test_verify_bucket_fence_response_init",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_engine_that_does_not_implement_the_wildcard_still_reports_a_fence",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_engine_that_inverts_the_match_is_named_rather_than_guessed_at",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_incoherent_engine_headline_is_inconclusive_not_fail",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_verdict_is_the_last_thing_printed_and_the_evidence_the_first",
-      "infra_provisioning_scripts_test_verify_bucket_fence_transport_init",
-      "infra_provisioning_scripts_test_verify_bucket_fence_unreachable"
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_a_negative_dwell_seconds_is_rejected",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_a_zero_dwell_seconds_is_rejected",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_an_unreadable_policy_file_stops_the_run",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_dry_run_lists_the_matrix_and_touches_nothing",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_missing_credentials_stop_the_run_with_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_the_distinct_key_check_covers_the_roles_a_mode_actually_signs_as",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_two_roles_on_one_key_stop_the_run",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_a_clean_run_does_not_claim_a_policy_is_safe_to_apply",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_it_does_not_shout_about_a_policy_nobody_is_applying",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_it_prints_each_credentials_account_and_writes_nothing",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_one_credential_is_enough_for_this_mode_and_for_no_other",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_only_this_mode_may_omit_the_bucket_and_the_policy",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsigningisarequirement",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testsigningisarequirement_test_every_mode_refuses_before_writing_when_the_signing_is_missing",
+      "infra_provisioning_scripts_test_verify_bucket_fence_transport",
+      "infra_provisioning_scripts_test_verify_bucket_fence_transport_init"
     ],
     "38": [
       "infra_tenant_scripts_assert_no_tenant_deletes",
@@ -1668,6 +1632,52 @@
       "infra_provisioning_index_tenantstackconfig"
     ],
     "41": [
+      "datetime",
+      "db_provision_test_objectstorage",
+      "db_provision_test_objectstorage_deleteobjecttests",
+      "db_provision_test_objectstorage_deleteobjecttests_test_a_404_is_not_an_error",
+      "db_provision_test_objectstorage_deleteobjecttests_test_deletes_at_the_path_style_url",
+      "db_provision_test_objectstorage_deleteobjecttests_test_raises_on_a_non_2xx_non_404_response",
+      "db_provision_test_objectstorage_parseowneridtests",
+      "db_provision_test_objectstorage_parseowneridtests_test_a_response_that_is_not_xml_yields_nothing_rather_than_raising",
+      "db_provision_test_objectstorage_parseowneridtests_test_a_response_without_an_owner_yields_nothing",
+      "db_provision_test_objectstorage_parseowneridtests_test_an_id_outside_owner_is_not_an_account",
+      "db_provision_test_objectstorage_parseowneridtests_test_an_unsigned_requests_owner_is_returned_verbatim_for_the_caller_to_refuse",
+      "db_provision_test_objectstorage_parseowneridtests_test_only_the_id_under_owner_counts",
+      "db_provision_test_objectstorage_parseowneridtests_test_reads_the_id_out_of_a_namespaced_response",
+      "db_provision_test_objectstorage_putbucketsubresourcetests",
+      "db_provision_test_objectstorage_putbucketsubresourcetests_test_lifecycle_put_signs_the_given_content_md5",
+      "db_provision_test_objectstorage_putbucketsubresourcetests_test_raises_on_a_non_2xx_response",
+      "db_provision_test_objectstorage_putbucketsubresourcetests_test_versioning_put_has_no_content_md5",
+      "db_provision_test_objectstorage_putobjecttests",
+      "db_provision_test_objectstorage_putobjecttests_test_204_is_accepted_as_success",
+      "db_provision_test_objectstorage_putobjecttests_test_puts_to_the_path_style_url_with_the_signed_headers",
+      "db_provision_test_objectstorage_putobjecttests_test_raises_on_a_non_2xx_response"
+    ],
+    "42": [
+      "db_provision_objectstorage_rationale_249",
+      "db_provision_objectstorage_signed_request",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_assert_bucket_is_disposable",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_bare_host",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_check",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_head",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_lifecycle_document",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_main",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_probeinputerror",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_put_bucket_subresource",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_put_object",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_rationale_241",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_rationale_245",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_rationale_348",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_setup",
+      "infra_provisioning_scripts_probe_media_lifecycle_expiration_versioning_document",
+      "infra_provisioning_scripts_shared_objectstorage",
+      "infra_provisioning_scripts_shared_objectstorage_load",
+      "infra_provisioning_scripts_shared_objectstorage_rationale_1",
+      "valueerror"
+    ],
+    "43": [
       "docref_rfc_5321",
       "services_mailgun_shim_src_asynchandler",
       "services_mailgun_shim_src_asynchandler_asynchandler",
@@ -1690,7 +1700,7 @@
       "services_mailgun_shim_test_unit_mailgunfields_test",
       "services_mailgun_shim_test_unit_mailgunfields_test_multipartrequest"
     ],
-    "42": [
+    "44": [
       "infra_provisioning_scripts_test_verify_bucket_fence_checks",
       "infra_provisioning_scripts_test_verify_bucket_fence_rationale_667",
       "infra_provisioning_scripts_test_verify_bucket_fence_testbothdirections_test_the_workload_read_probe_is_always_in_the_check_set",
@@ -1713,7 +1723,7 @@
       "infra_provisioning_scripts_test_verify_bucket_fence_testprobesarenondestructive_test_the_re_put_probes_send_the_document_that_is_already_stored",
       "infra_provisioning_scripts_test_verify_bucket_fence_testprobesarenondestructive_test_the_write_probes_stay_under_the_probe_prefix"
     ],
-    "43": [
+    "45": [
       "infra_provisioning_scripts_verify_bucket_fence_assert_probe_policy_grants_only",
       "infra_provisioning_scripts_verify_bucket_fence_assert_probe_policy_is_reversible",
       "infra_provisioning_scripts_verify_bucket_fence_default_transport",
@@ -1725,20 +1735,20 @@
       "infra_provisioning_scripts_verify_bucket_fence_rationale_1247",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_2020",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_2121",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2323",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2983",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3187",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_2344",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3018",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3222",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_369",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3777",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3812",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_607",
       "infra_provisioning_scripts_verify_bucket_fence_read_credentials",
       "infra_provisioning_scripts_verify_bucket_fence_refuse_an_anonymous_grant",
       "infra_provisioning_scripts_verify_bucket_fence_verifier_init",
       "infra_provisioning_scripts_verify_bucket_fence_verifiererror"
     ],
-    "44": [
+    "46": [
       "branchleft_tsconfig",
-      "infra_hetzner_host_check_package_devdependencies_types_node",
+      "infra_hetzner_host_check_package_devdependencies_typescript",
       "infra_hosts_package_devdependencies",
       "infra_hosts_package_devdependencies_branchleft_tsconfig",
       "infra_hosts_package_devdependencies_types_node",
@@ -1758,40 +1768,18 @@
       "typescript",
       "vitest"
     ],
-    "45": [
-      "db_provision_objectstorage_rationale_249",
-      "db_provision_objectstorage_signed_request",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_assert_bucket_is_disposable",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_bare_host",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_check",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_head",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_lifecycle_document",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_main",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_probeinputerror",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_put_bucket_subresource",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_put_object",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_rationale_241",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_rationale_245",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_rationale_348",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_setup",
-      "infra_provisioning_scripts_probe_media_lifecycle_expiration_versioning_document",
-      "infra_provisioning_scripts_shared_objectstorage",
-      "infra_provisioning_scripts_shared_objectstorage_load",
-      "infra_provisioning_scripts_shared_objectstorage_rationale_1"
-    ],
-    "46": [
+    "47": [
       "infra_provisioning_scripts_test_verify_bucket_fence_engine_init",
       "infra_provisioning_scripts_test_verify_bucket_fence_fixture",
       "infra_provisioning_scripts_test_verify_bucket_fence_fixture_body_problems",
       "infra_provisioning_scripts_test_verify_bucket_fence_fixture_init",
       "infra_provisioning_scripts_test_verify_bucket_fence_fixture_labels",
       "infra_provisioning_scripts_test_verify_bucket_fence_grantengine_init",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4158",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4198",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4292",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4300",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4318",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4217",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4257",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4351",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4359",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_4377",
       "infra_provisioning_scripts_test_verify_bucket_fence_resolve",
       "infra_provisioning_scripts_test_verify_bucket_fence_teardownmodule",
       "infra_provisioning_scripts_test_verify_bucket_fence_testfixtureprovenance",
@@ -1802,7 +1790,7 @@
       "infra_provisioning_scripts_test_verify_bucket_fence_testfixtureprovenance_test_the_scan_reaches_fixtures_built_inside_test_methods",
       "infra_provisioning_scripts_test_verify_bucket_fence_testfixtureprovenance_test_the_scan_refuses_an_unlabelled_fixture"
     ],
-    "47": [
+    "48": [
       "infra_provisioning_scripts_verify_bucket_fence_confirmed_reads",
       "infra_provisioning_scripts_verify_bucket_fence_dwell",
       "infra_provisioning_scripts_verify_bucket_fence_grant_baseline",
@@ -1816,15 +1804,15 @@
       "infra_provisioning_scripts_verify_bucket_fence_rationale_1954",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_1980",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_2139",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2204",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2279",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3272",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_3373",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_2218",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_2293",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3307",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3408",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_429",
       "infra_provisioning_scripts_verify_bucket_fence_read",
       "infra_provisioning_scripts_verify_bucket_fence_window"
     ],
-    "48": [
+    "49": [
       "infra_tenant_package",
       "infra_tenant_package_dependencies",
       "infra_tenant_package_dependencies_pulumi_pulumi",
@@ -1846,7 +1834,7 @@
       "ref_dist",
       "ref_scripts"
     ],
-    "49": [
+    "50": [
       "services_mailgun_shim_src_app_createapp",
       "services_mailgun_shim_src_routes_suppressions_createsuppressionsrouter",
       "services_mailgun_shim_src_routes_suppressions_issuppressiontype",
@@ -1868,7 +1856,7 @@
       "services_mailgun_shim_src_store_shimstore_tenantexists",
       "services_mailgun_shim_src_worker_workerhandle_status"
     ],
-    "50": [
+    "51": [
       "services_mailgun_shim_src_smtp_createdeliverytransport",
       "services_mailgun_shim_src_worker_createworker",
       "services_mailgun_shim_src_worker_istransientfailure",
@@ -1890,49 +1878,49 @@
       "services_mailgun_shim_test_unit_worker_test_createfailingworker",
       "services_mailgun_shim_test_unit_worker_test_payload"
     ],
-    "51": [
-      "db_provision_test_objectstorage",
-      "db_provision_test_objectstorage_deleteobjecttests",
-      "db_provision_test_objectstorage_deleteobjecttests_test_a_404_is_not_an_error",
-      "db_provision_test_objectstorage_deleteobjecttests_test_deletes_at_the_path_style_url",
-      "db_provision_test_objectstorage_deleteobjecttests_test_raises_on_a_non_2xx_non_404_response",
-      "db_provision_test_objectstorage_knownanswertests",
-      "db_provision_test_objectstorage_knownanswertests_cases",
-      "db_provision_test_objectstorage_knownanswertests_reference_authorization",
-      "db_provision_test_objectstorage_knownanswertests_test_bucket_subresource_form_agrees_with_the_independent_reference",
-      "db_provision_test_objectstorage_knownanswertests_test_build_headers_agrees_with_the_independent_reference",
-      "db_provision_test_objectstorage_putbucketsubresourcetests",
-      "db_provision_test_objectstorage_putbucketsubresourcetests_test_lifecycle_put_signs_the_given_content_md5",
-      "db_provision_test_objectstorage_putbucketsubresourcetests_test_raises_on_a_non_2xx_response",
-      "db_provision_test_objectstorage_putbucketsubresourcetests_test_versioning_put_has_no_content_md5",
-      "db_provision_test_objectstorage_putobjecttests",
-      "db_provision_test_objectstorage_putobjecttests_test_204_is_accepted_as_success",
-      "db_provision_test_objectstorage_putobjecttests_test_puts_to_the_path_style_url_with_the_signed_headers",
-      "db_provision_test_objectstorage_putobjecttests_test_raises_on_a_non_2xx_response",
-      "db_provision_test_objectstorage_rationale_395"
-    ],
     "52": [
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1154",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_394",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_a_negative_dwell_seconds_is_rejected",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_a_zero_dwell_seconds_is_rejected",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_an_unreadable_policy_file_stops_the_run",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_dry_run_lists_the_matrix_and_touches_nothing",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_missing_credentials_stop_the_run_with_no_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_the_distinct_key_check_covers_the_roles_a_mode_actually_signs_as",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsetuprefusals_test_two_roles_on_one_key_stop_the_run",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_a_clean_run_does_not_claim_a_policy_is_safe_to_apply",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_it_does_not_shout_about_a_policy_nobody_is_applying",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_it_prints_each_credentials_account_and_writes_nothing",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_one_credential_is_enough_for_this_mode_and_for_no_other",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testshowaccount_test_only_this_mode_may_omit_the_bucket_and_the_policy",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsigningisarequirement",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testsigningisarequirement_test_every_mode_refuses_before_writing_when_the_signing_is_missing",
-      "infra_provisioning_scripts_test_verify_bucket_fence_transport"
+      "infra_provisioning_scripts_test_verify_bucket_fence",
+      "infra_provisioning_scripts_test_verify_bucket_fence_engine_ignores_the_arn_format",
+      "infra_provisioning_scripts_test_verify_bucket_fence_engine_incoherent",
+      "infra_provisioning_scripts_test_verify_bucket_fence_engine_inverts_principal",
+      "infra_provisioning_scripts_test_verify_bucket_fence_engine_wildcard_unimplemented",
+      "infra_provisioning_scripts_test_verify_bucket_fence_principal_names",
+      "infra_provisioning_scripts_test_verify_bucket_fence_py_exception",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1702",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1727",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1759",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1774",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1785",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_356",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_engine_that_does_not_implement_the_wildcard_still_reports_a_fence",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_engine_that_inverts_the_match_is_named_rather_than_guessed_at",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_incoherent_engine_headline_is_inconclusive_not_fail",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_verdict_is_the_last_thing_printed_and_the_evidence_the_first",
+      "infra_provisioning_scripts_test_verify_bucket_fence_unreachable"
     ],
     "53": [
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_2xx_is_allowed",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_body_that_is_not_an_error_document_yields_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_code_element_outside_an_error_document_yields_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_code_element_that_is_not_a_code_yields_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_dead_credential_is_an_error_despite_arriving_as_the_same_403",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_doctype_is_never_treated_as_an_error_document",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_missing_object_is_an_error_and_never_a_denial",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_non_utf8_body_does_not_raise",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_pretty_printed_document_is_read_the_same_as_a_flat_one",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_refusal_with_no_error_document_is_an_error",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_a_request_that_never_reached_the_endpoint_is_an_error",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_an_expensive_document_is_refused_before_it_is_expanded",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_an_object_whose_own_contents_look_like_a_denial_is_still_allowed",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_an_unrecognised_service_error_is_an_error",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_denied_is_reachable_only_through_the_two_denial_codes",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_the_classifier_never_raises_even_if_the_parser_does",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_the_classifier_never_raises_whatever_the_body_is",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testclassification_test_the_real_access_denied_document_is_a_denial"
+    ],
+    "54": [
       "db_provision_test_naming",
       "db_provision_test_naming_databaseandusernametests",
       "db_provision_test_naming_databaseandusernametests_test_shares_the_prefix",
@@ -1952,7 +1940,7 @@
       "db_provision_test_naming_validatetenantnametests_test_rejects_uppercase",
       "db_provision_test_naming_validatetenantnametests_test_rejects_whitespace_in_any_position"
     ],
-    "54": [
+    "55": [
       "infra_hetzner_host_check_package",
       "infra_hetzner_host_check_package_dependencies",
       "infra_hetzner_host_check_package_dependencies_branchleft_hetzner_host",
@@ -1961,7 +1949,7 @@
       "infra_hetzner_host_check_package_description",
       "infra_hetzner_host_check_package_devdependencies",
       "infra_hetzner_host_check_package_devdependencies_branchleft_tsconfig",
-      "infra_hetzner_host_check_package_devdependencies_typescript",
+      "infra_hetzner_host_check_package_devdependencies_types_node",
       "infra_hetzner_host_check_package_devdependencies_vitest",
       "infra_hetzner_host_check_package_json_pulumi_pulumi",
       "infra_hetzner_host_check_package_json_vitest",
@@ -1971,7 +1959,7 @@
       "infra_hetzner_host_check_package_scripts_test_unit",
       "infra_hetzner_host_check_package_scripts_typecheck"
     ],
-    "55": [
+    "56": [
       "infra_platform_scripts_assert_no_platform_deletes",
       "infra_platform_scripts_assert_no_platform_deletes_coverage_self_test",
       "infra_platform_scripts_assert_no_platform_deletes_declaration_pattern",
@@ -1990,7 +1978,7 @@
       "infra_platform_scripts_assert_no_platform_deletes_self_test",
       "infra_platform_scripts_assert_no_platform_deletes_verify_coverage"
     ],
-    "56": [
+    "57": [
       "infra_provisioning_scripts_test_assert_image_ref_rationale_115",
       "infra_provisioning_scripts_test_assert_image_ref_rationale_145",
       "infra_provisioning_scripts_test_assert_image_ref_rationale_150",
@@ -2009,7 +1997,7 @@
       "infra_provisioning_scripts_test_assert_image_ref_refusesanythingthatisnotavalidimagepath_test_shell_metacharacters",
       "infra_provisioning_scripts_test_assert_image_ref_refusesanythingthatisnotavalidimagepath_test_the_separators_docker_does_allow_are_still_accepted"
     ],
-    "57": [
+    "58": [
       "infra_provisioning_scripts_verify_bucket_fence_classify",
       "infra_provisioning_scripts_verify_bucket_fence_decoded",
       "infra_provisioning_scripts_verify_bucket_fence_from_error_code",
@@ -2027,24 +2015,6 @@
       "infra_provisioning_scripts_verify_bucket_fence_temporary_policy_enter",
       "infra_provisioning_scripts_verify_bucket_fence_temporary_policy_exit",
       "infra_provisioning_scripts_verify_bucket_fence_temporary_policy_init"
-    ],
-    "58": [
-      "infra_hetzner_host_check_tsconfig_extends",
-      "infra_hosts_tsconfig_extends",
-      "infra_platform_tsconfig",
-      "infra_platform_tsconfig_compileroptions",
-      "infra_platform_tsconfig_compileroptions_pretty",
-      "infra_platform_tsconfig_extends",
-      "infra_platform_tsconfig_include",
-      "infra_platform_tsconfig_json_ref_ts",
-      "infra_tenant_tsconfig",
-      "infra_tenant_tsconfig_compileroptions",
-      "infra_tenant_tsconfig_compileroptions_pretty",
-      "infra_tenant_tsconfig_extends",
-      "infra_tenant_tsconfig_include",
-      "infra_tenant_tsconfig_json_ref_ts",
-      "ref_branchleft_tsconfig_pulumi_json",
-      "ref_branchleft_tsconfig_strict_1_json"
     ],
     "59": [
       "infra_provisioning_scripts_escrow_tenant_passphrase",
@@ -2065,6 +2035,41 @@
       "infra_provisioning_scripts_escrow_tenant_passphrase_validate_public_key"
     ],
     "60": [
+      "infra_provisioning_scripts_test_verify_bucket_fence_engine_enforces_nothing",
+      "infra_provisioning_scripts_test_verify_bucket_fence_engine_exempts_the_owner",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1741",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1780",
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2004",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_headline",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_a_read_that_drifts_from_the_pre_change_answer_still_reaches_a_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_a_rejected_document_produces_no_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_engine_that_exempts_the_bucket_owner_is_caught_without_the_wildcard",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_no_two_worlds_produce_the_same_verdict",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_nothing_is_enforced_needs_every_window_to_have_denied_nobody",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_evidence_block_carries_no_access_key_id",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_help_text_scopes_the_mode_the_same_way_its_verdict_does",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_strongest_verdict_claims_the_project_and_never_the_account",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_wildcard_window_is_not_sent_when_the_reading_does_not_turn_on_it"
+    ],
+    "61": [
+      "infra_hetzner_host_check_tsconfig",
+      "infra_hetzner_host_check_tsconfig_compileroptions",
+      "infra_hetzner_host_check_tsconfig_compileroptions_pretty",
+      "infra_hetzner_host_check_tsconfig_exclude",
+      "infra_hetzner_host_check_tsconfig_include",
+      "infra_hosts_tsconfig",
+      "infra_hosts_tsconfig_compileroptions",
+      "infra_hosts_tsconfig_compileroptions_pretty",
+      "infra_hosts_tsconfig_exclude",
+      "infra_hosts_tsconfig_include",
+      "infra_tenant_tsconfig_build_exclude",
+      "infra_tenant_tsconfig_build_json_ref_dist",
+      "infra_tenant_tsconfig_build_json_ref_test_ts",
+      "ref_node_modules",
+      "ref_ts"
+    ],
+    "62": [
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_checktests",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_checktests_test_all_required_secrets_missing",
@@ -2081,7 +2086,7 @@
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_selftesttests",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_selftesttests_test_self_test_passes"
     ],
-    "61": [
+    "63": [
       "infra_provisioning_scripts_test_mint_tenant_passphrase",
       "infra_provisioning_scripts_test_mint_tenant_passphrase_load_module",
       "infra_provisioning_scripts_test_mint_tenant_passphrase_maintests",
@@ -2098,7 +2103,23 @@
       "infra_provisioning_scripts_test_mint_tenant_passphrase_minttests_test_uses_the_urlsafe_alphabet",
       "infra_provisioning_scripts_test_mint_tenant_passphrase_rationale_23"
     ],
-    "62": [
+    "64": [
+      "db_provision_dump_nightly",
+      "db_provision_dump_nightly_dumperror",
+      "db_provision_dump_nightly_encrypt_with_age",
+      "db_provision_dump_nightly_get_server_uuid",
+      "db_provision_dump_nightly_main",
+      "db_provision_dump_nightly_object_key_for",
+      "db_provision_dump_nightly_py_datetime",
+      "db_provision_dump_nightly_py_exception",
+      "db_provision_dump_nightly_rationale_134",
+      "db_provision_dump_nightly_rationale_55",
+      "db_provision_dump_nightly_require_env",
+      "db_provision_dump_nightly_run_dump",
+      "db_provision_dump_nightly_run_mysql",
+      "db_provision_dump_nightly_run_mysqldump"
+    ],
+    "65": [
       "infra_provisioning_package",
       "infra_provisioning_package_dependencies",
       "infra_provisioning_package_dependencies_pulumi_gcp",
@@ -2114,7 +2135,7 @@
       "infra_provisioning_package_scripts",
       "infra_provisioning_package_scripts_typecheck"
     ],
-    "63": [
+    "66": [
       "db_provision_test_configure_backup_bucket",
       "db_provision_test_configure_backup_bucket_documenttests",
       "db_provision_test_configure_backup_bucket_documenttests_test_lifecycle_document_is_deterministic_for_the_same_input",
@@ -2129,7 +2150,7 @@
       "db_provision_test_configure_backup_bucket_loadpolicytests_test_refuses_a_file_that_is_not_json",
       "db_provision_test_configure_backup_bucket_rationale_109"
     ],
-    "64": [
+    "67": [
       "infra_platform_package",
       "infra_platform_package_dependencies",
       "infra_platform_package_dependencies_pulumi_gcp",
@@ -2144,7 +2165,7 @@
       "pulumi_gcp",
       "pulumi_random"
     ],
-    "65": [
+    "68": [
       "infra_provisioning_scripts_assert_image_ref",
       "infra_provisioning_scripts_assert_image_ref_check",
       "infra_provisioning_scripts_assert_image_ref_main",
@@ -2159,7 +2180,7 @@
       "infra_provisioning_scripts_test_assert_image_ref_refusesanunpinnedormalformeddigest_test_no_digest_at_all",
       "infra_provisioning_scripts_test_assert_image_ref_refusesanunpinnedormalformeddigest_test_uppercase_hex"
     ],
-    "66": [
+    "69": [
       "infra_provisioning_scripts_test_assert_image_ref",
       "infra_provisioning_scripts_test_assert_image_ref_accepts",
       "infra_provisioning_scripts_test_assert_image_ref_accepts_test_a_digest_pinned_image_in_our_ghcr_namespace",
@@ -2174,22 +2195,7 @@
       "infra_provisioning_scripts_test_assert_image_ref_therefusalsayswhich_test_a_wrong_registry_is_not_reported_as_malformed",
       "infra_provisioning_scripts_test_assert_image_ref_therefusalsayswhich_test_whitespace_is_named_as_whitespace"
     ],
-    "67": [
-      "infra_provisioning_scripts_test_verify_bucket_fence_engine_enforces_nothing",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1741",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2004",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_headline",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_a_probe_policy_that_could_not_be_removed_stops_the_run_there",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_every_window_reads_a_key_of_its_own_rather_than_a_cached_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_no_two_worlds_produce_the_same_verdict",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_nothing_is_enforced_needs_every_window_to_have_denied_nobody",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_confirming_read_is_a_second_request_and_not_a_cached_answer",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_help_text_scopes_the_mode_the_same_way_its_verdict_does",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_strongest_verdict_claims_the_project_and_never_the_account",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_wildcard_window_is_not_sent_when_the_reading_does_not_turn_on_it"
-    ],
-    "68": [
+    "70": [
       "infra_scripts_assert_no_committed_pulumi_secrets",
       "infra_scripts_assert_no_committed_pulumi_secrets_check",
       "infra_scripts_assert_no_committed_pulumi_secrets_find_stack_configs",
@@ -2204,7 +2210,7 @@
       "infra_scripts_assert_no_committed_pulumi_secrets_self_test",
       "path"
     ],
-    "69": [
+    "71": [
       "services_mailgun_shim_src_cli",
       "services_mailgun_shim_src_cli_cliio",
       "services_mailgun_shim_src_cli_generateapikey",
@@ -2219,7 +2225,7 @@
       "services_mailgun_shim_test_unit_store_test_makeevent",
       "services_mailgun_shim_test_unit_store_test_payload"
     ],
-    "70": [
+    "72": [
       "db_provision_test_objectstorage_rationale_566",
       "db_provision_test_objectstorage_signedrequesttests",
       "db_provision_test_objectstorage_signedrequesttests_send",
@@ -2233,7 +2239,21 @@
       "db_provision_test_objectstorage_signedrequesttests_test_the_service_root_is_addressable_for_list_all_my_buckets",
       "db_provision_test_objectstorage_signedrequesttests_test_the_verb_reaches_the_transport"
     ],
-    "71": [
+    "73": [
+      "infra_hetzner_host_check_tsconfig_extends",
+      "infra_hosts_tsconfig_extends",
+      "infra_platform_tsconfig",
+      "infra_platform_tsconfig_compileroptions",
+      "infra_platform_tsconfig_compileroptions_pretty",
+      "infra_platform_tsconfig_exclude",
+      "infra_platform_tsconfig_extends",
+      "infra_platform_tsconfig_include",
+      "infra_platform_tsconfig_json_ref_bin",
+      "infra_platform_tsconfig_json_ref_ts",
+      "ref_branchleft_tsconfig_pulumi_json",
+      "ref_branchleft_tsconfig_strict_1_json"
+    ],
+    "74": [
       "infra_provisioning_scripts_test_verify_bucket_fence_testsignedtransport",
       "infra_provisioning_scripts_test_verify_bucket_fence_testsignedtransport_send",
       "infra_provisioning_scripts_test_verify_bucket_fence_testsignedtransport_test_a_bucket_subresource_is_addressed_as_a_query_parameter",
@@ -2247,7 +2267,7 @@
       "infra_provisioning_scripts_test_verify_bucket_fence_testsignedtransport_test_two_probes_differing_only_in_body_do_not_share_a_cached_verdict",
       "infra_provisioning_scripts_test_verify_bucket_fence_testsignedtransport_verifier"
     ],
-    "72": [
+    "75": [
       "branchleft_ghost_platform_tenant",
       "claude_md",
       "contributing_contributing",
@@ -2260,7 +2280,7 @@
       "infra_tenant",
       "readme"
     ],
-    "73": [
+    "76": [
       "infra_provisioning_scripts_test_render_media_bucket_policy_policy_for",
       "infra_provisioning_scripts_test_render_media_bucket_policy_rationale_181",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testappendonly_test_no_statement_ever_allows_a_delete_action",
@@ -2273,7 +2293,7 @@
       "infra_provisioning_scripts_test_render_media_bucket_policy_testcredentialisolation_test_the_operator_key_keeps_control_of_the_bucket",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testthestrangercatchall_test_the_anonymous_list_deny_is_explicit_rather_than_implicit"
     ],
-    "74": [
+    "77": [
       "infra_provisioning_scripts_verify_bucket_fence_documented_grant_policy",
       "infra_provisioning_scripts_verify_bucket_fence_existing_policy_refusal",
       "infra_provisioning_scripts_verify_bucket_fence_foreign_grant_policy_id",
@@ -2281,12 +2301,12 @@
       "infra_provisioning_scripts_verify_bucket_fence_leftover_description",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_1344",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_1366",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2903",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2926",
-      "infra_provisioning_scripts_verify_bucket_fence_rationale_2965",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_2938",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_2961",
+      "infra_provisioning_scripts_verify_bucket_fence_rationale_3000",
       "infra_provisioning_scripts_verify_bucket_fence_scoped_grant_policy"
     ],
-    "75": [
+    "78": [
       "services_mailgun_shim_src_ratelimit",
       "services_mailgun_shim_src_ratelimit_tenantratelimiter",
       "services_mailgun_shim_src_routes_events",
@@ -2299,7 +2319,7 @@
       "services_mailgun_shim_test_unit_ratelimit_test_runmiddleware",
       "services_mailgun_shim_test_unit_ratelimit_test_startlimitedapp"
     ],
-    "76": [
+    "79": [
       "services_mailgun_shim_test_helpers_mailgunclient",
       "services_mailgun_shim_test_helpers_mailgunclient_createmailgunclient",
       "services_mailgun_shim_test_helpers_mailgunclient_mailgunconstructor",
@@ -2312,7 +2332,7 @@
       "services_mailgun_shim_test_helpers_smtpsink_startsmtpsink",
       "services_mailgun_shim_test_shim_integration_test"
     ],
-    "77": [
+    "80": [
       "db_provision_render_exporter_my_cnf",
       "db_provision_render_exporter_my_cnf_clear_bind_mount_stub",
       "db_provision_render_exporter_my_cnf_main",
@@ -2324,7 +2344,7 @@
       "db_provision_render_exporter_my_cnf_render",
       "db_provision_render_exporter_my_cnf_write"
     ],
-    "78": [
+    "81": [
       "db_provision_test_configure_backup_bucket_rationale_851",
       "db_provision_test_configure_backup_bucket_rationale_858",
       "db_provision_test_configure_backup_bucket_rationale_879",
@@ -2336,31 +2356,7 @@
       "db_provision_test_configure_backup_bucket_thecheckerrequireswhatthegeneratoractuallydenies_test_an_allow_carrying_notprincipal_is_refused",
       "db_provision_test_configure_backup_bucket_thecheckerrequireswhatthegeneratoractuallydenies_test_an_unrelated_allow_does_not_account_for_a_notprincipal_exemption"
     ],
-    "79": [
-      "infra_hetzner_host_check_tsconfig",
-      "infra_hetzner_host_check_tsconfig_compileroptions",
-      "infra_hetzner_host_check_tsconfig_compileroptions_pretty",
-      "infra_hetzner_host_check_tsconfig_include",
-      "infra_hosts_tsconfig",
-      "infra_hosts_tsconfig_compileroptions",
-      "infra_hosts_tsconfig_compileroptions_pretty",
-      "infra_hosts_tsconfig_exclude",
-      "infra_hosts_tsconfig_include",
-      "ref_ts"
-    ],
-    "80": [
-      "infra_hetzner_host_check_tsconfig_exclude",
-      "infra_platform_tsconfig_exclude",
-      "infra_platform_tsconfig_json_ref_bin",
-      "infra_tenant_tsconfig_build_exclude",
-      "infra_tenant_tsconfig_build_json_ref_dist",
-      "infra_tenant_tsconfig_build_json_ref_test_ts",
-      "infra_tenant_tsconfig_exclude",
-      "infra_tenant_tsconfig_json_ref_bin",
-      "infra_tenant_tsconfig_json_ref_dist",
-      "ref_node_modules"
-    ],
-    "81": [
+    "82": [
       "infra_provisioning_scripts_assert_tenant_provisioning_token_scopes",
       "infra_provisioning_scripts_assert_tenant_provisioning_token_scopes_check",
       "infra_provisioning_scripts_assert_tenant_provisioning_token_scopes_extract_scopes_header",
@@ -2372,7 +2368,7 @@
       "infra_provisioning_scripts_assert_tenant_provisioning_token_scopes_rationale_96",
       "infra_provisioning_scripts_assert_tenant_provisioning_token_scopes_self_test"
     ],
-    "82": [
+    "83": [
       "infra_provisioning_scripts_test_assert_image_ref_rationale_33",
       "infra_provisioning_scripts_test_assert_image_ref_rationale_42",
       "infra_provisioning_scripts_test_assert_image_ref_rationale_50",
@@ -2384,7 +2380,7 @@
       "infra_provisioning_scripts_test_assert_image_ref_refusesthewrongregistry_test_docker_hub",
       "infra_provisioning_scripts_test_assert_image_ref_refusesthewrongregistry_test_our_namespace_worn_as_a_path_by_another_registry"
     ],
-    "83": [
+    "84": [
       "infra_tenant_tsconfig_build",
       "infra_tenant_tsconfig_build_compileroptions",
       "infra_tenant_tsconfig_build_compileroptions_declaration",
@@ -2396,7 +2392,7 @@
       "infra_tenant_tsconfig_build_json_ref_ts",
       "infra_tenant_tsconfig_build_json_ref_tsconfig_json"
     ],
-    "84": [
+    "85": [
       "branchleft_hetzner_host",
       "infra_hosts",
       "infra_hosts_package_dependencies",
@@ -2407,7 +2403,7 @@
       "pulumi_hcloud",
       "pulumi_pulumi"
     ],
-    "85": [
+    "86": [
       "db_provision_test_objectstorage_buildheaderstests",
       "db_provision_test_objectstorage_buildheaderstests_headers",
       "db_provision_test_objectstorage_buildheaderstests_setup",
@@ -2418,7 +2414,7 @@
       "db_provision_test_objectstorage_buildheaderstests_test_signed_headers_cover_exactly_the_headers_sent",
       "db_provision_test_objectstorage_buildheaderstests_test_signs_the_actual_payload_hash"
     ],
-    "86": [
+    "87": [
       "infra_provisioning_scripts_test_render_media_bucket_policy",
       "infra_provisioning_scripts_test_render_media_bucket_policy_rationale_1",
       "infra_provisioning_scripts_test_render_media_bucket_policy_rationale_430",
@@ -2429,7 +2425,29 @@
       "infra_provisioning_scripts_test_render_media_bucket_policy_testthesequencerunsintheoperatorsshell",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testthesequencerunsintheoperatorsshell_test_the_rendered_commands_survive_zsh"
     ],
-    "87": [
+    "88": [
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_preflight_rows",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_row",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_deny_on_every_resource_is_not_invisible",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_deny_scoped_to_the_probe_prefix_is_not_a_workload_lockout",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_document_the_evaluator_cannot_walk_is_inconclusive_not_safe",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_notaction_policy_is_inconclusive_rather_than_passing",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_a_policy_that_really_does_lock_a_credential_out_fails",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_an_enumerated_policy_is_still_evaluated",
+      "infra_provisioning_scripts_test_verify_bucket_fence_testpreflight_test_the_policy_this_repository_renders_passes_and_is_applied"
+    ],
+    "89": [
+      "infra_tenant_tsconfig",
+      "infra_tenant_tsconfig_compileroptions",
+      "infra_tenant_tsconfig_compileroptions_pretty",
+      "infra_tenant_tsconfig_exclude",
+      "infra_tenant_tsconfig_extends",
+      "infra_tenant_tsconfig_include",
+      "infra_tenant_tsconfig_json_ref_bin",
+      "infra_tenant_tsconfig_json_ref_dist",
+      "infra_tenant_tsconfig_json_ref_ts"
+    ],
+    "90": [
       "db_provision_test_configure_backup_bucket_configurebackupbuckettests",
       "db_provision_test_configure_backup_bucket_configurebackupbuckettests_test_a_denied_second_policy_put_fails_the_run",
       "db_provision_test_configure_backup_bucket_configurebackupbuckettests_test_a_failed_lifecycle_call_never_applies_the_fence",
@@ -2439,7 +2457,7 @@
       "db_provision_test_configure_backup_bucket_configurebackupbuckettests_test_lifecycle_call_carries_a_correct_content_md5",
       "db_provision_test_configure_backup_bucket_configurebackupbuckettests_test_the_policy_is_put_twice_so_a_lockout_surfaces_here"
     ],
-    "88": [
+    "91": [
       "db_provision_test_configure_backup_bucket_enginecatchupdwelltests",
       "db_provision_test_configure_backup_bucket_enginecatchupdwelltests_test_a_custom_dwell_is_threaded_through_from_configure_backup_bucket",
       "db_provision_test_configure_backup_bucket_enginecatchupdwelltests_test_a_zero_dwell_sends_the_second_put_with_no_wait",
@@ -2449,7 +2467,7 @@
       "db_provision_test_configure_backup_bucket_enginecatchupdwelltests_test_the_second_put_is_sent_only_after_the_dwell_completes",
       "db_provision_test_configure_backup_bucket_rationale_310"
     ],
-    "89": [
+    "92": [
       "db_provision_test_objectstorage_owneridtests",
       "db_provision_test_objectstorage_owneridtests_call",
       "db_provision_test_objectstorage_owneridtests_test_a_non_2xx_response_raises_rather_than_returning_a_guess",
@@ -2459,7 +2477,7 @@
       "db_provision_test_objectstorage_owneridtests_test_the_two_failures_are_told_apart_in_the_message",
       "db_provision_test_objectstorage_rationale_322"
     ],
-    "90": [
+    "93": [
       "infra_hosts_package",
       "infra_hosts_package_description",
       "infra_hosts_package_main",
@@ -2469,7 +2487,7 @@
       "infra_hosts_package_scripts_test_unit",
       "infra_hosts_package_scripts_typecheck"
     ],
-    "91": [
+    "94": [
       "infra_provisioning_scripts_assert_tenant_provisioning_scoping",
       "infra_provisioning_scripts_assert_tenant_provisioning_scoping_check",
       "infra_provisioning_scripts_assert_tenant_provisioning_scoping_main",
@@ -2479,7 +2497,7 @@
       "infra_provisioning_scripts_assert_tenant_provisioning_scoping_self_test",
       "infra_provisioning_scripts_assert_tenant_provisioning_scoping_shadowed_message"
     ],
-    "92": [
+    "95": [
       "infra_provisioning_scripts_test_assert_image_ref_rationale_100",
       "infra_provisioning_scripts_test_assert_image_ref_rationale_105",
       "infra_provisioning_scripts_test_assert_image_ref_refusesemptyandwhitespace",
@@ -2489,7 +2507,7 @@
       "infra_provisioning_scripts_test_assert_image_ref_refusesemptyandwhitespace_test_none",
       "infra_provisioning_scripts_test_assert_image_ref_refusesemptyandwhitespace_test_trailing_newline"
     ],
-    "93": [
+    "96": [
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_maintests",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_maintests_test_exits_nonzero_and_reports_missing",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_maintests_test_exits_nonzero_and_reports_shadowed",
@@ -2499,7 +2517,7 @@
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_maintests_write",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_repointerpolationtests_write"
     ],
-    "94": [
+    "97": [
       "infra_provisioning_scripts_test_render_media_bucket_policy_decide",
       "infra_provisioning_scripts_test_render_media_bucket_policy_rationale_103",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testappendonly",
@@ -2509,7 +2527,7 @@
       "infra_provisioning_scripts_test_render_media_bucket_policy_testappendonly_test_the_tenant_key_cannot_delete_its_own_media",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testappendonly_test_the_tenant_key_cannot_edit_the_fence_that_constrains_it"
     ],
-    "95": [
+    "98": [
       "infra_provisioning_scripts_test_render_media_bucket_policy_testinputrefusals",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testinputrefusals_test_accepts_the_slugs_the_platform_permits",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testinputrefusals_test_agrees_with_the_components_derivation",
@@ -2519,7 +2537,7 @@
       "infra_provisioning_scripts_test_render_media_bucket_policy_testinputrefusals_test_refuses_a_slug_that_would_make_an_illegal_bucket_name",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testinputrefusals_test_refuses_an_access_key_that_could_change_the_arn_it_names"
     ],
-    "96": [
+    "99": [
       "infra_provisioning_scripts_verify_bucket_fence_diagnostic_policy",
       "infra_provisioning_scripts_verify_bucket_fence_diagnostic_policy_id",
       "infra_provisioning_scripts_verify_bucket_fence_probe_family_ids",
@@ -2529,7 +2547,7 @@
       "infra_provisioning_scripts_verify_bucket_fence_rationale_1218",
       "infra_provisioning_scripts_verify_bucket_fence_rationale_1997"
     ],
-    "97": [
+    "100": [
       "infra_provisioning_tsconfig",
       "infra_provisioning_tsconfig_compileroptions",
       "infra_provisioning_tsconfig_compileroptions_pretty",
@@ -2539,7 +2557,7 @@
       "infra_provisioning_tsconfig_json_ref_bin",
       "infra_provisioning_tsconfig_json_ref_ts"
     ],
-    "98": [
+    "101": [
       "ref_es2023",
       "services_mailgun_shim_tsconfig_compileroptions",
       "services_mailgun_shim_tsconfig_compileroptions_lib",
@@ -2549,7 +2567,17 @@
       "services_mailgun_shim_tsconfig_compileroptions_outdir",
       "services_mailgun_shim_tsconfig_compileroptions_target"
     ],
-    "99": [
+    "102": [
+      "runbook_literal_placeholders_test",
+      "runbook_literal_placeholders_test_command_fence_langs",
+      "runbook_literal_placeholders_test_commandblocks",
+      "runbook_literal_placeholders_test_findfixedhostplaceholders",
+      "runbook_literal_placeholders_test_fixed_hosts",
+      "runbook_literal_placeholders_test_root",
+      "runbook_literal_placeholders_test_runbook_paths",
+      "runbook_literal_placeholders_test_walk"
+    ],
+    "103": [
       "services_mailgun_shim_tsconfig_build",
       "services_mailgun_shim_tsconfig_build_compileroptions",
       "services_mailgun_shim_tsconfig_build_compileroptions_noemit",
@@ -2559,7 +2587,7 @@
       "services_mailgun_shim_tsconfig_build_json_ref_src_ts",
       "services_mailgun_shim_tsconfig_build_json_ref_test_ts"
     ],
-    "100": [
+    "104": [
       "db_provision_test_configure_backup_bucket_maintests",
       "db_provision_test_configure_backup_bucket_maintests_policy_file",
       "db_provision_test_configure_backup_bucket_maintests_test_a_locking_policy_stops_the_run_before_any_request",
@@ -2568,7 +2596,7 @@
       "db_provision_test_configure_backup_bucket_maintests_test_refuses_without_credentials",
       "db_provision_test_configure_backup_bucket_maintests_test_the_account_is_resolved_from_the_credential_not_from_an_argument"
     ],
-    "101": [
+    "105": [
       "db_provision_test_objectstorage_listobjectstests",
       "db_provision_test_objectstorage_listobjectstests_page",
       "db_provision_test_objectstorage_listobjectstests_test_paginates_on_is_truncated_until_a_page_says_otherwise",
@@ -2577,16 +2605,7 @@
       "db_provision_test_objectstorage_listobjectstests_test_truncated_with_no_continuation_token_raises_rather_than_returning_a_partial_page",
       "db_provision_test_objectstorage_listobjectstests_test_uses_a_get_request_with_the_prefix_and_list_type_query"
     ],
-    "102": [
-      "db_provision_test_objectstorage_parseowneridtests",
-      "db_provision_test_objectstorage_parseowneridtests_test_a_response_that_is_not_xml_yields_nothing_rather_than_raising",
-      "db_provision_test_objectstorage_parseowneridtests_test_a_response_without_an_owner_yields_nothing",
-      "db_provision_test_objectstorage_parseowneridtests_test_an_id_outside_owner_is_not_an_account",
-      "db_provision_test_objectstorage_parseowneridtests_test_an_unsigned_requests_owner_is_returned_verbatim_for_the_caller_to_refuse",
-      "db_provision_test_objectstorage_parseowneridtests_test_only_the_id_under_owner_counts",
-      "db_provision_test_objectstorage_parseowneridtests_test_reads_the_id_out_of_a_namespaced_response"
-    ],
-    "103": [
+    "106": [
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_rationale_204",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_repointerpolationtests",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_repointerpolationtests_run_and_capture",
@@ -2595,7 +2614,7 @@
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_repointerpolationtests_test_falls_back_to_the_placeholder_when_neither_is_set",
       "infra_provisioning_scripts_test_assert_tenant_provisioning_scoping_repointerpolationtests_test_github_repository_env_var_is_used_with_no_explicit_flag"
     ],
-    "104": [
+    "107": [
       "infra_provisioning_scripts_test_render_media_bucket_policy_rationale_63",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testpublicreadnotlistable",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testpublicreadnotlistable_test_anonymous_can_fetch_an_object_by_url",
@@ -2604,7 +2623,7 @@
       "infra_provisioning_scripts_test_render_media_bucket_policy_testpublicreadnotlistable_test_no_statement_ever_allows_a_list_action",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testpublicreadnotlistable_test_the_public_allow_names_objects_and_never_the_bucket"
     ],
-    "105": [
+    "108": [
       "infra_provisioning_scripts_test_verify_bucket_fence_engine_call",
       "infra_provisioning_scripts_test_verify_bucket_fence_grantengine_refuses_the_read",
       "infra_provisioning_scripts_test_verify_bucket_fence_operation",
@@ -2613,7 +2632,7 @@
       "infra_provisioning_scripts_test_verify_bucket_fence_sent_init",
       "infra_provisioning_scripts_test_verify_bucket_fence_transport_call"
     ],
-    "106": [
+    "109": [
       "infra_provisioning_scripts_test_verify_bucket_fence_engine_ignores_principal",
       "infra_provisioning_scripts_test_verify_bucket_fence_engine_one_principal_per_project",
       "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1746",
@@ -2622,16 +2641,15 @@
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_hypothesis_one_is_told_apart_from_an_engine_that_ignores_the_principal",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_only_the_one_user_reading_offers_a_project_per_tenant_as_a_way_out"
     ],
-    "107": [
-      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_a_listing_that_never_finishes_stops_rather_than_spinning",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_a_probe_object_left_behind_fails_the_run",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_a_truncated_listing_is_paged_rather_than_taken_as_the_whole_bucket",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_a_truncated_listing_with_no_marker_is_reported_rather_than_trusted",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_test_every_probe_object_version_and_delete_marker_is_removed",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testcleanup_versions_page"
+    "110": [
+      "db_provision_test_objectstorage_knownanswertests",
+      "db_provision_test_objectstorage_knownanswertests_cases",
+      "db_provision_test_objectstorage_knownanswertests_reference_authorization",
+      "db_provision_test_objectstorage_knownanswertests_test_bucket_subresource_form_agrees_with_the_independent_reference",
+      "db_provision_test_objectstorage_knownanswertests_test_build_headers_agrees_with_the_independent_reference",
+      "db_provision_test_objectstorage_rationale_395"
     ],
-    "108": [
+    "111": [
       "infra_provisioning_scripts_restore_stack_secrets_config",
       "infra_provisioning_scripts_restore_stack_secrets_config_main",
       "infra_provisioning_scripts_restore_stack_secrets_config_py_path",
@@ -2639,7 +2657,7 @@
       "infra_provisioning_scripts_restore_stack_secrets_config_restore",
       "infra_provisioning_scripts_restore_stack_secrets_config_scalar_field"
     ],
-    "109": [
+    "112": [
       "infra_provisioning_scripts_test_render_media_bucket_policy_rationale_394",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testtheemittedsequenceordersitscontrolfirst",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testtheemittedsequenceordersitscontrolfirst_commands",
@@ -2647,7 +2665,7 @@
       "infra_provisioning_scripts_test_render_media_bucket_policy_testtheemittedsequenceordersitscontrolfirst_test_the_control_runs_before_the_bucket_exists",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testtheemittedsequenceordersitscontrolfirst_test_the_control_runs_before_the_policy_is_applied"
     ],
-    "110": [
+    "113": [
       "infra_provisioning_scripts_test_render_media_bucket_policy_rationale_455",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testthestrangercatchall",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testthestrangercatchall_statement",
@@ -2655,7 +2673,7 @@
       "infra_provisioning_scripts_test_render_media_bucket_policy_testthestrangercatchall_test_it_denies_every_bucket_action_not_just_the_reads",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testthestrangercatchall_test_only_the_tenant_and_the_operator_are_exempt"
     ],
-    "111": [
+    "114": [
       "infra_provisioning_scripts_test_verify_bucket_fence_testnoexternalclient",
       "infra_provisioning_scripts_test_verify_bucket_fence_testnoexternalclient_test_a_corrupt_signing_source_is_refused_rather_than_traced_back",
       "infra_provisioning_scripts_test_verify_bucket_fence_testnoexternalclient_test_a_missing_signing_source_is_refused_with_the_fix",
@@ -2663,7 +2681,7 @@
       "infra_provisioning_scripts_test_verify_bucket_fence_testnoexternalclient_test_the_module_does_not_import_subprocess",
       "infra_provisioning_scripts_test_verify_bucket_fence_testnoexternalclient_test_the_signing_is_the_one_the_backup_pipeline_uses"
     ],
-    "112": [
+    "115": [
       "ref_vitest_config_ts",
       "services_mailgun_shim_tsconfig",
       "services_mailgun_shim_tsconfig_extends",
@@ -2671,286 +2689,282 @@
       "services_mailgun_shim_tsconfig_json_ref_src_ts",
       "services_mailgun_shim_tsconfig_json_ref_test_ts"
     ],
-    "113": [
+    "116": [
       "infra_provisioning_scripts_test_render_media_bucket_policy_rationale_253",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testprefixcollision",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testprefixcollision_test_blogs_policy_does_not_reach_blog_archives_objects",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testprefixcollision_test_the_public_read_of_one_tenant_is_not_the_public_read_of_another",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testprefixcollision_test_two_slugs_sharing_a_prefix_get_two_buckets"
     ],
-    "114": [
+    "117": [
       "infra_provisioning_scripts_test_render_media_bucket_policy_testcommands",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testcommands_test_applies_the_lifecycle_rule_before_the_policy_locks_config_down",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testcommands_test_embeds_a_policy_that_parses",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testcommands_test_enables_versioning_before_the_lifecycle_rule",
       "infra_provisioning_scripts_test_render_media_bucket_policy_testcommands_test_never_offers_the_public_read_canned_acl"
     ],
-    "115": [
+    "118": [
       "actions_checkout",
       "github_codeql_action_analyze",
       "github_codeql_action_init",
       "github_workflows_codeql_codeql"
     ],
-    "116": [
+    "119": [
       "app1",
       "db1",
       "edge1",
       "runbook_tenant_onboarding_md"
     ],
-    "117": [
+    "120": [
       "docker_entrypoint_branchleft",
       "docker_entrypoint_branchleft_server_host",
       "docker_entrypoint_branchleft_server_port",
       "docker_entrypoint_branchleft_sh__entry"
     ],
-    "118": [
+    "121": [
       "graphify_out_prettier_ignore_test",
       "graphify_out_prettier_ignore_test_repo_ignore_paths",
       "graphify_out_prettier_ignore_test_root",
       "graphify_out_prettier_ignore_test_sample_paths"
     ],
-    "119": [
+    "122": [
       "infra_hetzner_host_check_hetznerhostinstall_test",
       "infra_hetzner_host_check_hetznerhostinstall_test_call",
       "infra_hetzner_host_check_hetznerhostinstall_test_created",
       "infra_hetzner_host_check_hetznerhostinstall_test_newresource"
     ],
-    "120": [
+    "123": [
       "infra_provisioning_scripts_test_assert_image_ref_rationale_196",
       "infra_provisioning_scripts_test_assert_image_ref_theselftestisitselfchecked",
       "infra_provisioning_scripts_test_assert_image_ref_theselftestisitselfchecked_test_it_covers_both_outcomes",
       "infra_provisioning_scripts_test_assert_image_ref_theselftestisitselfchecked_test_it_passes_on_the_real_rules"
     ],
-    "121": [
+    "124": [
       "infra_tenant_package_repository",
       "infra_tenant_package_repository_directory",
       "infra_tenant_package_repository_type",
       "infra_tenant_package_repository_url"
     ],
-    "122": [
+    "125": [
       "scripts_test_storage_guard",
       "scripts_test_storage_guard_assert_blocked",
       "scripts_test_storage_guard_assert_boots",
       "scripts_test_storage_guard_sh__entry"
     ],
-    "123": [
+    "126": [
       "app_provision",
       "db_provision",
       "github_workflows_repo_tooling_ci"
     ],
-    "124": [
-      "bucket_policy_lockout",
-      "hetzner_object_storage",
-      "runbook_bucket_fencing_md"
-    ],
-    "125": [
+    "127": [
       "ghost_platform_provisioner",
       "ghost_tenant_provisioner",
       "infra_platform_runbook_bootstrap"
     ],
-    "126": [
+    "128": [
       "infra_provisioning_scripts_mint_tenant_passphrase",
       "infra_provisioning_scripts_mint_tenant_passphrase_main",
       "infra_provisioning_scripts_mint_tenant_passphrase_mint"
     ],
-    "127": [
-      "infra_provisioning_scripts_test_verify_bucket_fence_engine_exempts_the_owner",
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1780",
-      "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_an_engine_that_exempts_the_bucket_owner_is_caught_without_the_wildcard"
-    ],
-    "128": [
+    "129": [
       "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1798",
       "infra_provisioning_scripts_test_verify_bucket_fence_separates_two_keys",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyenginediagnostic_test_the_report_says_a_fence_is_possible_exactly_when_the_engine_separates_keys"
     ],
-    "129": [
+    "130": [
       "scripts_smoke_test",
       "scripts_smoke_test_cleanup",
       "scripts_smoke_test_sh__entry"
     ],
-    "130": [
+    "131": [
       "branchleft_github_workflows_docs_lint",
       "github_workflows_docs_lint_docs_lint"
     ],
-    "131": [
+    "132": [
       "branchleft_standards_standards",
       "github_workflows_standards_standards"
-    ],
-    "132": [
-      "db_env",
-      "db_runbook_db"
     ],
     "133": [
       "db_readme",
       "db_stack"
     ],
     "134": [
+      "db_runbook_db_runbook",
+      "runbook_bucket_fencing_runbook"
+    ],
+    "135": [
       "github_workflows_infra_hosts_ci",
       "pulumi_cli"
     ],
-    "135": [
+    "136": [
       "github_workflows_provision_tenant",
       "tenant_provisioning_env"
     ],
-    "136": [
+    "137": [
       "infra_provisioning_scripts_test_verify_bucket_fence_engine_refuses_the_read",
       "infra_provisioning_scripts_test_verify_bucket_fence_rationale_1866"
     ],
-    "137": [
-      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2366",
+    "138": [
+      "infra_provisioning_scripts_test_verify_bucket_fence_rationale_2425",
       "infra_provisioning_scripts_test_verify_bucket_fence_testpolicyengineprobesaresafe_every_document"
     ],
-    "138": [
+    "139": [
       "branchleft_db_backups"
     ],
-    "139": [
+    "140": [
       "branchleft_github_workflows_graphify"
     ],
-    "140": [
+    "141": [
       "branchleft_media_slug"
     ],
-    "141": [
+    "142": [
       "branchleft_tenant_pulumi_state"
     ],
-    "142": [
-      "db_provision_configure_backup_bucket_py_exception"
-    ],
     "143": [
-      "db_provision_objectstorage_py_datetime"
+      "db_env"
     ],
     "144": [
-      "db_stack_compose"
+      "db_provision_configure_backup_bucket_py_exception"
     ],
     "145": [
-      "eslint_config"
+      "db_provision_objectstorage_py_datetime"
     ],
     "146": [
-      "gcp_artifact_registry"
+      "db_stack_compose"
     ],
     "147": [
-      "gcp_cloud_run"
+      "eslint_config"
     ],
     "148": [
-      "gcp_cloud_sql"
+      "gcp_artifact_registry"
     ],
     "149": [
-      "gcp_kms"
+      "gcp_cloud_run"
     ],
     "150": [
-      "gcp_secret_manager"
+      "gcp_cloud_sql"
     ],
     "151": [
-      "gcp_storage_bucket"
+      "gcp_kms"
     ],
     "152": [
-      "gcp_workload_identity_federation"
+      "gcp_secret_manager"
     ],
     "153": [
-      "ghost_official_image"
+      "gcp_storage_bucket"
     ],
     "154": [
-      "ghost_tenant_name"
+      "gcp_workload_identity_federation"
     ],
     "155": [
-      "github_actions_wif"
+      "ghost_official_image"
     ],
     "156": [
-      "github_workflows_build_job_build"
+      "ghost_tenant_name"
     ],
     "157": [
-      "github_workflows_build_workflow"
+      "github_actions_wif"
     ],
     "158": [
-      "github_workflows_graphify_yml_graphify"
+      "github_workflows_build_job_build"
     ],
     "159": [
-      "github_workflows_infra_hetzner_host_check_ci"
+      "github_workflows_build_workflow"
     ],
     "160": [
-      "github_workflows_mailgun_shim_ci_yml"
+      "github_workflows_graphify_yml_graphify"
     ],
     "161": [
-      "github_workflows_mailgun_shim_image_yml"
+      "github_workflows_infra_hetzner_host_check_ci"
     ],
     "162": [
-      "github_workflows_registry_push_yml"
+      "github_workflows_mailgun_shim_ci_yml"
     ],
     "163": [
-      "hetzner_cloud"
+      "github_workflows_mailgun_shim_image_yml"
     ],
     "164": [
-      "infra_platform_pulumi_project"
+      "github_workflows_registry_push_yml"
     ],
     "165": [
-      "infra_platform_pulumi_yaml"
+      "hetzner_cloud"
     ],
     "166": [
-      "infra_provisioning_escrow_readme_md"
+      "hetzner_object_storage"
     ],
     "167": [
-      "infra_provisioning_scripts_assert_no_provisioning_deletes_py_pattern"
+      "infra_platform_pulumi_project"
     ],
     "168": [
-      "infra_tenant_changelog"
+      "infra_platform_pulumi_yaml"
     ],
     "169": [
-      "infra_tenant_ghosttenant"
+      "infra_provisioning_escrow_readme_md"
     ],
     "170": [
-      "infra_tenant_readme"
+      "infra_provisioning_scripts_assert_no_provisioning_deletes_py_pattern"
     ],
     "171": [
-      "infra_tenant_scripts_assert_no_tenant_deletes_py_exception"
+      "infra_tenant_changelog"
     ],
     "172": [
-      "infra_tenant_smoke_test_readme"
+      "infra_tenant_ghosttenant"
     ],
     "173": [
-      "pre_commit_config"
+      "infra_tenant_readme"
     ],
     "174": [
-      "pulumi_component_resource"
+      "infra_tenant_scripts_assert_no_tenant_deletes_py_exception"
     ],
     "175": [
-      "pulumi_platform_stack"
+      "infra_tenant_smoke_test_readme"
     ],
     "176": [
-      "services_mailgun_shim"
+      "pre_commit_config"
     ],
     "177": [
+      "pulumi_component_resource"
+    ],
+    "178": [
+      "pulumi_platform_stack"
+    ],
+    "179": [
+      "services_mailgun_shim"
+    ],
+    "180": [
       "services_mailgun_shim_vitest_config"
     ]
   },
   "cohesion": {
-    "0": 0.0644384221619994,
-    "1": 0.058941058941058944,
+    "0": 0.053482221569203646,
+    "1": 0.0644384221619994,
     "2": 0.05632360471070148,
-    "3": 0.0514216575922565,
-    "4": 0.06533575317604355,
-    "5": 0.07662337662337662,
-    "6": 0.07215686274509804,
-    "7": 0.06775510204081632,
-    "8": 0.041666666666666664,
-    "9": 0.07955596669750231,
-    "10": 0.050241545893719805,
-    "11": 0.08416389811738649,
-    "12": 0.08194905869324474,
-    "13": 0.0524390243902439,
-    "14": 0.11097560975609756,
-    "15": 0.10128205128205128,
-    "16": 0.0796221322537112,
-    "17": 0.07422402159244265,
-    "18": 0.09246088193456614,
-    "19": 0.09365079365079365,
-    "20": 0.0761904761904762,
-    "21": 0.10695187165775401,
-    "22": 0.08669354838709678,
-    "23": 0.15524193548387097,
-    "24": 0.13978494623655913,
-    "25": 0.12473118279569892,
-    "26": 0.13548387096774195,
-    "27": 0.06896551724137931,
-    "28": 0.1724137931034483,
+    "3": 0.06533575317604355,
+    "4": 0.07013574660633484,
+    "5": 0.08784313725490196,
+    "6": 0.06775510204081632,
+    "7": 0.041666666666666664,
+    "8": 0.07955596669750231,
+    "9": 0.050241545893719805,
+    "10": 0.08194905869324474,
+    "11": 0.0524390243902439,
+    "12": 0.10128205128205128,
+    "13": 0.09102564102564102,
+    "14": 0.0796221322537112,
+    "15": 0.07422402159244265,
+    "16": 0.09246088193456614,
+    "17": 0.09246088193456614,
+    "18": 0.09365079365079365,
+    "19": 0.0761904761904762,
+    "20": 0.14583333333333334,
+    "21": 0.08669354838709678,
+    "22": 0.15725806451612903,
+    "23": 0.13978494623655913,
+    "24": 0.13548387096774195,
+    "25": 0.12873563218390804,
+    "26": 0.06896551724137931,
+    "27": 0.1724137931034483,
+    "28": 0.11822660098522167,
     "29": 0.08866995073891626,
     "30": 0.08620689655172414,
     "31": 0.10344827586206896,
@@ -2959,100 +2973,100 @@
     "34": 0.15,
     "35": 0.16304347826086957,
     "36": 0.1541501976284585,
-    "37": 0.10276679841897234,
+    "37": 0.11462450592885376,
     "38": 0.1857707509881423,
     "39": 0.15584415584415584,
     "40": 0.12554112554112554,
-    "41": 0.1523809523809524,
-    "42": 0.12857142857142856,
-    "43": 0.10476190476190476,
-    "44": 0.12105263157894737,
-    "45": 0.18947368421052632,
+    "41": 0.09523809523809523,
+    "42": 0.1761904761904762,
+    "43": 0.1523809523809524,
+    "44": 0.12857142857142856,
+    "45": 0.10476190476190476,
     "46": 0.12105263157894737,
-    "47": 0.14736842105263157,
-    "48": 0.1,
-    "49": 0.11052631578947368,
-    "50": 0.2,
-    "51": 0.12280701754385964,
-    "52": 0.14619883040935672,
-    "53": 0.1111111111111111,
-    "54": 0.11764705882352941,
-    "55": 0.19117647058823528,
-    "56": 0.11764705882352941,
-    "57": 0.15441176470588236,
-    "58": 0.15,
+    "47": 0.12105263157894737,
+    "48": 0.14736842105263157,
+    "49": 0.1,
+    "50": 0.11052631578947368,
+    "51": 0.2,
+    "52": 0.1286549707602339,
+    "53": 0.10526315789473684,
+    "54": 0.1111111111111111,
+    "55": 0.11764705882352941,
+    "56": 0.19117647058823528,
+    "57": 0.11764705882352941,
+    "58": 0.15441176470588236,
     "59": 0.3333333333333333,
     "60": 0.13333333333333333,
-    "61": 0.13333333333333333,
-    "62": 0.14285714285714285,
-    "63": 0.15384615384615385,
-    "64": 0.15384615384615385,
-    "65": 0.2692307692307692,
+    "61": 0.14285714285714285,
+    "62": 0.13333333333333333,
+    "63": 0.13333333333333333,
+    "64": 0.2967032967032967,
+    "65": 0.14285714285714285,
     "66": 0.15384615384615385,
-    "67": 0.16666666666666666,
-    "68": 0.358974358974359,
-    "69": 0.24358974358974358,
-    "70": 0.30303030303030304,
-    "71": 0.30303030303030304,
-    "72": 0.2,
-    "73": 0.21818181818181817,
-    "74": 0.2,
-    "75": 0.3090909090909091,
-    "76": 0.23636363636363636,
-    "77": 0.28888888888888886,
-    "78": 0.2,
-    "79": 0.2,
-    "80": 0.2,
-    "81": 0.37777777777777777,
-    "82": 0.2,
+    "67": 0.15384615384615385,
+    "68": 0.2692307692307692,
+    "69": 0.15384615384615385,
+    "70": 0.358974358974359,
+    "71": 0.24358974358974358,
+    "72": 0.30303030303030304,
+    "73": 0.19696969696969696,
+    "74": 0.30303030303030304,
+    "75": 0.2,
+    "76": 0.21818181818181817,
+    "77": 0.2,
+    "78": 0.3090909090909091,
+    "79": 0.23636363636363636,
+    "80": 0.28888888888888886,
+    "81": 0.2,
+    "82": 0.37777777777777777,
     "83": 0.2,
-    "84": 0.2222222222222222,
-    "85": 0.3888888888888889,
-    "86": 0.2222222222222222,
-    "87": 0.25,
-    "88": 0.25,
-    "89": 0.42857142857142855,
+    "84": 0.2,
+    "85": 0.2222222222222222,
+    "86": 0.3888888888888889,
+    "87": 0.2222222222222222,
+    "88": 0.3055555555555556,
+    "89": 0.2222222222222222,
     "90": 0.25,
-    "91": 0.4642857142857143,
-    "92": 0.25,
-    "93": 0.32142857142857145,
-    "94": 0.39285714285714285,
+    "91": 0.25,
+    "92": 0.42857142857142855,
+    "93": 0.25,
+    "94": 0.4642857142857143,
     "95": 0.25,
-    "96": 0.25,
-    "97": 0.25,
+    "96": 0.32142857142857145,
+    "97": 0.39285714285714285,
     "98": 0.25,
     "99": 0.25,
-    "100": 0.47619047619047616,
-    "101": 0.3333333333333333,
-    "102": 0.2857142857142857,
-    "103": 0.47619047619047616,
-    "104": 0.2857142857142857,
-    "105": 0.38095238095238093,
-    "106": 0.3333333333333333,
-    "107": 0.47619047619047616,
-    "108": 0.4666666666666667,
-    "109": 0.4666666666666667,
+    "100": 0.25,
+    "101": 0.25,
+    "102": 0.25,
+    "103": 0.25,
+    "104": 0.47619047619047616,
+    "105": 0.3333333333333333,
+    "106": 0.47619047619047616,
+    "107": 0.2857142857142857,
+    "108": 0.38095238095238093,
+    "109": 0.3333333333333333,
     "110": 0.5333333333333333,
-    "111": 0.3333333333333333,
-    "112": 0.3333333333333333,
-    "113": 0.4,
-    "114": 0.4,
-    "115": 0.5,
-    "116": 0.5,
-    "117": 0.5,
+    "111": 0.4666666666666667,
+    "112": 0.4666666666666667,
+    "113": 0.5333333333333333,
+    "114": 0.3333333333333333,
+    "115": 0.3333333333333333,
+    "116": 0.4,
+    "117": 0.4,
     "118": 0.5,
     "119": 0.5,
     "120": 0.5,
     "121": 0.5,
-    "122": 0.8333333333333334,
-    "123": 0.6666666666666666,
-    "124": 0.6666666666666666,
-    "125": 0.6666666666666666,
-    "126": 1.0,
+    "122": 0.5,
+    "123": 0.5,
+    "124": 0.5,
+    "125": 0.8333333333333334,
+    "126": 0.6666666666666666,
     "127": 0.6666666666666666,
-    "128": 0.6666666666666666,
+    "128": 1.0,
     "129": 0.6666666666666666,
-    "130": 1.0,
+    "130": 0.6666666666666666,
     "131": 1.0,
     "132": 1.0,
     "133": 1.0,
@@ -3099,7 +3113,10 @@
     "174": 1.0,
     "175": 1.0,
     "176": 1.0,
-    "177": 1.0
+    "177": 1.0,
+    "178": 1.0,
+    "179": 1.0,
+    "180": 1.0
   },
   "gods": [
     {
@@ -3211,7 +3228,7 @@
     }
   ],
   "tokens": {
-    "input": 0,
-    "output": 0
+    "input": 30439,
+    "output": 1483
   }
 }
