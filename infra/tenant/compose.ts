@@ -156,9 +156,6 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
         ports: [`${args.appHostPrivateIp}:${args.hostPort}:${GHOST_CONTAINER_PORT}`],
         environment: args.environment as YamlValue,
         volumes: [`${content}:${CONTENT_MOUNT_PATH}`, `${adapters}:${ADAPTERS_MOUNT_PATH}:ro`],
-        // Two argv elements rather than `--header=<value>`: the image is
-        // Alpine-based, so this is BusyBox `wget`, and the separated form is
-        // the one both it and GNU `wget` accept.
         healthcheck: {
           test: [
             'CMD',
@@ -212,6 +209,66 @@ const FORBIDDEN_SECURITY_OPTS = [
   'apparmor=unconfined',
   'systempaths=unconfined',
 ];
+
+/**
+ * The value must be bound to `--header` to be sent at all. Merely appearing
+ * in the argv proves nothing: bound to `-U` it goes out as the user agent and
+ * Ghost redirects exactly as it did before.
+ *
+ * The shell forms carry the whole command in one string, so the binding is
+ * checked textually there — and the quotes are required, not optional, because
+ * the value contains a space and an unquoted one splits into `--header`,
+ * `X-Forwarded-Proto:` and a bare `https` the client reads as a URL.
+ */
+const SHELL_SENDS_HEADER = /--header[= ]\s*(['"])X-Forwarded-Proto:\s*https\1/;
+
+type HealthProbe =
+  { kind: 'missing' | 'disabled' | 'malformed' } | { kind: 'ok'; sendsHeader: boolean };
+
+/**
+ * Reads a service's probe in every shape Compose accepts.
+ *
+ * There are four, and a check that understands only the `CMD` array refuses
+ * correct stacks while passing broken ones: a bare string is an implicit
+ * `CMD-SHELL`, `CMD-SHELL` puts the whole command in one element, and
+ * `['NONE']` disables the probe rather than declaring one.
+ */
+function healthProbe(service: Record<string, YamlValue>): HealthProbe {
+  const healthcheck = service.healthcheck;
+  const test =
+    typeof healthcheck === 'object' && healthcheck !== null && !Array.isArray(healthcheck)
+      ? (healthcheck as Record<string, YamlValue>).test
+      : undefined;
+
+  if (typeof test === 'string') {
+    if (test.trim().length === 0) return { kind: 'missing' };
+    return { kind: 'ok', sendsHeader: SHELL_SENDS_HEADER.test(test) };
+  }
+  if (test === undefined) return { kind: 'missing' };
+  if (!Array.isArray(test)) return { kind: 'malformed' };
+  if (test.length === 0) return { kind: 'missing' };
+  if (!test.every((element): element is string => typeof element === 'string')) {
+    return { kind: 'malformed' };
+  }
+
+  const [form, ...rest] = test as string[];
+  if (form === 'NONE') return { kind: 'disabled' };
+  if (form === 'CMD-SHELL') {
+    const command = rest.join(' ');
+    if (command.trim().length === 0) return { kind: 'missing' };
+    return { kind: 'ok', sendsHeader: SHELL_SENDS_HEADER.test(command) };
+  }
+  if (form !== 'CMD') return { kind: 'malformed' };
+  if (rest.length === 0) return { kind: 'missing' };
+  return {
+    kind: 'ok',
+    sendsHeader: rest.some(
+      (element, index) =>
+        element === `--header=${HEALTHCHECK_FORWARDED_PROTO}` ||
+        (element === '--header' && rest[index + 1] === HEALTHCHECK_FORWARDED_PROTO)
+    ),
+  };
+}
 
 /**
  * Re-reads the finished document and refuses anything outside the posture.
@@ -302,16 +359,20 @@ export function assertRuntimePosture(
     // A probe that can never pass is worse than no probe at all: the unit's
     // `docker compose up --wait` fails on it, so every deploy of a perfectly
     // healthy tenant reports failure and the signal stops carrying anything.
-    // Asserting the header here is what makes that a construction-time
-    // refusal rather than something found on a host.
-    const healthcheck = service.healthcheck as Record<string, YamlValue> | undefined;
-    const probe = Array.isArray(healthcheck?.test) ? healthcheck.test : [];
-    if (probe.length === 0) {
-      at('must declare a `healthcheck.test`');
-    } else if (!probe.includes(HEALTHCHECK_FORWARDED_PROTO)) {
+    // Asserting it here is what makes that a construction-time refusal rather
+    // than something found on a host.
+    const probe = healthProbe(service);
+    if (probe.kind === 'missing') at('must declare a `healthcheck.test`');
+    if (probe.kind === 'disabled') at('must not disable its healthcheck with `test: [NONE]`');
+    if (probe.kind === 'malformed') {
+      at('declares a `healthcheck.test` that is not a string, `CMD` or `CMD-SHELL` form');
+    }
+    // Only the Ghost service answers on Ghost's terms. A future sidecar needs
+    // a probe that works, not this one's header.
+    if (name === 'ghost' && probe.kind === 'ok' && !probe.sendsHeader) {
       at(
-        `must send \`${HEALTHCHECK_FORWARDED_PROTO}\` in its healthcheck, or Ghost ` +
-          `answers the probe with a 301 to HTTPS that it cannot follow`
+        `must bind \`${HEALTHCHECK_FORWARDED_PROTO}\` to \`--header\` in its healthcheck, ` +
+          `or Ghost answers the probe with a 301 to HTTPS that it cannot follow`
       );
     }
 
