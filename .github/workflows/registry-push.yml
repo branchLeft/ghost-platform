@@ -78,6 +78,8 @@ jobs:
   push:
     name: Build and push tenant image
     runs-on: ubuntu-latest
+    # Observed 1.43-2.23min over the last 20 successful runs (p95 2.03min).
+    timeout-minutes: 15
 
     # Job-level, not workflow-level: `id-token: write` is what lets this job
     # request the GitHub OIDC token WIF exchanges. Scoping it here means it

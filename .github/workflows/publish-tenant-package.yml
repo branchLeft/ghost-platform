@@ -28,6 +28,8 @@ jobs:
   publish:
     name: Build & Publish to GitHub Packages
     runs-on: ubuntu-latest
+    # Observed 0.27-0.42min over the last 8 successful runs (p95 0.42min).
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write

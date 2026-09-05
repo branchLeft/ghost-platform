@@ -61,6 +61,8 @@ jobs:
   typecheck:
     name: Platform type check
     runs-on: ubuntu-latest
+    # Observed 0.28-5.27min over the last 20 successful runs (p95 3.58min).
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: infra/platform
@@ -100,6 +102,9 @@ jobs:
   provisioning-typecheck:
     name: Type check (provisioning)
     runs-on: ubuntu-latest
+    # Observed 0.33-4.18min over the last 20 successful runs (p95 0.47min);
+    # timeout set well above the occasional outlier, not just the p95.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: infra/provisioning
@@ -153,6 +158,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [typecheck]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Observed 0.95-5.83min over the last 7 successful runs (p95 5.83min) --
+    # small sample (only fires on push to main); a Pulumi apply job, so
+    # headroom is wider than the typecheck jobs above.
+    timeout-minutes: 20
 
     # Required reviewers and wait timers are public-repository-only for
     # GitHub Free, Pro and Team alike, so this gates nothing while the repo is
