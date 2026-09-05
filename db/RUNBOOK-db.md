@@ -25,8 +25,10 @@ jump host. That is a platform-owner-only step (root SSH); this repo's own
 PR states the exact command. Confirm it completed before anything below:
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
   systemctl is-active fail2ban unattended-upgrades docker &&
   test -x /usr/local/sbin/branchleft-deploy &&
   echo "db1 base-provisioned"
@@ -108,11 +110,13 @@ below, after the timers that enforce it.
 ## 1. Create the socket directory, copy the stack, install host prerequisites
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 'mkdir -p /opt/branchleft/db/run/mysqld && chmod 777 /opt/branchleft/db/run/mysqld'
-scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@10.20.1.20:/opt/branchleft/db
-scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 'python3 /opt/branchleft/db/provision/install_host_prereqs.py'
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'mkdir -p /opt/branchleft/db/run/mysqld && chmod 777 /opt/branchleft/db/run/mysqld'
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@"$DB1_PRIVATE_IP":/opt/branchleft/db
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'python3 /opt/branchleft/db/provision/install_host_prereqs.py'
 ```
 
 `chmod 777` is deliberate, not sloppy: the directory holds nothing but an
@@ -186,12 +190,14 @@ All three commands run against `db1`, which has no public address -- the same
 `$JUMP` hop through `edge1` as every other remote command in this file:
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
   'install -d -m 0755 /etc/systemd/system/branchleft-compose@db.service.d'
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" db/systemd/db.override.conf \
-  root@10.20.1.20:/etc/systemd/system/branchleft-compose@db.service.d/override.conf
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 'systemctl daemon-reload'
+  root@"$DB1_PRIVATE_IP":/etc/systemd/system/branchleft-compose@db.service.d/override.conf
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'systemctl daemon-reload'
 ```
 
 It is installed by hand rather than by shared-infra's
@@ -264,10 +270,12 @@ nothing to fall back to. Do all four before restarting anything.
    compose file is what stops requiring `EXPORTER_DATA_SOURCE_NAME`.
 
    ```bash
-   JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
-   scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
-   scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@10.20.1.20:/opt/branchleft/db
-   ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
+   EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+   DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+   JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+   scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
+   scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@"$DB1_PRIVATE_IP":/opt/branchleft/db
+   ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
      'grep -c DATA_SOURCE_NAME /opt/branchleft/db/compose.yml'
    ```
 
@@ -315,7 +323,10 @@ nothing to fall back to. Do all four before restarting anything.
 Only then:
 
 ```bash
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 \
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
   'systemctl restart branchleft-compose@db && docker ps --filter label=com.docker.compose.project=db --format "{{.Names}}\t{{.Status}}"'
 ```
 
@@ -469,9 +480,11 @@ listing before deciding is the only shape that can hold the invariant above.
 new unit files land, then dry-run before ever deleting anything real:
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@46.225.95.167"
-scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@10.20.1.20:/opt/branchleft/db/
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
   cd /opt/branchleft/db/provision &&
   set -a && . /etc/branchleft/db.env && set +a &&
   python3 prune_backups.py --dry-run
@@ -492,7 +505,10 @@ hour on this first invocation is expected and harmless, not a stall to
 interrupt. Only once the dry run looks right:
 
 ```bash
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
   cp /opt/branchleft/db/provision/branchleft-db-prune.{service,timer} /etc/systemd/system/ &&
   systemctl daemon-reload &&
   systemctl enable --now branchleft-db-prune.timer &&
@@ -510,7 +526,10 @@ dead one's), and reports each incarnation's oldest retained dump and oldest
 retained binlog independently:
 
 ```bash
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
   cd /opt/branchleft/db/provision &&
   set -a && . /etc/branchleft/db.env && set +a &&
   python3 prune_backups.py --verify-coverage
