@@ -20,6 +20,17 @@ rather than by pattern-matching the YAML text. A textual check can be
 satisfied by a comparison that reads right and behaves differently (a
 case-insensitive match, a truthy check); running the real script is the only
 way to pin the behaviour rather than its spelling.
+
+Running the script is necessary and not sufficient, though, and the second
+half of this file is why. Whether the gate refuses a bad value and whether
+the *job* stops are different questions: a step's `if:`, its
+`continue-on-error:`, what its `env:` binds FLOW_READY to, and which job
+holds the steps that create state all sit outside the script and decide
+whether its `exit 1` reaches anything. Each of those four was applied to
+provision-tenant.yml in a worktree and left every behavioural assertion here
+green while the gate was, in effect, open. The assertions that close them
+read the YAML around the step deliberately -- that surface has no runtime to
+execute.
 """
 
 import os
@@ -35,11 +46,30 @@ _WORKFLOW_PATH = os.path.join(
 
 GATE_STEP_NAME = "Refuse to provision through a half-migrated flow"
 
+# The job the gate and every provisioning step belong to.
+GATE_JOB_NAME = "provision"
+
 # The first step in the job that actually creates or writes anything, as
 # opposed to reading state and validating it. If a refactor ever moves the
 # gate below this step, tenant creation is no longer refused before it can
 # start -- the property the issue calls the one that is not survivable.
 FIRST_MUTATING_STEP_NAME = "Generate the tenant repo from the template"
+
+# The step's `env:` mapping, verbatim. The extracted shell reads $FLOW_READY
+# and nothing else, so what that name is bound to is half the control and is
+# invisible to any test that only runs the script: rebinding it to a literal
+# leaves every behavioural assertion below green and the gate permanently
+# open.
+FLOW_READY_BINDING = (
+    "FLOW_READY: ${{ vars.TENANT_PROVISIONING_FLOW_HETZNERISED }}")
+
+# Everything a gate step is allowed to carry. An allowlist rather than a
+# denylist of the two keys known to defeat it (`if:`, which skips the step
+# entirely, and `continue-on-error:`, which turns its `exit 1` into a green
+# run): a key nobody has thought about yet on the one step that stops all
+# tenant creation should stop this test, not slip past it. Widening it is a
+# one-line change made deliberately.
+ALLOWED_GATE_STEP_KEYS = frozenset({"env", "run"})
 
 
 def _read_workflow():
@@ -47,18 +77,47 @@ def _read_workflow():
         return fh.read()
 
 
+def _job_names(workflow_text):
+    """Top-level job keys, in file order."""
+    match = re.search(r"^jobs:\n(.*)\Z", workflow_text, re.DOTALL | re.MULTILINE)
+    if not match:
+        raise AssertionError(f"{_WORKFLOW_PATH} declares no 'jobs:' mapping")
+    names = re.findall(r"^  ([A-Za-z0-9_-]+):$", match.group(1), re.MULTILINE)
+    if not names:
+        raise AssertionError(
+            "found no '  <job>:' keys under 'jobs:' -- the indentation "
+            "assumption in this test no longer matches the workflow")
+    return names
+
+
+def _job_block(workflow_text, job_name):
+    """The raw text of one job, up to the next top-level job key or EOF."""
+    pattern = re.compile(
+        r"^  " + re.escape(job_name) + r":\n(.*?)(?=^  [A-Za-z0-9_-]+:$|\Z)",
+        re.DOTALL | re.MULTILINE,
+    )
+    match = pattern.search(workflow_text)
+    if not match:
+        raise AssertionError(
+            f"{_WORKFLOW_PATH} declares no job named {job_name!r}")
+    return match.group(1)
+
+
 def _steps_block(workflow_text):
     """The raw text of the `provision` job's `steps:` list.
 
-    Scoped to this one block, rather than searching the whole file, so a
-    `- name:` appearing in a *different* job (there is only one today) could
-    never be mistaken for a step of this one.
+    Bounded at both ends -- the job's own `steps:` key, and the next
+    top-level job key -- rather than running to end of file. An unbounded
+    block silently spans every job below it, which makes the ordering
+    assertion below satisfiable by moving a state-creating step into a
+    *second* job that never runs the gate at all.
     """
-    match = re.search(r"\n    steps:\n(.*)\Z", workflow_text, re.DOTALL)
+    job = _job_block(workflow_text, GATE_JOB_NAME)
+    match = re.search(r"^    steps:\n(.*)\Z", job, re.DOTALL | re.MULTILINE)
     if not match:
         raise AssertionError(
-            "could not find a job-level 'steps:' block in "
-            f"{_WORKFLOW_PATH} -- has the job structure changed?")
+            f"the {GATE_JOB_NAME!r} job in {_WORKFLOW_PATH} has no 'steps:' "
+            "block -- has the job structure changed?")
     return match.group(1)
 
 
@@ -83,6 +142,15 @@ def _step_body(steps_block, name):
     if not match:
         raise AssertionError(f"step {name!r} not found in the workflow")
     return match.group(1)
+
+
+def _step_keys(step_body):
+    """The step's own YAML keys, e.g. {"env", "run"}.
+
+    Keys sit at eight spaces; the `run: |` block's own lines sit at ten, so
+    a shell line reading `foo: bar` cannot be mistaken for one.
+    """
+    return set(re.findall(r"^        ([a-z][a-z-]*):", step_body, re.MULTILINE))
 
 
 def _run_script(step_body):
@@ -149,6 +217,23 @@ class TheGateExistsAndRunsFirst(unittest.TestCase):
     def test_the_gate_step_exists(self):
         names = _step_names(_steps_block(_read_workflow()))
         self.assertIn(GATE_STEP_NAME, names)
+
+    def test_the_gate_and_every_provisioning_step_share_one_job(self):
+        """`provision` is the only job in this workflow, and the ordering
+        assertion below is only meaningful while that holds.
+
+        A second job is not refused because two jobs are wrong -- it is
+        refused because whether the new one is behind the gate depends on
+        whether it declares `needs: provision`, which this test cannot
+        decide for a job it has never seen. Splitting the workflow is a
+        deliberate change that has to come back here and say how the gate
+        still covers what moved."""
+        self.assertEqual(
+            _job_names(_read_workflow()), [GATE_JOB_NAME],
+            "provision-tenant.yml no longer has exactly one job. A step that "
+            "creates state in a job which does not run the gate -- or does "
+            "not 'needs:' the job that does -- is not gated at all, and the "
+            "ordering assertions in this class say nothing about it")
 
     def test_the_gate_precedes_the_first_step_that_creates_anything(self):
         names = _step_names(_steps_block(_read_workflow()))
@@ -218,6 +303,61 @@ class RefusalFailsClosed(unittest.TestCase):
     def test_an_allowed_run_prints_no_error_annotation(self):
         _, output = _run_gate("true")
         self.assertNotIn("::error::", output)
+
+
+class TheGateCannotBeOpenedAroundItsScript(unittest.TestCase):
+    """The fail-open half, and the half a behavioural test cannot reach.
+
+    Everything above runs the gate's extracted shell and asserts what it
+    does with a value. None of it can see the three ways to leave that
+    shell byte-identical and still have the job provision a tenant: bind
+    `FLOW_READY` to something that is always "true", skip the step with an
+    `if:`, or soften its `exit 1` with `continue-on-error:`. Each was
+    applied to the workflow in a worktree and left all thirteen behavioural
+    assertions green, which is what these four exist for."""
+
+    def _gate_body(self):
+        return _step_body(_steps_block(_read_workflow()), GATE_STEP_NAME)
+
+    def test_flow_ready_is_bound_to_the_repository_variable(self):
+        """A step env of `FLOW_READY: 'true'` opens the gate for every run
+        while the script under test still refuses everything but "true"."""
+        env_block = re.search(
+            r"^        env:\n(.*?)(?=^        \S|\Z)",
+            self._gate_body(), re.DOTALL | re.MULTILINE)
+        self.assertIsNotNone(
+            env_block,
+            "the gate step declares no env: block, so FLOW_READY is unset "
+            "for every run -- which this gate refuses, but by accident "
+            "rather than by reading the variable an owner sets")
+        env_lines = re.findall(r"^          (\S.*)$", env_block.group(1),
+                               re.MULTILINE)
+        self.assertEqual(
+            env_lines, [FLOW_READY_BINDING],
+            "the gate step's env: no longer binds FLOW_READY to exactly "
+            f"{FLOW_READY_BINDING!r} -- the variable an owner sets to open "
+            "provisioning is not what the gate reads")
+
+    def test_the_gate_step_is_not_skippable_by_a_condition(self):
+        self.assertNotIn(
+            "if", _step_keys(self._gate_body()),
+            "the gate step carries an 'if:' -- a step that evaluates false "
+            "is skipped, and a skipped step is a passed one to every step "
+            "after it")
+
+    def test_the_gate_step_is_not_soft_failed(self):
+        self.assertNotIn(
+            "continue-on-error", _step_keys(self._gate_body()),
+            "the gate step carries 'continue-on-error:' -- its exit 1 no "
+            "longer stops the job, so the refusal becomes a red annotation "
+            "in front of a tenant that got created anyway")
+
+    def test_the_gate_step_carries_nothing_else(self):
+        self.assertEqual(
+            _step_keys(self._gate_body()), set(ALLOWED_GATE_STEP_KEYS),
+            "the gate step's keys have changed. Every key on this step is "
+            "part of the control: decide what a new one does to a refusal "
+            "before adding it to ALLOWED_GATE_STEP_KEYS")
 
 
 if __name__ == "__main__":
