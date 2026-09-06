@@ -76,7 +76,13 @@ TENANT_UID_MAX = 30999
 
 # Mirrors `infra/tenant/naming.ts`'s slug rules, including the reserved names:
 # a tenant slugged `website` would collide with the marketing site's stack.
-SLUG_PATTERN = re.compile(r"\A[a-z][a-z0-9-]*\Z")
+# The trailing character is restricted to a letter or digit for the same
+# reason it is there: `infra/tenant/media.ts` turns the same slug into an
+# S3-compatible bucket name, which must both start and end with one.
+# `branchLeft/workspace#681` found this copy had drifted from that pattern,
+# accepting a trailing hyphen; `scripts/assert-slug-pattern-consistency.py`
+# now guards all of this repo's copies against a repeat.
+SLUG_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
 MAX_SLUG_LENGTH = 26
 RESERVED_STACK_NAMES = ("website", "edge", "db", "monitoring")
 
