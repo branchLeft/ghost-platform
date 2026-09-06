@@ -234,8 +234,8 @@ def self_test() -> int:
     failed |= not ok
     print(f"{'PASS' if ok else 'FAIL'}: an agreeing copy reports no disagreement -> {clean!r}")
 
-    # A copy that has drifted loose -- accepting a trailing hyphen, exactly
-    # `branchLeft/workspace#681`'s finding -- must be caught.
+    # A copy that has drifted loose -- accepting a trailing hyphen -- must be
+    # caught: that is the drift this comparator exists to detect.
     def loose_validate(slug: str) -> None:
         import re
 

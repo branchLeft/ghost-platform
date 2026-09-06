@@ -79,9 +79,9 @@ TENANT_UID_MAX = 30999
 # The trailing character is restricted to a letter or digit for the same
 # reason it is there: `infra/tenant/media.ts` turns the same slug into an
 # S3-compatible bucket name, which must both start and end with one.
-# `branchLeft/workspace#681` found this copy had drifted from that pattern,
-# accepting a trailing hyphen; `scripts/assert-slug-pattern-consistency.py`
-# now guards all of this repo's copies against a repeat.
+# Nothing imports the rule across those files, so this copy can drift loose
+# -- accepting a trailing hyphen, say -- without any other test going red;
+# `scripts/assert-slug-pattern-consistency.py` is what compares them.
 SLUG_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
 MAX_SLUG_LENGTH = 26
 RESERVED_STACK_NAMES = ("website", "edge", "db", "monitoring")

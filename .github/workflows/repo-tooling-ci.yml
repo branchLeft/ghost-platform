@@ -112,12 +112,11 @@ jobs:
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'
 
-      # The same tenant-slug charset/length rule is written four times in this
-      # repo, each read by code on a different host or workstation with no
-      # shared import between them (see the script's own docstring).
-      # `branchLeft/workspace#681` found one of the four had drifted; this is
-      # the check that would have caught it, and self-tests first because a
-      # comparator that has quietly stopped comparing passes every copy.
+      # The same tenant-slug rule is written four times here, each read on a
+      # different host with no shared import (see the script's docstring), so
+      # one copy can drift loose without any other test going red. This is
+      # the comparison, and it self-tests first because a comparator that has
+      # quietly stopped comparing passes every copy.
       - name: Tenant-slug pattern consistency
         run: |
           python3 scripts/assert-slug-pattern-consistency.py --self-test
