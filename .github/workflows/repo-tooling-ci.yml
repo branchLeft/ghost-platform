@@ -29,6 +29,9 @@ jobs:
   format-and-lint:
     name: Format and lint
     runs-on: ubuntu-latest
+    # Observed 0.28-5.37min over the last 20 successful runs (p95 0.38min) --
+    # one outlier at 5.37min, so timeout is set well above that, not the p95.
+    timeout-minutes: 15
 
     steps:
       - name: Checkout

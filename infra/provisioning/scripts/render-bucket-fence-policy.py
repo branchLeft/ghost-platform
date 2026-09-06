@@ -94,8 +94,10 @@ import json
 import sys
 
 from bucketpolicy import (
+    BUCKET_CONFIGURATION_ACTIONS,
     RECOVERY_ACTIONS,
     PolicyInputError,
+    assert_enforceable,
     decide,
     key_principal,
     validate_bucket_name,
@@ -200,22 +202,40 @@ def render_policy(
             },
             {
                 # The operator alone keeps every bucket-configuration action.
-                # `NotAction` rather than an enumerated denylist, so an action
-                # nobody thought of falls closed.
+                # An enumerated `Action` list. This statement used to carry a
+                # `NotAction` catch-all, which this engine stores and does not
+                # enforce: with it in place the workload key keeps the ability
+                # to read this policy, rewrite it and change versioning, on a
+                # bucket that reads as fenced. The catch-all property is lost;
+                # `BUCKET_CONFIGURATION_ACTIONS` is kept wider than Hetzner's
+                # supported set to buy some of it back.
+                #
+                # Minus the workload's own bucket reads, so this narrows
+                # nothing the pipelines already rely on: `ListBucketVersions`
+                # is in both lists and stays with the workload.
                 "Sid": "DenyBucketConfigurationExceptOperator",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": [admin]},
-                "NotAction": WORKLOAD_BUCKET_READ_ACTIONS,
+                "Action": [
+                    a for a in BUCKET_CONFIGURATION_ACTIONS
+                    if a not in WORKLOAD_BUCKET_READ_ACTIONS
+                ],
                 "Resource": bucket_arn,
             },
             {
                 # The reads the statement above exempts, denied to everyone but
                 # the named keys. This is what makes the bucket unlistable
                 # *explicitly* rather than merely un-granted.
-                "Sid": "DenyBucketReadsExceptNamedKeys",
+                # `Action: s3:*`, not the enumerated read list: a construct
+                # this engine is observed to enforce, and the one place the
+                # catch-all property lost from the statement above can be had
+                # back. A bucket sub-resource nobody thought of falls closed
+                # against a stranger; only the named keys are exempt, and what
+                # THEY may do to the bucket is narrowed by the statement above.
+                "Sid": "DenyBucketAccessExceptNamedKeys",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": named},
-                "Action": WORKLOAD_BUCKET_READ_ACTIONS,
+                "Action": "s3:*",
                 "Resource": bucket_arn,
             },
             {
@@ -238,7 +258,12 @@ def render_policy(
     }
 
     assert_recoverable(policy, admin, bucket_arn)
-    return policy
+    # After assert_recoverable, not before: recoverability is evaluated with
+    # `decide()`, which now SKIPS a NotAction statement rather than evaluating
+    # its complement. A policy that only stays administrable because of a
+    # statement this engine ignores must fail the recoverability check on its
+    # own terms first, and be refused here second.
+    return assert_enforceable(policy)
 
 
 def assert_recoverable(policy: dict, admin: str, bucket_arn: str) -> None:

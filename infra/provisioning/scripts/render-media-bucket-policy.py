@@ -41,13 +41,25 @@ WHAT THE POLICY HAS TO ACHIEVE, AND WHY EACH PIECE IS SHAPED AS IT IS.
      being able to list a restricted bucket at all, which is worth knowing
      before an incident rather than during one.
 
-THE ONE PROPERTY THIS FILE CANNOT ESTABLISH. Hetzner documents `NotPrincipal`
-verbatim but publishes no list of supported policy Actions, Principal formats
-or Conditions, and says nothing about `NotAction`, which the object-level deny
-below relies on to leave anonymous reads intact. That is why
-RUNBOOK-tenant-onboarding.md verifies the four decisions against the live
-bucket before the credential is handed over, rather than treating a successful
-`put-bucket-policy` as proof.
+WHY BOTH BLANKET DENIES ARE ENUMERATED RATHER THAN `NotAction`. They were
+`NotAction` until it was established that this engine stores that keyword and
+enforces nothing: with it in place, any key in the project can write an object
+into a tenant's media bucket, and the tenant's own key can read and rewrite the
+policy that constrains it. Enumerating loses the property `NotAction` was
+chosen for, that an action nobody thought of falls closed. That loss is real on
+the object resource and is bought back only by keeping the lists in
+`bucketpolicy.py` wider than today's need. On the bucket resource it is not
+lost: `Action: s3:*` is enforced, and nothing anonymous needs exempting
+there.
+
+THE PROPERTY THIS FILE STILL CANNOT ESTABLISH. Hetzner publishes no list of
+supported policy Actions, Principal formats or Conditions. Every action named
+here is believed enforced because a construct of the same shape was observed
+working, not because the vendor documents it. That is why
+RUNBOOK-tenant-onboarding.md verifies the decisions against the live bucket
+before the credential is handed over, rather than treating a successful
+`put-bucket-policy` as proof -- a round trip compares what was stored, and
+this engine stores what it will not enforce.
 
 The principal syntax, the input charset rules and the evaluation model are in
 `bucketpolicy.py`, shared with the operational-bucket generator.
@@ -60,7 +72,15 @@ import json
 import re
 import sys
 
-from bucketpolicy import PolicyInputError, decide, key_principal
+from bucketpolicy import (
+    BUCKET_CONFIGURATION_ACTIONS,
+    MEDIA_PUBLIC_OBJECT_ACTIONS,
+    NON_PUBLIC_OBJECT_ACTIONS,
+    PolicyInputError,
+    assert_enforceable,
+    decide,
+    key_principal,
+)
 
 # Mirrors `MEDIA_BUCKET_PREFIX` in infra/tenant/media.ts. The two derivations
 # have to agree: this one runs first, because the bucket must exist before a
@@ -85,7 +105,7 @@ RESERVED_SLUGS = frozenset({"website", "edge", "db", "monitoring"})
 # requires allowing `s3:GetObjectVersion` alongside it. Anonymous callers still
 # cannot enumerate versions, because `ListBucketVersions` is an action on the
 # BUCKET resource and the bucket resource is denied to them outright.
-PUBLIC_READ_ACTIONS = ["s3:GetObject", "s3:GetObjectVersion"]
+PUBLIC_READ_ACTIONS = MEDIA_PUBLIC_OBJECT_ACTIONS
 
 # The only bucket-resource actions the tenant's key keeps. None of them mutates
 # anything. None is known to be needed by Ghost either -- `exists()` sends
@@ -98,6 +118,17 @@ TENANT_BUCKET_READ_ACTIONS = [
     "s3:ListBucketMultipartUploads",
     "s3:GetBucketLocation",
 ]
+
+# A bucket that is already fenced to named keys, in the same project. The
+# emitted sequence lists it under the credential the operator is about to name
+# as `--admin-access-key`, BEFORE anything is created: this script refuses a
+# tenant key and an operator key that are the same credential, but cannot
+# detect them being SWAPPED, and a swap puts `PutBucketPolicy` on the new
+# bucket into the key that lives inside the tenant's container while locking
+# the operator out of the statement that would have to be edited to undo it.
+# The property required of this bucket is that an unprivileged key is denied
+# it; an unfenced bucket would list for anyone and prove nothing.
+CONTROL_BUCKET = "branchleft-db-backups"
 
 # Withheld from the tenant's own key. Lifecycle expiry is performed by the
 # storage service rather than by an API caller, so a retention rule still
@@ -147,7 +178,7 @@ def render_policy(
     bucket_arn = f"arn:aws:s3:::{bucket}"
     objects_arn = f"arn:aws:s3:::{bucket}/*"
 
-    return {
+    return assert_enforceable({
         "Version": "2012-10-17",
         "Id": f"branchleft-media-{slug}",
         "Statement": [
@@ -173,36 +204,53 @@ def render_policy(
                 # ever calling `DeleteObject`. "The bucket is the boundary" is
                 # only true while the boundary is not writable from inside it.
                 #
-                # `NotAction` rather than an enumerated `Action` list, so a
-                # bucket sub-resource nobody thought of falls closed.
+                # An enumerated `Action` list, NOT the `NotAction` catch-all
+                # this statement used to carry. That form is stored and
+                # returned verbatim by this engine and enforces nothing: the
+                # tenant key read this policy and changed versioning on its own
+                # bucket while the statement was in place. `NotAction` costs
+                # the property that an unlisted sub-resource falls closed, so
+                # `BUCKET_CONFIGURATION_ACTIONS` is deliberately wider than
+                # what Hetzner supports today.
                 "Sid": "DenyBucketConfigurationExceptOperator",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": [admin]},
-                "NotAction": TENANT_BUCKET_READ_ACTIONS,
+                "Action": BUCKET_CONFIGURATION_ACTIONS,
                 "Resource": bucket_arn,
             },
             {
-                # The three reads the statement above exempts, denied to
-                # everyone but the tenant and the operator. This is what makes
-                # the bucket unlistable *explicitly* rather than merely
-                # un-granted, and the distinction is load-bearing: an implicit
-                # deny is overcome by a `public-read` bucket ACL, an explicit
-                # policy Deny is not.
-                "Sid": "DenyBucketReadsExceptNamedKeys",
+                # EVERY bucket action, denied to everyone but the tenant and
+                # the operator -- not the three reads the statement above
+                # exempts. `Action: s3:*` is a construct this engine is
+                # observed to enforce, so the catch-all property that
+                # `NotAction` was supposed to provide survives here: a bucket
+                # sub-resource nobody thought of still falls closed against a
+                # stranger. It is affordable on the bucket resource precisely
+                # because nothing anonymous has any business there, which is
+                # not true one resource down.
+                #
+                # This also makes the bucket unlistable *explicitly* rather
+                # than merely un-granted, and the distinction is load-bearing:
+                # an implicit deny is overcome by a `public-read` bucket ACL,
+                # an explicit policy Deny is not.
+                "Sid": "DenyBucketAccessExceptNamedKeys",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": [tenant, admin]},
-                "Action": TENANT_BUCKET_READ_ACTIONS,
+                "Action": "s3:*",
                 "Resource": bucket_arn,
             },
             {
-                # Object actions other than the public read. `NotAction` rather
-                # than a list of denied actions: a list is a denylist, and an
-                # action nobody thought of would fall through it and be allowed
-                # by Hetzner's default project-wide key permission.
+                # Object actions other than the two that serve a browser.
+                # This is the statement that was proven inert: written as
+                # `NotAction: PUBLIC_READ_ACTIONS`, it let an unrelated key in
+                # the same project write an object into a tenant's media
+                # bucket. The operational fence never hit this because it has
+                # no anonymous reader to exempt and can use `Action: s3:*`;
+                # public-read media cannot, so the complement is enumerated.
                 "Sid": "DenyObjectAccessExceptPublicReadAndNamedKeys",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": [tenant, admin]},
-                "NotAction": PUBLIC_READ_ACTIONS,
+                "Action": NON_PUBLIC_OBJECT_ACTIONS,
                 "Resource": objects_arn,
             },
             {
@@ -217,7 +265,7 @@ def render_policy(
                 "Resource": objects_arn,
             },
         ],
-    }
+    })
 
 
 def render_commands(
@@ -230,6 +278,7 @@ def render_commands(
 ) -> str:
     """The operator sequence, with every value filled in."""
     bucket = media_bucket_name(slug)
+    control_bucket = CONTROL_BUCKET
     policy = json.dumps(
         render_policy(slug, project_id, tenant_access_key, admin_access_key), indent=2
     )
@@ -244,6 +293,15 @@ export AWS_DEFAULT_REGION='{region}'
 # unquoted parameter expansion, so `S3='aws ... s3api'` then `$S3 ...`
 # fails there with "no such file or directory".
 s3() {{ aws --endpoint-url {endpoint} s3api "$@"; }}
+
+# 0. CONTROL, and it runs before anything is created. If this returns
+#    AccessDenied the key in the environment is not the operator's, which means
+#    the two --*-access-key values went in the wrong way round and every
+#    statement below names the wrong principal. STOP: nothing has been created,
+#    so there is nothing to undo. Running this AFTER the policy is applied
+#    would leave the wrong fence on a real bucket, recoverable only while the
+#    freshly minted tenant secret is still in someone's hands.
+s3 list-objects-v2 --bucket {control_bucket} --max-keys 1
 
 # 1. The bucket. `--acl private` is stated rather than left to the default:
 #    `public-read` is a BUCKET acl and grants LIST, which would publish this
@@ -338,6 +396,33 @@ def _self_test() -> None:
         (other, "s3:DeleteObject", f"{bucket}/x.png", "deny"),
         (admin, "s3:DeleteObject", f"{bucket}/x.png", "allow"),
         (admin, "s3:PutBucketPolicy", bucket, "allow"),
+        (admin, "s3:PutBucketVersioning", bucket, "allow"),
+        # Decisions the `NotAction` form did not make on this engine. They
+        # were in this table then and passed, because `decide()` evaluated the
+        # complement of a keyword the engine ignores: a passing table is
+        # evidence about the policy only once the model matches the engine.
+        (tenant, "s3:GetBucketPolicy", bucket, "deny"),
+        (other, "s3:PutObject", f"{bucket}/x.png", "deny"),
+        # Enumeration breadth. Each of these is an action a denylist written to
+        # the minimum would have let through, and each is a way to take or
+        # publish a tenant's media without calling PutObject or DeleteObject.
+        (other, "s3:AbortMultipartUpload", f"{bucket}/x.png", "deny"),
+        (other, "s3:PutObjectAcl", f"{bucket}/x.png", "deny"),
+        (other, "s3:RestoreObject", f"{bucket}/x.png", "deny"),
+        ("*", "s3:PutObjectAcl", f"{bucket}/x.png", "deny"),
+        ("*", "s3:GetObjectAcl", f"{bucket}/x.png", "deny"),
+        ("*", "s3:GetObjectAttributes", f"{bucket}/x.png", "deny"),
+        (tenant, "s3:GetBucketVersioning", bucket, "deny"),
+        (tenant, "s3:DeleteBucket", bucket, "deny"),
+        (tenant, "s3:GetBucketAcl", bucket, "deny"),
+        # ...and what the tenant must keep, so the enumeration cannot be
+        # widened into an outage. Ghost uploads multipart and must be able to
+        # abandon a failed part; `exists()` sends HeadObject, authorised by
+        # GetObject.
+        (tenant, "s3:AbortMultipartUpload", f"{bucket}/x.png", "allow"),
+        (tenant, "s3:ListMultipartUploadParts", f"{bucket}/x.png", "allow"),
+        (tenant, "s3:GetObject", f"{bucket}/x.png", "allow"),
+        (tenant, "s3:GetBucketLocation", bucket, "allow"),
     ]
     for principal, action, resource, expected in cases:
         got = decide(policy, principal, action, resource)
@@ -359,6 +444,28 @@ def _self_test() -> None:
         except PolicyInputError:
             continue
         raise AssertionError(f"policy self-test: access key {bad_key!r} was accepted")
+
+    # Structural, and separate from the decision table on purpose: the table
+    # can only ask about actions someone listed. This asks whether the
+    # rendered document contains a construct this engine declines to enforce
+    # at all, which no enumeration of cases would surface.
+    for statement in policy["Statement"]:
+        if "NotAction" in statement:
+            raise AssertionError(
+                f"policy self-test: statement {statement.get('Sid')!r} uses NotAction, "
+                f"which this engine stores and does not enforce"
+            )
+        if statement["Effect"] == "Deny" and "Action" not in statement:
+            raise AssertionError(
+                f"policy self-test: Deny statement {statement.get('Sid')!r} names no Action"
+            )
+
+    try:
+        assert_enforceable({"Statement": [{"Sid": "X", "NotAction": ["s3:GetObject"]}]})
+    except PolicyInputError:
+        pass
+    else:
+        raise AssertionError("policy self-test: assert_enforceable accepted a NotAction statement")
 
     print("render-media-bucket-policy self-test: ok", file=sys.stderr)
 

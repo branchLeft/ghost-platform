@@ -22,6 +22,8 @@ jobs:
   test:
     name: Shim type check and test
     runs-on: ubuntu-latest
+    # Observed 0.3-5.38min over the last 20 successful runs (p95 4.17min).
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: services/mailgun-shim

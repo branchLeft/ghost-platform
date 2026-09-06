@@ -27,6 +27,8 @@ jobs:
   build:
     name: docker build
     runs-on: ubuntu-latest
+    # Observed 1.18-1.63min over the last 20 successful runs (p95 1.57min).
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
