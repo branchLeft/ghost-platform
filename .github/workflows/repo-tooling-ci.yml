@@ -111,3 +111,13 @@ jobs:
       # mocked; no daemon, no root.
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'
+
+      # The same tenant-slug rule is written four times here, each read on a
+      # different host with no shared import (see the script's docstring), so
+      # one copy can drift loose without any other test going red. This is
+      # the comparison, and it self-tests first because a comparator that has
+      # quietly stopped comparing passes every copy.
+      - name: Tenant-slug pattern consistency
+        run: |
+          python3 scripts/assert-slug-pattern-consistency.py --self-test
+          python3 scripts/assert-slug-pattern-consistency.py
