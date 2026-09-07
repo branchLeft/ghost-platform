@@ -235,7 +235,7 @@ def _self_test() -> int:
 
     with tempfile.TemporaryDirectory() as raw:
         # Shaped like this repo: sibling Pulumi projects under infra/, each
-        # with its own project file, plus the three directories a scan from
+        # with its own project file, plus the directories a scan from
         # the repo root walks into and must not judge.
         root = pathlib.Path(raw)
         platform = root / "infra" / "platform"
