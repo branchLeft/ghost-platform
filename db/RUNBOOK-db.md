@@ -485,11 +485,28 @@ DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, s
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
-  cd /opt/branchleft/db/provision &&
-  set -a && . /etc/branchleft/db.env && set +a &&
-  python3 prune_backups.py --dry-run
+  systemd-run --pipe --wait --collect --quiet \
+    --property=EnvironmentFile=/etc/branchleft/db.env \
+    --property=WorkingDirectory=/opt/branchleft/db/provision \
+    -- /usr/bin/python3 prune_backups.py --dry-run
 '
 ```
+
+As step 2 warns: never `bash`-source `db.env` to run this. `systemd-run`'s
+`EnvironmentFile=` loads it the same way the compose units do -- parsed as
+`KEY=value` pairs, never evaluated as shell -- so a shell metacharacter in a
+value cannot make anything echo it back. **A malformed KEY is a different
+failure mode systemd does not stay silent about**: a key containing anything
+outside `[A-Za-z0-9_]` fails systemd's own name validation, and systemd logs
+the rejected assignment -- the full `KEY=value` line, secret value included
+-- to the journal at `LOG_ERR` (`journalctl -u <the transient unit>`), a
+different stream than the one this runbook tells you to read. Get the key
+name right; `EnvironmentFile=` does not make a bad one safe to write.
+
+The transient unit resolves `python3` through systemd's own default `PATH`,
+not the SSH login shell's, so the binary is named by the same absolute path
+the backup timers' `ExecStart=` already uses rather than relied on to be
+found.
 
 Read the output before doing anything else: `would delete N dump(s), M
 binlog(s)` lists every key by name, and a `REFUSED <uuid>: <reason>` line on
@@ -530,9 +547,10 @@ EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys
 DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
-  cd /opt/branchleft/db/provision &&
-  set -a && . /etc/branchleft/db.env && set +a &&
-  python3 prune_backups.py --verify-coverage
+  systemd-run --pipe --wait --collect --quiet \
+    --property=EnvironmentFile=/etc/branchleft/db.env \
+    --property=WorkingDirectory=/opt/branchleft/db/provision \
+    -- /usr/bin/python3 prune_backups.py --verify-coverage
 '
 ```
 
