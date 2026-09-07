@@ -494,11 +494,19 @@ ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 
 
 As step 2 warns: never `bash`-source `db.env` to run this. `systemd-run`'s
 `EnvironmentFile=` loads it the same way the compose units do -- parsed as
-`KEY=value` pairs, never evaluated as shell -- so a stray character in a
-value cannot make anything echo it back. The transient unit resolves
-`python3` through systemd's own default `PATH`, not the SSH login shell's,
-so the binary is named by the same absolute path the backup timers'
-`ExecStart=` already uses rather than relied on to be found.
+`KEY=value` pairs, never evaluated as shell -- so a shell metacharacter in a
+value cannot make anything echo it back. **A malformed KEY is a different
+failure mode systemd does not stay silent about**: a key containing anything
+outside `[A-Za-z0-9_]` fails systemd's own name validation, and systemd logs
+the rejected assignment -- the full `KEY=value` line, secret value included
+-- to the journal at `LOG_ERR` (`journalctl -u <the transient unit>`), a
+different stream than the one this runbook tells you to read. Get the key
+name right; `EnvironmentFile=` does not make a bad one safe to write.
+
+The transient unit resolves `python3` through systemd's own default `PATH`,
+not the SSH login shell's, so the binary is named by the same absolute path
+the backup timers' `ExecStart=` already uses rather than relied on to be
+found.
 
 Read the output before doing anything else: `would delete N dump(s), M
 binlog(s)` lists every key by name, and a `REFUSED <uuid>: <reason>` line on
