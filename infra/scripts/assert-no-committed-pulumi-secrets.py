@@ -81,7 +81,7 @@ BOM = "\ufeff"
 # never holds the salt, while `Pulumi.<stack>.yaml` does.
 STACK_CONFIG = re.compile(r"^Pulumi\.[^/]+\.yaml$")
 
-SKIP_DIRS = {".git", ".worktrees", "node_modules", "graphify-out", "dist", "bin", "vendor"}
+SKIP_DIRS = {".git", ".worktrees", "node_modules", "dist", "bin", "vendor"}
 
 
 def is_commented(line: str) -> bool:
@@ -245,7 +245,7 @@ def _self_test() -> int:
         (platform / "Pulumi.platform.yaml").write_text(SALTED, encoding="utf-8")
         (platform / "Pulumi.yaml").write_text("name: x\nruntime: nodejs\n", encoding="utf-8")
         (provisioning / "Pulumi.blog.yaml").write_text(CLEAN, encoding="utf-8")
-        for skipped_dir in ("node_modules/pkg", "graphify-out/cache", ".worktrees/branch/infra"):
+        for skipped_dir in ("node_modules/pkg", ".worktrees/branch/infra"):
             skipped = root / skipped_dir
             skipped.mkdir(parents=True)
             (skipped / "Pulumi.fixture.yaml").write_text(SALTED, encoding="utf-8")
@@ -261,14 +261,14 @@ def _self_test() -> int:
             print(f"FAIL: --scan-tree found {sorted(found)} (expected {sorted(expected_found)})", file=sys.stderr)
             failures += 1
 
-        # Named separately from the assertion above because they fail for
-        # different reasons. `graphify-out` and `.worktrees` are this repo's:
-        # the first is a committed CI artefact, the second holds checkouts of
-        # other branches, one of which may legitimately still carry a salt.
-        # Either would make the guard fail on a file this checkout does not own.
+        # Named separately from the assertion above because it fails for a
+        # different reason. `.worktrees` is this repo's own directory holding
+        # checkouts of other branches, one of which may legitimately still
+        # carry a salt -- entering it would make the guard fail on a file
+        # this checkout does not own.
         skipped_hits = [p for p in find_stack_configs(root) if "Pulumi.fixture.yaml" == p.name]
         if not skipped_hits:
-            print("PASS: --scan-tree skips node_modules, graphify-out and .worktrees")
+            print("PASS: --scan-tree skips node_modules and .worktrees")
         else:
             print(f"FAIL: --scan-tree entered a skipped directory: {skipped_hits}", file=sys.stderr)
             failures += 1

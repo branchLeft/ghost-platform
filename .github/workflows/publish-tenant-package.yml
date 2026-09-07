@@ -14,10 +14,9 @@ name: Publish tenant package
 
 # `workflow_dispatch` is the escape hatch for a tag push that produced no run
 # at all. GitHub honours `[skip ci]` in the head commit's message for tag
-# pushes as well as branch pushes, and `main`'s head is usually the graphify
-# bot's `[skip ci]` commit -- so a tag cut from `origin/main` normally lands on
-# it and is silently skipped. There is no failed run to notice: the only
-# symptom is the version never appearing in the registry.
+# pushes as well as branch pushes, so a tag cut from a commit that happens to
+# carry that marker is silently skipped. There is no failed run to notice:
+# the only symptom is the version never appearing in the registry.
 on:
   push:
     tags:
