@@ -71,9 +71,9 @@ jobs:
         run: npm run lint:check
 
       # `format:check` above only proves today's committed bytes happen to
-      # match Prettier's output; it says nothing about the ignore
-      # configuration itself. This proves graphify-out/ is actually excluded,
-      # not just coincidentally unformatted.
+      # match Prettier's output. This is a different property: it proves a
+      # committed runbook doesn't carry an unsubstituted placeholder or a
+      # stale hardcoded host literal in a copy-pasteable command.
       - name: Root guard tests
         run: npm test
 
