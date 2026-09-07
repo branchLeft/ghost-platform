@@ -27,6 +27,24 @@ class ValidateTenantNameTests(unittest.TestCase):
             with self.assertRaises(naming.InvalidTenantName):
                 naming.validate_tenant_name(name)
 
+    def test_rejects_trailing_hyphen(self):
+        # A trailing hyphen turns into an S3-incompatible media-bucket name
+        # via `infra/tenant/media.ts`'s `mediaBucketName`; this module has no
+        # such consumer today, but the charset is kept identical to the
+        # TypeScript side deliberately (see the module docstring), so it is
+        # refused here too.
+        for name in ("blog-", "-", "a-"):
+            with self.assertRaises(naming.InvalidTenantName):
+                naming.validate_tenant_name(name)
+
+    def test_rejects_trailing_hyphen_even_at_the_length_limit(self):
+        # Exactly `MAX_TENANT_NAME_LENGTH` characters, so only the trailing
+        # hyphen -- not the length check -- can be what rejects this.
+        name = "a" * (naming.MAX_TENANT_NAME_LENGTH - 1) + "-"
+        self.assertEqual(len(name), naming.MAX_TENANT_NAME_LENGTH)
+        with self.assertRaises(naming.InvalidTenantName):
+            naming.validate_tenant_name(name)
+
     def test_rejects_underscore_and_dot(self):
         for name in ("blog_archive", "blog.archive"):
             with self.assertRaises(naming.InvalidTenantName):

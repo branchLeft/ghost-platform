@@ -26,6 +26,9 @@ jobs:
   typecheck:
     name: Hetzner host check
     runs-on: ubuntu-latest
+    # Observed 0.27-4.88min over the last 20 successful runs (p95 2.9min) --
+    # wider spread than most typecheck jobs, headroom set above the max.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: infra/hetzner-host-check

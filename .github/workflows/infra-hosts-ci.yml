@@ -40,6 +40,8 @@ jobs:
   typecheck:
     name: Hosts stack
     runs-on: ubuntu-latest
+    # Observed 0.25-0.37min over the last 20 successful runs (p95 0.35min).
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: infra/hosts

@@ -985,12 +985,15 @@ section 2 on anything less.**
 
 The verifier proves the backup key can still put, get, list and delete against
 the bucket. This proves the real pipeline does, end to end, with the real
-object keys and the real encryption step. `<edge1-ipv4>` is edge1's public
-address, from the Hetzner Cloud Console.
+object keys and the real encryption step. `db1` has no public address, so
+this goes through edge1, the same jump host every other remote command in
+this repo uses.
 
 ```bash
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@<edge1-ipv4>"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@10.20.1.20 '
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
   systemctl start branchleft-db-binlog-ship.service &&
   systemctl start branchleft-db-dump.service &&
   systemctl is-failed branchleft-db-binlog-ship.service branchleft-db-dump.service;

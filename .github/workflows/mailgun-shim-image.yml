@@ -47,6 +47,8 @@ jobs:
     # "push the current main", so it skips straight to the push job below
     # rather than doing a redundant build-only pass first.
     if: github.event_name != 'workflow_dispatch'
+    # Observed 0.23-0.37min over the last 6 successful runs (p95 0.37min).
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: services/mailgun-shim
@@ -72,6 +74,10 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # Only 2 successful runs exist (small sample, only fires on push to
+    # main/dispatch) -- observed 0.52-0.67min, but a generous bound chosen
+    # deliberately given how little data that is.
+    timeout-minutes: 15
 
     permissions:
       contents: read

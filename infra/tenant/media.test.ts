@@ -30,14 +30,26 @@ describe('mediaBucketName', () => {
     expect(mediaBucketName('blog-archive').startsWith(`${mediaBucketName('blog')}/`)).toBe(false);
   });
 
-  it('refuses a slug whose bucket name S3 would reject', () => {
-    expect(() => mediaBucketName('blog-')).toThrow(/letter or a digit/);
-  });
-
   it('applies the component slug rules before deriving anything', () => {
     expect(() => mediaBucketName('Blog')).toThrow(/lowercase letter/);
     expect(() => mediaBucketName('website')).toThrow(/reserved/);
     expect(() => mediaBucketName('blog/../website')).toThrow(/lowercase letter/);
+    // A trailing hyphen would make the bucket name below S3-incompatible;
+    // `validateTenantSlug` refuses it before this function ever builds the
+    // string, so there is no separate S3-specific check left to exercise here.
+    expect(() => mediaBucketName('blog-')).toThrow(/lowercase letter/);
+  });
+
+  // What `bucketNameFromUrl` used to have to reject (an empty remainder, a
+  // trailing slash, an embedded path) after recovering a bucket name from a
+  // GCS `gs://` URL. This design has no equivalent recovery step: the bucket
+  // name is derived forward from an already-validated slug, so none of those
+  // three shapes can ever reach a caller — `/` and an empty string are both
+  // outside the slug charset `validateTenantSlug` enforces above.
+  it('cannot produce the malformed bucket names a URL-parsing approach would risk', () => {
+    expect(() => mediaBucketName('')).toThrow(/lowercase letter/);
+    expect(() => mediaBucketName('some-bucket/')).toThrow(/lowercase letter/);
+    expect(() => mediaBucketName('some-bucket/some/path')).toThrow(/lowercase letter/);
   });
 
   it('stays inside S3 63-character bucket-name limit at the longest legal slug', () => {

@@ -119,10 +119,20 @@ def provision(slug, uid, docker, fs):
 
 class ValidationTests(unittest.TestCase):
     def test_rejects_a_slug_the_component_would_also_reject(self):
-        for slug in ("1blog", "Blog", "blog_one", "blog one", "", "blog/../website"):
+        for slug in ("1blog", "Blog", "blog_one", "blog one", "", "blog/../website", "blog-", "-blog"):
             with self.subTest(slug=slug):
                 with self.assertRaises(ptv.ProvisionError):
                     ptv.validate_slug(slug)
+
+    def test_accepts_the_slug_length_boundary(self):
+        # The control that the trailing-hyphen rejection above narrows the
+        # accepted set rather than breaking it: a single character and the
+        # maximum length both still pass, and the maximum length still fails
+        # if it ends in a hyphen.
+        ptv.validate_slug("a")
+        ptv.validate_slug("a" * ptv.MAX_SLUG_LENGTH)
+        with self.assertRaises(ptv.ProvisionError):
+            ptv.validate_slug(("a" * (ptv.MAX_SLUG_LENGTH - 1)) + "-")
 
     def test_rejects_a_reserved_stack_name(self):
         # `website` already runs under /opt/branchleft/website on app1.
