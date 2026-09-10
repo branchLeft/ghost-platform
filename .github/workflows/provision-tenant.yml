@@ -511,8 +511,29 @@ jobs:
           # a second source of truth, and nothing reads them back.
           echo "this tenant's media bucket will be branchleft-media-${TENANT}"
 
-          if gh repo view "$TENANT_REPO" >/dev/null 2>&1; then
+          # `gh repo view` follows a rename redirect, so it reports a name as
+          # taken when nothing occupies it. GitHub keeps the old name pointing
+          # at the renamed repository until something claims it, and teardown
+          # step 8 of RUNBOOK-tenant-onboarding.md tells an operator to archive
+          # rather than delete -- which renames the repo and leaves exactly such
+          # a redirect behind. Re-provisioning a tenant under its previous name
+          # is therefore the normal case, and this check refused every one of
+          # them until 2026-09-10.
+          #
+          # The API distinguishes the two, so compare what it returns against
+          # what was asked for: a real repository answers with its own
+          # full_name, a redirect answers with the renamed repository's.
+          # Creating a repository under a former name is permitted and simply
+          # disables the redirect, which is why this warns rather than refuses.
+          #
+          # An empty answer means no repository and no redirect -- the ordinary
+          # case for a new tenant. `|| true` because `gh api` exits non-zero on
+          # the 404 that represents it, and this step runs under `set -e`.
+          existing_repo=$(gh api "repos/$TENANT_REPO" --jq .full_name 2>/dev/null || true)
+          if [ "$existing_repo" = "$TENANT_REPO" ]; then
             fail "$TENANT_REPO already exists -- onboarding is create-only. This is also what stops an existing tenant's hand-set passphrase being minted over, which would rotate a live stack's wrapping key without re-wrapping its checkpoint."
+          elif [ -n "$existing_repo" ]; then
+            echo "::warning::$TENANT_REPO does not exist -- the name redirects to $existing_repo, which is a rename. The name is free and creating the repository here will disable that redirect, so existing links to $TENANT_REPO will stop resolving to $existing_repo."
           fi
 
       # Before the repository exists, and before anything is minted. A missing
