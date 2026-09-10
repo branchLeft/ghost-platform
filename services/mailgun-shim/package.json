@@ -16,7 +16,7 @@
     "busboy": "^1.6.0",
     "express": "^4.21.2",
     "express-rate-limit": "^8.6.2",
-    "nodemailer": "^9.0.5"
+    "nodemailer": "^9.1.1"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.3.1",
