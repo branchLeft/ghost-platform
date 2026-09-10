@@ -301,18 +301,23 @@ jobs:
           # does the workflow's own GITHUB_TOKEN -- but only one of the two can
           # do this job. They are told apart here without ever handling the
           # token: an installation token is refused `GET /user` (403), while a
-          # PAT of either kind reads it (200). `if` rather than `&&` so this
-          # step's `set -e` does not abort on the very failure being measured.
-          if gh api user --silent >/dev/null 2>&1; then
-            reads_user=yes
-          else
-            reads_user=no
-          fi
+          # PAT of either kind reads it (200).
+          #
+          # The STATUS is captured rather than merely success or failure. A
+          # bare `if gh api user` collapses 403 -- a real, diagnosable answer
+          # -- together with 401, a 429 secondary rate limit and any 5xx, and
+          # the refusal would then tell an operator that their working
+          # fine-grained token is an installation token and should be
+          # replaced. `--include` writes the status line whatever the
+          # response, and `|| true` stops this step's `set -e` aborting on
+          # the very non-2xx case being measured.
+          gh api user --include --silent > /tmp/user-check-headers.txt 2>/dev/null || true
+          user_status=$(awk 'NR==1 {for (i = 1; i <= NF; i++) if ($i ~ /^[0-9][0-9][0-9]$/) { print $i; exit } }' /tmp/user-check-headers.txt || true)
 
           python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py --self-test
           python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py \
             --headers-file /tmp/scope-check-headers.txt \
-            --token-reads-user-endpoint "$reads_user"
+            --user-endpoint-status "$user_status"
 
           rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}" \
             --jq '[.protection_rules[].type] | join(",")') || {

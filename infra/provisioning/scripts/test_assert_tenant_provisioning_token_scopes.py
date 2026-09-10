@@ -237,7 +237,7 @@ class MainHeadersFileTests(unittest.TestCase):
         # Fail-closed without the new flag: an absent header alone still
         # refuses, and says which flag would let it decide, rather than
         # reporting scopes it never actually read.
-        self.assertIn("--token-reads-user-endpoint", stderr.getvalue())
+        self.assertIn("--user-endpoint-status", stderr.getvalue())
 
     def test_a_dump_with_a_superstring_scope_still_refuses(self):
         path = self._write("x-oauth-scopes: repo, workflow_dispatch\r\n")
@@ -250,7 +250,7 @@ class MainHeadersFileTests(unittest.TestCase):
 
 class DecidePolicyTests(unittest.TestCase):
     """The whole policy as a matrix. A classic token is judged on its scopes;
-    a token with no scopes header is judged on whether it is a PAT at all.
+    a token with no scopes header is judged on what GET /user answered.
 
     The case that matters most is the installation token: it looks identical
     to a fine-grained PAT in the headers, and letting it through would mean
@@ -259,20 +259,24 @@ class DecidePolicyTests(unittest.TestCase):
     """
 
     def test_classic_token_with_both_scopes_passes(self):
-        code, _ = guard.decide("repo, workflow", True)
-        self.assertEqual(code, 0)
+        self.assertEqual(guard.decide("repo, workflow", "200")[0], 0)
 
-    def test_classic_token_passes_regardless_of_the_user_endpoint_answer(self):
+    def test_classic_token_passes_whatever_the_user_endpoint_said(self):
         # A classic token's scopes are authoritative; /user adds nothing.
-        for reads_user in (True, False, None):
-            with self.subTest(reads_user=reads_user):
-                self.assertEqual(guard.decide("repo, workflow", reads_user)[0], 0)
+        for status in ("200", "403", "429", None):
+            with self.subTest(status=status):
+                self.assertEqual(guard.decide("repo, workflow", status)[0], 0)
+
+    def test_a_passing_classic_token_prints_nothing(self):
+        # No annotation at all: this is the fully verified path, and giving
+        # it a message would blur it with the unverified one.
+        self.assertEqual(guard.decide("repo, workflow", "200")[1], "")
 
     def test_classic_token_missing_a_scope_is_not_rescued_by_reading_user(self):
-        # Regression guard: the fine-grained path must never be reachable for
+        # Regression guard: the unverifiable path must never be reachable for
         # a token that DID publish scopes, or a classic token missing
         # `workflow` would pass by claiming to be unverifiable.
-        code, message = guard.decide("repo", True)
+        code, message = guard.decide("repo", "200")
         self.assertEqual(code, 1)
         self.assertIn("missing the OAuth scope(s)", message)
         self.assertIn("workflow", message)
@@ -280,33 +284,78 @@ class DecidePolicyTests(unittest.TestCase):
     def test_present_but_empty_header_is_a_classic_token_with_no_scopes(self):
         # "" and None must not be collapsed: an empty header is a knowably
         # broken classic token, not an unverifiable one.
-        code, message = guard.decide("", True)
+        code, message = guard.decide("", "200")
         self.assertEqual(code, 1)
         self.assertIn("missing the OAuth scope(s)", message)
 
-    def test_fine_grained_token_proceeds_with_an_explicit_notice(self):
-        code, message = guard.decide(None, True)
+    def test_a_non_classic_pat_proceeds_under_an_explicit_warning(self):
+        code, message = guard.decide(None, "200")
         self.assertEqual(code, 0)
-        self.assertIn("::notice::", message)
-        # It must say it is unverified. A notice that reads like a pass would
-        # be worse than the false refusal it replaces.
-        self.assertIn("unverified", message)
-        self.assertIn("Administration", message)
+        self.assertTrue(message.startswith("::warning::"))
+        # It must say it is unverified. A message that reads like a pass
+        # would be worse than the false refusal it replaces.
+        self.assertIn("UNVERIFIED", message)
 
-    def test_installation_token_is_refused(self):
-        code, message = guard.decide(None, False)
+    def test_the_warning_is_a_single_line_so_its_permission_list_survives(self):
+        # Workflow commands are line-oriented: a literal newline ends the
+        # annotation and everything after it falls out into plain log text --
+        # which would drop the entire permission list this message exists to
+        # carry. %0A is the escape that renders as a break inside it.
+        _, message = guard.decide(None, "200")
+        self.assertNotIn("\n", message)
+        self.assertIn("%0A", message)
+
+    def test_the_warning_names_every_permission_the_run_needs(self):
+        # Each entry pinned, not just the first: this list is the whole of
+        # what replaces verification, so an entry silently dropped from it
+        # is a permission an operator is never told to grant.
+        _, message = guard.decide(None, "200")
+        for permission in (
+            "Administration",
+            "Contents",
+            "Workflows",
+            "Environments",
+            "Secrets and Variables",
+            "Pull requests",
+        ):
+            with self.subTest(permission=permission):
+                self.assertIn(permission, message)
+
+    def test_installation_token_is_refused_and_named(self):
+        # Both halves matter, and only the first is about safety. A 403 that
+        # fell through to the indeterminate branch would still REFUSE -- so
+        # asserting the exit code alone passes against a broken diagnosis.
+        # It would then tell the operator the answer could not be determined,
+        # when 403 determines it exactly, and send them to re-dispatch a run
+        # that can never succeed. The message must be the specific one.
+        code, message = guard.decide(None, "403")
         self.assertEqual(code, 1)
         self.assertIn("::error::", message)
-        self.assertIn("installation token", message)
+        self.assertIn("GITHUB_TOKEN", message)
+        self.assertNotIn("could not determine", message)
 
-    def test_absent_header_without_a_user_answer_stays_fail_closed(self):
+    def test_an_inconclusive_status_is_never_reported_as_an_installation_token(self):
+        # A 429 secondary rate limit or a 5xx means the token may be
+        # perfectly good. Telling the operator to replace it is the same
+        # class of harm this script was rewritten to stop causing.
+        for status in ("401", "429", "500", "502", "418"):
+            with self.subTest(status=status):
+                code, message = guard.decide(None, status)
+                self.assertEqual(code, 1)
+                self.assertIn("could not determine", message)
+                self.assertIn(status, message)
+                self.assertNotIn("is one) is the case this matches", message)
+
+    def test_absent_status_stays_fail_closed(self):
         # An un-updated caller must not accidentally take the passing path.
-        code, message = guard.decide(None, None)
-        self.assertEqual(code, 1)
-        self.assertIn("--token-reads-user-endpoint", message)
+        for status in (None, "", "   "):
+            with self.subTest(status=status):
+                code, message = guard.decide(None, status)
+                self.assertEqual(code, 1)
+                self.assertIn("--user-endpoint-status", message)
 
 
-class MainTristateTests(unittest.TestCase):
+class MainStatusTests(unittest.TestCase):
     def _write(self, body):
         handle = tempfile.NamedTemporaryFile(
             "w", suffix=".txt", delete=False, encoding="utf-8"
@@ -316,40 +365,120 @@ class MainTristateTests(unittest.TestCase):
         self.addCleanup(lambda: pathlib.Path(handle.name).unlink(missing_ok=True))
         return handle.name
 
-    def test_fine_grained_dump_with_yes_passes_and_prints_the_notice(self):
-        path = self._write("HTTP/2 200 \r\ndate: Wed, 03 Sep 2026\r\n")
+    def _run(self, argv):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            rc = guard.main(
-                ["--headers-file", path, "--token-reads-user-endpoint", "yes"]
-            )
-        self.assertEqual(rc, 0)
-        self.assertEqual(err.getvalue(), "")
-        self.assertIn("::notice::", out.getvalue())
+            rc = guard.main(argv)
+        return rc, out.getvalue(), err.getvalue()
 
-    def test_installation_token_dump_with_no_refuses(self):
+    def test_non_classic_pat_dump_with_200_passes_and_warns_on_stdout(self):
         path = self._write("HTTP/2 200 \r\ndate: Wed, 03 Sep 2026\r\n")
-        err = io.StringIO()
-        with redirect_stderr(err):
-            rc = guard.main(
-                ["--headers-file", path, "--token-reads-user-endpoint", "no"]
-            )
+        rc, out, err = self._run(
+            ["--headers-file", path, "--user-endpoint-status", "200"]
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        self.assertIn("::warning::", out)
+
+    def test_installation_token_dump_with_403_refuses(self):
+        path = self._write("HTTP/2 200 \r\ndate: Wed, 03 Sep 2026\r\n")
+        rc, _, err = self._run(
+            ["--headers-file", path, "--user-endpoint-status", "403"]
+        )
         self.assertEqual(rc, 1)
-        self.assertIn("installation token", err.getvalue())
+        self.assertIn("installation token", err)
 
-    def test_each_accepted_spelling_of_the_flag_is_understood(self):
-        for yes, no in (("yes", "no"), ("true", "false"), ("1", "0")):
-            with self.subTest(spelling=yes):
-                self.assertIs(guard._parse_tristate(yes), True)
-                self.assertIs(guard._parse_tristate(no), False)
-        self.assertIsNone(guard._parse_tristate(None))
+    def test_a_rate_limited_probe_refuses_without_blaming_the_token(self):
+        path = self._write("HTTP/2 200 \r\ndate: Wed, 03 Sep 2026\r\n")
+        rc, _, err = self._run(
+            ["--headers-file", path, "--user-endpoint-status", "429"]
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("could not determine", err)
+        self.assertNotIn("Set GH_PAT_TENANT_PROVISIONING", err)
 
-    def test_an_unrecognised_flag_value_raises_rather_than_defaulting(self):
-        # Defaulting an unknown value to either answer would silently pick a
-        # policy branch. argparse `choices` blocks this at the CLI; this pins
-        # the parser itself so the two cannot drift apart.
-        with self.assertRaises(ValueError):
-            guard._parse_tristate("maybe")
+    def test_the_cli_accepts_an_arbitrary_status_string(self):
+        # No argparse `choices` here on purpose: an unexpected status must
+        # reach decide() and be refused as indeterminate, not rejected by the
+        # parser with exit 2, which would look like a usage error rather than
+        # a refusal.
+        path = self._write("HTTP/2 200 \r\n")
+        rc, _, err = self._run(
+            ["--headers-file", path, "--user-endpoint-status", "418"]
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("could not determine", err)
+
+
+class WorkflowWiringTests(unittest.TestCase):
+    """The discrimination is only a control if the workflow actually performs
+    it, and that half lives as inline shell in the YAML with no module to
+    import.
+
+    An adversarial review deleted the whole `gh api user` block from
+    provision-tenant.yml and every test in this repository stayed green: an
+    installation token would have passed the preflight with nothing red. The
+    script tests below cannot see that, by construction. These can.
+    """
+
+    WORKFLOW = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / ".github"
+        / "workflows"
+        / "provision-tenant.yml"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = cls.WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_workflow_file_is_where_this_test_expects(self):
+        # A control case: without it, a moved or renamed workflow would make
+        # every assertion below vacuously pass against an empty string.
+        self.assertTrue(self.WORKFLOW.is_file(), self.WORKFLOW)
+        self.assertIn("name: Provision tenant", self.source)
+
+    def test_the_preflight_probes_the_user_endpoint(self):
+        self.assertIn("gh api user --include --silent", self.source)
+
+    def test_the_probe_captures_a_status_rather_than_an_exit_code(self):
+        # `if gh api user; then` would collapse 403 with 401, 429 and 5xx,
+        # and the refusal would then misname a rate-limited good token an
+        # installation token.
+        self.assertIn("user_status=$(awk", self.source)
+        # Comment lines stripped first: this file's own comments explain the
+        # `if gh api user` shape they forbid, and matching prose instead of
+        # shell would make this assertion unfixable rather than strict.
+        shell = "\n".join(
+            line
+            for line in self.source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("if gh api user", shell)
+
+    def test_the_captured_status_is_passed_to_the_guard(self):
+        self.assertIn('--user-endpoint-status "$user_status"', self.source)
+
+    def test_the_probe_and_the_guard_call_are_in_the_same_run_block(self):
+        # Passing $user_status from a different step would expand to empty
+        # under the shell, which refuses -- fail-closed, but for a reason no
+        # message explains. They must be adjacent.
+        probe = self.source.index("gh api user --include --silent")
+        guard_call = self.source.index('--user-endpoint-status "$user_status"')
+        self.assertLess(probe, guard_call)
+        between = self.source[probe:guard_call]
+        self.assertNotIn("- name:", between)
+
+    def test_the_probe_cannot_abort_the_step_it_measures(self):
+        # The step runs under `set -euo pipefail`; a non-2xx `gh api` exits
+        # non-zero, and without `|| true` that would kill the step before the
+        # refusal it exists to produce.
+        probe_line = next(
+            line
+            for line in self.source.splitlines()
+            if "gh api user --include --silent" in line
+        )
+        self.assertIn("|| true", probe_line)
 
 
 if __name__ == "__main__":

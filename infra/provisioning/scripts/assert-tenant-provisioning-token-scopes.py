@@ -35,12 +35,14 @@ refused is a token that is not a PAT at all -- the workflow's own
 either, and cannot create a repository in the organization. That case is
 distinguished without ever handling the token: an installation token is
 refused `GET /user` (403), while a PAT of either kind reads it (200). The
-workflow makes that call and passes the outcome in.
+workflow makes that call and passes the *status* in -- not a pass/fail
+boolean, so a rate limit or an outage is reported as inconclusive rather
+than miscalled an installation token.
 
     assert-tenant-provisioning-token-scopes.py --self-test
     assert-tenant-provisioning-token-scopes.py --scopes-header "repo, workflow"
     assert-tenant-provisioning-token-scopes.py --headers-file /tmp/response.txt \
-        --token-reads-user-endpoint yes
+        --user-endpoint-status 200
 
 `--headers-file` takes the raw response (status line and headers, e.g. from
 `gh api ... --include --silent`) and extracts the one header this needs;
@@ -49,9 +51,9 @@ workflow makes that call and passes the outcome in.
 A header that is **present but empty** is still a refusal: that is a classic
 token carrying no scopes, which is a knowable failure rather than an
 unknowable one. Only a header that is **absent entirely** takes the
-fine-grained path, and only when `--token-reads-user-endpoint yes` says the
-token is a PAT. Without that flag an absent header refuses exactly as before,
-so every caller that has not been updated stays fail-closed.
+unverifiable path, and only when `--user-endpoint-status 200` says the token
+is a PAT at all. Without that status an absent header refuses exactly as
+before, so every caller that has not been updated stays fail-closed.
 
 The header value is parsed into exact, comma-separated tokens and compared
 by set membership -- never by substring search. `workflow_dispatch` and
@@ -140,38 +142,47 @@ def check(scopes: frozenset[str]) -> frozenset[str]:
 
 def decide(
     scopes_header: str | None,
-    reads_user_endpoint: bool | None,
+    user_endpoint_status: str | None,
     secret_name: str = "GH_PAT_TENANT_PROVISIONING",
 ) -> tuple[int, str]:
     """The whole policy, as one pure function over the two facts the workflow
     can establish without handling the token: what the `X-OAuth-Scopes`
-    header said (or that there wasn't one), and whether `GET /user`
-    succeeded.
+    header said (or that there wasn't one), and what `GET /user` answered.
+
+    The second is an explicit HTTP status rather than a success/failure
+    boolean on purpose. Exit-code truthiness collapses 403 (an installation
+    token -- a real, diagnosable answer) together with 401, a 429 secondary
+    rate limit, a 5xx and a DNS blip, and then reports all of them as
+    "installation token". Telling an operator to replace a working
+    fine-grained PAT because GitHub rate-limited one request is the same
+    class of harm this script was rewritten to stop causing.
 
     Returns `(exit_code, message)`. Exit 0 passes; the message may still
-    carry a notice worth printing."""
+    carry an annotation worth printing."""
     if scopes_header is not None:
         # A classic PAT. Present-but-empty lands here too and refuses, which
         # is correct: no scopes is a knowable failure.
         missing = check(parse_scopes(scopes_header))
         if missing:
             return 1, _missing_message(missing, secret_name)
-        return 0, "token scopes OK: classic PAT carrying repo and workflow"
+        return 0, ""
 
-    # No header at all. Not a classic PAT.
-    if reads_user_endpoint is None:
-        # An un-updated caller. Refuse exactly as this script did before the
-        # fine-grained path existed, rather than passing something it has
-        # established nothing about.
+    # No header at all, so not a classic PAT. What it is instead turns on
+    # what GET /user answered.
+    status = (user_endpoint_status or "").strip()
+
+    if not status:
+        # An un-updated caller, or a status that could not be read. Refuse
+        # exactly as this script did before the fine-grained path existed.
         return 1, _unverifiable_message(secret_name)
 
-    if not reads_user_endpoint:
-        # GET /user was refused: an installation token (the workflow's own
-        # GITHUB_TOKEN is one). It cannot create a repository in the
-        # organization, and no permission grant changes that.
+    if status == "403":
         return 1, _not_a_pat_message(secret_name)
 
-    return 0, _fine_grained_notice(secret_name)
+    if status != "200":
+        return 1, _indeterminate_message(status, secret_name)
+
+    return 0, _unverifiable_but_a_pat_warning(secret_name)
 
 
 def _missing_message(missing: frozenset[str], secret_name: str) -> str:
@@ -191,37 +202,63 @@ def _missing_message(missing: frozenset[str], secret_name: str) -> str:
 def _not_a_pat_message(secret_name: str) -> str:
     return (
         f"::error::the token behind {secret_name} carries no X-OAuth-Scopes "
-        "header and is refused `GET /user`, which makes it an installation "
-        "token rather than a personal access token -- the workflow's own "
-        "GITHUB_TOKEN is one. It cannot create a repository in the "
-        "organization, and no permission grant changes that. Set "
-        f"{secret_name} on the tenant-provisioning environment to a personal "
-        "access token, classic or fine-grained. Refusing before creating "
-        "anything."
+        "header and GitHub answered GET /user with 403, which no personal "
+        "access token does -- an installation token (the workflow's own "
+        "GITHUB_TOKEN is one) is the case this matches. It cannot create a "
+        "repository in the organization, and no permission grant changes "
+        f"that. Set {secret_name} on the tenant-provisioning environment to "
+        "a personal access token, classic or fine-grained. Refusing before "
+        "creating anything."
+    )
+
+
+def _indeterminate_message(status: str, secret_name: str) -> str:
+    return (
+        f"::error::could not determine what kind of token {secret_name} is. "
+        "It carries no X-OAuth-Scopes header, so it is not a classic PAT, "
+        f"and GET /user answered {status} rather than 200 (a personal "
+        "access token) or 403 (an installation token). A 401 means the "
+        "token is invalid or revoked; a 429 is a secondary rate limit and a "
+        "5xx is GitHub being unavailable -- for those two the token may be "
+        "perfectly good and re-dispatching later is the fix, so do not "
+        "replace it on the strength of this message alone. Refusing before "
+        "creating anything rather than guessing."
     )
 
 
 def _unverifiable_message(secret_name: str) -> str:
     return (
         f"::error::the token behind {secret_name} carries no X-OAuth-Scopes "
-        "header, so it is not a classic PAT, and this check was not told "
-        "whether it can read GET /user -- so it cannot tell a fine-grained "
-        "PAT from an installation token. Pass "
-        "--token-reads-user-endpoint yes|no. Refusing before creating "
-        "anything rather than assuming."
+        "header, so it is not a classic PAT, and this check was given no "
+        "GET /user status -- so it cannot tell a personal access token from "
+        "an installation token. Pass --user-endpoint-status with the status "
+        "GitHub returned. Refusing before creating anything rather than "
+        "assuming."
     )
 
 
-def _fine_grained_notice(secret_name: str) -> str:
-    permissions = "\n".join(f"  - {line}" for line in FINE_GRAINED_EQUIVALENTS)
+def _unverifiable_but_a_pat_warning(secret_name: str) -> str:
+    """Deliberately a ::warning:: and not a ::notice::. This run goes on to
+    create a public repository, mint and escrow a passphrase and publish a
+    secret, on a credential nothing has verified. This repo's own precedent
+    for "proceeding with a control absent" is a warning, and a blue notice
+    on a green step is read past.
+
+    Single-line, with %0A for the breaks: workflow commands are
+    line-oriented, so a literal newline ends the annotation and everything
+    after it falls out into plain log text. That would drop exactly the
+    permission list this message exists to carry.
+    """
+    permissions = "%0A".join(f"  - {line}" for line in FINE_GRAINED_EQUIVALENTS)
     return (
-        f"::notice::{secret_name} is a fine-grained personal access token. "
-        "GitHub publishes no API that reads back a fine-grained token's own "
-        "permissions, so this step cannot verify it in advance the way it "
-        "verifies a classic token's OAuth scopes -- it is proceeding "
-        "unverified, not verified. If this run fails on a later step for "
-        "want of a permission, these are the ones it needs:\n"
-        f"{permissions}"
+        f"::warning::{secret_name} publishes no OAuth scopes and reads GET "
+        "/user, so it is a personal access token but not a classic one -- a "
+        "fine-grained PAT, or a GitHub App user access token. GitHub exposes "
+        "no API that reads back such a token's own permissions, so this step "
+        "cannot verify it in advance the way it verifies a classic token's "
+        "scopes. It is proceeding UNVERIFIED, not verified. If a later step "
+        "fails for want of a permission, these are the ones this run "
+        f"needs:%0A{permissions}"
     )
 
 
@@ -287,47 +324,47 @@ def _self_test() -> None:
 
     # -- the policy --
 
-    # Classic PAT with both scopes passes, whatever the /user answer.
-    assert decide("repo, workflow", True)[0] == 0
+    # Classic PAT with both scopes passes, whatever GET /user said.
+    assert decide("repo, workflow", "200")[0] == 0
     assert decide("repo, workflow", None)[0] == 0
+    assert decide("repo, workflow", "403")[0] == 0
 
-    # Classic PAT missing one still refuses, and reading /user does not
-    # rescue it -- a classic token's scopes are authoritative.
-    code, message = decide("repo", True)
+    # Classic PAT missing one still refuses; GET /user does not rescue it.
+    code, message = decide("repo", "200")
     assert code == 1 and "workflow" in message
 
     # Present-but-empty is a classic token with no scopes: refuse, and do
-    # NOT take the fine-grained path.
-    code, message = decide("", True)
+    # NOT take the unverifiable path.
+    code, message = decide("", "200")
     assert code == 1 and "missing the OAuth scope(s)" in message
 
-    # Fine-grained PAT: no header, reads /user. Proceeds, with a notice that
-    # says plainly it is unverified.
-    code, message = decide(None, True)
+    # A PAT that is not classic: no header, GET /user is 200. Proceeds,
+    # under a warning that says plainly it is unverified.
+    code, message = decide(None, "200")
     assert code == 0
-    assert "::notice::" in message and "unverified" in message
+    assert message.startswith("::warning::") and "UNVERIFIED" in message
+    # The permission list must survive as one line, or the annotation drops it.
+    assert "\n" not in message and "%0A" in message
 
-    # Installation token (the workflow's own GITHUB_TOKEN): no header, and
-    # /user refused. This is the case that must still be refused.
-    code, message = decide(None, False)
+    # Installation token: no header, GET /user forbidden. Still refused.
+    code, message = decide(None, "403")
     assert code == 1 and "installation token" in message
 
-    # An un-updated caller that passes no /user answer stays fail-closed.
+    # Anything else is indeterminate, never reported as an installation
+    # token: a rate limit must not send an operator to replace a good token.
+    for status in ("401", "429", "500", "502"):
+        code, message = decide(None, status)
+        assert code == 1, status
+        assert "could not determine" in message and status in message
+        assert "installation token (the workflow" not in message
+
+    # No status at all stays fail-closed.
     code, message = decide(None, None)
-    assert code == 1 and "--token-reads-user-endpoint" in message
+    assert code == 1 and "--user-endpoint-status" in message
+    code, message = decide(None, "   ")
+    assert code == 1 and "--user-endpoint-status" in message
 
     print("self-test OK")
-
-
-def _parse_tristate(value: str | None) -> bool | None:
-    if value is None:
-        return None
-    normalised = value.strip().lower()
-    if normalised in {"yes", "true", "1"}:
-        return True
-    if normalised in {"no", "false", "0"}:
-        return False
-    raise ValueError(f"expected yes or no, got {value!r}")
 
 
 def main(argv: list[str]) -> int:
@@ -351,13 +388,13 @@ def main(argv: list[str]) -> int:
         ),
     )
     parser.add_argument(
-        "--token-reads-user-endpoint",
-        choices=["yes", "no", "true", "false", "1", "0"],
+        "--user-endpoint-status",
         help=(
-            "whether an authenticated `GET /user` succeeded with this token. "
-            "Only consulted when there is no X-OAuth-Scopes header, to tell "
-            "a fine-grained PAT (200) from an installation token (403). "
-            "Omitted, an absent header refuses."
+            "the HTTP status GitHub returned for an authenticated "
+            "`GET /user` with this token. Only consulted when there is no "
+            "X-OAuth-Scopes header, to tell a personal access token (200) "
+            "from an installation token (403) from an inconclusive answer "
+            "(anything else). Omitted, an absent header refuses."
         ),
     )
     parser.add_argument(
@@ -380,11 +417,11 @@ def main(argv: list[str]) -> int:
         parser.error("one of --scopes-header or --headers-file is required unless --self-test")
         return 2  # unreachable; parser.error exits, this satisfies type-checkers
 
-    reads_user = _parse_tristate(args.token_reads_user_endpoint)
-    code, message = decide(scopes_header, reads_user, args.secret_name)
+    code, message = decide(scopes_header, args.user_endpoint_status, args.secret_name)
     if code:
         print(message, file=sys.stderr)
-    elif message.startswith("::notice::"):
+    elif message:
+        # A pass that still has something to say: the unverified-PAT warning.
         print(message)
     return code
 
