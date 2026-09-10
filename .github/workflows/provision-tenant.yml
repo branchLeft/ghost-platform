@@ -297,9 +297,22 @@ jobs:
           # rather than here, so all three stay provable offline instead of
           # only by dispatching this workflow for real and watching it fail
           # on its last step.
+          # A fine-grained PAT publishes no X-OAuth-Scopes header, and neither
+          # does the workflow's own GITHUB_TOKEN -- but only one of the two can
+          # do this job. They are told apart here without ever handling the
+          # token: an installation token is refused `GET /user` (403), while a
+          # PAT of either kind reads it (200). `if` rather than `&&` so this
+          # step's `set -e` does not abort on the very failure being measured.
+          if gh api user --silent >/dev/null 2>&1; then
+            reads_user=yes
+          else
+            reads_user=no
+          fi
+
           python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py --self-test
           python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py \
-            --headers-file /tmp/scope-check-headers.txt
+            --headers-file /tmp/scope-check-headers.txt \
+            --token-reads-user-endpoint "$reads_user"
 
           rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}" \
             --jq '[.protection_rules[].type] | join(",")') || {

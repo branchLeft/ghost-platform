@@ -1,34 +1,57 @@
 #!/usr/bin/env python3
-"""Check that GH_PAT_TENANT_PROVISIONING carries every OAuth scope this
-workflow's later steps need, before any of them has run.
+"""Check that GH_PAT_TENANT_PROVISIONING can do what this workflow's later
+steps need, before any of them has run.
 
-A token missing a scope this run needs fails on whichever later step first
-calls for it -- by which point the run may already have created a public
+A token that cannot finish fails on whichever later step first calls for the
+thing it lacks -- by which point the run may already have created a public
 repository, minted and escrowed a passphrase, initialised a Pulumi stack and
-published an encryption salt to a repository secret. All of that is knowable
-in advance from one authenticated API response -- GitHub returns a classic
-token's scopes in its `X-OAuth-Scopes` response header -- so this script
-exists to read that header and refuse before anything is created, rather
-than after.
+published an encryption salt to a repository secret. Refusing before anything
+is created is the whole point of this script.
 
-This holds the extraction and the set logic together, exactly because the
-extraction is the part worth distrusting: a raw HTTP header dump is
-attacker-adjacent input in miniature, and a shell one-liner reaching into it
-(`grep | sed | tr`) has no test of its own and can abort a `pipefail` step
-before ever reaching the refusal it was meant to produce. Handing the whole
-dump to this script keeps that reach testable offline instead of only by
-dispatching the workflow for real.
+How much can be known in advance depends on what kind of token it is, and the
+two kinds differ in a way that is not a detail:
+
+  - A **classic** PAT publishes its own scopes in the `X-OAuth-Scopes`
+    response header on any authenticated call. Every scope this run needs is
+    therefore knowable from one response, and a token missing one is refused
+    here.
+
+  - A **fine-grained** PAT publishes nothing equivalent. GitHub exposes no
+    API that reads back a fine-grained token's own permissions, so there is
+    no request this script could make that would tell it whether the token
+    can create a repository. The check is not failing in this case -- it is
+    *inapplicable*.
+
+Treating "inapplicable" as "failed" is what this script did until it refused
+a fine-grained token that had already provisioned a tenant successfully. That
+is a false refusal with a real cost: the only way to satisfy the check was to
+replace a narrowly-permissioned fine-grained token with a classic `repo` one,
+which grants full control of every repository the account can reach. A guard
+that can only be satisfied by widening a credential is pushing the wrong way.
+
+So an absent header is no longer refused on its own. What must still be
+refused is a token that is not a PAT at all -- the workflow's own
+`GITHUB_TOKEN` is an installation token, carries no `X-OAuth-Scopes` header
+either, and cannot create a repository in the organization. That case is
+distinguished without ever handling the token: an installation token is
+refused `GET /user` (403), while a PAT of either kind reads it (200). The
+workflow makes that call and passes the outcome in.
 
     assert-tenant-provisioning-token-scopes.py --self-test
     assert-tenant-provisioning-token-scopes.py --scopes-header "repo, workflow"
-    assert-tenant-provisioning-token-scopes.py --headers-file /tmp/response.txt
+    assert-tenant-provisioning-token-scopes.py --headers-file /tmp/response.txt \
+        --token-reads-user-endpoint yes
 
 `--headers-file` takes the raw response (status line and headers, e.g. from
 `gh api ... --include --silent`) and extracts the one header this needs;
-`--scopes-header` takes an already-extracted value directly. A header that
-is absent, or present but empty, both parse to no scopes at all and refuse
-exactly like a token with none -- there is no path through this script that
-aborts instead of refusing.
+`--scopes-header` takes an already-extracted value directly.
+
+A header that is **present but empty** is still a refusal: that is a classic
+token carrying no scopes, which is a knowable failure rather than an
+unknowable one. Only a header that is **absent entirely** takes the
+fine-grained path, and only when `--token-reads-user-endpoint yes` says the
+token is a PAT. Without that flag an absent header refuses exactly as before,
+so every caller that has not been updated stays fail-closed.
 
 The header value is parsed into exact, comma-separated tokens and compared
 by set membership -- never by substring search. `workflow_dispatch` and
@@ -63,23 +86,40 @@ import sys
 #     so the handover push always touches one.
 REQUIRED_SCOPES = frozenset({"repo", "workflow"})
 
+# The equivalent fine-grained permissions, named in the advisory this script
+# prints when it cannot verify them. This list is documentation, not a check:
+# nothing here is read back from GitHub, and saying otherwise would be the
+# same false assurance this script was rewritten to remove.
+FINE_GRAINED_EQUIVALENTS = (
+    "Administration (read/write) -- create the tenant repository",
+    "Contents (read/write) -- push the handover branch",
+    "Workflows (read/write) -- the generated repo carries "
+    ".github/workflows/infra-ci.yml",
+    "Environments (read/write) -- create the generated repo's production "
+    "environment",
+    "Secrets and Variables (read/write) -- write the stack passphrase and salt",
+    "Pull requests (read/write) -- open the handover pull request",
+)
 
-def extract_scopes_header(raw_headers: str) -> str:
+
+def extract_scopes_header(raw_headers: str) -> str | None:
     """Find the `X-OAuth-Scopes` line in a raw HTTP header dump and return
     its value. Case-insensitive on the header name, matched line by line
     rather than by a single combined pattern so a status line or any other
     header (each of which may itself contain a colon, e.g. `date:`) can
     never be mistaken for it.
 
-    Returns the empty string -- meaning no scopes at all -- when the header
-    never appears, rather than raising: a fine-grained PAT or the default
-    `GITHUB_TOKEN` carries no such header, and that is itself a fact this
-    check must refuse on, not a condition to abort over."""
+    Returns `None` when the header never appears, which is a different fact
+    from an empty value and is now treated differently: absent means the
+    token is not a classic PAT, while present-but-empty means a classic PAT
+    holding no scopes at all. Collapsing the two -- as this returned `""`
+    for both until a fine-grained token was refused for it -- makes the
+    unknowable case indistinguishable from the knowably-broken one."""
     for line in raw_headers.splitlines():
         name, sep, value = line.partition(":")
         if sep and name.strip().lower() == "x-oauth-scopes":
             return value.strip()
-    return ""
+    return None
 
 
 def parse_scopes(header_value: str) -> frozenset[str]:
@@ -98,6 +138,42 @@ def check(scopes: frozenset[str]) -> frozenset[str]:
     return REQUIRED_SCOPES - scopes
 
 
+def decide(
+    scopes_header: str | None,
+    reads_user_endpoint: bool | None,
+    secret_name: str = "GH_PAT_TENANT_PROVISIONING",
+) -> tuple[int, str]:
+    """The whole policy, as one pure function over the two facts the workflow
+    can establish without handling the token: what the `X-OAuth-Scopes`
+    header said (or that there wasn't one), and whether `GET /user`
+    succeeded.
+
+    Returns `(exit_code, message)`. Exit 0 passes; the message may still
+    carry a notice worth printing."""
+    if scopes_header is not None:
+        # A classic PAT. Present-but-empty lands here too and refuses, which
+        # is correct: no scopes is a knowable failure.
+        missing = check(parse_scopes(scopes_header))
+        if missing:
+            return 1, _missing_message(missing, secret_name)
+        return 0, "token scopes OK: classic PAT carrying repo and workflow"
+
+    # No header at all. Not a classic PAT.
+    if reads_user_endpoint is None:
+        # An un-updated caller. Refuse exactly as this script did before the
+        # fine-grained path existed, rather than passing something it has
+        # established nothing about.
+        return 1, _unverifiable_message(secret_name)
+
+    if not reads_user_endpoint:
+        # GET /user was refused: an installation token (the workflow's own
+        # GITHUB_TOKEN is one). It cannot create a repository in the
+        # organization, and no permission grant changes that.
+        return 1, _not_a_pat_message(secret_name)
+
+    return 0, _fine_grained_notice(secret_name)
+
+
 def _missing_message(missing: frozenset[str], secret_name: str) -> str:
     return (
         "::error::GH_PAT_TENANT_PROVISIONING is missing the OAuth scope(s) "
@@ -112,7 +188,46 @@ def _missing_message(missing: frozenset[str], secret_name: str) -> str:
     )
 
 
+def _not_a_pat_message(secret_name: str) -> str:
+    return (
+        f"::error::the token behind {secret_name} carries no X-OAuth-Scopes "
+        "header and is refused `GET /user`, which makes it an installation "
+        "token rather than a personal access token -- the workflow's own "
+        "GITHUB_TOKEN is one. It cannot create a repository in the "
+        "organization, and no permission grant changes that. Set "
+        f"{secret_name} on the tenant-provisioning environment to a personal "
+        "access token, classic or fine-grained. Refusing before creating "
+        "anything."
+    )
+
+
+def _unverifiable_message(secret_name: str) -> str:
+    return (
+        f"::error::the token behind {secret_name} carries no X-OAuth-Scopes "
+        "header, so it is not a classic PAT, and this check was not told "
+        "whether it can read GET /user -- so it cannot tell a fine-grained "
+        "PAT from an installation token. Pass "
+        "--token-reads-user-endpoint yes|no. Refusing before creating "
+        "anything rather than assuming."
+    )
+
+
+def _fine_grained_notice(secret_name: str) -> str:
+    permissions = "\n".join(f"  - {line}" for line in FINE_GRAINED_EQUIVALENTS)
+    return (
+        f"::notice::{secret_name} is a fine-grained personal access token. "
+        "GitHub publishes no API that reads back a fine-grained token's own "
+        "permissions, so this step cannot verify it in advance the way it "
+        "verifies a classic token's OAuth scopes -- it is proceeding "
+        "unverified, not verified. If this run fails on a later step for "
+        "want of a permission, these are the ones it needs:\n"
+        f"{permissions}"
+    )
+
+
 def _self_test() -> None:
+    # -- scope set logic, unchanged --
+
     # The passing case: both required scopes present, plus one the run
     # never asked for -- an extra scope is never a reason to refuse.
     assert not check(parse_scopes("repo, workflow, read:org"))
@@ -157,20 +272,62 @@ def _self_test() -> None:
     # `X-OAuth-Scopes`; `gh`'s HTTP/2 output has been observed lower-cased.
     assert extract_scopes_header("X-OAuth-Scopes: repo, workflow\r\n") == "repo, workflow"
 
-    # Absent entirely -- a fine-grained PAT or GITHUB_TOKEN. Empty, not a
-    # raised exception; parse_scopes/check on the result then refuse both
-    # required scopes exactly as an empty header value would.
-    assert extract_scopes_header("HTTP/2 200 \r\ndate: Wed, 03 Sep 2026\r\n") == ""
-    assert check(parse_scopes(extract_scopes_header("HTTP/2 200 \r\n"))) == REQUIRED_SCOPES
+    # Absent entirely is now None, NOT "" -- the distinction the
+    # fine-grained path turns on.
+    assert extract_scopes_header("HTTP/2 200 \r\ndate: Wed, 03 Sep 2026\r\n") is None
+    assert extract_scopes_header("HTTP/2 200 \r\n") is None
 
-    # Present but carrying no value.
+    # Present but carrying no value stays "" -- a classic token with no
+    # scopes, which is knowably broken rather than unverifiable.
     assert extract_scopes_header("x-oauth-scopes:\r\n") == ""
 
     # A header value containing its own colon must not confuse the header
     # actually being searched for.
-    assert extract_scopes_header("date: Wed, 03 Sep 2026 12:00:00 GMT\r\n") == ""
+    assert extract_scopes_header("date: Wed, 03 Sep 2026 12:00:00 GMT\r\n") is None
+
+    # -- the policy --
+
+    # Classic PAT with both scopes passes, whatever the /user answer.
+    assert decide("repo, workflow", True)[0] == 0
+    assert decide("repo, workflow", None)[0] == 0
+
+    # Classic PAT missing one still refuses, and reading /user does not
+    # rescue it -- a classic token's scopes are authoritative.
+    code, message = decide("repo", True)
+    assert code == 1 and "workflow" in message
+
+    # Present-but-empty is a classic token with no scopes: refuse, and do
+    # NOT take the fine-grained path.
+    code, message = decide("", True)
+    assert code == 1 and "missing the OAuth scope(s)" in message
+
+    # Fine-grained PAT: no header, reads /user. Proceeds, with a notice that
+    # says plainly it is unverified.
+    code, message = decide(None, True)
+    assert code == 0
+    assert "::notice::" in message and "unverified" in message
+
+    # Installation token (the workflow's own GITHUB_TOKEN): no header, and
+    # /user refused. This is the case that must still be refused.
+    code, message = decide(None, False)
+    assert code == 1 and "installation token" in message
+
+    # An un-updated caller that passes no /user answer stays fail-closed.
+    code, message = decide(None, None)
+    assert code == 1 and "--token-reads-user-endpoint" in message
 
     print("self-test OK")
+
+
+def _parse_tristate(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    normalised = value.strip().lower()
+    if normalised in {"yes", "true", "1"}:
+        return True
+    if normalised in {"no", "false", "0"}:
+        return False
+    raise ValueError(f"expected yes or no, got {value!r}")
 
 
 def main(argv: list[str]) -> int:
@@ -194,6 +351,16 @@ def main(argv: list[str]) -> int:
         ),
     )
     parser.add_argument(
+        "--token-reads-user-endpoint",
+        choices=["yes", "no", "true", "false", "1", "0"],
+        help=(
+            "whether an authenticated `GET /user` succeeded with this token. "
+            "Only consulted when there is no X-OAuth-Scopes header, to tell "
+            "a fine-grained PAT (200) from an installation token (403). "
+            "Omitted, an absent header refuses."
+        ),
+    )
+    parser.add_argument(
         "--secret-name",
         default="GH_PAT_TENANT_PROVISIONING",
         help="name of the secret the failure message points the operator at",
@@ -213,11 +380,13 @@ def main(argv: list[str]) -> int:
         parser.error("one of --scopes-header or --headers-file is required unless --self-test")
         return 2  # unreachable; parser.error exits, this satisfies type-checkers
 
-    missing = check(parse_scopes(scopes_header))
-    if missing:
-        print(_missing_message(missing, args.secret_name), file=sys.stderr)
-        return 1
-    return 0
+    reads_user = _parse_tristate(args.token_reads_user_endpoint)
+    code, message = decide(scopes_header, reads_user, args.secret_name)
+    if code:
+        print(message, file=sys.stderr)
+    elif message.startswith("::notice::"):
+        print(message)
+    return code
 
 
 if __name__ == "__main__":
