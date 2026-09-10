@@ -177,7 +177,7 @@ jobs:
       # with no `environment:`), or a repository-level copy of a
       # provisioning-capable credential (which the scoping guard below exists to
       # refuse). A separate credential under a separate name removes the
-      # collision instead of choosing a side of it -- branchLeft/workspace#284.
+      # collision instead of choosing a side of it.
       TENANT_BACKEND_URL: ${{ vars.HETZNER_PULUMI_BACKEND_URL }}
       AWS_ACCESS_KEY_ID: ${{ secrets.TENANT_STATE_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY }}
@@ -189,7 +189,7 @@ jobs:
       #
       # **Two media variables, not four.** Each tenant now has its own media
       # bucket, reached with a credential allowlisted to that bucket alone
-      # (branchLeft/workspace#282, doc 14 section 6 candidate (a)). The bucket
+      # (doc 14 section 6 candidate (a)). The bucket
       # name and the public base URL are therefore per-tenant, and they are
       # derived from the slug by the tenant component rather than written here:
       # a value a stack could set is a value a stack could set to another
@@ -297,9 +297,27 @@ jobs:
           # rather than here, so all three stay provable offline instead of
           # only by dispatching this workflow for real and watching it fail
           # on its last step.
+          # A fine-grained PAT publishes no X-OAuth-Scopes header, and neither
+          # does the workflow's own GITHUB_TOKEN -- but only one of the two can
+          # do this job. They are told apart here without ever handling the
+          # token: an installation token is refused `GET /user` (403), while a
+          # PAT of either kind reads it (200).
+          #
+          # The STATUS is captured rather than merely success or failure. A
+          # bare `if gh api user` collapses 403 -- a real, diagnosable answer
+          # -- together with 401, a 429 secondary rate limit and any 5xx, and
+          # the refusal would then tell an operator that their working
+          # fine-grained token is an installation token and should be
+          # replaced. `--include` writes the status line whatever the
+          # response, and `|| true` stops this step's `set -e` aborting on
+          # the very non-2xx case being measured.
+          gh api user --include --silent > /tmp/user-check-headers.txt 2>/dev/null || true
+          user_status=$(awk 'NR==1 {for (i = 1; i <= NF; i++) if ($i ~ /^[0-9][0-9][0-9]$/) { print $i; exit } }' /tmp/user-check-headers.txt || true)
+
           python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py --self-test
           python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py \
-            --headers-file /tmp/scope-check-headers.txt
+            --headers-file /tmp/scope-check-headers.txt \
+            --user-endpoint-status "$user_status"
 
           rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}" \
             --jq '[.protection_rules[].type] | join(",")') || {
@@ -835,9 +853,9 @@ jobs:
       # `infra-ci.yml`) reads `HETZNER_S3_ACCESS_KEY_ID` /
       # `HETZNER_S3_SECRET_ACCESS_KEY` -- that repo has no hosts-stack
       # workflow to collide with, so the name this platform used before the
-      # branchLeft/workspace#284 rename is still the right one to hand it.
-      # Every tenant repo receives the same credential value today, until
-      # branchLeft/workspace#281 gives each tenant its own.
+      # estate-credential rename is still the right one to hand it.
+      # Every tenant repo receives the same credential value today; giving
+      # each tenant its own is a separate, still-open piece of work.
       #
       # **What that scoping does NOT bound, stated rather than implied.** This
       # credential is not scoped per stack. Once read, it lists and deletes
@@ -846,7 +864,7 @@ jobs:
       # which job may read it, not what it reaches. Bounding the reach itself
       # needs Hetzner's per-bucket key allowlisting, whose behaviour on
       # `ListBucket` is undemonstrated and whose account caps may not fit 100
-      # tenants: branchLeft/workspace#281. What IS bounded, by name in the
+      # tenants. What IS bounded, by name in the
       # validation step above, is the direction that matters most -- this is
       # never the estate's own bucket, so the reach stops before the checkpoint
       # the production hcloud token lives in.
