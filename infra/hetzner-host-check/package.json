@@ -15,6 +15,6 @@
     "@branchleft/tsconfig": "^0.3.1",
     "@types/node": "^26",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
