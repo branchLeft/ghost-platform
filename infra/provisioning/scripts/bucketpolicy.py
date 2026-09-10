@@ -69,10 +69,21 @@ WORKLOAD_OBJECT_ACTIONS = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
 # Enumerated, and that is a REGRESSION accepted rather than a design choice.
 # The `NotAction` form these lists replace made an action nobody thought of
 # fall closed; a denylist makes it fall open, back to Hetzner's project-wide
-# default. The mitigation is breadth, not cleverness: actions Hetzner
-# currently documents as unsupported are listed too, because the cost is a
-# longer array and the alternative is a hole that opens on the day support
-# lands, silently and in every policy already applied.
+# default.
+#
+# BREADTH IS NOT FREE, WHICH IS WHERE THE FIRST VERSION OF THIS WENT WRONG.
+# It reasoned that listing an action the platform does not support costs "a
+# longer array", so the lists should be padded against the day support lands.
+# That is false on this engine: an action name its policy parser does not know
+# does not sit inert in the document, it makes the WHOLE document
+# unacceptable. The bucket then keeps whatever policy it had, and the failure
+# arrives as an HTTP 503 with an empty message during a live apply -- which
+# the AWS CLI cannot render at all. Nineteen padded names were rejected that
+# way. `PARSER_REJECTS` below is that measurement, kept so the reasoning
+# cannot quietly come back.
+#
+# So these lists are exactly as wide as the parser's vocabulary and no wider,
+# and adding a name to them is a live question, not a judgement call.
 BUCKET_CONFIGURATION_ACTIONS = [
     "s3:GetBucketPolicy",
     "s3:PutBucketPolicy",
@@ -91,8 +102,6 @@ BUCKET_CONFIGURATION_ACTIONS = [
     "s3:PutBucketObjectLockConfiguration",
     "s3:GetBucketCORS",
     "s3:PutBucketCORS",
-    "s3:GetEncryptionConfiguration",
-    "s3:PutEncryptionConfiguration",
     "s3:CreateBucket",
     "s3:DeleteBucket",
     "s3:ListBucketVersions",
@@ -106,7 +115,6 @@ BUCKET_CONFIGURATION_ACTIONS = [
     "s3:PutBucketLogging",
     "s3:GetBucketTagging",
     "s3:PutBucketTagging",
-    "s3:DeleteBucketTagging",
     "s3:GetBucketWebsite",
     "s3:PutBucketWebsite",
     "s3:DeleteBucketWebsite",
@@ -116,6 +124,27 @@ BUCKET_CONFIGURATION_ACTIONS = [
     "s3:PutBucketRequestPayment",
     "s3:GetBucketOwnershipControls",
     "s3:PutBucketOwnershipControls",
+]
+
+# Action names this engine's policy parser REFUSES. Measured against a live
+# bucket, one name at a time, each in an otherwise known-good document: 19 of
+# 81 rejected, every one a name added speculatively rather than because
+# something needed it.
+#
+# Kept as data rather than deleted, for two reasons. It is the only record
+# that these were tried, so nobody re-adds them on the same "costs nothing"
+# reasoning; and `test_no_emitted_action_is_one_the_parser_refuses` asserts
+# the emitted lists stay disjoint from it, which turns a re-add into a red
+# test instead of a 503 in the middle of an operator's live apply.
+#
+# This is a measurement of one engine at one time, not a specification. If
+# Hetzner ships support for any of these, the way to find out is to probe the
+# live endpoint again -- never to assume a name parses because AWS documents
+# it. Every one of these is documented by AWS.
+PARSER_REJECTS = frozenset({
+    "s3:GetEncryptionConfiguration",
+    "s3:PutEncryptionConfiguration",
+    "s3:DeleteBucketTagging",
     "s3:DeleteBucketOwnershipControls",
     "s3:GetAnalyticsConfiguration",
     "s3:PutAnalyticsConfiguration",
@@ -125,7 +154,14 @@ BUCKET_CONFIGURATION_ACTIONS = [
     "s3:PutMetricsConfiguration",
     "s3:GetIntelligentTieringConfiguration",
     "s3:PutIntelligentTieringConfiguration",
-]
+    "s3:GetObjectAttributes",
+    "s3:GetObjectVersionAttributes",
+    "s3:ReplicateObject",
+    "s3:ReplicateDelete",
+    "s3:ReplicateTags",
+    "s3:GetObjectVersionForReplication",
+    "s3:ObjectOwnerOverrideToBucketOwner",
+})
 
 # Every object-resource action EXCEPT the two that serve a browser. Only the
 # media policy needs this split: an operational bucket has no anonymous reader
@@ -156,8 +192,6 @@ NON_PUBLIC_OBJECT_ACTIONS = [
     "s3:AbortMultipartUpload",
     "s3:ListMultipartUploadParts",
     "s3:RestoreObject",
-    "s3:GetObjectAttributes",
-    "s3:GetObjectVersionAttributes",
     "s3:GetObjectTorrent",
     "s3:GetObjectVersionTorrent",
     # The replication family. RGW's policy parser recognises these names, so
@@ -166,11 +200,6 @@ NON_PUBLIC_OBJECT_ACTIONS = [
     # them without a replication configuration on the bucket -- itself denied
     # by BUCKET_CONFIGURATION_ACTIONS -- is not established; they are listed
     # because an unlisted action falls open and the cost of listing is a line.
-    "s3:ReplicateObject",
-    "s3:ReplicateDelete",
-    "s3:ReplicateTags",
-    "s3:GetObjectVersionForReplication",
-    "s3:ObjectOwnerOverrideToBucketOwner",
 ]
 
 
@@ -257,6 +286,16 @@ def assert_enforceable(policy: dict) -> dict:
     bucket regardless of which one wrote it.
     """
     for statement in policy["Statement"]:
+        actions = statement.get("Action", [])
+        actions = [actions] if isinstance(actions, str) else actions
+        refused = [a for a in actions if a in PARSER_REJECTS]
+        if refused:
+            raise PolicyInputError(
+                f"statement {statement.get('Sid', '<unnamed>')!r} names {', '.join(refused)}, "
+                f"which this engine's policy parser refuses. It does not sit inert -- the whole "
+                f"document is rejected, the bucket keeps its previous policy, and the operator "
+                f"sees an HTTP 503 with no message in the middle of an apply."
+            )
         if "NotAction" in statement:
             raise PolicyInputError(
                 f"statement {statement.get('Sid', '<unnamed>')!r} uses NotAction, which this "
