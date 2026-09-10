@@ -3,30 +3,42 @@
 workflows/provision-tenant.yml -- the step that refuses to provision a tenant
 whose repository already exists.
 
-Why this file exists: the check was `gh repo view "$TENANT_REPO"`, which
-follows a rename redirect. GitHub keeps a renamed repository's former name
-pointing at it until something claims that name, so a tenant torn down per
-`RUNBOOK-tenant-onboarding.md` teardown step 8 -- which says to rename and
-archive rather than delete, to keep the audit trail -- leaves its old name
-answering. Re-provisioning that tenant under its own name is the normal
-lifecycle, and the check refused every one of them, reporting a repository
-that does not exist. It blocked a real provisioning run on 2026-09-10.
+That guard is load-bearing: it is what stops an existing tenant's hand-set
+stack passphrase being minted over, which would rotate a live stack's
+wrapping key without re-wrapping its checkpoint.
+
+It was `gh repo view "$TENANT_REPO"`, which follows a rename redirect.
+GitHub keeps a renamed repository's former name pointing at it until
+something claims that name, so a tenant whose repository was ever renamed
+could not be re-provisioned under its original name -- the check reported a
+repository that does not exist. It blocked a real run on 2026-09-10.
+
+**These tests execute the lookup, not just the branching.** An earlier
+version injected `existing_repo` directly and asserted that an empty value
+proceeds silently. That passed while the code did the opposite: on a 404
+`gh api` skips the `--jq` filter and copies the raw JSON error body to
+STDOUT (only "gh: Not Found" goes to stderr), so a `|| true` capture set the
+variable to that body and every ordinary new-tenant run took the redirect
+branch. The fixture asserted a value production never produced, which is the
+shape of a test that cannot fail. `gh` is stubbed on PATH here so the real
+capture runs, and the stub records that it was called.
 
 The check is inline shell in YAML with no module to import, so this follows
-`test_provision_tenant_flow_gate.py`: extract the literal block from the
-workflow and execute it under `bash -e`, which is what a `run:` with no
-`shell:` gets on a Linux runner. A textual assertion would be satisfied by a
-comparison that reads correctly and behaves differently -- `=` against `!=`,
-or a `-n` test that swallows the distinction this fix turns on.
+`test_provision_tenant_flow_gate.py`: extract the literal block and execute
+it under `bash -e`, which is what a `run:` with no `shell:` gets on a Linux
+runner. A textual assertion would be satisfied by a comparison that reads
+correctly and behaves differently.
 
 `fail` is a function defined earlier in the same step; the harness stubs it,
-so what is under test is the branching, not that helper.
+so what is under test is the lookup and the branching, not that helper.
 """
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -38,159 +50,245 @@ WORKFLOW = (
     / "provision-tenant.yml"
 )
 
-# The block under test: from the equality test through its closing `fi`.
+# From the lookup through the closing `fi` of the branch it feeds. The lookup
+# is inside the extracted region deliberately: it is where the defect above
+# lived, and a harness that starts after it cannot see that class of bug.
 BLOCK = re.compile(
-    r'^(\s*)if \[ "\$existing_repo" = "\$TENANT_REPO" \]; then\n(.*?)^\1fi\n',
+    r"^(\s*)if existing_repo=\$\(gh api .*?^\1fi\n",
     re.DOTALL | re.MULTILINE,
 )
 
+# The step's `run:` body sits at this indentation. The block must be at it and
+# not deeper -- see test_the_block_is_not_nested_inside_a_conditional.
+EXPECTED_INDENT = 10
 
-def extract_block(source: str) -> str:
+# What `gh api` really writes to stdout for a repository that does not exist.
+NOT_FOUND_BODY = json.dumps(
+    {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/repos/repos#get-a-repository",
+        "status": "404",
+    }
+)
+
+
+def extract_block(source: str) -> tuple[str, str]:
     match = BLOCK.search(source)
     if match is None:
         raise AssertionError(
-            "the repository precheck's if/elif/fi block was not found in "
+            "the repository precheck block was not found in "
             f"{WORKFLOW}. If it was rewritten, this test must be rewritten "
             "with it -- it must not silently stop testing anything."
         )
-    body = match.group(0)
-    # Strip the YAML block indentation so bash sees ordinary script text.
     indent = match.group(1)
-    return "\n".join(
+    dedented = "\n".join(
         line[len(indent):] if line.startswith(indent) else line
-        for line in body.splitlines()
+        for line in match.group(0).splitlines()
     )
+    return dedented, indent
 
 
 class ExtractionTests(unittest.TestCase):
     """A control case. Without it every behavioural test below would pass
     vacuously against an empty string if the workflow moved or the block was
-    renamed."""
+    rewritten."""
 
     def test_the_workflow_exists_and_is_the_provisioning_one(self):
         self.assertTrue(WORKFLOW.is_file(), WORKFLOW)
         self.assertIn("name: Provision tenant", WORKFLOW.read_text(encoding="utf-8"))
 
-    def test_the_block_is_found_and_is_not_empty(self):
-        block = extract_block(WORKFLOW.read_text(encoding="utf-8"))
+    def test_the_block_is_found_and_contains_the_lookup(self):
+        block, _ = extract_block(WORKFLOW.read_text(encoding="utf-8"))
+        self.assertIn("gh api", block)
         self.assertIn("existing_repo", block)
-        self.assertIn("fi", block)
 
     def test_extraction_raises_rather_than_returning_nothing(self):
-        # A missing block must stop the suite, not quietly test an empty
-        # string -- the failure mode that makes a green run meaningless.
         with self.assertRaises(AssertionError):
             extract_block("a workflow with no such block\n")
+
+    def test_the_block_is_not_nested_inside_a_conditional(self):
+        # Wrapping the block in `if [ "$TENANT_VISIBILITY" = public ]` would
+        # skip the create-only guard for every private tenant, and the
+        # extraction alone cannot see it -- the regex anchors `fi` to whatever
+        # indentation it found, so a re-indented block extracts and passes
+        # every behavioural test below. The indentation is the signal.
+        _, indent = extract_block(WORKFLOW.read_text(encoding="utf-8"))
+        self.assertEqual(
+            len(indent),
+            EXPECTED_INDENT,
+            "the precheck is indented more deeply than the step's run body, "
+            "which means it now sits inside a conditional and does not run "
+            "for every tenant",
+        )
 
 
 class PrecheckBehaviourTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.block = extract_block(WORKFLOW.read_text(encoding="utf-8"))
+        cls.block, _ = extract_block(WORKFLOW.read_text(encoding="utf-8"))
 
-    def _run(self, tenant_repo: str, existing_repo: str):
-        script = (
+    def _run(self, tenant_repo: str, *, api_stdout: str, api_exit: int):
+        """Execute the real block with `gh` stubbed to a chosen response."""
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+
+        marker = tmp / "gh-was-called"
+        stub = tmp / "gh"
+        stub.write_text(
+            "#!/bin/sh\n"
+            f"touch {shlex.quote(str(marker))}\n"
+            f"printf '%s' {shlex.quote(api_stdout)}\n"
+            f"exit {api_exit}\n"
+        )
+        stub.chmod(0o755)
+
+        script = tmp / "block.sh"
+        script.write_text(
             "set -e\n"
+            f"PATH={shlex.quote(str(tmp))}:$PATH\n"
             'fail() { echo "FAILED: $*" >&2; exit 1; }\n'
-            f"TENANT_REPO={tenant_repo!r}\n"
-            f"existing_repo={existing_repo!r}\n"
+            f"TENANT_REPO={shlex.quote(tenant_repo)}\n"
             + self.block
             + '\necho "REACHED THE END"\n'
         )
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".sh", delete=False, encoding="utf-8"
-        ) as handle:
-            handle.write(script)
-            path = handle.name
-        self.addCleanup(lambda: pathlib.Path(path).unlink(missing_ok=True))
-        return subprocess.run(
-            ["bash", path], capture_output=True, text=True, timeout=30
+        result = subprocess.run(
+            ["bash", str(script)], capture_output=True, text=True, timeout=30
         )
+        # Control: a stub that was never invoked would make every assertion
+        # below a statement about nothing.
+        self.assertTrue(marker.exists(), "the gh stub was never called")
+        return result
 
     def test_a_genuinely_existing_repository_still_refuses(self):
-        # The original purpose of the check, which must survive the fix: it is
-        # what stops a live tenant's hand-set passphrase being minted over.
-        result = self._run("branchLeft/ghost-tenant-acme", "branchLeft/ghost-tenant-acme")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("already exists", result.stderr)
-        self.assertNotIn("REACHED THE END", result.stdout)
+        # The guard's original purpose, which must survive the fix.
+        r = self._run(
+            "branchLeft/ghost-tenant-acme",
+            api_stdout="branchLeft/ghost-tenant-acme",
+            api_exit=0,
+        )
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("already exists", r.stderr)
+        self.assertNotIn("REACHED THE END", r.stdout)
+
+    def test_a_repository_that_does_not_exist_proceeds_silently(self):
+        # The ordinary new-tenant case, and the one the previous version of
+        # this file got wrong. `gh api` exits non-zero AND prints the error
+        # body to stdout; neither may be mistaken for a repository name.
+        r = self._run(
+            "branchLeft/ghost-tenant-newco",
+            api_stdout=NOT_FOUND_BODY,
+            api_exit=1,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("REACHED THE END", r.stdout)
+        self.assertNotIn("::warning::", r.stdout)
+        self.assertNotIn("Not Found", r.stdout)
 
     def test_a_rename_redirect_is_not_treated_as_an_existing_repository(self):
-        # The bug this fixes. The API answers a request for ghost-tenant-blog
-        # with ghost-tenant-blog-gcp, because the first was renamed to the
-        # second. Nothing occupies the requested name.
-        result = self._run(
-            "branchLeft/ghost-tenant-blog", "branchLeft/ghost-tenant-blog-gcp"
+        # The bug this change fixes.
+        r = self._run(
+            "branchLeft/ghost-tenant-blog",
+            api_stdout="branchLeft/ghost-tenant-blog-gcp",
+            api_exit=0,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("REACHED THE END", result.stdout)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("REACHED THE END", r.stdout)
 
     def test_a_rename_redirect_warns_and_names_both_repositories(self):
-        # Proceeding silently would be wrong: creating the repository disables
-        # the redirect, so links to the old name stop resolving. The operator
-        # is told which name is being claimed and what it currently points at.
-        result = self._run(
-            "branchLeft/ghost-tenant-blog", "branchLeft/ghost-tenant-blog-gcp"
+        r = self._run(
+            "branchLeft/ghost-tenant-blog",
+            api_stdout="branchLeft/ghost-tenant-blog-gcp",
+            api_exit=0,
         )
-        self.assertIn("::warning::", result.stdout)
-        self.assertIn("branchLeft/ghost-tenant-blog-gcp", result.stdout)
-        self.assertIn("redirect", result.stdout)
+        self.assertIn("::warning::", r.stdout)
+        self.assertIn("branchLeft/ghost-tenant-blog-gcp", r.stdout)
+        self.assertIn("renamed", r.stdout)
 
-    def test_no_repository_and_no_redirect_proceeds_silently(self):
-        # The ordinary new-tenant case: `gh api` 404s, `|| true` yields an
-        # empty string, and nothing is printed.
-        result = self._run("branchLeft/ghost-tenant-newco", "")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("REACHED THE END", result.stdout)
-        self.assertNotIn("::warning::", result.stdout)
+    def test_a_case_difference_still_refuses(self):
+        # GitHub repository names are case-insensitive, but full_name comes
+        # back in the casing the repository was created with. A case-sensitive
+        # comparison would read this as a different repository and skip the
+        # guard for a repository that genuinely exists.
+        r = self._run(
+            "branchLeft/ghost-tenant-acme",
+            api_stdout="branchLeft/ghost-tenant-Acme",
+            api_exit=0,
+        )
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("already exists", r.stderr)
+
+    def test_a_case_difference_in_the_org_login_still_refuses(self):
+        # The org login is hardcoded elsewhere in this workflow. A re-case of
+        # it would otherwise degrade the guard to warn-and-proceed for every
+        # tenant at once.
+        r = self._run(
+            "branchleft/ghost-tenant-acme",
+            api_stdout="branchLeft/ghost-tenant-acme",
+            api_exit=0,
+        )
+        self.assertEqual(r.returncode, 1, r.stdout)
 
     def test_the_comparison_is_exact_rather_than_a_prefix(self):
-        # `ghost-tenant-blog` and `ghost-tenant-blog2` are both real tenant
-        # names in this estate. A prefix or substring comparison would refuse
-        # one because the other exists.
-        result = self._run(
-            "branchLeft/ghost-tenant-blog", "branchLeft/ghost-tenant-blog2"
+        # `ghost-tenant-blog` and `ghost-tenant-blog2` are both real names in
+        # this estate; a prefix comparison would refuse one because the other
+        # exists.
+        r = self._run(
+            "branchLeft/ghost-tenant-blog",
+            api_stdout="branchLeft/ghost-tenant-blog2",
+            api_exit=0,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("REACHED THE END", result.stdout)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("REACHED THE END", r.stdout)
 
     def test_a_differently_owned_repository_of_the_same_name_does_not_refuse(self):
-        # full_name is compared, not name, so someone else's repository with
-        # this tenant's slug is not mistaken for ours.
-        result = self._run(
-            "branchLeft/ghost-tenant-blog", "someoneelse/ghost-tenant-blog"
+        r = self._run(
+            "branchLeft/ghost-tenant-blog",
+            api_stdout="someoneelse/ghost-tenant-blog",
+            api_exit=0,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("REACHED THE END", result.stdout)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("REACHED THE END", r.stdout)
 
 
 class WiringTests(unittest.TestCase):
-    """The behavioural tests above execute the block in isolation, so they
-    cannot see how `existing_repo` is populated. These read that line."""
+    """What the extracted block cannot show: that nothing else reintroduces
+    the redirect-following lookup."""
 
     @classmethod
     def setUpClass(cls):
-        cls.source = WORKFLOW.read_text(encoding="utf-8")
-
-    def test_the_value_comes_from_the_api_not_from_gh_repo_view(self):
-        # `gh repo view` is the call that follows the redirect. Using it again
-        # anywhere for this purpose reintroduces the bug.
-        self.assertIn('existing_repo=$(gh api "repos/$TENANT_REPO" --jq .full_name', self.source)
-        shell = "\n".join(
-            line for line in self.source.splitlines()
-            if not line.lstrip().startswith("#")
+        source = WORKFLOW.read_text(encoding="utf-8")
+        cls.source = source
+        cls.shell = "\n".join(
+            line for line in source.splitlines() if not line.lstrip().startswith("#")
         )
-        self.assertNotIn('gh repo view "$TENANT_REPO"', shell)
 
-    def test_the_lookup_cannot_abort_the_step_on_a_404(self):
-        # A new tenant's repository does not exist, so `gh api` exits
-        # non-zero. Under this step's `set -e` that would kill the step before
-        # the check it feeds -- turning the ordinary case into a hard failure.
+    def test_the_value_comes_from_the_api(self):
+        self.assertIn(
+            'existing_repo=$(gh api "repos/$TENANT_REPO" --jq .full_name', self.source
+        )
+
+    def test_gh_repo_view_is_not_used_against_the_tenant_repo_in_any_spelling(self):
+        # A literal substring assertion missed `gh repo view "${TENANT_REPO}"`,
+        # which restores the original bug while every test stayed green.
+        pattern = re.compile(r"gh\s+repo\s+view\s+\"?\$\{?TENANT_REPO\}?\"?")
+        self.assertIsNone(
+            pattern.search(self.shell),
+            "gh repo view follows a rename redirect and must not be used to "
+            "decide whether the tenant repository exists",
+        )
+
+    def test_the_lookup_branches_on_exit_status_not_on_emptiness(self):
+        # `|| true` here captures gh's JSON 404 body from stdout, which is
+        # never empty -- the defect that made every new-tenant run warn.
         line = next(
-            line for line in self.source.splitlines()
-            if "existing_repo=$(gh api" in line
+            line for line in self.shell.splitlines() if "existing_repo=$(gh api" in line
         )
-        self.assertIn("|| true", line)
+        self.assertIn("; then :; else", line)
+        self.assertNotIn("|| true", line)
+
+    def test_the_comparison_is_case_folded(self):
+        self.assertIn("tr '[:upper:]' '[:lower:]'", self.shell)
+        self.assertIn('[ "$existing_lower" = "$requested_lower" ]', self.shell)
 
 
 if __name__ == "__main__":
