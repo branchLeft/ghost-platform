@@ -6,8 +6,8 @@ name: passphrase-drill
 # it stays dormant.
 #
 # The drill job fetches a *fresh* `pulumi stack export` of the stack's own
-# state -- read-only, no `--show-secrets`, and no decryption happens at that
-# step -- then hands the export to `verify-archive-passphrase.py`, sourced
+# state -- read-only, no secret-revealing export flag, and no decryption
+# happens at that step -- then hands the export to `verify-archive-passphrase.py`, sourced
 # by a pinned commit from `branchLeft/shared-infra` (this repo owns no copy
 # of it, so it never drifts against the one that repo tests and documents).
 # That script's own docstring, and `shared-infra`'s
