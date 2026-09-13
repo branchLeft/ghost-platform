@@ -1,0 +1,201 @@
+name: passphrase-drill
+
+# Nothing previously proved, on a recurring basis, that the `hosts` stack's
+# passphrase still opens anything -- only that a merge touching its own
+# inputs happened to exercise it, which leaves it unchecked for however long
+# it stays dormant.
+#
+# The drill job fetches a *fresh* `pulumi stack export` of the stack's own
+# state -- read-only, no `--show-secrets`, and no decryption happens at that
+# step -- then hands the export to `verify-archive-passphrase.py`, sourced
+# by a pinned commit from `branchLeft/shared-infra` (this repo owns no copy
+# of it, so it never drifts against the one that repo tests and documents).
+# That script's own docstring, and `shared-infra`'s
+# `hetzner/RUNBOOK-existing-stack-migration.md` Part C, cover what it does
+# and does not prove; this workflow only adds the recurring cadence and the
+# dated record neither of those had.
+#
+# Quarterly, not on every merge: `infra-hosts-ci.yml`'s own plan/apply jobs
+# already cover this stack every time its inputs change; this exists
+# specifically for the quarter in which nothing does.
+on:
+  schedule:
+    - cron: '0 6 1 1,4,7,10 *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  # Posts the dated result to a pinned issue in this same repo. Nothing here
+  # ever needs `contents: write` -- the drill job only reads a live backend.
+  issues: write
+
+jobs:
+  drill-hosts:
+    name: Drill (hosts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # No Node/npm setup: `pulumi stack export` is a backend-only operation
+    # that never resolves or runs the project's language plugin, unlike the
+    # `pulumi preview` that `infra-hosts-ci.yml` runs before an apply.
+    env:
+      PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_PASSPHRASE_PLATFORM_HOSTS }}
+      PULUMI_SALT_PLATFORM_HOSTS: ${{ secrets.PULUMI_SALT_PLATFORM_HOSTS }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
+      AWS_REGION: hel1
+    outputs:
+      outcome: ${{ steps.verify.outputs.outcome }}
+      exit_code: ${{ steps.verify.outputs.exit_code }}
+      detail: ${{ steps.verify.outputs.detail }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: repo
+
+      # Sparse, pinned by commit rather than `@main` -- `verify-archive-passphrase.py`
+      # is shared-infra's own tool, tested and documented there; this repo
+      # borrows the one file rather than keeping a second copy that could
+      # silently diverge from the version its own tests cover. Bumping the
+      # pin is a deliberate, reviewed action, same as bumping a
+      # `github-workflows` tag elsewhere in this estate.
+      - name: Fetch the verifier from branchLeft/shared-infra
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/shared-infra
+          ref: 85817e2c94c6611faa29e28b7e0e4b46517c30e0
+          sparse-checkout: |
+            scripts/verify-archive-passphrase.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+          path: verifier-tool
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      - name: Verify the drill's own secrets are present
+        run: |
+          fail=0
+          [ -n "$PULUMI_CONFIG_PASSPHRASE" ] || { echo "::error::PULUMI_PASSPHRASE_PLATFORM_HOSTS is empty or unset" ; fail=1; }
+          [ -n "$AWS_ACCESS_KEY_ID" ] || { echo "::error::HETZNER_S3_ACCESS_KEY_ID is empty or unset" ; fail=1; }
+          [ -n "$AWS_SECRET_ACCESS_KEY" ] || { echo "::error::HETZNER_S3_SECRET_ACCESS_KEY is empty or unset" ; fail=1; }
+          case "$PULUMI_SALT_PLATFORM_HOSTS" in
+            v1:*) ;;
+            *) echo "::error::PULUMI_SALT_PLATFORM_HOSTS is empty or does not start with 'v1:'" ; fail=1;;
+          esac
+          exit "$fail"
+
+      - name: Restore the stack's encryption salt
+        working-directory: repo/infra/hosts
+        run: |
+          printf '\nencryptionsalt: %s\n' "$PULUMI_SALT_PLATFORM_HOSTS" >> Pulumi.production.yaml
+
+      - name: Export the live stack, read-only
+        working-directory: repo/infra/hosts
+        run: pulumi stack export --stack production --file "$RUNNER_TEMP/hosts-export.json"
+
+      - name: Verify the escrowed passphrase opens this export
+        id: verify
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/hosts-passphrase"
+          printf '%s' "$PULUMI_CONFIG_PASSPHRASE" > "$RUNNER_TEMP/hosts-passphrase"
+          rc=0
+          python3 verifier-tool/scripts/verify-archive-passphrase.py \
+            --passphrase-file "$RUNNER_TEMP/hosts-passphrase" \
+            --json "$RUNNER_TEMP/hosts-export.json" > "$RUNNER_TEMP/hosts-result.json" || rc=$?
+          python3 - "$RUNNER_TEMP/hosts-result.json" "$rc" <<'PY'
+          import json, os, sys
+          result = json.load(open(sys.argv[1]))[0]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"outcome={result['outcome']}\n")
+              fh.write(f"exit_code={sys.argv[2]}\n")
+              fh.write(f"detail={result['detail']}\n")
+          PY
+
+      - name: Clean up the export and passphrase file
+        if: always()
+        run: |
+          shred -u "$RUNNER_TEMP/hosts-export.json" "$RUNNER_TEMP/hosts-passphrase" 2>/dev/null || \
+            rm -f "$RUNNER_TEMP/hosts-export.json" "$RUNNER_TEMP/hosts-passphrase"
+
+  record:
+    name: Record the dated result
+    needs: [drill-hosts]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The target is a standing evidence log, not a piece of tracked work: it
+    # stays open indefinitely, carries no `Closes`/`Refs` trailer, and is not
+    # on any project board.
+    env:
+      EVIDENCE_ISSUE: 209
+      GH_TOKEN: ${{ github.token }}
+      # See the equivalent step in branchLeft/shared-infra's own
+      # `passphrase-drill.yml` for why these arrive via `env:` rather than
+      # being interpolated straight into the script body.
+      HOSTS_OUTCOME: ${{ needs.drill-hosts.outputs.outcome }}
+      HOSTS_EXIT_CODE: ${{ needs.drill-hosts.outputs.exit_code }}
+      HOSTS_DETAIL: ${{ needs.drill-hosts.outputs.detail }}
+    steps:
+      - name: Fetch the renderer from branchLeft/shared-infra
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/shared-infra
+          ref: 85817e2c94c6611faa29e28b7e0e4b46517c30e0
+          sparse-checkout: |
+            scripts/verify-archive-passphrase.py
+            scripts/render-drill-comment.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+          path: verifier-tool
+
+      # An unset output (job failed before verifying, was skipped, or was
+      # cancelled) renders as `INCONCLUSIVE` rather than being silently
+      # absent from the comment.
+      - name: Assemble this run's result
+        run: |
+          python3 - <<'PY' > "$RUNNER_TEMP/results.json"
+          import json
+          import os
+
+          outcome = os.environ.get("HOSTS_OUTCOME", "")
+          if not outcome:
+              result = {
+                  "stack": "hosts",
+                  "outcome": "INCONCLUSIVE",
+                  "exit_code": 4,
+                  "detail": "the drill job did not reach a verdict "
+                            "(failed, was skipped, or was cancelled before verifying)",
+              }
+          else:
+              result = {
+                  "stack": "hosts",
+                  "outcome": outcome,
+                  "exit_code": int(os.environ["HOSTS_EXIT_CODE"]),
+                  "detail": os.environ.get("HOSTS_DETAIL", ""),
+              }
+          json.dump([result], open("/dev/stdout", "w"))
+          PY
+
+      - name: Render the dated comment
+        id: render
+        run: |
+          rc=0
+          python3 verifier-tool/scripts/render-drill-comment.py \
+            --date "$(date -u +%F)" \
+            --repo-label branchLeft/ghost-platform \
+            < "$RUNNER_TEMP/results.json" > "$RUNNER_TEMP/comment.md" || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post the dated result
+        run: gh issue comment "$EVIDENCE_ISSUE" --repo branchLeft/ghost-platform --body-file "$RUNNER_TEMP/comment.md"
+
+      - name: Fail the run if the stack did not PASS
+        run: |
+          rc=${{ steps.render.outputs.rc }}
+          if [ "$rc" != "0" ]; then
+            echo "::error::the hosts stack's passphrase drill did not PASS this quarter -- see the comment just posted"
+            exit "$rc"
+          fi
