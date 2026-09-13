@@ -193,9 +193,10 @@ jobs:
         run: gh issue comment "$EVIDENCE_ISSUE" --repo branchLeft/ghost-platform --body-file "$RUNNER_TEMP/comment.md"
 
       - name: Fail the run if the stack did not PASS
+        env:
+          RC: ${{ steps.render.outputs.rc }}
         run: |
-          rc=${{ steps.render.outputs.rc }}
-          if [ "$rc" != "0" ]; then
+          if [ "$RC" != "0" ]; then
             echo "::error::the hosts stack's passphrase drill did not PASS this quarter -- see the comment just posted"
-            exit "$rc"
+            exit "$RC"
           fi
