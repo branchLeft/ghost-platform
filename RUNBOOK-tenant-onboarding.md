@@ -805,6 +805,35 @@ it, and pipes the digest over the slot key. Check the `Deploy` job actually ran
 — a skipped job still reports the run as successful — and read its summary,
 which names the digest that reached the host.
 
+### If the first deploy fails
+
+A first deploy is the likeliest deploy to fail — it is the one with the least
+prior evidence anything works — and `branchleft-deploy` handles that failure
+in a way that is correct but easy to misread. On a failed `systemctl restart`
+with no previous image pin to roll back to (always true on a first deploy: the
+step above enabled the unit `--now`-less specifically because there was no pin
+yet), it deletes `/etc/branchleft/<slug>.image.env` rather than leave a pin
+that failed. There is nothing to roll back to, so this is not a bug.
+
+The consequence is that the unit cannot start again **by any means** — not
+`systemctl restart`, not `systemctl start`, not a hand-run `docker compose
+up`. Its `EnvironmentFile=` for that pin is mandatory. Depending on which
+version of `branchleft-compose@.service` is installed on the host,
+`systemctl status branchleft-compose@<slug>` either names the missing file
+directly (`AssertPathExists=/etc/branchleft/<slug>.image.env was not met`) or
+reports systemd's generic `Failed to load environment files` — which names
+neither the file nor the cause, and reads like host resource exhaustion
+rather than a deploy failure. Either way the cause is the same, and so is the
+fix:
+
+**Re-run the deploy job.** It rewrites the pin and restarts the unit; nothing
+on the host needs touching by hand. Do not try to recover the unit directly —
+there is no pin to restart it into until the deploy job writes one.
+
+The mechanism (`AssertPathExists=`, and why the pin file's `EnvironmentFile=`
+stays mandatory rather than being relaxed) is documented in
+`branchLeft/shared-infra`'s `hetzner/README.md`, under "Deploys".
+
 ---
 
 ## Recovering a failed provisioning run
