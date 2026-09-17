@@ -9,8 +9,8 @@ defended only by a human reading the YAML.
 
 This file lives beside the other provisioning guard tests so
 `python3 -m unittest discover -s scripts -p 'test_*.py'` -- already run by
-infra-platform-ci.yml's `provisioning-typecheck` job -- picks it up with no
-workflow change. It differs from its neighbours in reading the *workflow*
+infra-provisioning-scripts-ci.yml's `Scripts unit tests` job -- picks it up
+with no workflow change. It differs from its neighbours in reading the *workflow*
 file rather than importing a script under test: the gate lives entirely as
 inline shell in the YAML, with no extracted module to import.
 
@@ -40,7 +40,7 @@ from an earlier version of this file; a step with no `name:` was invisible
 to it entirely. `_job_names` and `_step_names` now raise on any line at the
 right indent that they cannot read, so an unfamiliar YAML shape is a red
 test rather than a silent gap. A real parse would be better still, but
-PyYAML is not stdlib and `provisioning-typecheck` installs no pip
+PyYAML is not stdlib and the `Scripts unit tests` job installs no pip
 dependencies -- that trade-off is recorded here rather than left implicit.
 """
 

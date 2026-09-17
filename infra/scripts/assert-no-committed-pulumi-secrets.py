@@ -31,9 +31,9 @@ matching is a hook that passes everything, and the pattern lives in a different
 file from this one.
 
 **What it does not see.** It reads lines, not YAML: a real parser is not
-available here, the same stdlib-only constraint the delete-guards under
-`infra/platform/scripts` and `infra/provisioning/scripts` work under. Three
-shapes are therefore missed:
+available here, the same stdlib-only constraint this file's own sibling
+(`infra/scripts/assert-no-hetzner-deletes.py`) and the guard scripts under
+`infra/provisioning/scripts` work under. Three shapes are therefore missed:
 
 - a key inside an inline flow mapping (`config: {encryptionsalt: x}`);
 - a quoted key (`"encryptionsalt": v1:...`), which every YAML parser reads as

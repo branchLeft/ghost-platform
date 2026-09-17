@@ -50,7 +50,6 @@ const RUNBOOK_PATHS = [
   'RUNBOOK-bucket-fencing.md',
   'RUNBOOK-tenant-onboarding.md',
   'db/RUNBOOK-db.md',
-  'infra/platform/RUNBOOK-bootstrap.md',
 ];
 
 const COMMAND_FENCE_LANGS = new Set(['bash', 'sql']);

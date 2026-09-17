@@ -6,18 +6,15 @@ on:
   pull_request:
     branches: [main]
 
-# Build-only. Deliberately does not push anywhere or authenticate to GCP.
+# Build-only. Deliberately does not push anywhere or request any credential.
 #
-# Workload Identity Federation does now exist for this repo
-# (infra/platform/workloadIdentity.ts), so the old reason given here — "there
-# is no WIF set up yet" — was never why. Registry push now exists too, as its
-# own workflow (.github/workflows/registry-push.yml) rather than a job
-# here: that workflow runs only on push to `main` and requests
-# `id-token: write` only for its one push job. This workflow runs on every
-# PR, including from forks, and stays deliberately credential-free —
-# widening this job to request `id-token: write` would hand a build job that
-# runs on unreviewed PR code the platform deploy identity, for no benefit
-# this job needs.
+# Registry push exists as its own workflow
+# (.github/workflows/registry-push.yml) rather than a job here: that
+# workflow runs only on push to `main` and requests `packages: write` only
+# for its one push job. This workflow runs on every PR, including from
+# forks, and stays deliberately credential-free — widening this job to
+# request any write permission would hand a build job that runs on
+# unreviewed PR code a grant it does not need.
 #
 # This workflow exists to catch a broken Dockerfile / broken image on every
 # PR (and on every push to `main`, redundantly with registry-push.yml's own

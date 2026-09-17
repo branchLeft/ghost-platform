@@ -1,24 +1,26 @@
 name: Push tenant image
 
-# Builds the tenant Ghost image once and pushes it to both registries on every
-# merge to `main`, tagged with the git SHA and `latest`, so a tenant has a real,
+# Builds the tenant Ghost image once and pushes it to GHCR on every merge to
+# `main`, tagged with the git SHA and `latest`, so a tenant has a real,
 # digest-pinned image to reference wherever it runs.
 #
 # GHCR (`ghcr.io/branchleft/ghost-tenant`) is the one a Hetzner app host pulls
-# from, and is what `provision-tenant.yml` accepts. Artifact Registry is where
-# the still-GCP-served tenant resolves its deploys and is retired by the GCP
-# wind-down, not here -- dropping it now would leave the live tenant unable to
-# take a new image before cutover.
+# from, and is what `provision-tenant.yml` accepts.
+#
+# Used to also push a second copy to Artifact Registry, for a tenant still
+# served from GCP during the migration to Hetzner. The GCP estate was
+# destroyed 2026-09-13 (branchLeft/workspace#1000) -- nothing reads that
+# registry any more, and its own Workload Identity Federation pool went with
+# it, so every run of this workflow since has failed at the auth step, before
+# `docker build` or the GHCR push it gated ever run. Removing the dead half
+# restores the live one.
 #
 # Deliberately its own workflow, not a job bolted onto build.yml. build.yml's
 # `build` job runs on every PR, including from forks, and stays completely
 # credential-free by design (its own header explains why). This job runs
-# only on push to `main` and needs `id-token: write` to federate into the
-# deployer service account -- keeping it in a separate workflow means a PR
-# build never sits in the same permissions block as that grant, and a
-# malicious PR workflow change can't ride along to get near it (no
-# `pull_request` trigger exists in this file at all, so there is nothing to
-# gate with an `if:` -- the workflow itself never runs on a PR).
+# only on push to `main` and needs `packages: write` to push to GHCR --
+# keeping it in a separate workflow means a PR build never sits in the same
+# permissions block as that grant.
 #
 # Rebuilds the image rather than reusing build.yml's artifact. Passing a
 # multi-hundred-MB image between workflows costs more in upload/download time
@@ -28,35 +30,8 @@ name: Push tenant image
 # which commit/ref is actually checked out. A second `docker build` on the
 # same commit is the boring, verifiable choice.
 #
-# The registry path mirrors the `region`, `projectId` and
-# `tenantImageRepositoryId` that infra/platform/index.ts joins into
-# `tenantImageRepositoryDockerPath`. It is composed here rather than read
-# from a Pulumi stack output because a plain Actions workflow has no way to
-# import that value and no other reason to run Pulumi -- so if the region or
-# repository ID ever changes, this file and config.ts change together. The
-# region is pinned to europe-west1 by the platform's UK/EU data-residency
-# requirement.
-#
-# Image name within the repository: `ghost`. The
-# unambiguous.
-#
-# Credentials: two, both short-lived and neither stored. Workload Identity
-# Federation for Artifact Registry -- no service-account key, ever -- and this
-# run's own `GITHUB_TOKEN` for GHCR, which expires with the run
-#
-# Permission sufficiency, against the live IAM
-# API, not inferred from the role's name (2026-08-08):
-#
-#   gcloud iam roles describe roles/artifactregistry.admin \
-#     --format="value(includedPermissions)"
-#
-# includes `artifactregistry.repositories.uploadArtifacts` and
-# `artifactregistry.files.upload` -- the permissions `docker push` needs --
-# alongside `repositories.get` and `dockerimages.{get,list}`, which
-# `docker-credential-gcloud`'s auth handshake and a tenant's later
-# `docker pull` need too. The deployer SA already holds this role
-# project-wide (infra/platform/serviceAccounts.ts, granted for registry.ts's
-# `update` needs), so this workflow requires no new IAM grant.
+# Credentials: this run's own `GITHUB_TOKEN`, which expires with the run. No
+# stored credential exists for this workflow at all.
 
 on:
   push:
@@ -81,49 +56,20 @@ jobs:
     # Observed 1.43-2.23min over the last 20 successful runs (p95 2.03min).
     timeout-minutes: 15
 
-    # Job-level, not workflow-level: `id-token: write` is what lets this job
-    # request the GitHub OIDC token WIF exchanges. Scoping it here means it
-    # exists only for the one job in the one workflow that ever runs it, on
-    # the one trigger (push to `main`) that ever fires it.
+    # Job-level, not workflow-level: scoped here means it exists only for the
+    # one job in the one workflow that ever needs it, on the one trigger
+    # (push to `main`) that ever fires it.
     permissions:
       contents: read
-      id-token: write
       packages: write
 
-    # Two destinations for one build, for the length of the migration. GHCR is
-    # where a Hetzner app host pulls from; Artifact Registry is where the
-    # still-GCP-served tenant resolves its deploys, and is retired by the GCP
-    # wind-down -- dropping it earlier leaves the live tenant unable to take a
-    # new image before cutover.
     env:
       IMAGE: ghcr.io/branchleft/ghost-tenant
-      LEGACY_IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ghost-platform-tenant/ghost
       IMAGE_TAG: ${{ github.sha }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Exchanges this run's GitHub OIDC token for short-lived credentials
-      # for the deployer service account. Same step, same action pin, same
-      # three repo variables as infra-platform-ci.yml's deploy job.
-      - name: Authenticate to GCP (Workload Identity Federation)
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SA_EMAIL }}
-
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-
-      # Registers gcloud as Docker's credential helper for Artifact Registry
-      # hosts, so a plain `docker push` below picks up the WIF-exchanged
-      # credential with no separate `docker login`. `configure-docker` takes
-      # the registry hostname, not a path -- confirmed against
-      # `gcloud auth configure-docker --help`.
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
 
       # `GITHUB_TOKEN` with `packages: write`, same as mailgun-shim-image.yml.
       # No stored credential exists for this: the run's own token is the whole
@@ -145,8 +91,6 @@ jobs:
           docker build \
             --tag "$IMAGE:$IMAGE_TAG" \
             --tag "$IMAGE:latest" \
-            --tag "$LEGACY_IMAGE:$IMAGE_TAG" \
-            --tag "$LEGACY_IMAGE:latest" \
             .
 
       # Same gates build.yml runs on every PR, run again here against the
@@ -162,17 +106,7 @@ jobs:
       # repository (`docker push --help`: "Push all tags of an image to the
       # repository") -- both tags built above, in one push, rather than two
       # separate `docker push` invocations that could observably race.
-      # Artifact Registry first, and GHCR on `!cancelled()` rather than on the
-      # previous step succeeding, so neither registry can starve the other.
-      # Ordering alone is not enough in either direction: the live tenant is
-      # still GCP-served, so a GHCR failure must not stop its image landing,
-      # and once this registry is retired its failure must not stop the one
-      # that replaced it. The job still fails if either push does.
-      - name: Push to Artifact Registry
-        run: docker push "$LEGACY_IMAGE" --all-tags
-
       - name: Push to GHCR
-        if: ${{ !cancelled() }}
         run: docker push "$IMAGE" --all-tags
 
       - name: Write outcome to job summary
@@ -183,8 +117,7 @@ jobs:
             echo
             echo "Commit: \`$IMAGE_TAG\`"
             echo "Image: \`$IMAGE:$IMAGE_TAG\`"
-            echo "Legacy image: \`$LEGACY_IMAGE:$IMAGE_TAG\`"
-            echo 'Both also tagged `latest`.'
+            echo 'Also tagged `latest`.'
             echo
             echo 'Provision a tenant with the GHCR reference, digest-pinned:'
             echo '`docker buildx imagetools inspect '"$IMAGE:$IMAGE_TAG"'`'

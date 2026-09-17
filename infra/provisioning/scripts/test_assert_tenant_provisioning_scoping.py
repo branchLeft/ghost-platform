@@ -107,9 +107,10 @@ class CheckTests(unittest.TestCase):
 
 class SelfTestTests(unittest.TestCase):
     def test_self_test_passes(self):
-        # Calling the module's own self-test is what the workflow step and
-        # `infra-platform-ci.yml`'s coverage check both do; a bare call
-        # raising means the logic has drifted from what it claims to prove.
+        # Calling the module's own self-test is what the provision-tenant.yml
+        # step and infra-provisioning-scripts-ci.yml's discovery run both do;
+        # a bare call raising means the logic has drifted from what it claims
+        # to prove.
         guard._self_test()
 
 

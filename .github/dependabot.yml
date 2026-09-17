@@ -20,23 +20,6 @@ updates:
     labels:
       - 'dependencies'
 
-  # The platform stack. A bump here changes what CI applies to production
-  # infrastructure, so majors stay ungrouped.
-  - package-ecosystem: 'npm'
-    directory: '/infra/platform'
-    schedule:
-      interval: 'weekly'
-      day: 'monday'
-    open-pull-requests-limit: 5
-    groups:
-      npm-minor-and-patch:
-        applies-to: version-updates
-        update-types:
-          - 'minor'
-          - 'patch'
-    labels:
-      - 'dependencies'
-
   # The published tenant component. Bumps here reach every consumer of
   # @branchleft/ghost-platform-tenant, not just this repo.
   - package-ecosystem: 'npm'
