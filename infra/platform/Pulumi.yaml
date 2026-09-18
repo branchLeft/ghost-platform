@@ -1,3 +1,0 @@
-name: branchleft-ghost-platform
-runtime: nodejs
-description: Shared, non-tenant-specific GCP infrastructure for branchLeft's multi-tenant Ghost hosting platform (Cloud SQL, Artifact Registry, shared media bucket)

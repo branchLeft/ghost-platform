@@ -2,19 +2,6 @@
 
 This repo's IaC, split by shape rather than lumped into one program:
 
-- **`platform/`** -- one Pulumi program, one stack (`platform`), for the
-  handful of GCP resources that exist exactly once for the whole platform
-  and are not specific to any tenant: the shared Cloud SQL instance, the
-  tenant image's Artifact Registry repository, the shared media bucket. Also
-  holds this repo's CI identity -- a Workload Identity Federation pool and
-  provider scoped to this repository, and the deployer service account they
-  federate into. Applied by CI on every push to `main`
-  (`.github/workflows/infra-platform-ci.yml`), on a cadence closer to
-  "rarely" -- it doesn't change per tenant. The one exception is the initial
-  bootstrap, which has to run locally because it creates the identity CI
-  needs in order to run at all: see
-  [`platform/RUNBOOK-bootstrap.md`](platform/RUNBOOK-bootstrap.md).
-
 - **`tenant/`** -- a reusable Pulumi **component** (`GhostTenant`), not a
   stack: the per-tenant resources (a dedicated service account, logical
   database + DB user, storage write-isolation, Cloud Run service) that *do*
@@ -74,13 +61,23 @@ This repo's IaC, split by shape rather than lumped into one program:
   pattern only: nothing here installs MySQL, Ghost or Compose -- those are
   delivered onto the hosts separately.
 
+- **`provisioning/scripts/`** -- not a Pulumi program: the bucket-fencing,
+  tenant-passphrase-escrow and provisioning-scoping guard scripts
+  `.github/workflows/provision-tenant.yml` calls at tenant-onboarding time,
+  plus their unit tests. Pure-stdlib Python, tested on every PR and push by
+  `.github/workflows/infra-provisioning-scripts-ci.yml`. The Pulumi program
+  that used to sit beside it -- a per-tenant GCP deploy identity -- was
+  removed once the GCP estate it targeted was destroyed
+  (branchLeft/workspace#1000); this directory is what was left once that
+  went.
+
 Why split at all, rather than one program with a `sites`-style array (the
 shape `shared-infra/sites.ts` uses for the edge)? That pattern fits the edge
 because every site there shares one load balancer -- the array *is* the
-resource graph. It doesn't fit here: `platform/`'s resources exist once,
-full stop, while a tenant's resources are a repeated unit instantiated per
-tenant from a different repo entirely. A shared array in this repo would
-either force tenant identity into a public repo -- the thing the per-tenant
-repo split exists to prevent -- or force the reusable component to import a
-stack it has no business depending on. Two directories, two different Pulumi
+resource graph. It doesn't fit here: `hosts/`'s resources exist once, full
+stop, while a tenant's resources are a repeated unit instantiated per tenant
+from a different repo entirely. A shared array in this repo would either
+force tenant identity into a public repo -- the thing the per-tenant repo
+split exists to prevent -- or force the reusable component to import a stack
+it has no business depending on. Two directories, two different Pulumi
 artifact shapes (stack vs. component), keeps that boundary honest.

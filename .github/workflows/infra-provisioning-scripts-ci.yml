@@ -1,0 +1,55 @@
+name: Provisioning scripts CI
+
+# Runs the unit tests under infra/provisioning/scripts/ -- the bucket-fencing,
+# tenant-passphrase-escrow and provision-tenant.yml guard scripts that
+# `provision-tenant.yml` calls at tenant-onboarding time.
+#
+# This job used to live inside infra-platform-ci.yml's `provisioning-typecheck`
+# job, alongside a `tsc --noEmit` of infra/provisioning's Pulumi program
+# (index.ts/config.ts -- the per-tenant GCP deploy-identity stack). That
+# program is gone: the GCP estate it targeted was destroyed, and
+# provisioning has not applied it since tenant provisioning moved to
+# Hetzner. The scripts/ directory beside it is
+# not part of that program -- pure-stdlib Python, no `@pulumi/gcp` import
+# anywhere in it -- and is still the live guard suite provision-tenant.yml
+# runs today, so deleting infra-platform-ci.yml wholesale would have dropped
+# its only CI coverage with no error and no warning. This file is that
+# coverage, carried forward on its own.
+#
+# No npm install, no Node setup: these scripts have no package.json of their
+# own and no third-party dependency -- Python's standard library only.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Scripts unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra/provisioning
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned rather than inherited from the runner image, so that a syntax
+      # feature the default interpreter happens to support is not what
+      # decides whether these tests run at all. The path is repo-relative: an
+      # action's `with:` inputs do not follow this job's
+      # `defaults.run.working-directory`.
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Run provisioning scripts' unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v

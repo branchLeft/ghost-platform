@@ -10,13 +10,12 @@ This repo follows the [org-wide contribution guide](https://github.com/branchLef
 
 ## Setup
 
-There are three independent npm projects here, each with its own lockfile. There is no workspace linking them — install whichever you are working on.
+There are several independent npm projects here, each with its own lockfile. There is no workspace linking them — install whichever you are working on.
 
 ```bash
 nvm use
 npm ci                      # root: lint/format tooling only
 npm ci --prefix infra/tenant
-npm ci --prefix infra/platform
 ```
 
 ## Checks CI runs on every PR
@@ -32,10 +31,8 @@ docker build -t ghost-platform:local .
 # infra-tenant-ci.yml  (job: Tenant type check)
 npm ci --prefix infra/tenant && npx --prefix infra/tenant tsc --noEmit
 
-# infra-platform-ci.yml  (job: Platform type check)
-npm ci --prefix infra/platform && npx --prefix infra/platform tsc --noEmit
-python3 infra/platform/scripts/assert-no-platform-deletes.py --self-test
-python3 infra/platform/scripts/assert-no-platform-deletes.py --verify-coverage infra/platform
+# infra-provisioning-scripts-ci.yml  (job: Scripts unit tests)
+python3 -m unittest discover -s infra/provisioning/scripts -p 'test_*.py' -v
 ```
 
 **Fork PRs run all of these.** `build.yml` holds no credentials and neither type-check job requests `id-token`, so nothing in the PR path needs secrets. Only the deploy and image-push jobs authenticate, and both are gated on pushes to `main`.
@@ -55,7 +52,7 @@ If a hook fails it usually auto-fixes the issue (Prettier, whitespace) — re-st
 
 ## What belongs here, and what doesn't
 
-`infra/platform` is the one shared stack. `infra/tenant` is a reusable component published as `@branchleft/ghost-platform-tenant`; it is not a deployable stack, so no deploy job belongs in its workflow.
+`infra/tenant` is a reusable component published as `@branchleft/ghost-platform-tenant`; it is not a deployable stack, so no deploy job belongs in its workflow. `infra/hosts` is the shared Hetzner stack; `infra/provisioning/scripts` is the live bucket-fencing and tenant-onboarding guard tooling `provision-tenant.yml` calls, not a deployable stack of its own.
 
 **Nothing in this repo may name a tenant** — not in code, comments, commit messages, or CI logs. A hostname and a Cloud Run service name together are a tenant's identity. Tenant stacks live in one repo per tenant, named `ghost-tenant-<name>` and generated from [`ghost-platform-tenant-template`](https://github.com/branchLeft/ghost-platform-tenant-template). That repo is public unless the tenant asked for it to be private — a question settled with the tenant before their onboarding starts, never decided here.
 

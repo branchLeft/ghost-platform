@@ -27,14 +27,6 @@ it. It declares no cloud resources — see
 host-side steps it depends on, and for the media isolation the bucket policy
 carries.
 
-**`infra/platform/`** — the shared platform stack, applied by CI on every
-push to `main`: the Cloud SQL instance, the media bucket, the tenant image's
-Artifact Registry repository, and the CI deployer identity. See
-[`infra/README.md`](infra/README.md) for why these are split by shape (stack
-vs. component), and
-[`infra/platform/RUNBOOK-bootstrap.md`](infra/platform/RUNBOOK-bootstrap.md)
-for the one-time bootstrap that has to happen before CI can take over.
-
 **`app/`** — the app hosts' own per-tenant step: creating a tenant's Docker
 volumes owned by its reserved UID at `0700`, refusing a UID another tenant on
 that host already holds. The one control in the tenant path whose absence is

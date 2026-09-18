@@ -40,7 +40,7 @@ class CheckTests(unittest.TestCase):
         # HETZNER_S3_* genuinely need to live at the repository level for
         # infra-hosts-ci.yml. Before the rename, the required set named the
         # same two strings, so this configuration could never pass -- that
-        # was the whole conflict in branchLeft/workspace#284.
+        # was the whole conflict the rename exists to resolve.
         missing, shadowed = guard.check(
             environment_names=[
                 "GH_PAT_TENANT_PROVISIONING",
@@ -107,9 +107,10 @@ class CheckTests(unittest.TestCase):
 
 class SelfTestTests(unittest.TestCase):
     def test_self_test_passes(self):
-        # Calling the module's own self-test is what the workflow step and
-        # `infra-platform-ci.yml`'s coverage check both do; a bare call
-        # raising means the logic has drifted from what it claims to prove.
+        # Calling the module's own self-test is what the provision-tenant.yml
+        # step and infra-provisioning-scripts-ci.yml's discovery run both do;
+        # a bare call raising means the logic has drifted from what it claims
+        # to prove.
         guard._self_test()
 
 
