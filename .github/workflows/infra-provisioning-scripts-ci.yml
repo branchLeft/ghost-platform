@@ -7,9 +7,9 @@ name: Provisioning scripts CI
 # This job used to live inside infra-platform-ci.yml's `provisioning-typecheck`
 # job, alongside a `tsc --noEmit` of infra/provisioning's Pulumi program
 # (index.ts/config.ts -- the per-tenant GCP deploy-identity stack). That
-# program is gone: the GCP estate it targeted was destroyed 2026-09-13
-# (branchLeft/workspace#1000), and provisioning has not applied it since
-# tenant provisioning moved to Hetzner. The scripts/ directory beside it is
+# program is gone: the GCP estate it targeted was destroyed, and
+# provisioning has not applied it since tenant provisioning moved to
+# Hetzner. The scripts/ directory beside it is
 # not part of that program -- pure-stdlib Python, no `@pulumi/gcp` import
 # anywhere in it -- and is still the live guard suite provision-tenant.yml
 # runs today, so deleting infra-platform-ci.yml wholesale would have dropped

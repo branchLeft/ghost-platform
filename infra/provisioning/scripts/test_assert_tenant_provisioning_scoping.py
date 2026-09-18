@@ -40,7 +40,7 @@ class CheckTests(unittest.TestCase):
         # HETZNER_S3_* genuinely need to live at the repository level for
         # infra-hosts-ci.yml. Before the rename, the required set named the
         # same two strings, so this configuration could never pass -- that
-        # was the whole conflict in branchLeft/workspace#284.
+        # was the whole conflict the rename exists to resolve.
         missing, shadowed = guard.check(
             environment_names=[
                 "GH_PAT_TENANT_PROVISIONING",
