@@ -1,1 +1,11 @@
 * @branchLeft/branchleft-admin
+
+# The try-it-now programme's reviewer identity — branchLeft/workspace#1171.
+# CODEOWNERS takes the LAST matching pattern, so this line sets the owners for
+# the tree: the reviewer account, plus the admin team so Rob's own approval
+# path is unchanged.
+#
+# The shared line above stays. SYNC-1 is `contains`, not `identical`: a repo may
+# add to this file and may never drop a shared line, and rewriting that line in
+# place is dropping it.
+* @reviewer-agent-branchLeft @branchLeft/branchleft-admin
