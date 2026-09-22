@@ -1,5 +1,9 @@
 * @branchLeft/branchleft-admin
 
+# Verified live on 2026-09-22: GitHub reports no CODEOWNERS errors here, which
+# is the only signal that an entry resolved — an owner without write access is
+# ignored silently.
+#
 # The try-it-now programme's reviewer identity — branchLeft/workspace#1171.
 # CODEOWNERS takes the LAST matching pattern, so this line sets the owners for
 # the tree: the reviewer account, plus the admin team so Rob's own approval
