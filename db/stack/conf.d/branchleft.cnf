@@ -20,6 +20,8 @@ log_bin = mysql-bin
 binlog_expire_logs_seconds = 604800
 server-id = 1
 sync_binlog = 1
+# Per-tenant replay filters row events by table database; STATEMENT format filters by session USE and loses or leaks writes across tenants.
+binlog_format = ROW
 
 max_connections = 100
 innodb_buffer_pool_size = 1G
