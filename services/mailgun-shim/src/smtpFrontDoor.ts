@@ -1,0 +1,329 @@
+import { BlockList, isIPv4, isIPv6 } from 'node:net';
+import { randomUUID } from 'node:crypto';
+import {
+  SMTPServer,
+  type SMTPServerAddress,
+  type SMTPServerAuthentication,
+  type SMTPServerAuthenticationResponse,
+  type SMTPServerDataStream,
+  type SMTPServerSession,
+} from 'smtp-server';
+import { simpleParser } from 'mailparser';
+import { isSafeRecipientAddress } from './smtp.js';
+import type { Logger } from './log.js';
+import type { ShimStore } from './store.js';
+import type { WorkerHandle } from './worker.js';
+
+/**
+ * Ghost's own transactional sender is the only intended caller (LLD-6 §03):
+ * a magic link, a password reset, a staff invite. Loopback plus the private
+ * ranges a Docker bridge network hands out — never a public address, in
+ * either family. Kept as CIDRs (not a single host) because the container's
+ * own address on the bridge isn't known ahead of time.
+ */
+export const DEFAULT_ALLOWED_SOURCE_CIDRS = [
+  '127.0.0.1/32',
+  '::1/128',
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  'fc00::/7',
+];
+
+export function buildSourceAllowList(cidrs: readonly string[]): BlockList {
+  const list = new BlockList();
+  for (const cidr of cidrs) {
+    const slash = cidr.lastIndexOf('/');
+    const address = slash === -1 ? cidr : cidr.slice(0, slash);
+    const family = isIPv6(address) ? 'ipv6' : 'ipv4';
+    const defaultPrefix = family === 'ipv6' ? 128 : 32;
+    const prefix = slash === -1 ? defaultPrefix : Number(cidr.slice(slash + 1));
+    list.addSubnet(address, prefix, family);
+  }
+  return list;
+}
+
+/**
+ * `smtp-server` reports an IPv4 client as an IPv4-mapped IPv6 literal
+ * (`::ffff:172.18.0.3`) when the socket is dual-stack, which a v4-only or
+ * v6-only CIDR test would silently never match — the same shape of bug as
+ * the estate's mx1 exporter and the shim's own HTTP rate limiter (#1148),
+ * both of which went unnoticed because nothing tested the IPv6 path.
+ */
+export function isAllowedSource(remoteAddress: string | undefined, allowList: BlockList): boolean {
+  if (!remoteAddress) {
+    return false;
+  }
+  const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(remoteAddress);
+  const normalized = mapped ? mapped[1]! : remoteAddress;
+  if (isIPv4(normalized)) {
+    return allowList.check(normalized, 'ipv4');
+  }
+  if (isIPv6(normalized)) {
+    return allowList.check(normalized, 'ipv6');
+  }
+  return false;
+}
+
+export interface SubmitterLimiter {
+  /** Keyed on the authenticated submitter's own identity, never its address (#1148 is what happens otherwise). */
+  tryTake(submitterId: string): boolean;
+}
+
+/**
+ * Fixed-window counter, one bucket per authenticated tenant. Never looks at
+ * an address at all, so there's no IPv4/IPv6 asymmetry to get wrong — the
+ * generalisation LLD-6 M6 asks for, applied by construction rather than by
+ * adding an IPv6-shaped test to an address-keyed limiter.
+ */
+export function createSubmitterLimiter(
+  limit: number,
+  windowMs: number,
+  now: () => number = Date.now
+): SubmitterLimiter {
+  const windows = new Map<string, { count: number; windowStart: number }>();
+  return {
+    tryTake(submitterId) {
+      const t = now();
+      const entry = windows.get(submitterId);
+      if (!entry || t - entry.windowStart >= windowMs) {
+        windows.set(submitterId, { count: 1, windowStart: t });
+        return true;
+      }
+      if (entry.count >= limit) {
+        return false;
+      }
+      entry.count += 1;
+      return true;
+    },
+  };
+}
+
+export interface SmtpFrontDoorOptions {
+  store: ShimStore;
+  worker: WorkerHandle;
+  log: Logger;
+  maxMessageBytes: number;
+  allowedSourceCidrs?: readonly string[];
+  submitterMessagesPerMinute: number;
+  now?: () => number;
+}
+
+export interface SmtpFrontDoor {
+  listen(port: number, host: string): Promise<void>;
+  close(): Promise<void>;
+}
+
+declare module 'smtp-server' {
+  interface SMTPServerSession {
+    user?: string;
+  }
+}
+
+/**
+ * The listener Ghost's transactional sender connects to (LLD-6 §01-§03):
+ * a durable local write, answered at once, with nothing awaited past the
+ * SQLite transaction that makes the message durable. It shares
+ * `enqueueBatch`/`claimDueRecipients` with the Mailgun-shaped HTTP route
+ * (routes/messages.ts) — one queue, two front doors, exactly the LOAD-BEARING
+ * shape LLD-6 §03 sets out.
+ *
+ * `worker.kick()` below is fire-and-forget by its own contract (worker.ts) —
+ * nothing here awaits a network hop, which is the whole property this
+ * component exists to hold.
+ */
+export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
+  const { store, worker, log } = opts;
+  const now = opts.now ?? Date.now;
+  const allowList = buildSourceAllowList(opts.allowedSourceCidrs ?? DEFAULT_ALLOWED_SOURCE_CIDRS);
+  const limiter = createSubmitterLimiter(opts.submitterMessagesPerMinute, 60_000, now);
+
+  const server = new SMTPServer({
+    banner: 'branchLeft mail spool',
+    size: opts.maxMessageBytes,
+    disabledCommands: ['STARTTLS'],
+    authMethods: ['PLAIN', 'LOGIN'],
+    // Plaintext AUTH is refused by smtp-server unless this is set explicitly
+    // (its default assumes TLS or STARTTLS carries the credential) — safe
+    // only because this listener never leaves the container network (§03).
+    allowInsecureAuth: true,
+    authOptional: false,
+    disableReverseLookup: true,
+
+    onConnect(session: SMTPServerSession, callback: (err?: Error | null) => void): void {
+      if (!isAllowedSource(session.remoteAddress, allowList)) {
+        log.warn('smtp_connection_refused', { remoteAddress: session.remoteAddress });
+        callback(new Error('Connection refused'));
+        return;
+      }
+      callback();
+    },
+
+    onAuth(
+      auth: SMTPServerAuthentication,
+      _session: SMTPServerSession,
+      callback: (err: Error | null | undefined, response?: SMTPServerAuthenticationResponse) => void
+    ): void {
+      // The username IS the submitter's identity (a per-tenant/per-slot
+      // domain, same shape as the Mailgun HTTP route's tenant key) — a
+      // submission is never trusted because of where it came from or what
+      // address it claims to send as (issue #1236's premise).
+      const tenant = store.verifyTenant(auth.username ?? '', auth.password ?? '');
+      if (!tenant) {
+        log.warn('smtp_auth_failed', { username: auth.username ?? null });
+        callback(new Error('Invalid credentials'));
+        return;
+      }
+      callback(null, { user: tenant.domain });
+    },
+
+    onMailFrom(
+      _address: SMTPServerAddress,
+      session: SMTPServerSession,
+      callback: (err?: Error | null) => void
+    ): void {
+      const submitterId = session.user;
+      if (!submitterId) {
+        // Unreachable in practice — authOptional:false means smtp-server
+        // never lets MAIL FROM through pre-auth — kept as a fail-closed
+        // guard rather than assumed.
+        callback(new Error('Authentication required'));
+        return;
+      }
+      if (!limiter.tryTake(submitterId)) {
+        log.warn('smtp_submitter_rate_limited', { submitter: submitterId });
+        const err = new Error('Too many messages') as Error & { responseCode: number };
+        err.responseCode = 450;
+        callback(err);
+        return;
+      }
+      callback();
+    },
+
+    onRcptTo(
+      address: SMTPServerAddress,
+      _session: SMTPServerSession,
+      callback: (err?: Error | null) => void
+    ): void {
+      // Same address grammar the outbound path already defends (smtp.ts) —
+      // rejecting group/list syntax and control characters here, at
+      // acceptance, means the queue never holds a recipient a later
+      // nodemailer send could misinterpret.
+      if (!isSafeRecipientAddress(address.address)) {
+        const err = new Error('Invalid recipient address') as Error & { responseCode: number };
+        err.responseCode = 501;
+        callback(err);
+        return;
+      }
+      callback();
+    },
+
+    onData(
+      stream: SMTPServerDataStream,
+      session: SMTPServerSession,
+      callback: (err?: Error | null, message?: string) => void
+    ): void {
+      const submitterId = session.user;
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer) => {
+        // `size` above makes smtp-server itself stop accepting bytes past
+        // the cap and set sizeExceeded — chunks still collected here are
+        // bounded by that, not by anything this handler adds.
+        chunks.push(chunk);
+      });
+      stream.on('error', (err: Error) => callback(err));
+      stream.on('end', () => {
+        if (!submitterId) {
+          callback(new Error('Authentication required'));
+          return;
+        }
+        if (stream.sizeExceeded) {
+          const err = new Error('Message too large') as Error & { responseCode: number };
+          err.responseCode = 552;
+          callback(err);
+          return;
+        }
+
+        const recipients = session.envelope.rcptTo
+          .map((r) => r.address)
+          .filter((address) => isSafeRecipientAddress(address));
+        if (recipients.length === 0) {
+          callback(new Error('No recipients'));
+          return;
+        }
+
+        void simpleParser(Buffer.concat(chunks))
+          .then((parsed) => {
+            const headers: Record<string, string> = {};
+            const replyTo =
+              parsed.replyTo && !Array.isArray(parsed.replyTo) ? parsed.replyTo.text : undefined;
+            if (replyTo) {
+              headers['Reply-To'] = replyTo;
+            }
+
+            const from =
+              (parsed.from && parsed.from.text) ||
+              (session.envelope.mailFrom ? session.envelope.mailFrom.address : '');
+
+            const batchId = `<${now()}.${randomUUID()}@${submitterId}>`;
+
+            // Durable write, synchronous, no network hop — this is the ack
+            // Ghost's own request is waiting on (LLD-6 M1). worker.kick()
+            // just below is documented fire-and-forget; nothing after this
+            // point is awaited before callback() responds.
+            store.enqueueBatch({
+              batchId,
+              domain: submitterId,
+              emailId: null,
+              payload: {
+                from,
+                subject: parsed.subject ?? '',
+                html: typeof parsed.html === 'string' ? parsed.html : '',
+                text: parsed.text ?? '',
+                headers,
+                recipientVariables: {},
+              },
+              recipients,
+              now: now() / 1000,
+            });
+
+            log.info('smtp_enqueue', {
+              submitter: submitterId,
+              batchId,
+              recipientCount: recipients.length,
+            });
+            worker.kick();
+
+            callback(null, 'Queued. Thank you.');
+          })
+          .catch((err: unknown) => {
+            log.error('smtp_parse_failed', {
+              submitter: submitterId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            callback(err instanceof Error ? err : new Error('Failed to parse message'));
+          });
+      });
+    },
+  });
+
+  server.on('error', (err) => {
+    log.error('smtp_server_error', { error: err.message });
+  });
+
+  return {
+    listen(port: number, host: string): Promise<void> {
+      return new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, host, () => {
+          server.removeListener('error', reject);
+          log.info('worker_lifecycle', { event: 'smtp_listening', port, host });
+          resolve();
+        });
+      });
+    },
+    close(): Promise<void> {
+      return new Promise((resolve) => server.close(() => resolve()));
+    },
+  };
+}

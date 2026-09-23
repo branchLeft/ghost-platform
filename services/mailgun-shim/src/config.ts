@@ -1,4 +1,13 @@
 import type { DeliveryHostConfig } from './smtp.js';
+import { DEFAULT_ALLOWED_SOURCE_CIDRS } from './smtpFrontDoor.js';
+
+export interface SmtpFrontDoorConfig {
+  port: number;
+  host: string;
+  maxMessageBytes: number;
+  allowedSourceCidrs: string[];
+  submitterMessagesPerMinute: number;
+}
 
 export interface ShimConfig {
   port: number;
@@ -6,7 +15,12 @@ export interface ShimConfig {
   smtp: DeliveryHostConfig;
   throttlePath?: string;
   messagesPerHour: number;
+  smtpFrontDoor: SmtpFrontDoorConfig;
 }
+
+const DEFAULT_SMTP_LISTEN_PORT = 2525;
+const DEFAULT_MAX_MESSAGE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_SUBMITTER_MESSAGES_PER_MINUTE = 120;
 
 // Structurally identical to NodeJS.ProcessEnv, spelled out instead of named
 // so this file has no dependency on the ambient @types/node globals eslint's
@@ -54,5 +68,19 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
     },
     throttlePath: env.SHIM_THROTTLE_PATH,
     messagesPerHour,
+    smtpFrontDoor: {
+      port: Number(env.SMTP_LISTEN_PORT) || DEFAULT_SMTP_LISTEN_PORT,
+      // Binding every interface is normal for a containerised service — the
+      // container-network-only property LLD-6 §03 requires comes from the
+      // deployment not publishing this port to the host, plus the
+      // source-address check in smtpFrontDoor.ts as defence in depth for it.
+      host: env.SMTP_LISTEN_HOST || '0.0.0.0',
+      maxMessageBytes: Number(env.SMTP_MAX_MESSAGE_BYTES) || DEFAULT_MAX_MESSAGE_BYTES,
+      allowedSourceCidrs: env.SMTP_ALLOWED_SOURCE_CIDRS
+        ? env.SMTP_ALLOWED_SOURCE_CIDRS.split(',').map((s) => s.trim())
+        : DEFAULT_ALLOWED_SOURCE_CIDRS,
+      submitterMessagesPerMinute:
+        Number(env.SMTP_SUBMITTER_MESSAGES_PER_MINUTE) || DEFAULT_SUBMITTER_MESSAGES_PER_MINUTE,
+    },
   };
 }
