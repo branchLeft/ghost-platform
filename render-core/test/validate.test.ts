@@ -9,17 +9,17 @@ import {
   validate,
 } from '../src/validate.js';
 import { FieldValidationError } from '../src/brand.js';
-import { demoDescriptor, tenantDescriptor } from './fixtures.js';
+import { TEST_ZONES, demoDescriptor, tenantDescriptor } from './fixtures.js';
 
 describe('validate() — descriptors that violate nothing', () => {
   it('accepts a well-formed demo descriptor', () => {
     const descriptor = demoDescriptor();
-    expect(validate(descriptor)).toBe(descriptor);
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
   });
 
   it('accepts a well-formed tenant descriptor', () => {
     const descriptor = tenantDescriptor();
-    expect(validate(descriptor)).toBe(descriptor);
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
   });
 
   it('accepts a tenant descriptor with a code-injection grant on a verified custom domain', () => {
@@ -32,7 +32,7 @@ describe('validate() — descriptors that violate nothing', () => {
         until: null,
       },
     };
-    expect(() => validate(descriptor)).not.toThrow();
+    expect(() => validate(descriptor, TEST_ZONES)).not.toThrow();
   });
 });
 
@@ -42,7 +42,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -59,7 +59,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -76,7 +76,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -93,7 +93,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -110,7 +110,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -127,7 +127,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -144,7 +144,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -158,7 +158,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -176,7 +176,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -190,7 +190,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -205,7 +205,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -223,7 +223,7 @@ describe('validate() — closed-set discriminants, checked before any invariant'
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -247,7 +247,7 @@ describe('validate() — INV-1: codeInjection is never open, for any kind', () =
 
     let caught: unknown;
     try {
-      validate(sabotaged);
+      validate(sabotaged, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -271,7 +271,7 @@ describe('validate() — INV-1: codeInjection is never open, for any kind', () =
 
     let caught: unknown;
     try {
-      validate(sabotaged);
+      validate(sabotaged, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -290,7 +290,7 @@ describe('validate() — INV-2: gate = passphrase iff kind = demo', () => {
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -307,7 +307,7 @@ describe('validate() — INV-2: gate = passphrase iff kind = demo', () => {
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -323,7 +323,7 @@ describe('validate() — INV-3: media.kind = s3 implies backup.kind = bucket-nat
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -338,23 +338,23 @@ describe('validate() — code-injection hostname precondition (load-bearing, not
   it('rejects a grant on a platform hostname', () => {
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),
-      siteUrl: 'https://acme.sites.branchleft.co.uk' as never,
+      siteUrl: 'https://acme.platform-domain.example.test' as never,
       hostname: { kind: 'ours', sub: 'acme', gated: false },
       codeInjection: { kind: 'granted', by: 'support', reason: 'ticket', until: null },
     };
 
-    expect(() => validate(descriptor)).toThrow(CodeInjectionPreconditionError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(CodeInjectionPreconditionError);
   });
 
   it('rejects a managed injection on a platform hostname', () => {
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),
-      siteUrl: 'https://acme.sites.branchleft.co.uk' as never,
+      siteUrl: 'https://acme.platform-domain.example.test' as never,
       hostname: { kind: 'ours', sub: 'acme', gated: false },
       codeInjection: { kind: 'managed', head: 'head', foot: 'foot' },
     };
 
-    expect(() => validate(descriptor)).toThrow(CodeInjectionPreconditionError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(CodeInjectionPreconditionError);
   });
 });
 
@@ -364,7 +364,7 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
       ...tenantDescriptor(),
       database: { kind: 'sqlite', path: '/data/acme/ghost.db' },
     };
-    expect(() => validate(descriptor)).toThrow(TierMismatchError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
 
   it('rejects a paying tenant on local media', () => {
@@ -372,7 +372,7 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
       ...tenantDescriptor(),
       media: { kind: 'local', path: '/data/acme/content', resize: true, srcsets: true },
     };
-    expect(() => validate(descriptor)).toThrow(TierMismatchError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
 
   it('rejects a demo on MySQL', () => {
@@ -386,7 +386,7 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
         user: 'x',
       },
     };
-    expect(() => validate(descriptor)).toThrow(TierMismatchError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
 
   it('rejects a demo on object-storage media', () => {
@@ -405,7 +405,7 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
       // the tier-variant rule specifically, not INV-3.
       backup: { kind: 'bucket-native', encryptionRecipient: 'age1x' },
     };
-    expect(() => validate(descriptor)).toThrow(TierMismatchError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
 
   it('rejects a demo with a bucket-native backup', () => {
@@ -413,7 +413,7 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
       ...demoDescriptor(),
       backup: { kind: 'bucket-native', encryptionRecipient: 'age1x' },
     };
-    expect(() => validate(descriptor)).toThrow(TierMismatchError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
 
   it('rejects a demo carrying a code-injection grant — removed from demos, not merely defaulted off', () => {
@@ -430,7 +430,7 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -449,7 +449,7 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
       },
       codeInjection: { kind: 'managed', head: 'head', foot: 'foot' },
     };
-    expect(() => validate(descriptor)).toThrow(TierMismatchError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
 
   it('rejects a demo with a custom (theirs) hostname, even with codeInjection blocked', () => {
@@ -462,12 +462,12 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
         verifiedAt: '2026-09-01T00:00:00.000Z' as never,
       },
     };
-    expect(() => validate(descriptor)).toThrow(TierMismatchError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
 
   it('rejects a demo with no expiry', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), expiresAt: null };
-    expect(() => validate(descriptor)).toThrow(TierMismatchError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
 });
 
@@ -477,7 +477,7 @@ describe('validate() — a code-injection grant needs non-empty by and reason', 
       ...tenantDescriptor(),
       codeInjection: { kind: 'granted', by: '', reason: 'ticket', until: null },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects an empty reason', () => {
@@ -485,7 +485,7 @@ describe('validate() — a code-injection grant needs non-empty by and reason', 
       ...tenantDescriptor(),
       codeInjection: { kind: 'granted', by: 'support', reason: '', until: null },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 });
 
@@ -498,7 +498,7 @@ describe('validate() — hostname.ours.gated must agree with gate', () => {
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -513,13 +513,13 @@ describe('validate() — hostname.ours.gated must agree with gate', () => {
   it('rejects hostname.gated true on a tenant with no passphrase gate', () => {
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),
-      siteUrl: 'https://acme.sites.branchleft.co.uk' as never,
+      siteUrl: 'https://acme.platform-domain.example.test' as never,
       hostname: { kind: 'ours', sub: 'acme', gated: true },
     };
 
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -532,19 +532,19 @@ describe('validate() — hostname.ours.gated must agree with gate', () => {
 describe('validate() — schema version', () => {
   it('rejects a version this package does not know', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), version: 999 };
-    expect(() => validate(descriptor)).toThrow(UnknownSchemaVersionError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(UnknownSchemaVersionError);
   });
 });
 
 describe('validate() — per-field well-formedness', () => {
   it('rejects a malformed slug', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), slug: 'Not-Valid' as never };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a non-absolute siteUrl', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), siteUrl: 'not a url' as never };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects an image reference with no digest', () => {
@@ -552,7 +552,7 @@ describe('validate() — per-field well-formedness', () => {
       ...demoDescriptor(),
       image: 'ghost:6.55.0-alpine' as never,
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a malformed owner email', () => {
@@ -560,12 +560,12 @@ describe('validate() — per-field well-formedness', () => {
       ...demoDescriptor(),
       ownerEmail: 'not-an-email' as never,
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a uid outside the reserved range', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), uid: 1000 as never };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects an out-of-range port in the port triple', () => {
@@ -573,12 +573,12 @@ describe('validate() — per-field well-formedness', () => {
       ...demoDescriptor(),
       ports: { ...demoDescriptor().ports, health: 70000 as never },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a non-private appHostIp', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), appHostIp: '8.8.8.8' as never };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects an out-of-range mysql port', () => {
@@ -589,7 +589,7 @@ describe('validate() — per-field well-formedness', () => {
         port: 0,
       } as never,
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects an empty backup.encryptionRecipient', () => {
@@ -597,7 +597,7 @@ describe('validate() — per-field well-formedness', () => {
       ...tenantDescriptor(),
       backup: { kind: 'bucket-native', encryptionRecipient: '  ' },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects an out-of-range smtp port', () => {
@@ -605,7 +605,7 @@ describe('validate() — per-field well-formedness', () => {
       ...demoDescriptor(),
       transport: { kind: 'smtp', host: 'mx.example', port: 0 as never, user: 'ghost' },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a malformed hostname.verifiedAt', () => {
@@ -617,7 +617,7 @@ describe('validate() — per-field well-formedness', () => {
         verifiedAt: 'not-an-instant' as never,
       },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a malformed codeInjection.until on a tenant grant', () => {
@@ -625,7 +625,7 @@ describe('validate() — per-field well-formedness', () => {
       ...tenantDescriptor(),
       codeInjection: { kind: 'granted', by: 'support', reason: 'ticket', until: 'soon' as never },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a malformed expiresAt', () => {
@@ -633,7 +633,7 @@ describe('validate() — per-field well-formedness', () => {
       ...demoDescriptor(),
       expiresAt: 'not-an-instant' as never,
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 });
 
@@ -642,7 +642,7 @@ describe('validate() — presence and type of every field, every measured case',
     const descriptor: TenantDescriptor = { ...demoDescriptor(), uid: 'thirty-thousand' as never };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -658,7 +658,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -670,7 +670,7 @@ describe('validate() — presence and type of every field, every measured case',
     const descriptor: TenantDescriptor = { ...demoDescriptor(), limits: null as never };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -685,7 +685,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -695,17 +695,17 @@ describe('validate() — presence and type of every field, every measured case',
 
   it('rejects a missing limits', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), limits: undefined as never };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a missing caps', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), caps: undefined as never };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a missing safety', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), safety: undefined as never };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects safety:{near:false,exact:false} — both must be true', () => {
@@ -715,7 +715,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -728,7 +728,7 @@ describe('validate() — presence and type of every field, every measured case',
       ...demoDescriptor(),
       safety: { near: true, exact: false },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a grant on hostname:{kind:"theirs", fqdn:""}', () => {
@@ -739,7 +739,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -747,38 +747,11 @@ describe('validate() — presence and type of every field, every measured case',
     expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
   });
 
-  it("rejects a theirs fqdn under the platform's own zone (sites.branchleft.co.uk)", () => {
-    const descriptor: TenantDescriptor = {
-      ...tenantDescriptor(),
-      siteUrl: 'https://acme.sites.branchleft.co.uk' as never,
-      hostname: {
-        kind: 'theirs',
-        fqdn: 'acme.sites.branchleft.co.uk',
-        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
-      },
-    };
-    let caught: unknown;
-    try {
-      validate(descriptor);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(FieldValidationError);
-    expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
-  });
-
-  it('rejects a theirs fqdn equal to the zone itself, with no subdomain', () => {
-    const descriptor: TenantDescriptor = {
-      ...tenantDescriptor(),
-      siteUrl: 'https://sites.branchleft.co.uk' as never,
-      hostname: {
-        kind: 'theirs',
-        fqdn: 'sites.branchleft.co.uk',
-        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
-      },
-    };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
-  });
+  // The owned-domain exclusion itself (rejecting a fqdn equal to, or under,
+  // any configured owned domain, case-insensitively) has its own dedicated
+  // describe block below ("validate() — zone configuration") — these two
+  // covered it against the package's old hard-coded zone, which no longer
+  // exists.
 
   it('rejects a malformed theirs fqdn (no dot)', () => {
     const descriptor: TenantDescriptor = {
@@ -790,7 +763,7 @@ describe('validate() — presence and type of every field, every measured case',
         verifiedAt: '2026-09-01T00:00:00.000Z' as never,
       },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a managed injection missing head', () => {
@@ -800,7 +773,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -816,7 +789,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -831,7 +804,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -846,7 +819,7 @@ describe('validate() — presence and type of every field, every measured case',
     const descriptor: TenantDescriptor = { ...demoDescriptor(), media: media as never };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -861,7 +834,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -874,14 +847,14 @@ describe('validate() — presence and type of every field, every measured case',
       ...demoDescriptor(),
       gate: { kind: 'passphrase', argon2idHash: '   ' },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a missing slug with a named error, not a raw TypeError', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), slug: undefined as never };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -894,7 +867,7 @@ describe('validate() — presence and type of every field, every measured case',
     const descriptor: TenantDescriptor = { ...demoDescriptor(), slug: null as never };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -910,7 +883,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -926,7 +899,7 @@ describe('validate() — presence and type of every field, every measured case',
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -942,7 +915,7 @@ describe('validate() — encryptionRecipient must be exactly one recipient', () 
       ...tenantDescriptor(),
       backup: { kind: 'bucket-native', encryptionRecipient: 'age1aaa age1bbb' },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
   it('rejects a recipient containing a comma (two recipients, comma-joined)', () => {
@@ -950,7 +923,7 @@ describe('validate() — encryptionRecipient must be exactly one recipient', () 
       ...tenantDescriptor(),
       backup: { kind: 'bucket-native', encryptionRecipient: 'age1aaa,age1bbb' },
     };
-    expect(() => validate(descriptor)).toThrow(FieldValidationError);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 });
 
@@ -958,11 +931,11 @@ describe("validate() — siteUrl must match the descriptor's hostname", () => {
   it('rejects a siteUrl whose host disagrees with hostname.ours.sub', () => {
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),
-      siteUrl: 'https://someone-else.sites.branchleft.co.uk' as never,
+      siteUrl: 'https://someone-else.platform-domain.example.test' as never,
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
@@ -977,11 +950,532 @@ describe("validate() — siteUrl must match the descriptor's hostname", () => {
     };
     let caught: unknown;
     try {
-      validate(descriptor);
+      validate(descriptor, TEST_ZONES);
     } catch (error) {
       caught = error;
     }
     expect(caught).toBeInstanceOf(FieldValidationError);
     expect((caught as FieldValidationError).field).toBe('siteUrl');
+  });
+});
+
+describe('validate() — zone configuration (item 1: no hard-coded platform name)', () => {
+  it('accepts a demo on the demo zone', () => {
+    const descriptor = demoDescriptor();
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
+  });
+
+  it('rejects a demo whose siteUrl sits under the platform zone instead of the demo zone', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://k7m-vale-bright.platform-domain.example.test' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('accepts a paying tenant with an "ours" hostname on the platform zone', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: { kind: 'ours', sub: 'acme', gated: false },
+      siteUrl: 'https://acme.platform-domain.example.test' as never,
+    };
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
+  });
+
+  it('rejects a grant on www.<owned platform domain>', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      siteUrl: 'https://www.platform-domain.example.test' as never,
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'www.platform-domain.example.test',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+      codeInjection: { kind: 'granted', by: 'support', reason: 'ticket', until: null },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+  });
+
+  it('rejects a grant on the owned platform domain itself, with no subdomain', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      siteUrl: 'https://platform-domain.example.test' as never,
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'platform-domain.example.test',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+      codeInjection: { kind: 'granted', by: 'support', reason: 'ticket', until: null },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+  });
+
+  it('rejects a grant on evil.<owned platform domain> — any label, not only "www"', () => {
+    // Any subdomain of an owned domain is inside it regardless of what its
+    // own label says — the exclusion is a domain-boundary check, not a
+    // list of specific forbidden labels.
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      siteUrl: 'https://evil.platform-domain.example.test' as never,
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'evil.platform-domain.example.test',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+      codeInjection: { kind: 'granted', by: 'support', reason: 'ticket', until: null },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('accepts a look-alike domain that merely contains the zone as a substring, with no dot boundary', () => {
+    // "evilplatform-domain.example.test" is a single label "evilplatform-domain"
+    // followed by ".example.test" — it is NOT a subdomain of
+    // "platform-domain.example.test" (there is no "." before "platform-domain"),
+    // so it must be treated as a genuinely different, unowned domain. This is
+    // the control the other direction: proving the boundary check is
+    // subdomain-aware, not `.includes(ownedDomain)` — a substring test would
+    // wrongly reject this.
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      siteUrl: 'https://evilplatform-domain.example.test' as never,
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'evilplatform-domain.example.test',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+    };
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
+  });
+
+  it('rejects an uppercase variant of an owned domain, compared case-insensitively', () => {
+    const zonesWithMixedCaseEntry = {
+      ...TEST_ZONES,
+      ownedDomains: ['Platform-Domain.Example.TEST'],
+    };
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      siteUrl: 'https://sub.platform-domain.example.test' as never,
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'sub.platform-domain.example.test',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, zonesWithMixedCaseEntry);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+  });
+
+  it('trims a trailing dot before comparing an owned domain', () => {
+    const zonesWithTrailingDot = { ...TEST_ZONES, ownedDomains: ['platform-domain.example.test.'] };
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      siteUrl: 'https://sub.platform-domain.example.test' as never,
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'sub.platform-domain.example.test',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+    };
+    expect(() => validate(descriptor, zonesWithTrailingDot)).toThrow(FieldValidationError);
+  });
+});
+
+describe('validate() — range checks (item 2)', () => {
+  it.each([-1, 0, Infinity, 1.5])('rejects caps.cpuShares %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, cpuShares: value },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it.each([-1, 0, Infinity])('rejects caps.pidsLimit %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, pidsLimit: value },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it.each([-1, 0, Infinity])('rejects caps.nofile %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, nofile: value },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it.each(['', 'abc', '0', '-1', '1.', '01'])('rejects caps.cpus %j', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, cpus: value },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it.each(['1.0', '0.5', '2', '10.25'])('accepts a well-formed caps.cpus %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, cpus: value },
+    };
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
+  });
+
+  it.each([-5, 1.5, Infinity])('rejects limits.membersCap %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      limits: { ...demoDescriptor().limits, membersCap: value },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects limits.staffCap Infinity', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      limits: { ...demoDescriptor().limits, staffCap: Infinity },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('accepts limits with both caps null', () => {
+    const descriptor = tenantDescriptor();
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
+  });
+
+  it('accepts a positive integer membersCap and staffCap', () => {
+    const descriptor = demoDescriptor();
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
+  });
+});
+
+describe('validate() — siteUrl exact match (item 4)', () => {
+  it('accepts an optional trailing slash', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://k7m-vale-bright.demo-domain.example.test/' as never,
+    };
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
+  });
+
+  it('rejects a port', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://k7m-vale-bright.demo-domain.example.test:8443' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a path', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://k7m-vale-bright.demo-domain.example.test/admin' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects userinfo', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://user:pass@k7m-vale-bright.demo-domain.example.test' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a query string', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://k7m-vale-bright.demo-domain.example.test?x=1' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a fragment', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://k7m-vale-bright.demo-domain.example.test#x' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects an uppercase host', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://K7M-VALE-BRIGHT.demo-domain.example.test' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects http in place of https', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'http://k7m-vale-bright.demo-domain.example.test' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a backslash host-confusion attempt', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      siteUrl: 'https://evil.example\\@k7m-vale-bright.demo-domain.example.test' as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+});
+
+describe('validate() — hostname.sub is a DNS label (item 5)', () => {
+  it('rejects an empty sub', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      hostname: { kind: 'ours', sub: '', gated: true },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('hostname.sub');
+  });
+
+  it('rejects a sub containing a dot', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      hostname: { kind: 'ours', sub: 'a.b', gated: true },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('hostname.sub');
+  });
+
+  it('rejects a sub with an uppercase character', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      hostname: { kind: 'ours', sub: 'Demo-1', gated: true },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('hostname.sub');
+  });
+});
+
+describe('validate() — unknown keys are rejected at every object level (item 6)', () => {
+  it('rejects an unknown top-level key', () => {
+    const descriptor = { ...demoDescriptor(), extra: 'nope' } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('descriptor');
+  });
+
+  it('rejects codeInjection:{kind:"blocked", head:"<script>"} — an extra key on the blocked variant', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      codeInjection: { kind: 'blocked', head: '<script>' },
+    } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('codeInjection');
+  });
+
+  it('rejects an unknown key on ports', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      ports: { ...demoDescriptor().ports, extra: 1 },
+    } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('ports');
+  });
+
+  it('rejects an unknown key on safety', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      safety: { near: true, exact: true, extra: true },
+    } as unknown as TenantDescriptor;
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects an array where an object is expected (limits: [])', () => {
+    const descriptor = { ...demoDescriptor(), limits: [] } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as Error).message).toContain('an array');
+  });
+
+  it('rejects an unknown key on limits', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      limits: { ...demoDescriptor().limits, extra: 1 },
+    } as unknown as TenantDescriptor;
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a __proto__ own-property, the shape JSON.parse gives an attacker-supplied body', () => {
+    // Object-literal syntax (`{__proto__: x}`) sets the prototype instead of
+    // an own key — this constructs the actually-hostile shape the way
+    // `JSON.parse` of untrusted text does: `__proto__` as a genuine,
+    // enumerable own property.
+    const hostile = JSON.parse('{"__proto__":{"polluted":true}}') as Record<string, unknown>;
+    const descriptor = { ...demoDescriptor(), ...hostile } as unknown as TenantDescriptor;
+    // Control: confirm the hostile shape actually landed as an own key,
+    // rather than silently becoming a no-op prototype assignment.
+    expect(Object.prototype.hasOwnProperty.call(descriptor, '__proto__')).toBe(true);
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+});
+
+describe('validate() — a theirs fqdn must not be an IP literal (item 7)', () => {
+  it('rejects an IPv4 literal', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      siteUrl: 'https://203.0.113.5' as never,
+      hostname: {
+        kind: 'theirs',
+        fqdn: '203.0.113.5',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+  });
+
+  it('rejects an IPv6 literal', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: {
+        kind: 'theirs',
+        fqdn: '2001:db8::1',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+});
+
+describe('validate() — path and host fields reject empty values and ".." (item 8)', () => {
+  it('rejects an empty database.path (sqlite)', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      database: { kind: 'sqlite', path: '' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a database.path with a ".." segment', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      database: { kind: 'sqlite', path: '/data/../../etc/passwd' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a media.path with a ".." segment', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      media: { ...demoDescriptor().media, path: '../../etc' } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects an empty media.path', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      media: { ...demoDescriptor().media, path: '' } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects an empty database.host (mysql)', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      database: {
+        kind: 'mysql',
+        host: '',
+        port: 3306 as never,
+        name: 'ghost_acme',
+        user: 'ghost_acme',
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects an empty transport.path (queue)', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      transport: { kind: 'queue', path: '' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a transport.path with a ".." segment', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      transport: { kind: 'queue', path: '/var/spool/../../etc' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects an empty transport.host (smtp)', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      transport: { kind: 'smtp', host: '', port: 587 as never, user: 'ghost' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 });

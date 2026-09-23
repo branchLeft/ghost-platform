@@ -9,19 +9,31 @@ import type {
   TenantUid,
 } from '../src/brand.js';
 import type { TenantDescriptor } from '../src/descriptor.js';
-import { CURRENT_SCHEMA_VERSION } from '../src/validate.js';
+import { CURRENT_SCHEMA_VERSION, type ZoneConfig } from '../src/validate.js';
 
 // Not derived through the branding validators — these fixtures are meant to
 // be valid by construction, so `validate()`'s own tests are what exercise
 // the validators, not the fixtures that feed them.
 const DIGEST = 'a'.repeat(64);
 
+/**
+ * Test-only zones, in the example.test-style names `RFC 2606` reserves for
+ * exactly this — never a real platform or estate domain. The demo and
+ * platform zones are deliberately different registrable domains, matching
+ * the design's own separate-registration split, and both are owned.
+ */
+export const TEST_ZONES: ZoneConfig = {
+  demoZone: 'demo-domain.example.test',
+  platformZone: 'platform-domain.example.test',
+  ownedDomains: ['demo-domain.example.test', 'platform-domain.example.test'],
+};
+
 export function demoDescriptor(): TenantDescriptor {
   return {
     version: CURRENT_SCHEMA_VERSION,
     kind: 'demo',
     slug: 'demo-1' as Slug,
-    siteUrl: 'https://k7m-vale-bright.sites.branchleft.co.uk' as AbsoluteUrl,
+    siteUrl: 'https://k7m-vale-bright.demo-domain.example.test' as AbsoluteUrl,
     image: `ghost:6.55.0-alpine@sha256:${DIGEST}` as DigestPinnedRef,
     ownerEmail: 'owner@example.com' as EmailAddress,
     uid: 30001 as TenantUid,

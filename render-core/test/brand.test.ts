@@ -236,11 +236,17 @@ describe('validateEmailAddress', () => {
     expect(() => validateEmailAddress('owner@example.')).toThrow(FieldValidationError);
   });
 
-  // A pathological 80 KB value that would have taken ~2s under the previous
-  // two-adjacent-quantifier pattern (CodeQL js/polynomial-redos) must now
-  // resolve immediately, because the length cap runs before anything else.
+  // The attack shape that actually reproduces the quadratic blowup under the
+  // previous pattern: an unmatchable trailing space forces the engine to
+  // exhaustively retry every one of the 80,000 dots as a candidate split
+  // point for the two adjacent `[^\s@]+` groups either side of the literal
+  // `.`, before it can conclude the whole match fails — measured at ~3.6s
+  // against the pre-fix regex in this environment (round 3 review measured
+  // ~3.6s independently). The fixed implementation must resolve immediately,
+  // because the length cap runs before anything the trailing space could
+  // make ambiguous.
   it('rejects a pathological 80 KB value fast (the ReDoS control case)', () => {
-    const pathological = 'a'.repeat(80_000);
+    const pathological = 'a@' + '.'.repeat(80_000) + ' ';
     const start = performance.now();
     expect(() => validateEmailAddress(pathological)).toThrow(FieldValidationError);
     expect(performance.now() - start).toBeLessThan(50);

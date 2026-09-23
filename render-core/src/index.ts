@@ -47,7 +47,7 @@ export type {
   TransportSpec,
 } from './descriptor.js';
 
-export type { InvariantId } from './validate.js';
+export type { InvariantId, ZoneConfig } from './validate.js';
 export {
   CodeInjectionPreconditionError,
   CURRENT_SCHEMA_VERSION,
