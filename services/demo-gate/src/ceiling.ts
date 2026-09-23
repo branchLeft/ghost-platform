@@ -14,12 +14,17 @@ export interface AttemptCeiling {
   /** Records an attempt and says whether it may proceed; `retryAfterSeconds` when refused. */
   attempt(key: string, nowMs: number): Verdict;
   /**
-   * The verdict `attempt` would give right now, without recording anything
-   * -- no entry created, no count incremented, no table sweep. For a
-   * caller checking more than one ceiling before deciding whether to
-   * charge any of them: peek every ceiling first, and only call `attempt`
-   * on ones that already peeked `allowed`, so a request refused by one
-   * ceiling never creates or charges an entry in another.
+   * The verdict `attempt` would give right now, without recording an
+   * attempt -- no entry created for `key`, no count incremented. It may
+   * still evict other sources' already-expired windows when the table
+   * looks full, the same reclaiming `attempt` itself does: without that,
+   * a table that once reached `maxSources` would refuse every source
+   * forever, since nothing else ever runs a sweep once every caller peeks
+   * before it ever calls `attempt`. For a caller checking more than one
+   * ceiling before deciding whether to charge any of them: peek every
+   * ceiling first, and only call `attempt` on ones that already peeked
+   * `allowed`, so a request refused by one ceiling never creates or
+   * charges an entry in another.
    */
   peek(key: string, nowMs: number): Verdict;
   /**
@@ -55,14 +60,27 @@ export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
     return entry && nowMs - entry.start < options.windowMs ? entry : undefined;
   };
 
-  // The verdict for `key` right now, with no sweep and no mutation --
-  // `attempt`'s own first check and the whole of `peek` are both exactly
-  // this, so the two can never disagree about what "allowed" means.
+  // The verdict for `key` right now. `attempt` and `peek` share this whole
+  // function, sweep included, so the two can never disagree about what
+  // "allowed" means -- `peek` was the regression the sweep's old home (only
+  // inside `attempt`) caused: once a table held `maxSources` *expired*
+  // windows, `peek` refused every source forever, and `login()` (correctly,
+  // per the fix that added `peek`) never reaches `attempt` on a source
+  // `peek` has already refused, so nothing was left to reclaim them. The
+  // sweep below runs from `peek` too, and is safe to run from a read-only
+  // call: it only ever deletes entries `liveEntry` already treats as absent
+  // for every verdict, so evicting one changes no decision, only the table's
+  // own size.
   const decide = (key: string, nowMs: number): Verdict => {
     const entry = liveEntry(key, nowMs);
     if (!entry) {
       if (windows.size >= options.maxSources) {
-        return { allowed: false, retryAfterSeconds: Math.ceil(options.windowMs / 1000) };
+        // The table might just be full of dead windows; reclaim them before
+        // refusing a source that would otherwise fit.
+        sweep(nowMs);
+        if (windows.size >= options.maxSources) {
+          return { allowed: false, retryAfterSeconds: Math.ceil(options.windowMs / 1000) };
+        }
       }
       return { allowed: true };
     }
@@ -75,16 +93,7 @@ export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
 
   return {
     attempt(key, nowMs) {
-      let verdict = decide(key, nowMs);
-      // A full table might just be full of dead windows; reclaim them
-      // before refusing a source that would otherwise fit. Only worth
-      // trying when decide() refused for exactly that reason (no live
-      // entry for this key, table at capacity) -- sweeping never changes
-      // the verdict for a key that already has one.
-      if (!verdict.allowed && !liveEntry(key, nowMs) && windows.size >= options.maxSources) {
-        sweep(nowMs);
-        verdict = decide(key, nowMs);
-      }
+      const verdict = decide(key, nowMs);
       if (!verdict.allowed) return verdict;
       const entry = liveEntry(key, nowMs);
       if (entry) entry.count += 1;

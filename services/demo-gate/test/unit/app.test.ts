@@ -477,6 +477,27 @@ describe('login', () => {
     expect(unrelated.status).toBe(401);
   });
 
+  it('reclaims a ceiling table once its windows expire, rather than refusing everyone forever', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      broadCeiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 5 }),
+    });
+    // Five distinct IPv4 visitors fill the broad table to its capacity of 5.
+    for (let i = 0; i < 5; i++) {
+      expect((await login(PASSPHRASE, { source: `203.0.113.${i}` })).status).toBe(303);
+    }
+    // Two windows later: a new visitor, a returning one, and -- a month
+    // further on still -- another new one must all be admitted. A table
+    // that once reached capacity must not refuse every source forever;
+    // only `login()`'s own peek-before-charge pattern can ever run a
+    // sweep here, since nothing calls `attempt` once `peek` has refused.
+    h.now.ms += 2 * 60_000;
+    expect((await login(PASSPHRASE, { source: '198.51.100.200' })).status).toBe(303);
+    expect((await login(PASSPHRASE, { source: '203.0.113.0' })).status).toBe(303);
+    h.now.ms += 30 * 24 * 3600 * 1000;
+    expect((await login(PASSPHRASE, { source: '198.51.100.201' })).status).toBe(303);
+  });
+
   it('refuses a trusted peer that did not say who the client is', async () => {
     const reply = await send(
       'POST',

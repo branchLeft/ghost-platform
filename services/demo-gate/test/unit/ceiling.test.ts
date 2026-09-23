@@ -70,6 +70,25 @@ describe('peek', () => {
       retryAfterSeconds: 60,
     });
   });
+
+  it('reclaims a table full of expired windows on its own, without attempt ever running', () => {
+    // The regression this guards: a caller that always peeks before it
+    // ever calls attempt (login()'s own pattern, precisely to avoid
+    // charging a ceiling a sibling tier is about to refuse) never gives
+    // attempt a chance to sweep. If peek itself never reclaimed capacity,
+    // a table that once reached maxSources would refuse every source
+    // forever, expired windows or not -- this is the sequence that
+    // reproduces it if the reclaim is missing.
+    const ceiling = createAttemptCeiling({ limit: 5, windowMs: WINDOW, maxSources: 2 });
+    ceiling.attempt('a', 0);
+    ceiling.attempt('b', 0);
+    // Both windows now expired; nothing has called attempt since, so
+    // nothing but peek itself could ever reclaim them.
+    const wellPast = WINDOW * 100;
+    expect(ceiling.peek('a-new-source', wellPast)).toEqual({ allowed: true });
+    // The same table admits a returning source too, not just a new one.
+    expect(ceiling.peek('a', wellPast)).toEqual({ allowed: true });
+  });
 });
 
 describe('refund', () => {
