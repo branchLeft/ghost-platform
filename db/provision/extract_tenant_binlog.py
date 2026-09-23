@@ -10,12 +10,22 @@ together -- which is the *instance*-level restore Doc 14 SS7.2 promises, not
 the per-tenant one a "we deleted forty posts yesterday" recovery needs
 without also reintroducing every other tenant's events since the dump.
 
-`mysqlbinlog --database=<name>` is MySQL's own row-event filter. For a
-row-format binlog it filters on each row event's own Table_map -- the
-database and table the write actually targets -- never on which database a
-session had `USE`d when the write was issued; a write to `tenant_a.posts`
-made from inside a `USE tenant_b` session is still a `tenant_a` event and is
-kept when scoped to `tenant_a`. ROW is MySQL 8.0's own server default, not
+`mysqlbinlog --database=<name>` is MySQL's own filter, and it draws the
+line differently for the two event kinds this module cares about. A row
+event (`Table_map`/`Write_rows`/...) is filtered on the table it actually
+targets, never on which database a session had `USE`d: a write to
+`tenant_a.posts` made from inside a `USE tenant_b` session is still a
+`tenant_a` event and is kept when scoped to `tenant_a`. A DDL statement
+(`ALTER`/`CREATE`/`DROP`/...) is logged as a `Query` event and is never a
+row event even under ROW format -- mysqlbinlog filters it on the session's
+own `USE`d database at the moment it ran, the older, coarser rule. So an
+admin session that ran `USE tenant_b; ALTER TABLE tenant_a.posts ...` puts
+that statement in *tenant_b*'s extract, not tenant_a's -- the reverse of a
+row event's own rule -- and a DDL statement issued with no governing `USE`
+at all is dropped from every tenant's extract. Ordinary tenant database
+users cannot open a session against a database that is not their own, so
+this only matters for an admin session run directly against `db1` --
+`db/RUNBOOK-db.md` says so. ROW is MySQL 8.0's own server default, not
 something `db/stack/compose.yml` sets -- this module relies on that default
 rather than pinning it, which is a separate decision this story does not
 make load-bearing.
@@ -61,6 +71,17 @@ The minimal environment below carries no `HOME`, so `mysql`'s default
 default file could otherwise silently add options (a different socket, a
 different default database) to a replay applied against decrypted tenant
 data. Nothing in this module reads `~/.my.cnf`.
+
+The extract is always applied, whether or not it carries any event for the
+tenant -- a stream of nothing but session setup is harmless to apply, and
+there is no second code path to keep in sync with what gets counted (see
+count_tenant_events). Every run also reports the given binlog range's own
+coverage horizon: the last binlog file's closing `Rotate` event carries a
+timestamp (last_rotate_timestamp), and main() warns on stderr when
+`--stop-datetime` asks for an instant later than it -- the given file list
+may be short a binlog. This is the only case a coverage gap can be told
+apart from a tenant that genuinely wrote nothing: it has no bearing on the
+row/statement counts themselves, which stay legitimately zero either way.
 """
 
 from __future__ import annotations
@@ -85,6 +106,30 @@ SOURCE_DATA_PATTERN = re.compile(
 # directory prefix), so where the decrypted files happen to sit on disk
 # never affects whether the sequence reads as contiguous.
 BINLOG_SEQUENCE_PATTERN = re.compile(r"^(?P<base>.+\.)(?P<seq>\d+)$")
+
+# mysqlbinlog's own per-event header comment, e.g.
+# "#260923 11:22:09 server id 1  end_log_pos 1819 CRC32 0x7cce0723  Query
+# thread_id=12 ...". A tab or run of spaces separates the CRC32 field from
+# the event-type keyword, so both are accepted.
+QUERY_EVENT_HEADER_PATTERN = re.compile(rb"^#\d{6}[^\n]*[ \t]Query[ \t]+thread_id=", re.MULTILINE)
+
+# Same header shape, for a Rotate event -- emitted at the end of every
+# binlog file mysqld has closed (never the file currently being written),
+# carrying the timestamp of that rotation.
+ROTATE_EVENT_PATTERN = re.compile(
+    rb"^#(?P<yymmdd>\d{6})[ \t]+(?P<time>\d{1,2}:\d{2}:\d{2})[^\n]*[ \t]Rotate[ \t]", re.MULTILINE
+)
+
+# A line mysqlbinlog emits as session/positioning boilerplate around a
+# Query event's real statement -- never the statement itself. Stripping
+# these first is what isolates "BEGIN" from a real DDL statement without
+# having to parse SQL.
+_BOILERPLATE_LINE_PATTERN = re.compile(rb"^(SET |/\*!|use `|#)")
+
+# The three statements a Query event carries only for the storage engine's
+# own transaction bookkeeping, never as user-visible work -- excluded from
+# the statement count named in count_tenant_events.
+_TRANSACTION_BOUNDARY_STATEMENTS = (b"BEGIN", b"COMMIT", b"ROLLBACK")
 
 
 class ExtractError(Exception):
@@ -237,18 +282,78 @@ def mysqlbinlog_argv(
     return argv
 
 
-def tenant_wrote_anything(sql: bytes, tenant_database: str) -> bool:
-    """True if the extracted stream carries at least one row event whose
-    Table_map names this tenant's database -- mysqlbinlog's own per-event
-    annotation, not a guess. False is not necessarily wrong: a tenant with
-    no writes since the dump's resume point (or none before a `--stop-
-    datetime` chosen just before their first post-dump write -- the "just
-    before the mistake" restore) legitimately produces this. Distinguishing
-    that from a `--tenant-database` typo is find_resume_point's job (the
-    dump-declaration check), not this one's -- this function only reports
-    what the extract contains, and never raises."""
-    pattern = re.compile(rb"Table_map:\s*`" + re.escape(tenant_database.encode()) + rb"`\.")
-    return pattern.search(sql) is not None
+def _query_event_blocks(sql: bytes) -> list[bytes]:
+    """Splits the extract into one slice per Query event, each running from
+    just after that event's own header comment to just before the next
+    event's header comment (of any type) or end of stream."""
+    starts = [m.end() for m in QUERY_EVENT_HEADER_PATTERN.finditer(sql)]
+    blocks = []
+    for start in starts:
+        line_end = sql.index(b"\n", start)
+        next_header = sql.find(b"\n#", line_end)
+        end = next_header if next_header != -1 else len(sql)
+        blocks.append(sql[line_end + 1 : end])
+    return blocks
+
+
+def _is_transaction_boundary_only(block: bytes) -> bool:
+    """True if, once every session/positioning boilerplate line is
+    stripped, a Query event's block reduces to exactly BEGIN, COMMIT or
+    ROLLBACK and nothing else -- the storage engine's own bookkeeping, not
+    a statement a restore needs to reapply."""
+    kept = [
+        line.strip()
+        for line in block.split(b"\n")
+        if line.strip() and not _BOILERPLATE_LINE_PATTERN.match(line.strip())
+    ]
+    statement = b" ".join(kept).strip()
+    return statement in _TRANSACTION_BOUNDARY_STATEMENTS
+
+
+def count_tenant_events(sql: bytes, tenant_database: str) -> tuple[int, int]:
+    """Returns (row_events, statements) attributed to `tenant_database`
+    within an extract already scoped to it by `--database=<tenant_database>`.
+
+    row_events counts `Table_map` annotations naming the tenant --
+    mysqlbinlog's own per-row-event marker, not a guess.
+
+    statements counts Query events other than a bare BEGIN, COMMIT or
+    ROLLBACK: DDL (`ALTER`/`CREATE`/`DROP`/...) is logged as a Query event
+    even under ROW format and never appears as a Table_map/row event, so a
+    row-event-only check misses a tenant whose only post-dump events were
+    schema changes entirely -- exactly the shape of a restore that silently
+    restored less while reporting success (R4).
+
+    Neither count being nonzero does not mean the tenant is a typo; that is
+    find_resume_point's job (the dump-declaration check). This function
+    only reports what the extract contains, and never raises."""
+    row_pattern = re.compile(rb"Table_map:\s*`" + re.escape(tenant_database.encode()) + rb"`\.")
+    row_events = len(row_pattern.findall(sql))
+    statements = sum(1 for block in _query_event_blocks(sql) if not _is_transaction_boundary_only(block))
+    return row_events, statements
+
+
+def last_rotate_timestamp(sql: bytes) -> str | None:
+    """Returns "YYYY-MM-DD HH:MM:SS" for the last Rotate event in the
+    extract -- the moment mysqld closed the last binlog file given, i.e.
+    where this replay's coverage actually ends -- run under `TZ=UTC` same
+    as the rest of this module, so the value is UTC like everything else
+    here. A Rotate event is never filtered by `--database`: it is
+    structural, not tied to any database. None if no Rotate event is
+    present, which happens only if the last file given is the one mysqld
+    is still writing (ship_binlogs.py never ships that one, so this should
+    not occur against files it produced) -- coverage cannot be determined
+    from the extract in that case."""
+    matches = list(ROTATE_EVENT_PATTERN.finditer(sql))
+    if not matches:
+        return None
+    last = matches[-1]
+    yymmdd = last.group("yymmdd").decode()
+    time_part = last.group("time").decode()
+    year = 2000 + int(yymmdd[0:2])
+    month, day = yymmdd[2:4], yymmdd[4:6]
+    hh, mm, ss = time_part.split(":")
+    return f"{year:04d}-{month}-{day} {int(hh):02d}:{mm}:{ss}"
 
 
 def extract_tenant_stream(
@@ -305,13 +410,20 @@ def apply_stream(
 
 
 class ReplayResult(NamedTuple):
-    """`applied` is False for a legitimate empty replay -- no event for the
-    tenant between the resume point and the stop instant (or the end of
-    the given binlog range) -- not an error; see tenant_wrote_anything.
-    `sql` is always the bytes extract_tenant_stream produced, whether or
-    not anything in it was applied."""
+    """The extract is always applied (see _replay_from_resume_point) --
+    piping a boilerplate-only stream into `mysql` is harmless, so there is
+    no "empty replay" branch to get wrong. `row_events` and `statements`
+    (from count_tenant_events) say what that application actually did:
+    both zero means nothing in the given range belonged to the tenant, a
+    legitimate outcome main() reports as an empty replay rather than a
+    failure. `binlogs_end_at` (from last_rotate_timestamp) is the given
+    binlog range's own known coverage horizon, independent of whether the
+    tenant wrote anything in it. `sql` is the bytes extract_tenant_stream
+    produced and apply_stream applied."""
 
-    applied: bool
+    row_events: int
+    statements: int
+    binlogs_end_at: str | None
     sql: bytes
 
 
@@ -350,8 +462,12 @@ def _replay_from_resume_point(
         stop_datetime=stop_datetime,
         run=run,
     )
-    if not tenant_wrote_anything(sql, tenant_database):
-        return ReplayResult(applied=False, sql=sql)
+    row_events, statements = count_tenant_events(sql, tenant_database)
+    # Always applied -- a stream with zero row events and zero statements
+    # for this tenant is only session setup and positioning commands, a
+    # no-op against the restore target, and applying it is simpler and
+    # more honest than a second code path that has to agree with the
+    # count above about when to skip it.
     apply_stream(
         sql,
         socket_path=apply_socket_path,
@@ -360,7 +476,9 @@ def _replay_from_resume_point(
         password=apply_password,
         run=run,
     )
-    return ReplayResult(applied=True, sql=sql)
+    return ReplayResult(
+        row_events=row_events, statements=statements, binlogs_end_at=last_rotate_timestamp(sql), sql=sql
+    )
 
 
 def restore_point_in_time(
@@ -377,9 +495,7 @@ def restore_point_in_time(
 ) -> ReplayResult:
     """The end-to-end scoped replay: resume point (and tenant-declaration
     check) from the dump, sort-then-contiguity check, filtered extract,
-    applied to the restore target unless the tenant wrote nothing in
-    range (ReplayResult.applied is then False, and nothing was sent to
-    the restore target)."""
+    always applied to the restore target (see ReplayResult)."""
     log_file, position = parse_dump_resume_point(dump_text, tenant_database=tenant_database)
     return _replay_from_resume_point(
         log_file=log_file,
@@ -434,14 +550,26 @@ def main(argv: list[str]) -> int:
     except (ExtractError, OSError) as exc:
         print(f"extract_tenant_binlog: {exc}", file=sys.stderr)
         return 1
-    if not result.applied:
+    if result.row_events == 0 and result.statements == 0:
         stop_label = args.stop_datetime if args.stop_datetime is not None else "end"
         print(
             f"extract_tenant_binlog: no {args.tenant_database} events between the resume point and "
             f"{stop_label}; the loaded dump is the restore"
         )
-        return 0
-    print(f"extract_tenant_binlog: applied {len(result.sql)} byte(s) scoped to {args.tenant_database!r}")
+    else:
+        print(
+            f"extract_tenant_binlog: applied {result.row_events} row events and {result.statements} "
+            f"statements for {args.tenant_database!r}"
+        )
+    if result.binlogs_end_at is not None:
+        print(f"extract_tenant_binlog: the given binlogs end at {result.binlogs_end_at}")
+        if args.stop_datetime is not None and args.stop_datetime > result.binlogs_end_at:
+            print(
+                f"extract_tenant_binlog: WARNING: --stop-datetime {args.stop_datetime!r} is later than "
+                f"the given binlogs' end ({result.binlogs_end_at}) -- a binlog covering the rest of the "
+                "requested range may be missing from the given file list",
+                file=sys.stderr,
+            )
     return 0
 
 

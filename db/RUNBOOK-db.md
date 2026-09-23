@@ -658,12 +658,32 @@ python3 db/provision/extract_tenant_binlog.py \
 -- never just "enough".** A `--tenant-database` that does not match a
 database this dump declares is refused outright, before any mysqlbinlog
 call -- that is the typo guard. A tenant with no writes in the given range
-is not: the script applies nothing and exits 0, printing `no <tenant>
-events between the resume point and <stop-datetime or "end">; the loaded
-dump is the restore` -- a quiet tenant and a restore whose binlog file list
-falls short of covering the range both produce exactly this message, and
-nothing here can tell the two apart after the fact. Only giving every
-shipped file removes the ambiguity going in.
+is not: the extract is applied regardless (harmless when it carries
+nothing for the tenant), and the script prints `no <tenant> events between
+the resume point and <stop-datetime or "end">; the loaded dump is the
+restore` when it finds none -- a quiet tenant and a restore whose binlog
+file list falls short of covering the range can still print the same
+message. The script narrows that gap itself where it can: every run also
+prints `the given binlogs end at <time>` (the last binlog file's own
+closing `Rotate` timestamp) and warns on stderr if `--stop-datetime` is
+later than that -- read that warning as "the given file list may be short
+a binlog", and check the file list against what was actually shipped
+before trusting an empty result. No such warning is possible when
+`--stop-datetime` is left unset (there is no requested horizon to compare
+the given files' coverage against), so passing every shipped file matters
+most exactly then.
+
+**An admin session, not a tenant one, can put a schema change in the wrong
+tenant's extract.** A row event (an `INSERT`/`UPDATE`/`DELETE`) is scoped
+by the table it actually targets, so a tenant's own database user -- which
+can only ever reach its own database -- cannot make this happen. DDL
+(`ALTER`/`CREATE`/`DROP`) is scoped by the session's `USE`d database
+instead, the older and coarser of mysqlbinlog's two filtering rules: an
+admin session running `USE tenant_b; ALTER TABLE tenant_a.posts ...`
+against `db1` directly puts that statement in tenant_b's extract, and a
+DDL statement run with no governing `USE` at all is dropped from every
+tenant's extract. Run schema changes against `db1` inside an explicit
+`USE <tenant>;` for the tenant they belong to, every time.
 
 Confirm the same way as step 5, plus the property step 5 does not check:
 that no *other* tenant's database gained a row dated after the dump.

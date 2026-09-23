@@ -5,13 +5,16 @@ The property worth the most coverage is the one the story exists for: a
 scoped replay must carry exactly one tenant's post-resume events and none of
 another's -- filtered on the *table* a row event targets, never on which
 database a session had `USE`d, which is what makes AX/BX in SAMPLE_EVENTS
-below load-bearing rather than decorative. A close second is that a
+below load-bearing rather than decorative. Two more matter just as much: a
 legitimately empty replay (a quiet tenant, or a `--stop-datetime` chosen
-before a tenant's first post-dump write) is a *success*, not a typo --
-only a genuine mismatch against the dump's own declared databases is.
-FakeMysqlbinlog plays the part of mysqlbinlog well enough to prove both
-properties in-process, including its Table_map annotation, rather than
-proving only that this module's argv construction looks right. The real
+before a tenant's first post-dump write) is a *success*, not a typo -- only
+a genuine mismatch against the dump's own declared databases is; and a
+tenant whose only post-dump events are schema changes (DDL, logged as
+`Query` events, never a `Table_map`/row event) must still be detected and
+reported, not read as "wrote nothing". FakeMysqlbinlog plays the part of
+mysqlbinlog well enough to prove all three in-process -- including its
+`Table_map` and `Query`/`Rotate` event-header shapes -- rather than proving
+only that this module's argv construction looks right. The real
 `mysqlbinlog` binary is exercised separately, against a real MySQL instance
 in Docker, per db/RUNBOOK-db.md's restore drill; that is not a unit test
 and does not belong in this file's fast, hermetic run.
@@ -26,12 +29,14 @@ import unittest
 
 import extract_tenant_binlog as etb
 
-# tenant_a, tenant_b: the two tenants SAMPLE_EVENTS carries writes for.
-# tenant_quiet: declared in the dump, but appears in no event anywhere --
-# a tenant that has written nothing since the dump.
+# tenant_a, tenant_b: the two tenants SAMPLE_EVENTS carries row-event
+# writes for. tenant_quiet: declared in the dump, but appears in no event
+# anywhere -- a tenant that has written nothing since the dump.
 # tenant_early: declared in the dump; its only event is tagged so a
 # --stop-datetime excludes it (see FakeMysqlbinlog) -- a tenant whose first
-# post-dump write is after the chosen restore instant.
+# post-dump write is after the chosen restore instant. tenant_ddl:
+# declared in the dump; its only post-dump events are DDL (Query events,
+# never a Table_map) -- the round-3 finding.
 DUMP_WITH_RESUME_POINT = """\
 -- MySQL dump 10.13  Distrib 8.0.46
 --
@@ -66,22 +71,46 @@ CREATE DATABASE /*!32312 IF NOT EXISTS*/ `tenant_early` /*!40100 DEFAULT CHARACT
 USE `tenant_early`;
 
 CREATE TABLE `posts` (...);
+
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `tenant_ddl` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;
+
+USE `tenant_ddl`;
+
+CREATE TABLE `posts` (...);
 """
 
 
 class FakeMysqlbinlog:
-    """A fake event stream tagged by the row event's own *table* database
-    (never the session's `USE`), filtered the way a real
+    """A fake event stream, filtered the way a real
     `mysqlbinlog --database=<name> --start-position=<n> [--stop-datetime=<t>]`
-    filters a real row-format binlog. Each kept event's fake output line
-    carries a `Table_map: \\`<table_database>\\`.\\`posts\\`` annotation, the
-    same shape tenant_wrote_anything looks for in real output. A marker
-    starting `STOP-EXCLUDED` is dropped whenever *any* stop_datetime is
-    given -- this fake does not model specific instants, only "before" vs
-    "after" a stop, which is all the tests below need."""
+    filters a real row-format binlog. Each `events` entry is
+    `(file, position, table_database, marker)`, where `marker` is one of:
+
+    - `"ROW:<label>"` -- a row event (Table_map + label), filtered on
+      `table_database` the way a real row event is: the table it targets,
+      never a session's `USE`.
+    - `"DDL:<statement>"` / `"BEGIN"` -- a Query event, filtered on
+      `table_database` the way a real Query event is: the session's `USE`d
+      database, mysqlbinlog's older, coarser rule (see the module
+      docstring) -- modelled here by the same `table_database` field, since
+      the fixture's "session" is exactly the `table_database` given.
+    - `"ROTATE:<yymmdd>:<hh:mm:ss>"` -- a Rotate event, never filtered by
+      `--database` or `--start-position`, same as the real thing.
+
+    Every emitted event line begins with a `#`-prefixed header comment,
+    matching real mysqlbinlog output closely enough that
+    extract_tenant_binlog's own header-scanning regexes
+    (QUERY_EVENT_HEADER_PATTERN, ROTATE_EVENT_PATTERN) work against it
+    unmodified. A label/statement starting `STOP-EXCLUDED` is dropped
+    whenever *any* stop_datetime is given -- this fake does not model
+    specific instants, only "before" vs "after" a stop."""
+
+    _QUERY_HEADER = (
+        "#000000 00:00:00 server id 1  end_log_pos 1 CRC32 0x00000000 \tQuery\tthread_id=1"
+        "\texec_time=0\terror_code=0"
+    )
 
     def __init__(self, events, *, fail=False):
-        # events: list of (file, position, table_database, marker) in file order.
         self.events = events
         self.fail = fail
         self.calls: list[list[str]] = []
@@ -113,13 +142,34 @@ class FakeMysqlbinlog:
             for file, position, table_database, marker in self.events:
                 if file not in files:
                     continue
+                kind, _, rest = marker.partition(":")
+
+                if kind == "ROTATE":
+                    yymmdd, _, hhmmss = rest.partition(":")
+                    out.append(
+                        f"#{yymmdd} {hhmmss} server id 1  end_log_pos 999 CRC32 0x00000000 "
+                        f"\tRotate to next-file.000000  pos: 4"
+                    )
+                    continue
+
                 if file == files[0] and position < start_position:
                     continue
                 if database is not None and table_database != database:
                     continue
-                if stop_datetime is not None and marker.startswith("STOP-EXCLUDED"):
+                if stop_datetime is not None and rest.startswith("STOP-EXCLUDED"):
                     continue
-                out.append(f"Table_map: `{table_database}`.`posts`\n{marker}")
+
+                if kind == "ROW":
+                    out.append(
+                        f"#000000 00:00:00 server id 1  end_log_pos 1 CRC32 0x00000000 "
+                        f"\tTable_map: `{table_database}`.`posts` mapped to number 1\n{rest}"
+                    )
+                elif kind == "BEGIN":
+                    out.append(f"{self._QUERY_HEADER}\nSET TIMESTAMP=1/*!*/;\nBEGIN\n/*!*/;")
+                elif kind == "DDL":
+                    out.append(f"{self._QUERY_HEADER}\nSET TIMESTAMP=1/*!*/;\n{rest}\n/*!*/;")
+                else:
+                    raise AssertionError(f"unknown fake event kind: {kind!r}")
             return subprocess.CompletedProcess(argv, 0, stdout="\n".join(out).encode(), stderr=b"")
 
         if command == "mysql":
@@ -138,17 +188,27 @@ class FakeMysqlbinlog:
 # the filter follows the table, not the session. tenant_early's only event
 # is STOP-EXCLUDED: with any --stop-datetime, it vanishes, modelling a
 # restore instant chosen before that tenant's first post-dump write.
-# tenant_quiet has no event at all, anywhere.
+# tenant_quiet has no event at all, anywhere. tenant_ddl's only events are
+# DDL (Query events) plus the BEGIN/COMMIT bookkeeping around ordinary row
+# writes elsewhere in the same file -- proving DDL is counted and BEGIN
+# is not.
 SAMPLE_EVENTS = [
-    ("mysql-bin.000003", 1000, "tenant_a", "A0-before-resume-must-never-appear"),
-    ("mysql-bin.000003", 2000, "tenant_a", "A1-post-resume"),
-    ("mysql-bin.000003", 2100, "tenant_b", "B1-post-resume"),
-    ("mysql-bin.000003", 2200, "tenant_a", "AX-write-to-tenant_a-from-a-tenant_b-session"),
-    ("mysql-bin.000003", 2300, "tenant_early", "STOP-EXCLUDED-tenant_early-first-write"),
-    ("mysql-bin.000004", 500, "tenant_a", "A2-second-file"),
-    ("mysql-bin.000004", 600, "tenant_b", "B2-second-file"),
-    ("mysql-bin.000004", 700, "tenant_b", "BX-write-to-tenant_b-from-a-tenant_a-session"),
-    ("mysql-bin.000005", 100, "tenant_a", "A3-third-file"),
+    ("mysql-bin.000003", 1000, "tenant_a", "ROW:A0-before-resume-must-never-appear"),
+    ("mysql-bin.000003", 1900, "tenant_a", "BEGIN"),
+    ("mysql-bin.000003", 2000, "tenant_a", "ROW:A1-post-resume"),
+    ("mysql-bin.000003", 2050, "tenant_b", "BEGIN"),
+    ("mysql-bin.000003", 2100, "tenant_b", "ROW:B1-post-resume"),
+    ("mysql-bin.000003", 2200, "tenant_a", "ROW:AX-write-to-tenant_a-from-a-tenant_b-session"),
+    ("mysql-bin.000003", 2300, "tenant_early", "ROW:STOP-EXCLUDED-tenant_early-first-write"),
+    ("mysql-bin.000003", 2400, "tenant_ddl", "BEGIN"),
+    ("mysql-bin.000003", 2450, "tenant_ddl", "DDL:ALTER TABLE posts ADD COLUMN body TEXT"),
+    ("mysql-bin.000003", 2500, "tenant_ddl", "DDL:CREATE TABLE tags (id INT PRIMARY KEY)"),
+    ("mysql-bin.000003", 2550, "tenant_ddl", "DDL:DROP TABLE tags"),
+    ("mysql-bin.000004", 500, "tenant_a", "ROW:A2-second-file"),
+    ("mysql-bin.000004", 600, "tenant_b", "ROW:B2-second-file"),
+    ("mysql-bin.000004", 700, "tenant_b", "ROW:BX-write-to-tenant_b-from-a-tenant_a-session"),
+    ("mysql-bin.000004", 800, None, "ROTATE:260923:12:00:00"),
+    ("mysql-bin.000005", 100, "tenant_a", "ROW:A3-third-file"),
 ]
 
 
@@ -181,7 +241,8 @@ class FindResumePointTests(unittest.TestCase):
     def test_raises_when_the_tenant_database_is_not_in_the_dump(self):
         # The typo case: a --tenant-database that matches no database this
         # dump actually declares. This is the ONLY guard that catches a
-        # typo -- a quiet tenant or an early stop-datetime must not trip it.
+        # typo -- a quiet tenant, an early stop-datetime, or a DDL-only
+        # tenant must not trip it.
         with self.assertRaises(etb.ExtractError) as ctx:
             etb.parse_dump_resume_point(DUMP_WITH_RESUME_POINT, tenant_database="tenant_c")
         self.assertIn("tenant_c", str(ctx.exception))
@@ -278,23 +339,65 @@ class MysqlbinlogArgvTests(unittest.TestCase):
             etb.mysqlbinlog_argv([], database="tenant_a", start_position=1)
 
 
-class TenantWroteAnythingTests(unittest.TestCase):
-    def test_true_when_the_tenants_table_map_is_present(self):
-        sql = b"Table_map: `tenant_a`.`posts`\nsome row event"
-        self.assertTrue(etb.tenant_wrote_anything(sql, "tenant_a"))
+class CountTenantEventsTests(unittest.TestCase):
+    def test_counts_row_events_and_excludes_begin(self):
+        run = FakeMysqlbinlog(SAMPLE_EVENTS)
+        sql = etb.extract_tenant_stream(
+            ["mysql-bin.000003", "mysql-bin.000004"], database="tenant_a", start_position=1653, run=run
+        )
+        row_events, statements = etb.count_tenant_events(sql, "tenant_a")
+        # A1, AX, A2 -- three row events for tenant_a in this range (A0 is
+        # before the resume position and excluded by start_position).
+        self.assertEqual(row_events, 3)
+        # The BEGIN preceding A1 must not be counted as a statement.
+        self.assertEqual(statements, 0)
 
-    def test_false_when_absent(self):
-        sql = b"Table_map: `tenant_b`.`posts`\nsome row event"
-        self.assertFalse(etb.tenant_wrote_anything(sql, "tenant_a"))
+    def test_counts_ddl_statements_and_excludes_their_begin(self):
+        run = FakeMysqlbinlog(SAMPLE_EVENTS)
+        sql = etb.extract_tenant_stream(
+            ["mysql-bin.000003"], database="tenant_ddl", start_position=0, run=run
+        )
+        row_events, statements = etb.count_tenant_events(sql, "tenant_ddl")
+        # tenant_ddl never writes a row -- only DDL.
+        self.assertEqual(row_events, 0)
+        # ALTER, CREATE, DROP -- three statements. The BEGIN ahead of them
+        # must not inflate this count.
+        self.assertEqual(statements, 3)
 
-    def test_false_on_empty_stream(self):
-        self.assertFalse(etb.tenant_wrote_anything(b"", "tenant_a"))
+    def test_zero_and_zero_for_a_quiet_tenant(self):
+        run = FakeMysqlbinlog(SAMPLE_EVENTS)
+        sql = etb.extract_tenant_stream(
+            ["mysql-bin.000003", "mysql-bin.000004"], database="tenant_quiet", start_position=1653, run=run
+        )
+        self.assertEqual(etb.count_tenant_events(sql, "tenant_quiet"), (0, 0))
 
-    def test_never_raises(self):
-        # Unlike find_resume_point's declaration check, this is purely
-        # descriptive -- it is not this function's job to decide whether an
-        # empty result is a typo or a legitimately quiet tenant.
-        self.assertFalse(etb.tenant_wrote_anything(b"nothing relevant here", "tenant_a"))
+    def test_never_raises_on_an_empty_stream(self):
+        self.assertEqual(etb.count_tenant_events(b"", "tenant_a"), (0, 0))
+
+
+class LastRotateTimestampTests(unittest.TestCase):
+    def test_reads_the_last_rotate_events_timestamp(self):
+        run = FakeMysqlbinlog(SAMPLE_EVENTS)
+        sql = etb.extract_tenant_stream(
+            ["mysql-bin.000003", "mysql-bin.000004"], database="tenant_a", start_position=1653, run=run
+        )
+        self.assertEqual(etb.last_rotate_timestamp(sql), "2026-09-23 12:00:00")
+
+    def test_none_when_no_rotate_event_is_present(self):
+        run = FakeMysqlbinlog(SAMPLE_EVENTS)
+        # 000005 carries no ROTATE marker in the fixture -- the "currently
+        # open file" case.
+        sql = etb.extract_tenant_stream(["mysql-bin.000005"], database="tenant_a", start_position=0, run=run)
+        self.assertIsNone(etb.last_rotate_timestamp(sql))
+
+    def test_survives_the_database_filter(self):
+        # A Rotate event belongs to no database -- must appear in a scoped
+        # extract exactly as it does in an unscoped one.
+        run = FakeMysqlbinlog(SAMPLE_EVENTS)
+        scoped = etb.extract_tenant_stream(
+            ["mysql-bin.000004"], database="tenant_quiet", start_position=0, run=run
+        )
+        self.assertEqual(etb.last_rotate_timestamp(scoped), "2026-09-23 12:00:00")
 
 
 class ExtractTenantStreamTests(unittest.TestCase):
@@ -342,25 +445,6 @@ class ExtractTenantStreamTests(unittest.TestCase):
         run = FakeMysqlbinlog(SAMPLE_EVENTS, fail=True)
         with self.assertRaises(etb.ExtractError):
             etb.extract_tenant_stream(["mysql-bin.000003"], database="tenant_a", start_position=1653, run=run)
-
-    def test_returns_empty_scoped_result_without_raising_for_a_quiet_tenant(self):
-        # extract_tenant_stream itself never decides whether an empty
-        # result is a problem -- that is _replay_from_resume_point's job
-        # (via tenant_wrote_anything). A tenant with zero events in range
-        # must not raise here.
-        run = FakeMysqlbinlog(SAMPLE_EVENTS)
-        out = etb.extract_tenant_stream(
-            ["mysql-bin.000003", "mysql-bin.000004"], database="tenant_quiet", start_position=1653, run=run
-        )
-        self.assertFalse(etb.tenant_wrote_anything(out, "tenant_quiet"))
-
-    def test_unscoped_extract_never_triggers_the_no_op_check(self):
-        # database=None means "every tenant" -- there is no single tenant
-        # to check tenant_wrote_anything against, and this function does
-        # not perform that check itself in any case.
-        run = FakeMysqlbinlog([])
-        out = etb.extract_tenant_stream(["mysql-bin.000003"], database=None, start_position=0, run=run)
-        self.assertEqual(out, b"")
 
     def test_env_passed_to_mysqlbinlog_is_path_and_tz_utc_only(self):
         run = FakeMysqlbinlog(SAMPLE_EVENTS)
@@ -424,7 +508,8 @@ class RestorePointInTimeTests(unittest.TestCase):
             apply_password="pw",
             run=run,
         )
-        self.assertTrue(result.applied)
+        self.assertEqual(result.row_events, 3)  # A1, AX, A2
+        self.assertEqual(result.statements, 0)
         self.assertIn(b"A1-post-resume", result.sql)
         self.assertNotIn(b"B1-post-resume", result.sql)
         self.assertEqual(run.applied, result.sql)
@@ -489,10 +574,11 @@ class RestorePointInTimeTests(unittest.TestCase):
             )
         self.assertIn("gap", str(ctx.exception))
 
-    # -- Round-2 finding 1: a quiet tenant, or a --stop-datetime before a
-    # tenant's first post-dump write, applies nothing and does not raise.
+    # -- Round-2 finding 1 (as re-scoped by round 3): a quiet tenant, or a
+    # --stop-datetime before a tenant's first post-dump write, is applied
+    # (harmlessly empty) and reported as zero, not refused.
 
-    def test_a_quiet_tenant_is_a_successful_empty_replay(self):
+    def test_a_quiet_tenant_is_always_applied_and_reports_zero(self):
         run = FakeMysqlbinlog(SAMPLE_EVENTS)
         result = etb.restore_point_in_time(
             dump_text=DUMP_WITH_RESUME_POINT,
@@ -503,12 +589,13 @@ class RestorePointInTimeTests(unittest.TestCase):
             apply_password="pw",
             run=run,
         )
-        self.assertFalse(result.applied)
-        # apply_stream (the "mysql" command) must never have been called --
-        # nothing to apply means nothing sent to the restore target.
-        self.assertNotIn("mysql", [c[0] for c in run.calls])
+        self.assertEqual((result.row_events, result.statements), (0, 0))
+        # apply_stream (the "mysql" command) is ALWAYS called now, even for
+        # a stream carrying nothing for the tenant -- harmless, and one
+        # fewer code path to keep in sync with the count above.
+        self.assertIn("mysql", [c[0] for c in run.calls])
 
-    def test_a_stop_datetime_before_the_tenants_first_write_is_a_successful_empty_replay(self):
+    def test_a_stop_datetime_before_the_tenants_first_write_reports_zero(self):
         run = FakeMysqlbinlog(SAMPLE_EVENTS)
         result = etb.restore_point_in_time(
             dump_text=DUMP_WITH_RESUME_POINT,
@@ -520,8 +607,29 @@ class RestorePointInTimeTests(unittest.TestCase):
             apply_password="pw",
             run=run,
         )
-        self.assertFalse(result.applied)
-        self.assertNotIn("mysql", [c[0] for c in run.calls])
+        self.assertEqual((result.row_events, result.statements), (0, 0))
+
+    # -- Round-3 finding 1: a tenant whose only post-dump events are DDL
+    # must be detected via the statement count, not missed by row_events.
+
+    def test_a_ddl_only_tenant_reports_nonzero_statements(self):
+        run = FakeMysqlbinlog(SAMPLE_EVENTS)
+        result = etb.restore_point_in_time(
+            dump_text=DUMP_WITH_RESUME_POINT,
+            binlog_paths=["mysql-bin.000003"],
+            tenant_database="tenant_ddl",
+            apply_socket_path="/tmp/mysqld.sock",
+            apply_user="root",
+            apply_password="pw",
+            run=run,
+        )
+        self.assertEqual(result.row_events, 0)
+        self.assertEqual(result.statements, 3)
+        self.assertIn(b"ALTER TABLE posts ADD COLUMN body TEXT", result.sql)
+        self.assertIn(b"CREATE TABLE tags (id INT PRIMARY KEY)", result.sql)
+        self.assertIn(b"DROP TABLE tags", result.sql)
+        # And it was actually applied -- not skipped because row_events==0.
+        self.assertEqual(run.applied, result.sql)
 
     # -- Round-2 finding 2: sort before slicing, check contiguity over the
     # whole given list.
@@ -659,19 +767,13 @@ class MainTests(unittest.TestCase):
     def test_a_quiet_tenant_exits_zero_and_names_the_dump_as_the_restore(self):
         import contextlib
         import io
+        import unittest.mock as mock
 
         os.environ["MYSQL_PWD"] = "pw"
         with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
             handle.write(DUMP_WITH_RESUME_POINT)
             path = handle.name
         try:
-            # main() always uses subprocess.run internally, so this drives
-            # the CLI path with a real (harmless) mysqlbinlog/mysql absent
-            # from PATH would fail differently -- instead we call through
-            # _replay_from_resume_point's own FakeMysqlbinlog path by
-            # monkeypatching subprocess.run for the duration of the call.
-            import unittest.mock as mock
-
             with mock.patch("extract_tenant_binlog.subprocess.run", FakeMysqlbinlog(SAMPLE_EVENTS)):
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -734,6 +836,110 @@ class MainTests(unittest.TestCase):
             "no tenant_early events between the resume point and 2026-09-23 00:00:00; the loaded dump is the restore",
             stdout.getvalue(),
         )
+
+    def test_a_ddl_only_tenant_exits_zero_and_reports_statements(self):
+        import contextlib
+        import io
+        import unittest.mock as mock
+
+        os.environ["MYSQL_PWD"] = "pw"
+        with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
+            handle.write(DUMP_WITH_RESUME_POINT)
+            path = handle.name
+        try:
+            with mock.patch("extract_tenant_binlog.subprocess.run", FakeMysqlbinlog(SAMPLE_EVENTS)):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    rc = etb.main(
+                        [
+                            "--dump",
+                            path,
+                            "--tenant-database",
+                            "tenant_ddl",
+                            "--apply-socket",
+                            "/tmp/mysqld.sock",
+                            "--apply-user",
+                            "root",
+                            "mysql-bin.000003",
+                        ]
+                    )
+        finally:
+            del os.environ["MYSQL_PWD"]
+            os.unlink(path)
+        self.assertEqual(rc, 0)
+        self.assertIn("applied 0 row events and 3 statements for 'tenant_ddl'", stdout.getvalue())
+
+    def test_warns_on_stderr_when_stop_datetime_is_later_than_the_binlogs_end(self):
+        import contextlib
+        import io
+        import unittest.mock as mock
+
+        os.environ["MYSQL_PWD"] = "pw"
+        with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
+            handle.write(DUMP_WITH_RESUME_POINT)
+            path = handle.name
+        try:
+            with mock.patch("extract_tenant_binlog.subprocess.run", FakeMysqlbinlog(SAMPLE_EVENTS)):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    rc = etb.main(
+                        [
+                            "--dump",
+                            path,
+                            "--tenant-database",
+                            "tenant_a",
+                            "--stop-datetime",
+                            "2026-09-23 23:59:59",  # after the fixture's ROTATE at 12:00:00
+                            "--apply-socket",
+                            "/tmp/mysqld.sock",
+                            "--apply-user",
+                            "root",
+                            "mysql-bin.000003",
+                            "mysql-bin.000004",
+                        ]
+                    )
+        finally:
+            del os.environ["MYSQL_PWD"]
+            os.unlink(path)
+        self.assertEqual(rc, 0)
+        self.assertIn("the given binlogs end at 2026-09-23 12:00:00", stdout.getvalue())
+        self.assertIn("WARNING", stderr.getvalue())
+        self.assertIn("2026-09-23 12:00:00", stderr.getvalue())
+
+    def test_no_warning_when_stop_datetime_is_within_the_binlogs_coverage(self):
+        import contextlib
+        import io
+        import unittest.mock as mock
+
+        os.environ["MYSQL_PWD"] = "pw"
+        with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
+            handle.write(DUMP_WITH_RESUME_POINT)
+            path = handle.name
+        try:
+            with mock.patch("extract_tenant_binlog.subprocess.run", FakeMysqlbinlog(SAMPLE_EVENTS)):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    rc = etb.main(
+                        [
+                            "--dump",
+                            path,
+                            "--tenant-database",
+                            "tenant_a",
+                            "--stop-datetime",
+                            "2026-09-23 00:00:00",  # before the fixture's ROTATE at 12:00:00
+                            "--apply-socket",
+                            "/tmp/mysqld.sock",
+                            "--apply-user",
+                            "root",
+                            "mysql-bin.000003",
+                            "mysql-bin.000004",
+                        ]
+                    )
+        finally:
+            del os.environ["MYSQL_PWD"]
+            os.unlink(path)
+        self.assertEqual(rc, 0)
+        self.assertEqual(stderr.getvalue(), "")
 
 
 if __name__ == "__main__":
