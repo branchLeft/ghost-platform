@@ -74,10 +74,17 @@ describe('createHttpGhostProbe', () => {
     expect(await probe.isHealthy()).toBe(true);
   });
 
-  it('is unhealthy when a redirect leads nowhere -- following it is not the same as being healthy', async () => {
+  it('is unhealthy on a 3xx -- never followed, whatever it points at', async () => {
     const fake = await startFakeGhost((_req, res) => {
-      res.writeHead(301, { Location: 'https://127.0.0.1:1/' }).end();
+      res.writeHead(301, { Location: 'https://an-entirely-different-host.example/' }).end();
     });
+    close = fake.close;
+    const probe = createHttpGhostProbe(fake.url, 1000);
+    expect(await probe.isHealthy()).toBe(false);
+  });
+
+  it('is unhealthy on a non-200 2xx -- only exactly 200 counts as healthy', async () => {
+    const fake = await startFakeGhost((_req, res) => res.writeHead(204).end());
     close = fake.close;
     const probe = createHttpGhostProbe(fake.url, 1000);
     expect(await probe.isHealthy()).toBe(false);

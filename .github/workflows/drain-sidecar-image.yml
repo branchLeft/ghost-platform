@@ -1,9 +1,10 @@
 name: Drain sidecar image
 
-# Builds the drain-sidecar image and proves its contract against a real
-# Ghost container -- scripts/test-drain-sidecar.sh, which reads the Ghost
-# image straight out of this repo's own Dockerfile so the proof never drifts
-# from the image the platform actually ships.
+# Builds the platform image (this repo's own root Dockerfile) and the
+# drain-sidecar image, then proves the sidecar's contract against a real,
+# running instance of the platform image with scripts/test-drain-sidecar.sh
+# -- never a second-hand copy of what the platform ships, because it's the
+# same image handed to the script.
 #
 # Build-only, mirroring build.yml's stance for the tenant image: no push,
 # no registry credential. Delivering this sidecar to a host (an image
@@ -64,5 +65,5 @@ jobs:
             --tag drain-sidecar:ci \
             services/drain-sidecar
 
-      - name: Real-Ghost proof (flag set -> 503 while Ghost answers 200; flag cleared -> 200)
+      - name: Real-Ghost proof (Ghost not ready, flag set, flag cleared, unreadable flag directory)
         run: ./scripts/test-drain-sidecar.sh drain-sidecar:ci ghost-platform:ci

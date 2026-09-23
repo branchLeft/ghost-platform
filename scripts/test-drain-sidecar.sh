@@ -1,11 +1,11 @@
 #!/bin/sh
 # Proves the drain-sidecar's contract against a real Ghost container: with
-# the broker's drain flag set, the sidecar answers 503 while Ghost itself
-# still answers 200 -- the whole reason a slot's health comes from the
+# the broker's drain flag set, the sidecar answers 503 "drained" while Ghost
+# itself still answers 200 -- the whole reason a slot's health comes from the
 # sidecar rather than from Ghost (ghost-platform-docs/19-try-it-now-design/
 # 02-broker-and-slot.html §01b). With the flag cleared, the sidecar answers
-# 200. It also proves the two ways the sidecar must fail closed: while
-# Ghost is still booting, and when the flag directory can't be read.
+# 200. It also proves the two ways the sidecar must fail closed: flag clear
+# but Ghost not yet ready, and a flag directory it cannot read.
 #
 # Both images under test are handed to this script rather than derived from
 # it, so the proof always runs against what the platform actually builds:
@@ -14,13 +14,18 @@
 # wrapper -- the image a real tenant boots), not a second-hand copy of its
 # `FROM` line.
 #
-# The sidecar shares Ghost's network namespace (`docker run --network
-# container:<id>`), matching the design's own term for how the two
-# processes see one address. Docker requires port publishing to be declared
-# on the container that owns the namespace, so both the Ghost port and the
-# sidecar's health port are published on the Ghost container up front, even
-# though the sidecar container that will answer on its port doesn't exist
-# yet at that point.
+# The sidecar under test always shares Ghost's network namespace (`docker
+# run --network container:<id>`), matching the design's own term for how the
+# two processes see one address -- including the unreadable-flag-directory
+# state, which needs a genuinely healthy Ghost behind it: a sidecar that
+# fails open on an unreadable flag would otherwise fall through to asking
+# Ghost and get a 200, and an isolated network would hide that by making
+# even the correct implementation answer 503 for the wrong reason (Ghost
+# unreachable, not the flag). Docker requires port publishing to be declared
+# on the container that owns the namespace, so every health port answered on
+# this shared namespace is published on the Ghost container up front, even
+# though the sidecar containers that will answer on them don't exist yet at
+# that point.
 #
 # Ghost's own `url` is configured https here, as any real tenant's is
 # (LLD-4 §U3b): a plaintext probe with no X-Forwarded-Proto header gets
@@ -43,6 +48,7 @@ RUN_ID="$$"
 GHOST_NAME="drain-sidecar-test-ghost-$RUN_ID"
 SIDECAR_NAME="drain-sidecar-test-sidecar-$RUN_ID"
 UNREADABLE_NAME="drain-sidecar-test-unreadable-$RUN_ID"
+UNREADABLE_VOLUME="drain-sidecar-test-unreadable-$RUN_ID"
 FLAG_DIR="$(mktemp -d)"
 FLAG_FILE="$FLAG_DIR/drain"
 # 0755: readable and traversable by the sidecar's uid (1000) without being
@@ -50,17 +56,14 @@ FLAG_FILE="$FLAG_DIR/drain"
 # must provide. `chmod 777` would also pass this test; it would not prove
 # anything about the mode the sidecar actually needs.
 chmod 0755 "$FLAG_DIR"
-# Deliberately left at mktemp's own default (0700, owned by whoever runs
-# this script) -- uid 1000 can neither read nor traverse it, which is
-# exactly the "cannot tell" case the flag check must fail closed on.
-UNREADABLE_DIR="$(mktemp -d)"
 FAILURES=0
 
 cleanup() {
     docker rm -f "$UNREADABLE_NAME" >/dev/null 2>&1 || true
     docker rm -f "$SIDECAR_NAME" >/dev/null 2>&1 || true
     docker rm -f "$GHOST_NAME" >/dev/null 2>&1 || true
-    rm -rf "$FLAG_DIR" "$UNREADABLE_DIR"
+    docker volume rm "$UNREADABLE_VOLUME" >/dev/null 2>&1 || true
+    rm -rf "$FLAG_DIR"
 }
 trap cleanup EXIT
 
@@ -73,6 +76,7 @@ docker run -d \
     --name "$GHOST_NAME" \
     -p "$GHOST_PORT:2368" \
     -p "$SIDECAR_PORT:8080" \
+    -p "$UNREADABLE_PORT:8081" \
     -e url="https://localhost:$GHOST_PORT" \
     -e database__client="sqlite3" \
     -e database__connection__filename="/var/lib/ghost/content/data/ghost-drain-test.db" \
@@ -80,34 +84,38 @@ docker run -d \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE="true" \
     "$GHOST_IMAGE" >/dev/null
 
-echo "--- starting sidecar immediately (sharing Ghost's network namespace) ---"
+echo "--- starting sidecar immediately (sharing Ghost's network namespace), flag directory mounted read-only ---"
 docker run -d \
     --name "$SIDECAR_NAME" \
     --network "container:$GHOST_NAME" \
-    -v "$FLAG_DIR:/var/run/branchleft" \
+    -v "$FLAG_DIR:/var/run/branchleft:ro" \
     -e DRAIN_FLAG_PATH="/var/run/branchleft/drain" \
     -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
     -e PORT="8080" \
     "$SIDECAR_IMAGE" >/dev/null
 
-# http_status URL -> sets $status to the HTTP code, empty string on a
-# connection failure (curl not yet answering counts as "not ready" rather
-# than aborting the whole script under set -e). Carries the same
-# X-Forwarded-Proto header the edge sets on every real request -- both
-# Ghost's own port and the sidecar's answer to it identically, so sending
-# it everywhere keeps every check on the path production traffic takes.
+# http_probe URL BODY_FILE -> sets $status via stdout to the HTTP code and
+# writes the response body to BODY_FILE; empty status on a connection
+# failure (curl not yet answering counts as "not ready" rather than
+# aborting the whole script under set -e). Carries the same
+# X-Forwarded-Proto header the edge sets on every real request -- Ghost's
+# own port and every sidecar answer to it identically, so sending it
+# everywhere keeps every check on the path production traffic takes.
+http_probe() {
+    curl -s -o "$2" -w '%{http_code}' -H 'X-Forwarded-Proto: https' "$1" 2>/dev/null || true
+}
 http_status() {
-    curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Proto: https' "$1" 2>/dev/null || true
+    http_probe "$1" /dev/null
 }
 
-echo "--- state: flag clear, Ghost still booting -> sidecar answers 503 (Ghost's own boot-time maintenance mode gives this for free) ---"
+echo "--- state: flag clear, Ghost not ready -> 503 ---"
 deadline=$(($(date +%s) + 60))
-saw_503_while_booting=false
+saw_503_while_ghost_not_ready=false
 ghost_ready=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    status="$(http_status "http://localhost:$SIDECAR_PORT/health")"
+    status="$(http_status "http://localhost:$SIDECAR_PORT/healthz")"
     if [ "$status" = "503" ]; then
-        saw_503_while_booting=true
+        saw_503_while_ghost_not_ready=true
     fi
     if [ "$status" = "200" ]; then
         ghost_ready=true
@@ -123,8 +131,8 @@ if [ "$ghost_ready" != "true" ]; then
     docker logs "$SIDECAR_NAME" 2>&1 | tail -40
     exit 1
 fi
-if [ "$saw_503_while_booting" = "true" ]; then
-    echo "PASS: sidecar answered 503 at least once while Ghost was still booting"
+if [ "$saw_503_while_ghost_not_ready" = "true" ]; then
+    echo "PASS: sidecar answered 503 while the flag was clear and Ghost was not yet ready"
 else
     echo "FAIL: never observed a 503 from the sidecar before Ghost became ready"
     FAILURES=$((FAILURES + 1))
@@ -146,30 +154,34 @@ assert_status() {
     fi
 }
 assert_status "sidecar answers 200 with the flag clear and Ghost healthy" \
-    "http://localhost:$SIDECAR_PORT/health" 200
+    "http://localhost:$SIDECAR_PORT/healthz" 200
 echo
 
 echo "--- state: flag set ---"
 touch "$FLAG_FILE"
 # The flag is a file the broker writes; a filesystem-backed bind mount can
 # lag by a beat behind the touch on some Docker Desktop backends, so this
-# polls rather than asserting on the very next request.
+# polls rather than asserting on the very next request. The body, not just
+# the status, is checked -- 503 alone doesn't distinguish "drained" from
+# "Ghost unhealthy", and those are different states with the same code.
+body_file="$(mktemp)"
 deadline=$(($(date +%s) + 10))
 drained=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    status="$(http_status "http://localhost:$SIDECAR_PORT/health")"
-    if [ "$status" = "503" ]; then
+    status="$(http_probe "http://localhost:$SIDECAR_PORT/healthz" "$body_file")"
+    if [ "$status" = "503" ] && grep -q '"drained"' "$body_file"; then
         drained=true
         break
     fi
     sleep 0.2
 done
 if [ "$drained" = "true" ]; then
-    echo "PASS: sidecar answers 503 with the flag set (got 503)"
+    echo "PASS: sidecar answers 503 \"drained\" with the flag set (got $status)"
 else
-    echo "FAIL: sidecar never answered 503 within 10s of the flag being set (last: $status)"
+    echo "FAIL: sidecar never answered 503 \"drained\" within 10s of the flag being set (last status: $status, body: $(cat "$body_file" 2>/dev/null))"
     FAILURES=$((FAILURES + 1))
 fi
+rm -f "$body_file"
 assert_status "Ghost itself still answers 200 while the sidecar is draining -- the two are independent signals" \
     "http://localhost:$GHOST_PORT/" 200
 echo
@@ -179,7 +191,7 @@ rm -f "$FLAG_FILE"
 deadline=$(($(date +%s) + 10))
 undrained=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    status="$(http_status "http://localhost:$SIDECAR_PORT/health")"
+    status="$(http_status "http://localhost:$SIDECAR_PORT/healthz")"
     if [ "$status" = "200" ]; then
         undrained=true
         break
@@ -195,32 +207,54 @@ fi
 echo
 
 echo "--- state: flag directory unreadable by the sidecar's uid -> fails closed ---"
+# A root-owned, mode-0700 directory inside a genuine Docker volume -- not a
+# bind mount of a host directory. Docker Desktop's virtiofs/gRPC-FUSE layer
+# does not enforce host uid/gid permissions on a bind mount the way a
+# native Linux mount does, so a bind mount here would pass this state
+# whether or not the sidecar actually fails closed. A named volume's
+# contents are real files inside the Docker daemon's own Linux filesystem,
+# so the permission check below is genuine on every platform this script
+# runs on. Seeded by running as root once, before the container under test
+# -- which never runs as root -- ever touches it.
+docker run --rm --user root \
+    -v "$UNREADABLE_VOLUME:/vol" \
+    "$SIDECAR_IMAGE" sh -c 'chmod 700 /vol && chown 0:0 /vol' >/dev/null
+
+# Shares Ghost's network namespace like the main sidecar above: a sidecar
+# that fails OPEN on an unreadable directory would fall through to asking a
+# genuinely healthy Ghost and answer 200, and an isolated network would
+# mask that bug by making even a fail-open sidecar answer 503 for the wrong
+# reason (Ghost unreachable, not the flag) -- indistinguishable from the
+# fix by this state alone.
 docker run -d \
     --name "$UNREADABLE_NAME" \
-    -p "$UNREADABLE_PORT:8080" \
-    -v "$UNREADABLE_DIR:/var/run/branchleft" \
+    --network "container:$GHOST_NAME" \
+    -v "$UNREADABLE_VOLUME:/var/run/branchleft:ro" \
     -e DRAIN_FLAG_PATH="/var/run/branchleft/drain" \
     -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
-    -e PORT="8080" \
+    -e PORT="8081" \
     "$SIDECAR_IMAGE" >/dev/null
+
+body_file="$(mktemp)"
 deadline=$(($(date +%s) + 10))
 unreadable_failed_closed=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    status="$(http_status "http://localhost:$UNREADABLE_PORT/health")"
-    if [ "$status" = "503" ]; then
+    status="$(http_probe "http://localhost:$UNREADABLE_PORT/healthz" "$body_file")"
+    if [ "$status" = "503" ] && grep -q '"drained"' "$body_file"; then
         unreadable_failed_closed=true
         break
     fi
     sleep 0.2
 done
 if [ "$unreadable_failed_closed" = "true" ]; then
-    echo "PASS: sidecar answers 503 when it cannot read the flag directory (got 503)"
+    echo "PASS: sidecar answers 503 \"drained\" when it cannot read the flag directory (got $status)"
 else
-    echo "FAIL: sidecar did not fail closed on an unreadable flag directory (last: $status)"
+    echo "FAIL: sidecar did not fail closed on an unreadable flag directory (last status: $status, body: $(cat "$body_file" 2>/dev/null))"
     echo "--- sidecar (unreadable-dir) logs ---"
     docker logs "$UNREADABLE_NAME" 2>&1 | tail -40
     FAILURES=$((FAILURES + 1))
 fi
+rm -f "$body_file"
 echo
 
 if [ "$FAILURES" -gt 0 ]; then

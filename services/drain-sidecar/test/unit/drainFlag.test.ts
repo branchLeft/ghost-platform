@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -55,5 +55,10 @@ describe('createFileDrainFlag', () => {
   it('is set (fails closed) when the containing directory does not exist', () => {
     const missingPath = join(dir, 'no-such-directory', 'drain');
     expect(createFileDrainFlag(missingPath).isSet()).toBe(true);
+  });
+
+  it('is set when the flag is a dangling symlink -- the entry, not what it resolves to, is the contract', () => {
+    symlinkSync(join(dir, 'no-such-target'), flagPath);
+    expect(createFileDrainFlag(flagPath).isSet()).toBe(true);
   });
 });

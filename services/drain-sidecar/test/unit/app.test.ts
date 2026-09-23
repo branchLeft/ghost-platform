@@ -31,7 +31,7 @@ function fakeGhost(healthy: boolean): GhostProbe {
   return { isHealthy: async () => healthy };
 }
 
-describe('createApp — GET /health', () => {
+describe('createApp — GET /healthz', () => {
   let close: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -50,7 +50,7 @@ describe('createApp — GET /health', () => {
     const listening = await listen(createApp(fakeFlag(true), ghost));
     close = listening.close;
 
-    const res = await fetch(`${listening.baseUrl}/health`);
+    const res = await fetch(`${listening.baseUrl}/healthz`);
     expect(res.status).toBe(503);
     expect(asked).toBe(false);
   });
@@ -59,7 +59,7 @@ describe('createApp — GET /health', () => {
     const listening = await listen(createApp(fakeFlag(false), fakeGhost(true)));
     close = listening.close;
 
-    const res = await fetch(`${listening.baseUrl}/health`);
+    const res = await fetch(`${listening.baseUrl}/healthz`);
     expect(res.status).toBe(200);
   });
 
@@ -67,7 +67,7 @@ describe('createApp — GET /health', () => {
     const listening = await listen(createApp(fakeFlag(false), fakeGhost(false)));
     close = listening.close;
 
-    const res = await fetch(`${listening.baseUrl}/health`);
+    const res = await fetch(`${listening.baseUrl}/healthz`);
     expect(res.status).toBe(503);
   });
 
@@ -75,7 +75,7 @@ describe('createApp — GET /health', () => {
     const listening = await listen(createApp(fakeFlag(true), fakeGhost(false)));
     close = listening.close;
 
-    const res = await fetch(`${listening.baseUrl}/health`);
+    const res = await fetch(`${listening.baseUrl}/healthz`);
     expect(res.status).toBe(503);
   });
 
@@ -83,7 +83,7 @@ describe('createApp — GET /health', () => {
     const listening = await listen(createApp(fakeFlag(false), fakeGhost(true)));
     close = listening.close;
 
-    const res = await fetch(`${listening.baseUrl}/health`);
+    const res = await fetch(`${listening.baseUrl}/healthz`);
     expect(res.headers.get('x-powered-by')).toBeNull();
   });
 });

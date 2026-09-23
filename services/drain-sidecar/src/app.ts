@@ -14,7 +14,7 @@ export function createApp(drainFlag: DrainFlag, ghost: GhostProbe): Express {
   const app = express();
   app.disable('x-powered-by');
 
-  app.get('/health', async (_req, res) => {
+  app.get('/healthz', async (_req, res) => {
     if (drainFlag.isSet()) {
       res.status(503).json({ status: 'drained' });
       return;
