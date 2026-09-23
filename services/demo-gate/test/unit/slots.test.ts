@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { validateSlotName } from '@branchleft/ghost-platform-render-core';
+import { hashIdOf, validateSlotName } from '@branchleft/ghost-platform-render-core';
 import {
   createLeaseReader,
   createSlotsSource,
@@ -12,6 +12,7 @@ import {
 
 const HASH =
   '$argon2id$v=19$m=8192,t=1,p=1$c2FsdHNhbHRzYWx0c2FsdA$dGFndGFndGFndGFndGFndGFndGFndGFndGFndGFndGE';
+const HASH_ID = hashIdOf(HASH);
 const LEASE = '01J9F4Q7ZC3M8V2K6X0R5T1B9D';
 const entry = (over: Record<string, unknown> = {}) => ({
   host: 'a1b2.demo.example',
@@ -27,6 +28,11 @@ describe('parseSlots', () => {
     expect(slots.get('a1b2.demo.example')?.slot).toBe('0');
     expect(slots.get('c3d4.demo.example')?.hash.memoryKiB).toBe(8192);
     expect(slots.size).toBe(2);
+  });
+
+  it("carries the raw PHC string's hashId alongside the parsed hash", () => {
+    const slots = parseSlots(file(entry()));
+    expect(slots.get('a1b2.demo.example')?.hashId).toBe(HASH_ID);
   });
 
   it('accepts an empty slot list', () => {
@@ -92,9 +98,15 @@ describe('files on disk', () => {
     await expect(source()).rejects.toThrow();
   });
 
-  it('reads the current lease from the broker record', async () => {
-    writeFileSync(join(dir, '0.json'), JSON.stringify({ slot: '0', lease: LEASE }));
-    expect(await createLeaseReader(dir)(validateSlotName('0'))).toBe(LEASE);
+  it('reads the current lease and hashId from the broker record', async () => {
+    writeFileSync(
+      join(dir, '0.json'),
+      JSON.stringify({ slot: '0', lease: LEASE, hashId: HASH_ID })
+    );
+    expect(await createLeaseReader(dir)(validateSlotName('0'))).toEqual({
+      lease: LEASE,
+      hashId: HASH_ID,
+    });
   });
 
   it('throws on a missing, malformed, misplaced or symlinked record', async () => {
@@ -102,10 +114,21 @@ describe('files on disk', () => {
     await expect(read(validateSlotName('0'))).rejects.toThrow();
     writeFileSync(join(dir, '0.json'), 'nope');
     await expect(read(validateSlotName('0'))).rejects.toThrow();
-    writeFileSync(join(dir, '1.json'), JSON.stringify({ slot: '0', lease: LEASE }));
+    writeFileSync(
+      join(dir, '1.json'),
+      JSON.stringify({ slot: '0', lease: LEASE, hashId: HASH_ID })
+    );
     await expect(read(validateSlotName('1'))).rejects.toThrow(/names slot/);
-    writeFileSync(join(dir, 'real.json'), JSON.stringify({ slot: '2', lease: LEASE }));
+    writeFileSync(
+      join(dir, 'real.json'),
+      JSON.stringify({ slot: '2', lease: LEASE, hashId: HASH_ID })
+    );
     symlinkSync(join(dir, 'real.json'), join(dir, '2.json'));
     await expect(read(validateSlotName('2'))).rejects.toThrow();
+  });
+
+  it('throws on a lease record missing hashId (an old-shape record the broker must never write)', async () => {
+    writeFileSync(join(dir, '0.json'), JSON.stringify({ slot: '0', lease: LEASE }));
+    await expect(createLeaseReader(dir)(validateSlotName('0'))).rejects.toThrow(/hashId/);
   });
 });

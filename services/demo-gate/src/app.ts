@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { LeaseId, SlotName } from '@branchleft/ghost-platform-render-core';
+import type { SlotName } from '@branchleft/ghost-platform-render-core';
 import { verifyPassphrase, type Argon2idHash } from './argon2id.js';
 import type { AttemptCeiling } from './ceiling.js';
 import { readGateCookies, setCookieHeader, signCookie, verifyCookie } from './cookie.js';
 import { DerivationGateFullError, type DerivationGate } from './derivationGate.js';
 import { LOGIN_PATH, passphrasePage, safeReturnPath } from './page.js';
-import type { GatedHost } from './slots.js';
+import type { CurrentLease, GatedHost } from './slots.js';
 import type { SourceResolver } from './source.js';
 
 export const VERIFY_PATH = '/__gate/verify';
@@ -15,20 +15,32 @@ const MAX_PASSPHRASE_LENGTH = 256;
 
 export interface GateDeps {
   readonly slots: () => Promise<ReadonlyMap<string, GatedHost>>;
-  readonly leaseOf: (slot: SlotName) => Promise<LeaseId>;
+  readonly leaseOf: (slot: SlotName) => Promise<CurrentLease>;
   readonly signingKey: Buffer;
+  /** Per source, keyed narrow (IPv6 /64, or the IPv4 address). */
   readonly ceiling: AttemptCeiling;
   /**
+   * Per source, keyed broad (IPv6 /48, an aggregate over many /64s a single
+   * customer is routinely allocated; the same key as `ceiling` on IPv4,
+   * where there is no cheaper broader tier). Checked and incremented
+   * alongside `ceiling` as a second, independent limit -- never a
+   * replacement for it -- so a flood spread across many /64s inside one
+   * /48 still exhausts a bucket, not just an uncounted multiplication of
+   * them.
+   */
+  readonly broadCeiling: AttemptCeiling;
+  /**
    * Caps derivations in flight at once, across every source together --
-   * the per-source ceiling above bounds one source's rate, not how many
+   * the per-source ceilings above bound one source's rate, not how many
    * distinct sources can be mid-derivation at the same time.
    */
   readonly derivationGate: DerivationGate;
   readonly sources: SourceResolver;
   readonly cookieTtlSeconds: number;
   /**
-   * Verified against when the host names no slot or the slot has no lease,
-   * so a guess costs the same whether or not there was anything to guess.
+   * Verified against when the host names no slot, the slot has no lease, or
+   * the lease's `hashId` does not name the hash actually in hand, so a
+   * guess costs the same whether or not there was anything real to guess.
    */
   readonly decoyHash: Argon2idHash;
   readonly nowMs: () => number;
@@ -83,7 +95,7 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function currentLease(deps: GateDeps, slot: SlotName): Promise<LeaseId | null> {
+async function currentLease(deps: GateDeps, slot: SlotName): Promise<CurrentLease | null> {
   try {
     return await deps.leaseOf(slot);
   } catch {
@@ -108,24 +120,34 @@ async function verify(deps: GateDeps, req: IncomingMessage, res: ServerResponse)
   // The lease is read on every request and never cached: the instant the
   // broker records a new lease, every cookie issued against the old one
   // stops admitting.
-  const lease = await currentLease(deps, gated.slot);
-  if (lease === null || !claims.some((claim) => claim.lease === lease)) return deny();
+  const current = await currentLease(deps, gated.slot);
+  if (current === null || !claims.some((claim) => claim.lease === current.lease)) return deny();
 
   send(res, 200);
 }
 
 async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const source = deps.sources.resolve(req.socket.remoteAddress, req.headers['x-forwarded-for']);
-  if (source === null) {
+  const broadSource = deps.sources.resolveBroad(
+    req.socket.remoteAddress,
+    req.headers['x-forwarded-for']
+  );
+  if (source === null || broadSource === null) {
     deps.log('refused a login whose source could not be established');
     return send(res, 403);
   }
 
-  const verdict = deps.ceiling.attempt(source, deps.nowMs());
-  if (!verdict.allowed) {
+  const attemptedAt = deps.nowMs();
+  const narrowVerdict = deps.ceiling.attempt(source, attemptedAt);
+  const broadVerdict = deps.broadCeiling.attempt(broadSource, attemptedAt);
+  if (!narrowVerdict.allowed || !broadVerdict.allowed) {
+    const retryAfterSeconds = Math.max(
+      narrowVerdict.allowed ? 0 : narrowVerdict.retryAfterSeconds,
+      broadVerdict.allowed ? 0 : broadVerdict.retryAfterSeconds
+    );
     return send(res, 429, passphrasePage('/', 'DEMO_GATE_TOO_MANY_ATTEMPTS'), {
       ...PAGE_HEADERS,
-      'Retry-After': String(verdict.retryAfterSeconds),
+      'Retry-After': String(retryAfterSeconds),
     });
   }
 
@@ -144,30 +166,49 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
 
   const host = hostOf(req);
   const gated = host === null ? undefined : (await deps.slots()).get(host);
-  const lease = gated ? await currentLease(deps, gated.slot) : null;
-  // Always exactly one derivation: against the slot's hash when there is a
-  // leased slot to admit to, against the decoy otherwise. Routed through the
-  // derivation gate so a flood of distinct sources -- none of which trips
-  // its own per-source ceiling -- cannot pile up unbounded concurrent
-  // derivations; past the gate's own queue, refused rather than deriving.
+  const current = gated ? await currentLease(deps, gated.slot) : null;
+  // The slots file (the hash) and a slot's lease record are two files the
+  // broker writes independently, at different moments, with no shared
+  // transaction between the two writes. Reading them a moment apart can
+  // therefore surface a hash and a lease from two different tenancies --
+  // the recycle race render-core/src/lease.ts's contract exists to close.
+  // `hashId` is how a lease record ties itself to the one hash the broker
+  // wrote it alongside; admitting only when the two agree is correct
+  // regardless of which file the broker happens to write first, or how
+  // these two reads land relative to either write -- unlike trusting a
+  // read order, which only holds if the broker's write order does too.
+  const tied = gated !== undefined && current !== null && current.hashId === gated.hashId;
+
+  // Always exactly one derivation: against the slot's hash when the lease
+  // just read is tied to it, against the decoy otherwise -- an untied pair
+  // is refused the same as no lease at all, never derived against. Routed
+  // through the derivation gate so a flood of distinct sources -- none of
+  // which trips its own per-source ceiling -- cannot pile up unbounded
+  // concurrent derivations; past the gate's own queue, refused rather than
+  // deriving.
   let matched: boolean;
   try {
     matched = await deps.derivationGate.run(() =>
-      verifyPassphrase(passphrase, gated && lease !== null ? gated.hash : deps.decoyHash)
+      verifyPassphrase(passphrase, tied && gated !== undefined ? gated.hash : deps.decoyHash)
     );
   } catch (err) {
     if (err instanceof DerivationGateFullError) {
+      // Not the visitor's fault: the gate ran out of capacity, not them out
+      // of guesses. The attempt already recorded above is given back
+      // rather than left to count against a ceiling it never really used.
+      deps.ceiling.refund(source);
+      deps.broadCeiling.refund(broadSource);
       return send(res, 503, '', { 'Retry-After': '1' });
     }
     throw err;
   }
 
-  if (!gated || lease === null || !matched) {
+  if (gated === undefined || current === null || !tied || !matched) {
     return send(res, 401, passphrasePage(returnPath, 'DEMO_GATE_WRONG_PASSPHRASE'), PAGE_HEADERS);
   }
 
   const exp = Math.floor(deps.nowMs() / 1000) + deps.cookieTtlSeconds;
-  const cookie = signCookie(deps.signingKey, { slot: gated.slot, lease, exp });
+  const cookie = signCookie(deps.signingKey, { slot: gated.slot, lease: current.lease, exp });
   send(res, 303, '', {
     Location: returnPath,
     'Set-Cookie': setCookieHeader(cookie, deps.cookieTtlSeconds),

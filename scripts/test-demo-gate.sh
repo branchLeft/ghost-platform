@@ -15,6 +15,8 @@
 #     cookie forged the same way that is admitted -- so the refusals are the
 #     gate's verdict, not a forging mistake
 #   - recycling the slot (a new lease record) kills the cookie at once
+#   - a lease record untied from the slot's current hash (the recycle race,
+#     review cycle 1 finding 1) refuses even the right passphrase
 #   - the per-source ceiling trips for one visitor while another still gets
 #     in, and neither a spoofed X-Forwarded-For through the edge nor one sent
 #     straight to the gate resets it
@@ -104,10 +106,26 @@ forge() {
       process.stdout.write(`__Host-bl_demo_gate=${payload}.${mac}`);
     ' "$1" "$2" "$3"
 }
+# hash_id <argon2id-PHC-string> -> the hashId a lease record must carry to
+# tie itself to that hash (render-core/src/lease.ts's hashIdOf). The image
+# ships the built render-core package the gate itself imports, so this uses
+# the exact same function rather than a second, shell-side implementation
+# that could quietly drift from it.
+hash_id() {
+    docker run --rm "$GATE_IMAGE" node -e '
+      import("@branchleft/ghost-platform-render-core").then((m) => {
+        process.stdout.write(m.hashIdOf(process.argv[1]));
+      });
+    ' "$1"
+}
 write_lease() {
     # Written beside the record and renamed over it, as the broker must: a
-    # reader never sees a half-written record.
-    printf '{"slot":"%s","lease":"%s"}' "$1" "$2" > "$WORK/leases/.$1.tmp"
+    # reader never sees a half-written record. hashId ties the record to
+    # the hash it was issued alongside (render-core/src/lease.ts) -- login()
+    # refuses a lease record and a slot hash whose hashId fields disagree,
+    # so every call site below passes the hashId of whichever hash is
+    # currently that slot's in slots.json.
+    printf '{"slot":"%s","lease":"%s","hashId":"%s"}' "$1" "$2" "$3" > "$WORK/leases/.$1.tmp"
     chmod 0644 "$WORK/leases/.$1.tmp"
     mv "$WORK/leases/.$1.tmp" "$WORK/leases/$1.json"
 }
@@ -118,6 +136,8 @@ head -c 32 /dev/urandom > "$WORK/config/key"
 chmod 0644 "$WORK/config/key"
 HASH_A="$(printf %s "$PASS_A" | docker run --rm -i "$GATE_IMAGE" node dist/hashCli.js)"
 HASH_B="$(printf %s "$PASS_B" | docker run --rm -i "$GATE_IMAGE" node dist/hashCli.js)"
+HASH_ID_A="$(hash_id "$HASH_A")"
+HASH_ID_B="$(hash_id "$HASH_B")"
 cat > "$WORK/config/slots.json" <<EOF
 {"slots":[
   {"host":"$HOST_A","slot":"0","gate":{"kind":"passphrase","argon2idHash":"$HASH_A"}},
@@ -125,8 +145,8 @@ cat > "$WORK/config/slots.json" <<EOF
 ]}
 EOF
 chmod 0644 "$WORK/config/slots.json"
-write_lease 0 "$LEASE_1"
-write_lease 1 "$LEASE_B"
+write_lease 0 "$LEASE_1" "$HASH_ID_A"
+write_lease 1 "$LEASE_B" "$HASH_ID_B"
 echo "  two gated hosts, argon2id hashes minted by the image's own hashCli"
 
 echo "--- starting the stand-in slot, the gate and Caddy ---"
@@ -207,7 +227,7 @@ expect "a cookie re-pointed at slot 1" 401 \
     "$(status "$VISITOR_B" -H "Cookie: $TAMPERED_SLOT" "https://$HOST_B/")"
 
 echo "--- 6. recycle: a new lease kills every earlier cookie ---"
-write_lease 0 "$LEASE_2"
+write_lease 0 "$LEASE_2" "$HASH_ID_A"
 expect "the old cookie after the slot's lease changed" 401 \
     "$(status "$VISITOR_B" -H "Cookie: $COOKIE" "https://$HOST_A/")"
 expect "the forged control after the slot's lease changed" 401 \
@@ -219,7 +239,21 @@ expect "the new cookie" 200 "$(status "$VISITOR_B" -H "Cookie: $NEWCOOKIE" "http
 rm "$WORK/leases/0.json"
 expect "a live cookie once the slot has no lease record at all" 401 \
     "$(status "$VISITOR_B" -H "Cookie: $NEWCOOKIE" "https://$HOST_A/")"
-write_lease 0 "$LEASE_2"
+write_lease 0 "$LEASE_2" "$HASH_ID_A"
+
+echo "--- 6b. the recycle race: a lease record untied from the slot's hash refuses even the right passphrase ---"
+# Adversarial review cycle 1, finding 1: a lease record whose hashId names
+# neither this slot's current hash nor any hash ever written for it (well
+# formed, sixteen hex characters, just the wrong sixteen) reproduces the
+# mid-recycle state where the two files briefly disagree about which
+# tenancy is current.
+write_lease 0 "$LEASE_2" "0000000000000000"
+UNTIED="$(login "$VISITOR_B" "$HOST_A" "$PASS_A")"
+expect "the right passphrase against an untied lease record" 401 "$(echo "$UNTIED" | code_of)"
+expect "no cookie set on an untied pair" "" "$(echo "$UNTIED" | cookie_of)"
+write_lease 0 "$LEASE_2" "$HASH_ID_A"
+RETIED="$(login "$VISITOR_B" "$HOST_A" "$PASS_A")"
+expect "the same passphrase once the lease record is tied to the hash again" 303 "$(echo "$RETIED" | code_of)"
 
 echo "--- 7. per-source ceiling ($CEILING attempts) ---"
 i=0

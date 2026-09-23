@@ -10,8 +10,11 @@
  * A slot past the concurrency cap waits in a queue rather than running
  * immediately; a slot past the queue's own cap is refused outright, so the
  * bound holds under load instead of shifting into an unbounded backlog of
- * waiters. `DEFAULT_PARAMETERS` (64 MiB) times the concurrency cap is the
- * ceiling on live derivation memory this gate enforces.
+ * waiters. This gate bounds a *count*, not memory directly: a slot's hash
+ * can ask for up to 256 MiB (`argon2id.ts`'s `LIMITS.memoryKiB`), so the
+ * real ceiling on live derivation memory is the concurrency cap times that
+ * 256 MiB, not times `DEFAULT_PARAMETERS`' 64 MiB -- 768 MiB at the default
+ * cap of 3, 16 GiB at the configurable maximum of 64.
  */
 export interface DerivationGate {
   run<T>(fn: () => Promise<T>): Promise<T>;

@@ -14,6 +14,15 @@ export interface AttemptCeiling {
     key: string,
     nowMs: number
   ): { allowed: true } | { allowed: false; retryAfterSeconds: number };
+  /**
+   * Undoes exactly one `attempt` recorded for `key` -- for a login refused
+   * for a reason that was not the attempter's fault (the derivation gate
+   * ran out of capacity), never for a wrong guess, which must still count.
+   * A no-op if the window has already expired and been swept, or never
+   * existed: refunding is best-effort forgiveness, not a promise that the
+   * exact window `attempt` incremented is still the one live now.
+   */
+  refund(key: string): void;
 }
 
 export interface CeilingOptions {
@@ -52,6 +61,10 @@ export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
       }
       entry.count += 1;
       return { allowed: true };
+    },
+    refund(key) {
+      const entry = windows.get(key);
+      if (entry && entry.count > 0) entry.count -= 1;
     },
   };
 }

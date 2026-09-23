@@ -13,6 +13,19 @@ import { BlockList, isIP } from 'node:net';
  */
 export interface SourceResolver {
   resolve(peer: string | undefined, forwardedFor: string | string[] | undefined): string | null;
+  /**
+   * The same source as `resolve`, keyed coarser: one bucket per IPv6 /48 --
+   * a block routinely allocated whole to a single customer, so this is the
+   * tier that still catches a flood spread across many distinct /64s
+   * within one /48 -- or per IPv4 address, where there is no cheaper
+   * broader tier than the one `resolve` already uses. Checked and
+   * incremented against a second, independent ceiling, never in place of
+   * `resolve`'s.
+   */
+  resolveBroad(
+    peer: string | undefined,
+    forwardedFor: string | string[] | undefined
+  ): string | null;
 }
 
 export class TrustedProxyFormatError extends Error {
@@ -52,6 +65,22 @@ export function ceilingKey(address: string): string | null {
   return `${groups.map((group) => group.toString(16)).join(':')}::/64`;
 }
 
+/**
+ * The broad ceiling's key for one address: an IPv6 /48 (a whole /64's
+ * ceiling has no aggregate above it, and /48 is what a residential or
+ * business ISP allocation routinely is), or the same IPv4 address
+ * `ceilingKey` already keys on -- IPv4 has no cheaper broader tier to add.
+ * Returns null for anything that is not an IP literal.
+ */
+export function ceilingKeyBroad(address: string): string | null {
+  const unmapped = unmapIpv4(address.trim());
+  const family = isIP(unmapped);
+  if (family === 4) return unmapped;
+  if (family !== 6 || unmapped.includes('.') || unmapped.includes('%')) return null;
+  const groups = expandIpv6(unmapped).slice(0, 3);
+  return `${groups.map((group) => group.toString(16)).join(':')}::/48`;
+}
+
 export function parseTrustedProxies(spec: string): BlockList {
   const list = new BlockList();
   for (const raw of spec.split(',')) {
@@ -83,16 +112,35 @@ function isTrusted(list: BlockList, address: string): boolean {
   return list.check(address, family === 4 ? 'ipv4' : 'ipv6');
 }
 
+/**
+ * The raw address `resolve`/`resolveBroad` would key on, before either
+ * keying function narrows or broadens it: the socket peer, or -- only when
+ * that peer is a configured trusted proxy -- the rightmost
+ * `X-Forwarded-For` entry, which is the address the proxy itself saw.
+ */
+function effectiveAddress(
+  trusted: BlockList,
+  peer: string | undefined,
+  forwardedFor: string | string[] | undefined
+): string | null {
+  if (!peer) return null;
+  const peerAddress = unmapIpv4(peer);
+  if (!isTrusted(trusted, peerAddress)) return peerAddress;
+  const header = Array.isArray(forwardedFor) ? forwardedFor.join(',') : forwardedFor;
+  if (!header) return null;
+  const rightmost = header.split(',').pop();
+  return rightmost === undefined ? null : rightmost;
+}
+
 export function createSourceResolver(trusted: BlockList): SourceResolver {
   return {
     resolve(peer, forwardedFor) {
-      if (!peer) return null;
-      const peerAddress = unmapIpv4(peer);
-      if (!isTrusted(trusted, peerAddress)) return ceilingKey(peerAddress);
-      const header = Array.isArray(forwardedFor) ? forwardedFor.join(',') : forwardedFor;
-      if (!header) return null;
-      const rightmost = header.split(',').pop();
-      return rightmost === undefined ? null : ceilingKey(rightmost);
+      const address = effectiveAddress(trusted, peer, forwardedFor);
+      return address === null ? null : ceilingKey(address);
+    },
+    resolveBroad(peer, forwardedFor) {
+      const address = effectiveAddress(trusted, peer, forwardedFor);
+      return address === null ? null : ceilingKeyBroad(address);
     },
   };
 }

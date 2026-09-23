@@ -2,11 +2,13 @@ import { readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import {
+  hashIdOf,
   leaseRecordFileName,
   MAX_LEASE_RECORD_BYTES,
   parseSlotLeaseRecord,
   validateSlotName,
   type GateSpec,
+  type HashId,
   type LeaseId,
   type SlotName,
 } from '@branchleft/ghost-platform-render-core';
@@ -18,6 +20,19 @@ export interface GatedHost {
   readonly host: string;
   readonly slot: SlotName;
   readonly hash: Argon2idHash;
+  /**
+   * `hashIdOf(the raw PHC string this hash was parsed from)`. Carried
+   * alongside the parsed hash because `login()` must check it against the
+   * lease record's own `hashId` *before* deriving against `hash` — see
+   * `render-core/src/lease.ts`'s recycle contract.
+   */
+  readonly hashId: HashId;
+}
+
+/** The slot's current lease, as read from its lease record. */
+export interface CurrentLease {
+  readonly lease: LeaseId;
+  readonly hashId: HashId;
 }
 
 export class SlotsFormatError extends Error {
@@ -31,7 +46,7 @@ const HOST_PATTERN =
   /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const MAX_SLOTS_BYTES = 256 * 1024;
 
-function parseGate(gate: unknown, where: string): Argon2idHash {
+function parseGate(gate: unknown, where: string): { hash: Argon2idHash; hashId: HashId } {
   if (typeof gate !== 'object' || gate === null) {
     throw new SlotsFormatError(`${where}.gate must be an object.`);
   }
@@ -46,7 +61,11 @@ function parseGate(gate: unknown, where: string): Argon2idHash {
     throw new SlotsFormatError(`${where}.gate must have exactly kind and argon2idHash.`);
   }
   try {
-    return parseArgon2idHash(spec.argon2idHash);
+    // hashIdOf reads the raw PHC string, not the parsed struct: it is the
+    // tag `login()` ties against the lease record's own `hashId`, and it
+    // must be computed the exact same way the broker computes it when it
+    // writes that record (render-core/src/lease.ts).
+    return { hash: parseArgon2idHash(spec.argon2idHash), hashId: hashIdOf(spec.argon2idHash) };
   } catch (err) {
     throw new SlotsFormatError(`${where}.gate: ${(err as Error).message}`);
   }
@@ -92,7 +111,7 @@ export function parseSlots(text: string): ReadonlyMap<string, GatedHost> {
       throw new SlotsFormatError(`${where}.slot "${slotName}" appears twice.`);
     }
     seenSlots.add(slotName);
-    byHost.set(host, { host, slot: slotName, hash: parseGate(gate, where) });
+    byHost.set(host, { host, slot: slotName, ...parseGate(gate, where) });
   });
   return byHost;
 }
@@ -119,7 +138,7 @@ export function createSlotsSource(path: string): () => Promise<ReadonlyMap<strin
  * thrown, and every caller treats a throw as "no current lease": a slot that
  * cannot prove who holds it admits nobody.
  */
-export function createLeaseReader(dir: string): (slot: SlotName) => Promise<LeaseId> {
+export function createLeaseReader(dir: string): (slot: SlotName) => Promise<CurrentLease> {
   return async (slot) => {
     // O_NOFOLLOW: the record is written by the broker in place; a symlink
     // where a record should be is not a record.
@@ -130,7 +149,8 @@ export function createLeaseReader(dir: string): (slot: SlotName) => Promise<Leas
     try {
       const buffer = Buffer.alloc(MAX_LEASE_RECORD_BYTES + 1);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      return parseSlotLeaseRecord(buffer.subarray(0, bytesRead).toString('utf8'), slot).lease;
+      const record = parseSlotLeaseRecord(buffer.subarray(0, bytesRead).toString('utf8'), slot);
+      return { lease: record.lease, hashId: record.hashId };
     } finally {
       await handle.close();
     }

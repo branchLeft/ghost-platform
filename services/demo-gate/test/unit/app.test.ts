@@ -1,9 +1,14 @@
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  hashIdOf,
   validateLeaseId,
   validateSlotName,
+  type HashId,
   type LeaseId,
   type SlotName,
 } from '@branchleft/ghost-platform-render-core';
@@ -12,7 +17,12 @@ import { hashPassphrase, parseArgon2idHash, type Argon2idHash } from '../../src/
 import { createAttemptCeiling } from '../../src/ceiling.js';
 import { COOKIE_NAME, signCookie } from '../../src/cookie.js';
 import { createDerivationGate, DerivationGateFullError } from '../../src/derivationGate.js';
-import type { GatedHost } from '../../src/slots.js';
+import {
+  createLeaseReader,
+  createSlotsSource,
+  type CurrentLease,
+  type GatedHost,
+} from '../../src/slots.js';
 import { createSourceResolver, parseTrustedProxies } from '../../src/source.js';
 
 const FAST = { memoryKiB: 8192, passes: 1, parallelism: 1 };
@@ -26,17 +36,21 @@ const LEASE_2 = validateLeaseId('01J9F4Q7ZC3M8V2K6X0R5T1B9E');
 const PASSPHRASE = 'correct horse battery';
 const NOW_MS = 1_900_000_000_000;
 
+let slotHashPhc: string;
 let slotHash: Argon2idHash;
+let slotHashId: HashId;
 let decoyHash: Argon2idHash;
 
 beforeAll(async () => {
-  slotHash = parseArgon2idHash(await hashPassphrase(PASSPHRASE, FAST));
+  slotHashPhc = await hashPassphrase(PASSPHRASE, FAST);
+  slotHash = parseArgon2idHash(slotHashPhc);
+  slotHashId = hashIdOf(slotHashPhc);
   decoyHash = parseArgon2idHash(await hashPassphrase('decoy', FAST));
 });
 
 interface Harness {
   deps: GateDeps;
-  leases: Map<SlotName, LeaseId>;
+  leases: Map<SlotName, CurrentLease>;
   logs: string[];
   now: { ms: number };
   base: string;
@@ -46,25 +60,26 @@ let server: Server;
 let h: Harness;
 
 async function start(over: Partial<GateDeps> = {}): Promise<Harness> {
-  const leases = new Map<SlotName, LeaseId>([
-    [SLOT, LEASE_1],
-    [OTHER_SLOT, LEASE_1],
+  const leases = new Map<SlotName, CurrentLease>([
+    [SLOT, { lease: LEASE_1, hashId: slotHashId }],
+    [OTHER_SLOT, { lease: LEASE_1, hashId: slotHashId }],
   ]);
   const logs: string[] = [];
   const now = { ms: NOW_MS };
   const slots = new Map<string, GatedHost>([
-    [HOST, { host: HOST, slot: SLOT, hash: slotHash }],
-    [OTHER_HOST, { host: OTHER_HOST, slot: OTHER_SLOT, hash: slotHash }],
+    [HOST, { host: HOST, slot: SLOT, hash: slotHash, hashId: slotHashId }],
+    [OTHER_HOST, { host: OTHER_HOST, slot: OTHER_SLOT, hash: slotHash, hashId: slotHashId }],
   ]);
   const deps: GateDeps = {
     slots: async () => slots,
     leaseOf: async (slot) => {
-      const lease = leases.get(slot);
-      if (!lease) throw new Error('no lease');
-      return lease;
+      const current = leases.get(slot);
+      if (!current) throw new Error('no lease');
+      return current;
     },
     signingKey: KEY,
     ceiling: createAttemptCeiling({ limit: 3, windowMs: 60_000, maxSources: 100 }),
+    broadCeiling: createAttemptCeiling({ limit: 100, windowMs: 60_000, maxSources: 100 }),
     derivationGate: createDerivationGate(4, 64),
     sources: createSourceResolver(parseTrustedProxies('127.0.0.1')),
     cookieTtlSeconds: 3600,
@@ -162,7 +177,7 @@ describe('verify (the forward_auth target)', () => {
 
   it('refuses a cookie issued against a lease the slot no longer holds', async () => {
     const cookie = cookieFor(SLOT, LEASE_1);
-    h.leases.set(SLOT, LEASE_2);
+    h.leases.set(SLOT, { lease: LEASE_2, hashId: slotHashId });
     expect((await verifyAs(HOST, cookie)).status).toBe(401);
   });
 
@@ -231,7 +246,7 @@ describe('login', () => {
 
   it('issues a cookie that dies when the slot is recycled', async () => {
     const cookie = cookieFrom(await login(PASSPHRASE));
-    h.leases.set(SLOT, LEASE_2);
+    h.leases.set(SLOT, { lease: LEASE_2, hashId: slotHashId });
     expect((await verifyAs(HOST, cookie)).status).toBe(401);
   });
 
@@ -297,6 +312,26 @@ describe('login', () => {
     expect(h.logs.join()).toContain('gate wiring broke');
   });
 
+  it('refunds the ceiling attempt on a 503, so it never counts against the visitor', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    let calls = 0;
+    h = await start({
+      derivationGate: {
+        run: () => {
+          calls += 1;
+          throw new DerivationGateFullError();
+        },
+      },
+      ceiling: createAttemptCeiling({ limit: 1, windowMs: 60_000, maxSources: 100 }),
+    });
+    expect((await login(PASSPHRASE)).status).toBe(503);
+    // Had the first attempt not been refunded, a ceiling of 1 would refuse
+    // this second one with 429 before the derivation gate is ever asked --
+    // `calls` would stay at 1.
+    expect((await login(PASSPHRASE)).status).toBe(503);
+    expect(calls).toBe(2);
+  });
+
   it('refuses past the ceiling from one source while another source still gets through', async () => {
     for (let i = 0; i < 3; i++) expect((await login('wrong')).status).toBe(401);
     const refused = await login(PASSPHRASE);
@@ -317,6 +352,20 @@ describe('login', () => {
     h = await start({ sources: createSourceResolver(parseTrustedProxies('')) });
     for (let i = 0; i < 3; i++) await login('wrong', { source: `198.51.100.${i}` });
     expect((await login(PASSPHRASE, { source: '198.51.100.99' })).status).toBe(429);
+  });
+
+  it('refuses once the broad ceiling trips, even though each /64 is still under its own narrow limit', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      broadCeiling: createAttemptCeiling({ limit: 2, windowMs: 60_000, maxSources: 100 }),
+    });
+    // Three distinct /64s inside one /48: none trips its own narrow limit
+    // of 3, but all three share one broad bucket capped at 2.
+    const addr = (suffix: string) => `2001:db8:aaaa:${suffix}::1`;
+    expect((await login('wrong', { source: addr('0') })).status).toBe(401);
+    expect((await login('wrong', { source: addr('1') })).status).toBe(401);
+    const third = await login(PASSPHRASE, { source: addr('2') });
+    expect(third.status).toBe(429);
   });
 
   it('refuses a trusted peer that did not say who the client is', async () => {
@@ -361,6 +410,105 @@ describe('login', () => {
     expect(
       (await login(PASSPHRASE, { r: '/\\evil.example', source: '203.0.113.5' })).headers.location
     ).toBe('/');
+  });
+});
+
+/**
+ * The recycle race (adversarial review, PR branchLeft/ghost-platform#236
+ * cycle 1, finding 1): `login()` used to read the slot's hash from the
+ * slots file and the current lease from a separate lease record, and bind
+ * the cookie to whatever lease it read -- with nothing checking that the
+ * hash and the lease named the same tenancy. The two files are written by
+ * the broker independently, at different moments, with no shared
+ * transaction, so a hash and a lease read a moment apart could belong to
+ * two different tenancies, letting a previous visitor's old passphrase
+ * mint a cookie bound to the *new* lease during a recycle.
+ *
+ * This suite goes straight at `createSlotsSource`/`createLeaseReader` --
+ * the real file-backed readers, not the in-memory `Map`s the rest of this
+ * file uses -- because the bug lived entirely in how two independently
+ * written files interact, which an in-memory double cannot reproduce.
+ */
+describe('the recycle race, against the real file-backed slots and lease readers', () => {
+  const RACE_HOST = 'race.demo.example';
+  const RACE_SLOT = validateSlotName('race');
+  const OLD_PASSPHRASE = 'the-previous-visitors-passphrase';
+  const NEW_PASSPHRASE = 'the-next-visitors-passphrase';
+  const OLD_LEASE = validateLeaseId('01J9F4Q7ZC3M8V2K6X0R5T1B9F');
+  const NEW_LEASE = validateLeaseId('01J9F4Q7ZC3M8V2K6X0R5T1BA0');
+
+  let dir: string;
+  let oldHashPhc: string;
+  let newHashPhc: string;
+
+  beforeAll(async () => {
+    oldHashPhc = await hashPassphrase(OLD_PASSPHRASE, FAST);
+    newHashPhc = await hashPassphrase(NEW_PASSPHRASE, FAST);
+  });
+
+  function writeSlots(hashPhc: string): void {
+    writeFileSync(
+      join(dir, 'slots.json'),
+      JSON.stringify({
+        slots: [
+          { host: RACE_HOST, slot: RACE_SLOT, gate: { kind: 'passphrase', argon2idHash: hashPhc } },
+        ],
+      })
+    );
+  }
+
+  // Beside its final name and renamed into place, as the broker's own
+  // contract requires (render-core/src/lease.ts): a reader must never see
+  // a half-written record.
+  function writeLease(lease: string, hashPhc: string): void {
+    const tmpPath = join(dir, `.${RACE_SLOT}.tmp`);
+    writeFileSync(tmpPath, JSON.stringify({ slot: RACE_SLOT, lease, hashId: hashIdOf(hashPhc) }));
+    renameSync(tmpPath, join(dir, `${RACE_SLOT}.json`));
+  }
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'demo-gate-race-'));
+    writeSlots(oldHashPhc);
+    writeLease(OLD_LEASE, oldHashPhc);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      slots: createSlotsSource(join(dir, 'slots.json')),
+      leaseOf: createLeaseReader(dir),
+    });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a tied pair (both files agree) admits the passphrase that matches them, ordinary operation', async () => {
+    const reply = await login(OLD_PASSPHRASE, { host: RACE_HOST });
+    expect(reply.status).toBe(303);
+  });
+
+  it('Race A: the new lease record lands before the new hash -- the old passphrase must not mint a cookie on the new lease', async () => {
+    // Mid-recycle: the lease record already names the new tenancy (a fresh
+    // lease id, hashId tied to the hash the broker is about to write), but
+    // slots.json still serves the old hash -- exactly the window the
+    // vulnerable code trusted.
+    writeLease(NEW_LEASE, newHashPhc);
+    const reply = await login(OLD_PASSPHRASE, { host: RACE_HOST });
+    expect(reply.status).toBe(401);
+    expect(reply.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('once both files catch up to the new tenancy, the new passphrase is admitted and bound to the new lease', async () => {
+    writeSlots(newHashPhc);
+    writeLease(NEW_LEASE, newHashPhc);
+    const reply = await login(NEW_PASSPHRASE, { host: RACE_HOST });
+    expect(reply.status).toBe(303);
+    expect(String(reply.headers['set-cookie'])).toContain(`.${NEW_LEASE}.`);
+  });
+
+  it('a lease record whose hashId names neither the old nor the new hash refuses everyone', async () => {
+    writeLease(NEW_LEASE, 'a-hash-string-belonging-to-no-write-that-happened');
+    expect((await login(OLD_PASSPHRASE, { host: RACE_HOST })).status).toBe(401);
+    expect((await login(NEW_PASSPHRASE, { host: RACE_HOST })).status).toBe(401);
   });
 });
 

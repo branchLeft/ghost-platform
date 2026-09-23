@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ceilingKey,
+  ceilingKeyBroad,
   createSourceResolver,
   parseTrustedProxies,
   TrustedProxyFormatError,
@@ -28,6 +29,36 @@ describe('ceilingKey', () => {
     'refuses %j',
     (address) => {
       expect(ceilingKey(address)).toBeNull();
+    }
+  );
+});
+
+describe('ceilingKeyBroad', () => {
+  it.each([
+    ['203.0.113.9', '203.0.113.9'],
+    ['::ffff:203.0.113.9', '203.0.113.9'],
+    ['2001:db8:1:2:3:4:5:6', '2001:db8:1::/48'],
+    ['2001:db8:1:9999::9', '2001:db8:1::/48'],
+    ['2001:DB8:1:2:ffff::1', '2001:db8:1::/48'],
+    [' 203.0.113.9 ', '203.0.113.9'],
+  ])('keys %s as %s', (address, key) => {
+    expect(ceilingKeyBroad(address)).toBe(key);
+  });
+
+  it('keys every /64 inside one /48 identically, but not a different /48', () => {
+    expect(ceilingKeyBroad('2001:db8:1:2::1')).toBe(ceilingKeyBroad('2001:db8:1:3::1'));
+    expect(ceilingKeyBroad('2001:db8:1:2::1')).toBe(ceilingKeyBroad('2001:db8:1:ffff::1'));
+    expect(ceilingKeyBroad('2001:db8:2:2::1')).not.toBe(ceilingKeyBroad('2001:db8:1:2::1'));
+  });
+
+  it('agrees with ceilingKey on IPv4, where there is no broader tier', () => {
+    expect(ceilingKeyBroad('203.0.113.9')).toBe(ceilingKey('203.0.113.9'));
+  });
+
+  it.each(['', 'unknown', '203.0.113', 'fe80::1%eth0', '::ffff:1.2.3.4.5', '64:ff9b::1.2.3.4'])(
+    'refuses %j',
+    (address) => {
+      expect(ceilingKeyBroad(address)).toBeNull();
     }
   );
 });
@@ -78,5 +109,17 @@ describe('createSourceResolver', () => {
 
   it('refuses a peer that is not an address', () => {
     expect(resolver.resolve('not-an-ip', undefined)).toBeNull();
+  });
+
+  it('resolveBroad keys the same effective address, broadened', () => {
+    expect(resolver.resolveBroad('2001:db8:1:2::9', undefined)).toBe('2001:db8:1::/48');
+    expect(resolver.resolveBroad('172.30.0.2', '198.51.100.1, 2001:db8:1:2::9')).toBe(
+      '2001:db8:1::/48'
+    );
+  });
+
+  it('resolveBroad refuses exactly when resolve does', () => {
+    expect(resolver.resolveBroad('172.30.0.2', undefined)).toBeNull();
+    expect(resolver.resolveBroad(undefined, '203.0.113.9')).toBeNull();
   });
 });

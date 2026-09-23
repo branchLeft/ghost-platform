@@ -14,6 +14,8 @@ export interface GateConfig {
   readonly ceilingLimit: number;
   readonly ceilingWindowMs: number;
   readonly ceilingMaxSources: number;
+  readonly ceilingBroadLimit: number;
+  readonly ceilingBroadMaxSources: number;
   readonly argon2MaxConcurrent: number;
   readonly argon2MaxQueued: number;
 }
@@ -60,13 +62,36 @@ export function loadConfig(
     ceilingLimit: positiveInteger(env, 'GATE_CEILING_ATTEMPTS', 10, 1000),
     ceilingWindowMs: positiveInteger(env, 'GATE_CEILING_WINDOW_SECONDS', 900, 86400) * 1000,
     ceilingMaxSources: positiveInteger(env, 'GATE_CEILING_MAX_SOURCES', 100_000, 10_000_000),
-    // Design amended (LLD-5 silent, incidental): bounded at 4 concurrent --
-    // Node's `crypto.argon2` runs on the libuv threadpool, whose own default
-    // size is 4, so admitting more here would only grow a second queue
-    // behind the one libuv already keeps, without buying real parallelism.
-    // 64 concurrent waiters is the queue's own cap, so a flood is refused
-    // once it would hold more pending derivations than that.
-    argon2MaxConcurrent: positiveInteger(env, 'GATE_ARGON2_MAX_CONCURRENT', 4, 64),
+    // A second, coarser ceiling over the same window: one bucket per IPv6
+    // /48 rather than /64, so a flood spread across many /64s inside a
+    // single /48 (a block routinely allocated whole to one customer) still
+    // exhausts a bucket instead of multiplying past the per-/64 limit
+    // uncounted. Limit and table size are both larger than the narrow
+    // ceiling's own -- a /48 aggregates many genuine visitors' /64s too,
+    // and this tier exists to catch a flood, not to throttle ordinary
+    // traffic sharing an allocation.
+    ceilingBroadLimit: positiveInteger(env, 'GATE_CEILING_BROAD_ATTEMPTS', 200, 20_000),
+    ceilingBroadMaxSources: positiveInteger(
+      env,
+      'GATE_CEILING_BROAD_MAX_SOURCES',
+      20_000,
+      2_000_000
+    ),
+    // Bounded at 3, one below Node's default libuv threadpool size (4):
+    // `crypto.argon2` and `fs` share that pool, and `verify` -- which runs
+    // on every forward_auth, every page and every asset -- does several
+    // `fs` calls of its own (the slots read; open/read/close on the lease
+    // record). Measured on this machine: with the cap at 4, saturating it
+    // pushed `verify`'s own file operations from a 0.13 ms idle median to a
+    // 112 ms median (130 ms max) -- the whole pool was busy deriving. At 3,
+    // one thread stays free for `fs` work and the same measurement holds at
+    // a 0.3 ms median (1.8 ms max). The fix is the cap sitting *below* the
+    // pool, not above or equal to it; raising `UV_THREADPOOL_SIZE` instead
+    // would also work but adds a second place to keep in sync, so this
+    // config does not do that. 64 concurrent waiters is the queue's own
+    // cap, so a flood is refused once it would hold more pending
+    // derivations than that.
+    argon2MaxConcurrent: positiveInteger(env, 'GATE_ARGON2_MAX_CONCURRENT', 3, 64),
     argon2MaxQueued: positiveInteger(env, 'GATE_ARGON2_MAX_QUEUED', 64, 10_000),
   };
 }

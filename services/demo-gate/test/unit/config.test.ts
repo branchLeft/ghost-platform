@@ -21,6 +21,13 @@ describe('loadConfig', () => {
       ceilingLimit: 10,
       ceilingWindowMs: 900_000,
       ceilingMaxSources: 100_000,
+      ceilingBroadLimit: 200,
+      ceilingBroadMaxSources: 20_000,
+      // Below the libuv threadpool's own default size (4) -- see
+      // config.ts's comment for the measurement this default is chosen
+      // from.
+      argon2MaxConcurrent: 3,
+      argon2MaxQueued: 64,
     });
     expect(config.trustedProxies.check('127.0.0.1', 'ipv4')).toBe(false);
   });
@@ -35,6 +42,10 @@ describe('loadConfig', () => {
       GATE_CEILING_ATTEMPTS: '3',
       GATE_CEILING_WINDOW_SECONDS: '30',
       GATE_CEILING_MAX_SOURCES: '5',
+      GATE_CEILING_BROAD_ATTEMPTS: '40',
+      GATE_CEILING_BROAD_MAX_SOURCES: '50',
+      GATE_ARGON2_MAX_CONCURRENT: '2',
+      GATE_ARGON2_MAX_QUEUED: '8',
     });
     expect(config).toMatchObject({
       port: 9000,
@@ -43,6 +54,10 @@ describe('loadConfig', () => {
       ceilingLimit: 3,
       ceilingWindowMs: 30_000,
       ceilingMaxSources: 5,
+      ceilingBroadLimit: 40,
+      ceilingBroadMaxSources: 50,
+      argon2MaxConcurrent: 2,
+      argon2MaxQueued: 8,
     });
     expect(config.trustedProxies.check('172.30.0.2', 'ipv4')).toBe(true);
   });

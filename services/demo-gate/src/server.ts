@@ -23,6 +23,11 @@ const handler = createGateHandler({
     windowMs: config.ceilingWindowMs,
     maxSources: config.ceilingMaxSources,
   }),
+  broadCeiling: createAttemptCeiling({
+    limit: config.ceilingBroadLimit,
+    windowMs: config.ceilingWindowMs,
+    maxSources: config.ceilingBroadMaxSources,
+  }),
   derivationGate: createDerivationGate(config.argon2MaxConcurrent, config.argon2MaxQueued),
   sources: createSourceResolver(config.trustedProxies),
   cookieTtlSeconds: config.cookieTtlSeconds,
