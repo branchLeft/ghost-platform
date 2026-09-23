@@ -414,19 +414,19 @@ describe('login', () => {
 });
 
 /**
- * The recycle race (adversarial review, PR branchLeft/ghost-platform#236
- * cycle 1, finding 1): `login()` used to read the slot's hash from the
- * slots file and the current lease from a separate lease record, and bind
- * the cookie to whatever lease it read -- with nothing checking that the
- * hash and the lease named the same tenancy. The two files are written by
- * the broker independently, at different moments, with no shared
- * transaction, so a hash and a lease read a moment apart could belong to
- * two different tenancies, letting a previous visitor's old passphrase
- * mint a cookie bound to the *new* lease during a recycle.
+ * The recycle race: `login()` reads the slot's hash from the slots file
+ * and the current lease from a separate lease record, then binds the
+ * cookie to whatever lease it read. The two files are written by the
+ * broker independently, at different moments, with no shared transaction,
+ * so a hash and a lease read a moment apart can belong to two different
+ * tenancies unless something checks that they agree -- without that
+ * check, a previous visitor's old passphrase could mint a cookie bound to
+ * the *new* lease during a recycle. `hashId` is that check (see
+ * render-core/src/lease.ts).
  *
  * This suite goes straight at `createSlotsSource`/`createLeaseReader` --
  * the real file-backed readers, not the in-memory `Map`s the rest of this
- * file uses -- because the bug lived entirely in how two independently
+ * file uses -- because the race lives entirely in how two independently
  * written files interact, which an in-memory double cannot reproduce.
  */
 describe('the recycle race, against the real file-backed slots and lease readers', () => {

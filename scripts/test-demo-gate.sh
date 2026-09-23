@@ -15,8 +15,10 @@
 #     cookie forged the same way that is admitted -- so the refusals are the
 #     gate's verdict, not a forging mistake
 #   - recycling the slot (a new lease record) kills the cookie at once
-#   - a lease record untied from the slot's current hash (the recycle race,
-#     review cycle 1 finding 1) refuses even the right passphrase
+#   - a lease record untied from the slot's current hash refuses even the
+#     right passphrase (the recycle race: the hash and the lease are two
+#     files the broker writes independently, and only hashId proves they
+#     name the same tenancy)
 #   - the per-source ceiling trips for one visitor while another still gets
 #     in, and neither a spoofed X-Forwarded-For through the edge nor one sent
 #     straight to the gate resets it
@@ -40,6 +42,9 @@ GATE_IP="10.231.77.3"
 SLOT_IP="10.231.77.4"
 VISITOR_A="10.231.77.10"
 VISITOR_B="10.231.77.11"
+# Its own attempt-ceiling budget, so the recycle-race checks below don't
+# spend VISITOR_B's -- section 7 needs VISITOR_B to still have room left.
+VISITOR_C="10.231.77.12"
 HOST_A="slot0.demo.test"
 HOST_B="slot1.demo.test"
 PASS_A="proof-passphrase-slot-0"
@@ -242,17 +247,16 @@ expect "a live cookie once the slot has no lease record at all" 401 \
 write_lease 0 "$LEASE_2" "$HASH_ID_A"
 
 echo "--- 6b. the recycle race: a lease record untied from the slot's hash refuses even the right passphrase ---"
-# Adversarial review cycle 1, finding 1: a lease record whose hashId names
-# neither this slot's current hash nor any hash ever written for it (well
-# formed, sixteen hex characters, just the wrong sixteen) reproduces the
-# mid-recycle state where the two files briefly disagree about which
-# tenancy is current.
+# A lease record whose hashId names neither this slot's current hash nor
+# any hash ever written for it (well formed, sixteen hex characters, just
+# the wrong sixteen) reproduces the mid-recycle state where the two files
+# briefly disagree about which tenancy is current.
 write_lease 0 "$LEASE_2" "0000000000000000"
-UNTIED="$(login "$VISITOR_B" "$HOST_A" "$PASS_A")"
+UNTIED="$(login "$VISITOR_C" "$HOST_A" "$PASS_A")"
 expect "the right passphrase against an untied lease record" 401 "$(echo "$UNTIED" | code_of)"
 expect "no cookie set on an untied pair" "" "$(echo "$UNTIED" | cookie_of)"
 write_lease 0 "$LEASE_2" "$HASH_ID_A"
-RETIED="$(login "$VISITOR_B" "$HOST_A" "$PASS_A")"
+RETIED="$(login "$VISITOR_C" "$HOST_A" "$PASS_A")"
 expect "the same passphrase once the lease record is tied to the hash again" 303 "$(echo "$RETIED" | code_of)"
 
 echo "--- 7. per-source ceiling ($CEILING attempts) ---"
