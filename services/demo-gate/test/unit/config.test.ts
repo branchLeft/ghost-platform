@@ -21,7 +21,7 @@ describe('loadConfig', () => {
       ceilingLimit: 10,
       ceilingWindowMs: 900_000,
       ceilingMaxSources: 100_000,
-      ceilingBroadLimit: 200,
+      ceilingBroadLimit: 1000,
       ceilingBroadMaxSources: 20_000,
       // Below the libuv threadpool's own default size (4) -- see
       // config.ts's comment for the measurement this default is chosen

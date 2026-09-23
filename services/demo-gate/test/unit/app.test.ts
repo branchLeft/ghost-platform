@@ -12,11 +12,20 @@ import {
   type LeaseId,
   type SlotName,
 } from '@branchleft/ghost-platform-render-core';
-import { createGateHandler, VERIFY_PATH, type GateDeps } from '../../src/app.js';
+import {
+  createGateHandler,
+  selectVerificationHash,
+  VERIFY_PATH,
+  type GateDeps,
+} from '../../src/app.js';
 import { hashPassphrase, parseArgon2idHash, type Argon2idHash } from '../../src/argon2id.js';
 import { createAttemptCeiling } from '../../src/ceiling.js';
 import { COOKIE_NAME, signCookie } from '../../src/cookie.js';
-import { createDerivationGate, DerivationGateFullError } from '../../src/derivationGate.js';
+import {
+  createDerivationGate,
+  DerivationGateFullError,
+  type DerivationGate,
+} from '../../src/derivationGate.js';
 import {
   createLeaseReader,
   createSlotsSource,
@@ -156,6 +165,40 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
+/**
+ * `selectVerificationHash` is what `login()` actually derives against; a
+ * test on the HTTP status alone cannot tell "derived against the decoy
+ * and it didn't match" apart from "never derived against anything" --
+ * both end in 401. This proves the decision itself, independent of
+ * whether a derivation gate skips it (covered separately below).
+ */
+describe('selectVerificationHash', () => {
+  // A function, not a constant: the fixtures it closes over are only set
+  // by `beforeAll` once tests start running, after this describe block's
+  // own body has already executed once to register them.
+  const anyGated = (): GatedHost => ({
+    host: HOST,
+    slot: SLOT,
+    hash: slotHash,
+    hashId: slotHashId,
+  });
+
+  it('is the slot hash only when tied to a known gated host', () => {
+    expect(selectVerificationHash(anyGated(), true, decoyHash)).toBe(slotHash);
+  });
+
+  it('is the decoy when untied, even though the host is known -- the mid-recycle case', () => {
+    expect(selectVerificationHash(anyGated(), false, decoyHash)).toBe(decoyHash);
+  });
+
+  it('is the decoy when there is no gated host at all -- the unknown-host case', () => {
+    expect(selectVerificationHash(undefined, false, decoyHash)).toBe(decoyHash);
+    // `tied` cannot legitimately be true with no host, but the function
+    // must still refuse to hand back a hash that doesn't exist.
+    expect(selectVerificationHash(undefined, true, decoyHash)).toBe(decoyHash);
+  });
+});
+
 describe('verify (the forward_auth target)', () => {
   it('refuses a request with no cookie, showing the passphrase form for the original path', async () => {
     const reply = await verifyAs(HOST, undefined, { 'x-forwarded-uri': '/ghost/#/dashboard' });
@@ -242,6 +285,35 @@ describe('login', () => {
     expect(setCookie).not.toMatch(/Domain=/i);
     expect(setCookie).toContain(`.${LEASE_1}.`);
     expect((await verifyAs(HOST, cookieFrom(reply))).status).toBe(200);
+  });
+
+  it('derives exactly once per attempt, whether tied, untied, mid-recycle or unknown -- never skipped', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const inner = createDerivationGate(4, 64);
+    let calls = 0;
+    const countingGate: DerivationGate = {
+      run: (fn) => {
+        calls += 1;
+        return inner.run(fn);
+      },
+    };
+    h = await start({
+      derivationGate: countingGate,
+      ceiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 100 }),
+    });
+
+    await login(PASSPHRASE); // tied, matches
+    expect(calls).toBe(1);
+    await login('wrong'); // tied, does not match
+    expect(calls).toBe(2);
+    await login(PASSPHRASE, { host: 'unknown.demo.example' }); // no gated host at all
+    expect(calls).toBe(3);
+    h.leases.set(SLOT, { lease: LEASE_1, hashId: 'deadbeefdeadbeef' as HashId }); // untied: mid-recycle
+    await login(PASSPHRASE);
+    expect(calls).toBe(4);
+    h.leases.delete(SLOT); // no lease record at all
+    await login(PASSPHRASE);
+    expect(calls).toBe(5);
   });
 
   it('issues a cookie that dies when the slot is recycled', async () => {
@@ -366,6 +438,43 @@ describe('login', () => {
     expect((await login('wrong', { source: addr('1') })).status).toBe(401);
     const third = await login(PASSPHRASE, { source: addr('2') });
     expect(third.status).toBe(429);
+  });
+
+  it('does not let one /64 spend a /48 budget past its own narrow limit, locking out a neighbour', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      ceiling: createAttemptCeiling({ limit: 3, windowMs: 60_000, maxSources: 100 }),
+      broadCeiling: createAttemptCeiling({ limit: 5, windowMs: 60_000, maxSources: 100 }),
+    });
+    const attacker = '2001:db8:cccc:0::1';
+    // Far past the attacker's own narrow limit of 3. Charging the broad
+    // bucket on every one of these -- rather than only on the 3 the
+    // narrow ceiling actually admits -- would spend the whole broad
+    // budget (5) on one source's refused attempts alone.
+    for (let i = 0; i < 20; i++) await login('wrong', { source: attacker });
+    const neighbour = '2001:db8:cccc:9999::1'; // same /48, a different /64
+    expect((await login(PASSPHRASE, { source: neighbour })).status).toBe(303);
+  });
+
+  it('bounds how many narrow-table entries one /48 can create, so it cannot fill the table alone', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      ceiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 5 }),
+      broadCeiling: createAttemptCeiling({ limit: 3, windowMs: 60_000, maxSources: 100 }),
+    });
+    // Five distinct /64s inside one /48, one attempt each: more than the
+    // broad budget (3), but fewer than the narrow table's own capacity
+    // (5) -- so if the flood filled the table, it would be the /48
+    // budget doing it, not running out of table.
+    const addr = (suffix: string) => `2001:db8:dddd:${suffix}::1`;
+    for (const suffix of ['0', '1', '2', '3', '4']) {
+      await login('wrong', { source: addr(suffix) });
+    }
+    // An unrelated visitor, outside that /48, must still get an ordinary
+    // refusal -- not a full-table 429 -- which only holds if the flood
+    // above created at most 3 narrow entries (the broad budget), not 5.
+    const unrelated = await login('wrong', { source: '203.0.113.99' });
+    expect(unrelated.status).toBe(401);
   });
 
   it('refuses a trusted peer that did not say who the client is', async () => {

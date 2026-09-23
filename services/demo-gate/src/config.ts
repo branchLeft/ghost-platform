@@ -66,11 +66,20 @@ export function loadConfig(
     // /48 rather than /64, so a flood spread across many /64s inside a
     // single /48 (a block routinely allocated whole to one customer) still
     // exhausts a bucket instead of multiplying past the per-/64 limit
-    // uncounted. Limit and table size are both larger than the narrow
-    // ceiling's own -- a /48 aggregates many genuine visitors' /64s too,
-    // and this tier exists to catch a flood, not to throttle ordinary
-    // traffic sharing an allocation.
-    ceilingBroadLimit: positiveInteger(env, 'GATE_CEILING_BROAD_ATTEMPTS', 200, 20_000),
+    // uncounted. `login()` checks both without charging either, and
+    // charges both together only when both admit -- a request either tier
+    // refuses costs neither, and creates no new narrow-table entry, so one
+    // /48's own narrow-limited attempts are the only thing that can ever
+    // spend its broad budget (never someone else's refused attempts).
+    // 1000 is a compromise, not a proof: low enough that one /48 can add
+    // at most ~1% to the narrow table (needing on the order of 100 /48s to
+    // fill it, versus one before this tier existed), high enough that
+    // ordinary shared-allocation traffic to a low-volume demo estate is
+    // very unlikely to hit it. A client that can rotate through many /64s
+    // inside its own /48 can still exhaust that /48's own budget -- this
+    // tier bounds the blast radius to one /48, it does not make that /48's
+    // visitors immune to each other.
+    ceilingBroadLimit: positiveInteger(env, 'GATE_CEILING_BROAD_ATTEMPTS', 1_000, 20_000),
     ceilingBroadMaxSources: positiveInteger(
       env,
       'GATE_CEILING_BROAD_MAX_SOURCES',

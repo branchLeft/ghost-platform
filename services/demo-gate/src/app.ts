@@ -103,6 +103,23 @@ async function currentLease(deps: GateDeps, slot: SlotName): Promise<CurrentLeas
   }
 }
 
+/**
+ * The hash `login()` derives against: the slot's real hash only when
+ * `tied` (the lease record's `hashId` matches it), the decoy in every
+ * other case -- an unknown host, no lease, or an untied pair, including
+ * mid-recycle. Exported and pure so a test can assert the selection
+ * directly, rather than only the eventual HTTP status, which looks
+ * identical whether the decoy was actually derived against or the
+ * derivation was skipped outright.
+ */
+export function selectVerificationHash(
+  gated: GatedHost | undefined,
+  tied: boolean,
+  decoyHash: Argon2idHash
+): Argon2idHash {
+  return tied && gated !== undefined ? gated.hash : decoyHash;
+}
+
 async function verify(deps: GateDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const returnPath = safeReturnPath(headerValue(req.headers['x-forwarded-uri']));
   const deny = (): void => send(res, 401, passphrasePage(returnPath, null), PAGE_HEADERS);
@@ -138,18 +155,25 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
   }
 
   const attemptedAt = deps.nowMs();
-  const narrowVerdict = deps.ceiling.attempt(source, attemptedAt);
-  const broadVerdict = deps.broadCeiling.attempt(broadSource, attemptedAt);
-  if (!narrowVerdict.allowed || !broadVerdict.allowed) {
+  // Peeked, not charged: a request either tier would refuse must cost
+  // neither one anything, and must not create a new /64 entry in the
+  // narrow table just because the /48 tier was going to refuse it anyway
+  // -- checking without charging first is what stops that. Only once both
+  // agree to admit is the attempt actually recorded, on both together.
+  const narrowPeek = deps.ceiling.peek(source, attemptedAt);
+  const broadPeek = deps.broadCeiling.peek(broadSource, attemptedAt);
+  if (!narrowPeek.allowed || !broadPeek.allowed) {
     const retryAfterSeconds = Math.max(
-      narrowVerdict.allowed ? 0 : narrowVerdict.retryAfterSeconds,
-      broadVerdict.allowed ? 0 : broadVerdict.retryAfterSeconds
+      narrowPeek.allowed ? 0 : narrowPeek.retryAfterSeconds,
+      broadPeek.allowed ? 0 : broadPeek.retryAfterSeconds
     );
     return send(res, 429, passphrasePage('/', 'DEMO_GATE_TOO_MANY_ATTEMPTS'), {
       ...PAGE_HEADERS,
       'Retry-After': String(retryAfterSeconds),
     });
   }
+  deps.ceiling.attempt(source, attemptedAt);
+  deps.broadCeiling.attempt(broadSource, attemptedAt);
 
   const contentType = headerValue(req.headers['content-type']) ?? '';
   const body =
@@ -181,16 +205,15 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
 
   // Always exactly one derivation: against the slot's hash when the lease
   // just read is tied to it, against the decoy otherwise -- an untied pair
-  // is refused the same as no lease at all, never derived against. Routed
-  // through the derivation gate so a flood of distinct sources -- none of
-  // which trips its own per-source ceiling -- cannot pile up unbounded
-  // concurrent derivations; past the gate's own queue, refused rather than
-  // deriving.
+  // is refused the same as no lease at all, never derived against, and its
+  // timing must not tell the two cases apart. Routed through the
+  // derivation gate so a flood of distinct sources -- none of which trips
+  // its own per-source ceiling -- cannot pile up unbounded concurrent
+  // derivations; past the gate's own queue, refused rather than deriving.
+  const hashToVerify = selectVerificationHash(gated, tied, deps.decoyHash);
   let matched: boolean;
   try {
-    matched = await deps.derivationGate.run(() =>
-      verifyPassphrase(passphrase, tied && gated !== undefined ? gated.hash : deps.decoyHash)
-    );
+    matched = await deps.derivationGate.run(() => verifyPassphrase(passphrase, hashToVerify));
   } catch (err) {
     if (err instanceof DerivationGateFullError) {
       // Not the visitor's fault: the gate ran out of capacity, not them out

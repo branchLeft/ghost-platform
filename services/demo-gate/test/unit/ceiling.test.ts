@@ -46,6 +46,32 @@ describe('createAttemptCeiling', () => {
   });
 });
 
+describe('peek', () => {
+  it('gives the same verdict attempt would, without recording anything', () => {
+    const ceiling = createAttemptCeiling({ limit: 2, windowMs: WINDOW, maxSources: 10 });
+    expect(ceiling.peek('a', 0)).toEqual({ allowed: true });
+    expect(ceiling.peek('a', 0)).toEqual({ allowed: true }); // still true: peek charged nothing
+    expect(ceiling.attempt('a', 0)).toEqual({ allowed: true });
+    expect(ceiling.peek('a', 0)).toEqual({ allowed: true }); // one of two spent
+    expect(ceiling.attempt('a', 0)).toEqual({ allowed: true });
+    expect(ceiling.peek('a', 0)).toEqual({ allowed: false, retryAfterSeconds: 60 }); // now spent
+    expect(ceiling.attempt('a', 0)).toEqual({ allowed: false, retryAfterSeconds: 60 });
+  });
+
+  it('never creates a table entry, so it cannot fill the table on its own', () => {
+    const ceiling = createAttemptCeiling({ limit: 5, windowMs: WINDOW, maxSources: 1 });
+    // Fifty distinct sources peeked, none ever attempted: the table stays
+    // empty, so all fifty peek as allowed -- checking a verdict is not the
+    // same as spending the one slot this table has.
+    for (let i = 0; i < 50; i++) expect(ceiling.peek(`source-${i}`, 0).allowed).toBe(true);
+    expect(ceiling.attempt('the-only-room', 0).allowed).toBe(true);
+    expect(ceiling.attempt('a-second-source', 0)).toEqual({
+      allowed: false,
+      retryAfterSeconds: 60,
+    });
+  });
+});
+
 describe('refund', () => {
   it('undoes exactly one recorded attempt, restoring room in the window', () => {
     const ceiling = createAttemptCeiling({ limit: 1, windowMs: WINDOW, maxSources: 10 });
