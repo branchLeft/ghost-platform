@@ -4,7 +4,7 @@
 Usage:
     render_slot_sudoers.py [--out FILE]
 
-Prints the generated sudoers file to stdout, or installs it at `--out`
+Prints the generated sudoers file to stdout, or writes it safely to `--out`
 (syntax-checked with `visudo -c -f` and written atomically -- see
 `write_generated_file`).
 
@@ -132,19 +132,23 @@ def render(slots: Sequence[str] = SLOT_NAMES) -> str:
 
 
 def write_generated_file(path: str, content: str) -> None:
-    """Install `content` at `path` the way a host build must: to a temp file
-    in the same directory, syntax-checked with `visudo -c -f` before
-    anything can read it, then renamed into place atomically.
+    """Write `content` to `path` the safe way: to a temp file in the same
+    directory, syntax-checked with `visudo -c -f` before anything can read
+    it, then renamed into place atomically.
+
+    This writes a file; it does not install one. Setting ownership and
+    making the path an active sudoers.d entry are a host-build concern this
+    generator does not perform.
 
     `visudo -c -f` checks syntax only -- it does not check the file's mode.
     A file at 0644 parses exactly as one at 0440 does; it is
     `visudo -c` against the *whole active configuration* (no `-f`) that
     refuses a sudoers.d file with the wrong permissions, and only once it is
-    already installed. So the 0440 below is this function's own guarantee,
+    already in place. So the 0440 below is this function's own guarantee,
     not something a syntax check would have caught for it.
 
     On any failure the temp file is removed and `path` is left untouched --
-    a partial or invalid write never reaches the install path.
+    a partial or invalid write never reaches the target path.
     """
     directory = os.path.dirname(os.path.abspath(path)) or "."
     fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".render_slot_sudoers-")
@@ -158,12 +162,12 @@ def write_generated_file(path: str, content: str) -> None:
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
-                "visudo is required to install the generated file safely; it was not found "
+                "visudo is required to write the generated file safely; it was not found "
                 "on PATH"
             ) from exc
         if result.returncode != 0:
             raise RuntimeError(
-                "visudo -c -f rejected the generated file; nothing was installed:\n"
+                "visudo -c -f rejected the generated file; nothing was written:\n"
                 f"{result.stdout}{result.stderr}"
             )
         os.replace(tmp_path, path)
@@ -178,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out",
         help=(
-            "path to install the generated file at, syntax-checked and written "
+            "path to write the generated file to, syntax-checked and written "
             "atomically; defaults to printing to stdout with no check"
         ),
     )

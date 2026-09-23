@@ -24,9 +24,9 @@ from unittest import mock
 import render_slot_sudoers as rss
 
 # Matches one rule line's shape and captures the invocation. Used with
-# `fullmatch` against a single line at a time -- never `finditer` against the
-# whole multi-line file, which is what let an earlier version of this suite
-# match nothing at all and still report green.
+# `fullmatch` against a single line at a time -- `finditer` against the whole
+# multi-line file would need `re.M` for `\A`/`\Z` to anchor per line, and
+# without it silently matches nothing.
 RULE_LINE_PATTERN = re.compile(
     re.escape(f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} ")
     + r"(?P<invocation>[a-zA-Z0-9 ]+)"
@@ -85,8 +85,8 @@ class SlotNameValidationTests(unittest.TestCase):
             rss.slot_invocations("")
 
     def test_render_rejects_a_slot_table_carrying_a_wildcard(self):
-        # The literal case named by the review: a slot "name" that is
-        # actually an attempt to smuggle a wildcard into the invocation.
+        # A slot "name" that is actually an attempt to smuggle a wildcard
+        # into the invocation.
         with self.assertRaises(rss.InvalidSlotName):
             rss.render(("0 *",))
 
@@ -113,15 +113,26 @@ class AllInvocationsTests(unittest.TestCase):
         self.assertEqual(len(rss.all_invocations(tuple(str(n) for n in range(9)))), 45)
 
 
-class RenderExactnessTests(unittest.TestCase):
-    """The property the review found missing: not just "35 lines starting
-    with `broker `" but "nothing else in the file at all". Each test here
-    would fail on an appended `Defaults` line, `@includedir` directive, or a
-    bare `ALL ALL=(ALL) NOPASSWD: ALL` line that no earlier version of this
-    suite could see, because none of them filter for the broker prefix
-    before checking anything.
+class RenderPinnedLiteralsTests(unittest.TestCase):
+    """These two strings are hardcoded, not read from `rss.BROKER_USER` /
+    `rss.WRAPPER_PATH` -- a test built from the same constant the generator
+    reads moves with it, so it stays green even if that constant is changed
+    to something wrong (`BROKER_USER = "ALL"` turns every rule into a
+    `sudoers` host-spec everyone matches, and no test deriving its
+    expectation from `BROKER_USER` itself can see that).
     """
 
+    def test_rendered_output_pins_the_literal_broker_account_and_wrapper_path(self):
+        content = rss.render()
+        self.assertIn(
+            "broker ALL=(root) NOPASSWD: /usr/local/sbin/branchleft-slot 0 reset", content
+        )
+        self.assertIn(
+            "broker ALL=(root) NOPASSWD: /usr/local/sbin/branchleft-slot 6 b stop", content
+        )
+
+
+class RenderExactnessTests(unittest.TestCase):
     def test_render_output_equals_the_independently_built_expected_text(self):
         self.assertEqual(rss.render(), _expected_full_text())
 
@@ -150,8 +161,7 @@ class RenderTests(unittest.TestCase):
         # "broker ALL=(root)" -- but must never appear inside the invocation
         # itself, which is the part a caller's argument reaches. Matched
         # per line with `fullmatch`, and the match count is asserted so an
-        # empty loop (the earlier bug: `\A`/`\Z` with `finditer` over the
-        # whole multi-line file, which matches zero times) cannot pass.
+        # empty loop cannot pass silently.
         matched = 0
         for line in rss.render().splitlines():
             match = RULE_LINE_PATTERN.fullmatch(line)
@@ -180,7 +190,7 @@ class RenderTests(unittest.TestCase):
 
 
 class WriteGeneratedFileTests(unittest.TestCase):
-    def test_installs_the_real_rendered_file_at_mode_0440(self):
+    def test_writes_the_real_rendered_file_at_mode_0440(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = pathlib.Path(tmp) / "branchleft-slot"
             rss.write_generated_file(str(target), rss.render())
@@ -241,7 +251,7 @@ class MainTests(unittest.TestCase):
         finally:
             sys.stdout = original_stdout
 
-    def test_main_installs_via_out_using_the_same_safe_write(self):
+    def test_main_writes_via_out_using_the_same_safe_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             out_path = pathlib.Path(tmp) / "generated-sudoers"
             exit_code = rss.main(["--out", str(out_path)])

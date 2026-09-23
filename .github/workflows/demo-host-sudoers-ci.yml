@@ -1,9 +1,10 @@
 name: Demo host sudoers CI
 
-# Proves the two properties the unit-test suite under demo-host/provision/
+# Proves the properties the unit-test suite under demo-host/provision/
 # cannot: that the rendered file is valid sudoers syntax under a real
-# `visudo -c`, and that a real `sudo -l` accepts an enumerated invocation and
-# refuses the same invocation with one extra argument appended.
+# `visudo -c`; that a real `sudo -l` accepts an enumerated invocation and
+# refuses the same invocation with one extra argument appended; and that a
+# caller who is not the broker account is refused outright.
 #
 # Runs inside a throwaway Debian container rather than the runner's own sudo
 # configuration, because the check installs a rule file under
@@ -57,6 +58,14 @@ jobs:
             echo "--- sudo -l: the same invocation plus an extra argument must be refused ---"
             if sudo -l -U broker /usr/local/sbin/branchleft-slot 0 reset extra-argument; then
               echo "::error::extra-argument invocation was allowed -- the sudoers boundary regressed"
+              exit 1
+            fi
+            echo "refused, as required"
+
+            id nobody >/dev/null 2>&1 || useradd -r nobody
+            echo "--- sudo -l: a caller outside the broker account must be refused ---"
+            if sudo -l -U nobody /usr/local/sbin/branchleft-slot 0 reset; then
+              echo "::error::nobody was allowed to run the slot wrapper -- the broker account was not enforced"
               exit 1
             fi
             echo "refused, as required"
