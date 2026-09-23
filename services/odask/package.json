@@ -1,0 +1,27 @@
+{
+  "name": "ghost-platform-odask",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The on-demand TLS ask endpoint Caddy calls once per new hostname before issuing a certificate -- 200 only for a hostname the descriptor set declares, fail closed otherwise. Reachable only from its own edge (see ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html §02, E1-E5).",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@branchleft/ghost-platform-render-core": "file:../../render-core",
+    "@branchleft/tsconfig": "^0.4.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.5.1",
+    "@vitest/coverage-v8": "^4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
