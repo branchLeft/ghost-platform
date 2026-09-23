@@ -1,11 +1,13 @@
-import type { DeliveryHostConfig } from './smtp.js';
-
 export interface ShimConfig {
   port: number;
   dbPath: string;
-  smtp: DeliveryHostConfig;
   throttlePath?: string;
   messagesPerHour: number;
+  drainToken: string;
+  drainHoldMs: number;
+  drainLeaseSeconds: number;
+  drainBatchLimit: number;
+  drainPollIntervalMs: number;
 }
 
 // Structurally identical to NodeJS.ProcessEnv, spelled out instead of named
@@ -19,6 +21,11 @@ function requireEnv(env: ShimEnv, name: string): string {
     throw new Error(`Missing required environment variable ${name}`);
   }
   return value;
+}
+
+function positiveIntEnv(env: ShimEnv, name: string, fallback: number): number {
+  const raw = Number(env[name]);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
 /**
@@ -38,21 +45,22 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
     );
   }
 
-  const messagesPerHourRaw = Number(env.SHIM_MESSAGES_PER_HOUR);
-  const messagesPerHour =
-    Number.isFinite(messagesPerHourRaw) && messagesPerHourRaw > 0 ? messagesPerHourRaw : 50;
+  const messagesPerHour = positiveIntEnv(env, 'SHIM_MESSAGES_PER_HOUR', 50);
 
   return {
     port: Number(env.PORT) || 8080,
     dbPath,
-    smtp: {
-      host: requireEnv(env, 'SMTP_HOST'),
-      port: Number(env.SMTP_PORT) || 587,
-      secure: env.SMTP_SECURE === 'true',
-      auth:
-        env.SMTP_USER && env.SMTP_PASS ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined,
-    },
     throttlePath: env.SHIM_THROTTLE_PATH,
     messagesPerHour,
+    // No default: an empty or guessable drain token defeats the one
+    // authentication check standing between "queued mail" and "anyone who
+    // can reach this port" (LLD-6 — "the drain endpoint hands out mail, so
+    // it needs authentication"). requireEnv fails startup rather than let
+    // the service come up silently unauthenticated.
+    drainToken: requireEnv(env, 'SHIM_DRAIN_TOKEN'),
+    drainHoldMs: positiveIntEnv(env, 'SHIM_DRAIN_HOLD_MS', 30_000),
+    drainLeaseSeconds: positiveIntEnv(env, 'SHIM_DRAIN_LEASE_SECONDS', 30),
+    drainBatchLimit: positiveIntEnv(env, 'SHIM_DRAIN_BATCH_LIMIT', 25),
+    drainPollIntervalMs: positiveIntEnv(env, 'SHIM_DRAIN_POLL_INTERVAL_MS', 250),
   };
 }

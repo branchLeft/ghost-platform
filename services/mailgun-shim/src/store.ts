@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { hashApiKey, verifyApiKey } from './crypto.js';
+import { isSafeRecipientAddress } from './recipientSafety.js';
 
 export type SuppressionType = 'bounces' | 'complaints' | 'unsubscribes';
 
@@ -38,9 +39,10 @@ export interface ListEventsResult {
   nextOffset: number;
 }
 
-export type QueueRecipientStatus = 'pending' | 'sent' | 'failed' | 'suppressed';
+/** 'held' is a lease: drained but not yet acknowledged. See claimForDrain. */
+export type QueueRecipientStatus = 'pending' | 'held' | 'sent' | 'failed' | 'suppressed';
 
-/** The parts of a parsed Mailgun send request a queued recipient still needs at send time. */
+/** The parts of a parsed Mailgun send request a queued recipient still needs at drain time. */
 export interface QueueBatchPayload {
   from: string;
   subject: string;
@@ -59,13 +61,26 @@ export interface EnqueueBatchParams {
   now: number;
 }
 
-export interface DueRecipient {
+/** A recipient row handed to a drain caller — held, with a lease, until it acks or the lease lapses. */
+export interface DrainedRecipient {
+  /** Stable across re-offers — the same crash-before-ack recipient comes back under this same id (LLD-6: "every message carries a stable id"). */
+  id: string;
   batchId: string;
   domain: string;
   emailId: string | null;
   payload: QueueBatchPayload;
   recipient: string;
-  attempts: number;
+  /** How many times this row has been drained (including this one) — handed out again is not itself an error, only an unacked one left forever would be. */
+  drainCount: number;
+}
+
+export interface AckDrainResult {
+  /** ids that were 'held' and are now 'sent' — this call's own work. */
+  acked: string[];
+  /** ids already 'sent' before this call — a duplicate ack, not an error (LLD-6: "the drainer can refuse a duplicate"). */
+  alreadyHandled: string[];
+  /** ids this store has no record of currently being held — an unknown id, or one whose lease had already lapsed and was re-offered under itself before this ack arrived. */
+  unknown: string[];
 }
 
 /**
@@ -99,28 +114,50 @@ export interface ShimStore {
   removeSuppression(domain: string, type: SuppressionType, email: string): void;
   isSuppressed(domain: string, type: SuppressionType, email: string): boolean;
 
-  /** Inserts the batch row and every recipient row in one transaction. */
+  /** Inserts the batch row and every recipient row (each given its own stable drain id) in one transaction. */
   enqueueBatch(params: EnqueueBatchParams): void;
-  /** Oldest-batch-first; a caller-supplied limit bounds one claim's work. */
-  claimDueRecipients(now: number, limit: number): DueRecipient[];
-  recordRecipientSent(batchId: string, recipient: string, event: Omit<StoredEvent, 'id'>): void;
-  /** No event is recorded — a suppressed recipient never had mail attempted. */
-  recordRecipientSuppressed(batchId: string, recipient: string): void;
-  scheduleRecipientRetry(
-    batchId: string,
-    recipient: string,
-    attempts: number,
-    nextAttemptAt: number,
-    lastError: string
-  ): void;
-  recordRecipientFailed(
-    batchId: string,
-    recipient: string,
-    attempts: number,
-    lastError: string,
-    event: Omit<StoredEvent, 'id'>
-  ): void;
-  countPendingRecipients(): number;
+
+  /**
+   * Atomically claims up to `limit` recipients for hand-over: every row
+   * already `pending`, plus every `held` row whose lease has lapsed
+   * (re-offered under its original id — nothing here mints a new one). A
+   * suppressed recipient is resolved in place (recorded, excluded, no
+   * event) rather than ever being handed to a drainer; an unsafe address
+   * is failed in place the same way. Both still count toward `limit`
+   * being consumed for this call, so a caller wanting more should call
+   * again rather than assume it always gets `limit` drainable rows back.
+   */
+  claimForDrain(now: number, leaseSeconds: number, limit: number): DrainedRecipient[];
+
+  /**
+   * The other half of the handover: a `held` id becomes `sent` (this
+   * store's job for that message is over), a duplicate ack is reported
+   * rather than erroring, and an id this store does not currently hold
+   * (unknown, or already reclaimed back to `pending` by a lapsed lease)
+   * is reported as `unknown` so the caller can decide what to do rather
+   * than have it silently swallowed.
+   *
+   * Deliberately does not synthesize a "delivered" event: an ack means
+   * the drainer took responsibility for the message, not that anyone
+   * received it (LLD-6 M5) — that distinction is the whole reason the
+   * old worker's premature "delivered" event was a defect, and it would
+   * be the same defect one hop later to synthesize it here.
+   */
+  ackDrain(ids: string[], now: number): AckDrainResult;
+
+  /**
+   * Seconds since the oldest recipient still owed a hand-over (`pending`
+   * or `held`) was enqueued, or null if none are outstanding. `held`
+   * counts as outstanding on purpose: a drainer that keeps re-polling but
+   * never acking must show up as a growing number here exactly like one
+   * that stopped calling at all (LLD-8 §03b — "whatever it reports about
+   * itself").
+   */
+  oldestUndrainedAgeSeconds(now: number): number | null;
+
+  /** Total rows not yet resolved to a terminal state (sent/failed/suppressed) — pending plus held. */
+  countUndrainedRecipients(): number;
+
   /** Returns the number of batches deleted. The events table is untouched. */
   cleanupCompletedBatches(olderThan: number): number;
   /** Throws if the underlying connection can't run a trivial query. */
@@ -232,18 +269,28 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       completed_at REAL
     );
 
+    -- id is the drain-facing identity: stable across re-offers, and what
+    -- an ack names. (batch_id, recipient) stays the primary key -- it is
+    -- what enqueueBatch's own de-duplication and every existing join rely
+    -- on -- id is a second, uniquely-indexed column rather than a
+    -- replacement for it.
     CREATE TABLE IF NOT EXISTS queue_recipients (
+      id TEXT NOT NULL,
       batch_id TEXT NOT NULL,
       recipient TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0,
-      next_attempt_at REAL NOT NULL,
+      drain_count INTEGER NOT NULL DEFAULT 0,
+      available_at REAL NOT NULL,
+      held_until REAL,
       last_error TEXT,
       PRIMARY KEY (batch_id, recipient)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_queue_recipients_status_next
-      ON queue_recipients (status, next_attempt_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_recipients_id ON queue_recipients (id);
+    CREATE INDEX IF NOT EXISTS idx_queue_recipients_status_available
+      ON queue_recipients (status, available_at);
+    CREATE INDEX IF NOT EXISTS idx_queue_recipients_status_held_until
+      ON queue_recipients (status, held_until);
   `);
 
   const insertTenant = db.prepare(
@@ -272,37 +319,47 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     'INSERT INTO queue_batches (batch_id, domain, email_id, payload, created_at, completed_at) VALUES (?, ?, ?, ?, ?, NULL)'
   );
   const insertRecipient = db.prepare(
-    "INSERT INTO queue_recipients (batch_id, recipient, status, attempts, next_attempt_at, last_error) VALUES (?, ?, 'pending', 0, ?, NULL)"
+    "INSERT INTO queue_recipients (id, batch_id, recipient, status, drain_count, available_at, held_until, last_error) VALUES (?, ?, ?, 'pending', 0, ?, NULL, NULL)"
   );
-  const selectDue = db.prepare(`
-    SELECT qr.batch_id AS batch_id, qr.recipient AS recipient, qr.attempts AS attempts,
+  const selectClaimCandidates = db.prepare(`
+    SELECT qr.id AS id, qr.batch_id AS batch_id, qr.recipient AS recipient, qr.drain_count AS drain_count,
            qb.domain AS domain, qb.email_id AS email_id, qb.payload AS payload
     FROM queue_recipients qr
     JOIN queue_batches qb ON qb.batch_id = qr.batch_id
-    WHERE qr.status = 'pending' AND qr.next_attempt_at <= ?
+    WHERE (qr.status = 'pending' AND qr.available_at <= ?)
+       OR (qr.status = 'held' AND qr.held_until <= ?)
     ORDER BY qb.created_at ASC, qr.rowid ASC
     LIMIT ?
   `);
-  const updateSent = db.prepare(
-    "UPDATE queue_recipients SET status = 'sent' WHERE batch_id = ? AND recipient = ?"
+  const updateHeld = db.prepare(
+    'UPDATE queue_recipients SET status = ?, drain_count = drain_count + 1, held_until = ? WHERE id = ?'
   );
-  const updateSuppressed = db.prepare(
-    "UPDATE queue_recipients SET status = 'suppressed' WHERE batch_id = ? AND recipient = ?"
+  const updateSuppressedById = db.prepare(
+    "UPDATE queue_recipients SET status = 'suppressed', held_until = NULL WHERE id = ?"
   );
-  const updateRetry = db.prepare(
-    'UPDATE queue_recipients SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE batch_id = ? AND recipient = ?'
+  const updateFailedById = db.prepare(
+    "UPDATE queue_recipients SET status = 'failed', held_until = NULL, last_error = ? WHERE id = ?"
   );
-  const updateFailed = db.prepare(
-    "UPDATE queue_recipients SET status = 'failed', attempts = ?, last_error = ? WHERE batch_id = ? AND recipient = ?"
+  const selectRecipientById = db.prepare(
+    'SELECT id, batch_id AS batch_id, status FROM queue_recipients WHERE id = ?'
   );
+  const updateSentById = db.prepare(
+    "UPDATE queue_recipients SET status = 'sent', held_until = NULL WHERE id = ?"
+  );
+  const countUndrained = db.prepare(
+    "SELECT COUNT(*) AS c FROM queue_recipients WHERE status IN ('pending', 'held')"
+  );
+  const selectOldestUndrained = db.prepare(`
+    SELECT MIN(qb.created_at) AS oldest
+    FROM queue_recipients qr
+    JOIN queue_batches qb ON qb.batch_id = qr.batch_id
+    WHERE qr.status IN ('pending', 'held')
+  `);
   const countPendingForBatch = db.prepare(
-    "SELECT COUNT(*) AS c FROM queue_recipients WHERE batch_id = ? AND status = 'pending'"
+    "SELECT COUNT(*) AS c FROM queue_recipients WHERE batch_id = ? AND status NOT IN ('sent', 'failed', 'suppressed')"
   );
   const updateCompletedAt = db.prepare(
     'UPDATE queue_batches SET completed_at = ? WHERE batch_id = ? AND completed_at IS NULL'
-  );
-  const countAllPending = db.prepare(
-    "SELECT COUNT(*) AS c FROM queue_recipients WHERE status = 'pending'"
   );
   const selectOldBatchIds = db.prepare(
     'SELECT batch_id FROM queue_batches WHERE completed_at IS NOT NULL AND completed_at < ?'
@@ -311,10 +368,10 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
   const deleteBatch = db.prepare('DELETE FROM queue_batches WHERE batch_id = ?');
   const pingStmt = db.prepare('SELECT 1');
 
-  function maybeCompleteBatch(batchId: string): void {
+  function maybeCompleteBatch(batchId: string, now: number): void {
     const row = countPendingForBatch.get(batchId) as { c: number };
     if (row.c === 0) {
-      updateCompletedAt.run(Date.now() / 1000, batchId);
+      updateCompletedAt.run(now, batchId);
     }
   }
 
@@ -415,81 +472,104 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       withTransaction(db, () => {
         insertBatch.run(batchId, domain, emailId, JSON.stringify(payload), now);
         for (const recipient of recipients) {
-          insertRecipient.run(batchId, recipient, now);
+          insertRecipient.run(randomUUID(), batchId, recipient, now);
         }
       });
     },
 
-    claimDueRecipients(now, limit) {
-      const rows = selectDue.all(now, limit) as Array<{
-        batch_id: string;
-        recipient: string;
-        attempts: number;
-        domain: string;
-        email_id: string | null;
-        payload: string;
-      }>;
-      return rows.map((row) => ({
-        batchId: row.batch_id,
-        domain: row.domain,
-        emailId: row.email_id,
-        payload: JSON.parse(row.payload) as QueueBatchPayload,
-        recipient: row.recipient,
-        attempts: row.attempts,
-      }));
+    claimForDrain(now, leaseSeconds, limit) {
+      return withTransaction(db, () => {
+        const candidates = selectClaimCandidates.all(now, now, limit) as Array<{
+          id: string;
+          batch_id: string;
+          recipient: string;
+          drain_count: number;
+          domain: string;
+          email_id: string | null;
+          payload: string;
+        }>;
+
+        const drained: DrainedRecipient[] = [];
+
+        for (const row of candidates) {
+          let suppressed = false;
+          for (const type of SUPPRESSION_TYPES) {
+            if (isSuppressed_(row.domain, type, row.recipient)) {
+              suppressed = true;
+              break;
+            }
+          }
+          if (suppressed) {
+            updateSuppressedById.run(row.id);
+            maybeCompleteBatch(row.batch_id, now);
+            continue;
+          }
+
+          if (!isSafeRecipientAddress(row.recipient)) {
+            updateFailedById.run('Invalid recipient address', row.id);
+            maybeCompleteBatch(row.batch_id, now);
+            continue;
+          }
+
+          updateHeld.run('held', now + leaseSeconds, row.id);
+          drained.push({
+            id: row.id,
+            batchId: row.batch_id,
+            domain: row.domain,
+            emailId: row.email_id,
+            payload: JSON.parse(row.payload) as QueueBatchPayload,
+            recipient: row.recipient,
+            drainCount: row.drain_count + 1,
+          });
+        }
+
+        return drained;
+      });
+
+      function isSuppressed_(domain: string, type: SuppressionType, email: string): boolean {
+        return selectSuppression.get(domain, type, email) !== undefined;
+      }
     },
 
-    recordRecipientSent(batchId, recipient, event) {
-      withTransaction(db, () => {
-        updateSent.run(batchId, recipient);
-        insertEvent.run(
-          randomUUID(),
-          event.domain,
-          event.type,
-          event.severity,
-          event.recipient,
-          event.emailId,
-          event.providerMessageId,
-          event.timestamp,
-          event.errorCode,
-          event.errorMessage
-        );
-        maybeCompleteBatch(batchId);
+    ackDrain(ids, now) {
+      return withTransaction(db, () => {
+        const acked: string[] = [];
+        const alreadyHandled: string[] = [];
+        const unknown: string[] = [];
+
+        for (const id of ids) {
+          const row = selectRecipientById.get(id) as
+            { id: string; batch_id: string; status: QueueRecipientStatus } | undefined;
+          if (!row) {
+            unknown.push(id);
+            continue;
+          }
+          if (row.status === 'sent') {
+            alreadyHandled.push(id);
+            continue;
+          }
+          if (row.status !== 'held') {
+            // 'pending' (lease lapsed and reclaimed before this ack arrived),
+            // 'failed' or 'suppressed' — this ack is stale, not a success.
+            unknown.push(id);
+            continue;
+          }
+          updateSentById.run(id);
+          maybeCompleteBatch(row.batch_id, now);
+          acked.push(id);
+        }
+
+        return { acked, alreadyHandled, unknown };
       });
     },
 
-    recordRecipientSuppressed(batchId, recipient) {
-      withTransaction(db, () => {
-        updateSuppressed.run(batchId, recipient);
-        maybeCompleteBatch(batchId);
-      });
+    oldestUndrainedAgeSeconds(now) {
+      const row = selectOldestUndrained.get() as { oldest: number | null };
+      return row.oldest === null ? null : now - row.oldest;
     },
 
-    scheduleRecipientRetry(batchId, recipient, attempts, nextAttemptAt, lastError) {
-      updateRetry.run(attempts, nextAttemptAt, lastError, batchId, recipient);
-    },
-
-    recordRecipientFailed(batchId, recipient, attempts, lastError, event) {
-      withTransaction(db, () => {
-        updateFailed.run(attempts, lastError, batchId, recipient);
-        insertEvent.run(
-          randomUUID(),
-          event.domain,
-          event.type,
-          event.severity,
-          event.recipient,
-          event.emailId,
-          event.providerMessageId,
-          event.timestamp,
-          event.errorCode,
-          event.errorMessage
-        );
-        maybeCompleteBatch(batchId);
-      });
-    },
-
-    countPendingRecipients() {
-      return (countAllPending.get() as { c: number }).c;
+    countUndrainedRecipients() {
+      return (countUndrained.get() as { c: number }).c;
     },
 
     cleanupCompletedBatches(olderThan) {
