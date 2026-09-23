@@ -71,9 +71,14 @@ start_ghost() {
     eval docker run $args widgets-proof-ghost:local >/dev/null
 
     # Strict readiness: an HTTP 200 from Ghost itself, not merely a TCP
-    # connect (see scripts/smoke-test.sh's own note on why).
+    # connect (see scripts/smoke-test.sh's own note on why). 127.0.0.1, not
+    # localhost: this image's Alpine/musl base resolves "localhost" to ::1
+    # first, and Ghost (like the image's own smoke test) binds IPv4 only --
+    # busybox wget's connection to the IPv6 loopback is refused every time,
+    # so an unqualified "localhost" here would time out on every run
+    # regardless of whether Ghost is actually ready.
     deadline=$(($(date +%s) + 90))
-    until docker exec "$GHOST_NAME" wget -q -O /dev/null http://localhost:2368/ 2>/dev/null; do
+    until docker exec "$GHOST_NAME" wget -q -O /dev/null http://127.0.0.1:2368/ 2>/dev/null; do
         if [ "$(date +%s)" -ge "$deadline" ]; then
             echo "FAILED: Ghost did not become ready within 90s" >&2
             docker logs "$GHOST_NAME" >&2
