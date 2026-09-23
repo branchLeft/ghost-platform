@@ -6,6 +6,7 @@ import type { DrainWake } from '../drainWake.js';
 import { resolveRecipientTokens } from '../mailgunFields.js';
 import type { Logger } from '../log.js';
 import type { DrainedRecipient, ShimStore } from '../store.js';
+import type { Throttle } from '../throttle.js';
 
 export interface DrainRouterOptions {
   /** How long a GET /drain request may be held open with nothing to offer, in ms. LLD-2: "held ~30s". */
@@ -114,6 +115,7 @@ export function createDrainRouter(
   drainToken: string,
   options: DrainRouterOptions,
   log: Logger,
+  throttle: Throttle,
   now: () => number = () => Date.now() / 1000
 ): Router {
   const router = createRouter();
@@ -126,7 +128,16 @@ export function createDrainRouter(
       const deadline = Date.now() + options.holdMs;
 
       for (;;) {
-        const drained = store.claimForDrain(now(), options.leaseSeconds, options.batchLimit);
+        // Re-read on every poll iteration, not once per request: a request
+        // held open across the whole holdMs window (LLD-2: "held ~30s")
+        // must still pick up an operator's throttle-file edit within that
+        // one hold, not only on the next request. reload() is a single
+        // stat() call when nothing changed, so this costs nothing on the
+        // common path.
+        throttle.reload();
+        const drained = store.claimForDrain(now(), options.leaseSeconds, options.batchLimit, () =>
+          throttle.tryTake()
+        );
         if (drained.length > 0) {
           log.info('drain', { count: drained.length, ids: drained.map((r) => r.id) });
           res.status(200).json({ messages: drained.map(toWireMessage) });

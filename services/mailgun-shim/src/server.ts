@@ -3,11 +3,17 @@ import { loadConfig } from './config.js';
 import { createDrainWake } from './drainWake.js';
 import { createLogger } from './log.js';
 import { createSqliteStore } from './store.js';
+import { createThrottle } from './throttle.js';
 
 const config = loadConfig();
 const log = createLogger();
 const store = createSqliteStore(config.dbPath);
 const wake = createDrainWake();
+const throttle = createThrottle({
+  configPath: config.throttlePath,
+  envMessagesPerHour: config.messagesPerHour,
+  log,
+});
 
 const app = createApp(
   store,
@@ -19,6 +25,7 @@ const app = createApp(
     batchLimit: config.drainBatchLimit,
     pollIntervalMs: config.drainPollIntervalMs,
   },
+  throttle,
   log
 );
 

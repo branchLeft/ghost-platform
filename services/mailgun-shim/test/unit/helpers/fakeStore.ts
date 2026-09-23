@@ -1,5 +1,9 @@
+import { randomUUID } from 'node:crypto';
+import { isSafeRecipientAddress } from '../../../src/recipientSafety.js';
+import { SUPPRESSION_TYPES } from '../../../src/store.js';
 import type {
-  DueRecipient,
+  AckDrainResult,
+  DrainedRecipient,
   QueueBatchPayload,
   QueueRecipientStatus,
   ShimStore,
@@ -12,13 +16,16 @@ export interface FakeShimStore extends ShimStore {
 }
 
 interface RecipientRow {
+  id: string;
+  recipient: string;
   status: QueueRecipientStatus;
-  attempts: number;
-  nextAttemptAt: number;
-  lastError: string | null;
+  drainCount: number;
+  availableAt: number;
+  heldUntil: number | null;
 }
 
 interface BatchRow {
+  batchId: string;
   domain: string;
   emailId: string | null;
   payload: QueueBatchPayload;
@@ -36,25 +43,35 @@ function suppressionKey(domain: string, type: string, email: string): string {
  * instead of SQLite, so tests can assert on exactly what a route recorded
  * without a database round trip. Mirrors createSqliteStore's contract
  * (store.ts is covered directly by its own unit tests), including the
- * queue's ordering (oldest batch first, insertion order within a batch)
- * and its "no pending rows left" batch-completion rule.
+ * queue's ordering (oldest batch first, insertion order within a batch),
+ * its "no pending/held rows left" batch-completion rule, and the
+ * claim/lease/ack shape claimForDrain and ackDrain give real drainers.
  */
 export function createFakeStore(): FakeShimStore {
   const tenants = new Map<string, string>();
   const suppressionKeys = new Set<string>();
   const events: StoredEvent[] = [];
   const batches = new Map<string, BatchRow>();
+  const recipientIndex = new Map<string, { batchId: string; recipient: string }>();
   let nextId = 0;
 
-  function maybeCompleteBatch(batchId: string): void {
+  function maybeCompleteBatch(batchId: string, now: number): void {
     const batch = batches.get(batchId);
     if (!batch || batch.completedAt !== null) {
       return;
     }
-    const stillPending = [...batch.recipients.values()].some((row) => row.status === 'pending');
-    if (!stillPending) {
-      batch.completedAt = Date.now() / 1000;
+    const outstanding = [...batch.recipients.values()].some(
+      (row) => row.status === 'pending' || row.status === 'held'
+    );
+    if (!outstanding) {
+      batch.completedAt = now;
     }
+  }
+
+  function isSuppressed_(domain: string, recipient: string): boolean {
+    return SUPPRESSION_TYPES.some((type) =>
+      suppressionKeys.has(suppressionKey(domain, type, recipient))
+    );
   }
 
   return {
@@ -115,14 +132,19 @@ export function createFakeStore(): FakeShimStore {
             `UNIQUE constraint failed: queue_recipients.batch_id, queue_recipients.recipient (duplicate recipient "${recipient}" in batch "${batchId}")`
           );
         }
+        const id = randomUUID();
         recipientMap.set(recipient, {
+          id,
+          recipient,
           status: 'pending',
-          attempts: 0,
-          nextAttemptAt: now,
-          lastError: null,
+          drainCount: 0,
+          availableAt: now,
+          heldUntil: null,
         });
+        recipientIndex.set(id, { batchId, recipient });
       }
       batches.set(batchId, {
+        batchId,
         domain,
         emailId,
         payload,
@@ -132,71 +154,103 @@ export function createFakeStore(): FakeShimStore {
       });
     },
 
-    claimDueRecipients(now, limit) {
-      const due: DueRecipient[] = [];
-      const orderedBatches = [...batches.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
-      for (const [batchId, batch] of orderedBatches) {
-        for (const [recipient, row] of batch.recipients) {
-          if (due.length >= limit) {
-            return due;
+    claimForDrain(now, leaseSeconds, limit, canSend) {
+      const drained: DrainedRecipient[] = [];
+      const orderedBatches = [...batches.values()].sort((a, b) => a.createdAt - b.createdAt);
+
+      outer: for (const batch of orderedBatches) {
+        for (const row of batch.recipients.values()) {
+          if (drained.length >= limit) {
+            break outer;
           }
-          if (row.status === 'pending' && row.nextAttemptAt <= now) {
-            due.push({
-              batchId,
-              domain: batch.domain,
-              emailId: batch.emailId,
-              payload: batch.payload,
-              recipient,
-              attempts: row.attempts,
-            });
+          const claimable =
+            (row.status === 'pending' && row.availableAt <= now) ||
+            (row.status === 'held' && row.heldUntil !== null && row.heldUntil <= now);
+          if (!claimable) {
+            continue;
           }
+
+          if (isSuppressed_(batch.domain, row.recipient)) {
+            row.status = 'suppressed';
+            row.heldUntil = null;
+            maybeCompleteBatch(batch.batchId, now);
+            continue;
+          }
+
+          if (!isSafeRecipientAddress(row.recipient)) {
+            row.status = 'failed';
+            row.heldUntil = null;
+            maybeCompleteBatch(batch.batchId, now);
+            continue;
+          }
+
+          if (canSend && !canSend()) {
+            break outer;
+          }
+
+          row.status = 'held';
+          row.drainCount += 1;
+          row.heldUntil = now + leaseSeconds;
+          drained.push({
+            id: row.id,
+            batchId: batch.batchId,
+            domain: batch.domain,
+            emailId: batch.emailId,
+            payload: batch.payload,
+            recipient: row.recipient,
+            drainCount: row.drainCount,
+          });
         }
       }
-      return due;
+
+      return drained;
     },
 
-    recordRecipientSent(batchId, recipient, event) {
-      const row = batches.get(batchId)?.recipients.get(recipient);
-      if (row) {
+    ackDrain(ids, now) {
+      const result: AckDrainResult = { acked: [], alreadyHandled: [], unknown: [] };
+      for (const id of ids) {
+        const location = recipientIndex.get(id);
+        const row = location
+          ? batches.get(location.batchId)?.recipients.get(location.recipient)
+          : undefined;
+        if (!row) {
+          result.unknown.push(id);
+          continue;
+        }
+        if (row.status === 'sent') {
+          result.alreadyHandled.push(id);
+          continue;
+        }
+        if (row.status !== 'held') {
+          result.unknown.push(id);
+          continue;
+        }
         row.status = 'sent';
+        row.heldUntil = null;
+        maybeCompleteBatch(location!.batchId, now);
+        result.acked.push(id);
       }
-      events.push({ ...event, id: `fake-event-${nextId++}` });
-      maybeCompleteBatch(batchId);
+      return result;
     },
 
-    recordRecipientSuppressed(batchId, recipient) {
-      const row = batches.get(batchId)?.recipients.get(recipient);
-      if (row) {
-        row.status = 'suppressed';
+    oldestUndrainedAgeSeconds(now) {
+      let oldest: number | null = null;
+      for (const batch of batches.values()) {
+        const outstanding = [...batch.recipients.values()].some(
+          (row) => row.status === 'pending' || row.status === 'held'
+        );
+        if (outstanding && (oldest === null || batch.createdAt < oldest)) {
+          oldest = batch.createdAt;
+        }
       }
-      maybeCompleteBatch(batchId);
+      return oldest === null ? null : now - oldest;
     },
 
-    scheduleRecipientRetry(batchId, recipient, attempts, nextAttemptAt, lastError) {
-      const row = batches.get(batchId)?.recipients.get(recipient);
-      if (row) {
-        row.attempts = attempts;
-        row.nextAttemptAt = nextAttemptAt;
-        row.lastError = lastError;
-      }
-    },
-
-    recordRecipientFailed(batchId, recipient, attempts, lastError, event) {
-      const row = batches.get(batchId)?.recipients.get(recipient);
-      if (row) {
-        row.status = 'failed';
-        row.attempts = attempts;
-        row.lastError = lastError;
-      }
-      events.push({ ...event, id: `fake-event-${nextId++}` });
-      maybeCompleteBatch(batchId);
-    },
-
-    countPendingRecipients() {
+    countUndrainedRecipients() {
       let count = 0;
       for (const batch of batches.values()) {
         for (const row of batch.recipients.values()) {
-          if (row.status === 'pending') {
+          if (row.status === 'pending' || row.status === 'held') {
             count++;
           }
         }
@@ -208,6 +262,9 @@ export function createFakeStore(): FakeShimStore {
       let deleted = 0;
       for (const [batchId, batch] of batches) {
         if (batch.completedAt !== null && batch.completedAt < olderThan) {
+          for (const row of batch.recipients.values()) {
+            recipientIndex.delete(row.id);
+          }
           batches.delete(batchId);
           deleted++;
         }

@@ -127,7 +127,23 @@ export interface ShimStore {
    * being consumed for this call, so a caller wanting more should call
    * again rather than assume it always gets `limit` drainable rows back.
    */
-  claimForDrain(now: number, leaseSeconds: number, limit: number): DrainedRecipient[];
+  /**
+   * `canSend` gates the per-tenant hourly throttle (the deleted worker's
+   * own `throttle.tryTake()` check immediately before dispatch — see
+   * throttle.ts). It is asked once per row that would otherwise become
+   * `held`, in claim order; the first `false` stops the whole claim
+   * rather than skipping just that row, so a throttled candidate and
+   * every candidate after it in this batch stay `pending` for the next
+   * call, never reordered around the one that was throttled.
+   * Suppressed/unsafe rows are resolved regardless of the throttle: they
+   * were never going to consume a send. Omitted means unthrottled.
+   */
+  claimForDrain(
+    now: number,
+    leaseSeconds: number,
+    limit: number,
+    canSend?: () => boolean
+  ): DrainedRecipient[];
 
   /**
    * The other half of the handover: a `held` id becomes `sent` (this
@@ -477,7 +493,7 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       });
     },
 
-    claimForDrain(now, leaseSeconds, limit) {
+    claimForDrain(now, leaseSeconds, limit, canSend) {
       return withTransaction(db, () => {
         const candidates = selectClaimCandidates.all(now, now, limit) as Array<{
           id: string;
@@ -509,6 +525,17 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
             updateFailedById.run('Invalid recipient address', row.id);
             maybeCompleteBatch(row.batch_id, now);
             continue;
+          }
+
+          if (canSend && !canSend()) {
+            // Throttled — this row and every candidate after it in this
+            // batch stay exactly as claimed (pending, or held with their
+            // existing lease if this was a re-offer candidate): a
+            // re-offer candidate that loses the throttle race keeps its
+            // original held_until rather than being touched, so it is
+            // still re-offered once that original lease lapses, not
+            // pushed further out by an unrelated rate limit.
+            break;
           }
 
           updateHeld.run('held', now + leaseSeconds, row.id);

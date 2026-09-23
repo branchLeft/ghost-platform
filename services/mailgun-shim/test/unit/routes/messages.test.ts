@@ -1,12 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMessagesRouter } from '../../../src/routes/messages.js';
-import type { Transporter } from '../../../src/smtp.js';
-import type { WorkerHandle } from '../../../src/worker.js';
+import { createDrainWake, type DrainWake } from '../../../src/drainWake.js';
 import { createTestLogger, type TestLogger } from '../../helpers/testLogger.js';
-import { createTestWorker } from '../../helpers/testWorker.js';
 import { createFakeStore, type FakeShimStore } from '../helpers/fakeStore.js';
 import { basicAuthHeader, startRouter, type StartedRouter } from '../helpers/startRouter.js';
-import { vi } from 'vitest';
 
 const DOMAIN = 'tenant1.example.com';
 const API_KEY = 'tenant1-api-key';
@@ -19,26 +16,26 @@ function multipartBody(fields: Array<[string, string]>): FormData {
   return form;
 }
 
+/** Reads back the single row this test enqueued via claimForDrain — a real hand-over read, not a mock inspection. */
+function claimOne(store: FakeShimStore) {
+  return store.claimForDrain(Date.now() / 1000, 30, 10);
+}
+
 describe('POST /v3/:domain/messages', () => {
   let store: FakeShimStore;
-  let sendMail: ReturnType<typeof vi.fn>;
-  let transport: Transporter;
-  let worker: WorkerHandle;
+  let wake: DrainWake;
   let testLogger: TestLogger;
   let server: StartedRouter;
 
   beforeEach(async () => {
     store = createFakeStore();
     store.registerTenant(DOMAIN, API_KEY);
-    sendMail = vi.fn(async () => ({}));
-    transport = { sendMail } as unknown as Transporter;
+    wake = createDrainWake();
     testLogger = createTestLogger();
-    worker = createTestWorker(store, transport, { log: testLogger.logger });
-    server = await startRouter(createMessagesRouter(store, worker, testLogger.logger));
+    server = await startRouter(createMessagesRouter(store, wake, testLogger.logger));
   });
 
   afterEach(async () => {
-    await worker.stop();
     await server.close();
   });
 
@@ -53,7 +50,36 @@ describe('POST /v3/:domain/messages', () => {
     });
   }
 
-  it('excludes an already-suppressed recipient from delivery entirely', async () => {
+  it('enqueues durably and wakes the drain handover — nothing here dials out, it only queues', async () => {
+    const notifySpy = vi.spyOn(wake, 'notify');
+
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; message: string };
+    expect(body.id).toBeTruthy();
+    expect(body.message).toBe('Queued. Thank you.');
+
+    expect(notifySpy).toHaveBeenCalledTimes(1);
+
+    const claimed = claimOne(store);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]!.recipient).toBe('member@example.com');
+    expect(claimed[0]!.domain).toBe(DOMAIN);
+  });
+
+  it('does not itself apply suppression or safety filtering — enqueues every recipient and leaves that to claim time', async () => {
+    // Suppression/unsafe-address resolution moved to claimForDrain
+    // (store.ts) so it happens once, at the one place a message actually
+    // gets handed to a drainer, rather than being duplicated here.
     store.addSuppression(DOMAIN, 'bounces', 'bounced@example.com');
 
     const res = await post(
@@ -68,40 +94,17 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-    await worker.whenIdle();
 
-    expect(sendMail).toHaveBeenCalledTimes(1);
-    const sentTo = sendMail.mock.calls[0]![0].to;
-    expect(sentTo).toBe('ok@example.com');
-
-    // No event at all for the suppressed recipient — not even a "failed" one.
-    expect(store.events.some((e) => e.recipient === 'bounced@example.com')).toBe(false);
-    expect(
-      store.events.some((e) => e.recipient === 'ok@example.com' && e.type === 'delivered')
-    ).toBe(true);
+    // Both recipients were queued — the suppressed one is resolved when
+    // something actually claims the batch for drain, not here.
+    const claimed = claimOne(store);
+    expect(claimed.map((r) => r.recipient).sort()).toEqual(['ok@example.com']);
+    // bounced@ resolved suppressed at claim (terminal); ok@ was claimed and
+    // is now held, awaiting ack — still counts as undrained until then.
+    expect(store.countUndrainedRecipients()).toBe(1);
   });
 
-  it('checks all three suppression types for each recipient, not just one', async () => {
-    store.addSuppression(DOMAIN, 'complaints', 'complained@example.com');
-    store.addSuppression(DOMAIN, 'unsubscribes', 'unsubscribed@example.com');
-
-    const res = await post(
-      multipartBody([
-        ['to', 'complained@example.com'],
-        ['to', 'unsubscribed@example.com'],
-        ['from', 'noreply@tenant1.example.com'],
-        ['subject', 'Hi'],
-        ['html', '<p>hi</p>'],
-        ['text', 'hi'],
-        ['recipient-variables', '{}'],
-      ])
-    );
-    expect(res.status).toBe(200);
-    await worker.whenIdle();
-    expect(sendMail).not.toHaveBeenCalled();
-  });
-
-  it('batches personalised sends per recipient using recipient-variables', async () => {
+  it('batches personalised sends per recipient using recipient-variables, carried through in the queued payload', async () => {
     const recipientData = {
       'member-a@example.com': { name: 'Member A' },
       'member-b@example.com': { name: 'Member B' },
@@ -118,17 +121,13 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-    await worker.whenIdle();
 
-    expect(sendMail).toHaveBeenCalledTimes(2);
-    const byRecipient = new Map(
-      sendMail.mock.calls.map((call) => [call[0].to.address ?? call[0].to, call[0]])
-    );
-    expect(byRecipient.get('member-a@example.com')?.subject).toBe('Hello Member A');
-    expect(byRecipient.get('member-b@example.com')?.subject).toBe('Hello Member B');
+    const claimed = claimOne(store);
+    expect(claimed).toHaveLength(2);
+    expect(claimed[0]!.payload.recipientVariables).toEqual(recipientData);
   });
 
-  it('threads v:email-id through to the recorded delivery event', async () => {
+  it('threads v:email-id through to the queued batch', async () => {
     const res = await post(
       multipartBody([
         ['to', 'member@example.com'],
@@ -141,13 +140,12 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-    await worker.whenIdle();
 
-    const event = store.events.find((e) => e.recipient === 'member@example.com');
-    expect(event?.emailId).toBe('email-record-42');
+    const claimed = claimOne(store);
+    expect(claimed[0]!.emailId).toBe('email-record-42');
   });
 
-  it('rejects a request with no recipients', async () => {
+  it('rejects a request with no recipients, and never enqueues anything', async () => {
     const res = await post(
       multipartBody([
         ['from', 'noreply@tenant1.example.com'],
@@ -160,8 +158,7 @@ describe('POST /v3/:domain/messages', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { message: string };
     expect(body.message).toBe('No recipients');
-    await worker.whenIdle();
-    expect(sendMail).not.toHaveBeenCalled();
+    expect(claimOne(store)).toHaveLength(0);
   });
 
   it('rejects a malformed body (unparseable multipart) with 400 rather than crashing', async () => {
@@ -179,36 +176,7 @@ describe('POST /v3/:domain/messages', () => {
     expect(res.status).toBe(400);
   });
 
-  it('a downstream failure while the worker is sending is logged, not thrown into the request handler', async () => {
-    const recordSentSpy = vi.spyOn(store, 'recordRecipientSent').mockImplementation(() => {
-      throw new Error('storage unavailable');
-    });
-
-    const res = await post(
-      multipartBody([
-        ['to', 'member@example.com'],
-        ['from', 'noreply@tenant1.example.com'],
-        ['subject', 'Hi'],
-        ['html', '<p>hi</p>'],
-        ['text', 'hi'],
-        ['recipient-variables', '{}'],
-      ])
-    );
-    // The response already went out before the worker processed the row —
-    // a downstream failure there must not turn into a 500 here.
-    expect(res.status).toBe(200);
-
-    await worker.whenIdle();
-    expect(
-      testLogger.lines.some(
-        (line) => line.event === 'worker_lifecycle' && line.fields.event === 'tick_failed'
-      )
-    ).toBe(true);
-
-    recordSentSpy.mockRestore();
-  });
-
-  it('401s without valid tenant credentials, and never attempts delivery', async () => {
+  it('401s without valid tenant credentials, and never enqueues anything', async () => {
     const res = await fetch(`${server.baseUrl}/v3/${DOMAIN}/messages`, {
       method: 'POST',
       headers: { Authorization: basicAuthHeader('api', 'wrong-key') },
@@ -222,8 +190,7 @@ describe('POST /v3/:domain/messages', () => {
       ]),
     });
     expect(res.status).toBe(401);
-    await worker.whenIdle();
-    expect(sendMail).not.toHaveBeenCalled();
+    expect(claimOne(store)).toHaveLength(0);
   });
 
   it('deduplicates a recipient listed twice in the same send to one queued row, and the server keeps serving requests afterwards', async () => {
@@ -239,11 +206,11 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-    await worker.whenIdle();
 
-    // One send, not two — and no crash from the (batch_id, recipient)
+    // One queued row, not two — and no crash from the (batch_id, recipient)
     // primary key that a duplicate row would otherwise violate.
-    expect(sendMail).toHaveBeenCalledTimes(1);
+    const claimed = claimOne(store);
+    expect(claimed).toHaveLength(1);
 
     // The server is still alive and answering further requests — this is
     // the regression this test exists to catch: an unhandled rejection
@@ -259,8 +226,6 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(followUp.status).toBe(200);
-    await worker.whenIdle();
-    expect(sendMail).toHaveBeenCalledTimes(2);
   });
 
   it('treats differently-cased local parts as distinct recipients — dedup is exact-string, not case-insensitive', async () => {
@@ -276,8 +241,11 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(res.status).toBe(200);
-    await worker.whenIdle();
-    expect(sendMail).toHaveBeenCalledTimes(2);
+    const claimed = claimOne(store);
+    expect(claimed.map((r) => r.recipient).sort()).toEqual([
+      'Member@example.com',
+      'member@example.com',
+    ]);
   });
 
   it('a store throw during enqueue yields a 500 JSON response, not a crash — and the server keeps serving requests afterwards', async () => {

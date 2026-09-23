@@ -8,6 +8,7 @@ import { createSuppressionsRouter } from './routes/suppressions.js';
 import { renderMetrics } from './metrics.js';
 import type { DrainWake } from './drainWake.js';
 import type { ShimStore } from './store.js';
+import type { Throttle } from './throttle.js';
 
 /**
  * Assembles the Mailgun-shaped endpoints Ghost's bulk-email path calls (doc
@@ -31,6 +32,7 @@ export function createApp(
   wake: DrainWake,
   drainToken: string,
   drainOptions: DrainRouterOptions,
+  throttle: Throttle,
   log: Logger = createLogger()
 ): Express {
   const app = express();
@@ -58,7 +60,7 @@ export function createApp(
   app.use(createMessagesRouter(store, wake, log));
   app.use(createEventsRouter(store));
   app.use(createSuppressionsRouter(store));
-  app.use(createDrainRouter(store, wake, drainToken, drainOptions, log));
+  app.use(createDrainRouter(store, wake, drainToken, drainOptions, log, throttle));
 
   return app;
 }
