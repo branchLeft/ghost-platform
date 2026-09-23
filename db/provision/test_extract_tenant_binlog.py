@@ -36,7 +36,7 @@ import extract_tenant_binlog as etb
 # --stop-datetime excludes it (see FakeMysqlbinlog) -- a tenant whose first
 # post-dump write is after the chosen restore instant. tenant_ddl:
 # declared in the dump; its only post-dump events are DDL (Query events,
-# never a Table_map) -- the round-3 finding.
+# never a Table_map).
 DUMP_WITH_RESUME_POINT = """\
 -- MySQL dump 10.13  Distrib 8.0.46
 --
@@ -574,9 +574,9 @@ class RestorePointInTimeTests(unittest.TestCase):
             )
         self.assertIn("gap", str(ctx.exception))
 
-    # -- Round-2 finding 1 (as re-scoped by round 3): a quiet tenant, or a
-    # --stop-datetime before a tenant's first post-dump write, is applied
-    # (harmlessly empty) and reported as zero, not refused.
+    # A quiet tenant, or a --stop-datetime before a tenant's first
+    # post-dump write, is applied (harmlessly empty) and reported as
+    # zero, not refused.
 
     def test_a_quiet_tenant_is_always_applied_and_reports_zero(self):
         run = FakeMysqlbinlog(SAMPLE_EVENTS)
@@ -609,8 +609,8 @@ class RestorePointInTimeTests(unittest.TestCase):
         )
         self.assertEqual((result.row_events, result.statements), (0, 0))
 
-    # -- Round-3 finding 1: a tenant whose only post-dump events are DDL
-    # must be detected via the statement count, not missed by row_events.
+    # A tenant whose only post-dump events are DDL must be detected via
+    # the statement count, not missed by row_events.
 
     def test_a_ddl_only_tenant_reports_nonzero_statements(self):
         run = FakeMysqlbinlog(SAMPLE_EVENTS)
@@ -631,13 +631,13 @@ class RestorePointInTimeTests(unittest.TestCase):
         # And it was actually applied -- not skipped because row_events==0.
         self.assertEqual(run.applied, result.sql)
 
-    # -- Round-2 finding 2: sort before slicing, check contiguity over the
-    # whole given list.
+    # Sort before slicing, check contiguity over the whole given list.
 
     def test_unsorted_two_file_list_no_longer_drops_the_later_file(self):
-        # Before the fix: binlog_paths[resume_index:] on an UNSORTED list
-        # with resume file 000004 at index 0 would slice to ["000004"]
-        # only, silently dropping 000005 -- exactly the round-2 finding.
+        # binlog_paths[resume_index:] on an UNSORTED list with resume file
+        # 000004 at index 0 would slice to ["000004"] only, silently
+        # dropping 000005, if the list were used as given rather than
+        # sorted first.
         run = FakeMysqlbinlog(SAMPLE_EVENTS)
         result = etb._replay_from_resume_point(
             log_file="mysql-bin.000004",
