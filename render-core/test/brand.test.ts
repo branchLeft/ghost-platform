@@ -236,15 +236,15 @@ describe('validateEmailAddress', () => {
     expect(() => validateEmailAddress('owner@example.')).toThrow(FieldValidationError);
   });
 
-  // The attack shape that actually reproduces the quadratic blowup under the
-  // previous pattern: an unmatchable trailing space forces the engine to
-  // exhaustively retry every one of the 80,000 dots as a candidate split
-  // point for the two adjacent `[^\s@]+` groups either side of the literal
-  // `.`, before it can conclude the whole match fails — measured at ~3.6s
-  // against the pre-fix regex in this environment (round 3 review measured
-  // ~3.6s independently). The fixed implementation must resolve immediately,
-  // because the length cap runs before anything the trailing space could
-  // make ambiguous.
+  // The attack shape that actually reproduces the quadratic blowup a
+  // two-adjacent-quantifier pattern is vulnerable to: an unmatchable
+  // trailing space forces the engine to exhaustively retry every one of the
+  // 80,000 dots as a candidate split point for the two adjacent `[^\s@]+`
+  // groups either side of the literal `.`, before it can conclude the whole
+  // match fails — several seconds against such a pattern with no length
+  // cap. The fixed implementation must resolve immediately, because the
+  // length cap runs before anything the trailing space could make
+  // ambiguous.
   it('rejects a pathological 80 KB value fast (the ReDoS control case)', () => {
     const pathological = 'a@' + '.'.repeat(80_000) + ' ';
     const start = performance.now();
