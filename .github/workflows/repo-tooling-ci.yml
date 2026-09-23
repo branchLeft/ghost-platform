@@ -77,6 +77,14 @@ jobs:
       - name: Root guard tests
         run: npm test
 
+      # The pin-drift check for the self-hosted CDN bundles (widgets/pins.json
+      # vs widgets/dist/) -- a supply-chain integrity control, so its sabotage
+      # case runs on every push rather than only when someone remembers to run
+      # it by hand. No package.json of its own: only node:test and node:crypto,
+      # already satisfied by the Setup Node step above.
+      - name: Widget pin verification tests
+        run: node --test --experimental-test-coverage widgets/verify-pins.test.mjs
+
       # Self-test first: a matcher that has quietly stopped matching passes
       # every file, so prove it still works before trusting a pass. The scan
       # then walks the tree rather than taking a list of changed files --

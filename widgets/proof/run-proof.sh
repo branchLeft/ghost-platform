@@ -1,9 +1,9 @@
 #!/bin/sh
-# The live proof for branchLeft/workspace#1230: a real pinned Ghost
-# container, fronted by the origin built in widgets/origin/, exercised by a
-# real headless browser (widgets/proof/capture-network.mjs) through the
-# home page, Portal's sign-in overlay, search, a post with comments, and a
-# standalone page embedding the signup-form widget.
+# Live proof that zero widget bytes load from a third-party origin: a real
+# pinned Ghost container, fronted by the origin built in widgets/origin/,
+# exercised by a real headless browser (widgets/proof/capture-network.mjs)
+# through the home page, Portal's sign-in overlay, search, a post with
+# comments, and a standalone page embedding the signup-form widget.
 #
 # Three passes, matching the estate's sabotage-proof convention:
 #   GREEN  -- every widget config key pointed at our origin
