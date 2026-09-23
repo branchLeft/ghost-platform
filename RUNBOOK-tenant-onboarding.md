@@ -345,7 +345,6 @@ It prints `password=<value>` **once**, and prints nothing about it on a re-run â
 before the terminal scrolls; the recovery if you lose it is a password reset,
 not a lookup.
 
-
 ### 6. Create this tenant's media bucket, credential and bucket policy
 
 **This is an operator step and cannot be anything else.** Hetzner states that
