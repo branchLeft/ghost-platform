@@ -1,0 +1,44 @@
+# The proof-of-concept "our own origin" this story's Done criteria asks for:
+# one edge in front of Ghost that serves the pinned widget bundles itself and
+# proxies everything else straight through, so a reader's browser sees one
+# origin for the whole page -- the site and the scripts it loads to render
+# Portal, search, comments and the signup form.
+#
+# This is deliberately NOT the estate's production edge (that is LLD-5's own
+# job, built in a later story once epic branchLeft/workspace#1160's tenant
+# edge or branchLeft/workspace#1254's demo edge exists). It exists so this
+# story's claim -- zero third-party origins -- can be proven against a real
+# container rather than asserted from config. Whichever edge lands in
+# production is expected to fold the file_server block below into its own
+# Caddyfile rather than run this container permanently.
+{
+	auto_https off
+	admin off
+}
+
+:8080 {
+	# The six script bundles plus the one stylesheet, pinned by digest and
+	# vendored at build time -- see widgets/pins.json. `/bl-assets/` is the
+	# URL path LLD-5 §06 marks incidental; any path works as long as it is
+	# ours.
+	handle_path /bl-assets/* {
+		root * /srv/bl-assets
+		file_server
+		header Cache-Control "public, max-age=31536000, immutable"
+	}
+
+	# A standalone page embedding the signup-form widget the way a tenant
+	# would on an external landing page (signup-form is never loaded by
+	# Ghost's own front end -- see widgets/proof/signup-embed.html).
+	handle_path /proof/* {
+		root * /srv/proof
+		file_server
+	}
+
+	# Everything else -- the actual site, Portal's API calls, member
+	# sign-in -- proxied straight through to the Ghost container so the
+	# browser never sees a second origin.
+	handle {
+		reverse_proxy {$GHOST_UPSTREAM:ghost:2368}
+	}
+}
