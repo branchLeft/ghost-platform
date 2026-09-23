@@ -45,10 +45,19 @@ export function buildSourceAllowList(cidrs: readonly string[]): BlockList {
 
 /**
  * `smtp-server` reports an IPv4 client as an IPv4-mapped IPv6 literal
- * (`::ffff:172.18.0.3`) when the socket is dual-stack, which a v4-only or
- * v6-only CIDR test would silently never match — the same shape of bug as
- * the estate's mx1 exporter and the shim's own HTTP rate limiter (#1148),
- * both of which went unnoticed because nothing tested the IPv6 path.
+ * (`::ffff:172.18.0.3`) when the socket is dual-stack. Review cycle 1
+ * corrected this docstring: `node:net`'s `BlockList` already resolves a
+ * mapped address against an IPv4 subnet correctly on its own (measured:
+ * `check('::ffff:10.0.0.5','ipv6')` against a `10.0.0.0/8` IPv4 entry
+ * returns `true`; a mapped public address returns `false`), so the mapping
+ * below is not needed to avoid a silent false-negative the way the estate's
+ * mx1 exporter and the shim's own HTTP rate limiter (#1148) had — both of
+ * which never tested their own IPv6 path at all. It is kept anyway: passing
+ * a bare `10.0.0.5`-shaped string with family `'ipv4'` to `BlockList.check`
+ * is unambiguous where passing the mapped literal with family `'ipv6'`
+ * relies on `BlockList`'s own cross-family handling, and this function's own
+ * test matrix (`isAllowedSource`'s IPv4/IPv6/mapped cases) covers both paths
+ * either way.
  */
 export function isAllowedSource(remoteAddress: string | undefined, allowList: BlockList): boolean {
   if (!remoteAddress) {
@@ -167,19 +176,23 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // The username IS the submitter's identity (a per-tenant/per-slot
       // domain, same shape as the Mailgun HTTP route's tenant key) — a
       // submission is never trusted because of where it came from or what
-      // address it claims to send as (issue #1236's premise).
-      /* v8 ignore start -- the `?? ''`/`?? null` fallbacks defend against
-       * SMTPServerAuthentication's TypeScript type declaring username and
-       * password optional; smtp-server's own PLAIN and LOGIN mechanisms
-       * (lib/sasl.js) always normalise both to a string, even an empty one,
-       * before onAuth is ever called (verified from source: PLAIN takes
-       * `authcid || authzid` and `data[2] || ''`, LOGIN takes
-       * `(username || '').toString()` at each step) — undefined is not a
-       * value either supported mechanism can hand this callback. */
+      // address it claims to send as (issue #1236's premise). This
+      // credential decision is real and tested (an unknown/wrong credential
+      // is refused, a valid one is accepted) — deliberately NOT wrapped in a
+      // coverage-ignore region, unlike the `?? ''`/`?? null` fallbacks
+      // below, so its own coverage stays honest (review cycle 1, minor: an
+      // earlier version of this region wrapped this reachable decision too,
+      // hiding it from the coverage figure the 90% floor is measured
+      // against). Only the `??` fallbacks are the unreachable part: smtp-
+      // server's PLAIN and LOGIN mechanisms (lib/sasl.js) always normalise
+      // `username`/`password` to a string, even an empty one, before onAuth
+      // is ever called (verified from source: PLAIN takes `authcid ||
+      // authzid` and `data[2] || ''`, LOGIN takes `(username ||
+      // '').toString()` at each step) — undefined is not a value either
+      // mechanism can hand this callback, only the TypeScript type says so.
       const tenant = store.verifyTenant(auth.username ?? '', auth.password ?? '');
       if (!tenant) {
         log.warn('smtp_auth_failed', { username: auth.username ?? null });
-        /* v8 ignore stop */
         callback(new Error('Invalid credentials'));
         return;
       }
@@ -238,10 +251,27 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
     ): void {
       const submitterId = session.user;
       const chunks: Buffer[] = [];
+      // `size` above only makes smtp-server COUNT bytes past the cap and
+      // flip `stream.sizeExceeded` — it keeps emitting every byte regardless
+      // (smtp-stream.js's `_countDataBytes` sets the flag, then still writes
+      // the chunk to this stream). Retaining every chunk here until 'end' is
+      // what an authenticated submitter can turn into an OOM: a single
+      // 600 MiB DATA phase against a 10 MiB cap killed a 256 MiB container
+      // (reviewer live repro, review cycle 1). `_countDataBytes` runs before
+      // this handler sees each chunk, so `sizeExceeded` is already correct
+      // for the chunk in hand — once it flips, stop retaining bytes (release
+      // anything already buffered too) while still consuming 'data' events
+      // so the stream keeps draining and can still reach 'end' to reply 552.
+      let overCap = false;
       stream.on('data', (chunk: Buffer) => {
-        // `size` above makes smtp-server itself stop accepting bytes past
-        // the cap and set sizeExceeded — chunks still collected here are
-        // bounded by that, not by anything this handler adds.
+        if (overCap) {
+          return;
+        }
+        if (stream.sizeExceeded) {
+          overCap = true;
+          chunks.length = 0;
+          return;
+        }
         chunks.push(chunk);
       });
       stream.on('error', (err: Error) => callback(err));
@@ -329,7 +359,12 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             callback(null, 'Queued. Thank you.');
           })
           .catch((err: unknown) => {
-            log.error('smtp_parse_failed', {
+            // Review cycle 1, minor: renamed from `smtp_parse_failed` — this
+            // catch spans the `.then()` chain too, so it also reports a
+            // synchronous `store.enqueueBatch` failure (e.g. a SQLite write
+            // error), not only a `simpleParser` rejection. The old name
+            // misled whoever reads this event without misleading the code.
+            log.error('smtp_message_processing_failed', {
               submitter: submitterId,
               error: err instanceof Error ? err.message : String(err),
             });

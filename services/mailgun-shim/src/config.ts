@@ -18,7 +18,14 @@ export interface ShimConfig {
   smtpFrontDoor: SmtpFrontDoorConfig;
 }
 
-const DEFAULT_SMTP_LISTEN_PORT = 2525;
+// Review cycle 1: an earlier default of 2525 was justified by a false
+// claim (that the container's unprivileged `node` user can't bind <1024).
+// Measured against this service's own base image: Docker has set each
+// container's network namespace to `ip_unprivileged_port_start=0` since
+// 20.10, so an unprivileged user binds :25 with no root and no added
+// capability. LLD-6's diagram draws :25 — this default now matches it, and
+// no design amendment was needed after all.
+const DEFAULT_SMTP_LISTEN_PORT = 25;
 const DEFAULT_MAX_MESSAGE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_SUBMITTER_MESSAGES_PER_MINUTE = 120;
 

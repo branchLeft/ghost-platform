@@ -103,13 +103,13 @@ describe('SMTP front door — a parser failure is logged and refused, not swallo
     simpleParserMock.mockImplementation(() => Promise.reject(new Error('mailparser blew up')));
   });
 
-  it('logs smtp_parse_failed and refuses the message when simpleParser rejects with an Error', async () => {
+  it('logs smtp_message_processing_failed and refuses the message when simpleParser rejects with an Error', async () => {
     harness = await startHarness();
 
     const responses = await submitOneMessage(harness.port);
 
     expect(responses.some((line) => /^[45]\d\d /.test(line))).toBe(true);
-    expect(harness.logs.some((line) => line.event === 'smtp_parse_failed')).toBe(true);
+    expect(harness.logs.some((line) => line.event === 'smtp_message_processing_failed')).toBe(true);
     expect(harness.store.countPendingRecipients()).toBe(0);
     expect(harness.worker.kick).not.toHaveBeenCalled();
   });
@@ -126,7 +126,7 @@ describe('SMTP front door — a parser failure is logged and refused, not swallo
     const responses = await submitOneMessage(harness.port);
 
     expect(responses.some((line) => /^[45]\d\d /.test(line))).toBe(true);
-    const failLine = harness.logs.find((line) => line.event === 'smtp_parse_failed');
+    const failLine = harness.logs.find((line) => line.event === 'smtp_message_processing_failed');
     expect(failLine).toBeDefined();
     expect(failLine!.fields.error).toBe('not an Error instance');
     expect(harness.store.countPendingRecipients()).toBe(0);

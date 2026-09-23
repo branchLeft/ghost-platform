@@ -36,5 +36,5 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 USER node
-EXPOSE 8080
+EXPOSE 8080 25
 CMD ["node", "dist/server.js"]
