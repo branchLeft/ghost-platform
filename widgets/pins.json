@@ -1,0 +1,100 @@
+{
+  "$comment": "Pins for the six CDN script bundles plus one CDN stylesheet the pinned ghost:6.55.0 image loads by default (core/shared/config/defaults.json:294-318 in forks/Ghost at v6.55.0). Each row overrides one Ghost config key via its env-var form (nconf, separator \"__\") so the byte served is exactly the one pinned here, not whatever jsdelivr currently resolves the floating range to. Re-generate with widgets/scripts/fetch-pins.mjs; verify with widgets/scripts/verify-pins.mjs.",
+  "sourceGhostImage": "ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918",
+  "sourceDefaultsJson": "forks/Ghost @ v6.55.0, ghost/core/core/shared/config/defaults.json:294-318",
+  "servedFrom": "widgets/origin (Caddy file_server on /bl-assets/, reverse-proxying everything else to the Ghost container) -- see widgets/README.md",
+  "pinnedAt": "2026-09-23",
+  "bundles": [
+    {
+      "configKey": "portal",
+      "field": "url",
+      "envVar": "portal__url",
+      "servedPath": "/bl-assets/portal.min.js",
+      "vendoredFile": "dist/portal.min.js",
+      "mime": "application/javascript",
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/portal@~2.69/umd/portal.min.js",
+      "resolvedFrom": "portal@~2.69",
+      "resolvedVersion": "2.69.339",
+      "sha384": "sha384-YLARw+JrKTPUwhRrOUp/uslCAhg6EfLQJrZ8WiKqv3rbNo0VrDutWmkHwlXDKdAj",
+      "bytes": 2406990
+    },
+    {
+      "configKey": "sodoSearch",
+      "field": "url",
+      "envVar": "sodoSearch__url",
+      "servedPath": "/bl-assets/sodo-search.min.js",
+      "vendoredFile": "dist/sodo-search.min.js",
+      "mime": "application/javascript",
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/sodo-search@~1.8/umd/sodo-search.min.js",
+      "resolvedFrom": "sodo-search@~1.8",
+      "resolvedVersion": "1.8.554",
+      "sha384": "sha384-6wnKbY9PAoSONXNAY3KnVfBYTPO7IGEmSL2J/hqBe2ta1s7N838vzzM6so2u764W",
+      "bytes": 266755
+    },
+    {
+      "configKey": "sodoSearch",
+      "field": "styles",
+      "envVar": "sodoSearch__styles",
+      "servedPath": "/bl-assets/sodo-search.min.css",
+      "vendoredFile": "dist/sodo-search.min.css",
+      "mime": "text/css",
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/sodo-search@~1.8/umd/main.css",
+      "resolvedFrom": "sodo-search@~1.8",
+      "resolvedVersion": "1.8.554",
+      "sha384": "sha384-Ki57sKlMz8j0bkB6wDjGiM2Tuu9F14xszzP+hIYk/qL2K/H/8s8KXnbpMaY1ecx0",
+      "bytes": 9790
+    },
+    {
+      "configKey": "announcementBar",
+      "field": "url",
+      "envVar": "announcementBar__url",
+      "servedPath": "/bl-assets/announcement-bar.min.js",
+      "vendoredFile": "dist/announcement-bar.min.js",
+      "mime": "application/javascript",
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/announcement-bar@~1.1/umd/announcement-bar.min.js",
+      "resolvedFrom": "announcement-bar@~1.1",
+      "resolvedVersion": "1.1.525",
+      "sha384": "sha384-TRE/DVlWwvpiCvi2wqTnV8ZiVyGgDlFdMWXn2ddFDFY0+cPnz2+1dAOd2pHFSpxa",
+      "bytes": 133217
+    },
+    {
+      "configKey": "comments",
+      "field": "url",
+      "envVar": "comments__url",
+      "servedPath": "/bl-assets/comments-ui.min.js",
+      "vendoredFile": "dist/comments-ui.min.js",
+      "mime": "application/javascript",
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/comments-ui@~1.5/umd/comments-ui.min.js",
+      "resolvedFrom": "comments-ui@~1.5",
+      "resolvedVersion": "1.5.261",
+      "sha384": "sha384-G0OI2un8Kh7niW360+qBVmKg1ARVx6MQbDoHSA80UQgwBNIBPUdDXZBQx7P/0jzb",
+      "bytes": 849362
+    },
+    {
+      "configKey": "adminToolbar",
+      "field": "url",
+      "envVar": "adminToolbar__url",
+      "servedPath": "/bl-assets/admin-toolbar.min.js",
+      "vendoredFile": "dist/admin-toolbar.min.js",
+      "mime": "application/javascript",
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/admin-toolbar@~0.1/umd/admin-toolbar.min.js",
+      "resolvedFrom": "admin-toolbar@~0.1",
+      "resolvedVersion": "0.1.508",
+      "sha384": "sha384-J1wK8b7EN/TjWKZj/zJZAp1YgOSFyOmNVwOM8YM0hAFLof6mkvG/ycuFuiRvMlMu",
+      "bytes": 33908
+    },
+    {
+      "configKey": "signupForm",
+      "field": "url",
+      "envVar": "signupForm__url",
+      "servedPath": "/bl-assets/signup-form.min.js",
+      "vendoredFile": "dist/signup-form.min.js",
+      "mime": "application/javascript",
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/signup-form@~0.3/umd/signup-form.min.js",
+      "resolvedFrom": "signup-form@~0.3",
+      "resolvedVersion": "0.3.555",
+      "sha384": "sha384-Fj1RRc6cCtdUSeX7tGAdV/yGk+X9/dUB80etgJ4U0yqjvHFnknMTxalCJWzUmGos",
+      "bytes": 257509
+    }
+  ]
+}

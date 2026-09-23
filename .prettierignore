@@ -10,3 +10,8 @@
 
 # Pulumi's tsc output directory. Untracked, so .gitignore does not list it.
 bin/
+
+# Vendored, pinned third-party bundles (branchLeft/workspace#1230). Their
+# bytes are content-addressed in widgets/pins.json by sha384; reformatting
+# them changes those bytes and breaks the pin.
+widgets/dist/
