@@ -621,6 +621,29 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
 5. Confirm a row known to have changed after the dump and before the target
    timestamp is present, and that nothing after the target timestamp is.
 
+**Scoping the replay to one tenant.** Step 4 above brings back every
+tenant's post-dump writes together -- correct for the instance-level
+scenario Drill A proves, wrong for "we deleted forty posts yesterday", where
+every *other* tenant's writes since the dump must stay out of the restored
+database. `db/provision/extract_tenant_binlog.py` replaces step 4's raw
+`mysqlbinlog | mysql` pipe with a scoped equivalent for that case: it reads
+the dump's own `--source-data=2` resume point, so the position does not
+have to be copied out of the dump header by hand, and adds mysqlbinlog's own
+`--database=<tenant>` row-event filter to the replay.
+
+```bash
+MYSQL_PWD=<scratch-host-root-password> python3 db/provision/extract_tenant_binlog.py \
+  --dump dump.sql \
+  --tenant-database <tenant> \
+  --stop-datetime="<target timestamp>" \
+  --apply-host <scratch-host> \
+  --apply-user root \
+  mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...]
+```
+
+Confirm the same way as step 5, plus the property step 5 does not check:
+that no *other* tenant's database gained a row dated after the dump.
+
 ### Drill B -- host loss (dump-only recovery, no binlogs available)
 
 Proves the amendment's second criterion: recovery still works when db1's
