@@ -117,8 +117,8 @@ class RenderPinnedLiteralsTests(unittest.TestCase):
     """These two strings are hardcoded, not read from `rss.BROKER_USER` /
     `rss.WRAPPER_PATH` -- a test built from the same constant the generator
     reads moves with it, so it stays green even if that constant is changed
-    to something wrong (`BROKER_USER = "ALL"` turns every rule into a
-    `sudoers` host-spec everyone matches, and no test deriving its
+    to something wrong (`BROKER_USER = "ALL"` puts `ALL` in every rule's
+    user field, so every local account matches, and no test deriving its
     expectation from `BROKER_USER` itself can see that).
     """
 
