@@ -1,0 +1,63 @@
+name: Demo host sudoers CI
+
+# Proves the two properties the unit-test suite under demo-host/provision/
+# cannot: that the rendered file is valid sudoers syntax under a real
+# `visudo -c`, and that a real `sudo -l` accepts an enumerated invocation and
+# refuses the same invocation with one extra argument appended.
+#
+# Runs inside a throwaway Debian container rather than the runner's own sudo
+# configuration, because the check installs a rule file under
+# /etc/sudoers.d and creates a system user -- neither of which belongs on the
+# runner that also does everything else in this repository's CI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  visudo-and-sudo-l:
+    name: visudo and sudo -l against the rendered file
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The repo is mounted read-only: this job only needs to read the
+      # generator, never to write into the checkout.
+      - name: Render, visudo-check and sudo -l the generated file
+        run: |
+          docker run --rm -v "$PWD":/repo:ro -w /repo debian:bookworm-slim bash -c '
+            set -e
+            apt-get update -qq
+            apt-get install -y -qq sudo python3 >/dev/null
+
+            python3 demo-host/provision/render_slot_sudoers.py --out /tmp/generated-slot-sudoers
+
+            echo "--- visudo -c -f /tmp/generated-slot-sudoers ---"
+            visudo -c -f /tmp/generated-slot-sudoers
+
+            useradd -m broker
+            install -d /usr/local/sbin
+            printf "#!/bin/sh\ntrue\n" > /usr/local/sbin/branchleft-slot
+            chmod 0755 /usr/local/sbin/branchleft-slot
+            install -o root -g root -m 0440 /tmp/generated-slot-sudoers /etc/sudoers.d/branchleft-slot
+
+            echo "--- sudo -l: the enumerated invocation must be allowed ---"
+            sudo -l -U broker /usr/local/sbin/branchleft-slot 0 reset
+
+            echo "--- sudo -l: the same invocation plus an extra argument must be refused ---"
+            if sudo -l -U broker /usr/local/sbin/branchleft-slot 0 reset extra-argument; then
+              echo "::error::extra-argument invocation was allowed -- the sudoers boundary regressed"
+              exit 1
+            fi
+            echo "refused, as required"
+          '
