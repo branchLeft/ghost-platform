@@ -1,8 +1,8 @@
 name: Demo gate CI
 
-# Type-checks and unit-tests the drain-flag health sidecar
-# (services/demo-gate/). The real-Ghost proof of its contract lives in
-# drain-sidecar-image.yml instead, alongside the image build it needs.
+# Type-checks and unit-tests the demo gate service (services/demo-gate/).
+# The real-Caddy proof of its contract lives in demo-gate-image.yml
+# instead, alongside the image build it needs.
 
 on:
   push:
