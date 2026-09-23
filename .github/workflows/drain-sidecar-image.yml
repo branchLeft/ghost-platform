@@ -1,0 +1,69 @@
+name: Drain sidecar image
+
+# Builds the platform image (this repo's own root Dockerfile) and the
+# drain-sidecar image, then proves the sidecar's contract against a real,
+# running instance of the platform image with scripts/test-drain-sidecar.sh
+# -- never a second-hand copy of what the platform ships, because it's the
+# same image handed to the script.
+#
+# Build-only, mirroring build.yml's stance for the tenant image: no push,
+# no registry credential. Delivering this sidecar to a host (an image
+# registry, a slot's Compose stack) is a separate story -- see the PR that
+# introduced this workflow for what that leaves owed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/drain-sidecar/**
+      - scripts/test-drain-sidecar.sh
+      - Dockerfile
+      - .github/workflows/drain-sidecar-image.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - services/drain-sidecar/**
+      - scripts/test-drain-sidecar.sh
+      - Dockerfile
+      - .github/workflows/drain-sidecar-image.yml
+
+# `packages: read` because the image's build stage installs
+# `@branchleft/tsconfig` from GitHub Packages -- read-only, and this
+# workflow never requests a write credential at all.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: docker build + real-Ghost proof (drain-sidecar)
+    runs-on: ubuntu-latest
+    # Generous bound: it builds two images and boots two containers (Ghost
+    # plus the sidecar), the slowest step being Ghost's own fresh-SQLite
+    # migration on first boot.
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The platform image this repo actually ships (root Dockerfile: the
+      # upstream Ghost base plus the branchLeft entrypoint wrapper), not a
+      # copy of it -- so the proof below exercises the same storage guard
+      # and startup path a real tenant boots.
+      - name: Build platform image
+        run: docker build --tag ghost-platform:ci .
+
+      # The secret is consumed by a `RUN --mount` in the Dockerfile, so it
+      # reaches `npm ci` without entering a layer or the build history.
+      - name: Build sidecar image
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --tag drain-sidecar:ci \
+            services/drain-sidecar
+
+      - name: Real-Ghost proof (Ghost not ready, flag set, flag cleared, unreadable flag directory)
+        run: ./scripts/test-drain-sidecar.sh drain-sidecar:ci ghost-platform:ci

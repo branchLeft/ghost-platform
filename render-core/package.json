@@ -1,0 +1,35 @@
+{
+  "name": "@branchleft/ghost-platform-render-core",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "The tenant descriptor: schema, branded validated types and the three cross-field invariants both reconcilers render from.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/branchLeft/ghost-platform.git",
+    "directory": "render-core"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.4.0",
+    "@types/node": "^26.5.1",
+    "@vitest/coverage-v8": "^4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
