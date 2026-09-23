@@ -1,0 +1,68 @@
+name: Recovery image
+
+# Builds db/recovery/Dockerfile and proves its mysql/mysqldump/mysqlbinlog
+# still match the MySQL line db1 runs (db/recovery/check_toolchain_version.py,
+# read live from db/RUNBOOK-db.md). Build-only, like build.yml: this workflow
+# never pushes the image anywhere and requests no registry credential --
+# nothing outside this repo has a row saying where a recovery host would
+# pull it from yet.
+#
+# --platform linux/amd64 is not optional here -- see the Dockerfile's own
+# comment: an unpinned build on an arm64 runner would silently produce an
+# image that cannot restore anything on the amd64 hosts this estate runs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - db/recovery/**
+      - db/provision/install_host_prereqs.py
+      - db/RUNBOOK-db.md
+      - .github/workflows/recovery-image.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - db/recovery/**
+      - db/provision/install_host_prereqs.py
+      - db/RUNBOOK-db.md
+      - .github/workflows/recovery-image.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    name: Build and verify toolchain match
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      # Parsing/comparison logic only -- no docker call, no real image. The
+      # live functional proof (an actual dump/restore against real MySQL
+      # containers, plus the mismatched-client control) does not run here;
+      # see db/recovery/README.md for why and where it is recorded.
+      - name: Unit tests (mocked)
+        run: python3 -m unittest discover -s db/recovery -p 'test_*.py'
+
+      - name: Build recovery image
+        run: |
+          docker build --platform linux/amd64 \
+            -f db/recovery/Dockerfile \
+            -t branchleft-recovery:ci \
+            .
+
+      # Pulls db1's actual pinned server image (read out of db/RUNBOOK-db.md
+      # by the script itself) to compare against -- this is the live check,
+      # not a second hardcoded version string.
+      - name: Verify toolchain matches the pinned server line
+        run: python3 db/recovery/check_toolchain_version.py --recovery-image branchleft-recovery:ci
