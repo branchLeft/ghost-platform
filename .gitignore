@@ -5,12 +5,15 @@ infra/tenant/dist
 infra/tenant/*.tgz
 services/*/dist
 services/*/coverage
+render-core/dist
+render-core/coverage
+render-core/*.tgz
 __pycache__/
 *.pyc
 
 graphify-out/
 
-# This repo tracks package-lock.json (seven of them) and CI runs `npm ci`; a
+# This repo tracks package-lock.json (eight of them) and CI runs `npm ci`; a
 # pnpm install here is a mistake, and its lockfile must not get committed.
 pnpm-lock.yaml
 pnpm-workspace.yaml

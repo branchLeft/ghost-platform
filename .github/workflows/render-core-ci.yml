@@ -1,0 +1,62 @@
+name: Render core CI
+
+# Type-checks and tests the tenant-descriptor package (render-core/): the
+# schema, its branded validated types, and the three cross-field invariants
+# both reconcilers render from.
+#
+# No deploy job here, deliberately: render-core/ is a published library like
+# infra/tenant/, not a stack — there is nothing here for a Pulumi apply to
+# select, and who applies a tenant's own resources is that tenant repo's
+# pipeline's decision.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# `packages: read` because this package takes a dev dependency on
+# `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401 to
+# an anonymous request even for a public package.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  typecheck:
+    name: Render core type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: render-core
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: render-core/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: render-core/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test:unit
+
+      # Fails the build below the thresholds set in vitest.config.ts (90%
+      # lines/statements/functions/branches) — CLAUDE.md makes this
+      # non-negotiable for an input-validation package.
+      - name: Coverage (validate() and the invariant logic, >90%)
+        run: npm run coverage
