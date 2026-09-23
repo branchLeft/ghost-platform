@@ -1,0 +1,119 @@
+# Local sandbox for two proofs run-drain-proof.sh drives:
+#
+# 1. Network isolation: `shim` is attached ONLY to `shim_net`, which is
+#    `internal: true` -- Docker gives that network no default gateway, so
+#    a container on it alone has no route to anything outside the network
+#    at all, docker-managed DNS included. `collector` is the only other
+#    thing on `shim_net`; it is also on `delivery_net` so it can forward a
+#    drained message on to `delivery-stub` (mx1's stand-in here), which is
+#    itself never attached to `shim_net`. That shape is deliberate: the
+#    thing that can reach the shim can never reach the delivery host, and
+#    the shim can never reach either.
+# 2. The drain handover itself, and durability: the queue lives on a named
+#    Docker volume (never a host bind mount -- a bind-mounted sqlite file
+#    read from the macOS host side of Docker Desktop's file-sharing layer
+#    has lost writes here before; a named volume is entirely inside the
+#    Docker VM, which is where both the shim and the CLI-driven durability
+#    checks read and write it).
+#
+# `docker compose exec shim node dist/cli.js register <domain>` is how a
+# tenant is registered -- `exec` goes through the Docker daemon socket, not
+# the network, so it works even though nothing is published to the host.
+
+services:
+  # The Dockerfile runs the shim as the unprivileged `node` user (uid
+  # 1000) deliberately -- a named volume Docker creates is root-owned
+  # until something chowns it, so this one-shot init (root, only for this
+  # chown) does that once before `shim` ever starts. It never runs again
+  # after the volume already has the right owner.
+  init-shim-data:
+    image: node:26.5.0-bookworm-slim
+    user: root
+    volumes:
+      - shim_data:/data
+    command: ['chown', '1000:1000', '/data']
+
+  shim:
+    build:
+      context: .
+      secrets:
+        - node_auth_token
+    networks:
+      - shim_net
+    volumes:
+      - shim_data:/data
+    depends_on:
+      init-shim-data:
+        condition: service_completed_successfully
+    environment:
+      SHIM_DB_PATH: /data/shim.sqlite
+      SHIM_DRAIN_TOKEN: ${SHIM_DRAIN_TOKEN:-proof-drain-token}
+      SHIM_DRAIN_HOLD_MS: '2000'
+      SHIM_DRAIN_LEASE_SECONDS: '5'
+      PORT: '8080'
+      # The token bucket starts EMPTY by design (throttle.ts -- no burst
+      # on a freshly started worker) and accrues at messagesPerHour/3600
+      # per second. Left at its 50/hour default, this proof's own
+      # multi-second exec round trips would starve on the throttle before
+      # ever reaching the drain contract this compose file exists to
+      # prove -- which is a real property of the throttle, not a bug in
+      # it (see the drain.test.ts sabotage that proves the wiring). A
+      # generous rate here is a test-environment choice, not a
+      # production default.
+      SHIM_MESSAGES_PER_HOUR: '360000'
+    # Deliberately no `ports:` -- nothing on the host can reach this
+    # container directly, only `collector` (over shim_net) and `docker
+    # compose exec` (over the daemon socket) can.
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  collector:
+    image: node:26.5.0-bookworm-slim
+    networks:
+      - shim_net
+      - delivery_net
+    volumes:
+      - ./docker-proof:/proof:ro
+    working_dir: /proof
+    environment:
+      SHIM_BASE_URL: http://shim:8080
+      SHIM_DRAIN_TOKEN: ${SHIM_DRAIN_TOKEN:-proof-drain-token}
+      DELIVERY_BASE_URL: http://delivery-stub:3000
+    entrypoint: ['sleep', 'infinity']
+    depends_on:
+      shim:
+        condition: service_healthy
+      delivery-stub:
+        condition: service_started
+
+  delivery-stub:
+    image: node:26.5.0-bookworm-slim
+    networks:
+      - delivery_net
+    volumes:
+      - ./docker-proof:/proof:ro
+      - delivery_data:/data
+    working_dir: /proof
+    command: ['node', 'delivery-stub.mjs']
+
+networks:
+  shim_net:
+    internal: true
+  delivery_net: {}
+
+volumes:
+  shim_data:
+  delivery_data:
+
+secrets:
+  node_auth_token:
+    environment: NODE_AUTH_TOKEN
