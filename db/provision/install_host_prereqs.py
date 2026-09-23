@@ -128,10 +128,11 @@ MYSQL_GPG_KEY_URLS = (
 # `gpg --show-keys --keyid-format long` on both fetched files reports the
 # identical fingerprint below, just `[expired: 2025-10-22]` on the "2023"
 # export versus `[expires: 2027-10-23]` on the "2025" one), which is why one
-# constant covers both fetches. Cross-checked against Oracle's own published
-# fingerprint at
-# https://dev.mysql.com/doc/refman/8.0/en/checking-gpg-signature.html:
-# "BCA4 3417 C3B4 85DD 128E  C6D4 B7B3 B788 A8D3 785C". Without this pin,
+# constant covers both fetches. Cross-checked against the exact same value
+# Oracle publishes at
+# https://dev.mysql.com/doc/refman/8.0/en/checking-gpg-signature.html --
+# their spaced, human-readable rendering matches MYSQL_GPG_KEY_FINGERPRINT
+# below byte for byte once the spaces are removed. Without this pin,
 # `http_fetch` trusts whatever repo.mysql.com (or anything between here and
 # it) hands back as "the MySQL key" -- a swapped key would go straight into
 # the keyring `mysql-community.list` trusts for every package this script

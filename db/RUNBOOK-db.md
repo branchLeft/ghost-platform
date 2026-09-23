@@ -248,8 +248,9 @@ because `/etc/branchleft/db.image.env` (the file `branchleft-deploy`
 actually writes and the one that decides what `docker compose` runs) is
 only readable over SSH, and nothing with SSH access to `db1` runs in CI.
 **A green run of that check is evidence this file is internally
-consistent, not evidence it matches `db1`.** Rob confirms that match by
-hand, the same jump-host pattern as every other command in this runbook:
+consistent, not evidence it matches `db1`.** The platform owner confirms
+that match by hand, the same jump-host pattern as every other command in
+this runbook:
 
 ```bash
 EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")

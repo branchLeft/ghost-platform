@@ -33,11 +33,10 @@ really pin.
 This check compares against the runbook's pin, not against what `db1`
 itself currently reports running -- there is no way to read
 `/etc/branchleft/db.image.env` back from CI (no SSH, no host reachable from
-a GitHub Actions runner). `db/RUNBOOK-db.md`'s restore-drill section now
-carries an owner step asking Rob to read that file back by hand and record
-the date; until that record exists, a green run here is evidence the
-runbook is internally consistent, not evidence it matches what db1 is
-currently running.
+a GitHub Actions runner). `db/RUNBOOK-db.md` now carries a step for the
+platform owner to read that file back by hand and record the date; until
+that record exists, a green run here is evidence the runbook is internally
+consistent, not evidence it matches what db1 is currently running.
 
 Major.minor, not the full patch version: the same standard
 install_host_prereqs.py's own verify() uses, and design 09's own R5/§05
