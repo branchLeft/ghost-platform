@@ -3,9 +3,9 @@ name: Recovery image
 # Builds db/recovery/Dockerfile and proves its mysql/mysqldump/mysqlbinlog
 # still match the MySQL line db1 runs (db/recovery/check_toolchain_version.py,
 # read live from db/RUNBOOK-db.md). Build-only, like build.yml: this workflow
-# never pushes the image anywhere and requests no registry credential.
-# branchLeft/workspace#1205's Done means is explicit that publishing waits on
-# a delivery-paths.json row this repo does not have yet.
+# never pushes the image anywhere and requests no registry credential --
+# nothing outside this repo has a row saying where a recovery host would
+# pull it from yet.
 #
 # --platform linux/amd64 is not optional here -- see the Dockerfile's own
 # comment: an unpinned build on an arm64 runner would silently produce an
