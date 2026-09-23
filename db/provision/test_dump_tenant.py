@@ -3,12 +3,17 @@
 
 Every external command is faked -- no real mysqldump, mysql or network call
 -- so these cover the pipeline's ordering, its per-tenant failure isolation,
-and both floor checks: the early source-side refusal, and the one that
-actually matters, which counts what mysqldump's own stream wrote rather than
-what a separate query saw. A separate section proves, statically and
-behaviourally, that no storage or encryption credential can reach this
-script or the children it spawns -- that property has to survive both a
-forwarded environment and a dropped refusal, so each has its own sabotage.
+and both floor checks: the early source-side refusal (an exact count, a real
+`COUNT(*)`), and the one that actually matters, which watches what
+mysqldump's own stream wrote for *presence* rather than counting it --
+mysqldump's default packed form can put any number of rows on one matched
+line, so presence is the only claim the streamed check makes. A separate
+section proves, statically and behaviourally, that no storage or encryption
+credential can reach this script or the children it spawns -- that property
+has to survive both a forwarded environment and a dropped refusal, so each
+has its own sabotage. A further section proves byte-for-byte fidelity
+through `main`'s own default stdout wiring, including the exact bug a
+`sys.stdout.buffer` typo would reintroduce.
 """
 
 from __future__ import annotations
@@ -47,6 +52,16 @@ DUMP_LINES_NO_DATA = [
 DUMP_LINES_USERS_ONLY = [
     b"-- header\n",
     b"INSERT INTO `users` VALUES ('u1','Owner');\n",
+]
+
+# A single packed (extended-insert) line carrying many tuples for one table
+# -- proves presence is asserted per matched *line*, not per row, since
+# --skip-extended-insert was dropped and mysqldump's default output is
+# exactly this shape.
+DUMP_LINES_PACKED_SETTINGS = [
+    b"-- header\n",
+    b"INSERT INTO `users` VALUES ('u1','Owner');\n",
+    b"INSERT INTO `settings` VALUES ('s1','a','1'),('s2','b','2'),('s3','c','3');\n",
 ]
 
 
@@ -186,15 +201,23 @@ class RunMysqldumpStreamingTests(unittest.TestCase):
         dt.run_mysqldump(socket_path="/tmp/s", password="pw", db_name="ghost_blog", stdout=out, popen=popen)
         self.assertEqual(out.getvalue(), b"".join(DUMP_LINES_HAPPY))
 
-    def test_counts_rows_captured_per_floor_table(self):
+    def test_returns_the_set_of_floor_tables_seen_not_a_count(self):
         popen = FakePopen(lines=DUMP_LINES_HAPPY)
-        counts = dt.run_mysqldump(socket_path="/tmp/s", password="pw", db_name="ghost_blog", stdout=io.BytesIO(), popen=popen)
-        self.assertEqual(counts, {"users": 1, "settings": 2})
+        seen = dt.run_mysqldump(socket_path="/tmp/s", password="pw", db_name="ghost_blog", stdout=io.BytesIO(), popen=popen)
+        self.assertEqual(seen, {"users", "settings"})
 
-    def test_uses_skip_extended_insert_so_a_counted_line_is_exactly_one_row(self):
+    def test_never_passes_skip_extended_insert_mysqldumps_own_packed_form_is_kept(self):
         popen = FakePopen(lines=DUMP_LINES_HAPPY)
         dt.run_mysqldump(socket_path="/tmp/s", password="pw", db_name="ghost_blog", stdout=io.BytesIO(), popen=popen)
-        self.assertIn("--skip-extended-insert", popen.calls[0]["argv"])
+        self.assertNotIn("--skip-extended-insert", popen.calls[0]["argv"])
+
+    def test_a_single_packed_line_with_many_tuples_still_satisfies_the_floor(self):
+        """The whole point of dropping --skip-extended-insert: one matched
+        line, however many rows it packs, is enough to mark the table
+        seen."""
+        popen = FakePopen(lines=DUMP_LINES_PACKED_SETTINGS)
+        seen = dt.run_mysqldump(socket_path="/tmp/s", password="pw", db_name="ghost_blog", stdout=io.BytesIO(), popen=popen)
+        self.assertEqual(seen, {"users", "settings"})
 
     def test_the_reviewers_no_data_reproduction_now_fails_the_floor(self):
         """Before this fix, the floor check only ever queried the live
@@ -212,13 +235,13 @@ class RunMysqldumpStreamingTests(unittest.TestCase):
         # to retract.
         self.assertEqual(out.getvalue(), b"".join(DUMP_LINES_NO_DATA))
 
-    def test_one_floor_table_captured_and_the_other_not(self):
+    def test_one_floor_table_seen_and_the_other_not(self):
         popen = FakePopen(lines=DUMP_LINES_USERS_ONLY)
         with self.assertRaises(dt.FloorError) as ctx:
             dt.run_mysqldump(socket_path="/tmp/s", password="pw", db_name="ghost_blog", stdout=io.BytesIO(), popen=popen)
         message = str(ctx.exception)
         self.assertIn("settings", message)
-        self.assertNotIn("floor table(s) captured no rows in the dump itself (settings, users)", message)
+        self.assertNotIn("(settings, users)", message)
 
     def test_a_nonzero_mysqldump_exit_raises_dump_error_even_with_rows_seen(self):
         popen = FakePopen(lines=DUMP_LINES_HAPPY, returncode=2, stderr_bytes=b"boom")
@@ -411,6 +434,46 @@ class MainTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         argv = popen.calls[0]["argv"]
         self.assertEqual(argv[argv.index("--socket") + 1], "/custom/mysqld.sock")
+
+
+class _FakeStdout:
+    """Stands in for the real `sys.stdout`: a text-mode stream whose
+    `.buffer` is the underlying binary one, exactly as CPython wires it.
+    Deliberately has no usable `.write` of its own for raw bytes, mirroring
+    a real text stream's TypeError on a bytes argument -- so code that
+    reaches for `sys.stdout` instead of `sys.stdout.buffer` fails loudly
+    rather than silently mangling the dump."""
+
+    def __init__(self):
+        self.buffer = io.BytesIO()
+
+
+class MainDefaultStdoutByteIdentityTests(unittest.TestCase):
+    """main()'s own default -- `sys.stdout.buffer`, never exercised by the
+    other tests above, which all inject a BytesIO directly. Proves the
+    wiring survives content a naive text-mode write would corrupt: CR,
+    NUL, invalid UTF-8, and a line over a megabyte."""
+
+    @staticmethod
+    def _byte_identity_lines():
+        long_line = b"INSERT INTO `settings` VALUES ('s2','blob'," + b"A" * (1024 * 1024 + 37) + b");\n"
+        return [
+            b"-- MySQL dump 10.13\r\n",  # CR
+            b"INSERT INTO `users` VALUES ('u1','has a NUL \x00 byte');\n",  # NUL
+            b"-- invalid utf-8 follows: \xff\x80\xc3\x28\n",  # invalid UTF-8
+            long_line,  # > 1 MB, and satisfies the `settings` floor
+        ]
+
+    def test_bytes_through_mains_default_stdout_are_exactly_equal(self):
+        lines = self._byte_identity_lines()
+        run = FakeRun()
+        popen = FakePopen(lines=lines)
+        fake_stdout = _FakeStdout()
+        with mock.patch.dict(os.environ, _clean_env(DB_DUMP_MYSQL_PWD="pw"), clear=True):
+            with mock.patch("dump_tenant.sys.stdout", fake_stdout):
+                exit_code = dt.main(["blog"], run=run, popen=popen)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(fake_stdout.buffer.getvalue(), b"".join(lines))
 
 
 class NoStorageCredentialInEnvironmentTests(unittest.TestCase):

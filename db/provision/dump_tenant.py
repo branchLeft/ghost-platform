@@ -38,22 +38,23 @@ to stdout -- whatever streamed before the failure is the caller's to
 discard whole, never kept as a partial dump.
 
 The floor check runs twice, against different evidence, because they prove
-different things. A cheap pre-check queries row counts on the live source
-before `mysqldump` is invoked at all, and refuses early if the source is
-already empty. The check that actually matters runs afterwards, counting
-`INSERT` statements for the same tables as mysqldump's own output streams
-past: a pre-check alone only proves the *source* was not empty a moment
-earlier, and a mysqldump invocation that silently narrows what it writes
-(a stray `--no-data`, a filtered `--ignore-table`) can still pass a
-source-side pre-check while the dump itself captures nothing. `--databases
-<name>`, not `--all-databases`: one tenant's database per invocation is what
-makes a tenant's failure local to that tenant rather than aborting whatever
-else the caller was in the middle of dumping. `--skip-extended-insert` puts
-each row in its own `INSERT` statement, which is what makes counting matched
-lines the same operation as counting rows, at the cost of a larger, slower-
-to-restore dump than the packed default form -- judged worth it here rather
-than parsing tuple boundaries out of a `VALUES` list that can itself span
-buffers.
+different things. A cheap pre-check queries exact row counts on the live
+source before `mysqldump` is invoked at all, and refuses early if the source
+is already empty. The check that actually matters runs afterwards, watching
+for at least one `INSERT INTO `table`` line for each floor table as
+mysqldump's own output streams past: a pre-check alone only proves the
+*source* was not empty a moment earlier, and a mysqldump invocation that
+silently narrows what it writes (a stray `--no-data`, a filtered
+`--ignore-table`) can still pass a source-side pre-check while the dump
+itself captures nothing. This proves presence, not a count: mysqldump's
+default packed (`--extended-insert`) form can put an unknown number of rows
+in one matched line, and presence is all the floor needs -- unpacking it to
+count exactly (`--skip-extended-insert`) was tried and dropped once measured
+against a real restore: 50k rows went from 0.45s to restore packed to 42.7s
+unpacked, for a count nothing downstream reads. `--databases <name>`, not
+`--all-databases`: one tenant's database per invocation is what makes a
+tenant's failure local to that tenant rather than aborting whatever else the
+caller was in the middle of dumping.
 
 `posts` is deliberately not a floor table: Ghost's own "delete all content"
 endpoint destroys every post through the ordinary admin API
@@ -180,19 +181,20 @@ def check_floor(*, socket_path: str, db_name: str, password: str, run=subprocess
     return counts
 
 
-def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, popen=subprocess.Popen) -> dict[str, int]:
+def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, popen=subprocess.Popen) -> set[str]:
     """The floor check that actually matters: streams mysqldump's stdout to
-    `stdout` byte-for-byte as it arrives, counting the rows captured for
-    each floor table by counting the `INSERT` statements naming it --
-    `--skip-extended-insert` makes that count exact, one statement per row.
-    `stderr` is a real temp file rather than a pipe, so a chatty mysqldump
-    cannot deadlock this process against its own unread stderr while stdout
-    is being streamed and counted a line at a time. Raises DumpError if
-    mysqldump itself exits nonzero, or FloorError if a floor table's count
-    came back zero once the stream ends -- proof against what the dump
-    actually wrote, not against the source it read from."""
+    `stdout` byte-for-byte as it arrives, watching for at least one `INSERT`
+    statement naming each floor table -- presence, never a count, since
+    mysqldump's default packed form can put any number of rows on one
+    matched line. `stderr` is a real temp file rather than a pipe, so a
+    chatty mysqldump cannot deadlock this process against its own unread
+    stderr while stdout is being streamed. Raises DumpError if mysqldump
+    itself exits nonzero, or FloorError if a floor table's `INSERT` was
+    never seen once the stream ends -- proof against what the dump actually
+    wrote, not against the source it read from. Returns the set of floor
+    tables seen."""
     patterns = {table: f"INSERT INTO `{table}` VALUES".encode() for table in FLOOR_TABLES}
-    counts = {table: 0 for table in FLOOR_TABLES}
+    seen: set[str] = set()
 
     with tempfile.TemporaryFile() as stderr_file:
         process = popen(
@@ -207,7 +209,6 @@ def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, pope
                 "--routines",
                 "--triggers",
                 "--set-gtid-purged=OFF",
-                "--skip-extended-insert",
                 "--databases",
                 db_name,
             ],
@@ -219,8 +220,8 @@ def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, pope
             for line in process.stdout:
                 stdout.write(line)
                 for table, pattern in patterns.items():
-                    if line.startswith(pattern):
-                        counts[table] += 1
+                    if table not in seen and line.startswith(pattern):
+                        seen.add(table)
         finally:
             process.stdout.close()
 
@@ -230,13 +231,14 @@ def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, pope
             stderr_bytes = stderr_file.read()
             raise DumpError(f"mysqldump exited {returncode}: {stderr_bytes.decode(errors='replace')}")
 
-    empty = sorted(table for table, count in counts.items() if count == 0)
-    if empty:
+    missing = sorted(table for table in FLOOR_TABLES if table not in seen)
+    if missing:
         raise FloorError(
-            f"{db_name}: floor table(s) captured no rows in the dump itself ({', '.join(empty)}) "
-            "-- the stream just written restores cleanly and contains nothing for them"
+            f"{db_name}: floor table(s) had no INSERT statement in the dump itself "
+            f"({', '.join(missing)}) -- the stream just written restores cleanly and "
+            "contains nothing for them"
         )
-    return counts
+    return seen
 
 
 def run_dump(
