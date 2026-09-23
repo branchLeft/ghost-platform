@@ -10,6 +10,7 @@ export type {
   AbsoluteUrl,
   Brand,
   DigestPinnedRef,
+  EmailAddress,
   Instant,
   Port,
   PrivateIpV4,
@@ -20,6 +21,7 @@ export {
   FieldValidationError,
   validateAbsoluteUrl,
   validateDigestPinnedRef,
+  validateEmailAddress,
   validateInstant,
   validatePort,
   validatePrivateIpV4,
@@ -32,7 +34,6 @@ export {
 export type {
   BackupSpec,
   CodeInjectionSpec,
-  ContentSpec,
   DatabaseSpec,
   GateSpec,
   HostnameSpec,
@@ -47,4 +48,12 @@ export type {
 } from './descriptor.js';
 
 export type { InvariantId } from './validate.js';
-export { CodeInjectionPreconditionError, InvariantViolationError, validate } from './validate.js';
+export {
+  CodeInjectionPreconditionError,
+  CURRENT_SCHEMA_VERSION,
+  InvariantViolationError,
+  TierMismatchError,
+  UnknownDiscriminantError,
+  UnknownSchemaVersionError,
+  validate,
+} from './validate.js';

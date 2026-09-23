@@ -7,14 +7,15 @@
  * is a tagged union variant, never an absent field — an optional field would
  * let two descriptors differ by omission, which is how promotion quietly
  * becomes a migration instead of a re-point. `validate()` in `./validate.ts`
- * is the only place the three cross-field invariants below are checked; a
- * caller that re-implements one of them is exactly the failure mode this
- * shared core exists to remove.
+ * is the only place the cross-field rules below are checked; a caller that
+ * re-implements one of them is exactly the failure mode this shared core
+ * exists to remove.
  */
 
 import type {
   AbsoluteUrl,
   DigestPinnedRef,
+  EmailAddress,
   Instant,
   Port,
   PrivateIpV4,
@@ -33,11 +34,7 @@ export interface PortTriple {
   readonly health: Port;
 }
 
-/**
- * Where Ghost's data lives. `Sqlite` is demo-only — after D55 both paid
- * tiers resolve to the same `MySql` variant, so promotion never needs a
- * fourth code path here.
- */
+/** Where Ghost's data lives. `Sqlite` is demo-only; a paying tenant is `MySql`. */
 export type DatabaseSpec =
   | { readonly kind: 'sqlite'; readonly path: string }
   | {
@@ -49,18 +46,27 @@ export type DatabaseSpec =
     };
 
 /**
- * Where uploaded media lives. Amended 2026-09-22 (D55): `Local` is demo-only
- * — both paid tiers moved to OVHcloud object storage, so `S3` covers entry
- * and professional alike. INV-3 below is what a `S3` variant obliges on
- * `backup`.
+ * Where uploaded media lives, and Ghost's own image-optimisation behaviour
+ * for it: resizing on upload and generating responsive derivatives on
+ * demand. `Local` is demo-only; a paying tenant is `S3`. Optimisation is
+ * configuration rather than a Ghost default because whether derivatives are
+ * generated is a tenancy property, not an implementation detail — off for a
+ * demo means one copy per upload instead of an unbounded set of them.
  */
 export type MediaSpec =
-  | { readonly kind: 'local'; readonly path: string }
+  | {
+      readonly kind: 'local';
+      readonly path: string;
+      readonly resize: boolean;
+      readonly srcsets: boolean;
+    }
   | {
       readonly kind: 's3';
       readonly endpoint: string;
       readonly region: string;
       readonly bucket: string;
+      readonly resize: boolean;
+      readonly srcsets: boolean;
     };
 
 /**
@@ -75,32 +81,33 @@ export type TransportSpec =
 /**
  * The hostname a tenant is reached on. `Theirs` (a verified custom domain)
  * is a precondition a code-injection grant checks, never a grant on its
- * own — see `validate()`.
+ * own. `Ours.gated` must agree with `gate` — see `validate()`.
  */
 export type HostnameSpec =
   | { readonly kind: 'ours'; readonly sub: string; readonly gated: boolean }
   | { readonly kind: 'theirs'; readonly fqdn: string; readonly verifiedAt: Instant };
 
-/** The edge-level gate in front of a site. INV-2 ties this to `kind`. */
+/** The edge-level gate in front of a site. Tied to `kind` — see `validate()`. */
 export type GateSpec =
   { readonly kind: 'none' } | { readonly kind: 'passphrase'; readonly argon2idHash: string };
 
 /**
- * How a tenant's data is backed up. The `Platform { target }` arm this union
- * carried until D55 has no remaining user — once the entry tier's media
- * became `s3`, INV-3 forces its backup to `bucket-native` too, so every kind
- * now resolves to one of the two variants below. Removed here rather than
- * kept unreachable (an implementation decision the design left open).
+ * How a tenant's data is backed up. `BucketNative` carries the tenant's own
+ * encryption recipient — exactly one per tenant, which is what makes
+ * erasure a key destruction rather than a rewrite of every other tenant's
+ * backup. `None` is for a demo, which is not backed up at all.
  */
-export type BackupSpec = { readonly kind: 'none' } | { readonly kind: 'bucket-native' };
+export type BackupSpec =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'bucket-native'; readonly encryptionRecipient: string };
 
 /**
  * Whether a tenant may inject arbitrary script into its own site.
  *
  * `Blocked` for every kind, demos included — there is no `Open` variant to
- * construct, which is INV-1 enforced by the type system for any caller
- * building a descriptor through this module. `validate()` still checks it at
- * runtime, because JSON arriving over HTTP is not type-checked.
+ * construct. A grant or a managed injection requires a verified custom
+ * domain (`hostname.kind = "theirs"`) and is never available to a demo —
+ * see `validate()`.
  */
 export type CodeInjectionSpec =
   | { readonly kind: 'blocked' }
@@ -109,9 +116,9 @@ export type CodeInjectionSpec =
       readonly by: string;
       readonly reason: string;
       /**
-       * Marked incidental in the design: a permanent grant with a review
-       * date elsewhere satisfies the ruling as written, so `null` (no fixed
-       * expiry) is a valid value here, not a gap.
+       * An expiry is optional: a permanent grant with a review date tracked
+       * elsewhere is a valid posture, not an incomplete one, so `null` (no
+       * fixed expiry) is a legitimate value here rather than a gap.
        */
       readonly until: Instant | null;
     }
@@ -141,17 +148,6 @@ export interface ResourceCaps {
 }
 
 /**
- * Ghost's own image-optimisation behaviour: resizing on upload and
- * generating responsive derivatives on demand. Configuration, so a
- * descriptor field rather than a Ghost default — off for demos means one
- * copy per upload instead of an unbounded set of derivatives.
- */
-export interface ContentSpec {
-  readonly resize: boolean;
-  readonly srcsets: boolean;
-}
-
-/**
  * The perceptual-hash safety axis. Both flags are on for every tenant today;
  * they are still per-descriptor because a perceptual false positive must
  * never be allowed to become terminal on its own.
@@ -162,10 +158,18 @@ export interface SafetySpec {
 }
 
 export interface TenantDescriptor {
+  /**
+   * The schema version this descriptor was built against. A reconciler that
+   * does not recognise the value must refuse it rather than render a stack
+   * missing whatever a newer schema added.
+   */
+  readonly version: number;
   readonly kind: TenantKind;
   readonly slug: Slug;
   readonly siteUrl: AbsoluteUrl;
   readonly image: DigestPinnedRef;
+  /** The one piece of prospect data this schema carries: the address Ghost creates the owner account with. */
+  readonly ownerEmail: EmailAddress;
   readonly uid: TenantUid;
   readonly ports: PortTriple;
   readonly appHostIp: PrivateIpV4;
@@ -178,7 +182,6 @@ export interface TenantDescriptor {
   readonly codeInjection: CodeInjectionSpec;
   readonly limits: LimitsSpec;
   readonly caps: ResourceCaps;
-  readonly content: ContentSpec;
   readonly safety: SafetySpec;
   readonly expiresAt: Instant | null;
 }

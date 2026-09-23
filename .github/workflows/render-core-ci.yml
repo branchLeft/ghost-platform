@@ -23,8 +23,8 @@ permissions:
   packages: read
 
 jobs:
-  typecheck:
-    name: Render core type check
+  test:
+    name: Render core type check, test and coverage
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

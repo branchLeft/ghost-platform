@@ -21,6 +21,7 @@ export type Port = Brand<number, 'Port'>;
 export type PrivateIpV4 = Brand<string, 'PrivateIpV4'>;
 /** An ISO-8601 UTC instant, e.g. `2026-09-23T00:00:00.000Z`. */
 export type Instant = Brand<string, 'Instant'>;
+export type EmailAddress = Brand<string, 'EmailAddress'>;
 
 export class FieldValidationError extends Error {
   constructor(
@@ -166,4 +167,16 @@ export function validateInstant(value: string, field = 'instant'): Instant {
     );
   }
   return value as Instant;
+}
+
+// A deliberately loose check: this only ever gates the one address Ghost
+// creates the owner account with, and the real verification is Ghost's own
+// signup flow, not this package.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function validateEmailAddress(value: string, field = 'ownerEmail'): EmailAddress {
+  if (!EMAIL_PATTERN.test(value)) {
+    throw new FieldValidationError(field, `${field} "${value}" is not a valid email address.`);
+  }
+  return value as EmailAddress;
 }

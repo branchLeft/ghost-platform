@@ -1,6 +1,7 @@
 import type {
   AbsoluteUrl,
   DigestPinnedRef,
+  EmailAddress,
   Instant,
   Port,
   PrivateIpV4,
@@ -8,6 +9,7 @@ import type {
   TenantUid,
 } from '../src/brand.js';
 import type { TenantDescriptor } from '../src/descriptor.js';
+import { CURRENT_SCHEMA_VERSION } from '../src/validate.js';
 
 // Not derived through the branding validators — these fixtures are meant to
 // be valid by construction, so `validate()`'s own tests are what exercise
@@ -16,15 +18,17 @@ const DIGEST = 'a'.repeat(64);
 
 export function demoDescriptor(): TenantDescriptor {
   return {
+    version: CURRENT_SCHEMA_VERSION,
     kind: 'demo',
     slug: 'demo-1' as Slug,
     siteUrl: 'https://k7m-vale-bright.sites.branchleft.co.uk' as AbsoluteUrl,
     image: `ghost:6.55.0-alpine@sha256:${DIGEST}` as DigestPinnedRef,
+    ownerEmail: 'owner@example.com' as EmailAddress,
     uid: 30001 as TenantUid,
     ports: { a: 3001 as Port, b: 3002 as Port, health: 3003 as Port },
     appHostIp: '10.20.1.50' as PrivateIpV4,
     database: { kind: 'sqlite', path: '/data/demo-1/ghost.db' },
-    media: { kind: 'local', path: '/data/demo-1/content' },
+    media: { kind: 'local', path: '/data/demo-1/content', resize: false, srcsets: false },
     transport: { kind: 'queue', path: '/var/spool/demo-1' },
     hostname: { kind: 'ours', sub: 'k7m-vale-bright', gated: true },
     gate: { kind: 'passphrase', argon2idHash: '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA' },
@@ -32,7 +36,6 @@ export function demoDescriptor(): TenantDescriptor {
     codeInjection: { kind: 'blocked' },
     limits: { membersCap: 50, staffCap: 1 },
     caps: { cpus: '1.0', cpuShares: 512, pidsLimit: 256, nofile: 4096 },
-    content: { resize: false, srcsets: false },
     safety: { near: true, exact: true },
     expiresAt: '2026-09-30T00:00:00.000Z' as Instant,
   };
@@ -40,10 +43,12 @@ export function demoDescriptor(): TenantDescriptor {
 
 export function tenantDescriptor(): TenantDescriptor {
   return {
+    version: CURRENT_SCHEMA_VERSION,
     kind: 'tenant',
     slug: 'acme' as Slug,
     siteUrl: 'https://blog.acme.example' as AbsoluteUrl,
     image: `ghost:6.55.0-alpine@sha256:${DIGEST}` as DigestPinnedRef,
+    ownerEmail: 'owner@acme.example' as EmailAddress,
     uid: 30123 as TenantUid,
     ports: { a: 3101 as Port, b: 3102 as Port, health: 3103 as Port },
     appHostIp: '10.20.2.10' as PrivateIpV4,
@@ -59,6 +64,8 @@ export function tenantDescriptor(): TenantDescriptor {
       endpoint: 'https://s3.endpoint.example',
       region: 'eu',
       bucket: 'acme-media',
+      resize: true,
+      srcsets: true,
     },
     transport: { kind: 'queue', path: '/var/spool/acme' },
     hostname: {
@@ -67,11 +74,10 @@ export function tenantDescriptor(): TenantDescriptor {
       verifiedAt: '2026-09-01T00:00:00.000Z' as Instant,
     },
     gate: { kind: 'none' },
-    backup: { kind: 'bucket-native' },
+    backup: { kind: 'bucket-native', encryptionRecipient: 'age1qtenantacmeexamplerecipient' },
     codeInjection: { kind: 'blocked' },
     limits: { membersCap: null, staffCap: null },
     caps: { cpus: '1.0', cpuShares: 512, pidsLimit: 256, nofile: 4096 },
-    content: { resize: true, srcsets: true },
     safety: { near: true, exact: true },
     expiresAt: null,
   };
