@@ -1,17 +1,23 @@
 #!/bin/sh
 # Live proof that zero widget bytes load from a third-party origin: a real
-# pinned Ghost container, fronted by the origin built in widgets/origin/,
-# exercised by a real headless browser (widgets/proof/capture-network.mjs)
-# through the home page, Portal's sign-in overlay, search, a post with
-# comments, and a standalone page embedding the signup-form widget.
+# pinned Ghost container, taken out of its compiled-default "Coming Soon"
+# state by capture-network.mjs's own setup phase (owner setup, an
+# announcement, a published post), fronted by the origin built in
+# widgets/origin/, exercised by a real headless browser through the home
+# page (with the admin-toolbar marker cookie set), Portal's sign-in
+# overlay, search, the real published post (comments), and a signup-form
+# embed built from Ghost's own live config.
 #
-# Three passes, matching the estate's sabotage-proof convention:
-#   GREEN  -- every widget config key pointed at our origin
-#   RED    -- one override (sodoSearch__url) removed, so Ghost falls back to
-#             its compiled default (the jsdelivr CDN) -- proves the network
-#             assertion actually fails when the control is absent, not only
-#             when it is impossible to fail
-#   GREEN  -- the override restored, proving the fix is what closed it
+# One GREEN baseline, then one RED pass per pinned override -- each removes
+# exactly one env-var override, proving that specific bundle's pin is what
+# closes it, not merely that the mechanism works for whichever one happens
+# to get sabotaged -- then a final GREEN restores everything:
+#   GREEN-1        -- every widget config key pointed at our origin
+#   RED-<override>  -- one override removed, so Ghost (or, for signupForm,
+#                      the config Ghost reports) falls back to its compiled
+#                      default (the jsdelivr CDN) -- proves the assertion
+#                      actually fails when that one control is absent
+#   GREEN-2        -- every override restored, proving the fix is what closed it
 #
 # Usage: ./widgets/proof/run-proof.sh
 # Run from the repo root (needs widgets/, the root Dockerfile, and Node with
@@ -26,6 +32,9 @@ GHOST_NAME="widgets-proof-ghost-$$"
 ORIGIN_NAME="widgets-proof-origin-$$"
 HOST_PORT=4300
 ORIGIN="http://localhost:${HOST_PORT}"
+
+# One row per pinned override -- must match widgets/pins.json's envVar list.
+OVERRIDES="portal__url sodoSearch__url sodoSearch__styles announcementBar__url comments__url adminToolbar__url signupForm__url"
 
 cleanup() {
     docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" >/dev/null 2>&1 || true
@@ -110,34 +119,44 @@ run_capture() {
     PROOF_ORIGIN="$ORIGIN" PROOF_LABEL="$label" node widgets/proof/capture-network.mjs
 }
 
-echo "== GREEN: every override set =="
-start_ghost ""
-start_origin
-if run_capture GREEN-1; then GREEN1_STATUS=0; else GREEN1_STATUS=1; fi
-docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" >/dev/null 2>&1
+run_pass() {
+    # $1: label, $2: space-separated overrides to omit ("" for none)
+    label="$1"; omit="$2"
+    start_ghost "$omit"
+    start_origin
+    if run_capture "$label"; then status=0; else status=1; fi
+    docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" >/dev/null 2>&1
+    return $status
+}
+
+echo "== GREEN-1: every override set =="
+if run_pass GREEN-1 ""; then GREEN1_STATUS=0; else GREEN1_STATUS=1; fi
+
+ALL_RED_OK=1
+for OVR in $OVERRIDES; do
+    echo
+    echo "== RED: ${OVR} removed (sabotage) =="
+    if run_pass "RED-${OVR}" "$OVR"; then
+        echo "RED-${OVR}: PASS -- WRONG, sabotage was not detected"
+        ALL_RED_OK=0
+    else
+        echo "RED-${OVR}: FAIL as expected (control proven)"
+    fi
+done
 
 echo
-echo "== RED: sodoSearch__url removed (sabotage) =="
-start_ghost "sodoSearch__url"
-start_origin
-if run_capture RED; then RED_STATUS=0; else RED_STATUS=1; fi
-docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" >/dev/null 2>&1
-
-echo
-echo "== GREEN: override restored =="
-start_ghost ""
-start_origin
-if run_capture GREEN-2; then GREEN2_STATUS=0; else GREEN2_STATUS=1; fi
+echo "== GREEN-2: every override restored =="
+if run_pass GREEN-2 ""; then GREEN2_STATUS=0; else GREEN2_STATUS=1; fi
 
 echo
 echo "== Summary =="
 echo "GREEN-1 (baseline):        $([ "$GREEN1_STATUS" -eq 0 ] && echo PASS || echo FAIL)"
-echo "RED (sabotage, want FAIL): $([ "$RED_STATUS" -ne 0 ] && echo 'FAIL as expected (control proven)' || echo 'PASS -- WRONG, sabotage was not detected')"
+echo "RED (one pass per override, all want FAIL): $([ "$ALL_RED_OK" -eq 1 ] && echo 'all FAILED as expected (every override proven)' || echo 'AT LEAST ONE PASSED -- sabotage undetected for that override')"
 echo "GREEN-2 (restored):        $([ "$GREEN2_STATUS" -eq 0 ] && echo PASS || echo FAIL)"
 
-if [ "$GREEN1_STATUS" -eq 0 ] && [ "$RED_STATUS" -ne 0 ] && [ "$GREEN2_STATUS" -eq 0 ]; then
+if [ "$GREEN1_STATUS" -eq 0 ] && [ "$ALL_RED_OK" -eq 1 ] && [ "$GREEN2_STATUS" -eq 0 ]; then
     echo
-    echo "PROOF OK: the network assertion is green only when every override is in place."
+    echo "PROOF OK: the network assertion is green only when every override is in place, and removing any single one of the 7 pinned overrides is independently caught."
     exit 0
 else
     echo

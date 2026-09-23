@@ -13,6 +13,14 @@
   Ghost. This is that page: the same snippet shape as
   apps/signup-form/preview.html in forks/Ghost, pointed at the pinned,
   self-hosted bundle instead of the CDN.
+
+  A static, standalone reference for how a tenant would embed it by hand --
+  the src below is a fixed path, not read from Ghost's config, so it cannot
+  vary if the pin is ever sabotaged. The automated proof (run-proof.sh /
+  capture-network.mjs) does not navigate here for that reason: it builds
+  its own copy of this markup at runtime, with the src Ghost's own admin
+  config endpoint resolves for whichever pass is running, so sabotaging
+  signupForm__url is actually provable.
 -->
     <div style="min-height: 400px">
       <script

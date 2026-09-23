@@ -37,15 +37,44 @@ these pins -- `pins.json` is written so it can.
 ## The live proof
 
 `proof/run-proof.sh` runs the whole thing against real Docker containers: a
-GREEN pass with every override set, a RED (sabotage) pass with one override
-(`sodoSearch__url`) removed, and a GREEN pass restoring it -- each pass
-driven by a real headless Chromium (`proof/capture-network.mjs`, via
-Playwright) through the home page, Portal's sign-in overlay, search, a post
-with comments, and a standalone page embedding the signup-form widget
-(`proof/signup-embed.html` -- signup-form is never loaded by Ghost's own
-site, so this mimics how a tenant actually embeds it). It asserts every
-captured request's origin equals the origin under test.
+GREEN baseline with every override set, then one RED (sabotage) pass per
+pinned override -- each removes exactly one, proving that specific bundle's
+pin is what closes it rather than only whichever one happens to be tested --
+and a final GREEN restoring everything.
+
+Each pass is driven by a real headless Chromium
+(`proof/capture-network.mjs`, via Playwright), which first takes the
+container through Ghost's own owner-setup wizard (an announcement, a
+published post) before opening a browser: a fresh, unconfigured install
+only ever requests `portal` and `sodoSearch` unconditionally --
+`announcementBar`, `comments` and `adminToolbar` never render at all
+without real content, and a proof that skipped setup could never have
+caught a broken override for any of the three. It then exercises the home
+page (with the admin-toolbar marker cookie set via `?admin=1`, the same
+mechanism Ghost Admin's own "View site" link uses), Portal's sign-in
+overlay, search (clicking the theme's own trigger button, since sodoSearch
+mounts a root element but renders and fetches nothing until that fires),
+the published post (comments), and a signup-form embed built from the URL
+Ghost's admin config endpoint resolves right now for that pass -- the same
+value a real embeddable-snippet feature reads, and the only way to make
+sabotaging `signupForm__url` provable, since signup-form is never loaded by
+a Ghost-rendered page at all (`proof/signup-embed.html` is kept as a
+static, standalone reference for how a tenant would actually embed it by
+hand; the automated proof builds its own page dynamically each pass).
+
+Two independent, type-independent signals fail the run: any pinned bundle
+that was never requested at all (`missingBundles` in the JSON output --
+the primary signal, and what catches setup never having reached a real
+post), or any third-party script/stylesheet request (`thirdPartyRequests`
+-- the resource types CSP's script-src/style-src actually govern). Every
+third-party request of any type is recorded regardless
+(`allThirdPartyRequests`), scored or not -- currently always two
+`static.ghost.org` image URLs, Ghost-core's own compiled defaults (the
+`cover_image` setting and the seeded "coming-soon" post's `feature_image`),
+unrelated to any widget bundle and not addressable by a config-key pin.
 
 Run it from the repo root: `./widgets/proof/run-proof.sh` (needs Docker and
 `widgets/proof`'s own `npm install` for Playwright -- kept out of the root
-package.json and out of CI deliberately; see `proof/package.json`).
+package.json and out of CI deliberately; see `proof/package.json`). Nine
+container boots (one GREEN, seven RED, one GREEN), so it takes several
+minutes.
