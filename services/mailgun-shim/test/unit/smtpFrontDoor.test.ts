@@ -21,6 +21,20 @@ const DEFAULT_CIDRS = [
   'fc00::/7',
 ];
 
+describe('buildSourceAllowList', () => {
+  it('treats a bare address with no "/" prefix as a single host, not a range', () => {
+    const allowList = buildSourceAllowList(['203.0.113.7']);
+    expect(isAllowedSource('203.0.113.7', allowList)).toBe(true);
+    expect(isAllowedSource('203.0.113.8', allowList)).toBe(false);
+  });
+
+  it('treats a bare IPv6 address with no "/" prefix as a single host, not a range', () => {
+    const allowList = buildSourceAllowList(['2001:db8::1']);
+    expect(isAllowedSource('2001:db8::1', allowList)).toBe(true);
+    expect(isAllowedSource('2001:db8::2', allowList)).toBe(false);
+  });
+});
+
 describe('buildSourceAllowList / isAllowedSource', () => {
   const allowList = buildSourceAllowList(DEFAULT_CIDRS);
 
@@ -236,6 +250,48 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(due[0]!.payload.text).toContain('hi');
   });
 
+  it('carries a Reply-To header through to the queued payload when the message sets one', async () => {
+    harness = await startHarness();
+    const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+    await transport.sendMail({
+      from: 'Tenant A <noreply@tenant-a.example.com>',
+      replyTo: 'support@tenant-a.example.com',
+      to: 'member@example.com',
+      subject: 'Hi',
+      text: 'hi',
+    });
+
+    const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+    expect(due[0]!.payload.headers['Reply-To']).toContain('support@tenant-a.example.com');
+  });
+
+  it('falls back to the envelope sender and empty subject/text when a message carries no From/Subject/body', async () => {
+    // A minimal, protocol-legal message: mailparser leaves `from`, `subject`
+    // and `text` all undefined when the message has none of those, which is
+    // exactly the case the `?? ''` fallbacks and the envelope-mailFrom
+    // fallback below exist for — a message this bare still has to enqueue
+    // something rather than crash on an unguarded property read.
+    harness = await startHarness();
+    const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+
+    const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+      'EHLO test',
+      `AUTH PLAIN ${authPlain}`,
+      'MAIL FROM:<envelope-sender@tenant-a.example.com>',
+      'RCPT TO:<member@example.com>',
+      'DATA',
+      'To: member@example.com\r\n\r\n.',
+    ]);
+
+    expect(responses.some((line) => /^250 /.test(line))).toBe(true);
+    const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+    expect(due).toHaveLength(1);
+    expect(due[0]!.payload.from).toBe('envelope-sender@tenant-a.example.com');
+    expect(due[0]!.payload.subject).toBe('');
+    expect(due[0]!.payload.text).toBe('');
+  });
+
   it('rejects an unknown credential and never enqueues', async () => {
     harness = await startHarness();
     const transport = client(harness.port, 'tenant-a.example.com', 'wrong-key');
@@ -269,7 +325,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(harness.store.countPendingRecipients()).toBe(0);
   });
 
-  it('rejects an unsafe recipient address before it ever reaches the queue', async () => {
+  it("rejects group/list-syntax recipient syntax (smtp-server's own grammar refuses it before this front door sees it)", async () => {
     harness = await startHarness();
     const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
 
@@ -282,6 +338,28 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     ]);
 
     const rcptResponse = responses.find((line) => /^5\d\d /.test(line));
+    expect(rcptResponse).toBeDefined();
+    expect(harness.store.countPendingRecipients()).toBe(0);
+  });
+
+  it("rejects a recipient address isSafeRecipientAddress itself refuses, via this front door's own onRcptTo check", async () => {
+    // Unlike the group/list-syntax case above, `a"b@example.com` is
+    // syntactically valid RFC 5321 (a quoted-string local part) — smtp-server's
+    // own parser hands it straight to onRcptTo (verified: it does not 501
+    // it first). It reaches isSafeRecipientAddress, which refuses the `"`,
+    // and it is this front door's own 501 that comes back, not smtp-server's.
+    harness = await startHarness();
+    const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+
+    const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+      'EHLO test',
+      `AUTH PLAIN ${authPlain}`,
+      'MAIL FROM:<noreply@tenant-a.example.com>',
+      'RCPT TO:<a"b@example.com>',
+      'QUIT',
+    ]);
+
+    const rcptResponse = responses.find((line) => /^501 /.test(line));
     expect(rcptResponse).toBeDefined();
     expect(harness.store.countPendingRecipients()).toBe(0);
   });
@@ -453,5 +531,44 @@ describe('SMTP front door — answered at once, sabotage-provable', () => {
     // reachable to send to — the ack above did not wait on that call
     // resolving anything, only on the durable write.
     expect(harness.store.countPendingRecipients()).toBe(1);
+  });
+});
+
+describe('SMTP front door — runtime server errors are logged, not swallowed', () => {
+  let harness: Harness;
+  let second: SmtpFrontDoor | undefined;
+
+  afterEach(async () => {
+    await second?.close();
+    await harness?.close();
+  });
+
+  it('logs smtp_server_error when the underlying net.Server reports one (e.g. a second listener on the same port)', async () => {
+    harness = await startHarness();
+
+    const store2 = createSqliteStore(':memory:');
+    const { logger: logger2, lines: logs2 } = createTestLogger();
+    second = createSmtpFrontDoor({
+      store: store2,
+      worker: {
+        kick: vi.fn(),
+        whenIdle: () => Promise.resolve(),
+        stop: () => Promise.resolve(),
+        status: () => ({ lastTickAt: null, stopped: false }),
+      },
+      log: logger2,
+      maxMessageBytes: 1024 * 1024,
+      submitterMessagesPerMinute: 120,
+    });
+
+    // Binding a second listener to a port already in use makes the
+    // underlying net.Server emit 'error' (EADDRINUSE) — the same event
+    // this module's persistent `server.on('error', ...)` handler logs,
+    // exercising it independently of the once-listener listen() itself
+    // uses to reject its own promise.
+    await expect(second.listen(harness.port, '127.0.0.1')).rejects.toThrow();
+
+    expect(logs2.some((line) => line.event === 'smtp_server_error')).toBe(true);
+    store2.close();
   });
 });

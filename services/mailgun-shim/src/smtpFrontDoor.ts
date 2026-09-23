@@ -168,9 +168,18 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // domain, same shape as the Mailgun HTTP route's tenant key) — a
       // submission is never trusted because of where it came from or what
       // address it claims to send as (issue #1236's premise).
+      /* v8 ignore start -- the `?? ''`/`?? null` fallbacks defend against
+       * SMTPServerAuthentication's TypeScript type declaring username and
+       * password optional; smtp-server's own PLAIN and LOGIN mechanisms
+       * (lib/sasl.js) always normalise both to a string, even an empty one,
+       * before onAuth is ever called (verified from source: PLAIN takes
+       * `authcid || authzid` and `data[2] || ''`, LOGIN takes
+       * `(username || '').toString()` at each step) — undefined is not a
+       * value either supported mechanism can hand this callback. */
       const tenant = store.verifyTenant(auth.username ?? '', auth.password ?? '');
       if (!tenant) {
         log.warn('smtp_auth_failed', { username: auth.username ?? null });
+        /* v8 ignore stop */
         callback(new Error('Invalid credentials'));
         return;
       }
@@ -183,13 +192,17 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       callback: (err?: Error | null) => void
     ): void {
       const submitterId = session.user;
+      /* v8 ignore start -- proven unreachable: authOptional:false makes
+       * smtp-server refuse MAIL FROM before onAuth has set session.user
+       * (verified empirically — a raw MAIL FROM before AUTH gets a 530 from
+       * smtp-server itself, this handler is never called). Kept as a
+       * fail-closed guard against that contract changing, not exercised
+       * because there is no protocol sequence that reaches it. */
       if (!submitterId) {
-        // Unreachable in practice — authOptional:false means smtp-server
-        // never lets MAIL FROM through pre-auth — kept as a fail-closed
-        // guard rather than assumed.
         callback(new Error('Authentication required'));
         return;
       }
+      /* v8 ignore stop */
       if (!limiter.tryTake(submitterId)) {
         log.warn('smtp_submitter_rate_limited', { submitter: submitterId });
         const err = new Error('Too many messages') as Error & { responseCode: number };
@@ -233,10 +246,16 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       });
       stream.on('error', (err: Error) => callback(err));
       stream.on('end', () => {
+        /* v8 ignore start -- proven unreachable: MAIL/RCPT/DATA is a state
+         * machine smtp-server enforces itself, and MAIL FROM already refuses
+         * to proceed without session.user set (see onMailFrom above), so
+         * onData never fires with it unset. Kept as a fail-closed guard
+         * against that contract changing. */
         if (!submitterId) {
           callback(new Error('Authentication required'));
           return;
         }
+        /* v8 ignore stop */
         if (stream.sizeExceeded) {
           const err = new Error('Message too large') as Error & { responseCode: number };
           err.responseCode = 552;
@@ -247,10 +266,18 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         const recipients = session.envelope.rcptTo
           .map((r) => r.address)
           .filter((address) => isSafeRecipientAddress(address));
+        /* v8 ignore start -- proven unreachable: smtp-server only appends to
+         * session.envelope.rcptTo the addresses onRcptTo above already
+         * accepted with this identical isSafeRecipientAddress check, and
+         * DATA is refused with "503 need RCPT command" before onData fires
+         * if no RCPT was accepted (verified empirically). Kept as
+         * defense-in-depth should a future smtp-server version stop
+         * guaranteeing that overlap. */
         if (recipients.length === 0) {
           callback(new Error('No recipients'));
           return;
         }
+        /* v8 ignore stop */
 
         void simpleParser(Buffer.concat(chunks))
           .then((parsed) => {
@@ -263,6 +290,11 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
 
             const from =
               (parsed.from && parsed.from.text) ||
+              /* v8 ignore next -- session.envelope.mailFrom is only ever
+               * unset before MAIL FROM has been accepted, and MAIL FROM is
+               * required (smtp-server itself refuses RCPT/DATA without it)
+               * before onData can run at all; the ternary's false arm
+               * defends a state the protocol never lets this handler see. */
               (session.envelope.mailFrom ? session.envelope.mailFrom.address : '');
 
             const batchId = `<${now()}.${randomUUID()}@${submitterId}>`;
