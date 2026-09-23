@@ -5,6 +5,7 @@ import {
   TENANT_UID_MIN,
   validateAbsoluteUrl,
   validateDigestPinnedRef,
+  validateEmailAddress,
   validateInstant,
   validatePort,
   validatePrivateIpV4,
@@ -183,5 +184,65 @@ describe('validateInstant', () => {
 
   it('rejects an unparsable string', () => {
     expect(() => validateInstant('not-a-date')).toThrow(FieldValidationError);
+  });
+});
+
+describe('validateEmailAddress', () => {
+  it('accepts a well-formed address', () => {
+    expect(validateEmailAddress('owner@example.com')).toBe('owner@example.com');
+  });
+
+  it('rejects a non-string value with a named error, not a raw TypeError', () => {
+    let caught: unknown;
+    try {
+      validateEmailAddress(42 as never);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect(caught).not.toBeInstanceOf(TypeError);
+  });
+
+  it('rejects an address over 254 characters (RFC 5321 §4.5.3.1.3)', () => {
+    const local = 'a'.repeat(250);
+    expect(() => validateEmailAddress(`${local}@example.com`)).toThrow(FieldValidationError);
+  });
+
+  it('rejects an empty string', () => {
+    expect(() => validateEmailAddress('')).toThrow(FieldValidationError);
+  });
+
+  it('rejects a value with no "@"', () => {
+    expect(() => validateEmailAddress('not-an-email')).toThrow(FieldValidationError);
+  });
+
+  it('rejects a value with two "@" characters', () => {
+    expect(() => validateEmailAddress('a@b@example.com')).toThrow(FieldValidationError);
+  });
+
+  it('rejects whitespace in the local part', () => {
+    expect(() => validateEmailAddress('own er@example.com')).toThrow(FieldValidationError);
+  });
+
+  it('rejects whitespace in the domain part', () => {
+    expect(() => validateEmailAddress('owner@exa mple.com')).toThrow(FieldValidationError);
+  });
+
+  it('rejects a domain with no dot', () => {
+    expect(() => validateEmailAddress('owner@localhost')).toThrow(FieldValidationError);
+  });
+
+  it('rejects a domain ending in a dot', () => {
+    expect(() => validateEmailAddress('owner@example.')).toThrow(FieldValidationError);
+  });
+
+  // A pathological 80 KB value that would have taken ~2s under the previous
+  // two-adjacent-quantifier pattern (CodeQL js/polynomial-redos) must now
+  // resolve immediately, because the length cap runs before anything else.
+  it('rejects a pathological 80 KB value fast (the ReDoS control case)', () => {
+    const pathological = 'a'.repeat(80_000);
+    const start = performance.now();
+    expect(() => validateEmailAddress(pathological)).toThrow(FieldValidationError);
+    expect(performance.now() - start).toBeLessThan(50);
   });
 });

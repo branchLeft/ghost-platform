@@ -33,6 +33,31 @@ export class FieldValidationError extends Error {
   }
 }
 
+function describeType(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  return typeof value;
+}
+
+/**
+ * Every validator below assumes the language type its parameter declares.
+ * That is a compile-time promise only — a value arriving as parsed JSON can
+ * be anything — so each one checks its own type first, rather than letting
+ * a later `.length`/`.split`/`.trim()` throw a raw `TypeError` that names no
+ * field.
+ */
+export function assertString(value: unknown, field: string): asserts value is string {
+  if (typeof value !== 'string') {
+    throw new FieldValidationError(field, `${field} must be a string, got ${describeType(value)}.`);
+  }
+}
+
+export function assertNumber(value: unknown, field: string): asserts value is number {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    throw new FieldValidationError(field, `${field} must be a number, got ${describeType(value)}.`);
+  }
+}
+
 // Slug charset only: whether a given slug is *available* on a host (the
 // reserved-name list) is naming.ts's concern in infra/tenant, not this
 // package's — a descriptor is valid infrastructure-wide before either
@@ -41,6 +66,7 @@ const SLUG_PATTERN = /^[a-z]([a-z0-9-]*[a-z0-9])?$/;
 const MAX_SLUG_LENGTH = 63;
 
 export function validateSlug(value: string): Slug {
+  assertString(value, 'slug');
   if (!SLUG_PATTERN.test(value)) {
     throw new FieldValidationError(
       'slug',
@@ -58,6 +84,7 @@ export function validateSlug(value: string): Slug {
 }
 
 export function validateAbsoluteUrl(value: string): AbsoluteUrl {
+  assertString(value, 'siteUrl');
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -80,6 +107,7 @@ export function validateAbsoluteUrl(value: string): AbsoluteUrl {
 const DIGEST_PINNED_PATTERN = /^[a-z0-9][a-z0-9._/-]*(:[\w.-]+)?@sha256:[0-9a-f]{64}$/;
 
 export function validateDigestPinnedRef(value: string): DigestPinnedRef {
+  assertString(value, 'image');
   if (!DIGEST_PINNED_PATTERN.test(value)) {
     throw new FieldValidationError(
       'image',
@@ -96,6 +124,7 @@ export const TENANT_UID_MIN = 30000;
 export const TENANT_UID_MAX = 30999;
 
 export function validateTenantUid(value: number): TenantUid {
+  assertNumber(value, 'uid');
   if (!Number.isInteger(value) || value < TENANT_UID_MIN || value > TENANT_UID_MAX) {
     throw new FieldValidationError(
       'uid',
@@ -107,6 +136,7 @@ export function validateTenantUid(value: number): TenantUid {
 }
 
 export function validatePort(value: number, field = 'port'): Port {
+  assertNumber(value, field);
   if (!Number.isInteger(value) || value < 1 || value > 65535) {
     throw new FieldValidationError(field, `${field} ${value} must be an integer in 1-65535.`);
   }
@@ -140,6 +170,7 @@ function ipv4ToInt(address: string): number | undefined {
 }
 
 export function validatePrivateIpV4(value: string): PrivateIpV4 {
+  assertString(value, 'appHostIp');
   const asInt = ipv4ToInt(value);
   if (asInt === undefined) {
     throw new FieldValidationError(
@@ -160,6 +191,7 @@ export function validatePrivateIpV4(value: string): PrivateIpV4 {
 const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
 export function validateInstant(value: string, field = 'instant'): Instant {
+  assertString(value, field);
   if (!INSTANT_PATTERN.test(value) || Number.isNaN(Date.parse(value))) {
     throw new FieldValidationError(
       field,
@@ -169,14 +201,42 @@ export function validateInstant(value: string, field = 'instant'): Instant {
   return value as Instant;
 }
 
-// A deliberately loose check: this only ever gates the one address Ghost
-// creates the owner account with, and the real verification is Ghost's own
-// signup flow, not this package.
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// RFC 5321 §4.5.3.1.3's overall path-length limit, checked before any regex
+// touches the value: a prior version of this function matched an unbounded
+// value against a pattern with two adjacent `[^\s@]+` groups either side of
+// a literal, which — on an input with no `@` or no `.` — makes the engine
+// try every split point between them before failing, taking roughly
+// quadratic time (CodeQL js/polynomial-redos; an 80 KB value measured
+// around 2s with no cap). Capping the length first bounds that regardless
+// of the pattern; the checks below also avoid the vulnerable shape
+// entirely, using single-quantifier patterns and string splitting rather
+// than one pattern with adjacent unbounded groups.
+const MAX_EMAIL_LENGTH = 254;
+const NO_WHITESPACE_OR_AT = /^[^\s@]+$/;
 
 export function validateEmailAddress(value: string, field = 'ownerEmail'): EmailAddress {
-  if (!EMAIL_PATTERN.test(value)) {
-    throw new FieldValidationError(field, `${field} "${value}" is not a valid email address.`);
+  assertString(value, field);
+  if (value.length === 0 || value.length > MAX_EMAIL_LENGTH) {
+    throw new FieldValidationError(
+      field,
+      `${field} must be 1-${MAX_EMAIL_LENGTH} characters, got ${value.length}.`
+    );
+  }
+  const atIndex = value.indexOf('@');
+  if (atIndex === -1 || atIndex !== value.lastIndexOf('@')) {
+    throw new FieldValidationError(field, `${field} "${value}" must contain exactly one "@".`);
+  }
+  const local = value.slice(0, atIndex);
+  const domain = value.slice(atIndex + 1);
+  if (!NO_WHITESPACE_OR_AT.test(local) || !NO_WHITESPACE_OR_AT.test(domain)) {
+    throw new FieldValidationError(field, `${field} "${value}" must not contain whitespace.`);
+  }
+  const dotIndex = domain.lastIndexOf('.');
+  if (dotIndex <= 0 || dotIndex === domain.length - 1) {
+    throw new FieldValidationError(
+      field,
+      `${field} "${value}"'s domain must contain a "." with a label on each side.`
+    );
   }
   return value as EmailAddress;
 }

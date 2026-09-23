@@ -7,6 +7,8 @@
 
 import {
   FieldValidationError,
+  assertNumber,
+  assertString,
   validateAbsoluteUrl,
   validateDigestPinnedRef,
   validateEmailAddress,
@@ -125,6 +127,132 @@ function checkVersion(descriptor: TenantDescriptor): void {
   }
 }
 
+function assertBoolean(value: unknown, field: string): asserts value is boolean {
+  if (typeof value !== 'boolean') {
+    throw new FieldValidationError(
+      field,
+      `${field} must be a boolean, got ${value === null ? 'null' : typeof value}.`
+    );
+  }
+}
+
+function assertObject(value: unknown, field: string): asserts value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) {
+    throw new FieldValidationError(
+      field,
+      `${field} must be an object, got ${value === null ? 'null' : typeof value}.`
+    );
+  }
+}
+
+function assertNullableNumber(value: unknown, field: string): void {
+  if (value !== null && (typeof value !== 'number' || Number.isNaN(value))) {
+    throw new FieldValidationError(
+      field,
+      `${field} must be a number or null, got ${typeof value}.`
+    );
+  }
+}
+
+/**
+ * Checks that every field `validate()` or a renderer reads exists and has
+ * the right JS type, for the whole descriptor at once, before any format or
+ * cross-field rule below assumes it. Every one of these was previously a
+ * silent pass-through (a missing `limits`/`caps`/`safety`) or a raw
+ * `TypeError` (a `.trim()` or `.kind` read off an absent nested field) —
+ * this is the one place that turns both into the same named error. Each
+ * union's own `kind` is not re-checked here: `assertDiscriminant` above (and
+ * `checkInv1`, for `codeInjection`) already guarantee it is one of the
+ * variant's declared literals, so the branches below only need to check the
+ * fields *that variant* carries.
+ */
+function assertShape(descriptor: TenantDescriptor): void {
+  assertNumber(descriptor.version, 'version');
+  assertString(descriptor.slug, 'slug');
+  assertString(descriptor.siteUrl, 'siteUrl');
+  assertString(descriptor.image, 'image');
+  assertString(descriptor.ownerEmail, 'ownerEmail');
+  assertNumber(descriptor.uid, 'uid');
+  assertString(descriptor.appHostIp, 'appHostIp');
+
+  assertObject(descriptor.ports, 'ports');
+  assertNumber(descriptor.ports.a, 'ports.a');
+  assertNumber(descriptor.ports.b, 'ports.b');
+  assertNumber(descriptor.ports.health, 'ports.health');
+
+  if (descriptor.database.kind === 'sqlite') {
+    assertString(descriptor.database.path, 'database.path');
+  } else {
+    assertString(descriptor.database.host, 'database.host');
+    assertNumber(descriptor.database.port, 'database.port');
+    assertString(descriptor.database.name, 'database.name');
+    assertString(descriptor.database.user, 'database.user');
+  }
+
+  assertBoolean(descriptor.media.resize, 'media.resize');
+  assertBoolean(descriptor.media.srcsets, 'media.srcsets');
+  if (descriptor.media.kind === 'local') {
+    assertString(descriptor.media.path, 'media.path');
+  } else {
+    assertString(descriptor.media.endpoint, 'media.endpoint');
+    assertString(descriptor.media.region, 'media.region');
+    assertString(descriptor.media.bucket, 'media.bucket');
+  }
+
+  if (descriptor.transport.kind === 'queue') {
+    assertString(descriptor.transport.path, 'transport.path');
+  } else {
+    assertString(descriptor.transport.host, 'transport.host');
+    assertNumber(descriptor.transport.port, 'transport.port');
+    assertString(descriptor.transport.user, 'transport.user');
+  }
+
+  if (descriptor.hostname.kind === 'ours') {
+    assertString(descriptor.hostname.sub, 'hostname.sub');
+    assertBoolean(descriptor.hostname.gated, 'hostname.gated');
+  } else {
+    assertString(descriptor.hostname.fqdn, 'hostname.fqdn');
+    assertString(descriptor.hostname.verifiedAt, 'hostname.verifiedAt');
+  }
+
+  if (descriptor.gate.kind === 'passphrase') {
+    assertString(descriptor.gate.argon2idHash, 'gate.argon2idHash');
+  }
+
+  if (descriptor.backup.kind === 'bucket-native') {
+    assertString(descriptor.backup.encryptionRecipient, 'backup.encryptionRecipient');
+  }
+
+  if (descriptor.codeInjection.kind === 'granted') {
+    assertString(descriptor.codeInjection.by, 'codeInjection.by');
+    assertString(descriptor.codeInjection.reason, 'codeInjection.reason');
+    if (descriptor.codeInjection.until !== null) {
+      assertString(descriptor.codeInjection.until, 'codeInjection.until');
+    }
+  } else if (descriptor.codeInjection.kind === 'managed') {
+    assertString(descriptor.codeInjection.head, 'codeInjection.head');
+    assertString(descriptor.codeInjection.foot, 'codeInjection.foot');
+  }
+
+  assertObject(descriptor.limits, 'limits');
+  assertNullableNumber(descriptor.limits.membersCap, 'limits.membersCap');
+  assertNullableNumber(descriptor.limits.staffCap, 'limits.staffCap');
+
+  assertObject(descriptor.caps, 'caps');
+  assertString(descriptor.caps.cpus, 'caps.cpus');
+  assertNumber(descriptor.caps.cpuShares, 'caps.cpuShares');
+  assertNumber(descriptor.caps.pidsLimit, 'caps.pidsLimit');
+  assertNumber(descriptor.caps.nofile, 'caps.nofile');
+
+  assertObject(descriptor.safety, 'safety');
+  assertBoolean(descriptor.safety.near, 'safety.near');
+  assertBoolean(descriptor.safety.exact, 'safety.exact');
+
+  if (descriptor.expiresAt !== null) {
+    assertString(descriptor.expiresAt, 'expiresAt');
+  }
+}
+
 function validatePortTriple(ports: TenantDescriptor['ports']): void {
   validatePort(ports.a, 'ports.a');
   validatePort(ports.b, 'ports.b');
@@ -137,12 +265,29 @@ function validateDatabase(database: TenantDescriptor['database']): void {
   }
 }
 
+// The comma/whitespace check is what "exactly one" means in practice: age
+// (and every one-recipient-per-tenant scheme this could be swapped for)
+// takes one recipient per `-r` flag or line, so either character is a sign
+// this string actually holds more than one, silently encrypting a dump to
+// more than the one tenant it belongs to.
+const RECIPIENT_LIST_SEPARATOR = /[\s,]/;
+
 function validateBackup(backup: TenantDescriptor['backup']): void {
-  if (backup.kind === 'bucket-native' && backup.encryptionRecipient.trim() === '') {
+  if (backup.kind !== 'bucket-native') {
+    return;
+  }
+  if (backup.encryptionRecipient.trim() === '') {
     throw new FieldValidationError(
       'backup.encryptionRecipient',
       'backup.encryptionRecipient must be non-empty for bucket-native backup — exactly one ' +
         'recipient per tenant is what makes erasure a key destruction rather than a rewrite.'
+    );
+  }
+  if (RECIPIENT_LIST_SEPARATOR.test(backup.encryptionRecipient)) {
+    throw new FieldValidationError(
+      'backup.encryptionRecipient',
+      `backup.encryptionRecipient "${backup.encryptionRecipient}" must be exactly one recipient ` +
+        `— no whitespace or commas, which would mean more than one.`
     );
   }
 }
@@ -153,9 +298,91 @@ function validateTransport(transport: TenantDescriptor['transport']): void {
   }
 }
 
+function validateGate(gate: TenantDescriptor['gate']): void {
+  if (gate.kind === 'passphrase' && gate.argon2idHash.trim() === '') {
+    throw new FieldValidationError(
+      'gate.argon2idHash',
+      'gate.argon2idHash must be non-empty for a passphrase gate.'
+    );
+  }
+}
+
+// The platform's own zone for a demo/entry hostname it mints itself
+// ("ours"): `<sub>.sites.branchleft.co.uk`. A "theirs" fqdn under this same
+// zone would mean the "custom domain" precondition on a code-injection
+// grant is nominal — injected script would still land on the platform's own
+// registrable domain, which is exactly what the precondition exists to
+// prevent.
+const PLATFORM_ZONE = 'sites.branchleft.co.uk';
+
+function isOutsidePlatformZone(fqdn: string): boolean {
+  return fqdn !== PLATFORM_ZONE && !fqdn.endsWith(`.${PLATFORM_ZONE}`);
+}
+
+// A bounded inner group ({0,61}) rather than an unbounded one: this label
+// pattern cannot itself backtrack catastrophically, however long the
+// checked string is — see brand.ts's validateEmailAddress for why that
+// property matters enough to call out here too.
+const HOSTNAME_LABEL_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
+const MAX_FQDN_LENGTH = 253;
+
+function isWellFormedFqdn(fqdn: string): boolean {
+  if (fqdn.length === 0 || fqdn.length > MAX_FQDN_LENGTH) {
+    return false;
+  }
+  const labels = fqdn.split('.');
+  return labels.length >= 2 && labels.every((label) => HOSTNAME_LABEL_PATTERN.test(label));
+}
+
 function validateHostname(hostname: TenantDescriptor['hostname']): void {
-  if (hostname.kind === 'theirs') {
-    validateInstant(hostname.verifiedAt, 'hostname.verifiedAt');
+  if (hostname.kind !== 'theirs') {
+    return;
+  }
+  validateInstant(hostname.verifiedAt, 'hostname.verifiedAt');
+  if (!isWellFormedFqdn(hostname.fqdn)) {
+    throw new FieldValidationError(
+      'hostname.fqdn',
+      `hostname.fqdn "${hostname.fqdn}" must be a well-formed, non-empty domain name.`
+    );
+  }
+  if (!isOutsidePlatformZone(hostname.fqdn)) {
+    throw new FieldValidationError(
+      'hostname.fqdn',
+      `hostname.fqdn "${hostname.fqdn}" must be outside the platform's own zone ` +
+        `(${PLATFORM_ZONE}) — a custom domain is the whole point of "theirs".`
+    );
+  }
+}
+
+/**
+ * `siteUrl`'s host must be exactly the host the rest of the descriptor
+ * declares — the subdomain a `ours` hostname renders to, or a `theirs`
+ * fqdn verbatim — so a renderer reading either field gets the same
+ * answer.
+ */
+function checkSiteUrlMatchesHostname(descriptor: TenantDescriptor): void {
+  const expectedHost =
+    descriptor.hostname.kind === 'ours'
+      ? `${descriptor.hostname.sub}.${PLATFORM_ZONE}`
+      : descriptor.hostname.fqdn;
+  const actualHost = new URL(descriptor.siteUrl).hostname;
+  if (actualHost !== expectedHost) {
+    throw new FieldValidationError(
+      'siteUrl',
+      `siteUrl's host "${actualHost}" must match the host the descriptor's hostname field ` +
+        `declares ("${expectedHost}").`
+    );
+  }
+}
+
+/** Both flags are on for every tenant today — see SafetySpec's own doc comment. */
+function checkSafety(descriptor: TenantDescriptor): void {
+  if (!descriptor.safety.near || !descriptor.safety.exact) {
+    throw new FieldValidationError(
+      'safety',
+      `safety.near and safety.exact must both be true, got near=${descriptor.safety.near} ` +
+        `exact=${descriptor.safety.exact}.`
+    );
   }
 }
 
@@ -254,8 +481,11 @@ function checkCodeInjectionHostnamePrecondition(descriptor: TenantDescriptor): v
 /**
  * Each kind's shape is fixed, not merely typical: a paying tenant is MySQL,
  * object-storage media and bucket-native backup; a demo is SQLite, local
- * media, no backup, and carries no code-injection grant or managed
- * injection at all — removed from a demo, not merely defaulted off.
+ * media, no backup, carries no code-injection grant or managed injection at
+ * all — removed from a demo, not merely defaulted off — reaches the
+ * platform under its own `ours` hostname, never a custom domain, and always
+ * carries an expiry: a demo that never expires is a paying tenant's
+ * capacity a demo is silently holding.
  */
 function checkTierVariants(descriptor: TenantDescriptor): void {
   if (descriptor.kind === 'tenant') {
@@ -296,6 +526,15 @@ function checkTierVariants(descriptor: TenantDescriptor): void {
       `kind "demo" must carry no code-injection grant or managed injection; got ` +
         `codeInjection.kind "${descriptor.codeInjection.kind}".`
     );
+  }
+  if (descriptor.hostname.kind !== 'ours') {
+    throw new TierMismatchError(
+      `kind "demo" requires hostname.kind "ours", got "${descriptor.hostname.kind}". A demo ` +
+        `never reaches the platform under a custom domain.`
+    );
+  }
+  if (descriptor.expiresAt === null) {
+    throw new TierMismatchError('kind "demo" requires a non-null expiresAt.');
   }
 }
 
@@ -343,6 +582,11 @@ export function validate(descriptor: TenantDescriptor): TenantDescriptor {
   // three kinds, and checkInv1 is what makes that assumption safe.
   checkInv1(descriptor);
 
+  // Presence and type of every remaining field, all at once, before any
+  // format validator or cross-field rule below reads one — see assertShape's
+  // own doc comment.
+  assertShape(descriptor);
+
   checkVersion(descriptor);
 
   validateSlug(descriptor.slug);
@@ -356,10 +600,13 @@ export function validate(descriptor: TenantDescriptor): TenantDescriptor {
   validateBackup(descriptor.backup);
   validateTransport(descriptor.transport);
   validateHostname(descriptor.hostname);
+  validateGate(descriptor.gate);
   validateCodeInjection(descriptor.codeInjection);
   if (descriptor.expiresAt !== null) {
     validateInstant(descriptor.expiresAt, 'expiresAt');
   }
+  checkSafety(descriptor);
+  checkSiteUrlMatchesHostname(descriptor);
 
   checkInv2(descriptor);
   checkInv3(descriptor);

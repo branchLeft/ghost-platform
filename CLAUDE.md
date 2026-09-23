@@ -1,6 +1,6 @@
 # CLAUDE.md — branchLeft Ghost Platform
 
-Reusable Ghost-platform pieces shared across tenants: the tenant Pulumi component (`infra/tenant`, published to GitHub Packages as `@branchleft/ghost-platform-tenant`), the tenant descriptor package (`render-core`, published as `@branchleft/ghost-platform-render-core`), the shared Hetzner host stack (`infra/hosts`), the Ghost container image, and CI tooling. No per-tenant identity or infrastructure lives here.
+Reusable Ghost-platform pieces shared across tenants: the tenant Pulumi component (`infra/tenant`, published to GitHub Packages as `@branchleft/ghost-platform-tenant`), the tenant descriptor package (`render-core`, to be published the same way as `@branchleft/ghost-platform-render-core` — no publish workflow exists for it yet), the shared Hetzner host stack (`infra/hosts`), the Ghost container image, and CI tooling. No per-tenant identity or infrastructure lives here.
 
 **This repo is public.** No secrets, no tenant-identifying data, ever — in code, comments, commit messages, or CI logs. A tenant's hostname and its stack name together are that tenant's identity; both belong in that tenant's own repo, never here.
 
