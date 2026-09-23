@@ -613,10 +613,13 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
    ```
 4. Load the dump, then replay binlog events up to the target timestamp. The
    dump's header (from `--source-data=2`) names the exact `MASTER_LOG_FILE`/
-   `MASTER_LOG_POS` to resume from:
+   `MASTER_LOG_POS` to resume from. **`--stop-datetime` is UTC** -- pick the
+   target timestamp in UTC (step 1) and export `TZ=UTC` before running
+   `mysqlbinlog` by hand, since it otherwise evaluates the cutoff in
+   whichever timezone the operator's own shell happens to be in:
    ```bash
    mysql --host <scratch-host> -uroot -p < dump.sql
-   mysqlbinlog --start-position=<pos-from-dump-header> --stop-datetime="<target timestamp>" mysql-bin.NNNNNN | mysql --host <scratch-host> -uroot -p
+   TZ=UTC mysqlbinlog --start-position=<pos-from-dump-header> --stop-datetime="<target timestamp, UTC>" mysql-bin.NNNNNN | mysql --host <scratch-host> -uroot -p
    ```
 5. Confirm a row known to have changed after the dump and before the target
    timestamp is present, and that nothing after the target timestamp is.
@@ -628,18 +631,30 @@ every *other* tenant's writes since the dump must stay out of the restored
 database. `db/provision/extract_tenant_binlog.py` replaces step 4's raw
 `mysqlbinlog | mysql` pipe with a scoped equivalent for that case: it reads
 the dump's own `--source-data=2` resume point, so the position does not
-have to be copied out of the dump header by hand, and adds mysqlbinlog's own
-`--database=<tenant>` row-event filter to the replay.
+have to be copied out of the dump header by hand, adds mysqlbinlog's own
+`--database=<tenant>` row-event filter to the replay, and always runs
+`mysqlbinlog` with `TZ=UTC` itself -- **`--stop-datetime` below is UTC**,
+the same as step 4's.
+
+Read the scratch-host root password into the shell rather than typing it on
+the command line, where it would land in shell history:
 
 ```bash
-MYSQL_PWD=<scratch-host-root-password> python3 db/provision/extract_tenant_binlog.py \
+read -rs MYSQL_PWD
+export MYSQL_PWD
+python3 db/provision/extract_tenant_binlog.py \
   --dump dump.sql \
   --tenant-database <tenant> \
-  --stop-datetime="<target timestamp>" \
+  --stop-datetime="<target timestamp, UTC>" \
   --apply-host <scratch-host> \
   --apply-user root \
   mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...]
 ```
+
+A `--tenant-database` that does not match a database this dump declares, or
+that matches no event in the given binlog files, is refused outright -- a
+typo here fails loudly rather than applying nothing while reporting
+success.
 
 Confirm the same way as step 5, plus the property step 5 does not check:
 that no *other* tenant's database gained a row dated after the dump.
