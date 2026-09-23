@@ -51,10 +51,12 @@ UNREADABLE_NAME="drain-sidecar-test-unreadable-$RUN_ID"
 UNREADABLE_VOLUME="drain-sidecar-test-unreadable-$RUN_ID"
 FLAG_DIR="$(mktemp -d)"
 FLAG_FILE="$FLAG_DIR/drain"
-# 0755: readable and traversable by the sidecar's uid (1000) without being
-# world-writable -- the arrangement README.md documents as what production
-# must provide. `chmod 777` would also pass this test; it would not prove
-# anything about the mode the sidecar actually needs.
+# 0755 grants the sidecar's uid (1000) the read+traverse (r-x) access
+# README.md says the check needs, without being world-writable. `chmod
+# 777` would also pass this test; it would not prove anything about the
+# access the sidecar actually needs, which is only r-x -- what mode or
+# owner a real deployment gives the directory is a host placement
+# decision this script has no opinion on either.
 chmod 0755 "$FLAG_DIR"
 FAILURES=0
 

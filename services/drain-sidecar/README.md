@@ -15,28 +15,26 @@ the design this implements.
   own front page does not answer exactly `200`.
 - `200` (`{"status":"ok"}`) only when both checks pass.
 
-## Runtime user and the flag directory's permissions
+## What the sidecar needs from the flag directory
 
 The container runs as `node` — uid 1000, the user baked into the
 `node:*-bookworm-slim` base image (`USER node` in the Dockerfile). It never
 runs as root, and the flag check must never be made to pass by running it
 as one.
 
-The flag lives in a directory the broker owns and can write to (mode
-`0755`), separate from the root-owned slot directory created once at host
-build — the slot's own uids (30001–30007, one per slot) have no write
-access to it, or a compromised Ghost process could clear its own drain
-flag. The sidecar only ever needs to read: it mounts the directory
-**read-only**.
+Wherever `DRAIN_FLAG_PATH` lives:
 
-For the flag check to answer `503`/`200` correctly rather than always
-failing closed, that directory must be **readable and traversable by uid
-1000** — mode `0755` (group and other both get `r-x`) is what this repo's
-own CI proof (`scripts/test-drain-sidecar.sh`) sets up, and is the
-recommended arrangement. The flag file's own permissions and owner don't
-matter — the sidecar only ever `lstat`s the path by name, never opens or
-reads it, and never resolves a symlink (a dangling one still counts as
-present) — but the *directory*'s permissions do: without at least `r-x`
-for uid 1000, the check fails with `EACCES`, which this service treats as
-"cannot tell" and answers `503`, exactly as it would if the flag were
-actually set.
+- The sidecar only ever needs to read, so its containing directory is
+  mounted **read-only** (`scripts/test-drain-sidecar.sh` mounts it `:ro`).
+- That directory must be **readable and traversable by uid 1000** (`r-x`)
+  for the check to answer `503`/`200` correctly rather than always failing
+  closed. Without at least that, the check fails with `EACCES`, which this
+  service treats as "cannot tell" and answers `503` — exactly as it would
+  if the flag were actually set.
+- The flag file's own permissions and owner don't matter — the sidecar
+  only ever `lstat`s the path by name, never opens or reads it, and never
+  resolves a symlink (a dangling one still counts as present).
+
+Where the flag directory sits, who owns it, and what else can write to it
+are host placement decisions this service has no opinion on and makes no
+claim about; that is the fixed-slots story's territory, not this one's.

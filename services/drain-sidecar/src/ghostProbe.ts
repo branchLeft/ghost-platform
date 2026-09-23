@@ -37,12 +37,11 @@ export function createHttpGhostProbe(url: string, timeoutMs: number): GhostProbe
         // Never read -- only the status matters here -- but an unconsumed
         // body keeps the underlying connection from being released back to
         // the pool. Best-effort and fire-and-forget: the health verdict is
-        // already decided, and an unhandled rejection here must not be
-        // allowed to take the process down over a cleanup step.
-        /* v8 ignore next 3 -- no deterministic way to make cancel() itself reject */
-        response.body?.cancel().catch(() => {
-          return undefined;
-        });
+        // already decided, and cancel() can reject (a body that errors mid-
+        // stream, e.g. the connection resetting after headers arrive) --
+        // that must not become an unhandled rejection that takes the whole
+        // process down over a cleanup step.
+        response.body?.cancel().catch(() => undefined);
         return healthy;
       } catch {
         return false;
