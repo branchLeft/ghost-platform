@@ -13,29 +13,58 @@ Connects over the Unix socket bind-mounted out of the mysql container
 (`./run/mysqld:/var/run/mysqld` in db/stack/compose.yml) as the dedicated
 `backup`@`localhost` account -- never TCP, so this never depends on
 `bind-address` covering a loopback or private address for this account.
-Reads only `DB_DUMP_MYSQL_PWD` from the environment -- /etc/branchleft/db.env
-via whichever unit or session invokes this. There is no object-storage
-credential, no encryption key and no bucket, endpoint or region to read: the
-tenant database host is not the place either is meant to exist. Encryption
-and the write to storage both happen where the worker pulls to, never here.
+`DB_DUMP_MYSQL_PWD` is read from this process's own environment; nothing yet
+specifies how that variable reaches a pull-model invocation of this script,
+since a worker dialling in rather than a local systemd timer is what runs
+it now, and the old push model's answer (an on-host EnvironmentFile) was
+built for the timer it is replacing.
+
+There is no object-storage credential, no encryption key and no bucket,
+endpoint or region to read here. A start-up check refuses to run at all if
+any such variable is present in this process's own environment regardless
+of whether anything would have used it: the tenant database host is not the
+place any of that is meant to exist, encryption and the write to storage
+both happen where the worker pulls to. The mysql/mysqldump children this
+script spawns get an allowlisted environment of their own -- `PATH`, so the
+binary can be resolved by name, and `MYSQL_PWD` -- never a forwarded copy of
+this process's own, so a variable the start-up check somehow missed still
+could not reach them.
 
 The dump's own stdout carries nothing but the dump: every status line this
 script prints goes to stderr, because a caller reading stdout as the backup
 payload cannot tell a trailing line of prose from the last bytes of a
-`mysqldump` footer.
+`mysqldump` footer. A nonzero exit can follow partial bytes already written
+to stdout -- whatever streamed before the failure is the caller's to
+discard whole, never kept as a partial dump.
 
-The floor check runs before `mysqldump` is invoked at all, against the same
-tables a Ghost install always seeds on first boot. A tenant whose `users` or
-`posts` table is empty was never actually initialised, and letting
-`mysqldump` run anyway would produce a dump that decrypts cleanly, restores
-cleanly, and captures nothing -- exactly the outcome a floor check exists to
-refuse before it is written anywhere, not to discover afterwards.
+The floor check runs twice, against different evidence, because they prove
+different things. A cheap pre-check queries row counts on the live source
+before `mysqldump` is invoked at all, and refuses early if the source is
+already empty. The check that actually matters runs afterwards, counting
+`INSERT` statements for the same tables as mysqldump's own output streams
+past: a pre-check alone only proves the *source* was not empty a moment
+earlier, and a mysqldump invocation that silently narrows what it writes
+(a stray `--no-data`, a filtered `--ignore-table`) can still pass a
+source-side pre-check while the dump itself captures nothing. `--databases
+<name>`, not `--all-databases`: one tenant's database per invocation is what
+makes a tenant's failure local to that tenant rather than aborting whatever
+else the caller was in the middle of dumping. `--skip-extended-insert` puts
+each row in its own `INSERT` statement, which is what makes counting matched
+lines the same operation as counting rows, at the cost of a larger, slower-
+to-restore dump than the packed default form -- judged worth it here rather
+than parsing tuple boundaries out of a `VALUES` list that can itself span
+buffers.
 
-`--databases <name>`, not `--all-databases`: one tenant's database per
-invocation is what makes a tenant's failure local to that tenant rather than
-aborting whatever else the caller was in the middle of dumping. `db1`'s own
-`dump_nightly.py` is untouched by this file and keeps running exactly as it
-does today.
+`posts` is deliberately not a floor table: Ghost's own "delete all content"
+endpoint destroys every post through the ordinary admin API
+(`deleteAllContent` in ghost/core/core/server/api/endpoints/db.js), so an
+empty `posts` table is a legitimate tenant state, not evidence of a broken
+dump. `settings` is not reachable by that path and carries on the order of
+a hundred rows seeded by every install's default-settings fixture, with no
+migration in the tree that truncates it wholesale.
+
+`db1`'s own `dump_nightly.py` is untouched by this file and keeps running
+exactly as it does today.
 """
 
 from __future__ import annotations
@@ -44,6 +73,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 
 from naming import (
     InvalidTenantName,
@@ -59,11 +89,23 @@ DUMP_MYSQL_USER = "backup"
 # /opt/branchleft/db per db/RUNBOOK-db.md.
 DEFAULT_SOCKET = "/opt/branchleft/db/run/mysqld/mysqld.sock"
 
-# A fresh Ghost install always seeds an owner account and an example post on
-# first boot, so a genuine tenant's database can never have zero rows in
-# either table -- zero here means the database was never initialised, not
-# that a real tenant happens to have no content yet.
-FLOOR_TABLES = ("users", "posts")
+# `users` can never legitimately reach zero (Ghost refuses to delete the
+# last account) and `settings` is seeded on every install and never
+# wholesale-truncated. `posts` is excluded: "delete all content" empties it
+# through the ordinary admin API, so a zero count there is not evidence of
+# anything broken.
+FLOOR_TABLES = ("users", "settings")
+
+# Everything a mysql/mysqldump child process is allowed to see. PATH so the
+# binary can be found by name; MYSQL_PWD is added per call, never here,
+# because it is a value rather than a fixed name.
+CHILD_ENV_ALLOWLIST = ("PATH",)
+
+# Prefixes that name a storage or encryption credential anywhere in this
+# estate's convention (AWS_* for Hetzner/S3-compatible keys, DB_BACKUP_* for
+# the bucket/endpoint/region trio, AGE_* for the recipient key). This host
+# must never see one, regardless of whether anything here would forward it.
+FORBIDDEN_ENV_PREFIXES = ("AWS_", "DB_BACKUP_", "AGE_")
 
 
 class DumpError(Exception):
@@ -74,10 +116,30 @@ class FloorError(DumpError):
     """A table that must never be empty was, so no dump was taken."""
 
 
+def assert_no_storage_credential_in_environment() -> None:
+    """Refuses to start rather than silently carry on with a storage or
+    encryption variable already present in this process's own environment --
+    the child-process allowlist below exists as a second, independent
+    barrier, not as the only one."""
+    present = sorted(name for name in os.environ if name.startswith(FORBIDDEN_ENV_PREFIXES))
+    if present:
+        raise DumpError(
+            "refusing to start: this process's own environment carries "
+            f"{', '.join(present)} -- the tenant database host must hold no "
+            "credential that could reach where a dump ends up"
+        )
+
+
+def _child_env(password: str) -> dict[str, str]:
+    env = {name: os.environ[name] for name in CHILD_ENV_ALLOWLIST if name in os.environ}
+    env["MYSQL_PWD"] = password
+    return env
+
+
 def _run_mysql(sql: str, *, socket_path: str, password: str, run) -> str:
     result = run(
         ["mysql", "--socket", socket_path, "--user", DUMP_MYSQL_USER, "-N", "-B", "-e", sql],
-        env={**os.environ, "MYSQL_PWD": password},
+        env=_child_env(password),
         capture_output=True,
         text=True,
         check=False,
@@ -88,8 +150,11 @@ def _run_mysql(sql: str, *, socket_path: str, password: str, run) -> str:
 
 
 def check_floor(*, socket_path: str, db_name: str, password: str, run=subprocess.run) -> dict[str, int]:
-    """Returns the row count read for each floor table. Raises FloorError
-    naming every one found empty, without ever invoking mysqldump."""
+    """The early refusal, against the live source. Returns the row count
+    read for each floor table. Raises FloorError naming every one found
+    empty, without ever invoking mysqldump -- but a pass here proves only
+    that the source was not empty a moment ago, never what mysqldump itself
+    goes on to capture."""
     counts: dict[str, int] = {}
     for table in FLOOR_TABLES:
         # db_name and table are both drawn from validated, fixed sources
@@ -109,35 +174,69 @@ def check_floor(*, socket_path: str, db_name: str, password: str, run=subprocess
     empty = sorted(table for table, count in counts.items() if count == 0)
     if empty:
         raise FloorError(
-            f"{db_name}: floor table(s) empty ({', '.join(empty)}) -- refusing to take a "
-            "dump that would restore cleanly and capture nothing"
+            f"{db_name}: floor table(s) empty on the source ({', '.join(empty)}) -- refusing "
+            "to take a dump before mysqldump has even run"
         )
     return counts
 
 
-def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, run=subprocess.run) -> None:
-    result = run(
-        [
-            "mysqldump",
-            "--socket",
-            socket_path,
-            "--user",
-            DUMP_MYSQL_USER,
-            "--single-transaction",
-            "--source-data=2",
-            "--routines",
-            "--triggers",
-            "--set-gtid-purged=OFF",
-            "--databases",
-            db_name,
-        ],
-        env={**os.environ, "MYSQL_PWD": password},
-        stdout=stdout,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise DumpError(f"mysqldump exited {result.returncode}: {result.stderr.decode(errors='replace')}")
+def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, popen=subprocess.Popen) -> dict[str, int]:
+    """The floor check that actually matters: streams mysqldump's stdout to
+    `stdout` byte-for-byte as it arrives, counting the rows captured for
+    each floor table by counting the `INSERT` statements naming it --
+    `--skip-extended-insert` makes that count exact, one statement per row.
+    `stderr` is a real temp file rather than a pipe, so a chatty mysqldump
+    cannot deadlock this process against its own unread stderr while stdout
+    is being streamed and counted a line at a time. Raises DumpError if
+    mysqldump itself exits nonzero, or FloorError if a floor table's count
+    came back zero once the stream ends -- proof against what the dump
+    actually wrote, not against the source it read from."""
+    patterns = {table: f"INSERT INTO `{table}` VALUES".encode() for table in FLOOR_TABLES}
+    counts = {table: 0 for table in FLOOR_TABLES}
+
+    with tempfile.TemporaryFile() as stderr_file:
+        process = popen(
+            [
+                "mysqldump",
+                "--socket",
+                socket_path,
+                "--user",
+                DUMP_MYSQL_USER,
+                "--single-transaction",
+                "--source-data=2",
+                "--routines",
+                "--triggers",
+                "--set-gtid-purged=OFF",
+                "--skip-extended-insert",
+                "--databases",
+                db_name,
+            ],
+            env=_child_env(password),
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+        try:
+            for line in process.stdout:
+                stdout.write(line)
+                for table, pattern in patterns.items():
+                    if line.startswith(pattern):
+                        counts[table] += 1
+        finally:
+            process.stdout.close()
+
+        returncode = process.wait()
+        if returncode != 0:
+            stderr_file.seek(0)
+            stderr_bytes = stderr_file.read()
+            raise DumpError(f"mysqldump exited {returncode}: {stderr_bytes.decode(errors='replace')}")
+
+    empty = sorted(table for table, count in counts.items() if count == 0)
+    if empty:
+        raise FloorError(
+            f"{db_name}: floor table(s) captured no rows in the dump itself ({', '.join(empty)}) "
+            "-- the stream just written restores cleanly and contains nothing for them"
+        )
+    return counts
 
 
 def run_dump(
@@ -147,26 +246,28 @@ def run_dump(
     password: str,
     stdout,
     run=subprocess.run,
+    popen=subprocess.Popen,
 ) -> str:
     """Returns the database name dumped on success; raises InvalidTenantName
     or DumpError (FloorError included) otherwise. Nothing here accepts, reads
     or forwards a storage or encryption credential of any kind."""
+    assert_no_storage_credential_in_environment()
     validate_tenant_name(tenant_name)
     db_name = database_and_user_name(sql_identifier(tenant_name))
 
     check_floor(socket_path=socket_path, db_name=db_name, password=password, run=run)
-    run_mysqldump(socket_path=socket_path, password=password, db_name=db_name, stdout=stdout, run=run)
+    run_mysqldump(socket_path=socket_path, password=password, db_name=db_name, stdout=stdout, popen=popen)
     return db_name
 
 
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
-        raise DumpError(f"{name} must be set (see /etc/branchleft/db.env)")
+        raise DumpError(f"{name} must be set")
     return value
 
 
-def main(argv: list[str], *, run=subprocess.run, stdout=None) -> int:
+def main(argv: list[str], *, run=subprocess.run, popen=subprocess.Popen, stdout=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("tenant_name", help="the tenant slug, e.g. 'blog' for database ghost_blog")
     parser.add_argument("--socket", dest="socket_path", default=DEFAULT_SOCKET)
@@ -182,6 +283,7 @@ def main(argv: list[str], *, run=subprocess.run, stdout=None) -> int:
             password=password,
             stdout=stdout,
             run=run,
+            popen=popen,
         )
     except (InvalidTenantName, DumpError) as exc:
         print(f"dump_tenant: {exc}", file=sys.stderr)
