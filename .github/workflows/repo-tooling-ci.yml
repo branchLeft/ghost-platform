@@ -112,6 +112,14 @@ jobs:
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'
 
+      # The demo host's sudoers boundary generator. Its property is
+      # exactness -- every one of the enumerated invocations present, no
+      # wildcard anywhere -- so these tests assert the generated text
+      # directly rather than trusting the generator's own logic to be
+      # self-evidently right.
+      - name: Demo host provisioning script tests
+        run: python3 -m unittest discover -s demo-host/provision -p 'test_*.py'
+
       # The same tenant-slug rule is written four times here, each read on a
       # different host with no shared import (see the script's docstring), so
       # one copy can drift loose without any other test going red. This is
