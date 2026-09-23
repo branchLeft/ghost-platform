@@ -57,3 +57,12 @@ export {
   UnknownSchemaVersionError,
   validate,
 } from './validate.js';
+
+export type { LeaseId, SlotLeaseRecord, SlotName } from './lease.js';
+export {
+  leaseRecordFileName,
+  MAX_LEASE_RECORD_BYTES,
+  parseSlotLeaseRecord,
+  validateLeaseId,
+  validateSlotName,
+} from './lease.js';

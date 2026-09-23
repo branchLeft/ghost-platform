@@ -1,0 +1,29 @@
+# The gate's placement, as LLD-5 §03 draws it, for the live proof in
+# scripts/test-demo-gate.sh: Caddy asks the gate on every request to a gated
+# host and proxies to the slot only on a 2xx. The demo edge's real
+# configuration is rendered from the descriptor elsewhere; this file is the
+# smallest edge that exercises the same contract.
+{
+	local_certs
+	skip_install_trust
+	auto_https disable_redirects
+	admin off
+}
+
+https://{$DEMO_HOST_A}, https://{$DEMO_HOST_B} {
+	tls internal
+	header X-Robots-Tag "noindex, nofollow"
+
+	# The login form posts here, with a body, so it is proxied rather than
+	# sent through forward_auth, which forwards no request body.
+	handle /__gate/login {
+		reverse_proxy {$GATE_UPSTREAM}
+	}
+
+	handle {
+		forward_auth {$GATE_UPSTREAM} {
+			uri /__gate/verify
+		}
+		reverse_proxy {$SLOT_UPSTREAM}
+	}
+}
