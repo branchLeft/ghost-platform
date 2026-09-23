@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  // The shared base sets `noEmit`, because most projects extending it only
+  // ever type-check. This is the config the published package is built from.
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test/**/*.ts", "vitest.config.ts"]
+}

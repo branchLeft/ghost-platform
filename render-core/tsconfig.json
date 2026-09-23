@@ -1,0 +1,17 @@
+{
+  "extends": "@branchleft/tsconfig/strict-1.json",
+  // No `pulumi.json` in the extends array, unlike infra/tenant: this package
+  // takes no Pulumi dependency at all, and the dependency-closure test
+  // enforces that it never gains one by accident.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "pretty": true
+  },
+  // Recursive rather than a flat `*.ts` glob, which matches root-level files
+  // only and drops a subdirectory's sources with no error.
+  "include": ["**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}
