@@ -637,7 +637,10 @@ have to be copied out of the dump header by hand, adds mysqlbinlog's own
 the same as step 4's.
 
 Read the scratch-host root password into the shell rather than typing it on
-the command line, where it would land in shell history:
+the command line, where it would land in shell history. The script's own
+environment carries no `HOME` either (it never reads `~/.my.cnf`; every
+option it needs is passed explicitly), so a personal or host default file
+cannot silently change what gets applied:
 
 ```bash
 read -rs MYSQL_PWD
@@ -651,10 +654,16 @@ python3 db/provision/extract_tenant_binlog.py \
   mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...]
 ```
 
-A `--tenant-database` that does not match a database this dump declares, or
-that matches no event in the given binlog files, is refused outright -- a
-typo here fails loudly rather than applying nothing while reporting
-success.
+**Pass every binlog file shipped since the dump, through to the newest one
+-- never just "enough".** A `--tenant-database` that does not match a
+database this dump declares is refused outright, before any mysqlbinlog
+call -- that is the typo guard. A tenant with no writes in the given range
+is not: the script applies nothing and exits 0, printing `no <tenant>
+events between the resume point and <stop-datetime or "end">; the loaded
+dump is the restore` -- a quiet tenant and a restore whose binlog file list
+falls short of covering the range both produce exactly this message, and
+nothing here can tell the two apart after the fact. Only giving every
+shipped file removes the ambiguity going in.
 
 Confirm the same way as step 5, plus the property step 5 does not check:
 that no *other* tenant's database gained a row dated after the dump.

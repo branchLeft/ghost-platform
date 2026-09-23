@@ -24,10 +24,11 @@ make load-bearing.
 line, per mysqlbinlog's own documented behaviour -- the dump's resume point
 therefore only makes sense as the position within whichever binlog file was
 open at dump time; every subsequent file in the replay set is read from its
-own beginning, and the given file list must be the *contiguous* binlog
-sequence from the resume file forward -- a gap would under-replay silently,
-since mysqlbinlog reads exactly the files it is given and has no way to
-notice an absent one.
+own beginning. The given files are sorted by binlog sequence number before
+any of this happens (a caller's order is not trusted to be ascending), and
+the *whole* sorted list must be a contiguous binlog sequence with no gap --
+a gap would under-replay silently, since mysqlbinlog reads exactly the
+files it is given and has no way to notice one missing.
 
 `mysqlbinlog` is not in the official `mysql` image (`db/RUNBOOK-db.md`'s
 toolchain note); a pinned recovery image that carries it is tracked
@@ -45,10 +46,21 @@ the target in whatever state the events applied so far produced. Run it
 only against a drained or scratch restore target nothing else is reading or
 writing -- never against a database serving live traffic.
 
-`mysqlbinlog`'s own `--stop-datetime` is evaluated in the *process's* local
-timezone unless told otherwise, not the server's and not UTC. This module
-always runs it with `TZ=UTC` in its (otherwise minimal) environment, and
-every timestamp this module's CLI takes -- `--stop-datetime` -- is UTC.
+`mysqlbinlog`'s own `--stop-datetime` is evaluated against the *process's*
+local time unless told otherwise: with no `TZ` in its environment, glibc
+falls back to the recovery host's own `/etc/localtime`, not UTC and not
+whatever timezone an operator's invoking shell happens to be in -- `env=`
+below replaces the child's environment wholesale, so the invoking shell's
+own `TZ` (if any) never reaches the child either way. This module always
+runs `mysqlbinlog` with `TZ=UTC` explicitly set, so a recovery host
+provisioned with any local timezone still interprets `--stop-datetime`
+identically. Every timestamp this module's CLI takes is UTC.
+
+The minimal environment below carries no `HOME`, so `mysql`'s default
+`~/.my.cnf` lookup finds nothing -- deliberately: a personal or host
+default file could otherwise silently add options (a different socket, a
+different default database) to a replay applied against decrypted tenant
+data. Nothing in this module reads `~/.my.cnf`.
 """
 
 from __future__ import annotations
@@ -58,7 +70,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import Iterable
+from typing import Iterable, NamedTuple
 
 # The exact comment mysqldump's `--source-data=2` writes: an *uncommented*
 # `CHANGE MASTER TO` (`--source-data=1`) would execute against whatever
@@ -185,6 +197,17 @@ def assert_contiguous(binlog_paths: list[str]) -> None:
         prev_base, prev_seq = base, seq
 
 
+def sorted_binlog_paths(binlog_paths: list[str]) -> list[str]:
+    """Sorts by binlog sequence number, independent of the order given.
+    Slicing an *unsorted* list from the resume file's own index silently
+    drops any file that sorts after the resume file but happens to appear
+    earlier in the caller's list -- e.g. given as `000005 000004` with a
+    resume file of `000004`, slicing from index 0 keeps only `000004` and
+    drops `000005` with no error. Sorting first, then slicing, then
+    checking contiguity over the whole sorted list closes that gap."""
+    return sorted(binlog_paths, key=_binlog_sequence)
+
+
 def mysqlbinlog_argv(
     binlog_paths: list[str],
     *,
@@ -214,14 +237,16 @@ def mysqlbinlog_argv(
     return argv
 
 
-def _has_table_map_event(sql: bytes, tenant_database: str) -> bool:
+def tenant_wrote_anything(sql: bytes, tenant_database: str) -> bool:
     """True if the extracted stream carries at least one row event whose
     Table_map names this tenant's database -- mysqlbinlog's own per-event
-    annotation, not a guess. A scoped extract with none is not a smaller
-    result, it is a no-op: every session/positioning wrapper statement is
-    still emitted even when nothing in the requested database matched, so
-    a byte count alone cannot tell a real (if small) replay from an empty
-    one."""
+    annotation, not a guess. False is not necessarily wrong: a tenant with
+    no writes since the dump's resume point (or none before a `--stop-
+    datetime` chosen just before their first post-dump write -- the "just
+    before the mistake" restore) legitimately produces this. Distinguishing
+    that from a `--tenant-database` typo is find_resume_point's job (the
+    dump-declaration check), not this one's -- this function only reports
+    what the extract contains, and never raises."""
     pattern = re.compile(rb"Table_map:\s*`" + re.escape(tenant_database.encode()) + rb"`\.")
     return pattern.search(sql) is not None
 
@@ -234,13 +259,13 @@ def extract_tenant_stream(
     stop_datetime: str | None = None,
     run=subprocess.run,
 ) -> bytes:
-    """Returns the filtered SQL stream as bytes. Raises ExtractError on any
-    non-zero mysqlbinlog exit -- a partially filtered stream applied to a
-    restore host is worse than none, so this never returns partial stdout
-    on failure -- and, when `database` is given, also when the result
-    carries no event for that database at all (see _has_table_map_event):
-    a wrong --tenant-database must fail loudly, not apply nothing while
-    reporting success."""
+    """Returns the filtered SQL stream as bytes, whether or not it carries
+    any event for `database` -- an empty (for this tenant) result is a
+    legitimate outcome, not a failure; see tenant_wrote_anything and
+    _replay_from_resume_point, which decides what to do with it. Raises
+    ExtractError only on a non-zero mysqlbinlog exit: a partially filtered
+    stream applied to a restore host is worse than none, so this never
+    returns partial stdout on failure."""
     argv = mysqlbinlog_argv(
         binlog_paths, database=database, start_position=start_position, stop_datetime=stop_datetime
     )
@@ -248,14 +273,7 @@ def extract_tenant_stream(
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else result.stderr
         raise ExtractError(f"mysqlbinlog exited {result.returncode}: {stderr}")
-    sql = result.stdout
-    if database is not None and not _has_table_map_event(sql, database):
-        raise ExtractError(
-            f"no Table_map event for tenant database {database!r} in the given binlog range -- nothing "
-            "would be replayed; check --tenant-database for a typo and that the binlog files cover the "
-            "range the tenant actually wrote in"
-        )
-    return sql
+    return result.stdout
 
 
 def apply_stream(
@@ -286,6 +304,17 @@ def apply_stream(
         raise ExtractError(f"mysql exited {result.returncode} applying the extract: {stderr}")
 
 
+class ReplayResult(NamedTuple):
+    """`applied` is False for a legitimate empty replay -- no event for the
+    tenant between the resume point and the stop instant (or the end of
+    the given binlog range) -- not an error; see tenant_wrote_anything.
+    `sql` is always the bytes extract_tenant_stream produced, whether or
+    not anything in it was applied."""
+
+    applied: bool
+    sql: bytes
+
+
 def _replay_from_resume_point(
     *,
     log_file: str,
@@ -298,12 +327,21 @@ def _replay_from_resume_point(
     apply_user: str,
     apply_password: str,
     run,
-) -> bytes:
-    resume_index = next((i for i, p in enumerate(binlog_paths) if p.endswith(log_file)), None)
+) -> ReplayResult:
+    # Sorted before the resume file is located: a caller's list is not
+    # guaranteed ascending, and slicing from an unsorted list would risk
+    # silently dropping a later file that happened to be given earlier
+    # (sorted_binlog_paths's own docstring). Contiguity is then checked
+    # over the *whole* sorted list, not just the slice from the resume
+    # file forward, so a gap anywhere -- including one this replay would
+    # never otherwise touch -- is refused rather than left for a later,
+    # harder-to-diagnose under-replay.
+    sorted_paths = sorted_binlog_paths(binlog_paths)
+    assert_contiguous(sorted_paths)
+    resume_index = next((i for i, p in enumerate(sorted_paths) if p.endswith(log_file)), None)
     if resume_index is None:
         raise ExtractError(f"resume point names {log_file!r}, not found among the given binlog files")
-    ordered_paths = binlog_paths[resume_index:]
-    assert_contiguous(ordered_paths)
+    ordered_paths = sorted_paths[resume_index:]
 
     sql = extract_tenant_stream(
         ordered_paths,
@@ -312,6 +350,8 @@ def _replay_from_resume_point(
         stop_datetime=stop_datetime,
         run=run,
     )
+    if not tenant_wrote_anything(sql, tenant_database):
+        return ReplayResult(applied=False, sql=sql)
     apply_stream(
         sql,
         socket_path=apply_socket_path,
@@ -320,7 +360,7 @@ def _replay_from_resume_point(
         password=apply_password,
         run=run,
     )
-    return sql
+    return ReplayResult(applied=True, sql=sql)
 
 
 def restore_point_in_time(
@@ -334,10 +374,12 @@ def restore_point_in_time(
     apply_user: str,
     apply_password: str,
     run=subprocess.run,
-) -> bytes:
+) -> ReplayResult:
     """The end-to-end scoped replay: resume point (and tenant-declaration
-    check) from the dump, contiguity check, filtered extract, applied to
-    the restore target. Returns the bytes applied."""
+    check) from the dump, sort-then-contiguity check, filtered extract,
+    applied to the restore target unless the tenant wrote nothing in
+    range (ReplayResult.applied is then False, and nothing was sent to
+    the restore target)."""
     log_file, position = parse_dump_resume_point(dump_text, tenant_database=tenant_database)
     return _replay_from_resume_point(
         log_file=log_file,
@@ -361,7 +403,7 @@ def main(argv: list[str]) -> int:
         "--stop-datetime",
         default=None,
         help='UTC, e.g. "2026-09-23 14:00:00" -- mysqlbinlog is run with TZ=UTC so this is never '
-        "interpreted in the operator's own local timezone",
+        "interpreted against the recovery host's own /etc/localtime",
     )
     parser.add_argument("--apply-socket", default=None)
     parser.add_argument("--apply-host", default=None)
@@ -377,7 +419,7 @@ def main(argv: list[str]) -> int:
 
     try:
         log_file, position = read_dump_resume_point(args.dump, tenant_database=args.tenant_database)
-        sql = _replay_from_resume_point(
+        result = _replay_from_resume_point(
             log_file=log_file,
             position=position,
             binlog_paths=args.binlog_paths,
@@ -392,7 +434,14 @@ def main(argv: list[str]) -> int:
     except (ExtractError, OSError) as exc:
         print(f"extract_tenant_binlog: {exc}", file=sys.stderr)
         return 1
-    print(f"extract_tenant_binlog: applied {len(sql)} byte(s) scoped to {args.tenant_database!r}")
+    if not result.applied:
+        stop_label = args.stop_datetime if args.stop_datetime is not None else "end"
+        print(
+            f"extract_tenant_binlog: no {args.tenant_database} events between the resume point and "
+            f"{stop_label}; the loaded dump is the restore"
+        )
+        return 0
+    print(f"extract_tenant_binlog: applied {len(result.sql)} byte(s) scoped to {args.tenant_database!r}")
     return 0
 
 
