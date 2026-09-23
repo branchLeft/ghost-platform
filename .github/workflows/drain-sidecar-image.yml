@@ -37,15 +37,21 @@ jobs:
   build:
     name: docker build + real-Ghost proof (drain-sidecar)
     runs-on: ubuntu-latest
-    # No run history yet -- this workflow's first version. A generous bound
-    # chosen deliberately: it builds one image and boots two containers
-    # (Ghost plus the sidecar), the slowest step being Ghost's own
-    # fresh-SQLite migration on first boot.
+    # Generous bound: it builds two images and boots two containers (Ghost
+    # plus the sidecar), the slowest step being Ghost's own fresh-SQLite
+    # migration on first boot.
     timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The platform image this repo actually ships (root Dockerfile: the
+      # upstream Ghost base plus the branchLeft entrypoint wrapper), not a
+      # copy of it -- so the proof below exercises the same storage guard
+      # and startup path a real tenant boots.
+      - name: Build platform image
+        run: docker build --tag ghost-platform:ci .
 
       # The secret is consumed by a `RUN --mount` in the Dockerfile, so it
       # reaches `npm ci` without entering a layer or the build history.
@@ -59,4 +65,4 @@ jobs:
             services/drain-sidecar
 
       - name: Real-Ghost proof (flag set -> 503 while Ghost answers 200; flag cleared -> 200)
-        run: ./scripts/test-drain-sidecar.sh drain-sidecar:ci
+        run: ./scripts/test-drain-sidecar.sh drain-sidecar:ci ghost-platform:ci

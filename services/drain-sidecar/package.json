@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.3.1",
-    "@types/express": "^4.17.21",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "4.1.11",
     "typescript": "^5.9.0",

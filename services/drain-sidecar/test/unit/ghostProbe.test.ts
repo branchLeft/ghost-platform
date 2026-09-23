@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHttpGhostProbe } from '../../src/ghostProbe.js';
@@ -9,10 +9,10 @@ interface FakeGhost {
 }
 
 function startFakeGhost(
-  handler: (res: import('node:http').ServerResponse) => void
+  handler: (req: IncomingMessage, res: import('node:http').ServerResponse) => void
 ): Promise<FakeGhost> {
   return new Promise((resolve, reject) => {
-    const server: Server = createServer((_req, res) => handler(res));
+    const server: Server = createServer((req, res) => handler(req, res));
     server.listen(0, '127.0.0.1', () => {
       const address = server.address() as AddressInfo;
       resolve({
@@ -33,14 +33,14 @@ describe('createHttpGhostProbe', () => {
   });
 
   it('is healthy on a 200', async () => {
-    const fake = await startFakeGhost((res) => res.writeHead(200).end('ok'));
+    const fake = await startFakeGhost((_req, res) => res.writeHead(200).end('ok'));
     close = fake.close;
     const probe = createHttpGhostProbe(fake.url, 1000);
     expect(await probe.isHealthy()).toBe(true);
   });
 
   it('is unhealthy on a non-200 -- Ghost answering is not the same as Ghost being well', async () => {
-    const fake = await startFakeGhost((res) => res.writeHead(503).end());
+    const fake = await startFakeGhost((_req, res) => res.writeHead(503).end());
     close = fake.close;
     const probe = createHttpGhostProbe(fake.url, 1000);
     expect(await probe.isHealthy()).toBe(false);
@@ -59,5 +59,27 @@ describe('createHttpGhostProbe', () => {
     close = fake.close;
     const probe = createHttpGhostProbe(fake.url, 100);
     await expect(probe.isHealthy()).resolves.toBe(false);
+  });
+
+  it('sends X-Forwarded-Proto: https so a Ghost that redirects insecure requests reads healthy', async () => {
+    const fake = await startFakeGhost((req, res) => {
+      if (req.headers['x-forwarded-proto'] === 'https') {
+        res.writeHead(200).end('ok');
+      } else {
+        res.writeHead(301, { Location: 'https://127.0.0.1:1/' }).end();
+      }
+    });
+    close = fake.close;
+    const probe = createHttpGhostProbe(fake.url, 1000);
+    expect(await probe.isHealthy()).toBe(true);
+  });
+
+  it('is unhealthy when a redirect leads nowhere -- following it is not the same as being healthy', async () => {
+    const fake = await startFakeGhost((_req, res) => {
+      res.writeHead(301, { Location: 'https://127.0.0.1:1/' }).end();
+    });
+    close = fake.close;
+    const probe = createHttpGhostProbe(fake.url, 1000);
+    expect(await probe.isHealthy()).toBe(false);
   });
 });

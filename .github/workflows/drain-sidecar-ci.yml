@@ -21,10 +21,9 @@ jobs:
   test:
     name: Sidecar type check and test
     runs-on: ubuntu-latest
-    # No run history yet -- this workflow's first version. A generous bound
-    # chosen deliberately given there is no data to tighten it against;
-    # narrow it once runs accumulate, the way every sibling workflow in
-    # this repo states its own observed range.
+    # Generous bound: install, typecheck and vitest coverage on one small
+    # Express service, well inside Actions' minimum billable minute either
+    # way.
     timeout-minutes: 15
     defaults:
       run:
