@@ -1,0 +1,26 @@
+{
+  "name": "ghost-platform-drain-sidecar",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Health sidecar that answers a slot's health port for the drain flag, not for Ghost -- 200 only when the broker-owned drain flag is clear and Ghost's own front page answers 200 (see ghost-platform-docs/19-try-it-now-design/02-broker-and-slot.html §01b).",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/express": "^4.17.21",
+    "@types/node": "^26.0.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}

@@ -1,0 +1,62 @@
+name: Drain sidecar image
+
+# Builds the drain-sidecar image and proves its contract against a real
+# Ghost container -- scripts/test-drain-sidecar.sh, which reads the Ghost
+# image straight out of this repo's own Dockerfile so the proof never drifts
+# from the image the platform actually ships.
+#
+# Build-only, mirroring build.yml's stance for the tenant image: no push,
+# no registry credential. Delivering this sidecar to a host (an image
+# registry, a slot's Compose stack) is a separate story -- see the PR that
+# introduced this workflow for what that leaves owed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/drain-sidecar/**
+      - scripts/test-drain-sidecar.sh
+      - Dockerfile
+      - .github/workflows/drain-sidecar-image.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - services/drain-sidecar/**
+      - scripts/test-drain-sidecar.sh
+      - Dockerfile
+      - .github/workflows/drain-sidecar-image.yml
+
+# `packages: read` because the image's build stage installs
+# `@branchleft/tsconfig` from GitHub Packages -- read-only, and this
+# workflow never requests a write credential at all.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: docker build + real-Ghost proof (drain-sidecar)
+    runs-on: ubuntu-latest
+    # No run history yet -- this workflow's first version. A generous bound
+    # chosen deliberately: it builds one image and boots two containers
+    # (Ghost plus the sidecar), the slowest step being Ghost's own
+    # fresh-SQLite migration on first boot.
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The secret is consumed by a `RUN --mount` in the Dockerfile, so it
+      # reaches `npm ci` without entering a layer or the build history.
+      - name: Build sidecar image
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --tag drain-sidecar:ci \
+            services/drain-sidecar
+
+      - name: Real-Ghost proof (flag set -> 503 while Ghost answers 200; flag cleared -> 200)
+        run: ./scripts/test-drain-sidecar.sh drain-sidecar:ci
