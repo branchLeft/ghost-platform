@@ -4,6 +4,7 @@ import { createGateHandler } from './app.js';
 import { hashPassphrase, parseArgon2idHash } from './argon2id.js';
 import { createAttemptCeiling } from './ceiling.js';
 import { loadConfig } from './config.js';
+import { createDerivationGate } from './derivationGate.js';
 import { createLeaseReader, createSlotsSource } from './slots.js';
 import { createSourceResolver } from './source.js';
 
@@ -22,6 +23,7 @@ const handler = createGateHandler({
     windowMs: config.ceilingWindowMs,
     maxSources: config.ceilingMaxSources,
   }),
+  derivationGate: createDerivationGate(config.argon2MaxConcurrent, config.argon2MaxQueued),
   sources: createSourceResolver(config.trustedProxies),
   cookieTtlSeconds: config.cookieTtlSeconds,
   decoyHash: parseArgon2idHash(await hashPassphrase(randomBytes(32).toString('hex'))),

@@ -3,6 +3,7 @@ import type { LeaseId, SlotName } from '@branchleft/ghost-platform-render-core';
 import { verifyPassphrase, type Argon2idHash } from './argon2id.js';
 import type { AttemptCeiling } from './ceiling.js';
 import { readGateCookies, setCookieHeader, signCookie, verifyCookie } from './cookie.js';
+import { DerivationGateFullError, type DerivationGate } from './derivationGate.js';
 import { LOGIN_PATH, passphrasePage, safeReturnPath } from './page.js';
 import type { GatedHost } from './slots.js';
 import type { SourceResolver } from './source.js';
@@ -17,6 +18,12 @@ export interface GateDeps {
   readonly leaseOf: (slot: SlotName) => Promise<LeaseId>;
   readonly signingKey: Buffer;
   readonly ceiling: AttemptCeiling;
+  /**
+   * Caps derivations in flight at once, across every source together --
+   * the per-source ceiling above bounds one source's rate, not how many
+   * distinct sources can be mid-derivation at the same time.
+   */
+  readonly derivationGate: DerivationGate;
   readonly sources: SourceResolver;
   readonly cookieTtlSeconds: number;
   /**
@@ -139,11 +146,21 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
   const gated = host === null ? undefined : (await deps.slots()).get(host);
   const lease = gated ? await currentLease(deps, gated.slot) : null;
   // Always exactly one derivation: against the slot's hash when there is a
-  // leased slot to admit to, against the decoy otherwise.
-  const matched = await verifyPassphrase(
-    passphrase,
-    gated && lease !== null ? gated.hash : deps.decoyHash
-  );
+  // leased slot to admit to, against the decoy otherwise. Routed through the
+  // derivation gate so a flood of distinct sources -- none of which trips
+  // its own per-source ceiling -- cannot pile up unbounded concurrent
+  // derivations; past the gate's own queue, refused rather than deriving.
+  let matched: boolean;
+  try {
+    matched = await deps.derivationGate.run(() =>
+      verifyPassphrase(passphrase, gated && lease !== null ? gated.hash : deps.decoyHash)
+    );
+  } catch (err) {
+    if (err instanceof DerivationGateFullError) {
+      return send(res, 503, '', { 'Retry-After': '1' });
+    }
+    throw err;
+  }
 
   if (!gated || lease === null || !matched) {
     return send(res, 401, passphrasePage(returnPath, 'DEMO_GATE_WRONG_PASSPHRASE'), PAGE_HEADERS);

@@ -14,6 +14,8 @@ export interface GateConfig {
   readonly ceilingLimit: number;
   readonly ceilingWindowMs: number;
   readonly ceilingMaxSources: number;
+  readonly argon2MaxConcurrent: number;
+  readonly argon2MaxQueued: number;
 }
 
 export type GateEnv = Record<string, string | undefined>;
@@ -58,5 +60,13 @@ export function loadConfig(
     ceilingLimit: positiveInteger(env, 'GATE_CEILING_ATTEMPTS', 10, 1000),
     ceilingWindowMs: positiveInteger(env, 'GATE_CEILING_WINDOW_SECONDS', 900, 86400) * 1000,
     ceilingMaxSources: positiveInteger(env, 'GATE_CEILING_MAX_SOURCES', 100_000, 10_000_000),
+    // Design amended (LLD-5 silent, incidental): bounded at 4 concurrent --
+    // Node's `crypto.argon2` runs on the libuv threadpool, whose own default
+    // size is 4, so admitting more here would only grow a second queue
+    // behind the one libuv already keeps, without buying real parallelism.
+    // 64 concurrent waiters is the queue's own cap, so a flood is refused
+    // once it would hold more pending derivations than that.
+    argon2MaxConcurrent: positiveInteger(env, 'GATE_ARGON2_MAX_CONCURRENT', 4, 64),
+    argon2MaxQueued: positiveInteger(env, 'GATE_ARGON2_MAX_QUEUED', 64, 10_000),
   };
 }

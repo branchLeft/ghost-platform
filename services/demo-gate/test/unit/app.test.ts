@@ -11,6 +11,7 @@ import { createGateHandler, VERIFY_PATH, type GateDeps } from '../../src/app.js'
 import { hashPassphrase, parseArgon2idHash, type Argon2idHash } from '../../src/argon2id.js';
 import { createAttemptCeiling } from '../../src/ceiling.js';
 import { COOKIE_NAME, signCookie } from '../../src/cookie.js';
+import { createDerivationGate, DerivationGateFullError } from '../../src/derivationGate.js';
 import type { GatedHost } from '../../src/slots.js';
 import { createSourceResolver, parseTrustedProxies } from '../../src/source.js';
 
@@ -64,6 +65,7 @@ async function start(over: Partial<GateDeps> = {}): Promise<Harness> {
     },
     signingKey: KEY,
     ceiling: createAttemptCeiling({ limit: 3, windowMs: 60_000, maxSources: 100 }),
+    derivationGate: createDerivationGate(4, 64),
     sources: createSourceResolver(parseTrustedProxies('127.0.0.1')),
     cookieTtlSeconds: 3600,
     decoyHash,
@@ -263,6 +265,36 @@ describe('login', () => {
     const reply = await login(PASSPHRASE, { host: 'unknown.demo.example' });
     expect(reply.status).toBe(401);
     expect(reply.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('refuses with 503 and no cookie when the derivation gate is full, without denying the passphrase', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      derivationGate: {
+        run: () => {
+          throw new DerivationGateFullError();
+        },
+      },
+    });
+    const reply = await login(PASSPHRASE);
+    expect(reply.status).toBe(503);
+    expect(reply.headers['retry-after']).toBe('1');
+    expect(reply.headers['set-cookie']).toBeUndefined();
+    expect(reply.body).not.toContain('DEMO_GATE_WRONG_PASSPHRASE');
+  });
+
+  it('propagates an unexpected derivation-gate error as a 500, not a 503', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      derivationGate: {
+        run: () => {
+          throw new Error('gate wiring broke');
+        },
+      },
+    });
+    const reply = await login(PASSPHRASE);
+    expect(reply.status).toBe(500);
+    expect(h.logs.join()).toContain('gate wiring broke');
   });
 
   it('refuses past the ceiling from one source while another source still gets through', async () => {
