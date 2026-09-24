@@ -613,12 +613,21 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(harness.store.countPendingRecipients()).toBe(1);
   });
 
-  it('the enqueued row carries the authenticated tenant as its domain, not anything from the message body', async () => {
+  it('the enqueued row carries the authenticated tenant as its domain, taken from the credential rather than re-derived from the message body', async () => {
+    // Pre-branchLeft/workspace#1062, this test's From used a domain
+    // unrelated to the credential entirely, to prove `due[0].domain` came
+    // from `session.user` and not from parsing the message. #1062's control
+    // (senderBelongsToTenant in onMailFrom/onData) now refuses that
+    // combination outright — a foreign-domain From can no longer reach the
+    // queue at all, on either credential — so the two are inseparable for a
+    // message that gets enqueued. What still distinguishes "read from the
+    // credential" from "read from the body" is the display name/local
+    // part, which the queued row must ignore just as before.
     harness = await startHarness();
     const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
 
     await transport.sendMail({
-      from: 'Someone Else <noreply@not-tenant-a.example>',
+      from: 'Someone Else <noreply@tenant-a.example.com>',
       to: 'member@example.com',
       subject: 'Hi',
       text: 'hi',
@@ -629,29 +638,44 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(due[0]!.domain).toBe('tenant-a.example.com');
   });
 
-  it('two credentials sharing one claimed sending domain in the message body are still kept apart by their own identity', async () => {
-    // A demo host's slots can share one visible sending domain, so a
-    // per-domain tenant key alone can't tell them apart. Identity here is
-    // the authenticated credential (tenants.domain, the AUTH username) —
-    // never the domain the message body claims to send as. Two different
-    // slot credentials both send `From:` the identical literal domain and
-    // must still be attributed, ceilinged and queued as two separate
-    // submitters.
+  it('two credentials, each sending as their own domain, are still throttled and queued as two separate submitters', async () => {
+    // Pre-#1062, both slots sent `From:` one shared demo domain neither of
+    // them owned, to prove throttle/queue identity is the authenticated
+    // credential (tenants.domain, the AUTH username) and never anything the
+    // message body claims. #1062's control now requires each From to
+    // belong to its own sender's domain, so the shared-domain shape is gone
+    // — each slot sends as itself instead, which still proves the same
+    // property: two different credentials are attributed, ceilinged and
+    // queued independently rather than being merged onto one identity.
     harness = await startHarness({ submitterMessagesPerMinute: 1 });
     const slotA = client(harness.port, 'tenant-a.example.com', 'key-a');
     const slotB = client(harness.port, 'tenant-b.example.com', 'key-b');
-    const sharedFrom = 'Prospect <prospect@shareddemo.example.com>';
 
-    await slotA.sendMail({ from: sharedFrom, to: 'member@example.com', subject: 'A', text: 'hi' });
+    await slotA.sendMail({
+      from: 'Prospect <prospect@tenant-a.example.com>',
+      to: 'member@example.com',
+      subject: 'A',
+      text: 'hi',
+    });
 
     // Slot A's own ceiling (1/min) is already spent by the send above. Slot
-    // B — sharing the exact same body-level "From" domain, never having
-    // sent yet — is untouched by that: its own first send still succeeds.
+    // B — a different credential, never having sent yet — is untouched by
+    // that: its own first send still succeeds.
     await expect(
-      slotA.sendMail({ from: sharedFrom, to: 'member@example.com', subject: 'A2', text: 'hi' })
+      slotA.sendMail({
+        from: 'Prospect <prospect@tenant-a.example.com>',
+        to: 'member@example.com',
+        subject: 'A2',
+        text: 'hi',
+      })
     ).rejects.toThrow();
     await expect(
-      slotB.sendMail({ from: sharedFrom, to: 'member@example.com', subject: 'B', text: 'hi' })
+      slotB.sendMail({
+        from: 'Prospect <prospect@tenant-b.example.com>',
+        to: 'member@example.com',
+        subject: 'B',
+        text: 'hi',
+      })
     ).resolves.toBeDefined();
 
     const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);

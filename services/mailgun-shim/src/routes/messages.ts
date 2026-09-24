@@ -6,6 +6,7 @@ import { requireTenantForDomain } from '../auth.js';
 import type { Logger } from '../log.js';
 import { parseMailgunMessageFields } from '../mailgunFields.js';
 import { tenantRateLimiter } from '../rateLimit.js';
+import { senderBelongsToTenant } from '../senderAuthorization.js';
 import type { ShimStore } from '../store.js';
 import type { WorkerHandle } from '../worker.js';
 
@@ -17,6 +18,24 @@ import type { WorkerHandle } from '../worker.js';
  */
 function isYes(value: string | string[] | undefined): boolean {
   return (Array.isArray(value) ? value[0] : value) === 'yes';
+}
+
+/**
+ * Case-insensitive lookup into the `h:*`-derived headers map. Mailgun's
+ * wire shape carries a header's name as a literal multipart field name
+ * (`h:Reply-To`, `h:Sender`) rather than as a real MIME header, so nothing
+ * upstream of this shim normalises its case — a caller free to spell it
+ * `h:reply-to` must not slip past a check keyed on the exact casing every
+ * other caller happens to use.
+ */
+function findHeader(headers: Record<string, string>, name: string): string | undefined {
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -54,6 +73,40 @@ export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log
         fields = await parseMailgunMessageFields(req);
       } catch {
         res.status(400).json({ message: 'Failed to parse request' });
+        return;
+      }
+
+      // A tenant credential may only send as its own domain (branchLeft/workspace#1062,
+      // Rob's ruling: the shim's intake refuses any header From or envelope
+      // sender whose domain isn't the authenticated tenant's, on both
+      // routes — mustMatchSender at mx1 can only bind the envelope to the
+      // shim's own relaying login, never to the tenant that submitted a
+      // given send, so this is the only hop that can enforce it). A real
+      // Mailgun 400 for "not a valid address" is the shape this mirrors —
+      // permanent, not one of the codes worth an automatic retry.
+      if (!senderBelongsToTenant(fields.from, domain)) {
+        res.status(400).json({ message: `'from' address must belong to the domain ${domain}` });
+        return;
+      }
+      // A Reply-To header changes what the recipient sees as the reply
+      // address, and worker.ts's own send path DOES forward it (as
+      // nodemailer's `replyTo` option) even though it drops a raw h:Reply-To
+      // header from the extra-headers map — so this is a real, live
+      // visible-sender surface, not a defensive-only one. A Sender header
+      // is dropped everywhere downstream today and reaches no recipient,
+      // but is refused here too: defence in depth against that changing
+      // silently, and it is the exact header MTAs treat as the
+      // responsible-submitter override when a From is a mailing-list address.
+      const replyTo = findHeader(fields.headers, 'Reply-To');
+      if (replyTo !== undefined && !senderBelongsToTenant(replyTo, domain)) {
+        res
+          .status(400)
+          .json({ message: `'h:Reply-To' address must belong to the domain ${domain}` });
+        return;
+      }
+      const senderHeader = findHeader(fields.headers, 'Sender');
+      if (senderHeader !== undefined && !senderBelongsToTenant(senderHeader, domain)) {
+        res.status(400).json({ message: `'h:Sender' address must belong to the domain ${domain}` });
         return;
       }
 

@@ -11,6 +11,7 @@ import {
 import { simpleParser } from 'mailparser';
 import { isSafeRecipientAddress } from './smtp.js';
 import type { Logger } from './log.js';
+import { senderBelongsToTenant } from './senderAuthorization.js';
 import type { ShimStore } from './store.js';
 import type { WorkerHandle } from './worker.js';
 
@@ -651,7 +652,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
     },
 
     onMailFrom(
-      _address: SMTPServerAddress,
+      address: SMTPServerAddress,
       session: SMTPServerSession,
       callback: (err?: Error | null) => void
     ): void {
@@ -667,6 +668,23 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         return;
       }
       /* v8 ignore stop */
+      // The envelope half of branchLeft/workspace#1062: mustMatchSender at
+      // mx1 can only bind the envelope to the shim's own relaying login
+      // once mail leaves this process, never to which tenant credential
+      // submitted it — this is the only hop that still knows that. A
+      // credential may only submit as its own domain.
+      if (!senderBelongsToTenant(address.address, submitterId)) {
+        log.warn('smtp_mail_from_domain_mismatch', {
+          submitter: submitterId,
+          remoteAddress: session.remoteAddress,
+        });
+        const err = new Error(
+          '5.7.1 Sender address rejected: domain not authorised for this account'
+        ) as Error & { responseCode: number };
+        err.responseCode = 553;
+        callback(err);
+        return;
+      }
       if (!limiter.tryTake(submitterId)) {
         log.warn('smtp_submitter_rate_limited', { submitter: submitterId });
         const err = new Error('Too many messages') as Error & { responseCode: number };
@@ -853,6 +871,44 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
 
         void simpleParser(Buffer.concat(chunks))
           .then((parsed) => {
+            // The header half of branchLeft/workspace#1062. onMailFrom above
+            // already bound the envelope to this tenant, but a message's
+            // VISIBLE identity is its header From (and, if present, Sender)
+            // — a header this front door parses only now, from the body it
+            // is still holding, so this is the earliest point either can be
+            // checked. Only enforced when the header is actually present:
+            // a message with no header From at all displays the
+            // already-verified envelope address instead (see the
+            // `from` fallback below), so there is nothing left to spoof.
+            // Refused before enqueueBatch/callback below — never a 250 for
+            // a message that is then dropped.
+            const headerFrom = parsed.from?.text;
+            if (headerFrom !== undefined && !senderBelongsToTenant(headerFrom, submitterId)) {
+              log.warn('smtp_header_from_domain_mismatch', { submitter: submitterId });
+              const err = new Error(
+                '5.7.1 Sender address rejected: domain not authorised for this account'
+              ) as Error & { responseCode: number };
+              err.responseCode = 550;
+              callback(err);
+              return;
+            }
+            const senderHeaderValue = parsed.headers.get('sender');
+            const headerSender =
+              senderHeaderValue &&
+              typeof senderHeaderValue === 'object' &&
+              'text' in senderHeaderValue
+                ? (senderHeaderValue as { text: string }).text
+                : undefined;
+            if (headerSender !== undefined && !senderBelongsToTenant(headerSender, submitterId)) {
+              log.warn('smtp_header_sender_domain_mismatch', { submitter: submitterId });
+              const err = new Error(
+                '5.7.1 Sender address rejected: domain not authorised for this account'
+              ) as Error & { responseCode: number };
+              err.responseCode = 550;
+              callback(err);
+              return;
+            }
+
             const headers: Record<string, string> = {};
             const replyTo =
               parsed.replyTo && !Array.isArray(parsed.replyTo) ? parsed.replyTo.text : undefined;
@@ -904,11 +960,22 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             // This catch spans the `.then()` chain too, so it also reports a
             // synchronous `store.enqueueBatch` failure (e.g. a SQLite write
             // error), not only a `simpleParser` rejection — hence the name.
+            // The real error is logged (server-side only) but never handed
+            // to `callback`: smtp-server writes an Error's own `.message`
+            // straight onto the wire, and a raw SQLite constraint/IO message
+            // is internal detail no submitter should see. A temporary 4xx
+            // (not the permanent domain-mismatch 550s above) since this is
+            // this process's own failure, not a policy refusal — retrying
+            // later is the right client behaviour.
             log.error('smtp_message_processing_failed', {
               submitter: submitterId,
               error: err instanceof Error ? err.message : String(err),
             });
-            callback(err instanceof Error ? err : new Error('Failed to parse message'));
+            const safeErr = new Error('Temporary failure, please try again later') as Error & {
+              responseCode: number;
+            };
+            safeErr.responseCode = 450;
+            callback(safeErr);
           });
       });
     },
