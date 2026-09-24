@@ -318,6 +318,112 @@ class DeleteObjectTests(unittest.TestCase):
             )
 
 
+class GetObjectTests(unittest.TestCase):
+    def test_gets_at_the_path_style_url_with_the_signed_headers(self):
+        calls = []
+
+        def fake_transport(url, headers):
+            calls.append((url, headers))
+            return 200, b"ciphertext bytes"
+
+        body = os3.get_object(
+            bucket="branchleft-db-backups", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="dumps/u/db1.sql.age", transport=fake_transport,
+        )
+        url, headers = calls[0]
+        self.assertEqual(
+            url, "https://hel1.your-objectstorage.com/branchleft-db-backups/dumps/u/db1.sql.age"
+        )
+        self.assertIn("Authorization", headers)
+        self.assertEqual(body, b"ciphertext bytes")
+
+    def test_a_404_IS_an_error_unlike_delete(self):
+        # The opposite tolerance from delete_object on purpose: a caller
+        # reading an object back needs to know it is not there, not receive
+        # an empty body indistinguishable from an empty file.
+        def fake_transport(url, headers):
+            return 404, b"<Error><Code>NoSuchKey</Code></Error>"
+
+        with self.assertRaises(os3.ObjectStorageError):
+            os3.get_object(
+                bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+                access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+            )
+
+    def test_raises_on_a_non_2xx_response(self):
+        def fake_transport(url, headers):
+            return 403, b"<Error><Code>AccessDenied</Code></Error>"
+
+        with self.assertRaises(os3.ObjectStorageError):
+            os3.get_object(
+                bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+                access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+            )
+
+
+class GetObjectWithContentTypeTests(unittest.TestCase):
+    def test_returns_the_body_and_the_content_type_header(self):
+        def fake_transport(url, headers):
+            return 200, b"jpeg bytes", {"Content-Type": "image/jpeg", "Content-Length": "10"}
+
+        body, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(body, b"jpeg bytes")
+        self.assertEqual(content_type, "image/jpeg")
+
+    def test_falls_back_to_octet_stream_when_no_content_type_header_is_present(self):
+        def fake_transport(url, headers):
+            return 200, b"bytes", {}
+
+        _, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(content_type, "application/octet-stream")
+
+    def test_raises_on_a_non_2xx_response(self):
+        def fake_transport(url, headers):
+            return 404, b"<Error><Code>NoSuchKey</Code></Error>", {}
+
+        with self.assertRaises(os3.ObjectStorageError):
+            os3.get_object_with_content_type(
+                bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+                access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+            )
+
+    def test_the_lookup_is_case_insensitive_lowercase(self):
+        def fake_transport(url, headers):
+            return 200, b"bytes", {"content-type": "video/mp4"}
+
+        _, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(content_type, "video/mp4")
+
+    def test_the_lookup_is_case_insensitive_uppercase(self):
+        def fake_transport(url, headers):
+            return 200, b"bytes", {"CONTENT-TYPE": "audio/mpeg"}
+
+        _, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(content_type, "audio/mpeg")
+
+    def test_the_lookup_is_case_insensitive_mixed_case(self):
+        def fake_transport(url, headers):
+            return 200, b"bytes", {"Content-type": "application/pdf"}
+
+        _, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(content_type, "application/pdf")
+
+
 class OwnerIdTests(unittest.TestCase):
     """The account a credential belongs to, which is half of every policy principal.
 
