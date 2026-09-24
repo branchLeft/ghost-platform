@@ -37,22 +37,32 @@ The lifecycle rule bounds how long a *superseded* version survives --
 this stack otherwise relies on for recovery, without keeping every
 overwritten version forever.
 
-THREE NON-OVERLAPPING PREFIX RULES, NOT ONE BUCKET-WIDE RULE. This bucket
-also holds `infra/provisioning/scripts/media_backup_restore.py`'s C-refresh
-media backups, under `media/<tenant>/`, sharing the bucket with
-`dump_nightly.py`'s `dumps/<server_uuid>/` and `ship_binlogs.py`'s
-`binlogs/<server_uuid>/` objects. C-refresh deletes a tenant's previous
-generation on every run, so `media/` needs its own SHORT noncurrent-version
-expiry -- the whole point
-of a short-lived undo window, not a 35-day one that would leave two
-generations' worth of every tenant's media billable at once, indefinitely.
-The three rules are scoped by `Filter/Prefix` so they never overlap: `dumps/`
-and `binlogs/` keep the original `NoncurrentDays=35`, and `media/` gets its
-own `--media-noncurrent-days` (default 1). Hetzner's behaviour with
-OVERLAPPING lifecycle rules is unproven -- see
+FOUR NON-OVERLAPPING PREFIX RULES, NOT ONE BUCKET-WIDE RULE. This bucket
+also holds `infra/provisioning/scripts/media_backup_restore.py`'s
+generation-based media backups, under `media/<tenant>/generations/<run id>/`,
+sharing the bucket with `dump_nightly.py`'s `dumps/<server_uuid>/`,
+`ship_binlogs.py`'s `binlogs/<server_uuid>/` objects, and
+`verify-bucket-fence.py`'s own `fence-probe/` control objects. Every backup
+run deletes older generations on completion, so `media/` needs its own SHORT
+noncurrent-version expiry -- the whole point of a short-lived undo window,
+not a 35-day one that would leave many generations' worth of every tenant's
+media billable at once, indefinitely; `fence-probe/` gets the same short
+window, since its objects are throwaway verification writes with no
+retention argument of their own. The four rules are scoped by `Filter/Prefix`
+so they never overlap: `dumps/` and `binlogs/` keep the original
+`NoncurrentDays=35`, and `media/` and `fence-probe/` each get their own
+short expiry (`--media-noncurrent-days`, default 1, shared by both).
+Hetzner's behaviour with OVERLAPPING lifecycle rules is unproven -- see
 `infra/provisioning/scripts/probe-media-lifecycle-expiration.py`'s
-prefix-split mode -- so this is deliberately three prefix-scoped rules, never
+prefix-split mode -- so this is deliberately four prefix-scoped rules, never
 one broad rule plus a narrower one layered on top of the same keys.
+`media/`'s own rule also carries `ExpiredObjectDeleteMarker`: every deletion
+a backup run performs leaves a delete marker behind (a plain `DeleteObject`
+on a versioned bucket, never a `DeleteObjectVersion` -- see that module's
+own docstring), and Hetzner's lifecycle how-to documents this element as
+supported (ghost-platform-docs/14 §16 item 3), so nothing here relies on
+`NoncurrentVersionExpiration` alone to eventually clear a key with no
+current version left.
 """
 
 from __future__ import annotations
@@ -84,7 +94,19 @@ NONCURRENT_VERSION_EXPIRATION_DAYS = 35
 # prefix-split mode.
 MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS = 1
 
-# The three prefixes this bucket's objects are written under -- see "THREE
+# `verify-bucket-fence.py`'s PROBE_PREFIX: the fence verifier writes tiny
+# `fence-probe/*` control objects into THIS bucket to prove the fence policy
+# actually fences one key from another, and its own `cleanup()` removes
+# versions explicitly -- but when cleanup fails, it says so rather than
+# guaranteeing removal, and nothing else in this pipeline's lifecycle
+# document used to cover this prefix. Left uncovered, those objects sat
+# under the same fate as anything outside every rule: kept forever. Same
+# short window as `media/`, since these are throwaway verification objects
+# with no retention argument of their own -- never the 35-day dumps/binlogs
+# figure, which exists for a real recovery window this prefix has no use for.
+FENCE_PROBE_PREFIX = "fence-probe/"
+
+# The four prefixes this bucket's objects are written under -- see "FOUR
 # NON-OVERLAPPING PREFIX RULES" above. Trailing slash on each: a prefix
 # without one would also match an unrelated key merely starting with the
 # same letters (`dumps-archive/...`), which nothing in this pipeline writes
@@ -137,25 +159,31 @@ def lifecycle_document(
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
     media_noncurrent_days: int = MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
 ) -> bytes:
-    """Three prefix-scoped rules, never one bucket-wide rule -- see the
-    module docstring's "THREE NON-OVERLAPPING PREFIX RULES" section.
+    """Four prefix-scoped rules, never one bucket-wide rule -- see the
+    module docstring's "FOUR NON-OVERLAPPING PREFIX RULES" section.
     `noncurrent_days` governs `dumps/` and `binlogs/` (one rule each, so
     each carries its own `<ID>` and can be reasoned about independently even
     though they share a value today); `media_noncurrent_days` governs
-    `media/` alone. `Filter/Prefix` values that share no common leading
-    substring by construction (`dumps/`, `binlogs/`, `media/`), so no two of
-    these three rules can ever apply to the same key."""
+    `media/` and `fence-probe/` (also independent rules, sharing one value
+    since neither has its own retention argument). `Filter/Prefix` values
+    that share no common leading substring by construction (`dumps/`,
+    `binlogs/`, `media/`, `fence-probe/`), so no two of these four rules can
+    ever apply to the same key. Only `media/`'s rule carries
+    `ExpiredObjectDeleteMarker` -- see the module docstring for why."""
     rules = "".join(
         (
             f"<Rule><ID>branchleft-db-backups-{rule_id}-noncurrent-expiry</ID><Status>Enabled</Status>"
             f"<Filter><Prefix>{prefix}</Prefix></Filter>"
             f"<NoncurrentVersionExpiration><NoncurrentDays>{days}</NoncurrentDays>"
-            "</NoncurrentVersionExpiration></Rule>"
+            "</NoncurrentVersionExpiration>"
+            f"{delete_marker}"
+            "</Rule>"
         )
-        for rule_id, prefix, days in (
-            ("dumps", DB_DUMP_PREFIX, noncurrent_days),
-            ("binlogs", DB_BINLOG_PREFIX, noncurrent_days),
-            ("media", MEDIA_OBJECT_PREFIX, media_noncurrent_days),
+        for rule_id, prefix, days, delete_marker in (
+            ("dumps", DB_DUMP_PREFIX, noncurrent_days, ""),
+            ("binlogs", DB_BINLOG_PREFIX, noncurrent_days, ""),
+            ("media", MEDIA_OBJECT_PREFIX, media_noncurrent_days, "<Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration>"),
+            ("fence-probe", FENCE_PROBE_PREFIX, media_noncurrent_days, ""),
         )
     )
     return f'<LifecycleConfiguration xmlns="{S3_NS}">{rules}</LifecycleConfiguration>'.encode()
@@ -562,7 +590,7 @@ def main(argv: list[str]) -> int:
         type=int,
         default=MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
         help="the media/ prefix's own, shorter noncurrent-version expiry -- see the module "
-        "docstring's THREE NON-OVERLAPPING PREFIX RULES section",
+        "docstring's FOUR NON-OVERLAPPING PREFIX RULES section (shared with fence-probe/)",
     )
     parser.add_argument(
         "--policy-file",
@@ -647,7 +675,8 @@ def main(argv: list[str]) -> int:
     print(
         f"configure_backup_bucket: versioning enabled, {args.noncurrent_days}-day noncurrent "
         f"expiry set on dumps/ and binlogs/, {args.media_noncurrent_days}-day noncurrent expiry "
-        f"set on media/, and the fence applied on {args.bucket}, then re-applied to prove the "
+        f"set on media/ (with ExpiredObjectDeleteMarker) and fence-probe/, and the fence applied "
+        f"on {args.bucket}, then re-applied to prove the "
         f"bucket is still administrable. The fence is not proven to FENCE anything until "
         f"verify-bucket-fence.py passes -- run it now, from this terminal. The media/ expiry is "
         f"not proven to actually expire anything until "

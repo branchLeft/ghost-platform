@@ -240,6 +240,7 @@ import argparse
 import base64
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -248,6 +249,57 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from shared_objectstorage import ObjectStorageError, signed_request  # noqa: E402
+
+# `configure_backup_bucket.lifecycle_document` is the REAL document this
+# probe's prefix-split mode exists to prove safe -- loaded by path, the same
+# way `shared_objectstorage.py` loads `db/provision/objectstorage.py`,
+# rather than reimplementing its rule shape here a second time -- a
+# hand-copied shape can drift -- the wrong order, a missing element, a rule
+# count that quietly stops matching what actually ships -- and a probe that
+# tests its own drifted copy proves nothing about what
+# `configure_backup_bucket.py` will apply to the real bucket). One-way only:
+# `db/provision/` ships standalone to db1 via `scp -r` and must never import
+# anything back from here.
+_CONFIGURE_BACKUP_BUCKET_SOURCE = (
+    pathlib.Path(__file__).resolve().parents[3] / "db" / "provision" / "configure_backup_bucket.py"
+)
+
+
+def _load_configure_backup_bucket():
+    if not _CONFIGURE_BACKUP_BUCKET_SOURCE.is_file():
+        raise ImportError(
+            f"the real lifecycle document builder is not at {_CONFIGURE_BACKUP_BUCKET_SOURCE}. "
+            f"Check out the whole of branchLeft/ghost-platform rather than the scripts "
+            f"directory alone."
+        )
+    spec = importlib.util.spec_from_file_location(
+        "branchleft_configure_backup_bucket", _CONFIGURE_BACKUP_BUCKET_SOURCE
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"{_CONFIGURE_BACKUP_BUCKET_SOURCE} could not be loaded as a Python module")
+    module = importlib.util.module_from_spec(spec)
+    # configure_backup_bucket.py imports its OWN sibling, `objectstorage`,
+    # by bare module name (it is normally run with db/provision/ as its own
+    # directory, per db/RUNBOOK-db.md's `scp -r` deployment). Loading it by
+    # path from a different directory needs that sibling importable the
+    # same way its own script entry point already makes it -- inserted
+    # ahead of anything else on sys.path so it cannot pick up an unrelated
+    # same-named module from elsewhere on the path.
+    sibling_dir = str(_CONFIGURE_BACKUP_BUCKET_SOURCE.parent)
+    added = sibling_dir not in sys.path
+    if added:
+        sys.path.insert(0, sibling_dir)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as error:
+        raise ImportError(f"{_CONFIGURE_BACKUP_BUCKET_SOURCE} could not be executed: {error!r}") from error
+    finally:
+        if added:
+            sys.path.remove(sibling_dir)
+    return module
+
+
+_configure_backup_bucket = _load_configure_backup_bucket()
 
 # The one prefix this script will write under. A structural refusal, not a
 # reminder: a bucket named anything else -- including every tenant's own
@@ -387,27 +439,27 @@ def prefix_split_lifecycle_document(
     media_noncurrent_days: int = SPLIT_MEDIA_NONCURRENT_DAYS,
     db_noncurrent_days: int = SPLIT_DB_NONCURRENT_DAYS,
 ) -> bytes:
-    """The two-rule shape `db/provision/configure_backup_bucket.py`'s own
-    `lifecycle_document()` applies to the real backup bucket (minus its
-    third, identical `binlogs/` rule -- see the module docstring's
-    PREFIX-SPLIT MODE section for why one database-style prefix is enough).
-    `NoncurrentVersionExpiration` alone on each rule, no
-    `AbortIncompleteMultipartUpload` -- that generator's real shape, not
-    `render-media-bucket-policy.py`'s."""
-    rules = "".join(
-        f"<Rule><ID>branchleft-lifecycle-probe-split-{label}</ID><Status>Enabled</Status>"
-        f"<Filter><Prefix>{prefix}</Prefix></Filter>"
-        f"<NoncurrentVersionExpiration><NoncurrentDays>{days}</NoncurrentDays>"
-        "</NoncurrentVersionExpiration></Rule>"
-        for label, prefix, days in (
-            ("media", SPLIT_MEDIA_PREFIX, media_noncurrent_days),
-            ("db", SPLIT_DB_PREFIX, db_noncurrent_days),
-        )
+    """The REAL document, built by calling
+    `db/provision/configure_backup_bucket.py`'s own `lifecycle_document()`
+    directly (loaded by path -- see `_load_configure_backup_bucket` above)
+    rather than a hand-copied reconstruction of its shape. A copy can drift
+    -- the wrong rule order, a missing element, a rule count that quietly
+    stops matching what actually ships -- and a probe testing its own
+    drifted copy proves nothing about what `configure_backup_bucket.py`
+    will apply to the real bucket. This now carries all FOUR of that
+    generator's rules (`dumps/`, `binlogs/`, `media/` -- with
+    `ExpiredObjectDeleteMarker` -- and `fence-probe/`), byte for
+    byte and in the same order, even though `setup_prefix_split` below only
+    ever uploads canaries under two of them (`media/` and `dumps/`, the
+    latter standing in for `dumps/`+`binlogs/` since they carry an
+    identical rule -- see the module docstring's PREFIX-SPLIT MODE
+    section). The extra two rules being present and unexercised does not
+    weaken the question this mode answers; it makes the document under
+    test the one that will actually be applied, not a closest-effort
+    stand-in for it."""
+    return _configure_backup_bucket.lifecycle_document(
+        noncurrent_days=db_noncurrent_days, media_noncurrent_days=media_noncurrent_days
     )
-    return (
-        f'<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">{rules}'
-        "</LifecycleConfiguration>"
-    ).encode()
 
 
 def _local_name(tag: str) -> str:
@@ -833,13 +885,32 @@ def check_prefix_split(*, receipt_path: pathlib.Path, access_key: str, secret_ke
         }
 
     media, db = results["media"], results["db"]
+    # `control_survives` and `current_of_noncurrent_present` must hold for
+    # BOTH prefixes unconditionally -- neither rule's element set predicts
+    # removing a live current object. `delete_marker_present` is different
+    # for media/ specifically now that its real rule also carries
+    # `ExpiredObjectDeleteMarker` (see the module docstring and
+    # `configure_backup_bucket.py`'s own): once the noncurrent version under
+    # a deleted key is pruned, that element makes the now-sole delete marker
+    # itself eligible for removal on a later pass. The db-style prefix
+    # carries no such element, so its own delete marker surviving is still
+    # unconditional -- its disappearance is not predicted by any reading and
+    # is treated as a missing current object, same as before.
     all_currents_present = all(
         r[field]
         for r in (media, db)
-        for field in ("control_survives", "current_of_noncurrent_present", "delete_marker_present")
-    )
+        for field in ("control_survives", "current_of_noncurrent_present")
+    ) and db["delete_marker_present"]
     media_pruned = not media["noncurrent_present"] and not media["deleted_prior_present"]
     db_intact = db["noncurrent_present"] and db["deleted_prior_present"]
+    media_delete_marker_note = (
+        "media/'s delete marker also survives (ExpiredObjectDeleteMarker has not yet acted, "
+        "or this engine does not honour it -- inconclusive on that element alone)"
+        if media["delete_marker_present"]
+        else "media/'s delete marker is ALSO gone -- consistent with ExpiredObjectDeleteMarker "
+        "acting once the noncurrent version underneath it was pruned (READING: this engine "
+        "honours that element)"
+    )
 
     detail = (
         f"media: control={'survives' if media['control_survives'] else 'GONE'} "
@@ -863,7 +934,8 @@ def check_prefix_split(*, receipt_path: pathlib.Path, access_key: str, secret_ke
     if not all_currents_present:
         return (
             f"FAIL ({elapsed} after upload, {detail}): a CURRENT object is missing on at least "
-            f"one prefix. No reading of either rule predicts a current object's removal -- "
+            f"one prefix, or the db-style prefix's own delete marker (which carries no "
+            f"ExpiredObjectDeleteMarker) is gone. No reading of either rule predicts either -- "
             f"investigate rather than attribute this to the split working or not."
         )
     if media_pruned and db_intact:
@@ -871,7 +943,8 @@ def check_prefix_split(*, receipt_path: pathlib.Path, access_key: str, secret_ke
             f"PASS ({elapsed} after upload, {detail}): media/'s noncurrent content was pruned "
             f"by its own short rule; the db-style prefix's noncurrent content was left alone by "
             f"its own long rule. The two rules stayed independent -- record this in "
-            f"14-hetzner-migration-programme.md section 16.{early_warning}"
+            f"14-hetzner-migration-programme.md section 16. Also observed: {media_delete_marker_note}."
+            f"{early_warning}"
         )
     if not media_pruned and db_intact:
         verdict = "INCONCLUSIVE" if now < earliest else "FAIL"

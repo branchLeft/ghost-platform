@@ -435,17 +435,41 @@ class TestOnlyNoncurrentVersionId(unittest.TestCase):
 
 
 class TestPrefixSplitLifecycleDocument(unittest.TestCase):
-    """The literal two-rule shape db/provision/configure_backup_bucket.py's
-    own generator applies to the real bucket, mirrored here so this proof
-    tests the actual production config, not a proxy for it."""
+    """The REAL document, produced by calling
+    db/provision/configure_backup_bucket.py's own `lifecycle_document()`
+    directly (see `probe._configure_backup_bucket`), so this proof tests
+    the actual production config byte for byte -- never a hand-copied proxy
+    that could quietly drift from it. It now carries all four of that
+    generator's rules, even though `setup_prefix_split` only ever uploads
+    canaries under two of them -- see that function's own docstring."""
 
-    def test_two_rules_scoped_to_media_and_a_db_style_prefix(self):
+    def test_calls_the_real_configure_backup_bucket_builder(self):
+        # `probe._configure_backup_bucket` is loaded by path from
+        # `db/provision/configure_backup_bucket.py` -- see
+        # `_load_configure_backup_bucket`. Not a second, plain `import`
+        # here: db/provision/ ships standalone to db1 via `scp -r`, and a
+        # module-name import from this test would only work if something
+        # elsewhere had already put that directory on `sys.path`, which is
+        # exactly the kind of incidental coupling this loader avoids.
+        self.assertEqual(
+            probe.prefix_split_lifecycle_document(1, 35),
+            probe._configure_backup_bucket.lifecycle_document(35, 1),
+        )
+        self.assertEqual(probe._CONFIGURE_BACKUP_BUCKET_SOURCE.name, "configure_backup_bucket.py")
+
+    def test_four_rules_including_binlogs_and_fence_probe(self):
         body = probe.prefix_split_lifecycle_document(1, 35).decode()
-        self.assertEqual(body.count("<Rule>"), 2)
+        self.assertEqual(body.count("<Rule>"), 4)
         self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", body)
         self.assertIn("<Filter><Prefix>dumps/</Prefix></Filter>", body)
+        self.assertIn("<Filter><Prefix>binlogs/</Prefix></Filter>", body)
+        self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", body)
 
-    def test_no_abort_multipart_element_on_either_rule(self):
+    def test_only_the_media_rule_carries_expired_object_delete_marker(self):
+        body = probe.prefix_split_lifecycle_document(1, 35).decode()
+        self.assertEqual(body.count("<ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker>"), 1)
+
+    def test_no_abort_multipart_element_on_any_rule(self):
         # configure_backup_bucket.py's own shape, not render-media-bucket-policy.py's.
         body = probe.prefix_split_lifecycle_document(1, 35).decode()
         self.assertNotIn("AbortIncompleteMultipartUpload", body)
@@ -633,6 +657,35 @@ class TestCheckPrefixSplit(unittest.TestCase):
                 receipt_path, media_versions=self._all_current_pruned_media(), db_versions=self._db_intact()
             )
         self.assertIn("PASS", verdict)
+
+    def test_media_delete_marker_also_gone_is_still_pass_not_fail(self):
+        # The real media/ rule now carries ExpiredObjectDeleteMarker, so
+        # once the noncurrent version under a deleted key is pruned, this
+        # engine may ALSO remove the now-sole delete marker on a later
+        # pass. That is a consistent, expected reading of the element this
+        # rule now carries -- not a missing CURRENT object -- so it must
+        # not turn a PASS into a FAIL.
+        media_marker_also_gone = [("media/noncurrent/canary", "media-noncurrent-new", True, "version")]
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = self._receipt(tmp, earliest_decisive_check="2000-01-01T00:00:00+00:00")
+            verdict = self._check(
+                receipt_path, media_versions=media_marker_also_gone, db_versions=self._db_intact()
+            )
+        self.assertIn("PASS", verdict)
+        self.assertIn("ALSO gone", verdict)
+
+    def test_db_delete_marker_gone_is_still_fail(self):
+        # The db-style prefix's own rule carries NO ExpiredObjectDeleteMarker
+        # -- its delete marker disappearing is not predicted by either
+        # reading and must still be treated as a missing current object.
+        db_marker_gone = [("dumps/noncurrent/canary", "db-noncurrent-new", True, "version")]
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = self._receipt(tmp, earliest_decisive_check="2000-01-01T00:00:00+00:00")
+            verdict = self._check(
+                receipt_path, media_versions=self._all_current_pruned_media(), db_versions=db_marker_gone
+            )
+        self.assertIn("FAIL", verdict)
+        self.assertNotIn("PASS", verdict)
 
     def test_media_not_pruned_before_earliest_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as tmp:

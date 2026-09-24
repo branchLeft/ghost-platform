@@ -26,9 +26,9 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from media_backup_restore import (  # noqa: E402
-    _manifest_key,
     _object_key_for_backup,
     decrypt_with_age,
+    find_newest_generation,
 )
 from shared_objectstorage import (  # noqa: E402
     ObjectStorageError,
@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     list_p.add_argument("--prefix")
 
     manifest_p = sub.add_parser(
-        "manifest", help="decrypt and print one tenant's manifest as JSON"
+        "manifest", help="decrypt and print one tenant's NEWEST generation's manifest as JSON"
     )
     manifest_p.add_argument("--endpoint", required=True)
     manifest_p.add_argument("--region", required=True)
@@ -89,18 +89,35 @@ def main(argv: list[str] | None = None) -> int:
     manifest_p.add_argument("--tenant", required=True)
     manifest_p.add_argument("--identity-file", required=True)
 
+    run_id_p = sub.add_parser(
+        "current-run-id", help="print one tenant's NEWEST generation's run id"
+    )
+    _common_args(run_id_p)
+    run_id_p.add_argument("--tenant", required=True)
+
     backup_key_p = sub.add_parser(
         "backup-object-key",
-        help="print the backup bucket key for a live object, given its backup_id (from `manifest`)",
+        help="print the backup bucket key for a live object, given its run id and backup_id "
+        "(both from `manifest` / `current-run-id`)",
     )
     backup_key_p.add_argument("--tenant", required=True)
+    backup_key_p.add_argument("--run-id", required=True)
     backup_key_p.add_argument("--backup-id", required=True)
 
+    objects_prefix_p = sub.add_parser(
+        "objects-prefix",
+        help="print one tenant's generation's objects/ prefix, given its run id",
+    )
+    objects_prefix_p.add_argument("--tenant", required=True)
+    objects_prefix_p.add_argument("--run-id", required=True)
+
     args = parser.parse_args(argv)
-    # Built lazily, per command: `backup-object-key` is pure local
-    # computation with none of these flags, so building this unconditionally
-    # from `args` would crash on that command alone.
-    needs_bucket_args = args.command in ("sha256", "corrupt", "delete", "count", "list", "put")
+    # Built lazily, per command: `backup-object-key` / `objects-prefix` are
+    # pure local computation with none of these flags, so building this
+    # unconditionally from `args` would crash on those commands alone.
+    needs_bucket_args = args.command in (
+        "sha256", "corrupt", "delete", "count", "list", "put", "manifest", "current-run-id",
+    )
     common = (
         dict(
             endpoint=args.endpoint, region=args.region, access_key=args.access_key,
@@ -109,6 +126,14 @@ def main(argv: list[str] | None = None) -> int:
         if needs_bucket_args
         else {}
     )
+
+    def _newest_generation(tenant: str):
+        kwargs = dict(common)
+        kwargs["backup_bucket"] = kwargs.pop("bucket")
+        found = find_newest_generation(tenant=tenant, list_objects=list_objects, **kwargs)
+        if found is None:
+            raise ObjectStorageError(f"no generation with a manifest exists yet for tenant {tenant!r}")
+        return found  # (run_id, manifest_key)
 
     try:
         if args.command == "sha256":
@@ -127,18 +152,24 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "list":
             for entry in list_objects(prefix=args.prefix, **common):
                 print(entry["key"])
+        elif args.command == "current-run-id":
+            run_id, _manifest_key = _newest_generation(args.tenant)
+            print(run_id)
         elif args.command == "manifest":
+            _run_id, manifest_key = _newest_generation(args.tenant)
             ciphertext = get_object(
                 bucket=args.bucket, endpoint=args.endpoint, region=args.region,
                 access_key=args.access_key, secret_key=args.secret_key,
-                key=_manifest_key(args.tenant),
+                key=manifest_key,
             )
             manifest = json.loads(
                 decrypt_with_age(data=ciphertext, identity_path=args.identity_file)
             )
             print(json.dumps(manifest, indent=2, sort_keys=True))
         elif args.command == "backup-object-key":
-            print(_object_key_for_backup(args.tenant, args.backup_id))
+            print(_object_key_for_backup(args.tenant, args.run_id, args.backup_id))
+        elif args.command == "objects-prefix":
+            print(f"media/{args.tenant}/generations/{args.run_id}/objects/")
     except ObjectStorageError as error:
         print(f"media-backup-restore-proof-helpers: {error}", file=sys.stderr)
         return 1
