@@ -3,9 +3,8 @@
 # on_demand_tls in front of it, asking before every issuance, and a real
 # ACME test CA (Let's Encrypt's own Pebble, run through the actual ACME v2
 # protocol -- order, authorization, HTTP-01 challenge, finalize, download)
-# rather than Caddy's built-in internal CA. branchLeft/workspace#1234;
-# design: ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html
-# §02 (E1-E5).
+# rather than Caddy's built-in internal CA. Design:
+# ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html §02 (E1-E5).
 #
 # What it shows, each against the real edge rather than the service alone:
 #   - a served hostname completes the TLS handshake and Pebble genuinely

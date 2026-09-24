@@ -7,8 +7,7 @@ name: odask image
 #
 # Build-only, mirroring drain-sidecar-image.yml and demo-gate-image.yml's
 # stance: no push, no registry credential. Delivering this image to the
-# tenant estate's edge (branchLeft/workspace#1160's epic) is a separate
-# story.
+# tenant estate's edge is a separate story.
 
 on:
   push:

@@ -8,9 +8,8 @@
  * The bucket is two numbers (`tokens`, `lastRefillMs`), not a per-hostname
  * or per-source map: a burst of many *different* unknown names costs the
  * same one decrement each, so nothing here grows with how many distinct
- * names an attacker tries. That is what "refused without growing memory"
- * (branchLeft/workspace#1234) means in practice, not merely a large enough
- * cap.
+ * names an attacker tries -- refused without growing memory, not merely
+ * refused behind a large enough cap.
  */
 export class TokenBucket {
   private tokens: number;
