@@ -431,9 +431,8 @@ class CRefreshTests(unittest.TestCase):
     and writes the new manifest; only once that manifest is written AND read
     back does the previous run's set get deleted, with a plain DeleteObject
     that a versioned bucket turns into a delete marker, never
-    DeleteObjectVersion. See branchLeft/workspace#1325 comment 5817915400 for
-    the ruling and media_backup_restore.py's C-REFRESH docstring section for
-    the mechanism."""
+    DeleteObjectVersion. See media_backup_restore.py's C-REFRESH docstring
+    section for the mechanism and its reasons."""
 
     def setUp(self):
         self.store = RecordingObjectStore()

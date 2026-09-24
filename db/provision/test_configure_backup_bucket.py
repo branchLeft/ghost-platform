@@ -142,6 +142,119 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(cbb.lifecycle_document(35), cbb.lifecycle_document(35))
 
 
+class MediaLifecyclePrefixSplitTests(unittest.TestCase):
+    """C-refresh's storage bound depends on media/ carrying a SHORT
+    noncurrent-version expiry of its own, split out from the 35-day rule
+    dumps/ and binlogs/ keep. Three prefix-scoped rules, never one bucket-wide
+    rule and never two rules whose prefixes could both match the same key."""
+
+    def test_three_rules_are_present(self):
+        doc = cbb.lifecycle_document(35, 1).decode()
+        self.assertEqual(doc.count("<Rule>"), 3)
+
+    def test_each_rule_is_scoped_to_its_own_prefix(self):
+        doc = cbb.lifecycle_document(35, 1).decode()
+        self.assertIn("<Filter><Prefix>dumps/</Prefix></Filter>", doc)
+        self.assertIn("<Filter><Prefix>binlogs/</Prefix></Filter>", doc)
+        self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", doc)
+
+    def test_db_prefixes_get_the_db_noncurrent_days_media_gets_its_own(self):
+        doc = cbb.lifecycle_document(35, 1).decode()
+        # dumps/ and binlogs/ each carry their own <NoncurrentDays>35</...>
+        # element -- two occurrences, one per rule -- and media/ carries a
+        # single, independent <NoncurrentDays>1</...>.
+        self.assertEqual(doc.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
+        self.assertEqual(doc.count("<NoncurrentDays>1</NoncurrentDays>"), 1)
+
+    def test_no_two_prefixes_can_ever_match_the_same_key(self):
+        # The actual defence: construct a key under each prefix and confirm
+        # it starts with exactly one of the three, never zero and never two
+        # -- proving the split is genuinely non-overlapping, not merely
+        # "looks like three different strings".
+        sample_keys = [
+            "dumps/11111111-1111-1111-1111-111111111111/db1-20260924T000000Z.sql.age",
+            "binlogs/11111111-1111-1111-1111-111111111111/db1-binlog.000123.age",
+            "media/tenant-a/objects/" + "a" * 64 + ".age",
+            "media/tenant-a/manifest.json.age",
+        ]
+        prefixes = [cbb.DB_DUMP_PREFIX, cbb.DB_BINLOG_PREFIX, cbb.MEDIA_OBJECT_PREFIX]
+        for key in sample_keys:
+            matches = [prefix for prefix in prefixes if key.startswith(prefix)]
+            self.assertEqual(len(matches), 1, f"{key!r} matched {matches!r}, expected exactly one")
+
+    def test_media_and_a_tenant_named_dumps_or_binlogs_do_not_collide(self):
+        # media/<tenant>/... is scoped under media/ regardless of what the
+        # tenant happens to be named -- a tenant literally named "dumps" or
+        # "binlogs" still lives under media/, not under either db prefix.
+        for tenant in ("dumps", "binlogs"):
+            key = f"media/{tenant}/objects/{'b' * 64}.age"
+            self.assertTrue(key.startswith(cbb.MEDIA_OBJECT_PREFIX))
+            self.assertFalse(key.startswith(cbb.DB_DUMP_PREFIX))
+            self.assertFalse(key.startswith(cbb.DB_BINLOG_PREFIX))
+
+    def test_defaults_match_the_configured_constants(self):
+        doc = cbb.lifecycle_document().decode()
+        self.assertEqual(
+            doc.count(f"<NoncurrentDays>{cbb.NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"), 2
+        )
+        self.assertEqual(
+            doc.count(f"<NoncurrentDays>{cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"),
+            1,
+        )
+
+    def test_configure_backup_bucket_threads_media_noncurrent_days_through(self):
+        calls = []
+
+        def fake_put(**kwargs):
+            calls.append(kwargs)
+
+        cbb.configure_backup_bucket(
+            bucket="b",
+            endpoint="hel1.your-objectstorage.com",
+            region="hel1",
+            access_key="AK",
+            secret_key="SECRET",
+            policy_body=b"{}",
+            noncurrent_days=35,
+            media_noncurrent_days=2,
+            put=fake_put,
+        )
+        lifecycle_call = next(c for c in calls if c["subresource"] == "lifecycle")
+        body = lifecycle_call["body"].decode()
+        self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", body)
+        self.assertEqual(body.count("<NoncurrentDays>2</NoncurrentDays>"), 1)
+        self.assertEqual(body.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
+
+    def test_cli_media_noncurrent_days_flag_is_threaded_through(self):
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "policy.json"
+            policy_file.write_text(json.dumps(fence_policy()))
+            environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
+            captured = {}
+
+            def fake_configure(**kwargs):
+                captured.update(kwargs)
+
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                cbb, "owner_id", return_value="p1231234"
+            ), mock.patch.object(cbb, "configure_backup_bucket", fake_configure):
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    code = cbb.main(
+                        [
+                            "--bucket", BUCKET, "--endpoint", "hel1.your-objectstorage.com",
+                            "--region", "hel1", "--policy-file", str(policy_file),
+                            "--engine-diagnostic-passed", "--media-noncurrent-days", "3",
+                        ]
+                    )
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["media_noncurrent_days"], 3)
+
+
 class ConfigureBackupBucketTests(unittest.TestCase):
     def test_enables_versioning_then_sets_the_lifecycle(self):
         calls = []

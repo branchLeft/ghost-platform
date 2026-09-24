@@ -36,6 +36,23 @@ The lifecycle rule bounds how long a *superseded* version survives --
 `NoncurrentDays=35` comfortably outlives the 7-day on-host binlog retention
 this stack otherwise relies on for recovery, without keeping every
 overwritten version forever.
+
+THREE NON-OVERLAPPING PREFIX RULES, NOT ONE BUCKET-WIDE RULE. This bucket
+also holds `infra/provisioning/scripts/media_backup_restore.py`'s C-refresh
+media backups, under `media/<tenant>/`, sharing the bucket with
+`dump_nightly.py`'s `dumps/<server_uuid>/` and `ship_binlogs.py`'s
+`binlogs/<server_uuid>/` objects. C-refresh deletes a tenant's previous
+generation on every run, so `media/` needs its own SHORT noncurrent-version
+expiry -- the whole point
+of a short-lived undo window, not a 35-day one that would leave two
+generations' worth of every tenant's media billable at once, indefinitely.
+The three rules are scoped by `Filter/Prefix` so they never overlap: `dumps/`
+and `binlogs/` keep the original `NoncurrentDays=35`, and `media/` gets its
+own `--media-noncurrent-days` (default 1). Hetzner's behaviour with
+OVERLAPPING lifecycle rules is unproven -- see
+`infra/provisioning/scripts/probe-media-lifecycle-expiration.py`'s
+prefix-split mode -- so this is deliberately three prefix-scoped rules, never
+one broad rule plus a narrower one layered on top of the same keys.
 """
 
 from __future__ import annotations
@@ -54,8 +71,27 @@ S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
 # Comfortably beyond the 7-day on-host binlog window this stack otherwise
 # depends on, without an unbounded lifetime for a version this pipeline no
-# longer needs current.
+# longer needs current. Governs the db prefixes (`dumps/`, `binlogs/`) only
+# -- see MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS below for `media/`.
 NONCURRENT_VERSION_EXPIRATION_DAYS = 35
+
+# C-refresh deletes a tenant's previous media generation every run, so the
+# undo window this rule provides only needs to comfortably outlive the delete
+# marker turning into a durable removal, not the weeks a database dump's
+# retention argues for. 1-2 days, proven live before this figure is ever
+# applied to a real bucket -- see
+# infra/provisioning/scripts/probe-media-lifecycle-expiration.py's
+# prefix-split mode.
+MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS = 1
+
+# The three prefixes this bucket's objects are written under -- see "THREE
+# NON-OVERLAPPING PREFIX RULES" above. Trailing slash on each: a prefix
+# without one would also match an unrelated key merely starting with the
+# same letters (`dumps-archive/...`), which nothing in this pipeline writes
+# today but which a Filter/Prefix rule should not silently also cover.
+DB_DUMP_PREFIX = "dumps/"
+DB_BINLOG_PREFIX = "binlogs/"
+MEDIA_OBJECT_PREFIX = "media/"
 
 # How long to hold between the fence policy's first PUT and its confirming
 # second one.
@@ -97,15 +133,32 @@ def versioning_document() -> bytes:
     return f'<VersioningConfiguration xmlns="{S3_NS}"><Status>Enabled</Status></VersioningConfiguration>'.encode()
 
 
-def lifecycle_document(noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS) -> bytes:
-    return (
-        f'<LifecycleConfiguration xmlns="{S3_NS}">'
-        "<Rule><ID>branchleft-db-backups-noncurrent-expiry</ID><Status>Enabled</Status>"
-        "<Filter><Prefix></Prefix></Filter>"
-        f"<NoncurrentVersionExpiration><NoncurrentDays>{noncurrent_days}</NoncurrentDays>"
-        "</NoncurrentVersionExpiration>"
-        "</Rule></LifecycleConfiguration>"
-    ).encode()
+def lifecycle_document(
+    noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
+    media_noncurrent_days: int = MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
+) -> bytes:
+    """Three prefix-scoped rules, never one bucket-wide rule -- see the
+    module docstring's "THREE NON-OVERLAPPING PREFIX RULES" section.
+    `noncurrent_days` governs `dumps/` and `binlogs/` (one rule each, so
+    each carries its own `<ID>` and can be reasoned about independently even
+    though they share a value today); `media_noncurrent_days` governs
+    `media/` alone. `Filter/Prefix` values that share no common leading
+    substring by construction (`dumps/`, `binlogs/`, `media/`), so no two of
+    these three rules can ever apply to the same key."""
+    rules = "".join(
+        (
+            f"<Rule><ID>branchleft-db-backups-{rule_id}-noncurrent-expiry</ID><Status>Enabled</Status>"
+            f"<Filter><Prefix>{prefix}</Prefix></Filter>"
+            f"<NoncurrentVersionExpiration><NoncurrentDays>{days}</NoncurrentDays>"
+            "</NoncurrentVersionExpiration></Rule>"
+        )
+        for rule_id, prefix, days in (
+            ("dumps", DB_DUMP_PREFIX, noncurrent_days),
+            ("binlogs", DB_BINLOG_PREFIX, noncurrent_days),
+            ("media", MEDIA_OBJECT_PREFIX, media_noncurrent_days),
+        )
+    )
+    return f'<LifecycleConfiguration xmlns="{S3_NS}">{rules}</LifecycleConfiguration>'.encode()
 
 
 _MISSING = object()
@@ -435,6 +488,7 @@ def configure_backup_bucket(
     secret_key: str,
     policy_body: bytes,
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
+    media_noncurrent_days: int = MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
     fence_dwell_seconds: float = FENCE_ENGINE_DWELL_SECONDS,
     put=put_bucket_subresource,
 ) -> None:
@@ -448,7 +502,7 @@ def configure_backup_bucket(
         body=versioning_document(),
     )
 
-    lifecycle_body = lifecycle_document(noncurrent_days)
+    lifecycle_body = lifecycle_document(noncurrent_days, media_noncurrent_days)
     content_md5 = base64.b64encode(hashlib.md5(lifecycle_body, usedforsecurity=False).digest()).decode()
     put(
         bucket=bucket,
@@ -503,6 +557,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--endpoint", required=True, help="e.g. hel1.your-objectstorage.com")
     parser.add_argument("--region", required=True, help="the bucket's own location, e.g. hel1")
     parser.add_argument("--noncurrent-days", type=int, default=NONCURRENT_VERSION_EXPIRATION_DAYS)
+    parser.add_argument(
+        "--media-noncurrent-days",
+        type=int,
+        default=MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
+        help="the media/ prefix's own, shorter noncurrent-version expiry -- see the module "
+        "docstring's THREE NON-OVERLAPPING PREFIX RULES section",
+    )
     parser.add_argument(
         "--policy-file",
         required=True,
@@ -577,6 +638,7 @@ def main(argv: list[str]) -> int:
             secret_key=secret_key,
             policy_body=policy_body,
             noncurrent_days=args.noncurrent_days,
+            media_noncurrent_days=args.media_noncurrent_days,
         )
     except ObjectStorageError as exc:
         print(f"configure_backup_bucket: {exc}", file=sys.stderr)
@@ -584,9 +646,13 @@ def main(argv: list[str]) -> int:
 
     print(
         f"configure_backup_bucket: versioning enabled, {args.noncurrent_days}-day noncurrent "
-        f"expiry set, and the fence applied on {args.bucket}, then re-applied to prove the "
+        f"expiry set on dumps/ and binlogs/, {args.media_noncurrent_days}-day noncurrent expiry "
+        f"set on media/, and the fence applied on {args.bucket}, then re-applied to prove the "
         f"bucket is still administrable. The fence is not proven to FENCE anything until "
-        f"verify-bucket-fence.py passes -- run it now, from this terminal."
+        f"verify-bucket-fence.py passes -- run it now, from this terminal. The media/ expiry is "
+        f"not proven to actually expire anything until "
+        f"probe-media-lifecycle-expiration.py's prefix-split check comes back PASS -- see this "
+        f"story's PR for that runbook."
     )
     return 0
 
