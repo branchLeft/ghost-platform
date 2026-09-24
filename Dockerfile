@@ -29,6 +29,12 @@ FROM ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984
 # full guard and its explicit local-dev escape hatch, and
 # scripts/test-storage-guard.sh for the regression test proving both the
 # blocked and permitted paths actually behave as intended.
+# The break-glass SSO adapter (adapters/sso/README.md). It goes into Ghost's
+# own internal adapters directory, never the bind-mounted content directory: a
+# tenant can write to content, and Ghost would load an adapter from there.
+# Inert until a tenant's config sets adapters__sso__active=BreakGlassSSO.
+COPY --chown=node:node adapters/sso/src/BreakGlassSSO.js adapters/sso/src/break-glass.js /var/lib/ghost/current/core/server/adapters/sso/
+
 COPY docker-entrypoint.branchleft.sh /usr/local/bin/docker-entrypoint.branchleft.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.branchleft.sh
 

@@ -1,9 +1,16 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AbsoluteUrl } from '@branchleft/ghost-platform-render-core';
+import type { AbsoluteUrl, SlotName } from '@branchleft/ghost-platform-render-core';
 import { startTestBroker, type TestBroker } from '../helpers/testBroker.js';
 import { demoDescriptor } from '../helpers/fixtures.js';
+import { slotUid, slotPort, slotHealthPort } from '../../src/slotPorts.js';
+
+// The test harness's own fixed allocation (`testBroker.ts`): uidBase 30001,
+// appPortBase 9300, healthPortBase 9100.
+const UID_BASE = 30001;
+const APP_PORT_BASE = 9300;
+const HEALTH_PORT_BASE = 9100;
 
 /**
  * The recycle contract's whole point is that a previous visitor's hash and
@@ -22,11 +29,25 @@ function hashFor(tag: string): string {
   return `$argon2id$v=19$m=65536,t=3,p=4$${salt}$aGFzaA`;
 }
 
-function descFor(sub: string, tag: string, extra: Record<string, unknown> = {}) {
+/**
+ * `slot` decides the descriptor's own `uid`/`ports`: item 1's mismatch
+ * refusal means a descriptor aimed at slot `N` must carry slot `N`'s own
+ * derived allocation, not an arbitrary fixed one, or every call below would
+ * be refused with 400 before it ever reached the race this file exists to
+ * prove.
+ */
+function descFor(sub: string, tag: string, slot: string, extra: Record<string, unknown> = {}) {
+  const s = slot as SlotName;
   return demoDescriptor({
     siteUrl: `https://${sub}.demo-domain.example.test` as AbsoluteUrl,
     hostname: { kind: 'ours', sub, gated: true },
     gate: { kind: 'passphrase', argon2idHash: hashFor(tag) },
+    uid: slotUid(UID_BASE, s) as never,
+    ports: {
+      a: slotPort(APP_PORT_BASE, s, 'a'),
+      b: slotPort(APP_PORT_BASE, s, 'b'),
+      health: slotHealthPort(HEALTH_PORT_BASE, s),
+    } as never,
     ...extra,
   } as never);
 }
@@ -52,8 +73,14 @@ describe('concurrency and recycle-contract regressions', () => {
   it('exactly one of two racing reconciles on one free slot wins; the loser is refused, not applied', async () => {
     broker = await startTestBroker();
     const [r1, r2] = await Promise.all([
-      broker.signedFetch('POST', '/reconcile', { slot: '3', descriptor: descFor('aaa-one', 'A') }),
-      broker.signedFetch('POST', '/reconcile', { slot: '3', descriptor: descFor('bbb-two', 'B') }),
+      broker.signedFetch('POST', '/reconcile', {
+        slot: '3',
+        descriptor: descFor('aaa-one', 'A', '3'),
+      }),
+      broker.signedFetch('POST', '/reconcile', {
+        slot: '3',
+        descriptor: descFor('bbb-two', 'B', '3'),
+      }),
     ]);
     const statuses = [r1.status, r2.status].sort();
     expect(statuses).toEqual([200, 409]);
@@ -76,7 +103,7 @@ describe('concurrency and recycle-contract regressions', () => {
     broker = await startTestBroker();
     const rec = broker.signedFetch('POST', '/reconcile', {
       slot: '4',
-      descriptor: descFor('ccc-three', 'C'),
+      descriptor: descFor('ccc-three', 'C', '4'),
     });
     await new Promise((r) => setTimeout(r, 2));
     const rst = broker.signedFetch('POST', '/reset', { slot: '4' });
@@ -104,7 +131,7 @@ describe('concurrency and recycle-contract regressions', () => {
       slotsToTry.map((s) =>
         broker!.signedFetch('POST', '/reconcile', {
           slot: s,
-          descriptor: descFor(`host-${s}x`, `H${s}`, { slug: `demo-${s}` }),
+          descriptor: descFor(`host-${s}x`, `H${s}`, s, { slug: `demo-${s}` }),
         })
       )
     );
@@ -126,13 +153,13 @@ describe('concurrency and recycle-contract regressions', () => {
     broker = await startTestBroker();
     const first = await broker.signedFetch('POST', '/reconcile', {
       slot: '1',
-      descriptor: descFor('same-host', 'E'),
+      descriptor: descFor('same-host', 'E', '1'),
     });
     expect(first.status).toBe(200);
 
     const second = await broker.signedFetch('POST', '/reconcile', {
       slot: '2',
-      descriptor: descFor('same-host', 'F', { slug: 'demo-2' }),
+      descriptor: descFor('same-host', 'F', '2', { slug: 'demo-2' }),
     });
     expect(second.status).toBe(409);
 
@@ -153,11 +180,11 @@ describe('concurrency and recycle-contract regressions', () => {
     const [r1, r2] = await Promise.all([
       broker.signedFetch('POST', '/reconcile', {
         slot: '1',
-        descriptor: descFor('raced-host', 'R1'),
+        descriptor: descFor('raced-host', 'R1', '1'),
       }),
       broker.signedFetch('POST', '/reconcile', {
         slot: '2',
-        descriptor: descFor('raced-host', 'R2', { slug: 'demo-r2' }),
+        descriptor: descFor('raced-host', 'R2', '2', { slug: 'demo-r2' }),
       }),
     ]);
     const statuses = [r1.status, r2.status].sort();
@@ -182,7 +209,7 @@ describe('concurrency and recycle-contract regressions', () => {
     broker = await startTestBroker();
     const first = await broker.signedFetch('POST', '/reconcile', {
       slot: '1',
-      descriptor: descFor('ddd-four', 'D'),
+      descriptor: descFor('ddd-four', 'D', '1'),
     });
     expect(first.status).toBe(200);
 
@@ -190,15 +217,46 @@ describe('concurrency and recycle-contract regressions', () => {
 
     const sameHash = await broker.signedFetch('POST', '/reconcile', {
       slot: '1',
-      descriptor: descFor('other-host', 'D'),
+      descriptor: descFor('other-host', 'D', '1'),
     });
     expect(sameHash.status).toBe(409);
 
     const newHash = await broker.signedFetch('POST', '/reconcile', {
       slot: '1',
-      descriptor: descFor('other-host', 'D-rotated'),
+      descriptor: descFor('other-host', 'D-rotated', '1'),
     });
     expect(newHash.status).toBe(200);
+  });
+
+  // `assertHashRotated` compares only against the immediately previous
+  // tenancy, so a hash from two recycles back is accepted on a third
+  // reconcile -- documented in `stateStore.ts` as within
+  // `render-core/src/lease.ts`'s contract as written ("replaced on every
+  // recycle" is a one-step comparison), not a gap. Pinned here so a
+  // future reader sees this is deliberate, not untested.
+  it('accepts a hash from two recycles back (A -> B -> A): the one-step rotation contract as documented, not a gap', async () => {
+    broker = await startTestBroker();
+    const first = await broker.signedFetch('POST', '/reconcile', {
+      slot: '6',
+      descriptor: descFor('rotate-history', 'HIST-A', '6'),
+    });
+    expect(first.status).toBe(200);
+
+    await broker.signedFetch('POST', '/reset', { slot: '6' });
+    const second = await broker.signedFetch('POST', '/reconcile', {
+      slot: '6',
+      descriptor: descFor('rotate-history', 'HIST-B', '6'),
+    });
+    expect(second.status).toBe(200);
+
+    await broker.signedFetch('POST', '/reset', { slot: '6' });
+    // Hash "HIST-A" again -- two recycles back, not the immediately
+    // previous tenancy ("HIST-B"), so `assertHashRotated` admits it.
+    const third = await broker.signedFetch('POST', '/reconcile', {
+      slot: '6',
+      descriptor: descFor('rotate-history', 'HIST-A', '6'),
+    });
+    expect(third.status).toBe(200);
   });
 
   // F10: a reset whose teardown fails must not leave the previous visitor
@@ -209,7 +267,7 @@ describe('concurrency and recycle-contract regressions', () => {
       (
         await broker.signedFetch('POST', '/reconcile', {
           slot: '5',
-          descriptor: descFor('eee-five', 'G'),
+          descriptor: descFor('eee-five', 'G', '5'),
         })
       ).status
     ).toBe(200);

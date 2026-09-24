@@ -47,6 +47,13 @@ export interface BrokerConfig {
   /** `appPortBase + Number(slot)*2 (+1 for colour b)` -- see `slotPorts.ts`. */
   readonly appPortBase: number;
   /**
+   * `uidBase + Number(slot)` is this slot's reserved uid -- incidental in the
+   * exact base (LLD-2 §01's figcaption again), mirrored here for the same
+   * reason `healthPortBase` is: no package yet owns the slot -> uid mapping.
+   * See `slotPorts.ts`'s `slotUid`.
+   */
+  readonly uidBase: number;
+  /**
    * Captured once, at config load (server start), never from a request or
    * the caller's clock. A signed request whose timestamp predates this
    * process refuses regardless of the replay window: a restart is not the
@@ -124,6 +131,7 @@ export function loadConfig(
     healthCheckTimeoutMs: positiveInteger(env, 'BROKER_HEALTH_TIMEOUT_MS', 2_000, 30_000),
     healthPortBase: positiveInteger(env, 'BROKER_HEALTH_PORT_BASE', 9100, 65000),
     appPortBase: positiveInteger(env, 'BROKER_APP_PORT_BASE', 9300, 65000),
+    uidBase: positiveInteger(env, 'BROKER_UID_BASE', 30001, 65000),
     processStartSeconds: Math.floor(Date.now() / 1000),
     nowMs: () => Date.now(),
   };
