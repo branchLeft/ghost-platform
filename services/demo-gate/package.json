@@ -1,0 +1,25 @@
+{
+  "name": "ghost-platform-demo-gate",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The demo edge's admission service: a Caddy forward_auth target that checks a slot's argon2id passphrase under a per-source attempt ceiling and issues a signed cookie bound to the slot's current lease (see ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html §03).",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@branchleft/ghost-platform-render-core": "file:../../render-core"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/node": "^26.0.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
