@@ -1,0 +1,132 @@
+name: Major watcher run
+
+# The scheduled watcher itself (branchLeft/workspace#1301): polls
+# github.com/TryGhost/Ghost's releases and pages Rob over self-hosted ntfy
+# the first time a new major line is seen, preview or GA. It never opens a
+# PR, never merges, never deploys -- see services/major-watcher/README.md
+# "Signal" and "Decision" for why and how. D38/D39/D42: this is a scheduled
+# watcher that pages a human, which is monitoring, not an agent in
+# operations -- nothing here runs a model.
+#
+# Every 6 hours, well inside the Done criterion's day-long SLA even
+# allowing for a missed run.
+#
+# Dedupe state (see services/major-watcher/README.md "State") lives on its
+# own branch, `state/major-watcher`, never on `main` -- `main` requires
+# signed commits and PR review (this repo's ruleset), and a dedupe write is
+# neither a code change nor something review should gate. That branch
+# carries no ruleset of its own (checked directly against the live
+# rulesets API, 2026-09-24: only `~DEFAULT_BRANCH` and `refs/tags/v*` are
+# covered), so `contents: write` on this job's own token is sufficient --
+# no PAT, no bypass of anything.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  # Manual runs are safe here in a way they are not in recovery-image.yml
+  # or registry-push.yml: this workflow ships no artifact and merges
+  # nothing, so there is no review gate a dispatched run could bypass.
+  # Useful for Rob to prove the end-to-end page once ntfy exists.
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  packages: read
+
+# One run at a time: a second run racing the first over the same state
+# branch would either clobber the other's push or double-page.
+concurrency:
+  group: ghost-platform-major-watcher-run
+  cancel-in-progress: false
+
+env:
+  # The major line known live as of this PR (2026-09-24) -- see
+  # services/major-watcher/README.md "Bootstrapping" for why this is a
+  # static, reviewed number and never derived at run time.
+  SEED_LAST_NOTIFIED_MAJOR: '6'
+
+jobs:
+  watch:
+    name: Poll upstream and page on a new major line
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure git identity for the state branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # A worktree, not a second checkout: this keeps main's checkout
+      # (where the watcher's own code is built and run from) untouched
+      # while giving the state branch its own working directory to commit
+      # and push from.
+      - name: Fetch or bootstrap the state branch
+        id: state
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin state/major-watcher > /dev/null; then
+            git fetch origin state/major-watcher
+            git worktree add /tmp/state-branch origin/state/major-watcher --detach
+            (cd /tmp/state-branch && git checkout -B state/major-watcher)
+          else
+            git worktree add --detach /tmp/state-branch
+            (
+              cd /tmp/state-branch
+              git checkout --orphan state/major-watcher
+              git rm -rf . > /dev/null 2>&1 || true
+              mkdir -p services/major-watcher/state
+              printf '{\n  "lastNotifiedMajor": %s\n}\n' "$SEED_LAST_NOTIFIED_MAJOR" \
+                > services/major-watcher/state/dedupe-state.json
+              git add services/major-watcher/state/dedupe-state.json
+              git commit -m "major-watcher: seed dedupe state at major $SEED_LAST_NOTIFIED_MAJOR"
+              git push origin HEAD:refs/heads/state/major-watcher
+            )
+          fi
+          echo "path=/tmp/state-branch/services/major-watcher/state/dedupe-state.json" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/major-watcher/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: services/major-watcher/package-lock.json
+
+      - name: Install and build
+        working-directory: services/major-watcher
+        run: |
+          npm ci
+          npm run build
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # NTFY_URL and NTFY_TOKEN are owed -- see README.md "Owed". Until
+      # NTFY_URL is set, src/cli.ts exits 0 with one log line rather than
+      # going red every 6 hours; once it is set, a real failure (GitHub
+      # unreachable, corrupt state, ntfy itself rejecting the publish)
+      # exits 1 as normal.
+      - name: Run the watcher
+        working-directory: services/major-watcher
+        env:
+          MAJOR_WATCHER_STATE_PATH: ${{ steps.state.outputs.path }}
+          NTFY_URL: ${{ secrets.NTFY_URL }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node dist/cli.js
+
+      - name: Push updated state, only if it changed
+        working-directory: /tmp/state-branch
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "no change to dedupe state"
+          else
+            git add services/major-watcher/state/dedupe-state.json
+            git commit -m "major-watcher: record new highest major notified"
+            git push origin HEAD:refs/heads/state/major-watcher
+          fi

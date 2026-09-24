@@ -1,0 +1,22 @@
+{
+  "name": "ghost-platform-major-watcher",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deterministic, scheduled watcher for a new Ghost major version or its public preview being announced upstream (github.com/TryGhost/Ghost releases). Pages Rob over self-hosted ntfy; opens nothing, changes nothing, runs no model (branchLeft/workspace#1301, D38/D39/D42).",
+  "type": "module",
+  "main": "dist/cli.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "start": "node dist/cli.js"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/node": "^26.0.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
