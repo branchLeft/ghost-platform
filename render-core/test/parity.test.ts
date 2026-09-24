@@ -148,6 +148,25 @@ const KNOWN_GAP_KEYS = [
   'bulkEmail__mailgun__apiKey',
 ].sort();
 
+// The actual diff loop, factored out so the control case below can run it
+// for real instead of asserting on hand-built objects that never pass
+// through it.
+function diffSharedKeys(
+  infra: Readonly<Record<string, string | number | boolean>>,
+  core: Readonly<Record<string, string | number | boolean>>,
+  sharedKeys: readonly string[]
+): Array<{ key: string; infra: unknown; core: unknown }> {
+  const mismatched: Array<{ key: string; infra: unknown; core: unknown }> = [];
+  for (const key of sharedKeys) {
+    const infraValue = infra[key];
+    const coreValue = core[key];
+    if (infraValue !== coreValue) {
+      mismatched.push({ key, infra: infraValue, core: coreValue });
+    }
+  }
+  return mismatched;
+}
+
 describe('tenant-zero parity — a real key-by-key diff against infra/tenant, not a substring check', () => {
   it('every key infra/tenant renders for blog is either matched by render-core or in the known #1250 gap list', () => {
     const infra = INFRA_TENANT_BLOG_ENV;
@@ -169,26 +188,35 @@ describe('tenant-zero parity — a real key-by-key diff against infra/tenant, no
     // Every key both sides claim to render must carry the same value —
     // the actual parity claim, checked, not merely counted.
     const sharedKeys = infraKeys.filter((k) => !KNOWN_GAP_KEYS.includes(k));
-    const mismatched: Array<{ key: string; infra: unknown; core: unknown }> = [];
-    for (const key of sharedKeys) {
-      const infraValue = infra[key];
-      const coreValue = core[key];
-      if (infraValue !== coreValue) {
-        mismatched.push({ key, infra: infraValue, core: coreValue });
-      }
-    }
+    const mismatched = diffSharedKeys(infra, core, sharedKeys);
     expect(mismatched).toEqual([]);
     // 31 keys matched at review time (35 infra keys minus the 4 gap keys).
     expect(sharedKeys.length).toBe(31);
     expect(infraKeys.length).toBe(35);
   });
 
-  it('control case: the diff can fail — a deliberately wrong value is caught', () => {
+  it('control case: re-running diffSharedKeys against a deliberately drifted snapshot catches the mismatch', () => {
+    // Re-runs the same loop the test above trusts, not a hand-built
+    // object compared by hand — proves the loop itself would go red on
+    // real drift, not just that two literals differ.
+    const infra = INFRA_TENANT_BLOG_ENV;
     const core = renderCoreTenantZeroEnv();
-    expect(core.database__connection__host).not.toBe('not-the-real-host');
-    const sabotaged = { ...core, database__connection__host: 'not-the-real-host' };
-    expect(sabotaged.database__connection__host).not.toBe(
-      INFRA_TENANT_BLOG_ENV.database__connection__host
-    );
+    const sharedKeys = Object.keys(infra)
+      .sort()
+      .filter((k) => !KNOWN_GAP_KEYS.includes(k));
+
+    const drifted: Record<string, string | number | boolean> = {
+      ...infra,
+      database__connection__host: 'drifted-host.invalid',
+    };
+
+    const mismatched = diffSharedKeys(drifted, core, sharedKeys);
+    expect(mismatched).toEqual([
+      {
+        key: 'database__connection__host',
+        infra: 'drifted-host.invalid',
+        core: infra.database__connection__host,
+      },
+    ]);
   });
 });
