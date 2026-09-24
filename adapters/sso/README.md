@@ -1,6 +1,6 @@
 # Break-glass SSO adapter
 
-The only code this platform adds to Ghost. It lets an operator holding a short-lived signed token open an Administrator session as **one account fixed per site**, with no standing password anywhere. Design: `ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html` §05 (B2 to B7).
+The only code this platform adds to Ghost. It lets an operator holding a short-lived signed token open an Administrator session as **one account fixed per site**, with no standing password anywhere. Design: `ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html`, section 05, break-glass support access.
 
 `src/BreakGlassSSO.js` and `src/break-glass.js` are copied by the root `Dockerfile` into Ghost's internal adapter directory, `core/server/adapters/sso/`. They are never placed in the content directory, which a tenant can write to. The adapter is inert until a tenant's config selects it.
 
@@ -19,7 +19,7 @@ If any of the three is missing, is not a string, or the key is not an Ed25519 ke
 
 ## Token
 
-```
+```text
 base64url(JSON claims) "." base64url(Ed25519 signature over the first segment, as sent)
 ```
 
@@ -43,14 +43,14 @@ Ghost 6.55.0 constructs the adapter while building the admin app (`core/server/s
 
 ## Known residual
 
-A valid, unused token presented while the account is suspended makes Ghost create a verified session row for that account. The row is refused while the account stays suspended, but it becomes a live Administrator session the next time the account is un-suspended. Ghost's own un-suspend does not destroy existing sessions. Measured on 6.55.0. Single use and the 900-second lifetime cap narrow this to a stolen token that has not been used, presented after a revoke and before it expires. Closing it fully means the adapter must read the account's status, which the repository Ghost provides does not expose.
+A valid, unused token presented while the account is suspended makes Ghost create a verified session row for that account. The row is refused while the account stays suspended, but it becomes a live Administrator session the next time the account is un-suspended. Measured on 6.55.0, un-suspending by setting the status column. Nothing in Ghost's source destroys a user's sessions when their status changes. Single use and the 900-second lifetime cap narrow this to a stolen token that has not been used, presented after a revoke and before it expires. Closing it fully means the adapter must read the account's status, which the repository Ghost provides does not expose.
 
 ## Tests
 
-```
+```sh
 npm ci && npm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
 IMAGE=ghost-platform:ci npm run test:image       # real Ghost 6.55.0 in Docker
 ```
 
-The image test (`test/image/`) runs the built image: LLD-5 B3's rows (suspended, active, no token, tampered, forged, expired, other tenant, replay, revoke), B4 (a token naming the owner), B5 (boot and 200 with a malformed key and with each value missing), and a planted content adapter. Every refusal asserts both Ghost's 403 and the adapter's logged reason. `build.yml` runs it on every PR.
+The image test (`test/image/`) runs the built image through every case the design measured: a suspended and an active account, no token, a tampered, forged, expired or other-tenant token, a replay, a revoke, a token naming the owner, boot and 200 with a malformed key and with each value missing, and a planted content adapter. Every refusal asserts both Ghost's 403 and the adapter's logged reason. `build.yml` runs it on every PR.
