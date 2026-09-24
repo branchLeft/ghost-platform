@@ -2,6 +2,7 @@
   "name": "ghost-platform-broker",
   "version": "0.0.0",
   "private": true,
+  "license": "SEE LICENSE IN LICENSE",
   "description": "The demo host's broker: the HTTP endpoints (reconcile, reset, status, drain) LLD-2 specifies, with the privileged sudoers wrapper as the only path to root and a signed-request scheme in front of every side effect (see ghost-platform-docs/19-try-it-now-design/02-broker-and-slot.html §03).",
   "type": "module",
   "main": "dist/server.js",

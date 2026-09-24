@@ -2,6 +2,7 @@
   "name": "ghost-platform",
   "version": "0.0.0",
   "private": true,
+  "license": "SEE LICENSE IN LICENSE",
   "description": "Repo-root tooling only. The publishable package is infra/tenant.",
   "type": "module",
   "prettier": "@branchleft/prettier-config",

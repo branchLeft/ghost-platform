@@ -2,6 +2,7 @@
   "name": "ghost-platform-demo-gate",
   "version": "0.0.0",
   "private": true,
+  "license": "SEE LICENSE IN LICENSE",
   "description": "The demo edge's admission service: a Caddy forward_auth target that checks a slot's argon2id passphrase under a per-source attempt ceiling and issues a signed cookie bound to the slot's current lease (see ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html §03).",
   "type": "module",
   "main": "dist/server.js",
