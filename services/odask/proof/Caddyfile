@@ -1,0 +1,25 @@
+{
+	# Matches pebble-config.json's httpPort/tlsPort: Pebble's validation
+	# authority dials the client back on these non-privileged ports rather
+	# than 80/443, which is what makes it usable without root or a real
+	# public listener. https_port also becomes this Caddy's own serving
+	# port for every site block below.
+	auto_https disable_redirects
+	http_port 5002
+	https_port 5001
+	acme_ca https://pebble:14000/dir
+	acme_ca_root /pebble.minica.pem
+	on_demand_tls {
+		ask http://odask:9000/
+	}
+}
+
+# No host in the site address: on-demand TLS decides admission per-SNI via
+# the ask endpoint above, for whatever hostname arrives, exactly as LLD-5
+# §02 describes -- there is no per-tenant Caddy config to maintain.
+:5001 {
+	tls {
+		on_demand
+	}
+	respond "served" 200
+}

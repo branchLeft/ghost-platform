@@ -1,0 +1,62 @@
+name: odask CI
+
+# Type-checks and unit-tests the on-demand TLS ask endpoint (services/odask/).
+# The real-Caddy-and-Pebble proof of its contract lives in odask-image.yml
+# instead, alongside the image build it needs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# `packages: read` because this service takes a dev dependency on
+# `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401
+# to an anonymous request even for a public package.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test:
+    name: odask type check and test
+    runs-on: ubuntu-latest
+    # Generous bound: install, typecheck and vitest coverage on one small
+    # Express service, well inside Actions' minimum billable minute either
+    # way.
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/odask
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/odask/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: services/odask/package-lock.json
+
+      # The service links render-core by a relative file: dependency and
+      # needs its compiled types.
+      - name: Build render-core
+        working-directory: render-core
+        run: npm ci && npm run build
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run coverage
