@@ -354,13 +354,12 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     assert.equal(r.email, SUPPORT);
   });
 
-  // branchLeft/workspace#1352: express-session's res.end override flushes
-  // Set-Cookie before the session store's write completes, so a client
-  // acting on the cookie immediately (any redirect- or page-follower, not a
-  // test artefact) can be refused on its very next request. This never
-  // showed up sequentially -- it needs concurrent logins racing the same
-  // store to open the window. Every one of these must succeed; a single
-  // 403 here is the race, not flake.
+  // express-session's res.end override flushes Set-Cookie before the session
+  // store's write completes, so a client acting on the cookie immediately
+  // (any redirect- or page-follower, not a test artefact) can be refused on
+  // its very next request. This never showed up sequentially -- it needs
+  // concurrent logins racing the same store to open the window. Every one of
+  // these must succeed; a single 403 here is the race, not flake.
   it('N concurrent fresh-token logins each authenticate on their very first users/me/ request', async () => {
     ghost.setSupportStatus('active');
     const CONCURRENCY = 8;
