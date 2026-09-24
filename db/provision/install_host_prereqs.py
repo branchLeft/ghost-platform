@@ -239,19 +239,24 @@ def ensure_mysql_gpg_keyring(*, keyring_path: str = MYSQL_APT_KEYRING_PATH, run=
     with nothing to self-heal it. The write itself is atomic for the same
     reason: this function can be interrupted too.
 
-    Each fetched key is checked against MYSQL_GPG_KEY_FINGERPRINT *before*
-    any of them is dearmored or written -- a wrong or swapped key at either
-    URL refuses here, rather than joining a keyring that
+    Each fetched file is checked against MYSQL_GPG_KEY_FINGERPRINT *before*
+    any of it is dearmored or written -- a wrong, swapped, or *appended* key
+    at either URL refuses here, rather than joining a keyring that
     `mysql-community.list` then trusts for every `apt-get install` this
-    script runs as root.
+    script runs as root. The check requires the file's primary keys to be
+    *exactly* `[MYSQL_GPG_KEY_FINGERPRINT]` -- membership alone (checking
+    only that the pin is present) would accept the pinned key plus any
+    number of extra, unpinned primary keys appended to the same armored
+    file, and dearmor the whole file including those extras into the
+    trusted keyring.
 
     Returns True if the file was created or changed."""
     fetched = [fetch(url) for url in MYSQL_GPG_KEY_URLS]
     for url, armored in zip(MYSQL_GPG_KEY_URLS, fetched):
         fingerprints = _primary_key_fingerprints(armored, run=run)
-        if MYSQL_GPG_KEY_FINGERPRINT not in fingerprints:
+        if fingerprints != [MYSQL_GPG_KEY_FINGERPRINT]:
             raise HostPrereqError(
-                f"{url} does not carry the pinned MySQL signing key {MYSQL_GPG_KEY_FINGERPRINT} "
+                f"{url} does not carry only the pinned MySQL signing key {MYSQL_GPG_KEY_FINGERPRINT} "
                 f"(found {fingerprints or ['no key at all']}) -- refusing to trust it"
             )
 

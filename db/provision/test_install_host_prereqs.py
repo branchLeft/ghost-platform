@@ -348,6 +348,39 @@ class MysqlGpgKeyringTests(unittest.TestCase):
         with self.assertRaises(ihp.HostPrereqError):
             ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
 
+    def test_raises_when_the_pinned_key_has_an_extra_primary_key_appended(self):
+        # The gap the review found live: `MYSQL_GPG_KEY_FINGERPRINT in
+        # fingerprints` (membership) passes as long as the pinned key is
+        # *somewhere* in the file, even if a second, unpinned primary key
+        # ("Attacker") rides along appended to the same armored export --
+        # and the whole file, attacker key included, would then be
+        # dearmored into the trusted keyring. The fix requires the file's
+        # primary keys to be *exactly* `[MYSQL_GPG_KEY_FINGERPRINT]`.
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
+        calls = []
+
+        def run(argv, input=None, **kwargs):
+            calls.append(list(argv))
+            if "--show-keys" in argv:
+                colon_output = (
+                    "pub:e:4096:1:B7B3B788A8D3785C:0:0::-:::sc::::::23::0:\n"
+                    f"fpr:::::::::{ihp.MYSQL_GPG_KEY_FINGERPRINT}:\n"
+                    "pub:e:4096:1:1111111111111111:0:0::-:::sc::::::23::0:\n"
+                    "uid:e::::0::0::Attacker <attacker@example.com>::::::::::0:\n"
+                    "fpr:::::::::1111111111111111111111111111111111111111:\n"
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout=colon_output, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=b"KEYRING", stderr=b"")
+
+        with self.assertRaises(ihp.HostPrereqError) as ctx:
+            ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+        self.assertIn(ihp.MYSQL_GPG_KEY_FINGERPRINT, str(ctx.exception))
+        self.assertFalse(os.path.exists(self.keyring_path))
+        # Never reaches dearmor once a file's primary keys are anything
+        # other than exactly the pin -- the attacker key never gets a
+        # chance to land in the trusted keyring alongside the real one.
+        self.assertFalse(any(argv == ["gpg", "--dearmor"] for argv in calls))
+
 
 class EnsureLibaio1Tests(unittest.TestCase):
     def test_no_op_when_already_installed(self):

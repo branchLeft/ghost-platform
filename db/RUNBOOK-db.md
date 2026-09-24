@@ -628,6 +628,15 @@ image, and it only runs on a push to `main` -- including the very merge
 that adds it, which is the first time it can possibly run. There is
 nothing to pin here until that first run has happened.
 
+**First publish only -- make the package public.** A container package is
+created private, and a private package needs a pull credential on the host,
+which this estate deliberately does not carry -- the drill's `docker pull`
+above would 401 mid-incident. Go to
+<https://github.com/orgs/branchLeft/packages/container/db-recovery/settings>,
+"Change package visibility", choose Public, confirm. This is a platform-owner
+action; there is no reviewed path to it. Same step as `RUNBOOK-edge.md`
+§1, for the same reason.
+
 **Recording the digest, once it exists (owner step, no placeholder left
 behind afterwards):**
 
