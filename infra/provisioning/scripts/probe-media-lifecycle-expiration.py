@@ -169,6 +169,69 @@ Storage with a credential that could run it, and it must not gain that
 ability, because `check`'s only destructive potential -- misreading a
 transport failure as READING B -- is exactly the failure mode an unattended
 retry would make more likely, not less.
+
+PREFIX-SPLIT MODE (`setup-split` / `check-split`): A DIFFERENT QUESTION FROM
+THE ONE ABOVE. Everything above answers "does a noncurrent-only rule expire
+a CURRENT object" for one rule applied to a whole bucket. The media backup
+pipeline's C-refresh design needs a second, separate question answered:
+given TWO rules on the SAME bucket, each scoped to its own `Filter/Prefix`
+-- `media/` with a short expiry, a database-backup-style prefix with the
+existing long one -- does each rule act ONLY within its own prefix, leaving
+the other's content alone? Hetzner's behaviour with overlapping or
+multiple lifecycle rules on one bucket is exactly as unproven as the
+single-rule current-vs-noncurrent question the rest of this script answers,
+and a config that assumes prefix scoping "obviously" works is the same
+unproven-assumption shape this whole tool exists to replace with a real
+answer.
+
+This mode applies the literal two-rule shape
+`db/provision/configure_backup_bucket.py`'s `lifecycle_document()` renders
+for its `media/` and database prefixes (one database-style prefix stands in
+for both `dumps/` and `binlogs/`: both carry the identical rule, so the
+mechanism under test -- a prefix-scoped `NoncurrentVersionExpiration` -- does
+not depend on which literal database prefix string is used). Under each
+prefix it creates THREE objects: a `control/` object that is never touched
+again (must survive under every reading, on both prefixes, forever); a
+`noncurrent/` object, uploaded twice so the first upload becomes a
+noncurrent version (the everyday "someone re-uploaded this file" case); and
+a `deleted/` object, uploaded once then deleted, so a delete marker becomes
+current and the original content becomes a noncurrent version (the
+everyday "someone removed this file" case C-refresh itself produces on
+every run). `setup-split` records each of the two noncurrent-making
+objects' NONCURRENT version id immediately, via `?versions` -- the only way
+to see a version id a later lifecycle pass may since have pruned, because a
+bare GET/HEAD only ever answers about whatever is CURRENT at a key.
+
+`check-split`, run 24-48h later, re-lists both prefixes' versions and
+requires ALL of the following to report PASS -- anything else is FAIL or
+INCONCLUSIVE, the same discipline as `check` above:
+  - every CURRENT object on both prefixes still answers (both controls, the
+    post-overwrite current version of both `noncurrent/` objects, and both
+    delete markers) -- if any current object is gone, something removed it
+    that neither reading of either rule predicts, so nothing is attributed
+    to the rule;
+  - `media/`'s two recorded NONCURRENT version ids are no longer present in
+    a `media/`-scoped version listing (the short rule pruned them); and
+  - the database-style prefix's two recorded NONCURRENT version ids ARE
+    still present (the long rule has not, and must not have, expired them
+    early -- proving the two rules stayed independent, not just that the
+    short one eventually fires).
+A media-side PASS this early (before `earliest_decisive_check`) is not
+decisive, exactly as with `check` above; a database-side PASS is decisive
+at any time after setup, because nothing legitimate removes it sooner than
+its own 35-day rule allows.
+
+USAGE:
+
+    python3 infra/provisioning/scripts/probe-media-lifecycle-expiration.py setup-split \\
+      --bucket branchleft-lifecycle-probe-<yyyymmdd> \\
+      --endpoint hel1.your-objectstorage.com --region hel1 \\
+      --receipt /tmp/media-lifecycle-split-receipt.json
+    # optional: --media-noncurrent-days (default 1) --db-noncurrent-days (default 35)
+
+    # 24-48 hours later:
+    python3 infra/provisioning/scripts/probe-media-lifecycle-expiration.py check-split \\
+      --receipt /tmp/media-lifecycle-split-receipt.json
 """
 
 from __future__ import annotations
@@ -181,6 +244,7 @@ import json
 import os
 import pathlib
 import sys
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from shared_objectstorage import ObjectStorageError, signed_request  # noqa: E402
@@ -234,6 +298,21 @@ PROBE_OBJECT_BODY = b"branchleft media-lifecycle expiration probe -- do not dele
 CONTROL_OBJECT_BODY = (
     b"branchleft media-lifecycle expiration probe CONTROL -- outside the rule's Filter "
     b"on purpose; do not delete by hand\n"
+)
+
+# PREFIX-SPLIT MODE -- see the module docstring's own section. Byte-for-byte
+# the two prefixes db/provision/configure_backup_bucket.py's real lifecycle
+# document scopes its rules to; one database-style prefix stands in for both
+# `dumps/` and `binlogs/`, which carry the identical rule.
+SPLIT_MEDIA_PREFIX = "media/"
+SPLIT_DB_PREFIX = "dumps/"
+SPLIT_PREFIXES = {"media": SPLIT_MEDIA_PREFIX, "db": SPLIT_DB_PREFIX}
+# The real values C-refresh ships, not a shortened stand-in: this mode
+# exists to prove THESE numbers are safe, not a proxy for them.
+SPLIT_MEDIA_NONCURRENT_DAYS = 1
+SPLIT_DB_NONCURRENT_DAYS = 35
+SPLIT_OBJECT_BODY = (
+    b"branchleft media-lifecycle PREFIX-SPLIT probe -- do not delete by hand\n"
 )
 
 
@@ -302,6 +381,123 @@ def lifecycle_document(noncurrent_days: int, include_abort_multipart_upload: boo
         f"{abort_multipart}"
         "</Rule></LifecycleConfiguration>"
     ).encode()
+
+
+def prefix_split_lifecycle_document(
+    media_noncurrent_days: int = SPLIT_MEDIA_NONCURRENT_DAYS,
+    db_noncurrent_days: int = SPLIT_DB_NONCURRENT_DAYS,
+) -> bytes:
+    """The two-rule shape `db/provision/configure_backup_bucket.py`'s own
+    `lifecycle_document()` applies to the real backup bucket (minus its
+    third, identical `binlogs/` rule -- see the module docstring's
+    PREFIX-SPLIT MODE section for why one database-style prefix is enough).
+    `NoncurrentVersionExpiration` alone on each rule, no
+    `AbortIncompleteMultipartUpload` -- that generator's real shape, not
+    `render-media-bucket-policy.py`'s."""
+    rules = "".join(
+        f"<Rule><ID>branchleft-lifecycle-probe-split-{label}</ID><Status>Enabled</Status>"
+        f"<Filter><Prefix>{prefix}</Prefix></Filter>"
+        f"<NoncurrentVersionExpiration><NoncurrentDays>{days}</NoncurrentDays>"
+        "</NoncurrentVersionExpiration></Rule>"
+        for label, prefix, days in (
+            ("media", SPLIT_MEDIA_PREFIX, media_noncurrent_days),
+            ("db", SPLIT_DB_PREFIX, db_noncurrent_days),
+        )
+    )
+    return (
+        f'<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">{rules}'
+        "</LifecycleConfiguration>"
+    ).encode()
+
+
+def _local_name(tag: str) -> str:
+    """Strips the S3 XML namespace off an ElementTree tag, the same way
+    `db/provision/objectstorage.py`'s own helper of the same name does for
+    Hetzner's RGW responses."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _list_object_versions(
+    *, host: str, region: str, access_key: str, secret_key: str, bucket: str, prefix: str,
+) -> list[dict]:
+    """Every version and delete marker under `prefix`, as
+    `[{"key", "version_id", "is_latest", "kind": "version"|"delete_marker"}, ...]`.
+
+    The `?versions` sub-resource is the only way to see a version id that
+    `NoncurrentVersionExpiration` may since have pruned -- a bare GET/HEAD
+    only ever answers about whatever is CURRENT at a key, and a pruned
+    version leaves no trace there at all. Paginates on
+    `IsTruncated`/`NextKeyMarker`/`NextVersionIdMarker`; a `Filter/Prefix`
+    rule and this listing are scoped from the same string so the two can
+    never silently drift apart."""
+    entries: list[dict] = []
+    key_marker: str | None = None
+    version_id_marker: str | None = None
+    for _ in range(50):
+        query = {"versions": "", "prefix": prefix}
+        if key_marker is not None:
+            query["key-marker"] = key_marker
+        if version_id_marker is not None:
+            query["version-id-marker"] = version_id_marker
+        status, body = signed_request(
+            method="GET", endpoint=host, region=region, access_key=access_key,
+            secret_key=secret_key, bucket=bucket, query=query,
+        )
+        if not 200 <= status < 300:
+            raise ObjectStorageError(
+                f"GET {bucket}?versions&prefix={prefix} failed: HTTP {status}: {body!r}"
+            )
+        root = ET.fromstring(body)
+        truncated = False
+        next_key_marker = None
+        next_version_id_marker = None
+        for child in root:
+            name = _local_name(child.tag)
+            if name in ("Version", "DeleteMarker"):
+                fields = {_local_name(g.tag): (g.text or "") for g in child}
+                key, version_id = fields.get("Key"), fields.get("VersionId")
+                if key and version_id:
+                    entries.append(
+                        {
+                            "key": key,
+                            "version_id": version_id,
+                            "is_latest": fields.get("IsLatest", "").strip().lower() == "true",
+                            "kind": "delete_marker" if name == "DeleteMarker" else "version",
+                        }
+                    )
+            elif name == "IsTruncated":
+                truncated = (child.text or "").strip().lower() == "true"
+            elif name == "NextKeyMarker" and (child.text or "").strip():
+                next_key_marker = child.text.strip()
+            elif name == "NextVersionIdMarker" and (child.text or "").strip():
+                next_version_id_marker = child.text.strip()
+        if not truncated:
+            return entries
+        if not next_key_marker and not next_version_id_marker:
+            raise ObjectStorageError(
+                f"GET {bucket}?versions&prefix={prefix}: IsTruncated=true but no marker to "
+                f"resume from -- the listing may be incomplete"
+            )
+        key_marker, version_id_marker = next_key_marker, next_version_id_marker
+    raise ObjectStorageError(f"GET {bucket}?versions&prefix={prefix}: did not finish within 50 pages")
+
+
+def _only_noncurrent_version_id(versions: list[dict], key: str) -> str:
+    """The single noncurrent (non-latest, non-delete-marker) version id
+    recorded for `key`, immediately after `setup-split` made it noncurrent --
+    raises if the listing does not show exactly one, since a receipt
+    recording an ambiguous starting point would make `check-split`'s later
+    verdict meaningless."""
+    matches = [
+        v["version_id"] for v in versions
+        if v["key"] == key and v["kind"] == "version" and not v["is_latest"]
+    ]
+    if len(matches) != 1:
+        raise ObjectStorageError(
+            f"expected exactly one noncurrent version of {key!r} immediately after it was "
+            f"superseded, found {len(matches)}: {matches!r}"
+        )
+    return matches[0]
 
 
 def _put_bucket_subresource(
@@ -411,6 +607,113 @@ def setup(
     )
 
 
+def setup_prefix_split(
+    *,
+    bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    media_noncurrent_days: int = SPLIT_MEDIA_NONCURRENT_DAYS,
+    db_noncurrent_days: int = SPLIT_DB_NONCURRENT_DAYS,
+    receipt_path: pathlib.Path,
+) -> str:
+    """See the module docstring's PREFIX-SPLIT MODE section. Enables
+    versioning, applies the two-rule split, then under EACH prefix creates a
+    control object (current, never touched again), a noncurrent-making
+    overwrite, and a noncurrent-making delete -- recording the two resulting
+    noncurrent version ids in the receipt immediately, because that is the
+    only moment a bare listing is guaranteed to still show them."""
+    assert_bucket_is_disposable(bucket)
+    if receipt_path.exists():
+        raise ProbeInputError(
+            f"{receipt_path} already exists -- this script does not overwrite a receipt. "
+            f"Delete it only once you are certain no probe is in flight."
+        )
+    host = _bare_host(endpoint)
+
+    _put_bucket_subresource(
+        bucket=bucket, endpoint=host, region=region, access_key=access_key,
+        secret_key=secret_key, subresource="versioning", body=_versioning_document(),
+        needs_content_md5=False,
+    )
+    lifecycle_body = prefix_split_lifecycle_document(media_noncurrent_days, db_noncurrent_days)
+    _put_bucket_subresource(
+        bucket=bucket, endpoint=host, region=region, access_key=access_key,
+        secret_key=secret_key, subresource="lifecycle", body=lifecycle_body,
+        needs_content_md5=True,
+    )
+
+    receipt_prefixes: dict[str, dict] = {}
+    for label, prefix in SPLIT_PREFIXES.items():
+        control_key = f"{prefix}control/canary"
+        noncurrent_key = f"{prefix}noncurrent/canary"
+        deleted_key = f"{prefix}deleted/canary"
+
+        _put_object(
+            bucket=bucket, endpoint=host, region=region, access_key=access_key,
+            secret_key=secret_key, key=control_key, body=SPLIT_OBJECT_BODY,
+        )
+        _put_object(
+            bucket=bucket, endpoint=host, region=region, access_key=access_key,
+            secret_key=secret_key, key=noncurrent_key, body=SPLIT_OBJECT_BODY + b"v1\n",
+        )
+        _put_object(
+            bucket=bucket, endpoint=host, region=region, access_key=access_key,
+            secret_key=secret_key, key=noncurrent_key, body=SPLIT_OBJECT_BODY + b"v2\n",
+        )
+        _put_object(
+            bucket=bucket, endpoint=host, region=region, access_key=access_key,
+            secret_key=secret_key, key=deleted_key, body=SPLIT_OBJECT_BODY,
+        )
+        status, body = signed_request(
+            method="DELETE", endpoint=host, region=region, access_key=access_key,
+            secret_key=secret_key, bucket=bucket, key=deleted_key,
+        )
+        if not 200 <= status < 300:
+            raise ObjectStorageError(f"DELETE {bucket}/{deleted_key} failed: HTTP {status}: {body!r}")
+
+        versions = _list_object_versions(
+            host=host, region=region, access_key=access_key, secret_key=secret_key,
+            bucket=bucket, prefix=prefix,
+        )
+        receipt_prefixes[label] = {
+            "prefix": prefix,
+            "control_key": control_key,
+            "noncurrent_key": noncurrent_key,
+            "noncurrent_version_id": _only_noncurrent_version_id(versions, noncurrent_key),
+            "deleted_key": deleted_key,
+            "deleted_prior_version_id": _only_noncurrent_version_id(versions, deleted_key),
+        }
+
+    uploaded_at = datetime.datetime.now(datetime.timezone.utc)
+    # The media side is the one expected to CHANGE -- the db side's decisive
+    # answer (still present) is valid from the moment setup finishes, since
+    # nothing legitimate removes it sooner than its own long rule allows.
+    earliest_decisive_check = uploaded_at + datetime.timedelta(days=media_noncurrent_days + 1)
+    receipt = {
+        "bucket": bucket,
+        "endpoint": endpoint,
+        "region": region,
+        "media_noncurrent_days": media_noncurrent_days,
+        "db_noncurrent_days": db_noncurrent_days,
+        "uploaded_at": uploaded_at.isoformat(),
+        "earliest_decisive_check": earliest_decisive_check.isoformat(),
+        "prefixes": receipt_prefixes,
+    }
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+
+    return (
+        f"prefix-split setup complete on {bucket}: versioning enabled, two-rule split applied "
+        f"(media/ NoncurrentDays={media_noncurrent_days}, dumps/ (representing dumps/+binlogs/) "
+        f"NoncurrentDays={db_noncurrent_days}); under each prefix, a control object plus a "
+        f"noncurrent version from an overwrite and one from a delete were created and their "
+        f"version ids recorded.\n"
+        f"Receipt written to {receipt_path}.\n"
+        f"Run `check-split` no earlier than {earliest_decisive_check.isoformat()}."
+    )
+
+
 def _head(*, host: str, region: str, access_key: str, secret_key: str, bucket: str, key: str):
     return signed_request(
         method="HEAD", endpoint=host, region=region, access_key=access_key,
@@ -489,6 +792,106 @@ def check(*, receipt_path: pathlib.Path, access_key: str, secret_key: str) -> st
     )
 
 
+def check_prefix_split(*, receipt_path: pathlib.Path, access_key: str, secret_key: str) -> str:
+    """See the module docstring's PREFIX-SPLIT MODE section for the full
+    decision table. PASS requires every current object on both prefixes to
+    still answer, media/'s two noncurrent version ids to be GONE, and the
+    db-style prefix's two noncurrent version ids to still be PRESENT --
+    anything else is FAIL or INCONCLUSIVE."""
+    if not receipt_path.exists():
+        raise ProbeInputError(f"{receipt_path} does not exist -- run `setup-split` first")
+    receipt = json.loads(receipt_path.read_text())
+    assert_bucket_is_disposable(receipt["bucket"])
+    host = _bare_host(receipt["endpoint"])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    earliest = datetime.datetime.fromisoformat(receipt["earliest_decisive_check"])
+    elapsed = now - datetime.datetime.fromisoformat(receipt["uploaded_at"])
+
+    results: dict[str, dict] = {}
+    for label, info in receipt["prefixes"].items():
+        control_status, _ = _head(
+            host=host, region=receipt["region"], access_key=access_key, secret_key=secret_key,
+            bucket=receipt["bucket"], key=info["control_key"],
+        )
+        versions = _list_object_versions(
+            host=host, region=receipt["region"], access_key=access_key, secret_key=secret_key,
+            bucket=receipt["bucket"], prefix=info["prefix"],
+        )
+        present_ids = {v["version_id"] for v in versions}
+        results[label] = {
+            "control_survives": control_status == 200,
+            "noncurrent_present": info["noncurrent_version_id"] in present_ids,
+            "deleted_prior_present": info["deleted_prior_version_id"] in present_ids,
+            "current_of_noncurrent_present": any(
+                v["key"] == info["noncurrent_key"] and v["kind"] == "version" and v["is_latest"]
+                for v in versions
+            ),
+            "delete_marker_present": any(
+                v["key"] == info["deleted_key"] and v["kind"] == "delete_marker" and v["is_latest"]
+                for v in versions
+            ),
+        }
+
+    media, db = results["media"], results["db"]
+    all_currents_present = all(
+        r[field]
+        for r in (media, db)
+        for field in ("control_survives", "current_of_noncurrent_present", "delete_marker_present")
+    )
+    media_pruned = not media["noncurrent_present"] and not media["deleted_prior_present"]
+    db_intact = db["noncurrent_present"] and db["deleted_prior_present"]
+
+    detail = (
+        f"media: control={'survives' if media['control_survives'] else 'GONE'} "
+        f"current={'survives' if media['current_of_noncurrent_present'] else 'GONE'} "
+        f"delete-marker={'survives' if media['delete_marker_present'] else 'GONE'} "
+        f"noncurrent-overwrite={'present' if media['noncurrent_present'] else 'pruned'} "
+        f"noncurrent-from-delete={'present' if media['deleted_prior_present'] else 'pruned'}; "
+        f"db: control={'survives' if db['control_survives'] else 'GONE'} "
+        f"current={'survives' if db['current_of_noncurrent_present'] else 'GONE'} "
+        f"delete-marker={'survives' if db['delete_marker_present'] else 'GONE'} "
+        f"noncurrent-overwrite={'present' if db['noncurrent_present'] else 'pruned'} "
+        f"noncurrent-from-delete={'present' if db['deleted_prior_present'] else 'pruned'}"
+    )
+    early_warning = "" if now >= earliest else (
+        f"\nWARNING: this is {elapsed} after upload, before the earliest decisive check time "
+        f"{receipt['earliest_decisive_check']}. media/ not yet pruned is not yet decisive this "
+        f"early -- the daily lifecycle pass may not have run. Any current object missing, or "
+        f"the db-style prefix losing a noncurrent version, is still decisive even this early."
+    )
+
+    if not all_currents_present:
+        return (
+            f"FAIL ({elapsed} after upload, {detail}): a CURRENT object is missing on at least "
+            f"one prefix. No reading of either rule predicts a current object's removal -- "
+            f"investigate rather than attribute this to the split working or not."
+        )
+    if media_pruned and db_intact:
+        return (
+            f"PASS ({elapsed} after upload, {detail}): media/'s noncurrent content was pruned "
+            f"by its own short rule; the db-style prefix's noncurrent content was left alone by "
+            f"its own long rule. The two rules stayed independent -- record this in "
+            f"14-hetzner-migration-programme.md section 16.{early_warning}"
+        )
+    if not media_pruned and db_intact:
+        verdict = "INCONCLUSIVE" if now < earliest else "FAIL"
+        return (
+            f"{verdict} ({elapsed} after upload, {detail}): media/'s noncurrent content has not "
+            f"been pruned. {'Not yet decisive this early.' if verdict == 'INCONCLUSIVE' else 'Past the earliest decisive check time and still not pruned -- the media/ rule is not acting as expected.'}{early_warning}"
+        )
+    if media_pruned and not db_intact:
+        return (
+            f"FAIL ({elapsed} after upload, {detail}): the db-style prefix's noncurrent content "
+            f"was pruned even though its own rule sets a 35-day expiry -- the two rules are NOT "
+            f"staying independent. Stop and escalate to Rob before touching any live bucket."
+        )
+    return (
+        f"INCONCLUSIVE ({elapsed} after upload, {detail}): neither prefix behaved as either "
+        f"reading predicts. Investigate the bucket itself before drawing any "
+        f"conclusion.{early_warning}"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -511,6 +914,26 @@ def main(argv: list[str] | None = None) -> int:
     # the receipt `setup` wrote, so `check` cannot be pointed at a bucket
     # other than the one it uploaded to by a mistyped flag.
 
+    split_setup_parser = subparsers.add_parser(
+        "setup-split", help="prefix-split mode: apply the real two-rule shape and the canaries"
+    )
+    split_setup_parser.add_argument("--bucket", required=True)
+    split_setup_parser.add_argument("--endpoint", default="https://hel1.your-objectstorage.com")
+    split_setup_parser.add_argument("--region", default="hel1")
+    split_setup_parser.add_argument(
+        "--media-noncurrent-days", type=int, default=SPLIT_MEDIA_NONCURRENT_DAYS
+    )
+    split_setup_parser.add_argument(
+        "--db-noncurrent-days", type=int, default=SPLIT_DB_NONCURRENT_DAYS
+    )
+    split_setup_parser.add_argument("--receipt", required=True, type=pathlib.Path)
+
+    split_check_parser = subparsers.add_parser(
+        "check-split", help="prefix-split mode: read back both prefixes and give a verdict"
+    )
+    split_check_parser.add_argument("--receipt", required=True, type=pathlib.Path)
+    # No --bucket/--endpoint/--region here either -- same reasoning as `check`.
+
     args = parser.parse_args(argv)
 
     access_key = os.environ.get("AWS_ACCESS_KEY_ID")
@@ -527,8 +950,19 @@ def main(argv: list[str] | None = None) -> int:
                 noncurrent_days=args.noncurrent_days, receipt_path=args.receipt,
                 rule_shape=args.rule_shape,
             )
-        else:
+        elif args.command == "check":
             report = check(receipt_path=args.receipt, access_key=access_key, secret_key=secret_key)
+        elif args.command == "setup-split":
+            report = setup_prefix_split(
+                bucket=args.bucket, endpoint=args.endpoint, region=args.region,
+                access_key=access_key, secret_key=secret_key,
+                media_noncurrent_days=args.media_noncurrent_days,
+                db_noncurrent_days=args.db_noncurrent_days, receipt_path=args.receipt,
+            )
+        else:
+            report = check_prefix_split(
+                receipt_path=args.receipt, access_key=access_key, secret_key=secret_key
+            )
     except (ProbeInputError, ObjectStorageError) as error:
         print(f"probe-media-lifecycle-expiration: {error}", file=sys.stderr)
         return 1

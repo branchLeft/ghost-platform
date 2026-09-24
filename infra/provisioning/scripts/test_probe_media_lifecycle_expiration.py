@@ -328,5 +328,412 @@ class TestMainRequiresBothCredentialEnvVars(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+def _versions_xml(entries):
+    """`entries`: list of (key, version_id, is_latest, kind) where kind is
+    "version" or "delete_marker". Builds the ListVersions XML body
+    `_list_object_versions` parses -- shaped like Hetzner's real RGW
+    response, per verify-bucket-fence.py's already-proven reading of it."""
+    body = ['<?xml version="1.0" encoding="UTF-8"?>', "<ListVersionsResult>"]
+    for key, version_id, is_latest, kind in entries:
+        tag = "DeleteMarker" if kind == "delete_marker" else "Version"
+        body.append(
+            f"<{tag}><Key>{key}</Key><VersionId>{version_id}</VersionId>"
+            f"<IsLatest>{'true' if is_latest else 'false'}</IsLatest></{tag}>"
+        )
+    body.append("<IsTruncated>false</IsTruncated>")
+    body.append("</ListVersionsResult>")
+    return "".join(body).encode()
+
+
+class TestListObjectVersions(unittest.TestCase):
+    def test_parses_versions_and_delete_markers_with_is_latest(self):
+        xml = _versions_xml(
+            [
+                ("media/control/canary", "v-current", True, "version"),
+                ("media/noncurrent/canary", "v-new", True, "version"),
+                ("media/noncurrent/canary", "v-old", False, "version"),
+                ("media/deleted/canary", "v-marker", True, "delete_marker"),
+                ("media/deleted/canary", "v-prior", False, "version"),
+            ]
+        )
+        with mock.patch.object(probe, "signed_request", return_value=(200, xml)):
+            versions = probe._list_object_versions(
+                host="h", region="hel1", access_key=ACCESS_KEY, secret_key=SECRET_KEY,
+                bucket=DISPOSABLE_BUCKET, prefix="media/",
+            )
+        self.assertEqual(len(versions), 5)
+        noncurrent = [v for v in versions if v["key"] == "media/noncurrent/canary" and not v["is_latest"]]
+        self.assertEqual(noncurrent, [{"key": "media/noncurrent/canary", "version_id": "v-old", "is_latest": False, "kind": "version"}])
+        marker = [v for v in versions if v["kind"] == "delete_marker"]
+        self.assertEqual(marker[0]["version_id"], "v-marker")
+        self.assertTrue(marker[0]["is_latest"])
+
+    def test_paginates_on_truncation(self):
+        page1 = (
+            '<?xml version="1.0"?><ListVersionsResult>'
+            '<Version><Key>media/a</Key><VersionId>1</VersionId><IsLatest>true</IsLatest></Version>'
+            "<IsTruncated>true</IsTruncated><NextKeyMarker>media/a</NextKeyMarker>"
+            "<NextVersionIdMarker>1</NextVersionIdMarker></ListVersionsResult>"
+        ).encode()
+        page2 = _versions_xml([("media/b", "2", True, "version")])
+        responses = iter([(200, page1), (200, page2)])
+        with mock.patch.object(probe, "signed_request", side_effect=lambda **k: next(responses)):
+            versions = probe._list_object_versions(
+                host="h", region="hel1", access_key=ACCESS_KEY, secret_key=SECRET_KEY,
+                bucket=DISPOSABLE_BUCKET, prefix="media/",
+            )
+        self.assertEqual([v["key"] for v in versions], ["media/a", "media/b"])
+
+    def test_truncated_with_no_marker_raises_rather_than_under_reporting(self):
+        page1 = (
+            '<?xml version="1.0"?><ListVersionsResult>'
+            '<Version><Key>media/a</Key><VersionId>1</VersionId><IsLatest>true</IsLatest></Version>'
+            "<IsTruncated>true</IsTruncated></ListVersionsResult>"
+        ).encode()
+        with mock.patch.object(probe, "signed_request", return_value=(200, page1)):
+            with self.assertRaises(probe.ObjectStorageError):
+                probe._list_object_versions(
+                    host="h", region="hel1", access_key=ACCESS_KEY, secret_key=SECRET_KEY,
+                    bucket=DISPOSABLE_BUCKET, prefix="media/",
+                )
+
+    def test_a_non_2xx_response_raises(self):
+        with mock.patch.object(probe, "signed_request", return_value=(403, b"AccessDenied")):
+            with self.assertRaises(probe.ObjectStorageError):
+                probe._list_object_versions(
+                    host="h", region="hel1", access_key=ACCESS_KEY, secret_key=SECRET_KEY,
+                    bucket=DISPOSABLE_BUCKET, prefix="media/",
+                )
+
+
+class TestOnlyNoncurrentVersionId(unittest.TestCase):
+    def test_returns_the_single_noncurrent_version(self):
+        versions = [
+            {"key": "k", "version_id": "new", "is_latest": True, "kind": "version"},
+            {"key": "k", "version_id": "old", "is_latest": False, "kind": "version"},
+        ]
+        self.assertEqual(probe._only_noncurrent_version_id(versions, "k"), "old")
+
+    def test_zero_matches_raises(self):
+        with self.assertRaises(probe.ObjectStorageError):
+            probe._only_noncurrent_version_id([], "k")
+
+    def test_two_matches_raises(self):
+        versions = [
+            {"key": "k", "version_id": "old1", "is_latest": False, "kind": "version"},
+            {"key": "k", "version_id": "old2", "is_latest": False, "kind": "version"},
+        ]
+        with self.assertRaises(probe.ObjectStorageError):
+            probe._only_noncurrent_version_id(versions, "k")
+
+    def test_a_delete_marker_is_not_counted_as_a_noncurrent_version(self):
+        versions = [
+            {"key": "k", "version_id": "marker", "is_latest": True, "kind": "delete_marker"},
+            {"key": "k", "version_id": "old", "is_latest": False, "kind": "version"},
+        ]
+        self.assertEqual(probe._only_noncurrent_version_id(versions, "k"), "old")
+
+
+class TestPrefixSplitLifecycleDocument(unittest.TestCase):
+    """The literal two-rule shape db/provision/configure_backup_bucket.py's
+    own generator applies to the real bucket, mirrored here so this proof
+    tests the actual production config, not a proxy for it."""
+
+    def test_two_rules_scoped_to_media_and_a_db_style_prefix(self):
+        body = probe.prefix_split_lifecycle_document(1, 35).decode()
+        self.assertEqual(body.count("<Rule>"), 2)
+        self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", body)
+        self.assertIn("<Filter><Prefix>dumps/</Prefix></Filter>", body)
+
+    def test_no_abort_multipart_element_on_either_rule(self):
+        # configure_backup_bucket.py's own shape, not render-media-bucket-policy.py's.
+        body = probe.prefix_split_lifecycle_document(1, 35).decode()
+        self.assertNotIn("AbortIncompleteMultipartUpload", body)
+
+    def test_each_rule_carries_its_own_days(self):
+        body = probe.prefix_split_lifecycle_document(1, 35).decode()
+        self.assertIn("<Filter><Prefix>media/</Prefix></Filter><NoncurrentVersionExpiration><NoncurrentDays>1</NoncurrentDays>", body)
+        self.assertIn("<Filter><Prefix>dumps/</Prefix></Filter><NoncurrentVersionExpiration><NoncurrentDays>35</NoncurrentDays>", body)
+
+    def test_defaults_match_the_real_production_values(self):
+        body = probe.prefix_split_lifecycle_document().decode()
+        self.assertIn("<NoncurrentDays>1</NoncurrentDays>", body)
+        self.assertIn("<NoncurrentDays>35</NoncurrentDays>", body)
+
+
+class TestSetupPrefixSplit(unittest.TestCase):
+    def _run(self, tmp, **overrides):
+        kwargs = dict(
+            bucket=DISPOSABLE_BUCKET,
+            endpoint="https://hel1.your-objectstorage.com",
+            region="hel1",
+            access_key=ACCESS_KEY,
+            secret_key=SECRET_KEY,
+            receipt_path=pathlib.Path(tmp) / "receipt.json",
+        )
+        kwargs.update(overrides)
+        return probe.setup_prefix_split(**kwargs)
+
+    def _fake_transport(self):
+        """A minimal fake that tracks PUT/DELETE writes and answers `?versions`
+        listings from what was actually written, so `setup_prefix_split`'s own
+        version-id bookkeeping is exercised against real-shaped responses,
+        not a canned XML fixture."""
+        store: dict[str, list[str]] = {}  # key -> ordered list of "version ids" (content markers)
+        deleted_markers: dict[str, str] = {}
+        counter = {"n": 0}
+
+        def fake(**kwargs):
+            method = kwargs["method"]
+            if method == "PUT" and kwargs.get("query") is None and kwargs.get("key"):
+                key = kwargs["key"]
+                counter["n"] += 1
+                # A GLOBALLY unique version id, not a per-key counter -- a
+                # per-key "v0" would collide across different keys (the
+                # noncurrent/ and deleted/ objects each start their own
+                # count from zero), exactly the ambiguity
+                # _only_noncurrent_version_id exists to refuse in the real
+                # code and must not be accidentally reintroduced by a sloppy
+                # test fixture.
+                store.setdefault(key, []).append(f"v{counter['n']}")
+                return 200, b""
+            if method == "DELETE":
+                key = kwargs["key"]
+                marker = f"marker-{key}"
+                deleted_markers[key] = marker
+                return 204, b""
+            if method == "PUT" and kwargs.get("query"):
+                return 200, b""  # versioning / lifecycle
+            if method == "GET" and kwargs.get("query") and "versions" in kwargs["query"]:
+                prefix = kwargs["query"].get("prefix", "")
+                entries = []
+                for key, vids in store.items():
+                    if not key.startswith(prefix):
+                        continue
+                    if key in deleted_markers:
+                        entries.append((key, deleted_markers[key], True, "delete_marker"))
+                        for i, vid in enumerate(vids):
+                            entries.append((key, vid, False, "version"))
+                    else:
+                        for i, vid in enumerate(vids):
+                            entries.append((key, vid, i == len(vids) - 1, "version"))
+                return 200, _versions_xml(entries)
+            raise AssertionError(f"unexpected call: {kwargs}")
+
+        return fake
+
+    def test_writes_a_receipt_naming_both_prefixes_with_one_noncurrent_id_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(probe, "signed_request", side_effect=self._fake_transport()):
+                self._run(tmp)
+            receipt = json.loads((pathlib.Path(tmp) / "receipt.json").read_text())
+        self.assertEqual(set(receipt["prefixes"]), {"media", "db"})
+        for label, prefix in (("media", "media/"), ("db", "dumps/")):
+            info = receipt["prefixes"][label]
+            self.assertEqual(info["prefix"], prefix)
+            self.assertTrue(info["noncurrent_version_id"])
+            self.assertTrue(info["deleted_prior_version_id"])
+            self.assertNotEqual(info["noncurrent_version_id"], info["deleted_prior_version_id"])
+
+    def test_a_second_setup_against_an_existing_receipt_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(probe, "signed_request", side_effect=self._fake_transport()):
+                self._run(tmp)
+                with self.assertRaises(probe.ProbeInputError):
+                    self._run(tmp)
+
+    def test_a_non_disposable_bucket_is_refused_before_any_request(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(probe, "signed_request", side_effect=lambda **k: calls.append(k)):
+                with self.assertRaises(probe.ProbeInputError):
+                    self._run(tmp, bucket="branchleft-media-blog")
+        self.assertEqual(calls, [])
+
+    def test_earliest_decisive_check_is_based_on_the_media_days_not_the_db_days(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(probe, "signed_request", side_effect=self._fake_transport()):
+                self._run(tmp, media_noncurrent_days=1, db_noncurrent_days=35)
+            receipt = json.loads((pathlib.Path(tmp) / "receipt.json").read_text())
+        import datetime as _dt
+
+        uploaded = _dt.datetime.fromisoformat(receipt["uploaded_at"])
+        earliest = _dt.datetime.fromisoformat(receipt["earliest_decisive_check"])
+        self.assertEqual((earliest - uploaded).days, 2)  # media_noncurrent_days(1) + 1
+
+
+class TestCheckPrefixSplit(unittest.TestCase):
+    def _receipt(self, tmp, **overrides):
+        data = {
+            "bucket": DISPOSABLE_BUCKET,
+            "endpoint": "https://hel1.your-objectstorage.com",
+            "region": "hel1",
+            "media_noncurrent_days": 1,
+            "db_noncurrent_days": 35,
+            "uploaded_at": "2026-08-01T00:00:00+00:00",
+            "earliest_decisive_check": "2026-08-03T00:00:00+00:00",
+            "prefixes": {
+                "media": {
+                    "prefix": "media/",
+                    "control_key": "media/control/canary",
+                    "noncurrent_key": "media/noncurrent/canary",
+                    "noncurrent_version_id": "media-noncurrent-old",
+                    "deleted_key": "media/deleted/canary",
+                    "deleted_prior_version_id": "media-deleted-prior",
+                },
+                "db": {
+                    "prefix": "dumps/",
+                    "control_key": "dumps/control/canary",
+                    "noncurrent_key": "dumps/noncurrent/canary",
+                    "noncurrent_version_id": "db-noncurrent-old",
+                    "deleted_key": "dumps/deleted/canary",
+                    "deleted_prior_version_id": "db-deleted-prior",
+                },
+            },
+        }
+        data.update(overrides)
+        path = pathlib.Path(tmp) / "receipt.json"
+        path.write_text(json.dumps(data))
+        return path
+
+    def _check(self, receipt_path, *, media_versions, db_versions, control_status=200):
+        def fake(**kwargs):
+            if kwargs["method"] == "HEAD":
+                return control_status, b""
+            prefix = kwargs["query"]["prefix"]
+            entries = media_versions if prefix == "media/" else db_versions
+            return 200, _versions_xml(entries)
+
+        with mock.patch.object(probe, "signed_request", side_effect=fake):
+            return probe.check_prefix_split(
+                receipt_path=receipt_path, access_key=ACCESS_KEY, secret_key=SECRET_KEY
+            )
+
+    def _all_current_pruned_media(self):
+        # media/'s two noncurrent ids are ABSENT (pruned); currents present.
+        media = [
+            ("media/noncurrent/canary", "media-noncurrent-new", True, "version"),
+            ("media/deleted/canary", "media-delete-marker", True, "delete_marker"),
+        ]
+        return media
+
+    def _db_intact(self):
+        db = [
+            ("dumps/noncurrent/canary", "db-noncurrent-new", True, "version"),
+            ("dumps/noncurrent/canary", "db-noncurrent-old", False, "version"),
+            ("dumps/deleted/canary", "db-delete-marker", True, "delete_marker"),
+            ("dumps/deleted/canary", "db-deleted-prior", False, "version"),
+        ]
+        return db
+
+    def test_media_pruned_db_intact_currents_present_is_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = self._receipt(tmp, earliest_decisive_check="2000-01-01T00:00:00+00:00")
+            verdict = self._check(
+                receipt_path, media_versions=self._all_current_pruned_media(), db_versions=self._db_intact()
+            )
+        self.assertIn("PASS", verdict)
+
+    def test_media_not_pruned_before_earliest_is_inconclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            far_future = "2999-01-01T00:00:00+00:00"
+            receipt_path = self._receipt(tmp, earliest_decisive_check=far_future)
+            verdict = self._check(receipt_path, media_versions=self._db_intact_like_media(), db_versions=self._db_intact())
+        self.assertIn("INCONCLUSIVE", verdict)
+        self.assertNotIn("PASS", verdict)
+
+    def _db_intact_like_media(self):
+        return [
+            ("media/noncurrent/canary", "media-noncurrent-new", True, "version"),
+            ("media/noncurrent/canary", "media-noncurrent-old", False, "version"),
+            ("media/deleted/canary", "media-delete-marker", True, "delete_marker"),
+            ("media/deleted/canary", "media-deleted-prior", False, "version"),
+        ]
+
+    def test_media_not_pruned_after_earliest_is_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = self._receipt(tmp, earliest_decisive_check="2000-01-01T00:00:00+00:00")
+            verdict = self._check(
+                receipt_path, media_versions=self._db_intact_like_media(), db_versions=self._db_intact()
+            )
+        self.assertIn("FAIL", verdict)
+        self.assertNotIn("PASS", verdict)
+
+    def test_db_pruned_is_always_fail_and_says_escalate(self):
+        # The dangerous case: the long rule expired early, meaning the two
+        # rules are not staying independent -- never a PASS at any time.
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = self._receipt(tmp, earliest_decisive_check="2000-01-01T00:00:00+00:00")
+            verdict = self._check(
+                receipt_path, media_versions=self._all_current_pruned_media(),
+                db_versions=self._all_current_pruned_media_as_db(),
+            )
+        self.assertIn("FAIL", verdict)
+        self.assertIn("escalate to Rob", verdict)
+
+    def _all_current_pruned_media_as_db(self):
+        return [
+            ("dumps/noncurrent/canary", "db-noncurrent-new", True, "version"),
+            ("dumps/deleted/canary", "db-delete-marker", True, "delete_marker"),
+        ]
+
+    def test_a_missing_current_object_is_fail_never_pass_or_reading_attributed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = self._receipt(tmp, earliest_decisive_check="2000-01-01T00:00:00+00:00")
+            verdict = self._check(
+                receipt_path, media_versions=self._all_current_pruned_media(), db_versions=self._db_intact(),
+                control_status=404,
+            )
+        self.assertIn("FAIL", verdict)
+        self.assertNotIn("PASS", verdict)
+
+    def test_check_split_without_a_receipt_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = pathlib.Path(tmp) / "does-not-exist.json"
+            with self.assertRaises(probe.ProbeInputError):
+                probe.check_prefix_split(receipt_path=missing, access_key=ACCESS_KEY, secret_key=SECRET_KEY)
+
+    def test_check_split_refuses_a_receipt_naming_a_non_probe_bucket(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = self._receipt(tmp, bucket="branchleft-media-blog")
+            with mock.patch.object(probe, "signed_request", side_effect=lambda **k: calls.append(k)):
+                with self.assertRaises(probe.ProbeInputError):
+                    probe.check_prefix_split(
+                        receipt_path=receipt_path, access_key=ACCESS_KEY, secret_key=SECRET_KEY
+                    )
+        self.assertEqual(calls, [])
+
+
+class TestPrefixSplitCLIWiring(unittest.TestCase):
+    def test_setup_split_and_check_split_are_reachable_from_main(self):
+        with mock.patch.object(probe, "setup_prefix_split", return_value="ok") as fake_setup:
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.dict(
+                    "os.environ", {"AWS_ACCESS_KEY_ID": ACCESS_KEY, "AWS_SECRET_ACCESS_KEY": SECRET_KEY}
+                ):
+                    code = probe.main(
+                        [
+                            "setup-split", "--bucket", DISPOSABLE_BUCKET,
+                            "--receipt", str(pathlib.Path(tmp) / "r.json"),
+                        ]
+                    )
+        self.assertEqual(code, 0)
+        fake_setup.assert_called_once()
+
+        with mock.patch.object(probe, "check_prefix_split", return_value="ok") as fake_check:
+            with mock.patch.dict(
+                "os.environ", {"AWS_ACCESS_KEY_ID": ACCESS_KEY, "AWS_SECRET_ACCESS_KEY": SECRET_KEY}
+            ):
+                code = probe.main(["check-split", "--receipt", "/tmp/r.json"])
+        self.assertEqual(code, 0)
+        fake_check.assert_called_once()
+
+    def test_check_split_has_no_bucket_flag_either(self):
+        with self.assertRaises(SystemExit) as cm:
+            probe.main(["check-split", "--receipt", "x", "--bucket", "branchleft-media-blog"])
+        self.assertEqual(cm.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
