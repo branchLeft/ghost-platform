@@ -34,7 +34,20 @@ declare module 'nodemailer/lib/addressparser/index.js' {
  * would compare unequal to "tenant.com".
  */
 function normalizeDomain(rawDomain: string): string | null {
-  const trimmed = rawDomain.trim().replace(/\.+$/, '');
+  // Trailing dots stripped by scanning for the cut point and slicing once,
+  // rather than a `\.+$/` regex or a slice-in-a-loop: the input is
+  // attacker-controlled (a header value with no length cap enforced
+  // upstream of this function). A trailing-anchored `+` quantifier is
+  // exactly the shape static analysis flags for ReDoS, and repeatedly
+  // slicing one character off a string of `k` trailing dots is its own
+  // O(n*k) trap — this single scan-then-slice is O(n) regardless of how
+  // many trailing dots the input carries.
+  const beforeTrim = rawDomain.trim();
+  let end = beforeTrim.length;
+  while (end > 0 && beforeTrim.charCodeAt(end - 1) === 46 /* '.' */) {
+    end--;
+  }
+  const trimmed = beforeTrim.slice(0, end);
   if (!trimmed) {
     return null;
   }
