@@ -796,6 +796,146 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(harness.store.countPendingRecipients()).toBe(0);
   });
 
+  describe('branchLeft/workspace#1062 — the visible sender is bound to the authenticated tenant', () => {
+    it("refuses an envelope sender (MAIL FROM) outside the authenticated tenant's domain, with 553 5.7.1, and queues nothing", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      await expect(
+        transport.sendMail({
+          from: 'Attacker <noreply@evil.example>',
+          to: 'member@example.com',
+          subject: 'Envelope spoof',
+          text: 'hi',
+        })
+      ).rejects.toMatchObject({ responseCode: 553 });
+
+      expect(harness.store.countPendingRecipients()).toBe(0);
+    });
+
+    it("CONTROL: the tenant's own domain, as both envelope and header From, is accepted and enqueued", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      const info = await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        to: 'member@example.com',
+        subject: 'Legitimate',
+        text: 'hi',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      expect(harness.store.countPendingRecipients()).toBe(1);
+    });
+
+    it("refuses a header From outside the tenant's domain even when the envelope sender is legitimate, with 550 5.7.1, and queues nothing", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      await expect(
+        transport.sendMail({
+          envelope: { from: 'noreply@tenant-a.example.com', to: 'member@example.com' },
+          from: 'Attacker <noreply@evil.example>',
+          to: 'member@example.com',
+          subject: 'Header From spoof',
+          text: 'hi',
+        })
+      ).rejects.toMatchObject({ responseCode: 550 });
+
+      expect(harness.store.countPendingRecipients()).toBe(0);
+    });
+
+    it("refuses a header Sender outside the tenant's domain even when From and envelope are both legitimate, with 550 5.7.1, and queues nothing", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      await expect(
+        transport.sendMail({
+          from: 'Tenant A <noreply@tenant-a.example.com>',
+          sender: 'Attacker <noreply@evil.example>',
+          to: 'member@example.com',
+          subject: 'Header Sender spoof',
+          text: 'hi',
+        })
+      ).rejects.toMatchObject({ responseCode: 550 });
+
+      expect(harness.store.countPendingRecipients()).toBe(0);
+    });
+
+    it("accepts Ghost's real transactional sender shape for a tenant (mailFrom exactly as configured in ghost-tenant-blog's Pulumi.blog.yaml) and queues it", async () => {
+      // `blog-infra:mailFrom: branchLeft blog <blog@branchleft.co.uk>` is the
+      // live value for branchLeft's own tenant-zero blog — copied verbatim,
+      // not paraphrased, so this proves the exact real shape is never
+      // refused. The credential identity (AUTH username = the tenant's
+      // registered domain) mirrors this suite's own existing convention,
+      // e.g. 'tenant-a.example.com' above — every other test in this file
+      // authenticates the same way.
+      harness = await startHarness();
+      harness.store.registerTenant('branchleft.co.uk', 'blog-key');
+      const transport = client(harness.port, 'branchleft.co.uk', 'blog-key');
+
+      const info = await transport.sendMail({
+        from: 'branchLeft blog <blog@branchleft.co.uk>',
+        to: 'member@example.com',
+        subject: 'Your sign-in link',
+        text: 'Click here',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      expect(harness.store.countPendingRecipients()).toBe(1);
+    });
+
+    it('falls back to the already-verified envelope sender when a message has no header From at all — nothing left to spoof, so it is not refused', async () => {
+      // Same minimal-message shape as the pre-existing "falls back to the
+      // envelope sender" test above, retained deliberately: a header From
+      // is only checked when it is actually present (see smtpFrontDoor.ts's
+      // own comment on this), so this must still succeed after #1062.
+      harness = await startHarness();
+      const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+
+      const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+        'EHLO test',
+        `AUTH PLAIN ${authPlain}`,
+        'MAIL FROM:<envelope-sender@tenant-a.example.com>',
+        'RCPT TO:<member@example.com>',
+        'DATA',
+        'To: member@example.com\r\n\r\n.',
+      ]);
+
+      expect(responses.some((line) => /^250 /.test(line))).toBe(true);
+      expect(harness.store.countPendingRecipients()).toBe(1);
+    });
+
+    it('an enqueue failure (e.g. a SQLite error) returns a generic temporary 4xx, never the raw internal error text, over the real SMTP wire', async () => {
+      harness = await startHarness();
+      const enqueueSpy = vi.spyOn(harness.store, 'enqueueBatch').mockImplementation(() => {
+        throw new Error(
+          'SQLITE_CONSTRAINT: UNIQUE constraint failed: queue_recipients.batch_id, queue_recipients.recipient'
+        );
+      });
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      let caught: (Error & { responseCode?: number }) | undefined;
+      try {
+        await transport.sendMail({
+          from: 'Tenant A <noreply@tenant-a.example.com>',
+          to: 'member@example.com',
+          subject: 'Hi',
+          text: 'hi',
+        });
+      } catch (err) {
+        caught = err as Error & { responseCode?: number };
+      }
+
+      expect(caught).toBeDefined();
+      expect(caught!.responseCode).toBe(450);
+      expect(caught!.message).not.toMatch(/SQLITE|constraint/i);
+      expect(harness.store.countPendingRecipients()).toBe(0);
+
+      enqueueSpy.mockRestore();
+    });
+  });
+
   it("rejects group/list-syntax recipient syntax (smtp-server's own grammar refuses it before this front door sees it)", async () => {
     harness = await startHarness();
     const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');

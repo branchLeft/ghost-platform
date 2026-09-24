@@ -209,6 +209,71 @@ describe('mailgun-shaped shim', () => {
     ).rejects.toMatchObject({ status: 401 });
   });
 
+  it("refuses a From whose domain is not the authenticated tenant's, through the real HTTP route, and queues nothing", async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: 'Attacker <noreply@evil.example>',
+        subject: 'Spoofed',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  it("CONTROL: the tenant's own domain is accepted through the same real HTTP route", async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      subject: 'Legitimate',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.subject).toBe('Legitimate');
+  });
+
+  it('refuses an h:Reply-To override naming a foreign domain, through the real HTTP route, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        'h:Reply-To': 'reply@evil.example',
+        subject: 'Reply-To spoof',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  it('refuses an h:Sender override naming a foreign domain, through the real HTTP route, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        'h:Sender': 'sender@evil.example',
+        subject: 'Sender spoof',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
   it('a recipient listed twice in one send (well-formed — real Mailgun tolerates this) delivers exactly once and the shim stays up for the next request', async () => {
     // mailgun.js serialises each array entry as its own repeated multipart
     // field (see mailgunFields.ts's own docstring on this) — sending the

@@ -208,6 +208,107 @@ describe('POST /v3/:domain/messages', () => {
     recordSentSpy.mockRestore();
   });
 
+  it("refuses a 'from' address whose domain is not the authenticated tenant's, and queues nothing", async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'Attacker <noreply@evil.example>'],
+        ['subject', 'Spoofed'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(400);
+    await worker.whenIdle();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a 'from' address at the tenant's own domain is accepted", async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `Tenant <noreply@${DOMAIN}>`],
+        ['subject', 'Legitimate'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+    await worker.whenIdle();
+    expect(sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an h:Reply-To override naming a foreign domain, and queues nothing', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `noreply@${DOMAIN}`],
+        ['h:Reply-To', 'reply@evil.example'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(400);
+    await worker.whenIdle();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('refuses an h:Sender override naming a foreign domain, and queues nothing', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `noreply@${DOMAIN}`],
+        ['h:Sender', 'sender@evil.example'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(400);
+    await worker.whenIdle();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('catches an h:Sender override spelled with different casing — the check is case-insensitive on the header name, not just the domain', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `noreply@${DOMAIN}`],
+        ['h:sender', 'sender@evil.example'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(400);
+    await worker.whenIdle();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: an h:Reply-To/h:Sender at the tenant's own domain is accepted", async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `noreply@${DOMAIN}`],
+        ['h:Reply-To', `support@${DOMAIN}`],
+        ['h:Sender', `noreply@${DOMAIN}`],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+    await worker.whenIdle();
+    expect(sendMail).toHaveBeenCalledTimes(1);
+  });
+
   it('401s without valid tenant credentials, and never attempts delivery', async () => {
     const res = await fetch(`${server.baseUrl}/v3/${DOMAIN}/messages`, {
       method: 'POST',
