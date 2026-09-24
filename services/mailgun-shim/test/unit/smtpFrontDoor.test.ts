@@ -614,9 +614,9 @@ describe('SMTP front door — acceptance into the durable queue', () => {
   });
 
   it('the enqueued row carries the authenticated tenant as its domain, taken from the credential rather than re-derived from the message body', async () => {
-    // Pre-branchLeft/workspace#1062, this test's From used a domain
-    // unrelated to the credential entirely, to prove `due[0].domain` came
-    // from `session.user` and not from parsing the message. #1062's control
+    // This test's From used to be a domain unrelated to the credential
+    // entirely, to prove `due[0].domain` came from `session.user` and not
+    // from parsing the message. The sender-binding control
     // (senderBelongsToTenant in onMailFrom/onData) now refuses that
     // combination outright — a foreign-domain From can no longer reach the
     // queue at all, on either credential — so the two are inseparable for a
@@ -639,14 +639,14 @@ describe('SMTP front door — acceptance into the durable queue', () => {
   });
 
   it('two credentials, each sending as their own domain, are still throttled and queued as two separate submitters', async () => {
-    // Pre-#1062, both slots sent `From:` one shared demo domain neither of
+    // Both slots used to send `From:` one shared demo domain neither of
     // them owned, to prove throttle/queue identity is the authenticated
     // credential (tenants.domain, the AUTH username) and never anything the
-    // message body claims. #1062's control now requires each From to
-    // belong to its own sender's domain, so the shared-domain shape is gone
-    // — each slot sends as itself instead, which still proves the same
-    // property: two different credentials are attributed, ceilinged and
-    // queued independently rather than being merged onto one identity.
+    // message body claims. The sender-binding control now requires each
+    // From to belong to its own sender's domain, so the shared-domain shape
+    // is gone — each slot sends as itself instead, which still proves the
+    // same property: two different credentials are attributed, ceilinged
+    // and queued independently rather than being merged onto one identity.
     harness = await startHarness({ submitterMessagesPerMinute: 1 });
     const slotA = client(harness.port, 'tenant-a.example.com', 'key-a');
     const slotB = client(harness.port, 'tenant-b.example.com', 'key-b');
@@ -796,7 +796,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(harness.store.countPendingRecipients()).toBe(0);
   });
 
-  describe('branchLeft/workspace#1062 — the visible sender is bound to the authenticated tenant', () => {
+  describe('the visible sender is bound to the authenticated tenant', () => {
     it("refuses an envelope sender (MAIL FROM) outside the authenticated tenant's domain, with 553 5.7.1, and queues nothing", async () => {
       harness = await startHarness();
       const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
@@ -889,7 +889,8 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       // Same minimal-message shape as the pre-existing "falls back to the
       // envelope sender" test above, retained deliberately: a header From
       // is only checked when it is actually present (see smtpFrontDoor.ts's
-      // own comment on this), so this must still succeed after #1062.
+      // own comment on this), so this must still succeed under the
+      // sender-binding control too.
       harness = await startHarness();
       const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
 

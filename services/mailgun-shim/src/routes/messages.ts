@@ -76,14 +76,13 @@ export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log
         return;
       }
 
-      // A tenant credential may only send as its own domain (branchLeft/workspace#1062,
-      // Rob's ruling: the shim's intake refuses any header From or envelope
-      // sender whose domain isn't the authenticated tenant's, on both
-      // routes — mustMatchSender at mx1 can only bind the envelope to the
-      // shim's own relaying login, never to the tenant that submitted a
-      // given send, so this is the only hop that can enforce it). A real
-      // Mailgun 400 for "not a valid address" is the shape this mirrors —
-      // permanent, not one of the codes worth an automatic retry.
+      // A tenant credential may only send as its own domain — mx1's
+      // mustMatchSender binds the envelope to the shim's own relaying
+      // login once mail leaves this process, never to the tenant that
+      // submitted a given send, so this intake is the only hop that can
+      // still tell tenants apart. A real Mailgun 400 for "not a valid
+      // address" is the shape this mirrors — permanent, not one of the
+      // codes worth an automatic retry.
       if (!senderBelongsToTenant(fields.from, domain)) {
         res.status(400).json({ message: `'from' address must belong to the domain ${domain}` });
         return;

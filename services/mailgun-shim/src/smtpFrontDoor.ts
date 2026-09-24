@@ -668,7 +668,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         return;
       }
       /* v8 ignore stop */
-      // The envelope half of branchLeft/workspace#1062: mustMatchSender at
+      // The envelope half of the sender-binding control: mustMatchSender at
       // mx1 can only bind the envelope to the shim's own relaying login
       // once mail leaves this process, never to which tenant credential
       // submitted it — this is the only hop that still knows that. A
@@ -871,7 +871,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
 
         void simpleParser(Buffer.concat(chunks))
           .then((parsed) => {
-            // The header half of branchLeft/workspace#1062. onMailFrom above
+            // The header half of the sender-binding control. onMailFrom above
             // already bound the envelope to this tenant, but a message's
             // VISIBLE identity is its header From (and, if present, Sender)
             // — a header this front door parses only now, from the body it
