@@ -46,6 +46,16 @@ class ReExportsTests(unittest.TestCase):
         with self.assertRaises(shared.ObjectStorageError):
             shared.get_object(key="k", transport=fake_transport, **COMMON)
 
+    def test_get_object_with_content_type_signs_and_returns_both(self):
+        def fake_transport(url, headers):
+            return 200, b"jpeg bytes", {"Content-Type": "image/jpeg"}
+
+        body, content_type = shared.get_object_with_content_type(
+            key="k", transport=fake_transport, **COMMON
+        )
+        self.assertEqual(body, b"jpeg bytes")
+        self.assertEqual(content_type, "image/jpeg")
+
     def test_put_object_signs_and_sends_the_payload(self):
         calls = []
 

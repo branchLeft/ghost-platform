@@ -2,8 +2,13 @@
 """Small object-storage primitives `media-backup-restore-proof.sh` needs and
 `media_backup_restore.py` deliberately does not expose -- reading one
 object's digest to verify what Ghost itself wrote, corrupting a backup
-object in place, and counting a bucket's objects for the "genuine destroy"
-and "backup skipped media" checks the proof performs.
+object in place, counting a bucket's objects for the "genuine destroy" and
+"backup skipped media" checks, and reading back the (opaque, content-
+addressed) backup key or the decrypted manifest for a live key the proof
+uploaded -- since the production module's own key scheme is deliberately not
+derivable from a live key by anyone outside it (that opacity is finding 2's
+own fix), the proof asks the module for its own key rather than
+reimplementing the derivation.
 
 Never imported by `media_backup_restore.py` or by anything that ships:
 this is proof-only tooling, kept separate so the production module's own
@@ -15,10 +20,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from media_backup_restore import (  # noqa: E402
+    _manifest_key,
+    _object_key_for_backup,
+    decrypt_with_age,
+)
 from shared_objectstorage import (  # noqa: E402
     ObjectStorageError,
     delete_object,
@@ -60,10 +71,36 @@ def main(argv: list[str] | None = None) -> int:
     _common_args(list_p)
     list_p.add_argument("--prefix")
 
+    manifest_p = sub.add_parser(
+        "manifest", help="decrypt and print one tenant's manifest as JSON"
+    )
+    manifest_p.add_argument("--endpoint", required=True)
+    manifest_p.add_argument("--region", required=True)
+    manifest_p.add_argument("--access-key", required=True)
+    manifest_p.add_argument("--secret-key", required=True)
+    manifest_p.add_argument("--bucket", required=True)
+    manifest_p.add_argument("--tenant", required=True)
+    manifest_p.add_argument("--identity-file", required=True)
+
+    backup_key_p = sub.add_parser(
+        "backup-object-key",
+        help="print the backup bucket key for a live object, given its SHA-256 (from `manifest`)",
+    )
+    backup_key_p.add_argument("--tenant", required=True)
+    backup_key_p.add_argument("--sha256", required=True)
+
     args = parser.parse_args(argv)
-    common = dict(
-        endpoint=args.endpoint, region=args.region, access_key=args.access_key,
-        secret_key=args.secret_key, bucket=args.bucket,
+    # Built lazily, per command: `backup-object-key` is pure local
+    # computation with none of these flags, so building this unconditionally
+    # from `args` would crash on that command alone.
+    needs_bucket_args = args.command in ("sha256", "corrupt", "delete", "count", "list")
+    common = (
+        dict(
+            endpoint=args.endpoint, region=args.region, access_key=args.access_key,
+            secret_key=args.secret_key, bucket=args.bucket,
+        )
+        if needs_bucket_args
+        else {}
     )
 
     try:
@@ -81,6 +118,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "list":
             for entry in list_objects(prefix=args.prefix, **common):
                 print(entry["key"])
+        elif args.command == "manifest":
+            ciphertext = get_object(
+                bucket=args.bucket, endpoint=args.endpoint, region=args.region,
+                access_key=args.access_key, secret_key=args.secret_key,
+                key=_manifest_key(args.tenant),
+            )
+            manifest = json.loads(
+                decrypt_with_age(data=ciphertext, identity_path=args.identity_file)
+            )
+            print(json.dumps(manifest, indent=2, sort_keys=True))
+        elif args.command == "backup-object-key":
+            print(_object_key_for_backup(args.tenant, args.sha256))
     except ObjectStorageError as error:
         print(f"media-backup-restore-proof-helpers: {error}", file=sys.stderr)
         return 1

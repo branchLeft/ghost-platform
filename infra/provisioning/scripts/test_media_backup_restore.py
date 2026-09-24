@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 """Unit tests for media_backup_restore.py.
 
-No real network and no real `age` binary here -- both `list_objects` /
-`get_object` / `put_object` and `encrypt_with_age` / `decrypt_with_age` are
-injected as fakes, so these tests pin the module's own logic (the floor
-assertion, the checksum comparison, per-tenant isolation, key-safety) rather
-than re-proving the SigV4 signer (`test_objectstorage.py` already does that)
-or `age` itself. The real chain -- real MinIO, real `age`, a real Ghost
-upload -- is proven live by `media-backup-restore-proof.sh`, including the
-two sabotages this file cannot exercise on its own: a genuinely corrupted
-ciphertext failing `age`'s own authentication, and the CLI's wiring to
-`restore_tenant_media` rather than to a stub.
+No real network here -- `list_objects` / `get_object_with_content_type` /
+`get_object` / `put_object` are injected as fakes, so these tests pin the
+module's own logic (the floor, the checksum comparison, per-tenant
+isolation, key-safety, the recipient-count guard) rather than re-proving the
+SigV4 signer (`test_objectstorage.py` already does that). `age` itself IS
+real in `RecipientStanzaCountTests` -- the count this module trusts is
+checked against real `age` output, not only against a value this file
+invents -- and in `EncryptWithAgeArgvTests`, which captures the real argv a
+fake `run` receives. The full chain -- real MinIO, real Ghost, the CLI's own
+exit code, and a live reproduction of a second-recipient ciphertext -- is
+proven by `media-backup-restore-proof.sh`.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import unittest
+from unittest import mock
 
 from media_backup_restore import (
     MediaBackupError,
     MediaBackupFloorError,
+    MediaBackupRecipientError,
     MediaRestoreVerificationError,
     backup_tenant_media,
+    count_age_recipient_stanzas,
+    encrypt_with_age,
+    main,
     restore_tenant_media,
     sha256_hex,
 )
@@ -30,6 +39,9 @@ from shared_objectstorage import ObjectStorageError
 
 ENDPOINT = "sandbox.example.test"
 REGION = "sandbox"
+
+AGE_AVAILABLE = shutil.which("age") is not None
+AGE_KEYGEN_AVAILABLE = shutil.which("age-keygen") is not None
 
 
 class FakeObjectStore:
@@ -39,9 +51,14 @@ class FakeObjectStore:
 
     def __init__(self):
         self.buckets: dict[str, dict[str, bytes]] = {}
+        self.content_types: dict[str, dict[str, str]] = {}
 
     def _bucket(self, name: str) -> dict[str, bytes]:
         return self.buckets.setdefault(name, {})
+
+    def put(self, bucket: str, key: str, data: bytes, content_type: str = "application/octet-stream"):
+        self._bucket(bucket)[key] = data
+        self.content_types.setdefault(bucket, {})[key] = content_type
 
     def list_objects(self, *, bucket, endpoint, region, access_key, secret_key, prefix=None):
         del endpoint, region, access_key, secret_key
@@ -57,24 +74,44 @@ class FakeObjectStore:
         except KeyError:
             raise ObjectStorageError(f"GET {bucket}/{key} failed: HTTP 404 (NoSuchKey)")
 
-    def put_object(self, *, bucket, endpoint, region, access_key, secret_key, key, data, **_kw):
+    def get_object_with_content_type(self, *, bucket, endpoint, region, access_key, secret_key, key):
+        data = self.get_object(
+            bucket=bucket, endpoint=endpoint, region=region, access_key=access_key,
+            secret_key=secret_key, key=key,
+        )
+        content_type = self.content_types.get(bucket, {}).get(key, "application/octet-stream")
+        return data, content_type
+
+    def put_object(self, *, bucket, endpoint, region, access_key, secret_key, key, data, content_type="application/octet-stream", **_kw):
         del endpoint, region, access_key, secret_key
-        self._bucket(bucket)[key] = data
+        self.put(bucket, key, data, content_type)
 
 
 def _fake_encrypt(*, data: bytes, recipient: str) -> bytes:
-    """A one-recipient "cipher": readable only by the matching fake
-    identity. Not real crypto -- proving the module never calls `encrypt`
-    with more than one recipient, and that a mismatched identity is
-    refused, is what the tests below need, not confidentiality."""
-    return f"AGE1:{recipient}:".encode() + data
+    """A one-recipient "cipher", shaped like real `age`'s header just enough
+    for `count_age_recipient_stanzas` to read it correctly: one `-> `
+    stanza line per recipient, a `---` line, then the "ciphertext". Not real
+    crypto -- `RecipientStanzaCountTests` below is what proves the counter
+    against genuine `age` output."""
+    return f"-> X25519 {recipient}\nstanza-body\n---\n".encode() + data
+
+
+def _fake_encrypt_two_recipients(*, data: bytes, recipient: str) -> bytes:
+    """Simulates the exact defect this module's runtime guard exists to
+    catch: an `encrypt` call that (however it happened) produced a
+    ciphertext carrying two recipient stanzas."""
+    return (
+        f"-> X25519 {recipient}\nstanza-body\n"
+        f"-> X25519 age1anotherrecipientxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nstanza-body\n"
+        f"---\n"
+    ).encode() + data
 
 
 def _fake_decrypt(identity_to_recipient: dict[str, str]):
     def decrypt(*, data: bytes, identity_path: str) -> bytes:
         recipient = identity_to_recipient.get(identity_path)
         if recipient is not None:
-            prefix = f"AGE1:{recipient}:".encode()
+            prefix = f"-> X25519 {recipient}\nstanza-body\n---\n".encode()
             if data.startswith(prefix):
                 return data[len(prefix) :]
         raise MediaRestoreVerificationError(
@@ -95,13 +132,79 @@ IDENTITY_TO_RECIPIENT = {
 }
 
 
+class RecipientStanzaCountTests(unittest.TestCase):
+    """The counter this module's runtime guard trusts, checked against real
+    `age` output -- a passing table only evidences the counter's MODEL of
+    the format once it is shown to agree with the real binary, not before."""
+
+    @unittest.skipUnless(AGE_AVAILABLE and AGE_KEYGEN_AVAILABLE, "age/age-keygen not installed")
+    def test_a_real_one_recipient_ciphertext_counts_one(self):
+        keygen = subprocess.run(["age-keygen"], capture_output=True, check=True)
+        recipient = next(
+            line.split(b": ", 1)[1].decode()
+            for line in keygen.stderr.splitlines()
+            if line.startswith(b"Public key: ")
+        )
+        ciphertext = subprocess.run(
+            ["age", "-r", recipient], input=b"hello", capture_output=True, check=True
+        ).stdout
+        self.assertEqual(count_age_recipient_stanzas(ciphertext), 1)
+
+    @unittest.skipUnless(AGE_AVAILABLE and AGE_KEYGEN_AVAILABLE, "age/age-keygen not installed")
+    def test_a_real_two_recipient_ciphertext_counts_two(self):
+        recipients = []
+        for _ in range(2):
+            keygen = subprocess.run(["age-keygen"], capture_output=True, check=True)
+            recipients.append(
+                next(
+                    line.split(b": ", 1)[1].decode()
+                    for line in keygen.stderr.splitlines()
+                    if line.startswith(b"Public key: ")
+                )
+            )
+        ciphertext = subprocess.run(
+            ["age", "-r", recipients[0], "-r", recipients[1]],
+            input=b"hello",
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertEqual(count_age_recipient_stanzas(ciphertext), 2)
+
+    def test_fake_encrypt_helper_agrees_with_the_real_shape(self):
+        # The fakes above are trusted as stand-ins for real `age` output
+        # only because their header shape matches what the two tests above
+        # confirm about the real thing: one `-> ` line per recipient, then
+        # `---`.
+        self.assertEqual(count_age_recipient_stanzas(_fake_encrypt(data=b"x", recipient="r")), 1)
+        self.assertEqual(
+            count_age_recipient_stanzas(_fake_encrypt_two_recipients(data=b"x", recipient="r")), 2
+        )
+
+
+class EncryptWithAgeArgvTests(unittest.TestCase):
+    def test_the_argv_carries_exactly_one_dash_r_flag(self):
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, stdout=b"ciphertext", stderr=b"")
+
+        encrypt_with_age(data=b"x", recipient=TENANT_A_RECIPIENT, run=fake_run)
+        self.assertEqual(captured["argv"].count("-r"), 1)
+        self.assertEqual(captured["argv"], ["age", "-r", TENANT_A_RECIPIENT])
+
+
 class BackupTenantMediaTests(unittest.TestCase):
     def setUp(self):
         self.store = FakeObjectStore()
-        self.store.buckets["live-a"] = {
-            "content/images/2026/09/photo.jpg": b"a real jpeg's bytes, honest",
-            "content/images/2026/09/second.png": b"a second uploaded file",
-        }
+        self.store.put(
+            "live-a", "content/images/2026/09/photo.jpg",
+            b"a real jpeg's bytes, honest", content_type="image/jpeg",
+        )
+        self.store.put(
+            "live-a", "content/images/2026/09/second.png",
+            b"a second uploaded file", content_type="image/png",
+        )
 
     def _backup(self, **overrides):
         kwargs = dict(
@@ -115,9 +218,8 @@ class BackupTenantMediaTests(unittest.TestCase):
             backup_access_key="backup-ak",
             backup_secret_key="backup-sk",
             recipient=TENANT_A_RECIPIENT,
-            assert_media_present=True,
             list_objects=self.store.list_objects,
-            get_object=self.store.get_object,
+            get_object_with_content_type=self.store.get_object_with_content_type,
             put_object=self.store.put_object,
             encrypt=_fake_encrypt,
         )
@@ -125,79 +227,130 @@ class BackupTenantMediaTests(unittest.TestCase):
         return backup_tenant_media(**kwargs)
 
     def test_writes_one_ciphertext_object_per_live_object(self):
-        self._backup()
+        report = self._backup()
         backed_up = self.store.buckets["backup"]
-        self.assertIn("media/tenant-a/content/images/2026/09/photo.jpg.age", backed_up)
-        self.assertIn("media/tenant-a/content/images/2026/09/second.png.age", backed_up)
+        photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
+        second_digest = sha256_hex(b"a second uploaded file")
+        self.assertIn(f"media/tenant-a/objects/{photo_digest}.age", backed_up)
+        self.assertIn(f"media/tenant-a/objects/{second_digest}.age", backed_up)
+        self.assertEqual(report.object_count, 2)
+        self.assertFalse(report.deliberately_empty)
 
     def test_ciphertext_is_encrypted_to_exactly_the_given_recipient(self):
         self._backup()
-        ciphertext = self.store.buckets["backup"][
-            "media/tenant-a/content/images/2026/09/photo.jpg.age"
-        ]
-        self.assertTrue(ciphertext.startswith(f"AGE1:{TENANT_A_RECIPIENT}:".encode()))
+        photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
+        ciphertext = self.store.buckets["backup"][f"media/tenant-a/objects/{photo_digest}.age"]
+        self.assertEqual(count_age_recipient_stanzas(ciphertext), 1)
+        self.assertIn(TENANT_A_RECIPIENT.encode(), ciphertext)
 
-    def test_manifest_records_the_sha256_of_the_plaintext(self):
+    def test_manifest_records_sha256_size_and_content_type(self):
         report = self._backup()
-        expected = sha256_hex(b"a real jpeg's bytes, honest")
-        self.assertEqual(
-            report.objects["content/images/2026/09/photo.jpg"]["sha256"], expected
-        )
-        self.assertEqual(report.object_count, 2)
+        expected_digest = sha256_hex(b"a real jpeg's bytes, honest")
+        entry = report.objects["content/images/2026/09/photo.jpg"]
+        self.assertEqual(entry["sha256"], expected_digest)
+        self.assertEqual(entry["size"], len(b"a real jpeg's bytes, honest"))
+        self.assertEqual(entry["content_type"], "image/jpeg")
 
     def test_manifest_object_itself_is_encrypted(self):
         self._backup()
         manifest_ciphertext = self.store.buckets["backup"]["media/tenant-a/manifest.json.age"]
-        self.assertTrue(manifest_ciphertext.startswith(f"AGE1:{TENANT_A_RECIPIENT}:".encode()))
+        self.assertEqual(count_age_recipient_stanzas(manifest_ciphertext), 1)
         with self.assertRaises(Exception):
             json.loads(manifest_ciphertext)
 
-    def test_floor_assertion_refuses_an_empty_backup_when_asserted(self):
+    def test_backup_object_keys_never_contain_the_live_key(self):
+        # The live key is a tenant's own filename; a listing of the backup
+        # bucket must not leak it even before any key is destroyed.
+        self._backup()
+        for key in self.store.buckets["backup"]:
+            self.assertNotIn("photo.jpg", key)
+            self.assertNotIn("second.png", key)
+            self.assertNotIn("2026/09", key)
+
+    def test_a_live_object_literally_named_manifest_json_does_not_collide(self):
+        self.store.put("live-a", "manifest.json", b"not actually a manifest")
+        report = self._backup()
+        manifest_ciphertext = self.store.buckets["backup"]["media/tenant-a/manifest.json.age"]
+        manifest = json.loads(
+            manifest_ciphertext[len(f"-> X25519 {TENANT_A_RECIPIENT}\nstanza-body\n---\n".encode()) :]
+        )
+        self.assertEqual(manifest["tenant"], "tenant-a")
+        self.assertEqual(manifest["object_count"], 3)
+        self.assertIn("manifest.json", report.objects)
+        # The colliding live key's own ciphertext lives under objects/, at
+        # its content digest -- nowhere near the manifest key.
+        digest = sha256_hex(b"not actually a manifest")
+        self.assertIn(f"media/tenant-a/objects/{digest}.age", self.store.buckets["backup"])
+
+    def test_floor_refuses_an_empty_live_bucket_by_default(self):
         self.store.buckets["live-a"] = {}
+        self.store.content_types["live-a"] = {}
         with self.assertRaises(MediaBackupFloorError):
             self._backup()
-        # And nothing was written -- a refused backup leaves no half-written
-        # manifest that a later restore could mistake for a real one.
         self.assertNotIn("backup", self.store.buckets)
 
-    def test_without_the_floor_assertion_an_empty_backup_silently_succeeds(self):
-        # This is the baseline the floor assertion exists to prevent, not a
-        # desired behaviour -- callers who know a tenant has live media must
-        # pass assert_media_present=True, which is exactly the "backup
-        # skips media" sabotage proven live in media-backup-restore-proof.sh.
+    def test_confirm_tenant_has_no_media_allows_a_genuinely_empty_backup(self):
         self.store.buckets["live-a"] = {}
-        report = self._backup(assert_media_present=False)
+        self.store.content_types["live-a"] = {}
+        report = self._backup(confirm_tenant_has_no_media=True)
         self.assertEqual(report.object_count, 0)
+        self.assertTrue(report.deliberately_empty)
+        manifest_ciphertext = self.store.buckets["backup"]["media/tenant-a/manifest.json.age"]
+        manifest = json.loads(
+            manifest_ciphertext[len(f"-> X25519 {TENANT_A_RECIPIENT}\nstanza-body\n---\n".encode()) :]
+        )
+        self.assertTrue(manifest["deliberately_empty"])
 
-    def test_refuses_a_live_key_that_would_escape_the_tenant_prefix(self):
-        self.store.buckets["live-a"]["../other-tenant/secret.jpg"] = b"x"
-        with self.assertRaises(MediaBackupError):
-            self._backup()
+    def test_confirm_flag_is_ignored_when_media_actually_exists(self):
+        # The flag only relaxes the floor; it never marks a real backup as
+        # deliberately empty.
+        report = self._backup(confirm_tenant_has_no_media=True)
+        self.assertFalse(report.deliberately_empty)
+        self.assertEqual(report.object_count, 2)
+
+    def test_a_second_recipient_in_the_ciphertext_is_refused(self):
+        with self.assertRaises(MediaBackupRecipientError):
+            self._backup(encrypt=_fake_encrypt_two_recipients)
+
+    def test_a_second_recipient_in_the_manifest_ciphertext_is_also_refused(self):
+        # Same guard, exercised on the manifest's own encrypt call rather
+        # than an object's -- both call sites go through
+        # _encrypt_to_exactly_one_recipient, but this proves it is not only
+        # wired to the first one.
+        calls = []
+
+        def encrypt_manifest_with_two_recipients(*, data, recipient):
+            calls.append(data)
+            if len(calls) <= 2:  # the two objects: fine
+                return _fake_encrypt(data=data, recipient=recipient)
+            return _fake_encrypt_two_recipients(data=data, recipient=recipient)  # the manifest
+
+        with self.assertRaises(MediaBackupRecipientError) as ctx:
+            self._backup(encrypt=encrypt_manifest_with_two_recipients)
+        self.assertIn("manifest", str(ctx.exception))
 
     def test_second_tenants_backup_does_not_touch_the_firsts(self):
         self._backup()
-        self.store.buckets["live-b"] = {"content/images/only-b.jpg": b"tenant b's own bytes"}
+        self.store.put("live-b", "content/images/only-b.jpg", b"tenant b's own bytes")
         self._backup(
             tenant="tenant-b",
             live_bucket="live-b",
             recipient=TENANT_B_RECIPIENT,
         )
         backed_up = self.store.buckets["backup"]
-        self.assertIn("media/tenant-a/content/images/2026/09/photo.jpg.age", backed_up)
-        self.assertIn("media/tenant-b/content/images/only-b.jpg.age", backed_up)
-        # Tenant B's manifest never mentions tenant A's objects.
-        manifest_b = _fake_decrypt(IDENTITY_TO_RECIPIENT)(
-            data=backed_up["media/tenant-b/manifest.json.age"], identity_path=TENANT_B_IDENTITY
-        )
-        self.assertEqual(json.loads(manifest_b)["objects"].keys(), {"content/images/only-b.jpg"})
+        photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
+        b_digest = sha256_hex(b"tenant b's own bytes")
+        self.assertIn(f"media/tenant-a/objects/{photo_digest}.age", backed_up)
+        self.assertIn(f"media/tenant-b/objects/{b_digest}.age", backed_up)
 
 
 class RestoreTenantMediaTests(unittest.TestCase):
     def setUp(self):
         self.store = FakeObjectStore()
-        self.store.buckets["live-a"] = {
-            "content/images/photo.jpg": b"a real jpeg's bytes, honest",
-        }
+        self.store.put(
+            "live-a", "content/images/photo.jpg",
+            b"a real jpeg's bytes, honest", content_type="image/jpeg",
+        )
         backup_tenant_media(
             tenant="tenant-a",
             live_bucket="live-a",
@@ -209,9 +362,8 @@ class RestoreTenantMediaTests(unittest.TestCase):
             backup_access_key="backup-ak",
             backup_secret_key="backup-sk",
             recipient=TENANT_A_RECIPIENT,
-            assert_media_present=True,
             list_objects=self.store.list_objects,
-            get_object=self.store.get_object,
+            get_object_with_content_type=self.store.get_object_with_content_type,
             put_object=self.store.put_object,
             encrypt=_fake_encrypt,
         )
@@ -240,48 +392,42 @@ class RestoreTenantMediaTests(unittest.TestCase):
         self.assertEqual(report.verified_keys, ["content/images/photo.jpg"])
         self.assertEqual(report.bytes_recovered, len(b"a real jpeg's bytes, honest"))
 
-    def test_writes_verified_plaintext_to_the_target_bucket_when_given(self):
-        self._restore(
-            target_bucket="restored-a", target_access_key="ak", target_secret_key="sk"
-        )
+    def test_writes_verified_plaintext_to_the_target_bucket_with_the_original_content_type(self):
+        self._restore(target_bucket="restored-a", target_access_key="ak", target_secret_key="sk")
         self.assertEqual(
             self.store.buckets["restored-a"]["content/images/photo.jpg"],
             b"a real jpeg's bytes, honest",
         )
+        self.assertEqual(
+            self.store.content_types["restored-a"]["content/images/photo.jpg"], "image/jpeg"
+        )
 
     def test_control_missing_manifest_fails_rather_than_reports_success(self):
-        # Mirrors R4's own control: a restore against a bucket that never
-        # received a backup must not look like a successful restore of
-        # nothing.
         del self.store.buckets["backup"]["media/tenant-a/manifest.json.age"]
         with self.assertRaises(MediaRestoreVerificationError):
             self._restore()
 
     def test_control_missing_backup_object_fails_the_restore(self):
-        del self.store.buckets["backup"]["media/tenant-a/content/images/photo.jpg.age"]
+        digest = sha256_hex(b"a real jpeg's bytes, honest")
+        del self.store.buckets["backup"][f"media/tenant-a/objects/{digest}.age"]
         with self.assertRaises(MediaRestoreVerificationError):
             self._restore()
 
     def test_control_corrupt_backup_object_fails_the_checksum_comparison(self):
-        key = "media/tenant-a/content/images/photo.jpg.age"
+        digest = sha256_hex(b"a real jpeg's bytes, honest")
+        key = f"media/tenant-a/objects/{digest}.age"
         self.store.buckets["backup"][key] = self.store.buckets["backup"][key] + b"CORRUPTED"
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
             self._restore()
         self.assertIn("different digest", str(ctx.exception))
 
     def test_control_wrong_tenant_identity_fails_rather_than_returns_garbage(self):
-        # The crypto-shredding property this mirrors from the database dump:
-        # a different tenant's identity must not be able to read these
-        # objects at all, let alone silently produce wrong bytes.
         with self.assertRaises(MediaRestoreVerificationError):
             self._restore(identity_path=TENANT_B_IDENTITY)
 
     def test_control_manifest_naming_a_different_tenant_is_refused(self):
-        # A defensive check independent of the identity check above: even if
-        # a manifest were reachable and decryptable, a mismatched `tenant`
-        # field inside it is refused rather than trusted.
         manifest_key = "media/tenant-a/manifest.json.age"
-        tampered = json.dumps({"tenant": "tenant-x", "objects": {}}).encode()
+        tampered = json.dumps({"tenant": "tenant-x", "objects": {}, "deliberately_empty": True}).encode()
         self.store.buckets["backup"][manifest_key] = _fake_encrypt(
             data=tampered, recipient=TENANT_A_RECIPIENT
         )
@@ -289,14 +435,55 @@ class RestoreTenantMediaTests(unittest.TestCase):
             self._restore()
         self.assertIn("cross-tenant", str(ctx.exception))
 
-    def test_never_writes_a_partial_result_on_the_object_that_fails(self):
-        # Second object corrupted; the first must not have been written to
-        # the target bucket as though the whole restore had succeeded.
-        self.store.buckets["live-a"]["content/images/second.jpg"] = b"unused"
-        # Re-run backup with two objects so the manifest has two entries.
+    def test_control_zero_objects_without_the_deliberate_mark_is_refused(self):
+        # Same shape as the reviewer's finding: an empty manifest that was
+        # NOT written by an explicit confirm_tenant_has_no_media call must
+        # not read as a successful restore of nothing.
+        manifest_key = "media/tenant-a/manifest.json.age"
+        tampered = json.dumps({"tenant": "tenant-a", "objects": {}}).encode()  # no deliberately_empty at all
+        self.store.buckets["backup"][manifest_key] = _fake_encrypt(
+            data=tampered, recipient=TENANT_A_RECIPIENT
+        )
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn("deliberately_empty", str(ctx.exception))
+
+    def test_a_genuinely_deliberately_empty_manifest_restores_as_success(self):
+        self.store.buckets["backup"] = {}
+        backup_tenant_media(
+            tenant="tenant-a",
+            live_bucket="live-a",
+            backup_bucket="backup",
+            endpoint=ENDPOINT,
+            region=REGION,
+            live_access_key="live-ak",
+            live_secret_key="live-sk",
+            backup_access_key="backup-ak",
+            backup_secret_key="backup-sk",
+            recipient=TENANT_A_RECIPIENT,
+            confirm_tenant_has_no_media=True,
+            list_objects=self.store.list_objects,
+            get_object_with_content_type=self.store.get_object_with_content_type,
+            put_object=self.store.put_object,
+            encrypt=_fake_encrypt,
+        )
+        report = self._restore()
+        self.assertEqual(report.verified_keys, [])
+        self.assertEqual(report.bytes_recovered, 0)
+
+    def test_a_partial_restore_writes_already_verified_objects_before_the_failure(self):
+        # Not "never partial" -- the return value never is, but a target
+        # write for an object that already verified is real and stays real
+        # even when a LATER object in the same manifest fails. This test
+        # asserts exactly that, matching the module docstring rather than
+        # overstating it.
         self.store.buckets["live-a"] = {
             "content/images/photo.jpg": b"a real jpeg's bytes, honest",
             "content/images/second.jpg": b"second file bytes",
+        }
+        self.store.content_types["live-a"] = {
+            "content/images/photo.jpg": "image/jpeg",
+            "content/images/second.jpg": "image/jpeg",
         }
         self.store.buckets["backup"] = {}
         backup_tenant_media(
@@ -310,19 +497,113 @@ class RestoreTenantMediaTests(unittest.TestCase):
             backup_access_key="backup-ak",
             backup_secret_key="backup-sk",
             recipient=TENANT_A_RECIPIENT,
-            assert_media_present=True,
             list_objects=self.store.list_objects,
-            get_object=self.store.get_object,
+            get_object_with_content_type=self.store.get_object_with_content_type,
             put_object=self.store.put_object,
             encrypt=_fake_encrypt,
         )
-        key = "media/tenant-a/content/images/second.jpg.age"
+        digest = sha256_hex(b"second file bytes")
+        key = f"media/tenant-a/objects/{digest}.age"
         self.store.buckets["backup"][key] += b"CORRUPTED"
         with self.assertRaises(MediaRestoreVerificationError):
             self._restore(target_bucket="restored-a", target_access_key="ak", target_secret_key="sk")
         # "photo.jpg" sorts before "second.jpg", so it was verified and
-        # written before the corrupt object raised.
+        # written before the corrupt object raised -- a real, intended
+        # partial write, not a bug.
         self.assertIn("content/images/photo.jpg", self.store.buckets.get("restored-a", {}))
+        self.assertNotIn("content/images/second.jpg", self.store.buckets.get("restored-a", {}))
+
+
+class MainWiringTests(unittest.TestCase):
+    """Proves the CLI's argument parsing actually reaches the function calls
+    it claims to, not only that the process exits the right code -- the
+    exact class of defect the reviewer demonstrated by breaking
+    `assert_media_present=False` inside `main()` while every other test
+    stayed green: mock the two entry points and assert on the KWARGS `main`
+    passed them, not merely on the return code."""
+
+    def setUp(self):
+        self.env = {
+            "MEDIA_LIVE_ACCESS_KEY_ID": "lak",
+            "MEDIA_LIVE_SECRET_ACCESS_KEY": "lsk",
+            "MEDIA_BACKUP_ACCESS_KEY_ID": "bak",
+            "MEDIA_BACKUP_SECRET_ACCESS_KEY": "bsk",
+            "AGE_RECIPIENT_PUBLIC_KEY": TENANT_A_RECIPIENT,
+        }
+        self.env_patch = mock.patch.dict("os.environ", self.env, clear=True)
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+
+    @mock.patch("media_backup_restore.backup_tenant_media")
+    def test_backup_without_the_flag_passes_confirm_false(self, mock_backup):
+        mock_backup.return_value = mock.Mock(tenant="t", object_count=1, deliberately_empty=False)
+        rc = main(
+            [
+                "backup", "--tenant", "t", "--live-bucket", "lb", "--backup-bucket", "bb",
+                "--endpoint", ENDPOINT, "--region", REGION,
+            ]
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_backup.call_args.kwargs["confirm_tenant_has_no_media"], False)
+        self.assertEqual(mock_backup.call_args.kwargs["tenant"], "t")
+        self.assertEqual(mock_backup.call_args.kwargs["recipient"], TENANT_A_RECIPIENT)
+
+    @mock.patch("media_backup_restore.backup_tenant_media")
+    def test_backup_with_the_flag_passes_confirm_true(self, mock_backup):
+        mock_backup.return_value = mock.Mock(tenant="t", object_count=0, deliberately_empty=True)
+        rc = main(
+            [
+                "backup", "--tenant", "t", "--live-bucket", "lb", "--backup-bucket", "bb",
+                "--endpoint", ENDPOINT, "--region", REGION, "--confirm-tenant-has-no-media",
+            ]
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_backup.call_args.kwargs["confirm_tenant_has_no_media"], True)
+
+    @mock.patch("media_backup_restore.backup_tenant_media")
+    def test_backup_exits_1_when_the_floor_raises(self, mock_backup):
+        mock_backup.side_effect = MediaBackupFloorError("no media")
+        rc = main(
+            [
+                "backup", "--tenant", "t", "--live-bucket", "lb", "--backup-bucket", "bb",
+                "--endpoint", ENDPOINT, "--region", REGION,
+            ]
+        )
+        self.assertEqual(rc, 1)
+
+    @mock.patch("media_backup_restore.restore_tenant_media")
+    def test_restore_passes_the_identity_file_and_target_bucket_through(self, mock_restore):
+        mock_restore.return_value = mock.Mock(tenant="t", verified_keys=["k"], bytes_recovered=5)
+        rc = main(
+            [
+                "restore", "--tenant", "t", "--backup-bucket", "bb", "--target-bucket", "tb",
+                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id",
+            ]
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_restore.call_args.kwargs["identity_path"], "/tmp/id")
+        self.assertEqual(mock_restore.call_args.kwargs["target_bucket"], "tb")
+
+    @mock.patch("media_backup_restore.restore_tenant_media")
+    def test_restore_exits_1_when_verification_raises(self, mock_restore):
+        mock_restore.side_effect = MediaRestoreVerificationError("digest mismatch")
+        rc = main(
+            [
+                "restore", "--tenant", "t", "--backup-bucket", "bb",
+                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id",
+            ]
+        )
+        self.assertEqual(rc, 1)
+
+    def test_missing_env_var_exits_1_before_any_network_call(self):
+        del os.environ["AGE_RECIPIENT_PUBLIC_KEY"]
+        rc = main(
+            [
+                "backup", "--tenant", "t", "--live-bucket", "lb", "--backup-bucket", "bb",
+                "--endpoint", ENDPOINT, "--region", REGION,
+            ]
+        )
+        self.assertEqual(rc, 1)
 
 
 class Sha256HexTests(unittest.TestCase):

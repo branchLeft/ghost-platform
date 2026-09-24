@@ -14,8 +14,11 @@ recovered nothing.
 Custody mirrors the database dump exactly, because it is the same
 crypto-shredding invariant applied to a second dataset: one `age` recipient
 per tenant, never a second one, on both the ciphertext objects and the
-manifest that names them. Destroying that tenant's identity makes every
-object this module wrote unreadable and leaves every other tenant's objects
+manifest that names them. `backup_tenant_media` does not trust its own
+`encrypt` call to have honoured that: it re-opens every ciphertext's header
+and counts the recipient stanzas, and refuses to write anything with a count
+other than one. Destroying that tenant's identity then makes every object
+this module wrote unreadable and leaves every other tenant's objects
 untouched -- `restore_tenant_media` never falls back to a different key, and
 a caller that hands it the wrong tenant's identity gets `age`'s own refusal
 ("no identity matched any of the recipients"), not a wrong answer.
@@ -27,21 +30,32 @@ touches another tenant's backup or restore.
 Layout in the backup bucket, under a `media/<tenant>/` prefix so a tenant's
 media backup can never collide with another tenant's or with the database
 dumps sharing the same bucket:
-  media/<tenant>/<live object key>.age  -- one ciphertext object per source
-  media/<tenant>/manifest.json.age      -- {tenant, objects: {key: {sha256, size}}}
+  media/<tenant>/objects/<sha256 of the plaintext>.age  -- ciphertext, one per distinct object
+  media/<tenant>/manifest.json.age                      -- {tenant, objects: {live key: {sha256, size, content_type}}, deliberately_empty}
 
-The manifest is itself encrypted to the tenant's recipient, for the same
-reason the ciphertext objects are: an object key is an uploaded filename, and
-nothing about verifying a restore requires that being legible to anyone who
-can read the backup bucket's listing.
+Object keys are content-addressed, never the live key, on purpose: the live
+key is the tenant's own filename, and a listing of the backup bucket must not
+leak it even after the tenant's key is destroyed and the ciphertext itself is
+unreadable -- the mapping from a live key back to its digest lives only
+inside the encrypted manifest. Content-addressing also means the manifest key
+can never collide with an object key: every object lives under `objects/`,
+literally the string `objects/<64 lowercase hex characters>.age`, and the
+manifest never does, whatever a tenant happens to have uploaded a file named
+-- including a file literally named `manifest.json`.
 
-`assert_media_present` is the floor this pipeline asserts on itself, the
-same shape as `dump_tenant.py`'s row-count floor on `users`/`settings`: a
-valid, correctly encrypted, empty backup is the worst possible outcome,
-because everything downstream of it looks healthy. Media has no table that
-is always non-empty to check against, so the floor is asserted by the
-caller, from what it already knows about the tenant, rather than discovered
-in the data.
+The empty-backup floor is on by default, the same way `dump_tenant.py`'s
+row-count floor is not opt-in: a backup that lists zero live objects raises
+unless the caller passes `confirm_tenant_has_no_media=True`, an explicit,
+one-shot assertion from whatever already knows this tenant genuinely has no
+media (never inferred from an empty listing on its own, which is exactly the
+signal a misconfigured live-bucket pointer or a broken listing call would
+also produce). A confirmed-empty backup is marked as such in the manifest
+(`deliberately_empty: true`), and only that mark lets `restore_tenant_media`
+treat zero verified objects as success -- an unmarked manifest with no
+objects in it is refused the same way a missing or corrupt object is,
+because it is the same failure shape 09-backup-and-recovery.html's R4 names:
+a technically-valid, encrypted, empty result that looks exactly like a
+healthy backup until someone needs to restore from it.
 """
 
 from __future__ import annotations
@@ -52,6 +66,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -59,11 +74,24 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from shared_objectstorage import (  # noqa: E402
     ObjectStorageError,
     get_object as _default_get_object,
+    get_object_with_content_type as _default_get_object_with_content_type,
     list_objects as _default_list_objects,
     put_object as _default_put_object,
 )
 
 MEDIA_PREFIX = "media"
+OBJECTS_PREFIX = "objects"
+
+_SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
+
+# One line per `age` recipient stanza, e.g. "-> X25519 <base64>" or the
+# scrypt form "-> scrypt <base64> <n>". The `age` binary format spells this
+# out in its own spec: every stanza before the body's "---" MAC line starts
+# with "-> ", and there is exactly one per recipient the file was encrypted
+# to. This is the ONLY thing this pattern is trusted for -- counting
+# stanzas, never parsing or trusting their contents.
+_AGE_STANZA_LINE = re.compile(rb"\A-> ")
+_AGE_HEADER_END = b"---"
 
 
 class MediaBackupError(Exception):
@@ -71,7 +99,9 @@ class MediaBackupError(Exception):
 
 
 class MediaBackupFloorError(MediaBackupError):
-    """The tenant is known to have live media, and the backup captured none.
+    """The tenant is known to have live media, and the backup captured none
+    -- or no one asserted either way, which this pipeline treats the same
+    since the default is to assume media is expected.
 
     Distinguished from `MediaBackupError` so a caller (and a test) can tell
     "something failed" apart from "this specific, self-asserted floor was
@@ -79,9 +109,19 @@ class MediaBackupFloorError(MediaBackupError):
     """
 
 
+class MediaBackupRecipientError(MediaBackupError):
+    """A ciphertext this pipeline just produced does not carry exactly one
+    `age` recipient stanza. Never a decision to route around: the whole
+    crypto-shredding property this module exists to preserve dies with a
+    second recipient, silently, while every other signal stays green -- so a
+    count other than one aborts the backup for this tenant before anything
+    with the extra recipient is written anywhere."""
+
+
 class MediaRestoreVerificationError(Exception):
     """A restored object's bytes could not be shown to match the backup --
-    missing, corrupt, or undecryptable with the identity given. Never
+    missing, corrupt, undecryptable with the identity given, or a manifest
+    recording zero objects without the deliberate-empty mark. Never
     swallowed: raised on the FIRST such object, because a restore that
     reports partial success is a restore that reports success, and R4 is
     the reason that is not good enough for media either."""
@@ -91,30 +131,57 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _object_key_for_backup(tenant: str, live_key: str) -> str:
-    """The backup bucket's key for one live object -- refuses anything that
-    is not a plain, forward-relative path. A `../` segment or a leading `/`
-    in an object key would let a crafted upload write outside the tenant's
-    own `media/<tenant>/` prefix in the backup bucket; Ghost's own
-    `S3Storage.buildKey` already refuses that on the way in, but this
-    pipeline does not trust the live bucket's listing to have been produced
-    by code that still does."""
-    if live_key.startswith("/") or ".." in live_key.split("/"):
-        raise MediaBackupError(f"refusing an unsafe live object key: {live_key!r}")
-    return f"{MEDIA_PREFIX}/{tenant}/{live_key}.age"
+def _object_key_for_backup(tenant: str, digest_hex: str) -> str:
+    """The backup bucket's key for one object, addressed by the SHA-256 of
+    its plaintext rather than by the live key it came from -- see the module
+    docstring for why. `digest_hex` is always this module's own
+    `sha256_hex` output; the format check is defence in depth against a
+    corrupt manifest steering a restore at an unintended key, not a trust
+    boundary on external input."""
+    if not _SHA256_HEX.match(digest_hex):
+        raise MediaBackupError(f"not a SHA-256 hex digest: {digest_hex!r}")
+    return f"{MEDIA_PREFIX}/{tenant}/{OBJECTS_PREFIX}/{digest_hex}.age"
 
 
 def _manifest_key(tenant: str) -> str:
+    # Deliberately outside `objects/` -- see the module docstring. No value
+    # `_object_key_for_backup` can ever produce collides with this, because
+    # every one of those keys starts with `media/<tenant>/objects/` and this
+    # one does not.
     return f"{MEDIA_PREFIX}/{tenant}/manifest.json.age"
 
 
+def count_age_recipient_stanzas(ciphertext: bytes) -> int:
+    """How many recipients an `age` ciphertext's header names, read
+    structurally rather than trusted from whatever call produced it.
+
+    The age format (https://age-encryption.org/v1) is textual up to the
+    header's closing `---` MAC line: one `-> ...` line opens each recipient
+    stanza, immediately followed by that stanza's base64 body line(s), and
+    the whole file besides is opaque symmetrically-encrypted payload this
+    function never touches. Counting `-> ` line prefixes up to the first
+    `---` line is therefore an exact count of recipients, not a guess -- and
+    it is checked against real `age` output on both a one-recipient and a
+    two-recipient ciphertext in this module's own tests, so the count is
+    known to agree with what `age` itself considers a recipient rather than
+    with an invented reading of the format."""
+    count = 0
+    for line in ciphertext.split(b"\n"):
+        if line == _AGE_HEADER_END:
+            break
+        if _AGE_STANZA_LINE.match(line):
+            count += 1
+    return count
+
+
 def encrypt_with_age(*, data: bytes, recipient: str, run=subprocess.run) -> bytes:
-    """Encrypts `data` to exactly one recipient. A second `-r` here would be
-    the same defect 09-backup-and-recovery.html names for the database dump:
-    every test green, erasure silently no longer possible for this tenant's
-    media -- so this function accepts exactly one `recipient` string, not a
-    list, and there is no parameter shape that could carry a second one."""
-    result = run(["age", "-r", recipient], input=data, capture_output=True, check=False)
+    """Encrypts `data` to exactly one recipient. There is no parameter shape
+    here that could carry a second one -- `recipient` is a single string,
+    and the argv below has exactly one `-r`. `backup_tenant_media` does not
+    stop at trusting that, though: it re-parses every ciphertext this
+    function returns and refuses to proceed if the header disagrees."""
+    argv = ["age", "-r", recipient]
+    result = run(argv, input=data, capture_output=True, check=False)
     if result.returncode != 0:
         raise MediaBackupError(
             f"age encrypt exited {result.returncode}: {result.stderr.decode(errors='replace')}"
@@ -133,10 +200,30 @@ def decrypt_with_age(*, data: bytes, identity_path: str, run=subprocess.run) -> 
     return result.stdout
 
 
+def _encrypt_to_exactly_one_recipient(
+    *, data: bytes, recipient: str, encrypt, what: str
+) -> bytes:
+    """Calls `encrypt`, then checks its own output rather than trusting the
+    call -- see `MediaBackupRecipientError`. `what` names the object in the
+    error, since this runs once per live object plus once for the manifest
+    and a caller needs to know which one."""
+    ciphertext = encrypt(data=data, recipient=recipient)
+    stanzas = count_age_recipient_stanzas(ciphertext)
+    if stanzas != 1:
+        raise MediaBackupRecipientError(
+            f"{what}: encrypted output carries {stanzas} age recipient stanza(s), expected "
+            f"exactly 1 -- refusing to write it. A second recipient here is the exact defect "
+            f"09-backup-and-recovery.html names: it would leave this tenant's media backup "
+            f"readable after their key is destroyed, with every other signal still green."
+        )
+    return ciphertext
+
+
 @dataclasses.dataclass
 class BackupReport:
     tenant: str
     objects: dict[str, dict]
+    deliberately_empty: bool
 
     @property
     def object_count(self) -> int:
@@ -155,17 +242,24 @@ def backup_tenant_media(
     backup_access_key: str,
     backup_secret_key: str,
     recipient: str,
-    assert_media_present: bool,
+    confirm_tenant_has_no_media: bool = False,
     list_objects=_default_list_objects,
-    get_object=_default_get_object,
+    get_object_with_content_type=_default_get_object_with_content_type,
     put_object=_default_put_object,
     encrypt=encrypt_with_age,
 ) -> BackupReport:
     """Pulls every object in `live_bucket`, encrypts each to `recipient`, and
     writes the ciphertext plus an encrypted manifest to `backup_bucket`.
-    Returns before writing anything if `assert_media_present` is set and the
-    live bucket is empty -- see the module docstring for why that floor
-    exists and why it is the caller's to assert."""
+
+    Refuses -- raising `MediaBackupFloorError` and writing nothing -- if the
+    live bucket lists zero objects, UNLESS `confirm_tenant_has_no_media` is
+    explicitly `True`. That flag is not a convenience default: passing it is
+    how a caller who genuinely knows this tenant has no media (a brand-new
+    promotion, checked against the promotion record, never inferred from the
+    listing being empty) says so, and only that assertion is allowed to write
+    a manifest recording zero objects -- which is also the only kind of
+    empty manifest `restore_tenant_media` will accept as a real restore
+    rather than refuse outright."""
     live_objects = list_objects(
         bucket=live_bucket,
         endpoint=endpoint,
@@ -174,17 +268,19 @@ def backup_tenant_media(
         secret_key=live_secret_key,
     )
 
-    if assert_media_present and not live_objects:
+    if not live_objects and not confirm_tenant_has_no_media:
         raise MediaBackupFloorError(
-            f"tenant {tenant!r} is known to have live media, but {live_bucket!r} listed "
-            f"zero objects -- refusing to write an empty manifest that would look "
-            f"identical to a healthy backup of a tenant with nothing uploaded"
+            f"tenant {tenant!r}: {live_bucket!r} listed zero objects. Refusing to write an "
+            f"empty manifest -- that would look identical to a healthy backup of a tenant "
+            f"with nothing uploaded. Pass confirm_tenant_has_no_media=True only if this "
+            f"tenant is genuinely known to have no media, from something other than this "
+            f"listing being empty."
         )
 
     manifest_objects: dict[str, dict] = {}
     for entry in live_objects:
         key = entry["key"]
-        data = get_object(
+        data, content_type = get_object_with_content_type(
             bucket=live_bucket,
             endpoint=endpoint,
             region=region,
@@ -193,21 +289,32 @@ def backup_tenant_media(
             key=key,
         )
         digest = sha256_hex(data)
-        ciphertext = encrypt(data=data, recipient=recipient)
+        ciphertext = _encrypt_to_exactly_one_recipient(
+            data=data, recipient=recipient, encrypt=encrypt, what=f"object {key!r}"
+        )
         put_object(
             bucket=backup_bucket,
             endpoint=endpoint,
             region=region,
             access_key=backup_access_key,
             secret_key=backup_secret_key,
-            key=_object_key_for_backup(tenant, key),
+            key=_object_key_for_backup(tenant, digest),
             data=ciphertext,
         )
-        manifest_objects[key] = {"sha256": digest, "size": len(data)}
+        manifest_objects[key] = {"sha256": digest, "size": len(data), "content_type": content_type}
 
-    manifest = {"tenant": tenant, "objects": manifest_objects, "object_count": len(manifest_objects)}
-    manifest_ciphertext = encrypt(
-        data=json.dumps(manifest, sort_keys=True).encode(), recipient=recipient
+    deliberately_empty = not manifest_objects
+    manifest = {
+        "tenant": tenant,
+        "objects": manifest_objects,
+        "object_count": len(manifest_objects),
+        "deliberately_empty": deliberately_empty,
+    }
+    manifest_ciphertext = _encrypt_to_exactly_one_recipient(
+        data=json.dumps(manifest, sort_keys=True).encode(),
+        recipient=recipient,
+        encrypt=encrypt,
+        what="the manifest",
     )
     put_object(
         bucket=backup_bucket,
@@ -219,7 +326,7 @@ def backup_tenant_media(
         data=manifest_ciphertext,
     )
 
-    return BackupReport(tenant=tenant, objects=manifest_objects)
+    return BackupReport(tenant=tenant, objects=manifest_objects, deliberately_empty=deliberately_empty)
 
 
 @dataclasses.dataclass
@@ -247,12 +354,16 @@ def restore_tenant_media(
 ) -> RestoreReport:
     """Decrypts every object the tenant's manifest names and checksum-compares
     it against the digest recorded at backup time. Raises
-    `MediaRestoreVerificationError` -- never returns a partial report -- on
-    the first object that is missing from the backup bucket, that decrypts
-    to different bytes than the manifest recorded, or that the given
-    identity cannot decrypt at all. When `target_bucket` is given, verified
-    plaintext is written there too -- the actual recovery, not only the
-    proof of it."""
+    `MediaRestoreVerificationError` and returns nothing -- the RETURN VALUE
+    is never partial -- on the first object that is missing from the backup
+    bucket, that decrypts to different bytes than the manifest recorded, or
+    that the given identity cannot decrypt at all; also raises if the
+    manifest names zero objects without `deliberately_empty: true`, the same
+    R4 shape as a missing or corrupt object. When `target_bucket` is given,
+    each object already verified before a later failure has ALREADY been
+    written there -- a partial restore on disk is real and intended (the
+    objects that did verify are genuinely recovered), only the return value
+    and exit code are all-or-nothing."""
     try:
         manifest_ciphertext = get_object(
             bucket=backup_bucket,
@@ -275,10 +386,19 @@ def restore_tenant_media(
             f"{manifest.get('tenant')!r}, expected {tenant!r} -- refusing a cross-tenant restore"
         )
 
+    manifest_objects = manifest.get("objects") or {}
+    if not manifest_objects and not manifest.get("deliberately_empty"):
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: manifest at {_manifest_key(tenant)!r} names zero objects and "
+            f"is not marked deliberately_empty -- a valid, encrypted, empty manifest is not "
+            f"evidence of a successful restore (09-backup-and-recovery.html's R4), so this is "
+            f"refused the same way a missing or corrupt object would be"
+        )
+
     verified: list[str] = []
     bytes_recovered = 0
-    for key, expected in sorted(manifest["objects"].items()):
-        backup_key = _object_key_for_backup(tenant, key)
+    for key, expected in sorted(manifest_objects.items()):
+        backup_key = _object_key_for_backup(tenant, expected["sha256"])
         try:
             ciphertext = get_object(
                 bucket=backup_bucket,
@@ -291,7 +411,7 @@ def restore_tenant_media(
         except ObjectStorageError as error:
             raise MediaRestoreVerificationError(
                 f"tenant {tenant!r}: backup object {backup_key!r} listed in the manifest "
-                f"is missing from {backup_bucket!r}: {error}"
+                f"for live key {key!r} is missing from {backup_bucket!r}: {error}"
             ) from error
 
         plaintext = decrypt(data=ciphertext, identity_path=identity_path)
@@ -312,6 +432,7 @@ def restore_tenant_media(
                 secret_key=target_secret_key,
                 key=key,
                 data=plaintext,
+                content_type=expected.get("content_type") or "application/octet-stream",
             )
 
         verified.append(key)
@@ -338,9 +459,13 @@ def main(argv: list[str] | None = None) -> int:
     backup_p.add_argument("--endpoint", required=True)
     backup_p.add_argument("--region", required=True)
     backup_p.add_argument(
-        "--assert-media-present",
+        "--confirm-tenant-has-no-media",
         action="store_true",
-        help="refuse a zero-object backup for a tenant known to have live media",
+        help=(
+            "required to back up a tenant whose live bucket lists zero objects -- refused "
+            "by default. Pass this only when the tenant is genuinely known to have no media, "
+            "never merely because the listing came back empty."
+        ),
     )
 
     restore_p = sub.add_parser("restore", help="decrypt and checksum-verify one tenant's media")
@@ -366,10 +491,11 @@ def main(argv: list[str] | None = None) -> int:
                 backup_access_key=_require_env("MEDIA_BACKUP_ACCESS_KEY_ID"),
                 backup_secret_key=_require_env("MEDIA_BACKUP_SECRET_ACCESS_KEY"),
                 recipient=_require_env("AGE_RECIPIENT_PUBLIC_KEY"),
-                assert_media_present=args.assert_media_present,
+                confirm_tenant_has_no_media=args.confirm_tenant_has_no_media,
             )
             print(
-                f"backup: tenant={report.tenant} objects={report.object_count}",
+                f"backup: tenant={report.tenant} objects={report.object_count} "
+                f"deliberately_empty={report.deliberately_empty}",
                 file=sys.stderr,
             )
         else:

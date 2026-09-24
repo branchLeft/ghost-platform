@@ -361,6 +361,39 @@ class GetObjectTests(unittest.TestCase):
             )
 
 
+class GetObjectWithContentTypeTests(unittest.TestCase):
+    def test_returns_the_body_and_the_content_type_header(self):
+        def fake_transport(url, headers):
+            return 200, b"jpeg bytes", {"Content-Type": "image/jpeg", "Content-Length": "10"}
+
+        body, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(body, b"jpeg bytes")
+        self.assertEqual(content_type, "image/jpeg")
+
+    def test_falls_back_to_octet_stream_when_no_content_type_header_is_present(self):
+        def fake_transport(url, headers):
+            return 200, b"bytes", {}
+
+        _, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(content_type, "application/octet-stream")
+
+    def test_raises_on_a_non_2xx_response(self):
+        def fake_transport(url, headers):
+            return 404, b"<Error><Code>NoSuchKey</Code></Error>", {}
+
+        with self.assertRaises(os3.ObjectStorageError):
+            os3.get_object_with_content_type(
+                bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+                access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+            )
+
+
 class OwnerIdTests(unittest.TestCase):
     """The account a credential belongs to, which is half of every policy principal.
 

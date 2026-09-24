@@ -67,5 +67,6 @@ signed_request = _module.signed_request
 urllib_request = _module.urllib_request
 delete_object = _module.delete_object
 get_object = _module.get_object
+get_object_with_content_type = _module.get_object_with_content_type
 list_objects = _module.list_objects
 put_object = _module.put_object

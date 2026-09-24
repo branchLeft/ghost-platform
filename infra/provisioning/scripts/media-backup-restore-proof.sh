@@ -13,14 +13,18 @@
 # recovered bytes' digest, and every sabotage checks that the wrong outcome
 # is caught rather than reported as success.
 #
-# Five rounds:
+# Six rounds:
 #   GREEN-1   real backup + restore, genuine destroy in between, digest match
 #   RED-1     a corrupted backup object must fail the restore  -> repaired
 #   RED-2     a missing backup object must fail the restore    -> repaired
-#   RED-3     a backup that captures zero objects for a tenant known to
-#             have live media must refuse to write a manifest at all
+#   RED-3     a backup that captures zero objects must refuse BY DEFAULT;
+#             only an explicit, loudly-named flag allows a genuinely empty
+#             tenant through, and restoring THAT stays a legitimate success
 #   RED-4     the CLI's own exit code, disconnected from the verification
 #             it just ran, must be caught as a wiring defect -> reverted
+#   RED-5     a second age recipient in a ciphertext's own header must be
+#             refused, even though `encrypt_with_age`'s argv never carries
+#             one -> reverted
 # Plus one direct check outside the RED/GREEN frame: restoring with a
 # different tenant's identity is refused (the crypto-shredding property).
 #
@@ -71,15 +75,14 @@ fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
 cleanup() {
     docker rm -f "$GHOST_NAME" "$MINIO_NAME" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
-    # Belt-and-braces revert of the RED-4 wiring sabotage, in case the script
-    # exited before its own explicit revert ran. The file is not committed
-    # while this proof is being developed, so `git checkout --` cannot
-    # restore it (git error: "pathspec ... did not match any file(s) known
-    # to git") -- the saved copy from before the sabotage is the only way
-    # back, which is exactly why RED-4 saves one before touching the file.
-    if [ -f "$WORKDIR/media_backup_restore.py.orig" ]; then
-        cp "$WORKDIR/media_backup_restore.py.orig" "$SCRIPTS_DIR/media_backup_restore.py"
-    fi
+    # Belt-and-braces revert of the RED-4 and RED-5 sabotages, in case the
+    # script exited before their own explicit reverts ran. A saved copy on
+    # disk, not `git checkout --`: the latter depends on this file's commit
+    # state, which this trap has no reason to assume anything about, while a
+    # copy taken immediately before the sabotage is unconditionally correct.
+    for saved in "$WORKDIR/media_backup_restore.py.orig" "$WORKDIR/media_backup_restore.py.orig-red5"; do
+        [ -f "$saved" ] && cp "$saved" "$SCRIPTS_DIR/media_backup_restore.py"
+    done
     rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -230,15 +233,15 @@ else
 fi
 
 run_backup() {
-    # $1: live bucket  $2: --assert-media-present or ""  $3: recipient
-    live_bucket="$1"; assert_flag="$2"; recipient="$3"
+    # $1: live bucket  $2: --confirm-tenant-has-no-media or ""  $3: recipient
+    live_bucket="$1"; confirm_flag="$2"; recipient="$3"
     # shellcheck disable=SC2086
     MEDIA_LIVE_ACCESS_KEY_ID="$MINIO_ROOT_USER" MEDIA_LIVE_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
         MEDIA_BACKUP_ACCESS_KEY_ID="$MINIO_ROOT_USER" MEDIA_BACKUP_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
         AGE_RECIPIENT_PUBLIC_KEY="$recipient" \
         python3 "$SCRIPTS_DIR/media_backup_restore.py" backup \
         --tenant tenant-a --live-bucket "$live_bucket" --backup-bucket "$BACKUP_BUCKET" \
-        --endpoint "$MINIO_ENDPOINT" --region "$REGION" $assert_flag
+        --endpoint "$MINIO_ENDPOINT" --region "$REGION" $confirm_flag
 }
 
 run_restore() {
@@ -255,13 +258,32 @@ run_restore() {
 }
 
 note "Backing up tenant-a's media through the real CLI entry point"
-if run_backup "$LIVE_BUCKET" "--assert-media-present" "$TENANT_A_RECIPIENT"; then
+if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
     pass "backup: exit 0, manifest + ciphertext written to the backup bucket"
 else
     fail "backup: unexpected non-zero exit on a healthy backup"
 fi
 
-BACKUP_KEY="media/tenant-a/${LIVE_KEY}.age"
+# The backup key is opaque and content-addressed (finding 2's fix), so this
+# proof cannot derive it from LIVE_KEY the way it used to -- it asks the
+# module for its own key, the same way any real caller would have to.
+MANIFEST_JSON="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" manifest \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" --tenant tenant-a --identity-file "$WORKDIR/tenant-a.identity")"
+LIVE_KEY_SHA256="$(echo "$MANIFEST_JSON" | jq -r --arg k "$LIVE_KEY" '.objects[$k].sha256')"
+[ -n "$LIVE_KEY_SHA256" ] && [ "$LIVE_KEY_SHA256" != "null" ] || {
+    echo "FAILED: manifest did not record a sha256 for $LIVE_KEY: $MANIFEST_JSON" >&2
+    exit 1
+}
+BACKUP_KEY="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" backup-object-key \
+    --tenant tenant-a --sha256 "$LIVE_KEY_SHA256")"
+echo "manifest's live-key -> digest mapping resolved; backup object key: $BACKUP_KEY"
+if echo "$BACKUP_KEY" | grep -qF "$LIVE_KEY"; then
+    fail "the backup object key contains the live key's own text -- opacity is broken"
+else
+    pass "the backup object key is content-addressed and carries no trace of the live key or its path"
+fi
 
 note "RED-1: a corrupted backup object must fail the restore"
 python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" corrupt \
@@ -274,7 +296,7 @@ else
     pass "RED-1: restore refused a corrupted backup object (control proven)"
 fi
 echo "-- repairing: re-running a clean backup (source is still live) --"
-run_backup "$LIVE_BUCKET" "--assert-media-present" "$TENANT_A_RECIPIENT" >/dev/null
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 
 note "RED-2: a missing backup object must fail the restore"
 python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" delete \
@@ -287,21 +309,28 @@ else
     pass "RED-2: restore refused a missing backup object (control proven)"
 fi
 echo "-- repairing: re-running a clean backup (source is still live) --"
-run_backup "$LIVE_BUCKET" "--assert-media-present" "$TENANT_A_RECIPIENT" >/dev/null
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 
-note "RED-3: a backup that skips media (captures zero objects) must refuse, not silently succeed"
-if run_backup "$LIVE_EMPTY_BUCKET" "--assert-media-present" "$TENANT_A_RECIPIENT"; then
-    fail "RED-3: backup exited 0 against an empty live bucket with --assert-media-present -- WRONG"
-else
-    pass "RED-3: backup refused a zero-object result for a tenant known to have live media (control proven)"
-fi
-echo "-- the baseline this control replaces, WITHOUT the flag (not a passing case, the reason the flag exists) --"
+note "RED-3: a backup that captures zero objects must refuse BY DEFAULT -- no opt-in required to be safe"
 if run_backup "$LIVE_EMPTY_BUCKET" "" "$TENANT_A_RECIPIENT"; then
-    echo "  (as expected: without --assert-media-present, an empty backup silently 'succeeds' -- this is why the flag is required)"
+    fail "RED-3: backup exited 0 against an empty live bucket with NO flag -- WRONG, the floor must be on by default"
 else
-    echo "  UNEXPECTED: this call should have succeeded silently; something else is wrong"
-    FAILURES=$((FAILURES + 1))
+    pass "RED-3: backup refused a zero-object result with no flag (control proven -- the floor defaults on, like dump_tenant.py's)"
 fi
+echo "-- the explicit, loudly-named opt-out: only --confirm-tenant-has-no-media allows a genuinely empty tenant through --"
+if run_backup "$LIVE_EMPTY_BUCKET" "--confirm-tenant-has-no-media" "$TENANT_A_RECIPIENT"; then
+    pass "backup succeeded for a genuinely empty tenant, only because the explicit flag was passed"
+else
+    fail "backup failed even with --confirm-tenant-has-no-media on a genuinely empty tenant -- the opt-out should have worked"
+fi
+echo "-- and restoring that deliberately-empty backup is a legitimate success, not a failure --"
+if run_restore "$WORKDIR/tenant-a.identity" ""; then
+    pass "restore of a manifest explicitly marked deliberately_empty succeeds with zero objects, as intended"
+else
+    fail "restore refused a manifest that WAS explicitly marked deliberately_empty -- the opt-out should be honoured on the way back too"
+fi
+echo "-- repairing: re-running a clean backup of tenant-a's REAL media (the empty-tenant test above overwrote its manifest, exactly as the explicit flag permits) --"
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 
 note "RED-4: sabotage the CLI's own wiring -- disconnect its exit code from the verification it ran"
 cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig"
@@ -331,12 +360,39 @@ else
     exit 1
 fi
 echo "-- repairing: re-running a clean backup (source is still live) --"
-run_backup "$LIVE_BUCKET" "--assert-media-present" "$TENANT_A_RECIPIENT" >/dev/null
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 if run_restore "$WORKDIR/tenant-a.identity" ""; then
     pass "GREEN restored: with real wiring back, restore succeeds again on a clean backup"
 else
     fail "restore failed on a clean backup after reverting the wiring sabotage -- something else broke"
 fi
+
+note "RED-5: reproduce the reviewer's attack -- a second age recipient in a ciphertext's header must be refused"
+cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-red5"
+sed -i.bak "s/argv = \[\"age\", \"-r\", recipient\]/argv = [\"age\", \"-r\", recipient, \"-r\", \"$TENANT_B_RECIPIENT\"]/" \
+    "$SCRIPTS_DIR/media_backup_restore.py"
+if ! diff -q "$WORKDIR/media_backup_restore.py.orig-red5" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
+    echo "second-recipient sabotage applied: encrypt_with_age's argv now carries two -r flags"
+else
+    echo "FAILED: the sed sabotage did not change the file -- cannot prove this control" >&2
+    exit 1
+fi
+if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
+    fail "RED-5: backup exited 0 while encrypting to two age recipients -- WRONG, the recipient-count guard did not catch it"
+else
+    pass "RED-5: backup refused a ciphertext carrying a second age recipient stanza (control proven)"
+fi
+echo "-- reverting the second-recipient sabotage --"
+cp "$WORKDIR/media_backup_restore.py.orig-red5" "$SCRIPTS_DIR/media_backup_restore.py"
+rm -f "$SCRIPTS_DIR/media_backup_restore.py.bak"
+if diff -q "$WORKDIR/media_backup_restore.py.orig-red5" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
+    echo "second-recipient sabotage reverted: file matches the pre-sabotage original"
+else
+    echo "FAILED: revert did not restore the original file" >&2
+    exit 1
+fi
+echo "-- repairing: re-running a clean backup (source is still live) --"
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 
 note "Direct check: a different tenant's identity cannot restore tenant-a's media"
 if run_restore "$WORKDIR/tenant-b.identity" ""; then
@@ -386,7 +442,7 @@ fi
 
 note "Summary"
 if [ "$FAILURES" -eq 0 ]; then
-    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a media-skipping backup and a disconnected exit code are each independently caught; a different tenant's identity is independently refused."
+    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code and a second age recipient are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are opaque and content-addressed."
     exit 0
 else
     echo "PROOF FAILED: $FAILURES check(s) did not behave as expected -- see the FAIL lines above."

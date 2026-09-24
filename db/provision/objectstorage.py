@@ -5,12 +5,14 @@ Stdlib only. The two automated write pipelines (nightly dump, binlog
 shipping) each write one object per run and read nothing back, so they only
 ever use `put_object`. `list_objects` and `delete_object` exist for
 `prune_backups.py`, which has to read the bucket's own listing to decide what
-is safe to remove. `get_object` exists for the media backup/restore pipeline
-(`infra/provisioning/scripts/media_backup_restore.py`, reached via
-`shared_objectstorage.py` like every other org/control-side caller): it pulls
-a tenant's live objects to back them up, and reads its own ciphertext back to
-verify a restore, so it is the one caller here that reads an object's body
-rather than only its listing. The signing algorithm is the same one
+is safe to remove. `get_object` and `get_object_with_content_type` exist for
+the media backup/restore pipeline (`infra/provisioning/scripts/media_backup_restore.py`,
+reached via `shared_objectstorage.py` like every other org/control-side
+caller): it pulls a tenant's live objects (with their Content-Type, so a
+restore can serve them the way Ghost did) to back them up, and reads its own
+ciphertext back with `get_object` to verify a restore, so it is the one
+caller here that reads an object's body rather than only its listing. The
+signing algorithm is the same one
 `shared-infra/hetzner/scripts/probe-object-storage.py` proves works against
 this endpoint; path-style addressing is mandatory there for the same reason
 it is here -- a dotted bucket name falls outside the endpoint's one-label
@@ -267,6 +269,63 @@ def get_object(
     status, body = transport(url, headers)
     _raise_for_status(what=f"GET {bucket}/{key}", status=status, body=body)
     return body
+
+
+def _urllib_get_with_headers(url: str, headers: dict[str, str]) -> tuple[int, bytes, dict[str, str]]:
+    """Like `urllib_request`, but also returns the response headers --
+    `get_object`'s transport deliberately does not, because every other
+    caller of this module only ever needed the body. `get_object_with_content_type`
+    is the one caller that needs a header back, so it carries its own
+    3-tuple transport rather than widening `urllib_request`'s contract
+    (and every existing caller's) for one new need."""
+    request = urllib.request.Request(url, method="GET")
+    for name, value in headers.items():
+        request.add_header(name, value)
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return response.status, response.read(), dict(response.headers)
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(), dict(exc.headers or {})
+    except (OSError, http.client.HTTPException) as exc:
+        raise ObjectStorageError(f"GET {url} failed to complete: {exc}") from exc
+
+
+def get_object_with_content_type(
+    *,
+    bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    key: str,
+    transport=_urllib_get_with_headers,
+) -> tuple[bytes, str]:
+    """Like `get_object`, but also returns the object's stored Content-Type.
+
+    Media has a reason `get_object`'s other callers do not: Ghost serves an
+    uploaded file by the content type it was stored with, and a restore that
+    recreates the exact bytes but writes them back as
+    `application/octet-stream` is a restore a browser will download instead
+    of rendering -- silently wrong for video, audio and any direct link,
+    while every checksum still matches. Falls back to
+    `application/octet-stream` only if the response genuinely carries no
+    Content-Type header, never as a way to skip reading one that is there."""
+    headers = build_headers(
+        bucket=bucket,
+        key=key,
+        payload=b"",
+        host=endpoint,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        now=datetime.datetime.now(datetime.timezone.utc),
+        method="GET",
+    )
+    url = request_url(endpoint=endpoint, bucket=bucket, key=key, query=None)
+    status, body, response_headers = transport(url, headers)
+    _raise_for_status(what=f"GET {bucket}/{key}", status=status, body=body)
+    content_type = response_headers.get("Content-Type") or "application/octet-stream"
+    return body, content_type
 
 
 def signed_request(
