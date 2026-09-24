@@ -8,6 +8,8 @@ const MAX_JTI_LENGTH = 128;
 // A token is carried from the broker to a browser, so minutes are enough. The
 // cap bounds a mis-minted token, which would otherwise be good until its exp.
 const MAX_TTL_SECONDS = 900;
+// Allowance for a minter whose clock runs ahead of the tenant's.
+const MAX_ISSUE_SKEW_SECONDS = 60;
 // Bounds memory against a flood of validly signed tokens. With the lifetime cap
 // above this is far beyond any real use; when full, new tokens are refused
 // rather than old entries evicted, because evicting would re-enable a replay.
@@ -73,11 +75,14 @@ function defineBreakGlassSSO(SSOBase, { logger, now = Date.now } = {}) {
     logger && typeof logger.warn === 'function' && typeof logger.info === 'function'
       ? logger
       : noopLogger;
+  // Only lookups this adapter produced are honoured by getUserForIdentity.
+  const issued = new WeakSet();
 
   return class BreakGlassSSO extends SSOBase {
     #key;
     #tenant;
     #identity;
+    #startSeconds;
     #consumed = new Map();
 
     // Runs on Ghost's boot path: a throw here stops the site serving.
@@ -87,6 +92,14 @@ function defineBreakGlassSSO(SSOBase, { logger, now = Date.now } = {}) {
       this.#key = parsed.key;
       this.#tenant = parsed.tenant;
       this.#identity = parsed.identity;
+      // The used-token list is memory only, so it is empty after a restart. A
+      // token issued before this process started may already have been used,
+      // and is refused. Unreadable clock: refuse everything, never throw.
+      try {
+        this.#startSeconds = Math.floor(now() / 1000);
+      } catch {
+        this.#startSeconds = Infinity;
+      }
       if (parsed.reason) {
         safeLog(
           log,
@@ -101,20 +114,12 @@ function defineBreakGlassSSO(SSOBase, { logger, now = Date.now } = {}) {
       return null;
     }
 
-    #consume(jti, exp, nowSeconds) {
+    #sweep(nowSeconds) {
       for (const [seen, seenExp] of this.#consumed) {
         if (seenExp <= nowSeconds) {
           this.#consumed.delete(seen);
         }
       }
-      if (this.#consumed.has(jti)) {
-        return 'replay';
-      }
-      if (this.#consumed.size >= MAX_CONSUMED) {
-        return 'replay cache full';
-      }
-      this.#consumed.set(jti, exp);
-      return null;
     }
 
     async getRequestCredentials(req) {
@@ -135,6 +140,9 @@ function defineBreakGlassSSO(SSOBase, { logger, now = Date.now } = {}) {
       }
     }
 
+    // Verifies the token and returns a lookup for getUserForIdentity. Nothing
+    // is recorded here: a refused token must never use up a legitimate jti,
+    // and the jti is only consumed once the account has been found.
     async getIdentityFromCredentials(token) {
       try {
         if (!this.#key) {
@@ -173,8 +181,20 @@ function defineBreakGlassSSO(SSOBase, { logger, now = Date.now } = {}) {
         if (!Number.isSafeInteger(claims.exp) || claims.exp <= nowSeconds) {
           return this.#refuse('expired');
         }
-        if (claims.exp - nowSeconds > MAX_TTL_SECONDS) {
+        if (!Number.isSafeInteger(claims.iat) || claims.iat >= claims.exp) {
+          return this.#refuse('issued-at');
+        }
+        if (
+          claims.exp - claims.iat > MAX_TTL_SECONDS ||
+          claims.exp - nowSeconds > MAX_TTL_SECONDS
+        ) {
           return this.#refuse('lifetime too long');
+        }
+        if (claims.iat > nowSeconds + MAX_ISSUE_SKEW_SECONDS) {
+          return this.#refuse('issued in the future');
+        }
+        if (claims.iat < this.#startSeconds) {
+          return this.#refuse('issued before this process started');
         }
         // The token's subject is checked, never used: the only account
         // this adapter can produce is the one named in its own config.
@@ -188,24 +208,43 @@ function defineBreakGlassSSO(SSOBase, { logger, now = Date.now } = {}) {
         ) {
           return this.#refuse('jti');
         }
-        const consumed = this.#consume(claims.jti, claims.exp, nowSeconds);
-        if (consumed) {
-          return this.#refuse(consumed);
+        this.#sweep(nowSeconds);
+        if (this.#consumed.has(claims.jti)) {
+          return this.#refuse('replay');
         }
-        safeLog(log, 'info', 'break-glass: token accepted for the configured identity');
-        return this.#identity;
+        const lookup = Object.freeze({
+          identity: this.#identity,
+          jti: claims.jti,
+          exp: claims.exp,
+        });
+        issued.add(lookup);
+        return lookup;
       } catch {
         return this.#refuse('verification error');
       }
     }
 
-    async getUserForIdentity(identity) {
+    async getUserForIdentity(lookup) {
       try {
-        if (!this.#identity || identity !== this.#identity) {
+        if (!this.#identity || !issued.has(lookup) || lookup.identity !== this.#identity) {
           return null;
         }
         const user = await this.getUserByEmail(this.#identity);
-        return user || null;
+        if (!user) {
+          return this.#refuse('no such account');
+        }
+        // Synchronous from here to the set, so concurrent requests carrying
+        // the same token cannot both pass.
+        this.#sweep(now() / 1000);
+        if (this.#consumed.has(lookup.jti)) {
+          return this.#refuse('replay');
+        }
+        if (this.#consumed.size >= MAX_CONSUMED) {
+          return this.#refuse('replay cache full');
+        }
+        this.#consumed.set(lookup.jti, lookup.exp);
+        safeLog(log, 'info', 'break-glass: token accepted for the configured identity');
+        return user;
       } catch {
         return null;
       }
@@ -218,6 +257,7 @@ module.exports = {
   parseConfig,
   QUERY_PARAM,
   MAX_TTL_SECONDS,
+  MAX_ISSUE_SKEW_SECONDS,
   MAX_TOKEN_LENGTH,
   MAX_CONSUMED,
 };

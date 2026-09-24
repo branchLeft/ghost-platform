@@ -228,6 +228,14 @@ class GhostContainer {
     return { ...me, cookie, adapter: await this.adapterLinesSince(mark) };
   }
 
+  async restart() {
+    docker('restart', this.name);
+    this.booted = await this.waitForHome();
+    // The adapter refuses tokens issued before its process started, to the
+    // second; minting in that same second would race it.
+    await sleep(1500);
+  }
+
   remove() {
     spawnSync('docker', ['rm', '-f', this.name], { stdio: 'ignore' });
   }
@@ -261,11 +269,18 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     assert.deepEqual(r.adapter, []);
   });
 
-  it('support SUSPENDED + valid token: no Administrator session', async () => {
+  // The adapter cannot see an account's status, so it accepts the token and
+  // Ghost creates a session row; Ghost then refuses that session on every
+  // request while the account stays suspended. The row is left in place: it is
+  // the known residual (README, "Known residual") and this test shows it.
+  it('support SUSPENDED + valid token: no usable session, but a dormant session row (known residual)', async () => {
+    const sessions = () =>
+      ghost.sql('select count(*) as n from sessions where user_id = ?', supportId)[0].n;
+    const before = sessions();
     const r = await ghost.attempt(validToken());
-    assert.equal(r.status, 403);
-    assert.equal(r.email, null);
-    ghost.sql('delete from sessions where user_id = ?', supportId);
+    assert.deepEqual({ status: r.status, email: r.email }, { status: 403, email: null });
+    assert.deepEqual(r.adapter, ['break-glass: token accepted for the configured identity']);
+    assert.equal(sessions(), before + 1);
   });
 
   let liveToken;
@@ -296,7 +311,14 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
       () => validToken({}, otherKey.privateKey),
       'signature',
     ],
-    ['expired token', () => validToken({ exp: Math.floor(Date.now() / 1000) - 60 }), 'expired'],
+    [
+      'expired token',
+      () => {
+        const nowS = Math.floor(Date.now() / 1000);
+        return validToken({ iat: nowS - 120, exp: nowS - 60 });
+      },
+      'expired',
+    ],
     ['token minted for another tenant', () => validToken({ aud: 'tenant-one' }), 'audience'],
     ['token naming the tenant OWNER (B4)', () => validToken({ sub: OWNER }), 'subject'],
     ['replay of a token already used', () => liveToken, 'replay'],
@@ -328,6 +350,31 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     const r = await ghost.attempt(validToken());
     assert.equal(r.status, 200);
     assert.equal(r.email, SUPPORT);
+  });
+
+  it('a token sent to the site root never reaches the adapter, and stays usable (documented gap)', async () => {
+    const t = validToken();
+    const mark = ghost.mark();
+    const res = await fetch(`${ghost.base}/?bl_break_glass=${encodeURIComponent(t)}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await ghost.adapterLinesSince(mark), []);
+    const r = await ghost.attempt(t);
+    assert.deepEqual({ status: r.status, email: r.email }, { status: 200, email: SUPPORT });
+  });
+
+  it('a used token is refused after Ghost restarts, although the used-token list is gone', async () => {
+    const used = validToken();
+    const first = await ghost.attempt(used);
+    assert.equal(first.status, 200);
+    await ghost.restart();
+    assert.ok(ghost.booted, 'Ghost did not come back after restart');
+    const replay = await ghost.attempt(used);
+    assert.deepEqual({ status: replay.status, email: replay.email }, { status: 403, email: null });
+    assert.deepEqual(replay.adapter, [
+      'break-glass: token refused (issued before this process started)',
+    ]);
+    const fresh = await ghost.attempt(validToken());
+    assert.deepEqual({ status: fresh.status, email: fresh.email }, { status: 200, email: SUPPORT });
   });
 });
 

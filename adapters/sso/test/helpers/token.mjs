@@ -29,5 +29,6 @@ export function claimsFor({
   jti = crypto.randomUUID(),
   nowMs = Date.now(),
 }) {
-  return { sub, aud, exp: Math.floor(nowMs / 1000) + ttlSeconds, jti };
+  const iat = Math.floor(nowMs / 1000);
+  return { sub, aud, iat, exp: iat + ttlSeconds, jti };
 }
