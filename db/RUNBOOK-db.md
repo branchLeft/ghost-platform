@@ -698,17 +698,84 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
    rather than an interactive `-p` because stdin here is already the piped
    dump/binlog stream, the same reason step 3's admin bootstrap above uses
    it. The dump's header (from `--source-data=2`) names the exact
-   `MASTER_LOG_FILE`/`MASTER_LOG_POS` to resume from:
+   `MASTER_LOG_FILE`/`MASTER_LOG_POS` to resume from. **`--stop-datetime` is
+   UTC** -- pick the target timestamp in UTC (step 1) and pass `-e TZ=UTC`
+   to the `mysqlbinlog` container, since it otherwise evaluates the cutoff
+   in whichever timezone the container's own default happens to be in:
    ```bash
    read -rs MYSQL_PWD; export MYSQL_PWD
    docker run --rm -i -e MYSQL_PWD -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
      mysql --host <scratch-host> -uroot < dump.sql
-   docker run --rm -i -e MYSQL_PWD -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
-     bash -c 'mysqlbinlog --start-position=<pos-from-dump-header> --stop-datetime="<target timestamp>" mysql-bin.NNNNNN | mysql --host <scratch-host> -uroot'
+   docker run --rm -i -e MYSQL_PWD -e TZ=UTC -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     bash -c 'mysqlbinlog --start-position=<pos-from-dump-header> --stop-datetime="<target timestamp, UTC>" mysql-bin.NNNNNN | mysql --host <scratch-host> -uroot'
    unset MYSQL_PWD
    ```
 5. Confirm a row known to have changed after the dump and before the target
    timestamp is present, and that nothing after the target timestamp is.
+
+**Scoping the replay to one tenant.** Step 4 above brings back every
+tenant's post-dump writes together -- correct for the instance-level
+scenario Drill A proves, wrong for "we deleted forty posts yesterday", where
+every *other* tenant's writes since the dump must stay out of the restored
+database. `db/provision/extract_tenant_binlog.py` replaces step 4's raw
+`mysqlbinlog | mysql` pipe with a scoped equivalent for that case: it reads
+the dump's own `--source-data=2` resume point, so the position does not
+have to be copied out of the dump header by hand, adds mysqlbinlog's own
+`--database=<tenant>` row-event filter to the replay, and always runs
+`mysqlbinlog` with `TZ=UTC` itself -- **`--stop-datetime` below is UTC**,
+the same as step 4's.
+
+Read the scratch-host root password into the shell rather than typing it on
+the command line, where it would land in shell history. The script's own
+environment carries no `HOME` either (it never reads `~/.my.cnf`; every
+option it needs is passed explicitly), so a personal or host default file
+cannot silently change what gets applied:
+
+```bash
+read -rs MYSQL_PWD
+export MYSQL_PWD
+python3 db/provision/extract_tenant_binlog.py \
+  --dump dump.sql \
+  --tenant-database <tenant> \
+  --stop-datetime="<target timestamp, UTC>" \
+  --apply-host <scratch-host> \
+  --apply-user root \
+  mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...]
+```
+
+**Pass every binlog file shipped since the dump, through to the newest one
+-- never just "enough".** A `--tenant-database` that does not match a
+database this dump declares is refused outright, before any mysqlbinlog
+call -- that is the typo guard. A tenant with no writes in the given range
+is not: the extract is applied regardless (harmless when it carries
+nothing for the tenant), and the script prints `no <tenant> events between
+the resume point and <stop-datetime or "end">; the loaded dump is the
+restore` when it finds none -- a quiet tenant and a restore whose binlog
+file list falls short of covering the range can still print the same
+message. The script narrows that gap itself where it can: every run also
+prints `the given binlogs end at <time>` (the last binlog file's own
+closing `Rotate` timestamp) and warns on stderr if `--stop-datetime` is
+later than that -- read that warning as "the given file list may be short
+a binlog", and check the file list against what was actually shipped
+before trusting an empty result. No such warning is possible when
+`--stop-datetime` is left unset (there is no requested horizon to compare
+the given files' coverage against), so passing every shipped file matters
+most exactly then.
+
+**An admin session, not a tenant one, can put a schema change in the wrong
+tenant's extract.** A row event (an `INSERT`/`UPDATE`/`DELETE`) is scoped
+by the table it actually targets, so a tenant's own database user -- which
+can only ever reach its own database -- cannot make this happen. DDL
+(`ALTER`/`CREATE`/`DROP`) is scoped by the session's `USE`d database
+instead, the older and coarser of mysqlbinlog's two filtering rules: an
+admin session running `USE tenant_b; ALTER TABLE tenant_a.posts ...`
+against `db1` directly puts that statement in tenant_b's extract, and a
+DDL statement run with no governing `USE` at all is dropped from every
+tenant's extract. Run schema changes against `db1` inside an explicit
+`USE <tenant>;` for the tenant they belong to, every time.
+
+Confirm the same way as step 5, plus the property step 5 does not check:
+that no *other* tenant's database gained a row dated after the dump.
 
 ### Drill B -- host loss (dump-only recovery, no binlogs available)
 
