@@ -1,0 +1,17 @@
+{
+  "name": "ghost-platform-sso-adapter",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The break-glass SSO adapter shipped in the Ghost image at core/server/adapters/sso/ (see ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html §05).",
+  "type": "commonjs",
+  "scripts": {
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "test:image": "node --test test/image/break-glass.image.test.mjs"
+  },
+  "devDependencies": {
+    "@tryghost/adapter-base-sso": "0.1.1",
+    "@vitest/coverage-v8": "^4.1.11",
+    "vitest": "^4.1.11"
+  }
+}
