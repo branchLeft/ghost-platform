@@ -6,12 +6,12 @@ import { startTestBroker, type TestBroker } from '../helpers/testBroker.js';
 import { demoDescriptor } from '../helpers/fixtures.js';
 
 /**
- * Regressions for the adversarial review's concurrency findings on
- * workspace#1302 (PR#244, cycle 1, F1/F2/F8/F9/F10) -- each attack the
- * review ran by hand against a real `http.Server`, turned into a permanent
- * test. The recycle contract's whole point is that a previous visitor's
- * hash and lease never outlive their tenancy; these prove that holds under
- * the exact interleavings the review measured, not only in the
+ * The recycle contract's whole point is that a previous visitor's hash and
+ * lease never outlive their tenancy. These prove that holds under
+ * concurrent and interleaved requests -- a slot claimed by one in-flight
+ * request refusing a second, a shared file surviving simultaneous writes
+ * to different slots, a duplicate host refused, an unrotated hash refused,
+ * a failed teardown leaving no live access -- not only in the
  * single-request path the rest of app.test.ts covers.
  */
 
