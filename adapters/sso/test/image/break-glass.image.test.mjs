@@ -243,7 +243,10 @@ class GhostContainer {
   // the adapter's own reason and the container's log tail, so a real
   // regression is never absorbed into the same retry loop as the one
   // legitimate race.
-  async pollUntilFreshTokenAccepted(mintFreshToken, { diagnostic = () => {}, deadlineMs = 30_000 } = {}) {
+  async pollUntilFreshTokenAccepted(
+    mintFreshToken,
+    { diagnostic = () => {}, deadlineMs = 30_000 } = {}
+  ) {
     const RESTART_RACE = 'break-glass: token refused (issued before this process started)';
     const isOnlyTheRestartRace = (adapterLines) =>
       adapterLines.length === 1 && adapterLines[0] === RESTART_RACE;
@@ -256,7 +259,9 @@ class GhostContainer {
       last = await this.attempt(mintFreshToken());
       if (last.status === 200) {
         if (attempts > 1) {
-          diagnostic(`fresh token accepted on attempt ${attempts}, after ${attempts - 1} restart-race refusal(s)`);
+          diagnostic(
+            `fresh token accepted on attempt ${attempts}, after ${attempts - 1} restart-race refusal(s)`
+          );
         }
         return last;
       }
@@ -267,7 +272,9 @@ class GhostContainer {
             `container log tail:\n${this.logs().slice(-40).join('\n')}`
         );
       }
-      diagnostic(`attempt ${attempts}: still the restart race (${JSON.stringify(last.adapter)}), retrying`);
+      diagnostic(
+        `attempt ${attempts}: still the restart race (${JSON.stringify(last.adapter)}), retrying`
+      );
       await sleep(200);
     } while (Date.now() < deadline);
     return last;
