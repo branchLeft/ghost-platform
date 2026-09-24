@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { HashId, SlotName } from '@branchleft/ghost-platform-render-core';
 import { writeFileAtomic } from './atomicFile.js';
+import { clearLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
 import type { Colour } from './literals.js';
 
 /**
@@ -104,10 +105,24 @@ const LOCK_HELD_PHASES: readonly Phase[] = ['preparing', 'resetting'];
  * /status` -- LLD-2 §03's deliberately unauthenticated, always-answering
  * endpoint -- reports it distinctly from a live `preparing` rather than
  * looking identical to one still genuinely in flight.
+ *
+ * The phase alone is not enough for a slot recovered from `resetting`:
+ * `handleReset` writes `resetting` *before* it revokes the previous
+ * tenancy's lease and hash, so a crash in that narrow window leaves them
+ * live while the phase already says "being torn down". Marking it `error`
+ * without also revoking would fail the phase closed while leaving access
+ * open -- the previous visitor keeps logging in for however long it takes
+ * an operator to notice and call `/reset`. Revoking here first, the same
+ * order `handleReset` itself uses, closes that gap immediately rather than
+ * waiting on a caller. A slot recovered from `preparing`, by contrast, has
+ * no previous tenancy's access to revoke: whatever lease exists there (if
+ * any got as far as being written) belongs to the new tenancy that never
+ * finished starting, not to one still logging in.
  */
 export async function recoverCrashedSlots(
   dir: string,
   slotLiterals: readonly string[],
+  leaseStoreConfig: Pick<LeaseStoreConfig, 'slotsPath' | 'leaseDir'>,
   log: (line: string) => void
 ): Promise<void> {
   for (const literal of slotLiterals) {
@@ -117,6 +132,10 @@ export async function recoverCrashedSlots(
       log(
         `slot "${slot}" was left "${state.phase}" by a process that never reached free, running or error -- marking it "error" for an explicit /reset`
       );
+      if (state.phase === 'resetting') {
+        log(`slot "${slot}" was mid-reset: revoking its lease and hash before marking it "error"`);
+        await clearLeaseAndHash(leaseStoreConfig, slot);
+      }
       await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
     }
   }

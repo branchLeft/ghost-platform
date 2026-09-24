@@ -55,14 +55,14 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(broker.renderer.calls).toHaveLength(1);
     expect(broker.adminApi.calls).toHaveLength(1);
     // The slot's own fixed port (F7): appPortBase=9300, slot '2', colour 'a'
-    // -> 9300 + 2*2. Item 1 now refuses a descriptor whose ports disagree
-    // with the slot's own allocation before this handler ever runs, so
-    // `descriptor.ports.a` is bound to equal this by construction --
-    // app.test.ts's "refuses a descriptor whose ports don't match the
-    // slot" test is what proves the Admin API call stays slot-derived
-    // rather than descriptor-derived, by making them disagree on purpose.
+    // -> 9300 + 2*2 = 9304. A literal, not `descriptor.ports.a`: since item
+    // 1's refusal (above) refuses any descriptor whose ports disagree
+    // with the slot's own allocation before this handler runs, the two are
+    // equal by construction for every accepted request here on -- asserting
+    // against `descriptor.ports.a` would merely echo back whatever the
+    // request sent, true or not. This literal is the actual independent
+    // check; `slotPorts.test.ts` separately proves the formula itself.
     expect(broker.adminApi.calls[0]?.baseUrl).toBe('http://127.0.0.1:9304');
-    expect(broker.adminApi.calls[0]?.baseUrl).toBe(`http://127.0.0.1:${descriptor.ports.a}`);
 
     const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
       .split('\n')
@@ -227,6 +227,38 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     const bad = demoDescriptor({ uid: 30123 as never });
     const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
     expect(res.status).toBe(400);
+    expect(broker.renderer.calls).toHaveLength(0);
+    expect(broker.adminApi.calls).toHaveLength(0);
+  });
+
+  // F1 (review, cycle 1): `ports.a` and `uid` were the only two of the four
+  // comparisons with a test, so deleting the `ports.b` or `ports.health`
+  // clause from app.ts stayed green. `descriptorForSlot`'s default is a
+  // fully correct allocation, so these override exactly one field each,
+  // leaving `a` and `uid` correct -- if either clause were missing, the
+  // request would be wrongly admitted.
+  it("refuses a descriptor whose ports.b doesn't match the slot's own allocation, with everything else correct", async () => {
+    broker = await startTestBroker();
+    const good = descriptorForSlot('0' as SlotName);
+    const bad = demoDescriptor({ ports: { ...good.ports, b: 4101 as never } });
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "descriptor's uid/ports don't match slot \"0\"'s own allocation",
+    });
+    expect(broker.renderer.calls).toHaveLength(0);
+    expect(broker.adminApi.calls).toHaveLength(0);
+  });
+
+  it("refuses a descriptor whose ports.health doesn't match the slot's own allocation, with everything else correct", async () => {
+    broker = await startTestBroker();
+    const good = descriptorForSlot('0' as SlotName);
+    const bad = demoDescriptor({ ports: { ...good.ports, health: 4101 as never } });
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "descriptor's uid/ports don't match slot \"0\"'s own allocation",
+    });
     expect(broker.renderer.calls).toHaveLength(0);
     expect(broker.adminApi.calls).toHaveLength(0);
   });

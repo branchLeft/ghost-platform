@@ -120,8 +120,14 @@ export async function main(): Promise<Server> {
   // left `preparing` or `resetting` had its lock holder die with it (the
   // lock is in-memory and this is a fresh process), so it cannot be trusted
   // as still in flight. See `recoverCrashedSlots`'s own doc comment for why
-  // `error` (fail-closed) rather than a guess at `free` or `running`.
-  await recoverCrashedSlots(config.stateDir, config.slotLiterals, (line) => console.error(line));
+  // `error` (fail-closed) rather than a guess at `free` or `running`, and
+  // why a `resetting` slot also has its lease and hash revoked here.
+  await recoverCrashedSlots(
+    config.stateDir,
+    config.slotLiterals,
+    { slotsPath: config.slotsPath, leaseDir: config.leaseDir },
+    (line) => console.error(line)
+  );
 
   const renderer = await loadPlugin('BROKER_RENDERER_MODULE', process.env, isRenderer);
   const adminApi = await loadPlugin('BROKER_ADMIN_API_MODULE', process.env, isAdminApiClient);

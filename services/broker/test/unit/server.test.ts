@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildDeps, loadPlugin } from '../../src/server.js';
@@ -13,6 +13,7 @@ import {
 } from '../helpers/pluginFixtures.js';
 import { findFreePort, spawnBroker, type SpawnedBroker } from '../helpers/spawnBroker.js';
 import { demoDescriptor, TEST_ZONES } from '../helpers/fixtures.js';
+import { writeLeaseAndHash } from '../../src/leaseStore.js';
 
 function fakeConfig(overrides: Partial<BrokerConfig> = {}): BrokerConfig {
   return {
@@ -123,6 +124,8 @@ describe('the real dist/server.js entrypoint', () => {
     env: Record<string, string>;
     keyPair: ReturnType<typeof generateTestKeyPair>;
     stateDir: string;
+    leaseDir: string;
+    slotsPath: string;
   }> {
     const root = await makeTempDir('broker-spawn-');
     const keyPair = generateTestKeyPair();
@@ -132,6 +135,7 @@ describe('the real dist/server.js entrypoint', () => {
     const leaseDir = join(root, 'lease');
     const drainFlagDir = join(root, 'drain');
     const slotDirBase = join(root, 'slots');
+    const slotsPath = join(root, 'slots.json');
     await mkdir(stateDir, { recursive: true });
     await mkdir(leaseDir, { recursive: true });
     await mkdir(drainFlagDir, { recursive: true });
@@ -139,11 +143,13 @@ describe('the real dist/server.js entrypoint', () => {
     return {
       keyPair,
       stateDir,
+      leaseDir,
+      slotsPath,
       env: {
         PORT: String(await findFreePort()),
         LISTEN_HOST: '127.0.0.1',
         BROKER_VERIFY_KEY_FILE: keyPath,
-        BROKER_SLOTS_FILE: join(root, 'slots.json'),
+        BROKER_SLOTS_FILE: slotsPath,
         BROKER_LEASE_DIR: leaseDir,
         BROKER_STATE_DIR: stateDir,
         BROKER_DRAIN_FLAG_DIR: drainFlagDir,
@@ -298,5 +304,42 @@ describe('the real dist/server.js entrypoint', () => {
 
     const statusAfterReset = await fetch(`${baseUrl}/status/2`);
     expect(await statusAfterReset.json()).toEqual({ slot: '2', phase: 'free', healthy: false });
+  });
+
+  // --- A slot recovered from "resetting" must also have the previous
+  // tenancy's lease and hash revoked at boot, not just its phase marked
+  // -- otherwise a crash between /reset's own writeSlotState('resetting')
+  // and clearLeaseAndHash leaves that access live until an operator
+  // happens to call /reset again. ---
+  it('revokes a stale lease/hash for a slot recovered from "resetting", before this process ever listens', async () => {
+    const root = await makeTempDir('broker-plugin-');
+    const { env, stateDir, leaseDir, slotsPath } = await baseEnv();
+    // The exact shape a crash between /reset's own two steps leaves: the
+    // phase already says "resetting", but the previous tenancy's lease and
+    // hash are still exactly as `/reconcile` wrote them.
+    await writeLeaseAndHash(
+      { slotsPath, leaseDir, nowMs: () => Date.now() },
+      'stale-visitor.demo-domain.example.test',
+      '3' as never,
+      '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA'
+    );
+    await writeFile(join(stateDir, '3.json'), JSON.stringify({ phase: 'resetting' }));
+
+    const renderer = await writeValidRendererPlugin(root);
+    const adminApi = await writeValidAdminApiPlugin(root);
+    const drainSource = await writeValidDrainSourcePlugin(root);
+    broker = spawnBroker({
+      ...env,
+      BROKER_RENDERER_MODULE: renderer,
+      BROKER_ADMIN_API_MODULE: adminApi,
+      BROKER_DRAIN_SOURCE_MODULE: drainSource,
+    });
+    await broker.waitListening(8000);
+
+    const slots = JSON.parse(await readFile(slotsPath, 'utf8')) as { slots: { slot: string }[] };
+    expect(slots.slots.find((e) => e.slot === '3')).toBeUndefined();
+    await expect(readFile(join(leaseDir, '3.json'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 });
