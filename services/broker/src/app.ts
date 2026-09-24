@@ -17,7 +17,7 @@ import { clearLeaseAndHash, writeLeaseAndHash, type LeaseStoreConfig } from './l
 import { validateSlotLiteral, type Colour } from './literals.js';
 import type { Renderer } from './render.js';
 import { type SlotLock } from './slotLock.js';
-import { slotPort } from './slotPorts.js';
+import { slotAllocation, slotPort } from './slotPorts.js';
 import { HostConflictError, hostHeldByAnotherSlot } from './slotsFile.js';
 import {
   assertHashRotated,
@@ -45,6 +45,7 @@ export interface BrokerDeps {
   readonly healthChecker: HealthChecker;
   readonly healthPortBase: number;
   readonly appPortBase: number;
+  readonly uidBase: number;
   readonly slotDirBase: string;
   readonly stateDir: string;
   readonly slotLock: SlotLock;
@@ -166,6 +167,26 @@ async function handleReconcile(
   const newHashId = hashIdOf(argon2idHash);
   const hash = descriptorHash(descriptor);
   const host = hostOf(descriptor, deps.zones.demoZone);
+
+  // Refuse a descriptor whose ports or uid disagree with this slot's own
+  // allocation, before anything below touches the renderer or the Admin
+  // API. LLD-2 §01 is load-bearing on "no port to pick, no uid to compute"
+  // -- `slotPort` already keeps the Admin API call itself slot-derived, but
+  // until the renderer exists (workspace#1183) it still receives whatever
+  // `ports`/`uid` the caller sent, unchanged. A mismatch here is malformed
+  // input for *this* slot, not a state conflict, so it is a 400 like the
+  // other descriptor-shape refusals above, not a 409.
+  const allocation = slotAllocation(deps.uidBase, deps.appPortBase, deps.healthPortBase, slot);
+  if (
+    descriptor.uid !== allocation.uid ||
+    descriptor.ports.a !== allocation.ports.a ||
+    descriptor.ports.b !== allocation.ports.b ||
+    descriptor.ports.health !== allocation.ports.health
+  ) {
+    return send(res, 400, {
+      error: `descriptor's uid/ports don't match slot "${slot}"'s own allocation`,
+    });
+  }
 
   // LLD-2 §04's `preparing` phase, restored: nothing below this point runs
   // for this slot without holding its lock, so a `/reset` (or a second
