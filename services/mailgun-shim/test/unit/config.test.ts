@@ -34,6 +34,25 @@ describe('loadConfig', () => {
     expect(config.smtp.auth).toBeUndefined();
     expect(config.messagesPerHour).toBe(50);
     expect(config.throttlePath).toBeUndefined();
+    expect(config.maxRecipientsPerMessage).toBe(50);
+  });
+
+  it('reads SHIM_MAX_RECIPIENTS_PER_MESSAGE', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      SHIM_ALLOW_EPHEMERAL_DB: 'true',
+      SHIM_MAX_RECIPIENTS_PER_MESSAGE: '5',
+    });
+    expect(config.maxRecipientsPerMessage).toBe(5);
+  });
+
+  it('falls back to 50 for a non-positive SHIM_MAX_RECIPIENTS_PER_MESSAGE', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      SHIM_ALLOW_EPHEMERAL_DB: 'true',
+      SHIM_MAX_RECIPIENTS_PER_MESSAGE: '0',
+    });
+    expect(config.maxRecipientsPerMessage).toBe(50);
   });
 
   it('reads PORT, SMTP_PORT, SMTP_SECURE, SMTP_USER/PASS and SHIM_MESSAGES_PER_HOUR', () => {

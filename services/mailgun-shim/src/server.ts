@@ -23,13 +23,14 @@ const throttle = createThrottle({
 // to be picked back up.
 const worker = createWorker({ store, transport, throttle, log });
 
-const app = createApp(store, worker, log);
+const app = createApp(store, worker, log, config.maxRecipientsPerMessage);
 
 const smtpFrontDoor = createSmtpFrontDoor({
   store,
   worker,
   log,
   maxMessageBytes: config.smtpFrontDoor.maxMessageBytes,
+  maxRecipientsPerMessage: config.maxRecipientsPerMessage,
   maxUnauthenticatedConnectionsPerSource:
     config.smtpFrontDoor.maxUnauthenticatedConnectionsPerSource,
   maxUnauthenticatedConnections: config.smtpFrontDoor.maxUnauthenticatedConnections,

@@ -319,3 +319,95 @@ describe('POST /v3/:domain/messages', () => {
     expect(followUp.status).toBe(200);
   });
 });
+
+describe('POST /v3/:domain/messages — recipient cap', () => {
+  let store: FakeShimStore;
+  let sendMail: ReturnType<typeof vi.fn>;
+  let transport: Transporter;
+  let worker: WorkerHandle;
+  let testLogger: TestLogger;
+  let server: StartedRouter;
+
+  beforeEach(async () => {
+    store = createFakeStore();
+    store.registerTenant(DOMAIN, API_KEY);
+    sendMail = vi.fn(async () => ({}));
+    transport = { sendMail } as unknown as Transporter;
+    testLogger = createTestLogger();
+    worker = createTestWorker(store, transport, { log: testLogger.logger });
+    // A small cap (3), not the 50 default, so the test sends a handful of
+    // recipients rather than 51 real multipart fields.
+    server = await startRouter(createMessagesRouter(store, worker, testLogger.logger, 3));
+  });
+
+  afterEach(async () => {
+    await worker.stop();
+    await server.close();
+  });
+
+  function post(body: FormData | string, contentType?: string) {
+    return fetch(`${server.baseUrl}/v3/${DOMAIN}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: basicAuthHeader('api', API_KEY),
+        ...(contentType ? { 'Content-Type': contentType } : {}),
+      },
+      body,
+    });
+  }
+
+  it('accepts a recipient count at the cap', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'a@example.com'],
+        ['to', 'b@example.com'],
+        ['to', 'c@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses a recipient count over the cap with 429, matching this route’s own temporary-refusal convention, and never enqueues', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'a@example.com'],
+        ['to', 'b@example.com'],
+        ['to', 'c@example.com'],
+        ['to', 'd@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toBe('Too many recipients');
+    expect(store.countPendingRecipients()).toBe(0);
+    await worker.whenIdle();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('counts recipients after de-duplication — a repeated address does not itself trip the cap', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'a@example.com'],
+        ['to', 'a@example.com'],
+        ['to', 'b@example.com'],
+        ['to', 'c@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(200);
+  });
+});

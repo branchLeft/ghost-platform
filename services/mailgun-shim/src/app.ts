@@ -21,7 +21,8 @@ import type { WorkerHandle } from './worker.js';
 export function createApp(
   store: ShimStore,
   worker: WorkerHandle,
-  log: Logger = createLogger()
+  log: Logger = createLogger(),
+  maxRecipientsPerMessage = 50
 ): Express {
   const app = express();
   app.disable('x-powered-by');
@@ -41,7 +42,7 @@ export function createApp(
     }
   });
 
-  app.use(createMessagesRouter(store, worker, log));
+  app.use(createMessagesRouter(store, worker, log, maxRecipientsPerMessage));
   app.use(createEventsRouter(store));
   app.use(createSuppressionsRouter(store));
 

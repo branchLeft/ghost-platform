@@ -22,6 +22,11 @@ export interface ShimConfig {
   smtp: DeliveryHostConfig;
   throttlePath?: string;
   messagesPerHour: number;
+  // Shared between both front doors (the HTTP Mailgun-shaped route and the
+  // SMTP listener) rather than nested under smtpFrontDoor below — Ghost's
+  // transactional mail always has exactly one recipient (LLD-6), so the cap
+  // is a property of "a message this shim will queue", not of one channel.
+  maxRecipientsPerMessage: number;
   smtpFrontDoor: SmtpFrontDoorConfig;
 }
 
@@ -96,6 +101,17 @@ const DEFAULT_MAX_CONCURRENT_DATA_PHASES_PER_SUBMITTER = 5;
 
 const DEFAULT_SUBMITTER_MESSAGES_PER_MINUTE = 120;
 
+// Ghost's transactional sender always addresses exactly one recipient
+// (LLD-6 §03) — 50 is generous headroom above that, not a fit to any real
+// send this shim should ever see, and bounds one credential's envelope
+// fan-out per message. smtp-server rescans its whole rcptTo array on every
+// RCPT, so an unbounded envelope costs quadratic CPU on this connection and
+// starves every other submitter sharing the process while it runs. A
+// message over the cap is refused mid-envelope with a temporary failure
+// (RFC 5321), never trimmed and accepted: trimming would return a false
+// success for the recipients silently dropped.
+const DEFAULT_MAX_RECIPIENTS_PER_MESSAGE = 50;
+
 // Structurally identical to NodeJS.ProcessEnv, spelled out instead of named
 // so this file has no dependency on the ambient @types/node globals eslint's
 // plain (non-type-aware) config doesn't resolve.
@@ -142,6 +158,8 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
     },
     throttlePath: env.SHIM_THROTTLE_PATH,
     messagesPerHour,
+    maxRecipientsPerMessage:
+      Number(env.SHIM_MAX_RECIPIENTS_PER_MESSAGE) || DEFAULT_MAX_RECIPIENTS_PER_MESSAGE,
     smtpFrontDoor: {
       port: Number(env.SMTP_LISTEN_PORT) || DEFAULT_SMTP_LISTEN_PORT,
       // Binding every interface is normal for a containerised service —

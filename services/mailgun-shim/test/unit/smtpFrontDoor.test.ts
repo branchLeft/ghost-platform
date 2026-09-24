@@ -17,7 +17,7 @@ import {
 } from '../../src/smtpFrontDoor.js';
 import { createSqliteStore, type ShimStore } from '../../src/store.js';
 import type { WorkerHandle } from '../../src/worker.js';
-import { createTestLogger } from '../helpers/testLogger.js';
+import { createTestLogger, type CapturedLogLine } from '../helpers/testLogger.js';
 
 // The real shipped default, not a hand copy — a hand copy would drift
 // silently from the exported constant, and a widened default would still
@@ -477,6 +477,7 @@ async function startHarness(
     omitAllowedSourceCidrs: boolean;
     submitterMessagesPerMinute: number;
     maxMessageBytes: number;
+    maxRecipientsPerMessage: number;
     maxUnauthenticatedConnectionsPerSource: number;
     maxUnauthenticatedConnections: number;
     maxUnauthenticatedPerSourceWaitQueueDepth: number;
@@ -508,6 +509,7 @@ async function startHarness(
     worker,
     log: logger,
     maxMessageBytes: overrides.maxMessageBytes ?? 1024 * 1024,
+    maxRecipientsPerMessage: overrides.maxRecipientsPerMessage ?? 50,
     maxUnauthenticatedConnectionsPerSource: overrides.maxUnauthenticatedConnectionsPerSource ?? 20,
     maxUnauthenticatedConnections: overrides.maxUnauthenticatedConnections ?? 20,
     maxUnauthenticatedPerSourceWaitQueueDepth:
@@ -736,6 +738,24 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(harness.worker.kick).not.toHaveBeenCalled();
   });
 
+  it('fails closed (an auth failure, not a crash) when verifyTenant rejects — a store/crypto error, not a failed check', async () => {
+    harness = await startHarness();
+    vi.spyOn(harness.store, 'verifyTenant').mockRejectedValueOnce(new Error('database is locked'));
+    const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+    await expect(
+      transport.sendMail({
+        from: 'noreply@tenant-a.example.com',
+        to: 'member@example.com',
+        subject: 'Hi',
+        text: 'hi',
+      })
+    ).rejects.toThrow();
+
+    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.logs.some((line) => line.event === 'smtp_auth_failed')).toBe(true);
+  });
+
   it('rejects a domain with no registered tenant and never enqueues', async () => {
     harness = await startHarness();
     const transport = client(harness.port, 'unregistered.example.com', 'anything');
@@ -789,6 +809,45 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     const rcptResponse = responses.find((line) => /^501 /.test(line));
     expect(rcptResponse).toBeDefined();
     expect(harness.store.countPendingRecipients()).toBe(0);
+  });
+
+  it('accepts the first 50 recipients on a message, refuses the 51st with 452 4.5.3, and enqueues exactly those 50', async () => {
+    harness = await startHarness();
+    const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+    const recipients = Array.from({ length: 51 }, (_, i) => `member${i}@example.com`);
+
+    // rawSmtpCommands' responses array is in strict protocol order, one
+    // entry per final (non-continuation) response line: [banner, EHLO,
+    // AUTH, MAIL FROM, ...one per RCPT TO, DATA's "354", the completed
+    // message's "250", QUIT]. Named indices instead of a single slice
+    // arithmetic expression, so a miscount fails loudly at the specific
+    // assertion rather than silently comparing the wrong line.
+    const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+      'EHLO test',
+      `AUTH PLAIN ${authPlain}`,
+      'MAIL FROM:<noreply@tenant-a.example.com>',
+      ...recipients.map((address) => `RCPT TO:<${address}>`),
+      'DATA',
+      'Subject: many recipients\r\n\r\nBody\r\n.',
+      'QUIT',
+    ]);
+
+    const rcptStart = 4; // banner, EHLO, AUTH, MAIL FROM
+    const rcptResponses = responses.slice(rcptStart, rcptStart + recipients.length);
+    expect(rcptResponses).toHaveLength(recipients.length);
+    expect(rcptResponses.slice(0, 50).every((line) => /^250 /.test(line))).toBe(true);
+    expect(rcptResponses[50]).toMatch(/^452 4\.5\.3 /);
+
+    const dataAcceptedIndex = rcptStart + recipients.length; // "354 ..."
+    expect(responses[dataAcceptedIndex]).toMatch(/^354 /);
+    // A standard client sends the refused recipient in a separate message —
+    // this one still completes for the 50 that were accepted.
+    expect(responses[dataAcceptedIndex + 1]).toMatch(/^250 /);
+
+    const due = harness.store.claimDueRecipients(Date.now() / 1000, 1000);
+    expect(due).toHaveLength(50);
+    expect(new Set(due.map((r) => r.recipient))).toEqual(new Set(recipients.slice(0, 50)));
+    expect(due.some((r) => r.recipient === 'member50@example.com')).toBe(false);
   });
 
   it('rejects a message over the configured size cap and never enqueues it', async () => {
@@ -911,6 +970,28 @@ describe('SMTP front door — acceptance into the durable queue', () => {
         socket.connect(harness.port, '127.0.0.1');
       });
       return socket;
+    }
+
+    /**
+     * Polls harness.logs for a line matching `predicate` instead of
+     * sleeping a guessed duration — smtp_connection_queued (smtpFrontDoor.ts)
+     * fires the instant a connection genuinely enters the per-source wait
+     * queue, so this is a real readiness signal for "reached the queue",
+     * not a timing assumption about smtp-server's own early-talker delay.
+     * The bound is a safety net against hanging the suite on a real
+     * regression, not the thing doing the waiting.
+     */
+    async function waitForLog(
+      predicate: (line: CapturedLogLine) => boolean,
+      timeoutMs = 2000
+    ): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (!harness.logs.some(predicate)) {
+        if (Date.now() > deadline) {
+          throw new Error(`waitForLog: no matching line within ${timeoutMs}ms`);
+        }
+        await new Promise((r) => setTimeout(r, 5));
+      }
     }
 
     interface RawSmtpSession {
@@ -1212,9 +1293,23 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       // source, cap held at 5, must all still complete — the excess waits
       // for the ordinary trickle of releases (each one authenticating)
       // rather than being turned away.
+      //
+      // maxUnauthenticatedPerSourceWaitMs is set explicitly here, well
+      // past the harness default of 2000ms, rather than left to it. What
+      // this test asserts is a correctness property — all 20 sends
+      // eventually complete, none refused — not that they do so within
+      // some particular wall-clock window, and the harness default was
+      // never chosen with that property in mind. Even with AUTH's scrypt
+      // check off the event loop (crypto.ts), the wait a queued
+      // connection can tolerate before every earlier one has authenticated
+      // still scales with real CPU time, which this suite does not
+      // control. 10s is comfortably under nodemailer's own default
+      // greeting timeout, so it changes nothing about what a real client
+      // would tolerate.
       harness = await startHarness({
         maxUnauthenticatedConnectionsPerSource: 5,
         maxUnauthenticatedConnections: 100,
+        maxUnauthenticatedPerSourceWaitMs: 10_000,
         maxConcurrentDataPhases: 100,
         maxConcurrentDataPhasesPerSubmitter: 100,
       });
@@ -1231,7 +1326,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
 
       const results = await Promise.all(sends);
       expect(results).toHaveLength(20);
-    });
+    }, 20000);
 
     it('a burst deeper than the per-source wait queue is refused outright, not queued without bound', async () => {
       harness = await startHarness({
@@ -1317,7 +1412,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       waiter.end();
     });
 
-    it('a connection that drops while still queued is withdrawn cleanly — never admitted, never logged as refused', async () => {
+    it('a connection that drops while still queued is withdrawn cleanly — never admitted, and the slot it would have leaked stays usable', async () => {
       harness = await startHarness({
         maxUnauthenticatedConnectionsPerSource: 1,
         maxUnauthenticatedConnections: 100,
@@ -1330,9 +1425,19 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       const waiter = new Socket();
       const waiterClosed = new Promise<void>((resolve) => waiter.on('close', resolve));
       waiter.connect(harness.port, '127.0.0.1');
-      // Give it a moment to actually reach the queue (past the greeting the
-      // holder consumed) before pulling it out from under itself.
-      await new Promise((r) => setTimeout(r, 50));
+      // Wait for the real readiness signal — smtp_connection_queued fires
+      // only once this connection has genuinely entered the per-source
+      // wait queue (see waitForLog's own comment). A fixed sleep here is
+      // not safe: smtp-server holds every connection for its own ~100ms
+      // early-talker check before onConnect ever runs, so a short enough
+      // sleep destroys the socket before it reaches the queue at all —
+      // proving nothing about the cancel-on-early-close path this test
+      // exists for (confirmed by sabotaging onEarlyClose to a no-op: with
+      // a 50ms sleep the test stayed green regardless).
+      await waitForLog(
+        (line) =>
+          line.event === 'smtp_connection_queued' && line.fields.remoteAddress === '127.0.0.1'
+      );
       waiter.destroy();
       await waiterClosed;
 
@@ -1341,8 +1446,30 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       // longer exists (smtp-server would have nothing to write a response
       // to), and must not appear in the logs as either admitted or refused.
       holder.end();
-      await new Promise((r) => setTimeout(r, 50));
 
+      // The proof that actually distinguishes a working cancel from a
+      // no-op one: a FRESH, live connection from the same source must get
+      // the slot the holder just freed. cancel() leaving the waiter in the
+      // queue (the sabotage below) is invisible to the two assertions
+      // above — wrapSlot's release() would silently hand the freed slot to
+      // that dead entry instead, calling its onResult with { admitted:
+      // true } and attaching the release-on-close listener to a socket
+      // that already closed, which will never fire it again. Nothing logs
+      // an error for that — the leak is silent, and the next legitimate
+      // connection from this source is the one that pays for it.
+      const fresh = new Socket();
+      const freshResponse = await new Promise<string>((resolve, reject) => {
+        let buf = '';
+        fresh.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^\d{3} /m.test(buf)) resolve(buf);
+        });
+        fresh.on('error', reject);
+        fresh.connect(harness.port, '127.0.0.1');
+      });
+      fresh.end();
+
+      expect(freshResponse).toMatch(/^220 /);
       expect(
         harness.logs.some(
           (line) =>
@@ -1806,6 +1933,7 @@ describe('SMTP front door — runtime server errors are logged, not swallowed', 
       },
       log: logger2,
       maxMessageBytes: 1024 * 1024,
+      maxRecipientsPerMessage: 50,
       maxUnauthenticatedConnectionsPerSource: 20,
       maxUnauthenticatedConnections: 20,
       maxUnauthenticatedPerSourceWaitQueueDepth: 50,

@@ -396,6 +396,8 @@ export interface SmtpFrontDoorOptions {
   worker: WorkerHandle;
   log: Logger;
   maxMessageBytes: number;
+  /** Cap on RCPT commands accepted for a single message — the (N+1)th and later get a temporary refusal (452), every earlier one stays accepted. Counted per-message (smtp-server replaces the whole envelope on RSET/EHLO/HELO and after each completed DATA), never cumulative across a connection's lifetime. */
+  maxRecipientsPerMessage: number;
   /** How many connections from one source address are admitted into the unauthenticated pool without waiting. Checked before the global pool, so one source (e.g. a compromised, credential-less container) can never occupy more than its own instantly-admitted share — churning connections defeats a purely time-based deadline, and a purely global count-based cap doesn't need many source addresses to exhaust. A legitimate source bursting past this does not get refused outright: see maxUnauthenticatedPerSourceWaitQueueDepth/Ms below. */
   maxUnauthenticatedConnectionsPerSource: number;
   /** Cap on connections that have not yet authenticated, across every source — the backstop behind the per-source cap above. Never gates an authenticated submitter — this pool and the authenticated one are counted separately. Never queued behind: it bounds many distinct hostile sources at once, a threat a per-source wait does nothing about. */
@@ -544,7 +546,18 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // message on this same connection attaches.
       const onEarlyClose = (): void => pending.cancel();
       rawConnection?._socket?.once('close', onEarlyClose);
+      // unauthAdmissionQueue.request() calls onResult synchronously, before
+      // returning, on every immediate path (admitted, or refused outright
+      // by the global cap or a full per-source wait queue) — the only path
+      // that defers it is genuinely entering that per-source wait queue.
+      // settledSynchronously therefore tells the two apart exactly, with no
+      // guess at how long "reaching the queue" takes — a caller (a test
+      // proving the cancel-on-early-close path, an operator's own log
+      // search) waiting on smtp_connection_queued below has a real
+      // readiness signal instead of a sleep.
+      let settledSynchronously = false;
       const pending = unauthAdmissionQueue.request(remoteAddress, (result) => {
+        settledSynchronously = true;
         rawConnection?._socket?.removeListener('close', onEarlyClose);
 
         if (!result.admitted) {
@@ -593,13 +606,16 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         }, opts.authDeadlineMs);
         deadline.unref();
       });
+      if (!settledSynchronously) {
+        log.info('smtp_connection_queued', { remoteAddress: session.remoteAddress });
+      }
     },
 
-    onAuth(
+    async onAuth(
       auth: SMTPServerAuthentication,
       session: SMTPServerSession,
       callback: (err: Error | null | undefined, response?: SMTPServerAuthenticationResponse) => void
-    ): void {
+    ): Promise<void> {
       // The username IS the submitter's identity (a per-tenant/per-slot
       // domain, same shape as the Mailgun HTTP route's tenant key) — a
       // submission is never trusted because of where it came from or what
@@ -609,7 +625,18 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // normalise `username`/`password` to a string, even an empty one,
       // before onAuth is called — undefined is not a value either mechanism
       // hands this callback, only the TypeScript type says so).
-      const tenant = store.verifyTenant(auth.username ?? '', auth.password ?? '');
+      //
+      // verifyTenant runs scrypt off the event loop (crypto.ts's
+      // verifyApiKey, async since it's on this request path) — awaited
+      // rather than left as a floating promise so a store/crypto error
+      // reaches smtp-server's own callback-based error handling as a
+      // credential failure, not an unhandled rejection.
+      let tenant;
+      try {
+        tenant = await store.verifyTenant(auth.username ?? '', auth.password ?? '');
+      } catch {
+        tenant = null;
+      }
       if (!tenant) {
         log.warn('smtp_auth_failed', { username: auth.username ?? null });
         callback(new Error('Invalid credentials'));
@@ -652,7 +679,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
 
     onRcptTo(
       address: SMTPServerAddress,
-      _session: SMTPServerSession,
+      session: SMTPServerSession,
       callback: (err?: Error | null) => void
     ): void {
       // Same address grammar the outbound path already defends (smtp.ts) —
@@ -662,6 +689,32 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       if (!isSafeRecipientAddress(address.address)) {
         const err = new Error('Invalid recipient address') as Error & { responseCode: number };
         err.responseCode = 501;
+        callback(err);
+        return;
+      }
+      // smtp-server calls onRcptTo BEFORE pushing the address onto
+      // session.envelope.rcptTo (verified from its source), so this length
+      // is exactly the count of recipients already accepted for THIS
+      // message — the cap below refuses the (maxRecipientsPerMessage+1)th
+      // and later, leaving every earlier one accepted, rather than
+      // rejecting the whole message. session.envelope is replaced wholesale
+      // by smtp-server on every RSET/EHLO/HELO and after each completed
+      // DATA, so this count is per-message, never cumulative across a
+      // connection's lifetime. A temporary failure (RFC 5321): the limit is
+      // this listener's own local policy, not a statement that the address
+      // can never be delivered to.
+      if (session.envelope.rcptTo.length >= opts.maxRecipientsPerMessage) {
+        log.warn('smtp_too_many_recipients', {
+          submitter: session.user ?? null,
+          limit: opts.maxRecipientsPerMessage,
+        });
+        // smtp-server's handler_RCPT sends err.responseCode/err.message
+        // verbatim with no enhanced-status-code context of its own for an
+        // onRcptTo-supplied error (unlike its internal syntax-error paths),
+        // so the enhanced code is written into the message text itself to
+        // land on the wire as "452 4.5.3 Too many recipients".
+        const err = new Error('4.5.3 Too many recipients') as Error & { responseCode: number };
+        err.responseCode = 452;
         callback(err);
         return;
       }

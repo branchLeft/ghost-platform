@@ -39,7 +39,12 @@ function dedupeRecipients(recipients: string[]): string[] {
   return deduped;
 }
 
-export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log: Logger): Router {
+export function createMessagesRouter(
+  store: ShimStore,
+  worker: WorkerHandle,
+  log: Logger,
+  maxRecipientsPerMessage = 50
+): Router {
   const router = createRouter();
 
   router.post(
@@ -63,6 +68,17 @@ export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log
       }
 
       const recipients = dedupeRecipients(fields.to);
+
+      // Same cap as the SMTP front door, same reason: Ghost's transactional
+      // sender always addresses exactly one recipient, so unbounded fan-out
+      // here can only be a single credential abusing the shared queue.
+      // 429 matches this route's existing temporary-refusal convention
+      // (tenantRateLimiter above, "too many" from the same tenant) — this
+      // is retryable as separate, smaller sends, not a permanent failure.
+      if (recipients.length > maxRecipientsPerMessage) {
+        res.status(429).json({ message: 'Too many recipients' });
+        return;
+      }
 
       const emailId = fields.customVars['email-id'] ?? null;
       const trackOpens = isYes(fields.options['tracking-opens']);
