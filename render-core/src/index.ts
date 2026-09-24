@@ -52,6 +52,7 @@ export {
   CodeInjectionPreconditionError,
   CURRENT_SCHEMA_VERSION,
   InvariantViolationError,
+  servedHostnameOf,
   TierMismatchError,
   UnknownDiscriminantError,
   UnknownSchemaVersionError,

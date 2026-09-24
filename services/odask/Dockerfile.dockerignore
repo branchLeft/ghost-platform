@@ -1,0 +1,10 @@
+# Read by BuildKit in place of the root .dockerignore when this Dockerfile is
+# used: the context is the repository root, and only two packages belong in it.
+*
+!render-core
+!services/odask
+**/node_modules
+**/dist
+**/coverage
+render-core/test
+services/odask/test

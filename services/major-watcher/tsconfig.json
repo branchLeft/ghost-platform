@@ -1,0 +1,15 @@
+{
+  // strict-1 alone, same reasoning as services/demo-gate and
+  // services/mailgun-shim: a plain Node CLI, no Pulumi resources, no
+  // browser target.
+  "extends": "@branchleft/tsconfig/strict-1.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noUncheckedIndexedAccess": true,
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}
