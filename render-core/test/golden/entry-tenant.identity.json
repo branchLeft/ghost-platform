@@ -1,0 +1,10 @@
+{
+  "slug": "entry-co",
+  "uid": 30201,
+  "stackName": "entry-co",
+  "contentVolume": "ghost-entry-co-content",
+  "adaptersVolume": "ghost-entry-co-adapters",
+  "appHostPrivateIp": "10.20.2.20",
+  "databaseName": "ghost_entry_co",
+  "mediaBucket": "branchleft-media-entry-co"
+}

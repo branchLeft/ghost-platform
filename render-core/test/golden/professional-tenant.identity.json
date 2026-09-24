@@ -1,0 +1,10 @@
+{
+  "slug": "pro-co",
+  "uid": 30301,
+  "stackName": "pro-co",
+  "contentVolume": "ghost-pro-co-content",
+  "adaptersVolume": "ghost-pro-co-adapters",
+  "appHostPrivateIp": "10.20.2.30",
+  "databaseName": "ghost_pro_co",
+  "mediaBucket": "branchleft-media-pro-co"
+}

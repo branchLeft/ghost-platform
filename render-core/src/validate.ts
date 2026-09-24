@@ -19,6 +19,8 @@ import {
   validateTenantUid,
 } from './brand.js';
 import type { TenantDescriptor } from './descriptor.js';
+import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
+import { validateMediaBucket } from './media.js';
 
 export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3';
 
@@ -394,10 +396,33 @@ function checkRanges(descriptor: TenantDescriptor): void {
   assertFinitePositiveInteger(descriptor.caps.nofile, 'caps.nofile');
 }
 
+/** Below 1024, a rendered port would collide with a privileged service on a
+ * host that already runs SSH — mirrors `infra/tenant/runtime.ts#validateHostPort`. */
+const MIN_HOST_PORT = 1024;
+
 function validatePortTriple(ports: TenantDescriptor['ports']): void {
   validatePort(ports.a, 'ports.a');
   validatePort(ports.b, 'ports.b');
   validatePort(ports.health, 'ports.health');
+  for (const field of ['a', 'b', 'health'] as const) {
+    if (ports[field] < MIN_HOST_PORT) {
+      throw new FieldValidationError(
+        `ports.${field}`,
+        `ports.${field} ${ports[field]} must be at least ${MIN_HOST_PORT} — below it collides ` +
+          `with a privileged service on a host that already runs SSH.`
+      );
+    }
+  }
+  // New with the blue/green ports.a/ports.b/ports.health triple (LLD-1
+  // §03b): nothing about a single-port schema could conflate two roles,
+  // but three same-typed numbers on one object can silently collide.
+  if (ports.a === ports.b || ports.a === ports.health || ports.b === ports.health) {
+    throw new FieldValidationError(
+      'ports',
+      `ports.a (${ports.a}), ports.b (${ports.b}) and ports.health (${ports.health}) must all ` +
+        `differ — two roles bound to the same port is a silent collision, not a valid triple.`
+    );
+  }
 }
 
 function assertNonEmptyString(value: string, field: string): void {
@@ -414,19 +439,30 @@ function assertNonEmptyPath(value: string, field: string): void {
   }
 }
 
-function validateDatabase(database: TenantDescriptor['database']): void {
+function validateDatabase(
+  slug: TenantDescriptor['slug'],
+  database: TenantDescriptor['database']
+): void {
   if (database.kind === 'sqlite') {
     assertNonEmptyPath(database.path, 'database.path');
     return;
   }
   assertNonEmptyString(database.host, 'database.host');
   validatePort(database.port, 'database.port');
+  // A descriptor must never be able to name another tenant's database — the
+  // same isolation control `validateMediaBucket` below applies to the
+  // bucket.
+  validateDatabaseIdentity(slug, database);
 }
 
-function validateMedia(media: TenantDescriptor['media']): void {
+function validateMedia(slug: TenantDescriptor['slug'], media: TenantDescriptor['media']): void {
   if (media.kind === 'local') {
     assertNonEmptyPath(media.path, 'media.path');
+    return;
   }
+  // A descriptor naming another tenant's bucket must not validate, not
+  // merely be refused later by a caller that happens to re-check it.
+  validateMediaBucket(slug, media);
 }
 
 // The comma/whitespace check is what "exactly one" means in practice: age
@@ -854,14 +890,15 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   checkVersion(descriptor);
 
   validateSlug(descriptor.slug);
+  validateSlugAvailability(descriptor.slug);
   validateAbsoluteUrl(descriptor.siteUrl);
   validateDigestPinnedRef(descriptor.image);
   validateEmailAddress(descriptor.ownerEmail, 'ownerEmail');
   validateTenantUid(descriptor.uid);
   validatePortTriple(descriptor.ports);
   validatePrivateIpV4(descriptor.appHostIp);
-  validateDatabase(descriptor.database);
-  validateMedia(descriptor.media);
+  validateDatabase(descriptor.slug, descriptor.database);
+  validateMedia(descriptor.slug, descriptor.media);
   validateBackup(descriptor.backup);
   validateTransport(descriptor.transport);
   validateHostname(descriptor.hostname, zones);
