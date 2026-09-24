@@ -53,14 +53,21 @@ describe('normalizeHostname', () => {
 });
 
 describe('isEveryInterfaceAddress', () => {
-  it.each(['0.0.0.0', '::'])('treats %j as every interface', (address) => {
+  it.each(['0.0.0.0', '::', '::ffff:0.0.0.0'])('treats %j as every interface', (address) => {
     expect(isEveryInterfaceAddress(address)).toBe(true);
   });
 
-  it.each(['127.0.0.1', '10.20.1.50', '::1', 'fd00::1', '0.0.0.1', ':::', '0.0.0.0.', ''])(
-    'does not treat %j as every interface',
-    (address) => {
-      expect(isEveryInterfaceAddress(address)).toBe(false);
-    }
-  );
+  it.each([
+    '127.0.0.1',
+    '10.20.1.50',
+    '::1',
+    'fd00::1',
+    '0.0.0.1',
+    ':::',
+    '0.0.0.0.',
+    '',
+    '::ffff:127.0.0.1', // a real, specific mapped address -- only mapped-zero is every interface
+  ])('does not treat %j as every interface', (address) => {
+    expect(isEveryInterfaceAddress(address)).toBe(false);
+  });
 });
