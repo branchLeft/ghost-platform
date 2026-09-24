@@ -13,11 +13,9 @@ import { createSqliteStore, type ShimStore } from '../../src/store.js';
 import type { WorkerHandle } from '../../src/worker.js';
 import { createTestLogger } from '../helpers/testLogger.js';
 
-// Review cycle 1, should-fix 3: this used to be a hand-copied literal that
-// never changed when the shipped `DEFAULT_ALLOWED_SOURCE_CIDRS` did — the
-// reviewer widened the real export to `0.0.0.0/0`/`::/0` and every test
-// here stayed green, because none of them exercised the shipped constant at
-// all. Importing it directly means the same sabotage now goes red.
+// The real shipped default, not a hand copy — a hand copy would drift
+// silently from the exported constant, and a widened default would still
+// pass every test here.
 const DEFAULT_CIDRS = DEFAULT_ALLOWED_SOURCE_CIDRS;
 
 describe('buildSourceAllowList', () => {
@@ -107,6 +105,7 @@ async function startHarness(
     omitAllowedSourceCidrs: boolean;
     submitterMessagesPerMinute: number;
     maxMessageBytes: number;
+    maxConcurrentConnections: number;
     host: string;
     /** A worker whose `whenIdle()` never resolves — proves the ack can't be coupled to it. */
     workerNeverIdle: boolean;
@@ -131,6 +130,7 @@ async function startHarness(
     worker,
     log: logger,
     maxMessageBytes: overrides.maxMessageBytes ?? 1024 * 1024,
+    maxConcurrentConnections: overrides.maxConcurrentConnections ?? 20,
     ...(overrides.omitAllowedSourceCidrs
       ? {}
       : { allowedSourceCidrs: overrides.allowedSourceCidrs ?? DEFAULT_CIDRS }),
@@ -243,14 +243,13 @@ describe('SMTP front door — acceptance into the durable queue', () => {
   });
 
   it('two credentials sharing one claimed sending domain in the message body are still kept apart by their own identity', async () => {
-    // Review cycle 1, should-fix 6, and the issue's own premise (LLD-6 §03):
-    // "on a demo host every slot shares one sending domain... the shim's
-    // current per-domain tenant key is not enough on its own to tell two
-    // slots apart." Identity here is the authenticated credential
-    // (tenants.domain, the AUTH username) — never the domain the message
-    // body claims to send as. Two different slot credentials both send
-    // `From:` the identical literal domain and must still be attributed,
-    // ceilinged and queued as two separate submitters.
+    // A demo host's slots can share one visible sending domain, so a
+    // per-domain tenant key alone can't tell them apart. Identity here is
+    // the authenticated credential (tenants.domain, the AUTH username) —
+    // never the domain the message body claims to send as. Two different
+    // slot credentials both send `From:` the identical literal domain and
+    // must still be attributed, ceilinged and queued as two separate
+    // submitters.
     harness = await startHarness({ submitterMessagesPerMinute: 1 });
     const slotA = client(harness.port, 'tenant-a.example.com', 'key-a');
     const slotB = client(harness.port, 'tenant-b.example.com', 'key-b');
@@ -424,18 +423,15 @@ describe('SMTP front door — acceptance into the durable queue', () => {
   });
 
   it('does not retain a message past its size cap — memory stays bounded while streaming, not just the eventual reply', async () => {
-    // Review cycle 1, blocking finding 1: `stream.sizeExceeded` only ever
-    // made this rejected AFTER the whole message had already been buffered
-    // into `chunks`. smtp-server counts bytes and flips the flag as data
-    // arrives (verified from its source: `_countDataBytes` runs before this
-    // handler sees each chunk) but never stops EMITTING them — an
-    // authenticated submitter streaming far past the cap with DATA still
-    // open could grow this process's memory unboundedly before the 552 ever
-    // came back. Live-repro'd as an OOM-killed 256 MiB container fed 600 MiB
-    // against a 10 MiB cap. This test proves retention itself stays bounded,
-    // which the reply-only assertion above cannot see (it already passed
-    // before this fix, on the unbounded version).
-    harness = await startHarness({ maxMessageBytes: 1024 * 1024 });
+    // `stream.sizeExceeded` flips as data arrives, not only once the whole
+    // message has been read — smtp-server counts bytes before this handler
+    // ever sees each chunk, but never stops emitting them past the cap. A
+    // submitter streaming far past the cap with DATA still open must not be
+    // able to grow this process's memory in proportion to what it sends;
+    // the reply-only assertion above cannot see that (it stays green even
+    // if every byte past the cap is still being retained).
+    const capBytes = 1024 * 1024;
+    harness = await startHarness({ maxMessageBytes: capBytes });
     const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
     const socket = new Socket();
     let buffer = '';
@@ -486,17 +482,73 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     await waitFor(/^5\d\d /m);
     socket.end();
 
-    // ~200 MiB was streamed against a 1 MiB cap. Retained memory must stay
-    // close to the cap, not the ~200 MiB an unbounded implementation held
-    // (reviewer's measurement: +411.8 MiB against a 1 MiB cap sending 200
-    // MiB; this repo's own sabotage-and-revert below measured +394.8 MiB).
-    // 100 MiB gives real headroom for in-flight chunks/socket/allocator/
-    // coverage-instrumentation overhead under a full parallel suite run,
-    // while still failing hard on the unbounded version — a 4x margin below
-    // what the bug actually produced, not a hair's-width threshold.
-    expect(duringMiB).toBeLessThan(100);
+    // Primary, exact assertion: the code's own count of bytes retained at
+    // the moment it stopped retaining. Bounded relative to the configured
+    // cap (never a fixed constant), so a sabotage that only raises the
+    // effective threshold — rather than removing the bound outright — is
+    // still caught: retention must stay under 2x the cap, not merely
+    // "less than some large fixed number." process.memoryUsage() alone
+    // can't provide this: it is noisy (allocator/GC-timing dependent) and
+    // conflates this connection's retention with everything else running.
+    const capExceededLine = harness.logs.find((line) => line.event === 'smtp_size_cap_exceeded');
+    expect(capExceededLine).toBeDefined();
+    const retainedBytes = capExceededLine!.fields.retainedBytes as number;
+    expect(retainedBytes).toBeGreaterThan(capBytes * 0.9);
+    expect(retainedBytes).toBeLessThan(capBytes * 2);
+
+    // Secondary, correlating check against real process memory — looser and
+    // relative to the cap too (not a fixed constant), since this measure is
+    // inherently noisier than the exact byte count above.
+    expect(duringMiB).toBeLessThan((capBytes / 1048576) * 100);
     expect(harness.store.countPendingRecipients()).toBe(0);
   }, 30000);
+
+  it('refuses a new connection once maxConcurrentConnections is already open — bounds the whole spool, not just one connection', async () => {
+    // The per-message size cap only bounds one connection's retention; many
+    // concurrent connections under that cap can still exhaust the process.
+    // This is a global cap (server.connections.size, which already counts
+    // the connection currently arriving), not per-submitter — the failure
+    // it defends against is the shared spool dying for every slot on the
+    // host, not one slot's own budget.
+    harness = await startHarness({ maxConcurrentConnections: 2 });
+
+    async function connectAndWaitBanner(): Promise<Socket> {
+      const socket = new Socket();
+      await new Promise<void>((resolve, reject) => {
+        let buf = '';
+        socket.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^220 /m.test(buf)) {
+            resolve();
+          }
+        });
+        socket.on('error', reject);
+        socket.connect(harness.port, '127.0.0.1');
+      });
+      return socket;
+    }
+
+    const first = await connectAndWaitBanner();
+    const second = await connectAndWaitBanner();
+
+    const third = new Socket();
+    const thirdResponse = await new Promise<string>((resolve, reject) => {
+      let buf = '';
+      third.on('data', (chunk: Buffer) => {
+        buf += chunk.toString('utf8');
+        if (/^\d{3} /m.test(buf)) {
+          resolve(buf);
+        }
+      });
+      third.on('error', reject);
+      third.connect(harness.port, '127.0.0.1');
+    });
+
+    expect(thirdResponse).toMatch(/^421 /);
+    first.end();
+    second.end();
+    third.end();
+  });
 
   it('refuses a connection from outside the configured source allow-list', async () => {
     // Only a range 127.0.0.1 doesn't belong to — proves the listener really
@@ -518,16 +570,14 @@ describe('SMTP front door — acceptance into the durable queue', () => {
   });
 
   it('applies the shipped default allow-list when none is configured', async () => {
-    // Review cycle 1, should-fix 3: exercises `createSmtpFrontDoor`'s own
+    // Exercises `createSmtpFrontDoor`'s own
     // `opts.allowedSourceCidrs ?? DEFAULT_ALLOWED_SOURCE_CIDRS` fallback for
     // real (the option is genuinely omitted here, not defaulted by the test
-    // harness's own `DEFAULT_CIDRS ?? ...`), so a change to the shipped
-    // default is caught here even if every other test in this file keeps
-    // passing an explicit list. "Refuses a public source" against this same
-    // shipped default is already proven directly by `isAllowedSource`'s own
-    // test matrix above (`buildSourceAllowList(DEFAULT_CIDRS)`, now the real
-    // export) — this test's job is only to prove the fallback wires that
-    // default in at all when the option is omitted, via a real connection.
+    // harness's own `DEFAULT_CIDRS ?? ...`). "Refuses a public source"
+    // against this same shipped default is already proven directly by
+    // `isAllowedSource`'s own test matrix above — this test's job is only to
+    // prove the fallback wires that default in at all when the option is
+    // omitted, via a real connection.
     harness = await startHarness({ omitAllowedSourceCidrs: true });
     const loopback = client(harness.port, 'tenant-a.example.com', 'key-a');
     await expect(
@@ -597,7 +647,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(harness.store.countPendingRecipients()).toBe(2);
   });
 
-  it('the same tenant sharing one ceiling across an IPv4 and an IPv6 connection — the #1148 shape, keyed correctly here', async () => {
+  it('the same tenant sharing one ceiling across an IPv4 and an IPv6 connection, keyed correctly', async () => {
     harness = await startHarness({ submitterMessagesPerMinute: 1, host: '::' });
     const overV4 = client(harness.port, 'tenant-a.example.com', 'key-a', '127.0.0.1');
     const overV6 = client(harness.port, 'tenant-a.example.com', 'key-a', '::1');
@@ -676,12 +726,10 @@ describe('SMTP front door — answered at once, sabotage-provable', () => {
   });
 
   it('still acknowledges within a bound when the worker never goes idle — the ack is not coupled to the drain', async () => {
-    // Review cycle 1, should-fix 4: the previous version of this test used
-    // a stub worker whose `whenIdle()` resolved immediately, so sabotaging
-    // the ack to `void worker.whenIdle().then(() => callback(...))` stayed
-    // green — nothing in the harness could ever see the coupling. This one
-    // gives the worker a `whenIdle()` that never resolves at all, so an ack
-    // wired to wait on it would hang forever rather than merely being slow.
+    // A worker whose `whenIdle()` resolves immediately can't distinguish "no
+    // coupling" from "coupled but fast" — this one never resolves at all, so
+    // an ack wired to wait on it hangs forever rather than merely running
+    // slow.
     harness = await startHarness({ workerNeverIdle: true });
     const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
 
@@ -723,6 +771,7 @@ describe('SMTP front door — runtime server errors are logged, not swallowed', 
       },
       log: logger2,
       maxMessageBytes: 1024 * 1024,
+      maxConcurrentConnections: 20,
       submitterMessagesPerMinute: 120,
     });
 

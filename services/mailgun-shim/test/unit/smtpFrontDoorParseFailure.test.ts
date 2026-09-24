@@ -73,6 +73,7 @@ async function startHarness(): Promise<Harness> {
     worker,
     log: logger,
     maxMessageBytes: 1024 * 1024,
+    maxConcurrentConnections: 20,
     submitterMessagesPerMinute: 120,
   });
   const port = 25000 + Math.floor(Math.random() * 10000);

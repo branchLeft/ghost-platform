@@ -81,11 +81,12 @@ describe('loadConfig', () => {
     expect(config.smtp.auth).toBeUndefined();
   });
 
-  it("defaults smtpFrontDoor to port 25, matching LLD-6's diagram (review cycle 1: no longer 2525)", () => {
+  it("defaults smtpFrontDoor to port 25, matching LLD-6's diagram", () => {
     const config = loadConfig({ ...baseEnv, SHIM_ALLOW_EPHEMERAL_DB: 'true' });
     expect(config.smtpFrontDoor.port).toBe(25);
     expect(config.smtpFrontDoor.host).toBe('0.0.0.0');
-    expect(config.smtpFrontDoor.maxMessageBytes).toBe(10 * 1024 * 1024);
+    expect(config.smtpFrontDoor.maxMessageBytes).toBe(2 * 1024 * 1024);
+    expect(config.smtpFrontDoor.maxConcurrentConnections).toBe(20);
     expect(config.smtpFrontDoor.submitterMessagesPerMinute).toBe(120);
     expect(config.smtpFrontDoor.allowedSourceCidrs).toEqual([
       '127.0.0.1/32',
@@ -97,19 +98,21 @@ describe('loadConfig', () => {
     ]);
   });
 
-  it('reads SMTP_LISTEN_PORT/HOST, SMTP_MAX_MESSAGE_BYTES, SMTP_ALLOWED_SOURCE_CIDRS and SMTP_SUBMITTER_MESSAGES_PER_MINUTE', () => {
+  it('reads SMTP_LISTEN_PORT/HOST, SMTP_MAX_MESSAGE_BYTES, SMTP_MAX_CONCURRENT_CONNECTIONS, SMTP_ALLOWED_SOURCE_CIDRS and SMTP_SUBMITTER_MESSAGES_PER_MINUTE', () => {
     const config = loadConfig({
       ...baseEnv,
       SHIM_ALLOW_EPHEMERAL_DB: 'true',
       SMTP_LISTEN_PORT: '2525',
       SMTP_LISTEN_HOST: '127.0.0.1',
       SMTP_MAX_MESSAGE_BYTES: '1024',
+      SMTP_MAX_CONCURRENT_CONNECTIONS: '3',
       SMTP_ALLOWED_SOURCE_CIDRS: '10.0.0.0/8, 172.16.0.0/12',
       SMTP_SUBMITTER_MESSAGES_PER_MINUTE: '5',
     });
     expect(config.smtpFrontDoor.port).toBe(2525);
     expect(config.smtpFrontDoor.host).toBe('127.0.0.1');
     expect(config.smtpFrontDoor.maxMessageBytes).toBe(1024);
+    expect(config.smtpFrontDoor.maxConcurrentConnections).toBe(3);
     expect(config.smtpFrontDoor.allowedSourceCidrs).toEqual(['10.0.0.0/8', '172.16.0.0/12']);
     expect(config.smtpFrontDoor.submitterMessagesPerMinute).toBe(5);
   });

@@ -5,6 +5,7 @@ export interface SmtpFrontDoorConfig {
   port: number;
   host: string;
   maxMessageBytes: number;
+  maxConcurrentConnections: number;
   allowedSourceCidrs: string[];
   submitterMessagesPerMinute: number;
 }
@@ -18,15 +19,26 @@ export interface ShimConfig {
   smtpFrontDoor: SmtpFrontDoorConfig;
 }
 
-// Review cycle 1: an earlier default of 2525 was justified by a false
-// claim (that the container's unprivileged `node` user can't bind <1024).
-// Measured against this service's own base image: Docker has set each
-// container's network namespace to `ip_unprivileged_port_start=0` since
-// 20.10, so an unprivileged user binds :25 with no root and no added
-// capability. LLD-6's diagram draws :25 — this default now matches it, and
-// no design amendment was needed after all.
+// Docker sets `ip_unprivileged_port_start=0` in each container's network
+// namespace, so this service's unprivileged runtime user can bind :25
+// directly with no added capability.
 const DEFAULT_SMTP_LISTEN_PORT = 25;
-const DEFAULT_MAX_MESSAGE_BYTES = 10 * 1024 * 1024;
+
+// Ghost's transactional sender (magic links, password resets, staff
+// invites) is plain HTML/text template mail, typically tens of KB — 2 MiB
+// is generous headroom, not a fit to any real message this listener should
+// ever see. Sized together with maxConcurrentConnections below: the two
+// bound this listener's worst-case retained memory as a product, not
+// independently.
+const DEFAULT_MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
+
+// Bounds the spool's worst-case memory against many small concurrent
+// submissions, not just one large one — each connection may retain up to
+// maxMessageBytes while its DATA phase is open, so total retained memory is
+// at most maxConcurrentConnections * maxMessageBytes. 20 concurrent
+// transactional sends is well past anything one Ghost instance on a single
+// host produces in practice.
+const DEFAULT_MAX_CONCURRENT_CONNECTIONS = 20;
 const DEFAULT_SUBMITTER_MESSAGES_PER_MINUTE = 120;
 
 // Structurally identical to NodeJS.ProcessEnv, spelled out instead of named
@@ -77,12 +89,13 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
     messagesPerHour,
     smtpFrontDoor: {
       port: Number(env.SMTP_LISTEN_PORT) || DEFAULT_SMTP_LISTEN_PORT,
-      // Binding every interface is normal for a containerised service — the
-      // container-network-only property LLD-6 §03 requires comes from the
-      // deployment not publishing this port to the host, plus the
-      // source-address check in smtpFrontDoor.ts as defence in depth for it.
+      // Binding every interface is normal for a containerised service —
+      // staying off the host network is a deployment property (the port
+      // must never be published), not something this bind address controls.
       host: env.SMTP_LISTEN_HOST || '0.0.0.0',
       maxMessageBytes: Number(env.SMTP_MAX_MESSAGE_BYTES) || DEFAULT_MAX_MESSAGE_BYTES,
+      maxConcurrentConnections:
+        Number(env.SMTP_MAX_CONCURRENT_CONNECTIONS) || DEFAULT_MAX_CONCURRENT_CONNECTIONS,
       allowedSourceCidrs: env.SMTP_ALLOWED_SOURCE_CIDRS
         ? env.SMTP_ALLOWED_SOURCE_CIDRS.split(',').map((s) => s.trim())
         : DEFAULT_ALLOWED_SOURCE_CIDRS,
