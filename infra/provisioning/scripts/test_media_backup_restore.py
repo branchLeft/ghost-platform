@@ -499,7 +499,8 @@ class RestoreTenantMediaTests(unittest.TestCase):
         self.assertIn("deliberately_empty", str(ctx.exception))
 
     def test_control_an_unsafe_live_key_from_a_forged_manifest_is_refused_before_writing_to_target(self):
-        # A manifest is decrypted, not thereby trusted (branchLeft/workspace#1346).
+        # A manifest is decrypted, not thereby trusted: age authenticates
+        # only that the given identity can decrypt it, not who wrote it.
         # This constructs one naming a path-escaping live key and confirms
         # restore refuses it before any write to the target bucket, rather
         # than trusting whatever the manifest says to write.

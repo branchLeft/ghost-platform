@@ -188,11 +188,12 @@ def _manifest_key(tenant: str) -> str:
 def _assert_safe_live_key(key: str) -> None:
     """Refuses a live key read out of a DECRYPTED manifest before it is used
     to build a target-bucket write path. A manifest is decrypted, not
-    thereby trusted -- see branchLeft/workspace#1346 on forged manifests --
-    so a `../` segment or a leading `/` that would write outside the
-    restore's intended location is refused here, on the way out, the same
-    way backup once refused it on the way in before object keys stopped
-    being derived from the live key at all."""
+    thereby trusted: nothing in `age`'s format authenticates who wrote a
+    ciphertext, only that it decrypts under the given identity, so a `../`
+    segment or a leading `/` that would write outside the restore's
+    intended location is refused here, on the way out, the same way backup
+    once refused it on the way in before object keys stopped being derived
+    from the live key at all."""
     if key.startswith("/") or ".." in key.split("/"):
         raise MediaRestoreVerificationError(f"refusing an unsafe live key from the manifest: {key!r}")
 
