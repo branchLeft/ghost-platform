@@ -1,26 +1,30 @@
 import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createServer } from 'node:net';
-import type { Readable } from 'node:stream';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { beforeAll, describe, expect, it } from 'vitest';
+import type { Readable } from 'node:stream';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { createSqliteStore } from '../src/store.js';
 
 /**
  * test/noOutboundConnection.test.ts proves `createApp()` never dials out,
  * but `src/server.ts` has real top-level code of its own — `loadConfig()`,
  * `createSqliteStore()`, `createThrottle()`, the SIGTERM handler — none of
  * which that test exercises, because it builds the app directly rather
- * than running the actual entrypoint. A reviewer's sabotage proved the
- * gap: a `net.connect` added to server.ts left the other test green.
+ * than running the actual entrypoint.
  *
- * This spawns the REAL entrypoint (`dist/server.js`, built fresh) as a
- * child process with a connect-guard preloaded before any of its top-level
- * code runs (test/helpers/connectGuardPreload.mjs), through a full
- * startup -> serve -> SIGTERM-shutdown cycle, and asserts the child never
- * once called net.Socket#connect. Unlike the in-process test, there is no
- * baseline to filter: every HTTP request against the child is made from
- * THIS (parent) process, which never touches the child's patched socket
- * prototype, so a silent child for its whole lifecycle is the entire bar.
+ * Review cycle 2 found the first version of this test insufficient even
+ * though it caught a top-level dial: the deleted worker never dialled at
+ * startup, it dialled once per QUEUED ROW, on a tick loop. A test that
+ * enqueues nothing and lives under a second stays green for exactly that
+ * shape restored. This version enqueues a real message through the
+ * child's own HTTP API (a file-backed store, not `:memory:`, since the
+ * property under test is what the real entrypoint does with real state)
+ * and keeps the child alive for several seconds afterward — comfortably
+ * longer than any plausible tick interval a re-introduced worker loop
+ * would use — before asserting silence and only then sending SIGTERM.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +33,8 @@ const serverJsPath = join(projectRoot, 'dist', 'server.js');
 const preloadPath = join(__dirname, 'helpers', 'connectGuardPreload.mjs');
 
 const CONNECT_MARKER = 'CONNECT_ATTEMPT ';
+const TENANT_DOMAIN = 'tenant1.example.com';
+const TENANT_API_KEY = 'startup-proof-api-key';
 
 function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -57,15 +63,16 @@ interface RunResult {
   exitCode: number | null;
 }
 
-/**
- * Spawns dist/server.js with the connect guard preloaded, waits for it to
- * report "listening", makes a handful of real requests against it (from
- * this parent process — never patched, so these never show up as
- * connect() calls the child made), then sends SIGTERM and waits for the
- * child's own graceful-shutdown log line before collecting everything it
- * reported.
- */
-async function runServerLifecycle(port: number): Promise<RunResult> {
+interface RunOptions {
+  dbPath: string;
+  port: number;
+  /** Sent as multipart form fields to /v3/:domain/messages right after startup, from THIS (parent, unpatched) process — proves the real request-handling code path, not a direct store write. */
+  enqueue?: boolean;
+  /** How long to keep the child alive after startup (and after the enqueue, if any) before SIGTERM — long enough to catch a tick-based worker loop, not just a startup-time dial. */
+  liveForMs: number;
+}
+
+async function runServerLifecycle(opts: RunOptions): Promise<RunResult> {
   const child: ChildProcessByStdio<null, Readable, Readable> = spawn(
     process.execPath,
     ['--import', preloadPath, serverJsPath],
@@ -73,13 +80,12 @@ async function runServerLifecycle(port: number): Promise<RunResult> {
       cwd: projectRoot,
       env: {
         ...process.env,
-        SHIM_ALLOW_EPHEMERAL_DB: 'true',
+        SHIM_DB_PATH: opts.dbPath,
         SHIM_DRAIN_TOKEN: 'server-startup-proof-token',
-        // Short, not the 30s production default — the /drain request below
-        // holds for the whole configured window when nothing is queued
-        // (correctly), and this test has nothing queued.
+        // Short, not the 30s production default — a GET /drain below
+        // holds for the whole configured window when nothing is queued.
         SHIM_DRAIN_HOLD_MS: '300',
-        PORT: String(port),
+        PORT: String(opts.port),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     }
@@ -116,14 +122,43 @@ async function runServerLifecycle(port: number): Promise<RunResult> {
     check();
   });
 
-  // Real requests against the real entrypoint, from this (unpatched) parent
-  // process — /healthz, /metrics and an authenticated /drain round trip.
-  const base = `http://127.0.0.1:${port}`;
+  const base = `http://127.0.0.1:${opts.port}`;
   await fetch(`${base}/healthz`);
   await fetch(`${base}/metrics`);
-  await fetch(`${base}/drain`, {
-    headers: { Authorization: 'Bearer server-startup-proof-token' },
-  });
+
+  if (opts.enqueue) {
+    const form = new FormData();
+    form.append('to', 'member@example.com');
+    form.append('from', `noreply@${TENANT_DOMAIN}`);
+    form.append('subject', 'Hi');
+    form.append('html', '<p>hi</p>');
+    form.append('text', 'hi');
+    form.append('recipient-variables', '{}');
+    const auth = Buffer.from(`api:${TENANT_API_KEY}`).toString('base64');
+    const enqueueRes = await fetch(`${base}/v3/${TENANT_DOMAIN}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}` },
+      body: form,
+    });
+    if (!enqueueRes.ok) {
+      throw new Error(`enqueue failed: ${enqueueRes.status} ${await enqueueRes.text()}`);
+    }
+
+    // Sanity check that the enqueue really landed, via the real drain
+    // route — this test's job is silence under real queued mail, so it
+    // has to confirm the mail was genuinely real and queued, not that the
+    // POST merely returned 200.
+    const metricsRes = await fetch(`${base}/metrics`);
+    const metricsText = await metricsRes.text();
+    if (!metricsText.includes('mailgun_shim_undrained_recipients 1')) {
+      throw new Error(`enqueue did not register as queued:\n${metricsText}`);
+    }
+  }
+
+  // Live for several seconds — long enough for a tick-based worker loop
+  // (the deleted one ticked every second; a plausible re-introduction
+  // would tick at least that often) to have fired multiple times.
+  await new Promise((r) => setTimeout(r, opts.liveForMs));
 
   const exitPromise = new Promise<number | null>((resolve) => {
     child.on('exit', (code) => resolve(code));
@@ -142,27 +177,54 @@ async function runServerLifecycle(port: number): Promise<RunResult> {
   const connectAttempts = stdout
     .split('\n')
     .filter((line) => line.startsWith(CONNECT_MARKER))
-    .map((line) => JSON.parse(line.slice(CONNECT_MARKER.length)) as unknown);
+    .map((line) => JSON.parse(line.slice(CONNECT_MARKER.length)) as { kind: string });
 
   return { connectAttempts, stdout, stderr, exitCode };
 }
 
-// The sabotage proof for this test (restoring a net.connect call to
-// server.ts, confirming this test goes red, reverting, confirming green)
-// is done by hand against the working tree and recorded verbatim in the
-// PR body — the same as this story's other sabotage records — rather than
-// as an automated test that rewrites src/server.ts on disk. That would
-// leave the working tree in a broken, half-sabotaged state on any
-// interruption (a crash, a timeout, ctrl-C) between the write and the
-// revert, for a property already fully proven by the manual record.
-describe('src/server.ts — the real entrypoint makes no outbound connection', () => {
+describe('src/server.ts — the real entrypoint, with real queued mail, makes no outbound connection of any kind', () => {
+  let dir: string;
+  let dbPath: string;
+
   beforeAll(() => {
     build();
   });
 
-  it('startup, a full request cycle and graceful SIGTERM shutdown never call net.Socket#connect', async () => {
+  afterEach(() => {
+    if (dir) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  async function freshDb(): Promise<string> {
+    dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-startup-test-'));
+    dbPath = join(dir, 'shim.sqlite');
+    // Tenant registration touches only the store, no network — safe setup
+    // done directly rather than by spawning the CLI as a second process.
+    const store = createSqliteStore(dbPath);
+    store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    store.close();
+    return dbPath;
+  }
+
+  it('startup alone (nothing ever queued) stays silent — the baseline', async () => {
+    const db = await freshDb();
     const port = await findFreePort();
-    const result = await runServerLifecycle(port);
+    const result = await runServerLifecycle({ dbPath: db, port, liveForMs: 1500 });
+    // Every one of these kinds (net.connect, dns.*, dgram.send,
+    // child_process.*) is unexpected here, with no baseline to filter:
+    // this is a spawned child, so the parent's own HTTP client traffic
+    // against it never shows up as a connect() call FROM the child (the
+    // server side of an accepted connection never calls Socket#connect at
+    // all — only a client dialling out does), and the flow never needs
+    // hostname resolution (127.0.0.1 is a literal), UDP, or a subprocess.
+    expect(result.connectAttempts).toEqual([]);
+  }, 20_000);
+
+  it('a real message enqueued through the real HTTP API, then held alive for several seconds, still makes no outbound connection of any kind', async () => {
+    const db = await freshDb();
+    const port = await findFreePort();
+    const result = await runServerLifecycle({ dbPath: db, port, enqueue: true, liveForMs: 3000 });
     expect(result.connectAttempts).toEqual([]);
   }, 20_000);
 });

@@ -36,14 +36,30 @@ const SECONDS_PER_HOUR = 3600;
  * a bucket starting at literally zero tokens makes the FIRST message ever
  * sent through a freshly started spool wait up to 72 seconds (1/50 hour)
  * for a token to accrue — before anything has actually burst, there is
- * nothing to protect against yet. That directly broke this story's own
- * Done criterion ("a message enqueued ... is handed over on a waiting
- * drain request within a second of enqueue") the first time it was
- * checked against production defaults rather than a test's boosted rate.
- * LLD-6 marks a *different* throttle — the demo-mail "two ceilings, not
- * one" containment in LLD-6 §05, load-bearing at §08 — but says nothing
- * about this one's cold-start latency, so fixing it is incidental: an
- * implementer's engineering call, not a redesign of anything LLD-6 pins.
+ * nothing to protect against yet. That broke this story's own Done
+ * criterion ("a message enqueued ... is handed over on a waiting drain
+ * request within a second of enqueue") for the cold-start case
+ * specifically. The fixed property is narrower than the Done sentence
+ * reads standalone: "within a second" holds only while a token is
+ * actually available — a SECOND message sent immediately after the first,
+ * before any refill, still waits out the ladder like any throttled send
+ * is supposed to. That is the throttle working as designed, not a residual
+ * gap; the grace token exists for the one case where there is nothing yet
+ * to legitimately throttle.
+ *
+ * This bucket and LLD-6 §05's demo-mail "two ceilings" (load-bearing at
+ * §08) are not unrelated: both ultimately defend mx1's shared IP
+ * reputation (§05: "IP reputation is the thing that has to be actively
+ * defended, by ceilings, by warm-up discipline"). What changes is where
+ * that defence has to live. Today, one spool total, a per-spool bucket
+ * and an estate-wide bucket are the same thing. Once every host has its
+ * own spool (LLD-6's own end state), a per-spool bucket stops bounding
+ * anything at the IP: N hosts each independently allowed up to
+ * messagesPerHour is N times the intended estate rate against the one
+ * address that carries the reputation. The warm-up ceiling then belongs
+ * at the single egress point (the #1239 collector, or mx1) rather than
+ * here — flagged on that issue, not fixed in this one, since #1237 is the
+ * last story before that egress point exists at all.
  */
 export function createThrottle(opts: ThrottleOptions): Throttle {
   const now = opts.now ?? (() => Date.now() / 1000);
