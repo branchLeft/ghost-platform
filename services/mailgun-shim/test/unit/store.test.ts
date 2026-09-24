@@ -39,25 +39,27 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
     store.close();
   });
 
-  it('registers a tenant and verifies its own key against its own domain', () => {
+  it('registers a tenant and verifies its own key against its own domain', async () => {
     store.registerTenant(DOMAIN, 'the-secret-key');
-    expect(store.verifyTenant(DOMAIN, 'the-secret-key')).toEqual({ domain: DOMAIN });
+    await expect(store.verifyTenant(DOMAIN, 'the-secret-key')).resolves.toEqual({ domain: DOMAIN });
   });
 
-  it('returns null for an unknown domain', () => {
-    expect(store.verifyTenant('never-registered.example.com', 'anything')).toBeNull();
+  it('returns null for an unknown domain', async () => {
+    await expect(
+      store.verifyTenant('never-registered.example.com', 'anything')
+    ).resolves.toBeNull();
   });
 
-  it('returns null for a known domain with the wrong key', () => {
+  it('returns null for a known domain with the wrong key', async () => {
     store.registerTenant(DOMAIN, 'the-secret-key');
-    expect(store.verifyTenant(DOMAIN, 'wrong-key')).toBeNull();
+    await expect(store.verifyTenant(DOMAIN, 'wrong-key')).resolves.toBeNull();
   });
 
-  it('re-registering a domain (INSERT OR REPLACE) replaces its key rather than erroring', () => {
+  it('re-registering a domain (INSERT OR REPLACE) replaces its key rather than erroring', async () => {
     store.registerTenant(DOMAIN, 'old-key');
     store.registerTenant(DOMAIN, 'new-key');
-    expect(store.verifyTenant(DOMAIN, 'old-key')).toBeNull();
-    expect(store.verifyTenant(DOMAIN, 'new-key')).toEqual({ domain: DOMAIN });
+    await expect(store.verifyTenant(DOMAIN, 'old-key')).resolves.toBeNull();
+    await expect(store.verifyTenant(DOMAIN, 'new-key')).resolves.toEqual({ domain: DOMAIN });
   });
 });
 
@@ -222,7 +224,7 @@ describe('createSqliteStore — durability and concurrency', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('survives a store restart against the same file', () => {
+  it('survives a store restart against the same file', async () => {
     const first = createSqliteStore(dbPath);
     first.registerTenant(DOMAIN, 'persisted-key');
     first.addSuppression(DOMAIN, 'bounces', 'bounced@example.com');
@@ -230,7 +232,9 @@ describe('createSqliteStore — durability and concurrency', () => {
     first.close();
 
     const reopened = createSqliteStore(dbPath);
-    expect(reopened.verifyTenant(DOMAIN, 'persisted-key')).toEqual({ domain: DOMAIN });
+    await expect(reopened.verifyTenant(DOMAIN, 'persisted-key')).resolves.toEqual({
+      domain: DOMAIN,
+    });
     expect(reopened.isSuppressed(DOMAIN, 'bounces', 'bounced@example.com')).toBe(true);
     const { events } = reopened.listEvents(DOMAIN, { limit: 10, offset: 0 });
     expect(events).toHaveLength(1);

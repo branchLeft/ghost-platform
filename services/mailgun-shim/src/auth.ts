@@ -31,20 +31,31 @@ function parseBasicAuth(header: string | undefined): { password: string } | null
  * the same way regardless of which HTTP status caused it.
  */
 export function requireTenantForDomain(store: ShimStore) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  // Async (verifyTenant runs crypto.ts's verifyApiKey — scrypt off the
+  // event loop, not a synchronous check any more). Returning the promise
+  // rather than discarding it lets a caller await full completion (this
+  // module's own tests do) while Express itself simply ignores the return
+  // value, as it does for any synchronous middleware. Any rejection (a
+  // store error — a failed *check* resolves to null, it never rejects) is
+  // forwarded to next() explicitly rather than left for the framework, so
+  // behaviour does not depend on which Express major version is running.
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const credentials = parseBasicAuth(req.headers.authorization);
     if (!credentials) {
       res.status(401).json({ message: 'Missing or malformed Authorization header' });
       return;
     }
 
-    const tenant = store.verifyTenant(req.params.domain as string, credentials.password);
-    if (!tenant) {
-      res.status(401).json({ message: 'Unauthorized' });
-      return;
+    try {
+      const tenant = await store.verifyTenant(req.params.domain as string, credentials.password);
+      if (!tenant) {
+        res.status(401).json({ message: 'Unauthorized' });
+        return;
+      }
+      res.locals.tenant = tenant;
+      next();
+    } catch (err) {
+      next(err);
     }
-
-    res.locals.tenant = tenant;
-    next();
   };
 }

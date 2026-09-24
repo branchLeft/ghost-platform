@@ -65,7 +65,7 @@ export function createFakeStore(): FakeShimStore {
       tenants.set(domain, apiKey);
     },
 
-    verifyTenant(domain, apiKey) {
+    async verifyTenant(domain, apiKey) {
       const stored = tenants.get(domain);
       return stored !== undefined && stored === apiKey ? { domain } : null;
     },
