@@ -570,7 +570,10 @@ python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" put \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
     --bucket "$LIVE_BUCKET" --key "content/images/2026/09/second-live-object.txt" \
     --body "a second live object, added only for C-REFRESH-2"
-echo "-- repairing: one clean backup run so this generation covers BOTH live objects --"
+LIVE_OBJECT_COUNT="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" --bucket "$LIVE_BUCKET")"
+echo "-- repairing: one clean backup run so this generation covers every live object ($LIVE_OBJECT_COUNT of them -- Ghost's own upload pipeline writes more than the one this proof uploaded) --"
 run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 PRE_SABOTAGE_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
@@ -617,10 +620,18 @@ POST_SABOTAGE_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helper
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
     --bucket "$BACKUP_BUCKET" --prefix "$OBJECTS_PREFIX" | sort)"
-if [ -z "$(comm -23 <(echo "$PRE_SABOTAGE_LISTING") <(echo "$POST_SABOTAGE_LISTING"))" ]; then
+# Temp files, not `comm -23 <(...) <(...)`: process substitution is a
+# bashism this `#!/bin/sh` script cannot rely on, and a shell that rejects
+# it turns the whole check into a silent, always-empty (so always "PASS")
+# no-op rather than a loud failure -- exactly the shape of bug this proof
+# exists to catch elsewhere, so it must not carry one of its own.
+echo "$PRE_SABOTAGE_LISTING" >"$WORKDIR/pre-sabotage-listing.txt"
+echo "$POST_SABOTAGE_LISTING" >"$WORKDIR/post-sabotage-listing.txt"
+MISSING_FROM_PREVIOUS_GENERATION="$(comm -23 "$WORKDIR/pre-sabotage-listing.txt" "$WORKDIR/post-sabotage-listing.txt")"
+if [ -z "$MISSING_FROM_PREVIOUS_GENERATION" ]; then
     pass "C-REFRESH-2: RED: every object from the pre-sabotage generation is still present after the failed run"
 else
-    fail "C-REFRESH-2: RED: at least one pre-sabotage object is MISSING after the failed run -- the previous generation was not preserved"
+    fail "C-REFRESH-2: RED: at least one pre-sabotage object is MISSING after the failed run -- the previous generation was not preserved ($MISSING_FROM_PREVIOUS_GENERATION)"
 fi
 if run_restore "$WORKDIR/tenant-a.identity" "$RESTORED_BUCKET"; then
     pass "C-REFRESH-2: RED: restore from the (untouched) previous generation still succeeds after the failed run"
@@ -646,10 +657,10 @@ POST_REPAIR_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
     --bucket "$BACKUP_BUCKET" --prefix "$OBJECTS_PREFIX")"
 POST_REPAIR_COUNT="$(echo "$POST_REPAIR_LISTING" | grep -c .)"
-if [ "$POST_REPAIR_COUNT" = "2" ]; then
-    pass "C-REFRESH-2: GREEN: the repaired generation covers exactly the two live objects, and the sabotaged run's own partial orphan is gone too"
+if [ "$POST_REPAIR_COUNT" = "$LIVE_OBJECT_COUNT" ]; then
+    pass "C-REFRESH-2: GREEN: the repaired generation covers exactly the $LIVE_OBJECT_COUNT live objects, and the sabotaged run's own partial orphan is gone too"
 else
-    fail "C-REFRESH-2: GREEN: expected exactly 2 objects after repair, found $POST_REPAIR_COUNT"
+    fail "C-REFRESH-2: GREEN: expected exactly $LIVE_OBJECT_COUNT objects after repair (one per live object), found $POST_REPAIR_COUNT"
 fi
 echo "-- cleaning up the extra live object added for this round --"
 python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" delete \
@@ -707,7 +718,7 @@ fi
 
 note "Summary"
 if [ "$FAILURES" -eq 0 ]; then
-    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code, a second age recipient and a content-derived backup id are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are random, not derived from the live key or the plaintext digest."
+    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code, a second age recipient and a content-derived backup id are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are random, not derived from the live key or the plaintext digest; C-refresh's second run supersedes the first (fresh key, old ciphertext genuinely gone, object count steady, restore still verifies) and an upload failure mid-run leaves the previous generation untouched and restorable."
     exit 0
 else
     echo "PROOF FAILED: $FAILURES check(s) did not behave as expected -- see the FAIL lines above."
