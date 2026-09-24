@@ -199,12 +199,12 @@ describe('the real dist/server.js entrypoint', () => {
     const baseUrl = `http://127.0.0.1:${port}`;
 
     // Item 2's floor is now `<=`: a request timestamped in the same
-    // wall-clock second as `processStartSeconds` is refused (N1's
-    // accepted cost). A fast local spawn can still be within that same
-    // second by the time `waitListening` resolves, so every authenticated
-    // request below waits past it first -- the real-server proof this
-    // test exists for is replay protection, not the same-second edge
-    // (auth.test.ts proves that edge directly and deterministically).
+    // wall-clock second as `processStartSeconds` is refused, an accepted
+    // cost. A fast local spawn can still be within that same second by
+    // the time `waitListening` resolves, so every authenticated request
+    // below waits past it first -- the real-server proof this test exists
+    // for is replay protection, not the same-second edge (auth.test.ts
+    // proves that edge directly and deterministically).
     await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Wrong key: the process must refuse, proving it verifies against the

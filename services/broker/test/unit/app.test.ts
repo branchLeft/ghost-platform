@@ -203,7 +203,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
 
   // --- Item 1: a descriptor whose ports or uid disagree with the slot's
   // own allocation is refused before the renderer or the Admin API ever
-  // see it (workspace#1323, ghost-platform#244 review finding S1). ---
+  // see it. ---
   it("refuses a descriptor whose ports don't match the slot's own derived allocation", async () => {
     broker = await startTestBroker();
     // slot "0"'s own port `a` is 9300 (see fixtures.ts); 4101 is a
@@ -231,7 +231,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(broker.adminApi.calls).toHaveLength(0);
   });
 
-  it('accepts a descriptor whose ports and uid match the target slot exactly (the positive case S1 needs alongside the refusal)', async () => {
+  it('accepts a descriptor whose ports and uid match the target slot exactly (the positive case alongside the refusal above)', async () => {
     broker = await startTestBroker();
     const good = descriptorForSlot('3' as SlotName);
     const res = await broker.signedFetch('POST', '/reconcile', { slot: '3', descriptor: good });

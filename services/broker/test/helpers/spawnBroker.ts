@@ -51,7 +51,7 @@ function newestSourceMtimeMs(dir: string): number {
  * `node dist/server.js` (what a real deploy runs) behaves the same way.
  *
  * Rebuilds whenever `dist/server.js` is missing *or* older than the newest
- * file under `src/` -- not merely missing (S2). A build that exists but
+ * file under `src/` -- not merely missing. A build that exists but
  * predates the latest edit is exactly the shape a sabotage-then-test cycle
  * produces locally: `dist/` from a clean tree, `src/` edited afterwards, and
  * an `existsSync`-only check would run the stale JS and report the

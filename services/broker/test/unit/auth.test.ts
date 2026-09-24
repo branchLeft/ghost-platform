@@ -143,7 +143,7 @@ describe('verifyRequest', () => {
     // The original request was captured at second T; the process crashed
     // and restarted inside that same second, so `processStartSeconds`
     // equals the captured request's own timestamp exactly, not merely
-    // "before" it -- the narrower edge N1 describes and `<` alone misses.
+    // "before" it -- the edge `<` alone misses.
     const { deps: d } = deps(nowMs, keyPair, 60, nowSeconds);
     const body = Buffer.from('{"slot":"3"}');
     const headers = headersFor(keyPair, 'POST', '/reset', body, nowSeconds);

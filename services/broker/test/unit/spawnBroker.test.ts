@@ -13,16 +13,16 @@ const DIST_SERVER = join(SERVICE_ROOT, 'dist', 'server.js');
 const A_SOURCE_FILE = join(SERVICE_ROOT, 'src', 'slotPorts.ts');
 
 /**
- * S2 (ghost-platform#244 review): `ensureBuilt()` used to check only that
- * `dist/server.js` existed, so a `dist/` built once from clean source stayed
- * "built" for the rest of a local session even after `src/` changed under
- * it -- a wiring sabotage's own regression test could then run against
- * stale JS and report green. This proves the fixed version actually
- * rebuilds when `dist/server.js` is older than the newest file under
- * `src/`, using the exact `dist/server.js` every spawned-server test in
- * this suite runs against (the real entrypoint), not a throwaway copy.
+ * `ensureBuilt()` used to check only that `dist/server.js` existed, so a
+ * `dist/` built once from clean source stayed "built" for the rest of a
+ * local session even after `src/` changed under it -- a wiring sabotage's
+ * own regression test could then run against stale JS and report green.
+ * This proves the fixed version actually rebuilds when `dist/server.js` is
+ * older than the newest file under `src/`, using the exact `dist/server.js`
+ * every spawned-server test in this suite runs against (the real
+ * entrypoint), not a throwaway copy.
  */
-describe('ensureBuilt (S2: a stale dist/ must not pass as built)', () => {
+describe('ensureBuilt (a stale dist/ must not pass as built)', () => {
   it('rebuilds when dist/server.js is older than the newest file under src/', () => {
     // A build already exists by the time any test file runs (every other
     // spawned-server test calls `ensureBuilt()` too); this only actually
