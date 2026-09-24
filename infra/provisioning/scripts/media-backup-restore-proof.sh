@@ -13,7 +13,7 @@
 # recovered bytes' digest, and every sabotage checks that the wrong outcome
 # is caught rather than reported as success.
 #
-# Seven rounds:
+# Nine rounds:
 #   GREEN-1   real backup + restore, genuine destroy in between, digest match
 #   RED-1     a corrupted backup object must fail the restore  -> repaired
 #   RED-2     a missing backup object must fail the restore    -> repaired
@@ -29,6 +29,14 @@
 #             fingerprint that survives crypto-shredding, since it needs no
 #             key to recompute -- must not appear in the backup bucket's
 #             listing -> reverted
+#   C-REFRESH-1  a second backup run supersedes the first: a fresh random
+#                key, the first generation's ciphertext genuinely gone (not
+#                merely unreferenced), object count never grows across a
+#                run, and restore still verifies afterwards
+#   C-REFRESH-2  an upload failing partway through a run must leave the
+#                PREVIOUS generation's objects untouched and still
+#                restorable -- sabotage the module's own upload call to fail
+#                on the second object -> reverted
 # Plus one direct check outside the RED/GREEN frame: restoring with a
 # different tenant's identity is refused (the crypto-shredding property).
 #
@@ -39,11 +47,18 @@
 # trusted via SSL_CERT_FILE rather than a real CA, because
 # db/provision/objectstorage.py's request_url is deliberately hardcoded to
 # https (Hetzner's endpoint always is) and this proof exercises that same
-# unmodified code, not a plaintext-HTTP shortcut.
+# unmodified code, not a plaintext-HTTP shortcut. C-refresh's own delete
+# step is a plain DELETE against MinIO too -- MinIO turns that into a
+# delete marker on a versioned bucket the same way Hetzner does, but this
+# proof does not itself enable bucket versioning on `backup`/MinIO, so here
+# it is a genuine removal; the noncurrent-version survival window is what
+# `probe-media-lifecycle-expiration.py`'s prefix-split mode proves against
+# real Hetzner Object Storage instead.
 #
 # Prerequisites on the workstation running this: docker, age (age-keygen),
-# openssl, curl, jq, python3. Pulls quay.io/minio/minio and quay.io/minio/mc
-# (Docker Hub's minio/minio now refuses anonymous pulls).
+# openssl, curl, jq, python3, comm (present in every base macOS/Linux
+# install). Pulls quay.io/minio/minio and quay.io/minio/mc (Docker Hub's
+# minio/minio now refuses anonymous pulls).
 #
 # Usage: ./infra/provisioning/scripts/media-backup-restore-proof.sh
 # Run from anywhere -- it cds to the repo root itself.
@@ -79,13 +94,13 @@ fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
 cleanup() {
     docker rm -f "$GHOST_NAME" "$MINIO_NAME" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
-    # Belt-and-braces revert of the RED-4, RED-5 and RED-6 sabotages, in
-    # case the script exited before their own explicit reverts ran. A saved
-    # copy on disk, not `git checkout --`: the latter depends on this file's
-    # commit state, which this trap has no reason to assume anything about,
-    # while a copy taken immediately before the sabotage is unconditionally
-    # correct.
-    for saved in "$WORKDIR/media_backup_restore.py.orig" "$WORKDIR/media_backup_restore.py.orig-red5" "$WORKDIR/media_backup_restore.py.orig-red6"; do
+    # Belt-and-braces revert of the RED-4, RED-5, RED-6 and C-REFRESH-2
+    # sabotages, in case the script exited before their own explicit reverts
+    # ran. A saved copy on disk, not `git checkout --`: the latter depends
+    # on this file's commit state, which this trap has no reason to assume
+    # anything about, while a copy taken immediately before the sabotage is
+    # unconditionally correct.
+    for saved in "$WORKDIR/media_backup_restore.py.orig" "$WORKDIR/media_backup_restore.py.orig-red5" "$WORKDIR/media_backup_restore.py.orig-red6" "$WORKDIR/media_backup_restore.py.orig-crefresh2"; do
         [ -f "$saved" ] && cp "$saved" "$SCRIPTS_DIR/media_backup_restore.py"
     done
     rm -rf "$WORKDIR"
@@ -500,6 +515,149 @@ if echo "$REPAIRED_LISTING" | grep -qF "$LIVE_KEY_SHA256"; then
 else
     pass "RED-6 reverted: the backup bucket's listing no longer contains the plaintext digest"
 fi
+
+note "C-REFRESH-1: a second backup run deletes the first run's objects, and restore still verifies"
+OBJECTS_PREFIX="media/tenant-a/objects/"
+FIRST_GEN_KEY="$(resolve_backup_key)"
+FIRST_GEN_COUNT="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" --prefix "$OBJECTS_PREFIX")"
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
+SECOND_GEN_KEY="$(resolve_backup_key)"
+SECOND_GEN_COUNT="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" --prefix "$OBJECTS_PREFIX")"
+if [ "$FIRST_GEN_KEY" = "$SECOND_GEN_KEY" ]; then
+    fail "C-REFRESH-1: the second run reused the first run's backup key -- ids are supposed to be fresh and random every run"
+else
+    pass "C-REFRESH-1: the second run used a fresh random backup key ($SECOND_GEN_KEY != $FIRST_GEN_KEY)"
+fi
+SECOND_GEN_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" --prefix "$OBJECTS_PREFIX")"
+if echo "$SECOND_GEN_LISTING" | grep -qF "$FIRST_GEN_KEY"; then
+    fail "C-REFRESH-1: the first generation's ciphertext is STILL in the backup bucket after a second run"
+else
+    pass "C-REFRESH-1: the first generation's ciphertext is genuinely gone from the backup bucket, not merely unreferenced"
+fi
+if [ "$SECOND_GEN_COUNT" = "$FIRST_GEN_COUNT" ]; then
+    pass "C-REFRESH-1: object count under $OBJECTS_PREFIX did not grow across the second run ($SECOND_GEN_COUNT)"
+else
+    fail "C-REFRESH-1: object count under $OBJECTS_PREFIX changed unexpectedly ($FIRST_GEN_COUNT -> $SECOND_GEN_COUNT)"
+fi
+if run_restore "$WORKDIR/tenant-a.identity" ""; then
+    pass "C-REFRESH-1: restore still succeeds (exit 0) after a second, superseding backup run"
+else
+    fail "C-REFRESH-1: restore failed after a second backup run"
+fi
+RESTORED_AFTER_SECOND_SHA256="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" sha256 \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$LIVE_BUCKET" --key "$LIVE_KEY")"
+if [ "$RESTORED_AFTER_SECOND_SHA256" = "$FIXTURE_SHA256" ]; then
+    pass "C-REFRESH-1: the live object's digest after two backup runs still matches the original upload"
+else
+    fail "C-REFRESH-1: the live object's digest changed unexpectedly across two backup runs"
+fi
+
+note "C-REFRESH-2: an upload failure mid-run must leave the previous generation intact and restorable"
+echo "-- adding a second live object so this run has something to fail partway through --"
+python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" put \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$LIVE_BUCKET" --key "content/images/2026/09/second-live-object.txt" \
+    --body "a second live object, added only for C-REFRESH-2"
+echo "-- repairing: one clean backup run so this generation covers BOTH live objects --"
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
+PRE_SABOTAGE_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" --prefix "$OBJECTS_PREFIX" | sort)"
+
+cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-crefresh2"
+python3 - "$SCRIPTS_DIR/media_backup_restore.py" <<'PYEOF'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+marker = "        backup_key = _object_key_for_backup(tenant, backup_id)\n        put_object(\n"
+assert marker in text, "expected marker not found -- has the loop shape changed?"
+sabotaged = text.replace(
+    marker,
+    "        backup_key = _object_key_for_backup(tenant, backup_id)\n"
+    "        _SABOTAGE_UPLOAD_COUNT[0] += 1\n"
+    "        if _SABOTAGE_UPLOAD_COUNT[0] == 2:\n"
+    "            raise ObjectStorageError('SABOTAGE: simulated upload failure mid-run')\n"
+    "        put_object(\n",
+    1,
+)
+assert sabotaged != text
+sabotaged = sabotaged.replace(
+    "MEDIA_PREFIX = \"media\"\n",
+    "MEDIA_PREFIX = \"media\"\n_SABOTAGE_UPLOAD_COUNT = [0]\n",
+    1,
+)
+open(path, "w").write(sabotaged)
+PYEOF
+if ! diff -q "$WORKDIR/media_backup_restore.py.orig-crefresh2" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
+    echo "upload-failure sabotage applied: the second object's upload now raises"
+else
+    echo "FAILED: the sabotage patch did not change the file -- cannot prove this control" >&2
+    exit 1
+fi
+
+if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
+    fail "C-REFRESH-2: backup exited 0 despite the sabotaged upload failure -- WRONG"
+else
+    pass "C-REFRESH-2: the sabotaged run's own exit code is non-zero, as expected"
+fi
+POST_SABOTAGE_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" --prefix "$OBJECTS_PREFIX" | sort)"
+if [ -z "$(comm -23 <(echo "$PRE_SABOTAGE_LISTING") <(echo "$POST_SABOTAGE_LISTING"))" ]; then
+    pass "C-REFRESH-2: RED: every object from the pre-sabotage generation is still present after the failed run"
+else
+    fail "C-REFRESH-2: RED: at least one pre-sabotage object is MISSING after the failed run -- the previous generation was not preserved"
+fi
+if run_restore "$WORKDIR/tenant-a.identity" "$RESTORED_BUCKET"; then
+    pass "C-REFRESH-2: RED: restore from the (untouched) previous generation still succeeds after the failed run"
+else
+    fail "C-REFRESH-2: RED: restore from the previous generation failed after the sabotaged run -- the old generation was not left restorable"
+fi
+echo "-- reverting the upload-failure sabotage --"
+cp "$WORKDIR/media_backup_restore.py.orig-crefresh2" "$SCRIPTS_DIR/media_backup_restore.py"
+if diff -q "$WORKDIR/media_backup_restore.py.orig-crefresh2" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
+    echo "upload-failure sabotage reverted: file matches the pre-sabotage original"
+else
+    echo "FAILED: revert did not restore the original file" >&2
+    exit 1
+fi
+echo "-- repairing: re-running a clean backup (both live objects) --"
+if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
+    pass "C-REFRESH-2: GREEN: with the sabotage reverted, a clean backup run succeeds again"
+else
+    fail "C-REFRESH-2: GREEN: a clean backup run failed after reverting the sabotage"
+fi
+POST_REPAIR_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" --prefix "$OBJECTS_PREFIX")"
+POST_REPAIR_COUNT="$(echo "$POST_REPAIR_LISTING" | grep -c .)"
+if [ "$POST_REPAIR_COUNT" = "2" ]; then
+    pass "C-REFRESH-2: GREEN: the repaired generation covers exactly the two live objects, and the sabotaged run's own partial orphan is gone too"
+else
+    fail "C-REFRESH-2: GREEN: expected exactly 2 objects after repair, found $POST_REPAIR_COUNT"
+fi
+echo "-- cleaning up the extra live object added for this round --"
+python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" delete \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$LIVE_BUCKET" --key "content/images/2026/09/second-live-object.txt"
+echo "-- repairing: one more clean backup so later rounds see tenant-a's original single-object generation --"
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 
 note "Direct check: a different tenant's identity cannot restore tenant-a's media"
 if run_restore "$WORKDIR/tenant-b.identity" ""; then

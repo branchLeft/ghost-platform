@@ -63,6 +63,13 @@ def main(argv: list[str] | None = None) -> int:
     _common_args(delete_p)
     delete_p.add_argument("--key", required=True)
 
+    put_p = sub.add_parser(
+        "put", help="write a raw object -- e.g. a second live object the proof itself needs to exist"
+    )
+    _common_args(put_p)
+    put_p.add_argument("--key", required=True)
+    put_p.add_argument("--body", required=True, help="the object's literal content")
+
     count_p = sub.add_parser("count", help="print how many objects a bucket (or prefix) holds")
     _common_args(count_p)
     count_p.add_argument("--prefix")
@@ -93,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     # Built lazily, per command: `backup-object-key` is pure local
     # computation with none of these flags, so building this unconditionally
     # from `args` would crash on that command alone.
-    needs_bucket_args = args.command in ("sha256", "corrupt", "delete", "count", "list")
+    needs_bucket_args = args.command in ("sha256", "corrupt", "delete", "count", "list", "put")
     common = (
         dict(
             endpoint=args.endpoint, region=args.region, access_key=args.access_key,
@@ -112,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             put_object(key=args.key, data=data + b"\x00CORRUPTED-BY-PROOF-SABOTAGE\x00", **common)
         elif args.command == "delete":
             delete_object(key=args.key, **common)
+        elif args.command == "put":
+            put_object(key=args.key, data=args.body.encode(), **common)
         elif args.command == "count":
             objects = list_objects(prefix=args.prefix, **common)
             print(len(objects))
