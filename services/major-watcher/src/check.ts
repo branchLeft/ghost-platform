@@ -3,11 +3,11 @@ import { fetchGhostReleases, type GhostRelease } from './ghostReleases.js';
 import { publish, type NtfyConfig } from './ntfy.js';
 import { readState, writeState } from './state.js';
 
-// The one thing this watcher is allowed to do (branchLeft/workspace#1301,
-// D38/D39/D42): read an upstream signal, decide, and either page Rob or do
-// nothing. No PR, no merge, no deploy, no second system touched -- unlike
-// its sibling #1252 (the minor-release watcher), which opens a PR. A new
-// major or preview only ever informs; nothing here acts on it.
+// The one thing this watcher is allowed to do: read an upstream signal,
+// decide, and either page the platform owner or do nothing. No PR, no
+// merge, no deploy, no second system touched -- unlike the sibling
+// minor-release watcher, which opens a PR. A new major or preview only
+// ever informs; nothing here acts on it.
 
 export interface RunOptions {
   readonly statePath: string;

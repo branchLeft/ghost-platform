@@ -1,17 +1,17 @@
 # major-watcher
 
-Alerts Rob when a new Ghost major version, or its public preview, is
-announced upstream (branchLeft/workspace#1301). Nothing else: no PR, no
-merge, no deploy, no other system touched. Compare with the sibling
-release watcher in branchLeft/workspace#1252, which opens a PR for a new
-*minor* and only sends an owner-digest note (never a page) if it happens to
-see a new major go by -- that story is unbuilt as of this writing and this
-one does not depend on it.
+Alerts the platform owner when a new Ghost major version, or its public
+preview, is announced upstream (branchLeft/workspace#1301). Nothing else:
+no PR, no merge, no deploy, no other system touched. Compare with the
+sibling release watcher in branchLeft/workspace#1252, which opens a PR for
+a new *minor* and only sends an owner-digest note (never a page) if it
+happens to see a new major go by -- that story is unbuilt and this one
+does not depend on it.
 
-Constraint this is built to (Rob's ruling on branchLeft/workspace#1274 /
-branchLeft/workspace#1159, and D38/D39/D42): a scheduled watcher that pages
-a human is monitoring, not an agent in operations. Nothing here runs a
-model, and nothing here acts on the announcement besides paging.
+Constraint this is built to (branchLeft/workspace#1274, branchLeft/workspace#1159,
+and D38/D39/D42): a scheduled watcher that pages a human is monitoring,
+not an agent in operations. Nothing here runs a model, and nothing here
+acts on the announcement besides paging.
 
 ## Signal
 
@@ -33,7 +33,7 @@ tags and publishes one before every major GA (`v6.0.0-alpha.1`,
 `v6.0.0-alpha.2`, four `v6.0.0-rc.*`, then `v6.0.0` itself, all real tags on
 that repo).
 
-**Real trap found while checking this premise (2026-09-24):**
+**Real trap found while checking this premise:**
 `v6.0.0-rc.2` is flagged `"prerelease": false` by GitHub's own API, despite
 its tag being unambiguously a release candidate. `src/semver.ts` parses the
 tag string itself rather than trusting that field -- see its header comment
@@ -45,11 +45,11 @@ Fires at most once per major line: the first time any release (preview or
 GA) carrying a major number higher than the last one notified about is
 seen. The message is written around whichever release of that line
 published *earliest* -- a preview if TryGhost shipped one, the GA itself
-otherwise -- so Rob gets the earliest possible lead time, matching his
-stated reason for the story ("get ahead of it... support it at a similar
-pace to competitors"). A later release of the same major line -- another
-preview, the eventual GA once a preview already fired, or any minor/patch
--- changes nothing.
+otherwise -- giving the maximum possible lead time before a major lands,
+which is the whole reason for alerting on the preview rather than waiting
+for GA ("get ahead of it... support it at a similar pace to competitors").
+A later release of the same major line -- another preview, the eventual GA
+once a preview already fired, or any minor/patch -- changes nothing.
 
 One page of releases (100, newest-first) is plenty for any realistic poll
 cadence: Ghost ships roughly weekly, so 100 releases covers well over a
@@ -83,18 +83,19 @@ step's `SEED_LAST_NOTIFIED_MAJOR` env var. This value is deliberately
 static in the workflow file, never derived from a live query at bootstrap
 time, so the first-ever run's baseline is an auditable, reviewed number
 rather than whatever the API happened to return that day. It is seeded to
-`6` in this PR, the major line confirmed live as of 2026-09-24.
+`6` in this PR, the major line confirmed live at the time this was written.
 
 ## Owed
 
-**Self-hosted ntfy is not deployed anywhere in the estate yet** (checked
-2026-09-24: no ntfy service, container, systemd unit, Caddy route, topic or
-token exists in `shared-infra`, and `alertmanager.yml.tmpl` still carries
-only an email receiver and two Healthchecks.io webhooks -- no receiver
-reaches a phone, matching branchLeft/workspace#1273's still-open
-statement). This service is built to ntfy's publish interface (a bare HTTP
-POST, `src/ntfy.ts`) and needs no Alertmanager wiring -- it pages directly,
-independent of #1273's still-open Alertmanager page-receiver decision.
+**Self-hosted ntfy is not deployed anywhere in the estate yet**: no ntfy
+service, container, systemd unit, Caddy route, topic or token exists in
+`shared-infra`, and `alertmanager.yml.tmpl` still carries only an email
+receiver and two Healthchecks.io webhooks -- no receiver reaches a phone,
+matching branchLeft/workspace#1273's still-open statement. This service is
+built to ntfy's publish interface (a bare HTTP POST, `src/ntfy.ts`) and
+needs no Alertmanager wiring -- it pages directly, independent of
+branchLeft/workspace#1273's still-open Alertmanager page-receiver
+decision.
 
 Before the scheduled workflow can page for real:
 
@@ -108,10 +109,10 @@ The schedule (`major-watcher-run.yml`, every 6 hours) is live from this PR
 is set, each run is a deliberate, clean no-op (exit 0, one log line: "not
 deployed yet") rather than a red run: a schedule failing every 6 hours for
 however long the ntfy story takes would desensitise exactly the signal
-this exists to protect, the same failure class #1163 calls out ("the
-control plane stops, nothing pages, because the thing that would page is
-the thing that is down"). A red run stays reserved for something actually
-wrong once the secret exists: an unreachable GitHub API, a corrupt state
+this exists to protect, the same failure class branchLeft/workspace#1163
+calls out ("the control plane stops, nothing pages, because the thing that
+would page is the thing that is down"). A red run stays reserved for
+something actually wrong once the secret exists: an unreachable GitHub API, a corrupt state
 file, or ntfy itself rejecting the publish (auth, network, a bad topic) --
 all of which still throw and exit 1, per `src/cli.ts`.
 

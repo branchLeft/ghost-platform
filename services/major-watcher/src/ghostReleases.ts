@@ -1,6 +1,6 @@
 // The signal: github.com/TryGhost/Ghost's own Releases API.
 //
-// Chosen over the alternatives considered for #1301:
+// Chosen over the two other signals considered:
 //  - npm's `ghost` package dist-tags carry no `prerelease` boolean and no
 //    publish timestamp per version without a second round trip, and Ghost's
 //    npm publishes lag its GitHub releases.

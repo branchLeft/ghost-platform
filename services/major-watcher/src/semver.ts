@@ -3,9 +3,9 @@
 //
 // Deliberately does not trust GitHub's own `prerelease` boolean on the
 // release object: a live check against github.com/TryGhost/Ghost's release
-// history (2026-09-24) found v6.0.0-rc.2 flagged `prerelease: false` even
-// though its tag plainly carries a `-rc.2` suffix. The tag string is the
-// only field that source cannot get wrong about itself.
+// history found v6.0.0-rc.2 flagged `prerelease: false` even though its
+// tag plainly carries a `-rc.2` suffix. The tag string is the only field
+// that source cannot get wrong about itself.
 
 export interface ParsedTag {
   readonly major: number;

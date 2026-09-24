@@ -17,9 +17,9 @@ describe('parseGhostTag', () => {
 
   it('parses an rc tag, independent of any API-reported prerelease flag', () => {
     // This is the real trap: github.com/TryGhost/Ghost's v6.0.0-rc.2 is
-    // flagged `prerelease: false` by GitHub's own API (checked live,
-    // 2026-09-24), despite its tag being unambiguously a release candidate.
-    // The tag string must still be read as a prerelease.
+    // flagged `prerelease: false` by GitHub's own API, despite its tag
+    // being unambiguously a release candidate. The tag string must still
+    // be read as a prerelease.
     expect(parseGhostTag('v6.0.0-rc.2')?.prerelease).toBe('rc.2');
   });
 

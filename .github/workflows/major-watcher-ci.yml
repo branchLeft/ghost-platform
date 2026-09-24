@@ -1,10 +1,9 @@
 name: Major watcher CI
 
 # Type-checks and unit-tests the Ghost major/preview watcher
-# (services/major-watcher/, branchLeft/workspace#1301). The scheduled run
-# that actually pages Rob lives in major-watcher-run.yml instead, since it
-# needs write access to the state branch and the ntfy secrets this job
-# must never see.
+# (services/major-watcher/). The scheduled run that actually sends a page
+# lives in major-watcher-run.yml instead, since it needs write access to
+# the state branch and the ntfy secrets this job must never see.
 
 on:
   push:

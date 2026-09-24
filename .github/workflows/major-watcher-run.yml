@@ -1,24 +1,23 @@
 name: Major watcher run
 
-# The scheduled watcher itself (branchLeft/workspace#1301): polls
-# github.com/TryGhost/Ghost's releases and pages Rob over self-hosted ntfy
-# the first time a new major line is seen, preview or GA. It never opens a
-# PR, never merges, never deploys -- see services/major-watcher/README.md
-# "Signal" and "Decision" for why and how. D38/D39/D42: this is a scheduled
-# watcher that pages a human, which is monitoring, not an agent in
-# operations -- nothing here runs a model.
+# The scheduled watcher itself: polls github.com/TryGhost/Ghost's releases
+# and pages the platform owner over self-hosted ntfy the first time a new
+# major line is seen, preview or GA. It never opens a PR, never merges,
+# never deploys -- see services/major-watcher/README.md "Signal" and
+# "Decision" for why and how. A scheduled watcher that pages a human is
+# monitoring, not an agent in operations -- nothing here runs a model.
 #
-# Every 6 hours, well inside the Done criterion's day-long SLA even
-# allowing for a missed run.
+# Every 6 hours, well inside a day-long alerting SLA even allowing for a
+# missed run.
 #
 # Dedupe state (see services/major-watcher/README.md "State") lives on its
 # own branch, `state/major-watcher`, never on `main` -- `main` requires
 # signed commits and PR review (this repo's ruleset), and a dedupe write is
 # neither a code change nor something review should gate. That branch
 # carries no ruleset of its own (checked directly against the live
-# rulesets API, 2026-09-24: only `~DEFAULT_BRANCH` and `refs/tags/v*` are
-# covered), so `contents: write` on this job's own token is sufficient --
-# no PAT, no bypass of anything.
+# rulesets API: only `~DEFAULT_BRANCH` and `refs/tags/v*` are covered), so
+# `contents: write` on this job's own token is sufficient -- no PAT, no
+# bypass of anything.
 
 on:
   schedule:
@@ -26,7 +25,7 @@ on:
   # Manual runs are safe here in a way they are not in recovery-image.yml
   # or registry-push.yml: this workflow ships no artifact and merges
   # nothing, so there is no review gate a dispatched run could bypass.
-  # Useful for Rob to prove the end-to-end page once ntfy exists.
+  # Useful to prove the end-to-end page once ntfy exists.
   workflow_dispatch: {}
 
 permissions:
@@ -40,7 +39,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The major line known live as of this PR (2026-09-24) -- see
+  # The major line known live when this was written -- see
   # services/major-watcher/README.md "Bootstrapping" for why this is a
   # static, reviewed number and never derived at run time.
   SEED_LAST_NOTIFIED_MAJOR: '6'
