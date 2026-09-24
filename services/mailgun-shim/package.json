@@ -2,7 +2,7 @@
   "name": "ghost-platform-mailgun-shim",
   "version": "0.0.0",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "SEE LICENSE IN ../../LICENSE",
   "description": "Mailgun-shaped shim that speaks the three endpoints Ghost's bulk-email path calls and relays to a self-hosted SMTP delivery host (see ghost-platform-docs/13-mail-architecture-options.md).",
   "type": "module",
   "main": "dist/server.js",

@@ -2,7 +2,7 @@
   "name": "ghost-platform-drain-sidecar",
   "version": "0.0.0",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "SEE LICENSE IN ../../LICENSE",
   "description": "Health sidecar that answers a slot's health port for the drain flag, not for Ghost -- 200 only when the broker-owned drain flag is clear and Ghost's own front page answers 200 (see ghost-platform-docs/19-try-it-now-design/02-broker-and-slot.html §01b).",
   "type": "module",
   "main": "dist/server.js",

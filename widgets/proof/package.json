@@ -2,7 +2,7 @@
   "name": "widgets-proof",
   "version": "0.0.0",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "SEE LICENSE IN ../../LICENSE",
   "description": "Headless-browser network capture for the self-hosted-widgets live proof. Not part of the repo's build or published packages -- run by hand (widgets/proof/run-proof.sh) against a real Docker pair, never in CI, since it needs a Chromium download and Docker-in-Docker either way.",
   "type": "module",
   "devDependencies": {

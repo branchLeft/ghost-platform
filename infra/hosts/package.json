@@ -1,7 +1,7 @@
 {
   "name": "ghost-platform-hosts",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "SEE LICENSE IN ../../LICENSE",
   "main": "index.ts",
   "description": "Pulumi program for the estate's application and database hosts (app1, db1). See infra/README.md.",
   "scripts": {
