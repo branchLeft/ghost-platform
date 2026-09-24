@@ -5,6 +5,7 @@ export interface SmtpFrontDoorConfig {
   port: number;
   host: string;
   maxMessageBytes: number;
+  maxUnauthenticatedConnectionsPerSource: number;
   maxUnauthenticatedConnections: number;
   authDeadlineMs: number;
   maxConcurrentDataPhases: number;
@@ -35,14 +36,23 @@ const DEFAULT_SMTP_LISTEN_PORT = 25;
 // independently.
 const DEFAULT_MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 
-// An unauthenticated connection costs nothing but a socket, so this pool can
-// be, and is, far more generous than the authenticated side's budget below —
-// it exists to bound raw connection/fd use, not memory, and is deliberately
-// separate so one can never starve the other. Sized well past anything a
-// single peer holding idle connections open (with no credential at all)
-// realistically sustains, so that peer alone can never fill it; the auth
-// deadline below is what actually bounds how long any slot stays occupied.
+// A generous global backstop bounding the unauthenticated pool in
+// aggregate, in case several distinct sources are legitimately connecting
+// at once. Should never be the binding limit for a single well-behaved
+// source — the per-source cap below is sized to bind first, well before
+// this one could.
 const DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS = 100;
+
+// Bounds one source address's own share of the unauthenticated pool,
+// checked before the global backstop above. A credential-less peer holding
+// (or churning — replacing each connection the instant it's refused or
+// evicted) idle connections can never occupy more than this many, however
+// many it opens: churn defeats a purely time-based deadline (reconnect
+// faster than it expires) and a purely global count-based cap doesn't need
+// many addresses to exhaust. Each legitimate source is exactly one Ghost
+// container, so this never binds for a well-behaved single source — its
+// own concurrent connection count in practice is 0 or 1.
+const DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS_PER_SOURCE = 5;
 
 // How long a connection has to complete AUTH before it is closed outright.
 // Short enough that holding a slot open with no credential is not a viable
@@ -118,6 +128,9 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
       // must never be published), not something this bind address controls.
       host: env.SMTP_LISTEN_HOST || '0.0.0.0',
       maxMessageBytes: Number(env.SMTP_MAX_MESSAGE_BYTES) || DEFAULT_MAX_MESSAGE_BYTES,
+      maxUnauthenticatedConnectionsPerSource:
+        Number(env.SMTP_MAX_UNAUTHENTICATED_CONNECTIONS_PER_SOURCE) ||
+        DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS_PER_SOURCE,
       maxUnauthenticatedConnections:
         Number(env.SMTP_MAX_UNAUTHENTICATED_CONNECTIONS) || DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS,
       authDeadlineMs: Number(env.SMTP_AUTH_DEADLINE_MS) || DEFAULT_AUTH_DEADLINE_MS,

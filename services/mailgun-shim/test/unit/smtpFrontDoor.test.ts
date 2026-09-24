@@ -3,8 +3,10 @@ import nodemailer from 'nodemailer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildSourceAllowList,
+  createConcurrencyGuard,
   createSmtpFrontDoor,
   createSubmitterLimiter,
+  createUnauthenticatedPoolGuard,
   DEFAULT_ALLOWED_SOURCE_CIDRS,
   isAllowedSource,
   type SmtpFrontDoor,
@@ -84,6 +86,153 @@ describe('createSubmitterLimiter', () => {
   });
 });
 
+describe('createConcurrencyGuard', () => {
+  it('grants up to the global cap, then refuses regardless of key', () => {
+    const guard = createConcurrencyGuard(2, 5);
+    expect(guard.tryAcquire('a')).not.toBeNull();
+    expect(guard.tryAcquire('b')).not.toBeNull();
+    expect(guard.tryAcquire('c')).toBeNull();
+  });
+
+  it('grants up to the per-key cap even under the global cap', () => {
+    const guard = createConcurrencyGuard(10, 1);
+    expect(guard.tryAcquire('a')).not.toBeNull();
+    expect(guard.tryAcquire('a')).toBeNull();
+    // A different key is unaffected by 'a' exhausting its own cap.
+    expect(guard.tryAcquire('b')).not.toBeNull();
+  });
+
+  it('release() frees exactly one slot, both global and per-key', () => {
+    const guard = createConcurrencyGuard(1, 1);
+    const slot = guard.tryAcquire('a');
+    expect(slot).not.toBeNull();
+    expect(guard.tryAcquire('a')).toBeNull();
+    slot!.release();
+    expect(guard.tryAcquire('a')).not.toBeNull();
+  });
+
+  it('release() is idempotent — calling it many times only ever frees the slot once', () => {
+    // This is the exact property review cycle 4's fix depends on: the same
+    // unit of work can be released from more than one event (a stream
+    // ending normally, a stream erroring, or the underlying connection
+    // closing without either firing), and a double-release must never
+    // double-free budget that was never actually double-acquired.
+    // Per-key cap is generous (5) so only the global cap (1) is what's
+    // under test here — two DIFFERENT keys isolate the global counter's
+    // own correctness from the per-key bookkeeping tested elsewhere.
+    const guard = createConcurrencyGuard(1, 5);
+    const slot = guard.tryAcquire('a')!;
+    slot.release();
+    slot.release();
+    slot.release();
+    // A non-idempotent release() would have decremented three times
+    // (global at -2 here instead of 0), which doesn't fail on the very
+    // next acquire — going negative just means the guard incorrectly
+    // admits MORE than its cap of 1 for a while, not fewer. The real
+    // proof is that only ONE further acquisition succeeds before the cap
+    // binds again, not two.
+    expect(guard.tryAcquire('b')).not.toBeNull();
+    expect(guard.tryAcquire('c')).toBeNull();
+  });
+
+  it('a refused (null) acquisition never affects the counts — nothing to release', () => {
+    const guard = createConcurrencyGuard(1, 1);
+    guard.tryAcquire('a');
+    const refused = guard.tryAcquire('a');
+    expect(refused).toBeNull();
+    // Releasing the ONE granted slot is the only thing that frees capacity;
+    // the refused attempt held nothing to begin with.
+    expect(guard.tryAcquire('b')).toBeNull(); // still at the global cap of 1
+  });
+
+  it('releasing one key does not affect a different key already at its own cap', () => {
+    const guard = createConcurrencyGuard(5, 1);
+    const a = guard.tryAcquire('a')!;
+    const b = guard.tryAcquire('b')!;
+    expect(guard.tryAcquire('a')).toBeNull();
+    b.release();
+    // 'a' is still at its own per-key cap of 1, even though 'b' released.
+    expect(guard.tryAcquire('a')).toBeNull();
+    expect(guard.tryAcquire('b')).not.toBeNull();
+    void a;
+  });
+});
+
+describe('createUnauthenticatedPoolGuard', () => {
+  // The bug review cycle 4's live proof found: checking a filtered view of
+  // smtp-server's own `connections` Set counts a connection from the
+  // instant its TCP handshake completes, not from the instant this guard
+  // would have admitted it — smtp-server holds every accepted socket for a
+  // fixed ~100ms "early talker" delay before its onConnect hook even runs.
+  // A burst of connections from one source therefore all land in that Set
+  // together, all still pending their own admission check, and a filter
+  // over the Set counts every one of them as if already admitted. This
+  // guard is the fix: its own counters increment only on a tryAcquire that
+  // itself returns admitted — never from anything outside its control —
+  // so a burst can never inflate its counts beyond what it actually let
+  // through, regardless of how many raw sockets are simultaneously open.
+  it('admits up to the per-source cap, then refuses further acquisitions from that source with a distinct reason', () => {
+    const guard = createUnauthenticatedPoolGuard(100, 2);
+    expect(guard.tryAcquire('1.1.1.1').admitted).toBe(true);
+    expect(guard.tryAcquire('1.1.1.1').admitted).toBe(true);
+    const third = guard.tryAcquire('1.1.1.1');
+    expect(third.admitted).toBe(false);
+    expect(third).toMatchObject({ reason: 'max_unauthenticated_connections_per_source' });
+  });
+
+  it('admits a different source up to ITS OWN per-source cap even while another source sits at its own cap', () => {
+    const guard = createUnauthenticatedPoolGuard(100, 2);
+    expect(guard.tryAcquire('1.1.1.1').admitted).toBe(true);
+    expect(guard.tryAcquire('1.1.1.1').admitted).toBe(true);
+    expect(guard.tryAcquire('1.1.1.1').admitted).toBe(false);
+    // A different source is unaffected by '1.1.1.1' exhausting its own cap
+    // — this is the exact property that was missing live: many burst
+    // acquisitions from one source must never count against another's
+    // admission.
+    expect(guard.tryAcquire('2.2.2.2').admitted).toBe(true);
+    expect(guard.tryAcquire('2.2.2.2').admitted).toBe(true);
+  });
+
+  it('refuses with the global reason once the global cap is reached, even from a source still under its own per-source cap', () => {
+    const guard = createUnauthenticatedPoolGuard(1, 5);
+    expect(guard.tryAcquire('1.1.1.1').admitted).toBe(true);
+    const second = guard.tryAcquire('2.2.2.2');
+    expect(second.admitted).toBe(false);
+    expect(second).toMatchObject({ reason: 'max_unauthenticated_connections' });
+  });
+
+  it('release() frees exactly one slot, both global and per-source, and is idempotent', () => {
+    const guard = createUnauthenticatedPoolGuard(1, 1);
+    const admission = guard.tryAcquire('1.1.1.1');
+    if (!admission.admitted) throw new Error('expected admission');
+    expect(guard.tryAcquire('2.2.2.2').admitted).toBe(false);
+    admission.slot.release();
+    admission.slot.release();
+    admission.slot.release();
+    // A non-idempotent release would have freed three slots' worth of
+    // global budget instead of one — the proof is that only ONE further
+    // acquisition succeeds before the cap binds again, not two.
+    expect(guard.tryAcquire('2.2.2.2').admitted).toBe(true);
+    expect(guard.tryAcquire('3.3.3.3').admitted).toBe(false);
+  });
+
+  it('a burst of acquisitions past the per-source cap never lets that source exceed its own admitted cap, however many were attempted', () => {
+    // Directly exercises the property the live churn attack depended on
+    // breaking: hammering tryAcquire far faster than anything could ever
+    // be released must still leave the source with no more than its own
+    // cap's worth of admitted slots, and a different source fully able to
+    // acquire its own.
+    const guard = createUnauthenticatedPoolGuard(1000, 5);
+    let admitted = 0;
+    for (let i = 0; i < 500; i++) {
+      if (guard.tryAcquire('192.168.65.1').admitted) admitted += 1;
+    }
+    expect(admitted).toBe(5);
+    const other = guard.tryAcquire('172.23.0.4');
+    expect(other.admitted).toBe(true);
+  });
+});
+
 interface Harness {
   store: ShimStore;
   worker: WorkerHandle;
@@ -105,6 +254,7 @@ async function startHarness(
     omitAllowedSourceCidrs: boolean;
     submitterMessagesPerMinute: number;
     maxMessageBytes: number;
+    maxUnauthenticatedConnectionsPerSource: number;
     maxUnauthenticatedConnections: number;
     authDeadlineMs: number;
     maxConcurrentDataPhases: number;
@@ -133,6 +283,7 @@ async function startHarness(
     worker,
     log: logger,
     maxMessageBytes: overrides.maxMessageBytes ?? 1024 * 1024,
+    maxUnauthenticatedConnectionsPerSource: overrides.maxUnauthenticatedConnectionsPerSource ?? 20,
     maxUnauthenticatedConnections: overrides.maxUnauthenticatedConnections ?? 20,
     authDeadlineMs: overrides.authDeadlineMs ?? 5000,
     maxConcurrentDataPhases: overrides.maxConcurrentDataPhases ?? 20,
@@ -609,6 +760,159 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       third.end();
     });
 
+    it('refuses a new connection once maxUnauthenticatedConnectionsPerSource is already open from THAT source, before the global pool is even close to full', async () => {
+      harness = await startHarness({
+        maxUnauthenticatedConnectionsPerSource: 2,
+        maxUnauthenticatedConnections: 100,
+      });
+
+      const first = await connectAndWaitBanner();
+      const second = await connectAndWaitBanner();
+
+      const third = new Socket();
+      const thirdResponse = await new Promise<string>((resolve, reject) => {
+        let buf = '';
+        third.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^\d{3} /m.test(buf)) {
+            resolve(buf);
+          }
+        });
+        third.on('error', reject);
+        third.connect(harness.port, '127.0.0.1');
+      });
+
+      expect(thirdResponse).toMatch(/^421 /);
+      first.end();
+      second.end();
+      third.end();
+    });
+
+    it('one source at (and churning past) its own per-source cap never causes a 421 for a different source', async () => {
+      // The blocking finding review cycle 4 fixed: the unauthenticated pool
+      // was global only, so one credential-less source churning
+      // connections — replacing each one the instant it's refused or
+      // evicted — could hold the whole pool full indefinitely without ever
+      // needing a slot for more than a few seconds, denying a real,
+      // different-source submitter (Ghost's own container) a slot at the
+      // greeting. `::1` and `127.0.0.1` are two genuinely distinct
+      // `remoteAddress` values reachable without any OS-level network
+      // configuration, standing in for "the attacker's container" and "the
+      // host's own Ghost".
+      harness = await startHarness({
+        maxUnauthenticatedConnectionsPerSource: 5,
+        maxUnauthenticatedConnections: 100,
+        host: '::',
+      });
+
+      async function connectFrom(host: string): Promise<{ response: string; socket: Socket }> {
+        const socket = new Socket();
+        const response = await new Promise<string>((resolve, reject) => {
+          let buf = '';
+          socket.on('data', (chunk: Buffer) => {
+            buf += chunk.toString('utf8');
+            if (/^\d{3} /m.test(buf)) {
+              resolve(buf);
+            }
+          });
+          socket.on('error', reject);
+          socket.connect(harness.port, host);
+        });
+        return { response, socket };
+      }
+
+      // Fill the attacker's own per-source budget (5 from ::1)...
+      const attackerSockets: Socket[] = [];
+      for (let i = 0; i < 5; i++) {
+        const { response, socket } = await connectFrom('::1');
+        expect(response).toMatch(/^220 /);
+        attackerSockets.push(socket);
+      }
+      // ...and prove churning past it is refused, not silently admitted.
+      const sixth = await connectFrom('::1');
+      expect(sixth.response).toMatch(/^421 /);
+      sixth.socket.end();
+
+      // A DIFFERENT source (127.0.0.1), while the attacker sits at its own
+      // cap, still gets the banner — never a 421.
+      const legitimate = await connectFrom('127.0.0.1');
+      expect(legitimate.response).toMatch(/^220 /);
+
+      attackerSockets.forEach((s) => s.end());
+      legitimate.socket.end();
+    });
+
+    it('a genuine concurrent burst from one source — not a sequence awaited one at a time — still never blocks a different source', async () => {
+      // The sequential test above proves the cap logic; it does not prove
+      // the WIRING survives real concurrency. smtp-server adds every
+      // accepted socket to its own `connections` Set the instant the TCP
+      // handshake completes, then holds it — unchecked by anything — for a
+      // fixed ~100ms "early talker" delay before onConnect ever runs
+      // (connectionReady(), smtp-connection.js). A live churn attack that
+      // opens many connections from one source at once, not one at a time,
+      // lands a burst of them in that Set together, all still pending
+      // their own admission check — which is exactly what defeated the
+      // first version of this fix (proven against real Ghost 6.55.0: a
+      // single churning source pinned the global count above its cap using
+      // connections that were themselves about to be refused, and a
+      // different, well-behaved source got a real 421). Firing many
+      // connects here without awaiting each one in turn is what actually
+      // exercises that window.
+      harness = await startHarness({
+        maxUnauthenticatedConnectionsPerSource: 3,
+        maxUnauthenticatedConnections: 10,
+        host: '::',
+      });
+
+      let stop = false;
+      const activeAttackers: Socket[] = [];
+
+      function churnOnce(): void {
+        if (stop) return;
+        const socket = new Socket();
+        activeAttackers.push(socket);
+        let sawFirstLine = false;
+        socket.on('data', (chunk: Buffer) => {
+          if (!sawFirstLine && /^\d{3}/.test(chunk.toString('utf8'))) {
+            sawFirstLine = true;
+          }
+        });
+        socket.on('error', () => {});
+        socket.on('close', () => {
+          const idx = activeAttackers.indexOf(socket);
+          if (idx !== -1) activeAttackers.splice(idx, 1);
+          if (!stop) churnOnce();
+        });
+        socket.connect(harness.port, '::1');
+      }
+
+      // 30 concurrent workers, none awaited individually — every connect
+      // below fires before any of them has resolved, which is the shape
+      // that lands a real burst in smtp-server's own Set together.
+      for (let i = 0; i < 30; i++) churnOnce();
+
+      // Let the burst run long enough to cross smtp-server's ~100ms
+      // pre-check dwell window several times over.
+      await new Promise((r) => setTimeout(r, 400));
+
+      const legitimate = new Socket();
+      const legitimateResponse = await new Promise<string>((resolve, reject) => {
+        let buf = '';
+        legitimate.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^\d{3} /m.test(buf)) resolve(buf);
+        });
+        legitimate.on('error', reject);
+        legitimate.connect(harness.port, '127.0.0.1');
+      });
+
+      stop = true;
+      activeAttackers.forEach((s) => s.destroy());
+      legitimate.end();
+
+      expect(legitimateResponse).toMatch(/^220 /);
+    });
+
     it('closes an unauthenticated connection once its auth deadline passes — even one sending NOOP to stay superficially active', async () => {
       // The exact shape an unauthenticated attacker can use to survive
       // smtp-server's own idle timeout without ever authenticating: send
@@ -805,6 +1109,41 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       second.write('\r\n.\r\n');
       second.socket.end();
       first.socket.end();
+    });
+
+    it('releases the concurrency slot when the connection drops mid-DATA — repeated drops never leak the budget permanently', async () => {
+      // The blocking finding review cycle 4 fixed: smtp-server detaches the
+      // data stream (unpipes it and sets it to null — _onClose,
+      // smtp-connection.js) without emitting 'end' or 'error' on it when
+      // the socket closes mid-transfer, so relying on those two events
+      // alone leaked the slot forever on every dropped connection, not
+      // only a deliberately malicious one — an ordinary network blip or
+      // container restart mid-send does this too. Six drops (one more than
+      // maxConcurrentDataPhasesPerSubmitter) proves the release genuinely
+      // happens every time, not just enough times to look like it by
+      // coincidence.
+      harness = await startHarness({
+        maxConcurrentDataPhasesPerSubmitter: 5,
+        maxConcurrentDataPhases: 20,
+      });
+
+      for (let i = 0; i < 6; i++) {
+        const dropped = await authenticateAndOpenData('tenant-a.example.com', 'key-a');
+        dropped.socket.destroy();
+        // Give the socket's own 'close' event, and this module's listener
+        // for it, a moment to fire before the next iteration starts.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+      await expect(
+        transport.sendMail({
+          from: 'noreply@tenant-a.example.com',
+          to: 'member@example.com',
+          subject: 'After six mid-DATA drops',
+          text: 'hi',
+        })
+      ).resolves.toBeDefined();
     });
   });
 
@@ -1029,6 +1368,7 @@ describe('SMTP front door — runtime server errors are logged, not swallowed', 
       },
       log: logger2,
       maxMessageBytes: 1024 * 1024,
+      maxUnauthenticatedConnectionsPerSource: 20,
       maxUnauthenticatedConnections: 20,
       authDeadlineMs: 5000,
       maxConcurrentDataPhases: 20,

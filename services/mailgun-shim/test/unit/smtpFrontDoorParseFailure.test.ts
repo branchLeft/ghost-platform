@@ -73,6 +73,7 @@ async function startHarness(): Promise<Harness> {
     worker,
     log: logger,
     maxMessageBytes: 1024 * 1024,
+    maxUnauthenticatedConnectionsPerSource: 20,
     maxUnauthenticatedConnections: 20,
     authDeadlineMs: 5000,
     maxConcurrentDataPhases: 20,

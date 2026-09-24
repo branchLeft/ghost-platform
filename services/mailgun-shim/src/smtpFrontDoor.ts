@@ -102,12 +102,140 @@ export function createSubmitterLimiter(
   };
 }
 
+export interface ConcurrencySlot {
+  /**
+   * Idempotent: safe to call any number of times, from any of the several
+   * events that can end one unit of work (a stream ending normally, a
+   * stream erroring, or the underlying connection closing without either
+   * firing). Only the first call has any effect.
+   */
+  release(): void;
+}
+
+export interface ConcurrencyGuard {
+  /** A slot if under both the global and per-key caps (which also increments them), or null if over either — nothing is incremented on a null return, and calling .release() on a null result would be a type error, not a silent no-op, by construction. */
+  tryAcquire(key: string): ConcurrencySlot | null;
+}
+
+/**
+ * Bounds concurrent work as a global count and a per-key count at once, with
+ * idempotent release. Pure and standalone (no smtp-server dependency) so the
+ * acquire/release bookkeeping — including "released more than once must
+ * never double-decrement" — is directly testable without a real connection.
+ */
+export function createConcurrencyGuard(maxGlobal: number, maxPerKey: number): ConcurrencyGuard {
+  let global = 0;
+  const perKey = new Map<string, number>();
+  return {
+    tryAcquire(key) {
+      const current = perKey.get(key) ?? 0;
+      if (global >= maxGlobal || current >= maxPerKey) {
+        return null;
+      }
+      global += 1;
+      perKey.set(key, current + 1);
+      let released = false;
+      return {
+        release(): void {
+          if (released) {
+            return;
+          }
+          released = true;
+          global -= 1;
+          const count = perKey.get(key) ?? 1;
+          if (count <= 1) {
+            perKey.delete(key);
+          } else {
+            perKey.set(key, count - 1);
+          }
+        },
+      };
+    },
+  };
+}
+
+export interface UnauthenticatedPoolSlot {
+  /** Idempotent, same contract as ConcurrencySlot.release above. */
+  release(): void;
+}
+
+export type UnauthenticatedPoolAdmission =
+  | { admitted: true; slot: UnauthenticatedPoolSlot }
+  | {
+      admitted: false;
+      reason: 'max_unauthenticated_connections_per_source' | 'max_unauthenticated_connections';
+    };
+
+export interface UnauthenticatedPoolGuard {
+  tryAcquire(remoteAddress: string): UnauthenticatedPoolAdmission;
+}
+
+/**
+ * Deliberately its own counters, not a filter over smtp-server's own
+ * `connections` Set. smtp-server adds every accepted socket to that Set the
+ * instant it accepts the TCP connection, then holds it for a fixed ~100ms
+ * ("early talker" detection, connectionReady() in smtp-connection.js)
+ * before this guard — inside the onConnect hook — ever runs on it. A
+ * connection still in that dwell window has not been admitted by anything
+ * yet, but a filter over the Set counts it anyway: a single source
+ * churning connections fast enough keeps a rolling ~150-wide window of
+ * such not-yet-checked connections permanently present, which pinned the
+ * global count above its cap using connections that were themselves about
+ * to be refused a moment later — starving a legitimate connection from a
+ * different source thanks to the very source the cap exists to contain
+ * (proven live against real Ghost 6.55.0 before this guard existed).
+ * Counting only what this guard itself has let through removes the race:
+ * a connection counts here from the instant it is admitted until this
+ * guard's own `.release()` is called, never from mere socket acceptance.
+ */
+export function createUnauthenticatedPoolGuard(
+  maxGlobal: number,
+  maxPerSource: number
+): UnauthenticatedPoolGuard {
+  let global = 0;
+  const perSource = new Map<string, number>();
+  return {
+    tryAcquire(remoteAddress): UnauthenticatedPoolAdmission {
+      const current = perSource.get(remoteAddress) ?? 0;
+      if (current >= maxPerSource) {
+        return { admitted: false, reason: 'max_unauthenticated_connections_per_source' };
+      }
+      if (global >= maxGlobal) {
+        return { admitted: false, reason: 'max_unauthenticated_connections' };
+      }
+      global += 1;
+      perSource.set(remoteAddress, current + 1);
+      let released = false;
+      return {
+        admitted: true,
+        slot: {
+          release(): void {
+            if (released) {
+              return;
+            }
+            released = true;
+            global -= 1;
+            const count = perSource.get(remoteAddress) ?? 1;
+            if (count <= 1) {
+              perSource.delete(remoteAddress);
+            } else {
+              perSource.set(remoteAddress, count - 1);
+            }
+          },
+        },
+      };
+    },
+  };
+}
+
 export interface SmtpFrontDoorOptions {
   store: ShimStore;
   worker: WorkerHandle;
   log: Logger;
   maxMessageBytes: number;
-  /** Cap on connections that have not yet authenticated. Never gates an authenticated submitter — this pool and the authenticated one are counted separately. */
+  /** Cap on connections that have not yet authenticated, from any one source address. Checked before the global pool, so one source (e.g. a compromised, credential-less container) can never occupy more than its own share — churning connections defeats a purely time-based deadline, and a purely global count-based cap doesn't need many source addresses to exhaust. Each legitimate source is exactly one Ghost container, so this never binds for a well-behaved single source. */
+  maxUnauthenticatedConnectionsPerSource: number;
+  /** Cap on connections that have not yet authenticated, across every source — the backstop behind the per-source cap above. Never gates an authenticated submitter — this pool and the authenticated one are counted separately. */
   maxUnauthenticatedConnections: number;
   /** How long a connection has to complete AUTH before it is closed outright, freeing its slot in the unauthenticated pool regardless of how it keeps itself alive (e.g. periodic NOOP). */
   authDeadlineMs: number;
@@ -128,19 +256,32 @@ export interface SmtpFrontDoor {
 declare module 'smtp-server' {
   interface SMTPServerSession {
     user?: string;
+    /** Set once this connection is admitted into the unauthenticated pool (onConnect); called from onAuth on success so the slot frees the instant it stops being needed, without waiting for the connection to eventually close. Idempotent — also called from the connection's own 'close', whichever fires first. */
+    releaseUnauthSlot?: () => void;
   }
 }
 
 /**
  * `smtp-server`'s own connection objects, as held in `SMTPServer.connections`
  * (typed `Set<any>` upstream) — narrowed to exactly what's needed to tell an
- * authenticated connection from an unauthenticated one and to end one that
- * has overrun its auth deadline. `session` here is the same object instance
- * `onAuth` mutates, so `.session.user` reflects live auth state.
+ * authenticated connection from an unauthenticated one, group connections by
+ * source address, end one that has overrun its auth deadline, and release a
+ * DATA phase's concurrency slot when the underlying socket closes without
+ * the data stream itself ever emitting `end` or `error` (verified from
+ * source: `_onClose`, smtp-connection.js, unpipes and nulls the data stream
+ * on socket close without emitting on it). `session` here is the same
+ * object instance `onAuth` mutates, so `.session.user` reflects live auth
+ * state, and `_socket` is the real underlying `net.Socket` — private to
+ * smtp-server, but real, and the only place a mid-transfer disconnect is
+ * ever observable from outside it.
  */
 interface RawSmtpConnection {
-  session?: { user?: string };
+  session?: { user?: string; remoteAddress?: string };
   close(): void;
+  _socket?: {
+    once(event: 'close', listener: () => void): void;
+    removeListener(event: 'close', listener: () => void): void;
+  };
 }
 
 /**
@@ -166,8 +307,17 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
   // per submitter so worst-case retained memory stays
   // maxConcurrentDataPhases * maxMessageBytes, and no single credential can
   // claim the whole budget.
-  let inFlightDataGlobal = 0;
-  const inFlightDataPerSubmitter = new Map<string, number>();
+  const dataPhaseGuard = createConcurrencyGuard(
+    opts.maxConcurrentDataPhases,
+    opts.maxConcurrentDataPhasesPerSubmitter
+  );
+
+  // See createUnauthenticatedPoolGuard's own comment for why this counts
+  // admissions itself rather than filtering server.connections.
+  const unauthPoolGuard = createUnauthenticatedPoolGuard(
+    opts.maxUnauthenticatedConnections,
+    opts.maxUnauthenticatedConnectionsPerSource
+  );
 
   const server = new SMTPServer({
     banner: 'branchLeft mail spool',
@@ -188,24 +338,44 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         return;
       }
 
-      // `server.connections` already includes this connection (smtp-server
-      // adds it before calling onConnect), with no `session.user` yet, so it
-      // is correctly counted here. Capping ALL connections — authenticated
-      // or not — behind one number let an attacker with no credential hold
-      // every slot with idle connections and get a real submitter refused
-      // at the greeting. This cap counts only the unauthenticated pool, so
-      // an authenticated submitter is never turned away because of it.
-      const connections = server.connections as unknown as Set<RawSmtpConnection>;
-      const unauthenticatedCount = [...connections].filter((c) => !c.session?.user).length;
-      if (unauthenticatedCount > opts.maxUnauthenticatedConnections) {
+      // Per-source is checked before global inside the guard itself: one
+      // source address (e.g. a compromised, credential-less container) can
+      // never occupy more than its own share of the pool, however fast it
+      // churns connections — replacing each one the instant it's refused or
+      // evicted defeats a purely time-based deadline (reconnect faster than
+      // it) and doesn't need to spread across addresses to defeat a purely
+      // global count-based cap. The global cap is the backstop, sized well
+      // past what the per-source cap alone would ever let one source reach,
+      // so it should never be the binding limit for a single well-behaved
+      // source.
+      const remoteAddress = session.remoteAddress ?? '';
+      const admission = unauthPoolGuard.tryAcquire(remoteAddress);
+      if (!admission.admitted) {
         log.warn('smtp_connection_refused', {
           remoteAddress: session.remoteAddress,
-          reason: 'max_unauthenticated_connections',
+          reason: admission.reason,
         });
         const err = new Error('Too many connections') as Error & { responseCode: number };
         err.responseCode = 421;
         callback(err);
         return;
+      }
+
+      const connections = server.connections as unknown as Set<RawSmtpConnection>;
+
+      // Released the instant this connection leaves the unauthenticated
+      // pool: either it authenticates (onAuth calls this same function on
+      // success, below) or its underlying socket closes first for any
+      // reason — a normal disconnect, the deadline eviction just below, or
+      // a mid-handshake network drop. `.release()` is idempotent, so
+      // whichever of the two fires first is the one that actually frees
+      // the slot; the other is a no-op.
+      session.releaseUnauthSlot = admission.slot.release;
+      for (const c of connections) {
+        if (c.session === session) {
+          c._socket?.once('close', admission.slot.release);
+          break;
+        }
       }
 
       callback();
@@ -234,7 +404,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
 
     onAuth(
       auth: SMTPServerAuthentication,
-      _session: SMTPServerSession,
+      session: SMTPServerSession,
       callback: (err: Error | null | undefined, response?: SMTPServerAuthenticationResponse) => void
     ): void {
       // The username IS the submitter's identity (a per-tenant/per-slot
@@ -252,6 +422,11 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         callback(new Error('Invalid credentials'));
         return;
       }
+      // This connection is leaving the unauthenticated pool — free its slot
+      // now rather than waiting for it to eventually close, so a submitter
+      // that opens many short-lived connections in a row (one per message)
+      // never accumulates against its own per-source cap.
+      session.releaseUnauthSlot?.();
       callback(null, { user: tenant.domain });
     },
 
@@ -322,29 +497,36 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // (never retained) rather than refused outright, reusing the same
       // proven-safe path as the size cap below — the stream still has to be
       // consumed to reach 'end' and reply, whichever cap it tripped.
-      const submitterInFlight = inFlightDataPerSubmitter.get(submitterId) ?? 0;
-      const overConcurrencyCap =
-        inFlightDataGlobal >= opts.maxConcurrentDataPhases ||
-        submitterInFlight >= opts.maxConcurrentDataPhasesPerSubmitter;
+      const slot = dataPhaseGuard.tryAcquire(submitterId);
+      const overConcurrencyCap = slot === null;
       if (overConcurrencyCap) {
         log.warn('smtp_data_concurrency_refused', { submitter: submitterId });
-      } else {
-        inFlightDataGlobal += 1;
-        inFlightDataPerSubmitter.set(submitterId, submitterInFlight + 1);
       }
-      let slotReleased = false;
-      const releaseConcurrencySlot = (): void => {
-        if (slotReleased || overConcurrencyCap) {
-          return;
+      const releaseConcurrencySlot = (): void => slot?.release();
+
+      // The slot must also be released if the underlying connection closes
+      // before the stream reaches 'end' or 'error' — smtp-server detaches
+      // the stream (unpipes it and sets it to null, smtp-connection.js
+      // _onClose) without emitting on it when the socket closes mid-DATA,
+      // so relying on the stream's own events alone leaks the slot forever
+      // on every dropped connection, not only a deliberately malicious one:
+      // an ordinary network blip or container restart mid-send does this.
+      // `_socket` is smtp-server's real underlying net.Socket; its own
+      // 'close' event fires in every case a TCP connection ends, however it
+      // ends. `.once()` self-removes once fired; the two calls below remove
+      // it on the other two paths instead, so a connection sending many
+      // messages in one session doesn't accumulate one listener per message.
+      const connections = server.connections as unknown as Set<RawSmtpConnection>;
+      let rawConnection: RawSmtpConnection | undefined;
+      for (const c of connections) {
+        if (c.session === session) {
+          rawConnection = c;
+          break;
         }
-        slotReleased = true;
-        inFlightDataGlobal -= 1;
-        const count = inFlightDataPerSubmitter.get(submitterId) ?? 1;
-        if (count <= 1) {
-          inFlightDataPerSubmitter.delete(submitterId);
-        } else {
-          inFlightDataPerSubmitter.set(submitterId, count - 1);
-        }
+      }
+      rawConnection?._socket?.once('close', releaseConcurrencySlot);
+      const detachCloseRelease = (): void => {
+        rawConnection?._socket?.removeListener('close', releaseConcurrencySlot);
       };
 
       const chunks: Buffer[] = [];
@@ -373,12 +555,27 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         retainedBytes += chunk.length;
         chunks.push(chunk);
       });
+      /* v8 ignore start -- proven unreachable, checked exhaustively against
+       * smtp-server's own source rather than assumed: nowhere in the
+       * library does anything call `.emit('error', ...)` or `.destroy(...)`
+       * on the data stream (grepped the whole package: zero hits). A socket
+       * error during the transaction (ECONNRESET/EPIPE with
+       * session.envelope.mailFrom set) is emitted on the CONNECTION
+       * (`this.emit('error', err)`, smtp-connection.js `_onError`), never
+       * forwarded to the stream; the same error outside a transaction goes
+       * through `_onClose` instead, which is the path the connection
+       * `close`-based release above defends — see that comment. Kept as a
+       * fail-closed guard against a future smtp-server version starting to
+       * emit here, not because any input today can reach it. */
       stream.on('error', (err: Error) => {
         releaseConcurrencySlot();
+        detachCloseRelease();
         callback(err);
       });
+      /* v8 ignore stop */
       stream.on('end', () => {
         releaseConcurrencySlot();
+        detachCloseRelease();
         if (overConcurrencyCap) {
           const err = new Error('Too many concurrent messages') as Error & { responseCode: number };
           err.responseCode = 450;
