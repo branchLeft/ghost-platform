@@ -719,9 +719,9 @@ class PolicyRefusalTests(unittest.TestCase):
         self.assertIn("s3:PutBucketAcl", str(caught.exception))
 
     def test_narrowing_the_object_denys_actions_to_a_read_list_is_refused(self):
-        # branchLeft/ghost-platform#154's confirmed finding: narrowing this
-        # statement's Action from `s3:*` to a read-only list converts the
-        # catch-all into a denylist, and PutObject/DeleteObject fall open.
+        # Narrowing this statement's Action from `s3:*` to a read-only list
+        # converts the catch-all into a denylist, and PutObject/DeleteObject
+        # fall open.
         policy = fence_policy()
         for statement in policy["Statement"]:
             if statement["Sid"] == "DenyObjectAccessExceptNamedKeys":
@@ -732,11 +732,10 @@ class PolicyRefusalTests(unittest.TestCase):
         self.assertIn("s3:DeleteObject", str(caught.exception))
 
     def test_widening_the_object_denys_notprincipal_to_an_unallowed_key_is_refused(self):
-        # branchLeft/ghost-platform#154's other confirmed finding: widening
-        # this statement's NotPrincipal to also exempt a foreign credential
-        # grants that credential full read/write/delete on every backup
-        # object -- and nothing else in the policy accounts for it, since no
-        # Allow statement names it either.
+        # Widening this statement's NotPrincipal to also exempt a foreign
+        # credential grants that credential full read/write/delete on every
+        # backup object -- and nothing else in the policy accounts for it,
+        # since no Allow statement names it either.
         foreign_arn = "arn:aws:iam:::user/p1231234:FFFFFFFFFFFFFFFFFFFF"
         policy = fence_policy()
         for statement in policy["Statement"]:
