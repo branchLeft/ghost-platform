@@ -303,9 +303,8 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
   ]) {
     it(`${name}: refused, while the support account is active`, async () => {
       const r = await ghost.attempt(build());
+      assert.deepEqual({ status: r.status, email: r.email }, { status: 403, email: null });
       assert.deepEqual(r.adapter, [`break-glass: token refused (${reason})`]);
-      assert.equal(r.status, 403);
-      assert.equal(r.email, null);
     });
   }
 
@@ -388,9 +387,8 @@ describe('the adapter ships in the image, not the content directory', { timeout:
       assert.ok(ghost.booted, `Ghost did not boot:\n${ghost.logs().slice(-40).join('\n')}`);
       await ghost.setupOwner();
       const r = await ghost.attempt(validToken({ sub: OWNER }, otherKey.privateKey));
+      assert.deepEqual({ status: r.status, email: r.email }, { status: 403, email: null });
       assert.deepEqual(r.adapter, ['break-glass: token refused (signature)']);
-      assert.equal(r.status, 403);
-      assert.equal(r.email, null);
     } finally {
       ghost.remove();
     }
