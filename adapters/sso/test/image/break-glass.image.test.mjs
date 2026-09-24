@@ -278,11 +278,10 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     const before = sessions();
     const r = await ghost.attempt(validToken());
     assert.deepEqual({ status: r.status, email: r.email }, { status: 403, email: null });
-    assert.deepEqual(r.adapter, ['break-glass: token refused (account not active)']);
-    assert.equal(sessions(), before);
+    assert.equal(sessions(), before, 'a session row was created for a suspended account');
     ghost.setSupportStatus('active');
     assert.equal((await ghost.me(r.cookie || undefined)).status, 403);
-    assert.equal(sessions(), before);
+    assert.deepEqual(r.adapter, ['break-glass: token refused (account not active)']);
     ghost.setSupportStatus('inactive');
   });
 
