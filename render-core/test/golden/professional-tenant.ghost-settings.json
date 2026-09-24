@@ -1,0 +1,5 @@
+{
+  "codeinjection_head": "<meta name=\"analytics-consent\" content=\"required\">",
+  "codeinjection_foot": "<script src=\"/analytics.js\" defer></script>",
+  "codeInjectionExplainer": "ALL_CAPS_PLACEHOLDER: code injection explainer copy"
+}

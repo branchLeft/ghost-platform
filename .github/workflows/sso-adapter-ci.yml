@@ -1,0 +1,42 @@
+name: SSO adapter CI
+
+# Unit tests and the coverage floor for the break-glass SSO adapter
+# (adapters/sso/). The proof against a real Ghost runs in build.yml, next to
+# the image it needs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: sso adapter unit tests
+    runs-on: ubuntu-latest
+    # Install plus a two-second vitest run; the bound is generous.
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: adapters/sso
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The version Ghost runs the adapter on inside the pinned image.
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: adapters/sso/.nvmrc
+          cache: npm
+          cache-dependency-path: adapters/sso/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test with coverage
+        run: npm run coverage
