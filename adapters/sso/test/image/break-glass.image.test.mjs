@@ -354,6 +354,41 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     assert.equal(r.email, SUPPORT);
   });
 
+  // express-session's res.end override flushes Set-Cookie before the session
+  // store's write completes, so a client acting on the cookie immediately
+  // (any redirect- or page-follower, not a test artefact) can be refused on
+  // its very next request. This never showed up sequentially -- it needs
+  // concurrent logins racing the same store to open the window. Every one of
+  // these must succeed; a single 403 here is the race, not flake.
+  //
+  // One round is not a reliable regression check by itself: measured against
+  // a build with the overlay missing, a single round of 8 came back clean
+  // (a false pass) on close to half of tries -- failures cluster within a
+  // round rather than landing at a steady per-login rate, so treating each
+  // login as an independent 50/50 coin understates how often a whole round
+  // slips through. Looped over ROUNDS rounds, a fresh-container measurement
+  // of exactly this shape (1 CPU, in-container load, 20 independent runs)
+  // came back 0/20 false passes; see the PR body's "Review cycle 2 response"
+  // table for the full counts and the caveat on how far that sample size
+  // can be trusted.
+  it('N concurrent fresh-token logins each authenticate on their very first users/me/ request, every round', async () => {
+    ghost.setSupportStatus('active');
+    const CONCURRENCY = 8;
+    const ROUNDS = 6;
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const results = await Promise.all(
+        Array.from({ length: CONCURRENCY }, () => ghost.attempt(validToken()))
+      );
+      results.forEach((r, i) => {
+        assert.deepEqual(
+          { status: r.status, email: r.email },
+          { status: 200, email: SUPPORT },
+          `round ${round + 1}/${ROUNDS}, login ${i} of ${CONCURRENCY}: adapter said ${JSON.stringify(r.adapter)}`
+        );
+      });
+    }
+  });
+
   it('a token sent to the site root never reaches the adapter, and stays usable (documented gap)', async () => {
     const t = validToken();
     const mark = ghost.mark();
@@ -443,3 +478,65 @@ describe('the adapter ships in the image, not the content directory', { timeout:
     }
   });
 });
+
+describe(
+  'the image carries the session-save overlay verbatim (LLD-5, ghost-core-overlay/README.md)',
+  { timeout: 60_000 },
+  () => {
+    // The Dockerfile's hash guard proves the UPSTREAM file it copied the
+    // overlay onto still matches what the overlay was derived from -- it runs
+    // at build time, before the final COPY. It proves nothing about the final
+    // image: a dropped COPY line, or a build stage reordering, could still
+    // ship plain upstream. This checks the artefact that actually reaches a
+    // tenant: the built image's own copy of the file, by content hash against
+    // this repo's overlay and against the pinned upstream hash.
+    it("the built image's session-from-token.js hashes to this repo's overlay, not to upstream", () => {
+      const cid = execFileSync('docker', ['create', IMAGE], { encoding: 'utf8' }).trim();
+      let inImageBytes;
+      try {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-overlay-check-'));
+        try {
+          const dest = path.join(tmp, 'in-image.js');
+          execFileSync('docker', [
+            'cp',
+            `${cid}:/var/lib/ghost/current/core/server/services/auth/session/session-from-token.js`,
+            dest,
+          ]);
+          inImageBytes = fs.readFileSync(dest);
+        } finally {
+          fs.rmSync(tmp, { recursive: true, force: true });
+        }
+      } finally {
+        spawnSync('docker', ['rm', '-f', cid], { stdio: 'ignore' });
+      }
+
+      const overlayDir = path.join(
+        path.dirname(new URL(import.meta.url).pathname),
+        '..',
+        '..',
+        'ghost-core-overlay'
+      );
+      const overlayBytes = fs.readFileSync(path.join(overlayDir, 'session-from-token.js'));
+      const upstreamPin = fs
+        .readFileSync(path.join(overlayDir, 'session-from-token.upstream.sha256'), 'utf8')
+        .trim()
+        .split(/\s+/)[0];
+
+      const hash = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+      const inImageHash = hash(inImageBytes);
+      const overlayHash = hash(overlayBytes);
+
+      assert.equal(
+        inImageHash,
+        overlayHash,
+        "the image's session-from-token.js does not match adapters/sso/ghost-core-overlay/session-from-token.js -- " +
+          'the Dockerfile COPY that lands the overlay is missing or was reordered ahead of a later overwrite'
+      );
+      assert.notEqual(
+        inImageHash,
+        upstreamPin,
+        "the image's session-from-token.js still hashes to pristine upstream -- the overlay never landed"
+      );
+    });
+  }
+);
