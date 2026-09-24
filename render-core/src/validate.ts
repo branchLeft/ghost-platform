@@ -593,6 +593,50 @@ function checkSiteUrlMatchesHostname(descriptor: TenantDescriptor, zones: ZoneCo
   }
 }
 
+/**
+ * The hostname a certificate-admission decision (Caddy's on-demand-TLS ask
+ * endpoint) should admit for this descriptor, or `null` if this descriptor
+ * must never reach that decision at all.
+ *
+ * A demo's `ours` hostname renders under the demo zone, but is never
+ * admitted here: demo slots sit under a platform wildcard certificate, so
+ * asking per-hostname for one would both waste an issuance and put a slot
+ * name into a public, append-only CT log for good — which the never-reuse
+ * rule for slot names cannot tolerate. `zones.demoZone` is therefore never
+ * read by this function: the demo branch returns before anything would use
+ * it. A `theirs` fqdn that is itself one of the platform's own owned
+ * domains is refused for the same reason `validateHostname` refuses it as
+ * a hostname at all — a "custom domain" is only a custom domain if it is
+ * genuinely outside every domain the platform owns, not merely a
+ * different-looking label of one.
+ *
+ * Deliberately narrower than `validate()`: a caller deciding whether to
+ * admit a TLS handshake has no business validating, or having an opinion
+ * on, every other field a descriptor carries.
+ */
+export function servedHostnameOf(
+  descriptor: Pick<TenantDescriptor, 'kind' | 'hostname'>,
+  zones: Pick<ZoneConfig, 'platformZone' | 'ownedDomains'>
+): string | null {
+  if (descriptor.hostname.kind === 'ours') {
+    if (descriptor.kind === 'demo') {
+      return null;
+    }
+    if (!HOSTNAME_LABEL_PATTERN.test(descriptor.hostname.sub)) {
+      return null;
+    }
+    return normalizeDomain(`${descriptor.hostname.sub}.${zones.platformZone}`);
+  }
+  const fqdn = descriptor.hostname.fqdn;
+  if (!isWellFormedFqdn(fqdn) || looksLikeIpLiteral(fqdn)) {
+    return null;
+  }
+  if (!isOutsideOwnedDomains(fqdn, zones.ownedDomains)) {
+    return null;
+  }
+  return normalizeDomain(fqdn);
+}
+
 /** Both flags are on for every tenant today — see SafetySpec's own doc comment. */
 function checkSafety(descriptor: TenantDescriptor): void {
   if (!descriptor.safety.near || !descriptor.safety.exact) {
