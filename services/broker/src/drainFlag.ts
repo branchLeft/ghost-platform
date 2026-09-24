@@ -4,13 +4,14 @@ import { removeFileIfPresent, writeFileAtomic } from './atomicFile.js';
 import type { Colour } from './literals.js';
 
 /**
- * LLD-2 §01b: the drain flag is a broker-owned file, not a sudoers verb,
- * and it lives outside the slot's own root-owned, reset-wiped directory
- * (workspace#1188's review, round 3/4: the flag directory must be
- * broker-writable and mounted read-only into the sidecar's container,
- * independent of the slot directory a `reset` wipes). One file per
- * (slot, colour): a colour pair shares a uid and a directory but not a
- * drain state -- exactly one colour serves traffic at a time.
+ * LLD-2 §01b: the drain flag is a broker-owned file, not a sudoers verb.
+ * The flag directory is broker-writable and mounted read-only into the
+ * sidecar's container, deliberately outside the slot's own root-owned
+ * directory: that directory is wiped on every `reset`, and a flag that
+ * lived there could not guarantee "boots drained" independently of reset
+ * having run first. One file per (slot, colour): a colour pair shares a
+ * uid and a directory but not a drain state -- exactly one colour serves
+ * traffic at a time.
  */
 export interface DrainFlagStore {
   set(slot: SlotName, colour: Colour): Promise<void>;
