@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>signup-form embed proof</title>
+  </head>
+  <body>
+    <!--
+  The signup-form widget is not loaded by Ghost's own site (ghost_head never
+  references the `signupForm` config key -- confirmed by reading
+  forks/Ghost's core/frontend/helpers/*.js). It is meant to be pasted onto
+  ANY page, the way a real tenant would embed it on a landing page outside
+  Ghost. This is that page: the same snippet shape as
+  apps/signup-form/preview.html in forks/Ghost, pointed at the pinned,
+  self-hosted bundle instead of the CDN.
+
+  A static, standalone reference for how a tenant would embed it by hand --
+  the src below is a fixed path, not read from Ghost's config, so it cannot
+  vary if the pin is ever sabotaged. The automated proof (run-proof.sh /
+  capture-network.mjs) does not navigate here for that reason: it builds
+  its own copy of this markup at runtime, with the src Ghost's own admin
+  config endpoint resolves for whichever pass is running, so sabotaging
+  signupForm__url is actually provable.
+-->
+    <div style="min-height: 400px">
+      <script
+        src="/bl-assets/signup-form.min.js"
+        data-button-color="#ff0095"
+        data-label-1="Signup form"
+        data-label-2="Self-hosted proof"
+        async
+      ></script>
+    </div>
+  </body>
+</html>
