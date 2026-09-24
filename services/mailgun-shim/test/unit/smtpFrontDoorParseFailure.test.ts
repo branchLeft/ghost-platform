@@ -17,7 +17,7 @@ vi.mock('mailparser', () => ({
 
 import { createSmtpFrontDoor, type SmtpFrontDoor } from '../../src/smtpFrontDoor.js';
 import { createSqliteStore, type ShimStore } from '../../src/store.js';
-import type { WorkerHandle } from '../../src/worker.js';
+import { createDrainWake } from '../../src/drainWake.js';
 import { createTestLogger } from '../helpers/testLogger.js';
 
 function rawSmtpCommands(port: number, host: string, lines: string[]): Promise<string[]> {
@@ -51,7 +51,7 @@ function rawSmtpCommands(port: number, host: string, lines: string[]): Promise<s
 
 interface Harness {
   store: ShimStore;
-  worker: WorkerHandle;
+  notify: ReturnType<typeof vi.fn>;
   frontDoor: SmtpFrontDoor;
   port: number;
   logs: ReturnType<typeof createTestLogger>['lines'];
@@ -60,17 +60,13 @@ interface Harness {
 async function startHarness(): Promise<Harness> {
   const store = createSqliteStore(':memory:');
   store.registerTenant('tenant-a.example.com', 'key-a');
-  const worker: WorkerHandle = {
-    kick: vi.fn(),
-    whenIdle: () => Promise.resolve(),
-    stop: () => Promise.resolve(),
-    status: () => ({ lastTickAt: null, stopped: false }),
-  };
+  const wake = createDrainWake();
+  const notify = vi.spyOn(wake, 'notify');
   const { logger, lines } = createTestLogger();
 
   const frontDoor = createSmtpFrontDoor({
     store,
-    worker,
+    wake,
     log: logger,
     maxMessageBytes: 1024 * 1024,
     maxRecipientsPerMessage: 50,
@@ -86,7 +82,7 @@ async function startHarness(): Promise<Harness> {
   const port = 25000 + Math.floor(Math.random() * 10000);
   await frontDoor.listen(port, '127.0.0.1');
 
-  return { store, worker, frontDoor, port, logs: lines };
+  return { store, notify, frontDoor, port, logs: lines };
 }
 
 async function submitOneMessage(port: number): Promise<string[]> {
@@ -118,8 +114,8 @@ describe('SMTP front door — a parser failure is logged and refused, not swallo
 
     expect(responses.some((line) => /^[45]\d\d /.test(line))).toBe(true);
     expect(harness.logs.some((line) => line.event === 'smtp_message_processing_failed')).toBe(true);
-    expect(harness.store.countPendingRecipients()).toBe(0);
-    expect(harness.worker.kick).not.toHaveBeenCalled();
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
+    expect(harness.notify).not.toHaveBeenCalled();
   });
 
   it('still logs and refuses cleanly when simpleParser rejects with a non-Error value', async () => {
@@ -137,6 +133,6 @@ describe('SMTP front door — a parser failure is logged and refused, not swallo
     const failLine = harness.logs.find((line) => line.event === 'smtp_message_processing_failed');
     expect(failLine).toBeDefined();
     expect(failLine!.fields.error).toBe('not an Error instance');
-    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
   });
 });
