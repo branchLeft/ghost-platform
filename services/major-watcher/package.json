@@ -2,6 +2,7 @@
   "name": "ghost-platform-major-watcher",
   "version": "0.0.0",
   "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
   "description": "Deterministic, scheduled watcher for a new Ghost major version or its public preview being announced upstream (github.com/TryGhost/Ghost releases). Pages the platform owner over self-hosted ntfy; opens nothing, changes nothing, runs no model.",
   "type": "module",
   "main": "dist/cli.js",

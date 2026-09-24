@@ -268,4 +268,6 @@ and media adapters are both externalised via the variables above.
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+Source-available under the PolyForm Shield License 1.0.0. See [LICENSE](LICENSE).
+Third-party code under `widgets/dist/` keeps its own MIT licence; see
+[widgets/dist/LICENSE](widgets/dist/LICENSE).

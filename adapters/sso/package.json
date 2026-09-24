@@ -2,6 +2,7 @@
   "name": "ghost-platform-sso-adapter",
   "version": "0.0.0",
   "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
   "description": "The break-glass SSO adapter shipped in the Ghost image at core/server/adapters/sso/ (see ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html §05).",
   "type": "commonjs",
   "scripts": {
