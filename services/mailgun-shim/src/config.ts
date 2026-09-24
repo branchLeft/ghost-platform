@@ -22,10 +22,12 @@ export interface ShimConfig {
   smtp: DeliveryHostConfig;
   throttlePath?: string;
   messagesPerHour: number;
-  // Shared between both front doors (the HTTP Mailgun-shaped route and the
-  // SMTP listener) rather than nested under smtpFrontDoor below — Ghost's
-  // transactional mail always has exactly one recipient (LLD-6), so the cap
-  // is a property of "a message this shim will queue", not of one channel.
+  // The SMTP front door's RCPT cap only. Ghost's SMTP transactional sender
+  // (magic links, password resets, staff invites) addresses exactly one
+  // recipient per message (LLD-6), so this bounds that channel alone — the
+  // HTTP Mailgun-shaped route below carries Ghost's bulk newsletter sends
+  // in batches of up to 1,000 (Ghost's own DEFAULT_BATCH_SIZE) and has no
+  // recipient cap of its own.
   maxRecipientsPerMessage: number;
   smtpFrontDoor: SmtpFrontDoorConfig;
 }
@@ -101,15 +103,17 @@ const DEFAULT_MAX_CONCURRENT_DATA_PHASES_PER_SUBMITTER = 5;
 
 const DEFAULT_SUBMITTER_MESSAGES_PER_MINUTE = 120;
 
-// Ghost's transactional sender always addresses exactly one recipient
-// (LLD-6 §03) — 50 is generous headroom above that, not a fit to any real
-// send this shim should ever see, and bounds one credential's envelope
-// fan-out per message. smtp-server rescans its whole rcptTo array on every
-// RCPT, so an unbounded envelope costs quadratic CPU on this connection and
-// starves every other submitter sharing the process while it runs. A
-// message over the cap is refused mid-envelope with a temporary failure
-// (RFC 5321), never trimmed and accepted: trimming would return a false
-// success for the recipients silently dropped.
+// Ghost's SMTP transactional sender always addresses exactly one recipient
+// per message (LLD-6 §03) — 50 is generous headroom above that, not a fit
+// to any real send this listener should ever see, and bounds one
+// credential's envelope fan-out per message. smtp-server rescans its whole
+// rcptTo array on every RCPT, so an unbounded envelope costs quadratic CPU
+// on this connection and starves every other submitter sharing the process
+// while it runs. A message over the cap is refused mid-envelope with a
+// temporary failure (RFC 5321), never trimmed and accepted: trimming would
+// return a false success for the recipients silently dropped. This is the
+// SMTP front door's own cap — the HTTP Mailgun-shaped route carries
+// Ghost's bulk newsletter sends and has no recipient cap of its own.
 const DEFAULT_MAX_RECIPIENTS_PER_MESSAGE = 50;
 
 // Structurally identical to NodeJS.ProcessEnv, spelled out instead of named

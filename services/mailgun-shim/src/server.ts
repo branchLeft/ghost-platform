@@ -23,7 +23,7 @@ const throttle = createThrottle({
 // to be picked back up.
 const worker = createWorker({ store, transport, throttle, log });
 
-const app = createApp(store, worker, log, config.maxRecipientsPerMessage);
+const app = createApp(store, worker, log);
 
 const smtpFrontDoor = createSmtpFrontDoor({
   store,
