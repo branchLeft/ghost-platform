@@ -500,22 +500,57 @@ describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, n
   });
 
   it('a message enqueued over SMTP wakes an already-held GET /drain, the same as one enqueued over HTTP', async () => {
-    const drainPromise = fetch(`${shim.baseUrl}/drain`, {
-      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    // A generous holdMs, not the outer describe's 200ms default: an SMTP
+    // submission is several protocol round trips plus AUTH's own scrypt
+    // cost (LLD-6/#239's own async-AUTH change), not the single HTTP
+    // request the equivalent HTTP-side test sends — comfortably fast
+    // locally, but with far less headroom against a loaded CI runner than
+    // one HTTP POST has. What this test proves is that the wait ends on
+    // notify(), not on the hold timing out — that property holds however
+    // long the hold is configured for, so it is generous here on purpose.
+    const wakeShim = await startTestShim({
+      startSmtpFrontDoor: true,
+      drainOptions: { holdMs: 5000 },
     });
-    await new Promise((r) => setTimeout(r, 30));
+    wakeShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    try {
+      const drainPromise = fetch(`${wakeShim.baseUrl}/drain`, {
+        headers: { Authorization: `Bearer ${wakeShim.drainToken}` },
+      });
+      await new Promise((r) => setTimeout(r, 30));
 
-    const start = Date.now();
-    await sendOverSmtp();
+      const start = Date.now();
+      const transport = nodemailer.createTransport({
+        host: '127.0.0.1',
+        port: wakeShim.smtpPort,
+        secure: false,
+        ignoreTLS: true,
+        auth: { user: TENANT_DOMAIN, pass: TENANT_API_KEY },
+      });
+      try {
+        await transport.sendMail({
+          from: `noreply@${TENANT_DOMAIN}`,
+          to: 'member@example.com',
+          subject: 'Sign-in link',
+          text: 'Click here to sign in',
+        });
+      } finally {
+        transport.close();
+      }
 
-    const res = await drainPromise;
-    const elapsedMs = Date.now() - start;
-    const body = (await res.json()) as { messages: Array<{ to: string }> };
+      const res = await drainPromise;
+      const elapsedMs = Date.now() - start;
+      const body = (await res.json()) as { messages: Array<{ to: string }> };
 
-    expect(body.messages).toHaveLength(1);
-    expect(body.messages[0]!.to).toBe('member@example.com');
-    // Woken by the SAME drainWake instance the HTTP route's own enqueue
-    // wakes — well under the 200ms holdMs this shim is configured with.
-    expect(elapsedMs).toBeLessThan(150);
+      expect(body.messages).toHaveLength(1);
+      expect(body.messages[0]!.to).toBe('member@example.com');
+      // Woken by the SAME drainWake instance the HTTP route's own enqueue
+      // wakes — comfortably under the 5s holdMs configured above, which is
+      // the property under test: ended by notify(), not by the hold
+      // timing out (a timeout would land at ~5000ms, not well under it).
+      expect(elapsedMs).toBeLessThan(3000);
+    } finally {
+      await wakeShim.close();
+    }
   });
 });
