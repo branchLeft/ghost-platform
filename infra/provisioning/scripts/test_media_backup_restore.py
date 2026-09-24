@@ -26,6 +26,7 @@ from unittest import mock
 from media_backup_restore import (
     MediaBackupError,
     MediaBackupFloorError,
+    MediaBackupManifestVerificationError,
     MediaBackupRecipientError,
     MediaRestoreVerificationError,
     _manifest_key,
@@ -88,6 +89,14 @@ class FakeObjectStore:
     def put_object(self, *, bucket, endpoint, region, access_key, secret_key, key, data, content_type="application/octet-stream", **_kw):
         del endpoint, region, access_key, secret_key
         self.put(bucket, key, data, content_type)
+
+    def delete_object(self, *, bucket, endpoint, region, access_key, secret_key, key):
+        del endpoint, region, access_key, secret_key
+        # Idempotent, like the real DELETE (db/provision/objectstorage.py
+        # tolerates a 404) -- a re-run deleting a key it already removed
+        # must not be treated as a bug.
+        self._bucket(bucket).pop(key, None)
+        self.content_types.get(bucket, {}).pop(key, None)
 
 
 def _fake_encrypt(*, data: bytes, recipient: str) -> bytes:
@@ -252,7 +261,9 @@ class BackupTenantMediaTests(unittest.TestCase):
             recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
+            get_object=self.store.get_object,
             put_object=self.store.put_object,
+            delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
         kwargs.update(overrides)
@@ -391,6 +402,258 @@ class BackupTenantMediaTests(unittest.TestCase):
         self.assertNotEqual(a_backup_id, b_backup_id)
 
 
+class RecordingObjectStore(FakeObjectStore):
+    """Same in-memory store, plus a shared `calls` log of
+    `(operation, bucket, key)` for every put/get/delete -- what the
+    ordering-sabotage tests below need to prove *when* the delete step ran
+    relative to the manifest write and its read-back, not only that it ran
+    at all."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls: list[tuple[str, str, str]] = []
+
+    def put_object(self, *, bucket, key, data, content_type="application/octet-stream", **kw):
+        self.calls.append(("put", bucket, key))
+        super().put_object(bucket=bucket, key=key, data=data, content_type=content_type, **kw)
+
+    def get_object(self, *, bucket, key, **kw):
+        self.calls.append(("get", bucket, key))
+        return super().get_object(bucket=bucket, key=key, **kw)
+
+    def delete_object(self, *, bucket, key, **kw):
+        self.calls.append(("delete", bucket, key))
+        super().delete_object(bucket=bucket, key=key, **kw)
+
+
+class CRefreshTests(unittest.TestCase):
+    """C-refresh: each run uploads a fresh complete set under new random ids
+    and writes the new manifest; only once that manifest is written AND read
+    back does the previous run's set get deleted, with a plain DeleteObject
+    that a versioned bucket turns into a delete marker, never
+    DeleteObjectVersion. See branchLeft/workspace#1325 comment 5817915400 for
+    the ruling and media_backup_restore.py's C-REFRESH docstring section for
+    the mechanism."""
+
+    def setUp(self):
+        self.store = RecordingObjectStore()
+        self.store.put(
+            "live-a", "content/images/photo.jpg", b"first generation bytes", content_type="image/jpeg",
+        )
+
+    def _backup(self, **overrides):
+        kwargs = dict(
+            tenant="tenant-a",
+            live_bucket="live-a",
+            backup_bucket="backup",
+            endpoint=ENDPOINT,
+            region=REGION,
+            live_access_key="live-ak",
+            live_secret_key="live-sk",
+            backup_access_key="backup-ak",
+            backup_secret_key="backup-sk",
+            recipient=TENANT_A_RECIPIENT,
+            list_objects=self.store.list_objects,
+            get_object_with_content_type=self.store.get_object_with_content_type,
+            get_object=self.store.get_object,
+            put_object=self.store.put_object,
+            delete_object=self.store.delete_object,
+            encrypt=_fake_encrypt,
+        )
+        kwargs.update(overrides)
+        return backup_tenant_media(**kwargs)
+
+    def _objects_prefix(self, tenant="tenant-a"):
+        return f"media/{tenant}/objects/"
+
+    def _backup_keys(self, tenant="tenant-a"):
+        return {
+            key for key in self.store.buckets.get("backup", {})
+            if key.startswith(self._objects_prefix(tenant))
+        }
+
+    def test_second_run_deletes_the_first_runs_objects(self):
+        first = self._backup()
+        first_keys = self._backup_keys()
+        self.assertEqual(len(first_keys), 1)
+
+        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
+        second = self._backup()
+        second_keys = self._backup_keys()
+
+        self.assertEqual(len(second_keys), 1)
+        self.assertNotEqual(first_keys, second_keys, "the second run must use a FRESH random id")
+        self.assertEqual(set(second.deleted_previous_keys), first_keys)
+        # The first generation's ciphertext is genuinely gone from the fake
+        # store -- not merely absent from the new manifest.
+        self.assertFalse(first_keys & second_keys)
+        for key in first_keys:
+            self.assertNotIn(key, self.store.buckets["backup"])
+
+    def test_storage_is_never_unbounded_across_many_runs(self):
+        # C-refresh's own storage claim: about 2x mid-run, never N x.
+        for generation in range(5):
+            self.store.buckets["live-a"]["content/images/photo.jpg"] = f"gen {generation}".encode()
+            self._backup()
+        self.assertEqual(len(self._backup_keys()), 1)
+
+    def test_restore_still_verifies_after_a_second_run(self):
+        self._backup()
+        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
+        self._backup()
+        del self.store.buckets["live-a"]["content/images/photo.jpg"]
+        report = restore_tenant_media(
+            tenant="tenant-a",
+            backup_bucket="backup",
+            endpoint=ENDPOINT,
+            region=REGION,
+            backup_access_key="backup-ak",
+            backup_secret_key="backup-sk",
+            identity_path=TENANT_A_IDENTITY,
+            get_object=self.store.get_object,
+            put_object=self.store.put_object,
+            decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
+        )
+        self.assertEqual(report.verified_keys, ["content/images/photo.jpg"])
+        self.assertEqual(report.bytes_recovered, len(b"second generation bytes"))
+
+    def test_sabotage_an_upload_failure_mid_run_leaves_the_previous_set_intact(self):
+        # RED: break the second object's upload partway through a run that
+        # would otherwise supersede the first generation.
+        first = self._backup()
+        first_keys = self._backup_keys()
+        self.store.buckets["live-a"]["content/images/second.jpg"] = b"a second live object"
+        self.store.content_types.setdefault("live-a", {})["content/images/second.jpg"] = "image/jpeg"
+
+        real_put = self.store.put_object
+        calls = {"n": 0}
+
+        def flaky_put(**kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise ObjectStorageError("simulated upload failure mid-run")
+            return real_put(**kw)
+
+        with self.assertRaises(ObjectStorageError):
+            self._backup(put_object=flaky_put)
+        # RED: the old generation must still be exactly what it was -- a
+        # failed run may leave an orphaned partial object from ITS OWN
+        # attempt behind (the object that uploaded before the failure), but
+        # it must never remove or alter anything from the previous
+        # generation, and it must never delete anything at all.
+        self.assertTrue(first_keys.issubset(self._backup_keys()))
+        for key in first_keys:
+            self.assertIn(key, self.store.buckets["backup"])
+        self.assertFalse(any(op == "delete" for op, _, _ in self.store.calls))
+        # GREEN: revert (no sabotage) and confirm a clean run still succeeds
+        # and still supersedes the original generation.
+        second = self._backup()
+        self.assertNotEqual(set(second.deleted_previous_keys), set())
+
+    def test_sabotage_a_manifest_readback_mismatch_prevents_deletion(self):
+        # RED: the manifest PUT "succeeds" (2xx) but what is actually stored
+        # differs from what was sent -- exactly the failure mode a 2xx alone
+        # cannot rule out. Deletion must not run.
+        first = self._backup()
+        first_keys = self._backup_keys()
+        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
+
+        real_put = self.store.put_object
+
+        def corrupting_put(**kw):
+            if kw["key"] == _manifest_key("tenant-a"):
+                kw = dict(kw)
+                kw["data"] = kw["data"] + b"\x00tampered-in-flight"
+            return real_put(**kw)
+
+        with self.assertRaises(MediaBackupManifestVerificationError):
+            self._backup(put_object=corrupting_put)
+        self.assertTrue(
+            first_keys.issubset(self._backup_keys()), "deletion must not run on an unverified manifest"
+        )
+        self.assertFalse(any(op == "delete" for op, _, _ in self.store.calls))
+        # GREEN: a clean run (no sabotage) still supersedes the first
+        # generation normally -- and also cleans up the orphan the
+        # sabotaged run's own partial upload left behind, since that orphan
+        # is, by the same "not written this run" rule, part of THIS run's
+        # previous set too.
+        second = self._backup()
+        self.assertTrue(first_keys.issubset(set(second.deleted_previous_keys)))
+        self.assertEqual(len(self._backup_keys()), 1, "only the latest generation should remain")
+
+    def test_delete_never_precedes_the_manifest_write_and_its_readback(self):
+        # The CLI's own ordering guarantee, proven through the real function
+        # rather than asserted from the source: every "delete" call in the
+        # recorded order must come after BOTH the manifest "put" and the
+        # manifest "get" (the read-back) that verifies it.
+        self._backup()
+        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
+        self.store.calls.clear()
+        self._backup()
+
+        manifest_key = _manifest_key("tenant-a")
+        put_index = next(
+            i for i, (op, bucket, key) in enumerate(self.store.calls)
+            if op == "put" and bucket == "backup" and key == manifest_key
+        )
+        get_index = next(
+            i for i, (op, bucket, key) in enumerate(self.store.calls)
+            if op == "get" and bucket == "backup" and key == manifest_key
+        )
+        delete_indices = [i for i, (op, *_r) in enumerate(self.store.calls) if op == "delete"]
+        self.assertTrue(delete_indices, "this run should have deleted the previous generation")
+        self.assertTrue(
+            all(i > put_index and i > get_index for i in delete_indices),
+            f"a delete ran before the manifest write/read-back: calls={self.store.calls}",
+        )
+
+    def test_a_truncated_live_listing_never_reaches_deletion(self):
+        first = self._backup()
+        first_keys = self._backup_keys()
+
+        def truncated_listing(**_kw):
+            raise ObjectStorageError(
+                "GET live-a?list-type=2: IsTruncated=true but no NextContinuationToken"
+            )
+
+        with self.assertRaises(ObjectStorageError):
+            self._backup(list_objects=truncated_listing)
+        self.assertEqual(self._backup_keys(), first_keys)
+        self.assertFalse(any(op == "delete" for op, _, _ in self.store.calls))
+
+    def test_tenant_isolation_a_prefix_sharing_tenant_name_is_never_touched(self):
+        # tenant-a and tenant-ab: "tenant-a" is a string-prefix of
+        # "tenant-ab", but "media/tenant-a/objects/" is not a string-prefix
+        # of "media/tenant-ab/objects/..." because "objects/" immediately
+        # follows the tenant name in every key this module writes.
+        self._backup()  # tenant-a, generation 1
+        self.store.put("live-ab", "content/images/only-ab.jpg", b"tenant-ab's own bytes")
+        self._backup(tenant="tenant-ab", live_bucket="live-ab", recipient=TENANT_B_RECIPIENT)
+        ab_keys = self._backup_keys("tenant-ab")
+        self.assertEqual(len(ab_keys), 1)
+
+        # A second run for tenant-a alone must delete only tenant-a's first
+        # generation, never anything under tenant-ab's prefix.
+        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"tenant-a generation 2"
+        second = self._backup()
+        self.assertEqual(set(second.deleted_previous_keys) & ab_keys, set())
+        self.assertEqual(self._backup_keys("tenant-ab"), ab_keys)
+        for key in ab_keys:
+            self.assertIn(key, self.store.buckets["backup"])
+
+    def test_deletion_uses_plain_delete_never_a_version_scoped_one(self):
+        # The workload credential is fenced from DeleteObjectVersion (see
+        # db/provision/configure_backup_bucket.py's fence and this module's
+        # C-REFRESH docstring section) -- `delete_object` is called with no
+        # version-identifying argument at all, so it cannot even express one.
+        self._backup()
+        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
+        self.store.calls.clear()
+        self._backup()
+        delete_calls = [c for c in self.store.calls if c[0] == "delete"]
+        self.assertTrue(delete_calls)
+
+
 class RestoreTenantMediaTests(unittest.TestCase):
     def setUp(self):
         self.store = FakeObjectStore()
@@ -411,7 +674,9 @@ class RestoreTenantMediaTests(unittest.TestCase):
             recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
+            get_object=self.store.get_object,
             put_object=self.store.put_object,
+            delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
         # The genuine destroy: the object-storage round trip this story asks
@@ -535,7 +800,9 @@ class RestoreTenantMediaTests(unittest.TestCase):
             confirm_tenant_has_no_media=True,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
+            get_object=self.store.get_object,
             put_object=self.store.put_object,
+            delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
         report = self._restore()
@@ -570,7 +837,9 @@ class RestoreTenantMediaTests(unittest.TestCase):
             recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
+            get_object=self.store.get_object,
             put_object=self.store.put_object,
+            delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
         backup_key = self._backup_key_for("content/images/second.jpg")

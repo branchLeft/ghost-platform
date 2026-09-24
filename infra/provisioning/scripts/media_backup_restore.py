@@ -66,6 +66,47 @@ objects in it is refused the same way a missing or corrupt object is,
 because it is the same failure shape 09-backup-and-recovery.html's R4 names:
 a technically-valid, encrypted, empty result that looks exactly like a
 healthy backup until someone needs to restore from it.
+
+C-REFRESH: EACH RUN WRITES A FRESH COMPLETE SET, THEN DELETES THE PREVIOUS
+ONE. Mirroring a tenant's media in place -- keeping storage near 1x rather
+than growing without bound -- needs to know which backup object belongs to
+which live file, so an unchanged file can be skipped and a removed one
+deleted. This pipeline cannot know that without either leaking or holding a
+secret (see "Object keys are RANDOM" above: a content- or filename-derived
+id leaks, and a per-tenant key to name them safely is a new secret with its
+own destruction obligation). `backup_tenant_media` instead never tries to
+diff against the previous run at all. It uploads a complete new set under
+fresh random ids, exactly as it always did, then deletes every key under
+this tenant's `objects/` prefix that THIS run did not just write -- which is
+by construction the previous run's whole set, without reading, decrypting,
+or diffing against it. Storage is therefore about 2x a tenant's media
+between one run finishing and the delete completing, not the unbounded
+growth an always-additive scheme would produce.
+
+The delete step is trusted with nothing until the new set is proven durable.
+Immediately after the new manifest is PUT, `backup_tenant_media` reads it
+straight back with `get_object` and compares the bytes to what was sent --
+this endpoint's own 2xx is not proof a write landed, and deleting the
+previous generation on the strength of an unconfirmed PUT would be able to
+leave a tenant with neither generation restorable. Only once that read-back
+matches does deletion run; any failure before it -- an upload, an encrypt,
+the floor, or the manifest write or its read-back -- raises first and
+deletes nothing, so a partial or failed run never touches the previous
+generation.
+
+Deletion is a plain `DeleteObject`, never a version-scoped
+`DeleteObjectVersion`: the workload credential this pipeline runs under is
+fenced from that action the same way it is fenced from every other
+bucket-administration action (see `db/provision/configure_backup_bucket.py`
+and the bucket fence it applies), so a plain delete -- which a versioned
+bucket turns into a delete marker over the still-readable prior version, not
+a destruction -- is the only kind of delete this pipeline is even able to
+issue. The bytes are actually reclaimed days later by the backup bucket's
+own short, `media/`-scoped noncurrent-version-expiry lifecycle rule, not by
+this pipeline. A delete that itself fails partway (one key errors, the rest
+were never attempted) leaves an orphan that is not a correctness problem: it
+sits outside every future run's own written-this-run set too, so the next
+run's delete step picks it up the same way.
 """
 
 from __future__ import annotations
@@ -84,6 +125,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from shared_objectstorage import (  # noqa: E402
     ObjectStorageError,
+    delete_object as _default_delete_object,
     get_object as _default_get_object,
     get_object_with_content_type as _default_get_object_with_content_type,
     list_objects as _default_list_objects,
@@ -134,6 +176,15 @@ class MediaBackupRecipientError(MediaBackupError):
     second recipient, silently, while every other signal stays green -- so a
     count other than one aborts the backup for this tenant before anything
     with the extra recipient is written anywhere."""
+
+
+class MediaBackupManifestVerificationError(MediaBackupError):
+    """The manifest just PUT to the backup bucket did not read back
+    byte-identical to what was sent. Distinguished from `MediaBackupError`
+    so a caller and a test can tell this specific control apart: C-refresh
+    deletes the previous run's objects on the strength of this read-back
+    alone, so a mismatch here has to stop the run before deletion, not just
+    fail loudly after."""
 
 
 class MediaRestoreVerificationError(Exception):
@@ -271,10 +322,101 @@ class BackupReport:
     tenant: str
     objects: dict[str, dict]
     deliberately_empty: bool
+    deleted_previous_keys: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def object_count(self) -> int:
         return len(self.objects)
+
+
+def _write_and_verify_manifest(
+    *,
+    tenant: str,
+    backup_bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    ciphertext: bytes,
+    put_object,
+    get_object,
+) -> None:
+    """PUTs the tenant's manifest, then reads it straight back and checks it
+    matches byte-for-byte before anything else is allowed to trust it exists.
+    See the module docstring's C-REFRESH section: a 2xx on the PUT is not by
+    itself evidence the write is durable, and `backup_tenant_media` deletes
+    the previous run's objects only once this function returns without
+    raising."""
+    key = _manifest_key(tenant)
+    put_object(
+        bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        key=key,
+        data=ciphertext,
+    )
+    readback = get_object(
+        bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        key=key,
+    )
+    if readback != ciphertext:
+        raise MediaBackupManifestVerificationError(
+            f"tenant {tenant!r}: the manifest just written to {key!r} does not read back "
+            f"byte-identical to what was sent -- refusing to delete the previous run's objects "
+            f"against a manifest that may not be durably the one this run just wrote"
+        )
+
+
+def _delete_superseded_objects(
+    *,
+    tenant: str,
+    backup_bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    written_this_run: set[str],
+    list_objects,
+    delete_object,
+) -> list[str]:
+    """Deletes every key under this tenant's `objects/` prefix that THIS run
+    did not just write -- C-refresh's definition of "the previous run's
+    set", needing no map and no decryption (see the module docstring). Never
+    reaches outside `media/<tenant>/objects/`: the listing this deletion
+    decision is based on is itself scoped to that one prefix, so a tenant
+    name that happens to be a string-prefix of another tenant's (e.g.
+    `tenant-a` and `tenant-ab`) cannot widen it -- `objects/` immediately
+    follows the tenant name in every key this module ever writes, so
+    `media/tenant-a/objects/` is never a string-prefix of
+    `media/tenant-ab/objects/...`."""
+    prefix = f"{MEDIA_PREFIX}/{tenant}/{OBJECTS_PREFIX}/"
+    existing = list_objects(
+        bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        prefix=prefix,
+    )
+    superseded = sorted(
+        entry["key"] for entry in existing if entry["key"] not in written_this_run
+    )
+    for key in superseded:
+        delete_object(
+            bucket=backup_bucket,
+            endpoint=endpoint,
+            region=region,
+            access_key=access_key,
+            secret_key=secret_key,
+            key=key,
+        )
+    return superseded
 
 
 def backup_tenant_media(
@@ -292,12 +434,20 @@ def backup_tenant_media(
     confirm_tenant_has_no_media: bool = False,
     list_objects=_default_list_objects,
     get_object_with_content_type=_default_get_object_with_content_type,
+    get_object=_default_get_object,
     put_object=_default_put_object,
+    delete_object=_default_delete_object,
     encrypt=encrypt_with_age,
     generate_backup_id=generate_backup_object_id,
 ) -> BackupReport:
     """Pulls every object in `live_bucket`, encrypts each to `recipient`, and
-    writes the ciphertext plus an encrypted manifest to `backup_bucket`.
+    writes the ciphertext plus an encrypted manifest to `backup_bucket` --
+    then, once that new manifest is proven durable, deletes every object
+    under this tenant's `objects/` prefix that this run did not just write
+    (C-refresh; see the module docstring's C-REFRESH section for why this
+    mirrors the tenant's media in place without a map or a new secret, and
+    why the delete step runs only after the manifest read-back, never
+    before).
 
     Refuses -- raising `MediaBackupFloorError` and writing nothing -- if the
     live bucket lists zero objects, UNLESS `confirm_tenant_has_no_media` is
@@ -307,7 +457,12 @@ def backup_tenant_media(
     listing being empty) says so, and only that assertion is allowed to write
     a manifest recording zero objects -- which is also the only kind of
     empty manifest `restore_tenant_media` will accept as a real restore
-    rather than refuse outright."""
+    rather than refuse outright. This floor runs before a single byte is
+    read, encrypted or written, so a zero or truncated live listing (which
+    `list_objects` itself refuses to treat as "complete" -- see
+    `db/provision/objectstorage.py`) never reaches the delete step either:
+    everything below this check, including the delete, is unreachable unless
+    it passed."""
     live_objects = list_objects(
         bucket=live_bucket,
         endpoint=endpoint,
@@ -326,6 +481,7 @@ def backup_tenant_media(
         )
 
     manifest_objects: dict[str, dict] = {}
+    new_backup_keys: set[str] = set()
     for entry in live_objects:
         key = entry["key"]
         data, content_type = get_object_with_content_type(
@@ -341,15 +497,17 @@ def backup_tenant_media(
         ciphertext = _encrypt_to_exactly_one_recipient(
             data=data, recipient=recipient, encrypt=encrypt, what=f"object {key!r}"
         )
+        backup_key = _object_key_for_backup(tenant, backup_id)
         put_object(
             bucket=backup_bucket,
             endpoint=endpoint,
             region=region,
             access_key=backup_access_key,
             secret_key=backup_secret_key,
-            key=_object_key_for_backup(tenant, backup_id),
+            key=backup_key,
             data=ciphertext,
         )
+        new_backup_keys.add(backup_key)
         manifest_objects[key] = {
             "sha256": digest,
             "size": len(data),
@@ -370,17 +528,41 @@ def backup_tenant_media(
         encrypt=encrypt,
         what="the manifest",
     )
-    put_object(
-        bucket=backup_bucket,
+
+    # C-REFRESH'S OWN ORDERING GUARANTEE. Nothing above this line can have
+    # deleted anything -- these two calls are the first and only place in
+    # this function that a previous run's objects are ever touched, and the
+    # second does not run unless the first returns without raising. See the
+    # module docstring's C-REFRESH section and each helper's own docstring.
+    _write_and_verify_manifest(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
         endpoint=endpoint,
         region=region,
         access_key=backup_access_key,
         secret_key=backup_secret_key,
-        key=_manifest_key(tenant),
-        data=manifest_ciphertext,
+        ciphertext=manifest_ciphertext,
+        put_object=put_object,
+        get_object=get_object,
+    )
+    deleted_previous_keys = _delete_superseded_objects(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=backup_access_key,
+        secret_key=backup_secret_key,
+        written_this_run=new_backup_keys,
+        list_objects=list_objects,
+        delete_object=delete_object,
     )
 
-    return BackupReport(tenant=tenant, objects=manifest_objects, deliberately_empty=deliberately_empty)
+    return BackupReport(
+        tenant=tenant,
+        objects=manifest_objects,
+        deliberately_empty=deliberately_empty,
+        deleted_previous_keys=deleted_previous_keys,
+    )
 
 
 @dataclasses.dataclass
