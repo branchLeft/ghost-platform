@@ -34,7 +34,7 @@ ceiling there is.
 
 ## Testing
 
-```
+```bash
 npm ci
 npm run typecheck
 npm run coverage   # unit + a real-socket reachability test, threshold 90%
@@ -48,7 +48,7 @@ control case proving that same interface *is* reachable when bound to
 
 ## Live proof
 
-```
+```bash
 docker build -f services/odask/Dockerfile --secret id=node_auth_token,env=NODE_AUTH_TOKEN -t odask:local .
 ./scripts/test-odask.sh odask:local
 ```
