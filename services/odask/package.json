@@ -8,7 +8,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "pretest:unit": "npm run build",
     "test:unit": "vitest run",
+    "precoverage": "npm run build",
     "coverage": "vitest run --coverage",
     "start": "node dist/server.js"
   },

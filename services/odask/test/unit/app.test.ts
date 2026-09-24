@@ -8,18 +8,24 @@ import { createApp } from '../../src/app.js';
 import { DescriptorStore } from '../../src/descriptorStore.js';
 import { TokenBucket } from '../../src/rateLimiter.js';
 
-const BASE_DOMAIN = 'sites.publicpress.co.uk';
+const PLATFORM_ZONE = 'sites.publicpress.co.uk';
+const OWNED_DOMAINS = ['publicpress.co.uk', 'trypublicpress.co.uk'];
 
 let dir: string;
 let server: Server;
 let base: string;
 
-function write(name: string, content: unknown): void {
-  writeFileSync(join(dir, name), JSON.stringify(content));
+function write(name: string, hostname: unknown): void {
+  writeFileSync(join(dir, name), JSON.stringify({ kind: 'tenant', hostname }));
 }
 
 async function start(rateLimiter: TokenBucket): Promise<DescriptorStore> {
-  const store = new DescriptorStore({ descriptorDir: dir, baseDomain: BASE_DOMAIN });
+  const store = new DescriptorStore({
+    descriptorDir: dir,
+    platformZone: PLATFORM_ZONE,
+    ownedDomains: OWNED_DOMAINS,
+    maxStalenessMs: 60_000,
+  });
   await store.refresh();
   const app = createApp(store, rateLimiter);
   server = app.listen(0, '127.0.0.1');
@@ -59,7 +65,7 @@ afterEach(async () => {
 
 describe('createApp', () => {
   it('200s a served hostname exactly as Caddy will send it', async () => {
-    write('t1.json', { hostname: { kind: 'ours', sub: 'tenant-one', gated: false } });
+    write('t1.json', { kind: 'ours', sub: 'tenant-one', gated: false });
     await start(new TokenBucket(50, 10));
     const res = await ask('?domain=tenant-one.sites.publicpress.co.uk');
     expect(res.status).toBe(200);
@@ -67,7 +73,7 @@ describe('createApp', () => {
   });
 
   it("200s regardless of the SNI value's case or trailing dot -- served-set membership is normalized", async () => {
-    write('t1.json', { hostname: { kind: 'ours', sub: 'tenant-one', gated: false } });
+    write('t1.json', { kind: 'ours', sub: 'tenant-one', gated: false });
     await start(new TokenBucket(50, 10));
     const res = await ask('?domain=Tenant-One.Sites.PublicPress.co.uk.');
     expect(res.status).toBe(200);
@@ -109,7 +115,7 @@ describe('createApp', () => {
   });
 
   it('a served hostname never touches the ceiling -- only a miss costs a token', async () => {
-    write('t1.json', { hostname: { kind: 'ours', sub: 'tenant-one', gated: false } });
+    write('t1.json', { kind: 'ours', sub: 'tenant-one', gated: false });
     // Capacity of exactly 1: if a served-hostname request consumed a token,
     // the single unknown-hostname request below would still see it exhausted.
     await start(new TokenBucket(1, 1e-6));

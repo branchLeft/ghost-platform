@@ -6,7 +6,9 @@ import { TokenBucket } from './rateLimiter.js';
 const config = loadConfig();
 const store = new DescriptorStore({
   descriptorDir: config.descriptorDir,
-  baseDomain: config.baseDomain,
+  platformZone: config.platformZone,
+  ownedDomains: config.ownedDomains,
+  maxStalenessMs: config.descriptorMaxStalenessMs,
 });
 const rateLimiter = new TokenBucket(config.rateLimitCapacity, config.rateLimitRefillPerSecond);
 

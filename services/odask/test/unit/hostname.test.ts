@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TenantDescriptor } from '@branchleft/ghost-platform-render-core';
-import {
-  isSyntacticallyValidHostname,
-  normalizeHostname,
-  servedHostnameOf,
-} from '../../src/hostname.js';
-
-const BASE_DOMAIN = 'sites.publicpress.co.uk';
+import { isSyntacticallyValidHostname, normalizeHostname } from '../../src/hostname.js';
 
 describe('isSyntacticallyValidHostname', () => {
   it.each([
@@ -52,35 +45,5 @@ describe('normalizeHostname', () => {
     const a = normalizeHostname('Tenant-One.Example.');
     const b = normalizeHostname('tenant-one.example');
     expect(a).toBe(b);
-  });
-});
-
-describe('servedHostnameOf', () => {
-  it('composes an "ours" descriptor with the configured base domain', () => {
-    const descriptor = {
-      hostname: { kind: 'ours', sub: 'tenant-one', gated: false },
-    } as unknown as TenantDescriptor;
-    expect(servedHostnameOf(descriptor, BASE_DOMAIN)).toBe('tenant-one.sites.publicpress.co.uk');
-  });
-
-  it('uses a "theirs" descriptor\'s fqdn as-is, normalized', () => {
-    const descriptor = {
-      hostname: {
-        kind: 'theirs',
-        fqdn: 'Blog.Trypublicpress.co.uk',
-        verifiedAt: '2026-01-01T00:00:00Z',
-      },
-    } as unknown as TenantDescriptor;
-    expect(servedHostnameOf(descriptor, BASE_DOMAIN)).toBe('blog.trypublicpress.co.uk');
-  });
-
-  it('never reads baseDomain for a "theirs" descriptor', () => {
-    const descriptor = {
-      hostname: { kind: 'theirs', fqdn: 'own-domain.example', verifiedAt: '2026-01-01T00:00:00Z' },
-    } as unknown as TenantDescriptor;
-    // A base domain that would produce a visibly different (wrong) result
-    // if it leaked into the "theirs" branch -- proves the branch never
-    // touches it rather than merely returning the right answer by luck.
-    expect(servedHostnameOf(descriptor, 'poison.invalid')).toBe('own-domain.example');
   });
 });

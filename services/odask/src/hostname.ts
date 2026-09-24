@@ -1,5 +1,3 @@
-import type { TenantDescriptor } from '@branchleft/ghost-platform-render-core';
-
 // RFC 1123 label: 1-63 characters, letters/digits/hyphens, never starting or
 // ending on a hyphen. Applied per label rather than as one pattern over the
 // whole string so a length violation on one label fails clearly instead of
@@ -37,17 +35,12 @@ export function normalizeHostname(value: string): string {
   return lower.endsWith('.') ? lower.slice(0, -1) : lower;
 }
 
-/**
- * The fully-qualified hostname a descriptor is served on. `ours` composes
- * with this edge's own base domain (a deployment property, not a descriptor
- * field -- see `AskConfig.baseDomain`); `theirs` already carries the full
- * name. Demo slots (platform-wildcard, LLD-5 E4) never reach this function:
- * they are certificated once, off the descriptor set this endpoint reads.
- */
-export function servedHostnameOf(descriptor: TenantDescriptor, baseDomain: string): string {
-  const hostname = descriptor.hostname;
-  if (hostname.kind === 'theirs') {
-    return normalizeHostname(hostname.fqdn);
-  }
-  return normalizeHostname(`${hostname.sub}.${baseDomain}`);
-}
+// Deriving which hostname a descriptor is served on -- and which
+// descriptors must never reach a per-hostname certificate decision at all
+// (a demo's `ours` hostname; a `theirs` fqdn that is itself one of the
+// platform's own owned domains; a multi-label `ours` sub) -- is
+// render-core's `servedHostnameOf`, imported in descriptorStore.ts rather
+// than re-derived here. A second copy of that logic is exactly how it
+// diverged the first time: this file used to carry its own version that
+// ignored `descriptor.kind` and never checked `sub`'s shape, which
+// admitted a demo slot's own hostname into the served set.
