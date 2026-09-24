@@ -314,8 +314,8 @@ class BackupTenantMediaTests(unittest.TestCase):
         self.assertFalse(any(second_digest in key for key in backup_keys))
 
     def test_sabotage_a_digest_derived_backup_id_is_caught_by_that_assertion(self):
-        # Reproduces the exact regression review cycle 2 found -- an id
-        # generator that returns the plaintext digest instead of a random
+        # Reproduces the exact regression this control exists to catch -- an
+        # id generator that returns the plaintext digest instead of a random
         # id -- and shows the assertion above would have caught it.
         self._backup(generate_backup_id=lambda *, digest: digest)
         photo_digest = sha256_hex(b"a real jpeg's bytes, honest")

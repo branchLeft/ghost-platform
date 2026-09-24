@@ -6,9 +6,9 @@ object in place, counting a bucket's objects for the "genuine destroy" and
 "backup skipped media" checks, and reading back the (opaque, RANDOM) backup
 key or the decrypted manifest for a live key the proof uploaded -- since the
 production module's own key scheme is deliberately unrelated to a live key
-or its content (review cycle 2's fix: a content-derived key is a fingerprint
-that survives crypto-shredding), the proof asks the module for its own key
-rather than reimplementing the derivation.
+or its content -- a content-derived key is a fingerprint that needs no key
+to recompute and so survives crypto-shredding -- the proof asks the module
+for its own key rather than reimplementing the derivation.
 
 Never imported by `media_backup_restore.py` or by anything that ships:
 this is proof-only tooling, kept separate so the production module's own

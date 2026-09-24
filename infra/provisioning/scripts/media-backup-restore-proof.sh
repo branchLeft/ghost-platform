@@ -25,10 +25,10 @@
 #   RED-5     a second age recipient in a ciphertext's own header must be
 #             refused, even though `encrypt_with_age`'s argv never carries
 #             one -> reverted
-#   RED-6     a backup id derived from the plaintext digest (review cycle
-#             2's finding: a content fingerprint that survives crypto-
-#             shredding) must not appear in the backup bucket's listing
-#             -> reverted
+#   RED-6     a backup id derived from the plaintext digest -- a content
+#             fingerprint that survives crypto-shredding, since it needs no
+#             key to recompute -- must not appear in the backup bucket's
+#             listing -> reverted
 # Plus one direct check outside the RED/GREEN frame: restoring with a
 # different tenant's identity is refused (the crypto-shredding property).
 #
@@ -262,10 +262,12 @@ run_restore() {
         --endpoint "$MINIO_ENDPOINT" --region "$REGION" --identity-file "$identity" $target_flag
 }
 
-# Backup ids are RANDOM (review cycle 2's own fix), so re-running a backup
-# -- every "repairing" step below does exactly that -- gives the SAME live
-# object a DIFFERENT backup key each time. A `BACKUP_KEY` computed once at
-# the top of this script would go stale the moment the first repair ran,
+# Backup ids are RANDOM, not derived from the plaintext or the live key, so
+# re-running a backup -- every "repairing" step below does exactly that --
+# gives the SAME live object a DIFFERENT backup key each time, and orphans
+# the previous generation's object rather than overwriting it: nothing in
+# this pipeline prunes a superseded backup id. A `BACKUP_KEY` computed once
+# at the top of this script would go stale the moment the first repair ran,
 # silently sabotaging every sabotage after it: corrupting or deleting an
 # orphaned key from a previous backup generation touches nothing the
 # manifest still points at, and the restore that follows "passes" for the
@@ -292,10 +294,11 @@ else
     fail "backup: unexpected non-zero exit on a healthy backup"
 fi
 
-# The backup key is opaque and RANDOM (review cycle 2's fix), so this proof
-# cannot derive it from LIVE_KEY -- or from the plaintext digest, tried in
-# cycle 1 and found to leak just as much -- the way it used to. It asks the
-# module for its own key, the same way any real caller would have to.
+# The backup key is opaque and RANDOM -- unrelated to LIVE_KEY and to the
+# plaintext digest, both of which leak (a filename or a content fingerprint
+# readable from the bucket listing after crypto-shredding). So this proof
+# cannot derive the key itself; it asks the module for its own key, the same
+# way any real caller would have to.
 MANIFEST_JSON="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" manifest \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
@@ -319,7 +322,7 @@ else
     pass "the backup object key carries no trace of the live key or its path"
 fi
 if [ "$LIVE_KEY_BACKUP_ID" = "$LIVE_KEY_SHA256" ]; then
-    fail "the backup id equals the plaintext digest -- content fingerprint present (review cycle 2's finding)"
+    fail "the backup id equals the plaintext digest -- a content fingerprint that survives crypto-shredding"
 else
     pass "the backup id is not the plaintext digest -- random, not content-derived"
 fi
@@ -436,7 +439,7 @@ fi
 echo "-- repairing: re-running a clean backup (source is still live) --"
 run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 
-note "RED-6: reproduce review cycle 2's attack -- a content-derived backup id must not appear in the listing"
+note "RED-6: a content-derived backup id (the plaintext digest) must not appear in the listing"
 cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-red6"
 sed -i.bak \
     -e "s/    del digest$/    pass  # SABOTAGE: digest kept rather than discarded/" \
@@ -453,7 +456,7 @@ SABOTAGED_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" --bucket "$BACKUP_BUCKET")"
 if echo "$SABOTAGED_LISTING" | grep -qF "$LIVE_KEY_SHA256"; then
-    pass "RED-6: with the sabotage applied, the backup bucket's listing now contains the plaintext digest (control proven -- this is exactly what review cycle 2 found)"
+    pass "RED-6: with the sabotage applied, the backup bucket's listing now contains the plaintext digest -- readable to anyone with list access after crypto-shredding (control proven)"
 else
     fail "RED-6: sabotaged backup did NOT leak the plaintext digest into the listing -- unexpected"
 fi
