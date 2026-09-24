@@ -2,6 +2,7 @@
   "name": "ghost-platform-mailgun-shim",
   "version": "0.0.0",
   "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
   "description": "Mailgun-shaped shim that speaks the three endpoints Ghost's bulk-email path calls, and hands queued mail over on a drain endpoint rather than dialling a delivery host itself (see ghost-platform-docs/19-try-it-now-design/06-mail-delivery.html).",
   "type": "module",
   "main": "dist/server.js",
@@ -15,7 +16,9 @@
   "dependencies": {
     "busboy": "^1.6.0",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.6.2"
+    "express-rate-limit": "^8.6.2",
+    "mailparser": "^3.7.1",
+    "smtp-server": "^3.13.5"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.3.1",
@@ -28,10 +31,12 @@
     "@vitest/coverage-v8": "4.1.11",
     "form-data": "^4.0.6",
     "mailgun.js": "10.4.0",
-    "mailparser": "^3.7.1",
     "nodemailer": "^9.1.1",
-    "smtp-server": "^3.13.5",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "nodemailer": "^9.1.1",
+    "deepmerge-ts": "^8.0.2"
   }
 }

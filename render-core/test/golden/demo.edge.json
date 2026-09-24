@@ -1,0 +1,10 @@
+{
+  "displayHostname": "k7m-vale-bright.demo-domain.example.test",
+  "admittedHostname": null,
+  "gate": {
+    "kind": "passphrase",
+    "argon2idHash": "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA"
+  },
+  "requestBodyMaxSize": "64MiB",
+  "contentSecurityPolicy": "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'"
+}

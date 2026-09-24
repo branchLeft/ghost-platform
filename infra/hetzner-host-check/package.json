@@ -1,6 +1,7 @@
 {
   "name": "ghost-platform-hetzner-host-check",
   "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
   "description": "Proves @branchleft/hetzner-host installs and resolves from ghost-platform. Not a Pulumi stack -- see infra/README.md.",
   "scripts": {
     "typecheck": "tsc --noEmit",

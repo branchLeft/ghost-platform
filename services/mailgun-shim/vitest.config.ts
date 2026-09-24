@@ -4,6 +4,11 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     testTimeout: 15000,
+    // --expose-gc backs the memory-bound streaming test
+    // (smtpFrontDoor.test.ts's "does not retain a message past its size
+    // cap") — without it `global.gc` is undefined and the measurement is at
+    // the mercy of GC timing rather than the code's own retention.
+    execArgv: ['--expose-gc'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

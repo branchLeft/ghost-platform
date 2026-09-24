@@ -117,7 +117,7 @@ export interface ShimStore {
    * that exists" into a single check, since both get the same 401 (see
    * requireTenantForDomain in auth.ts).
    */
-  verifyTenant(domain: string, apiKey: string): Tenant | null;
+  verifyTenant(domain: string, apiKey: string): Promise<Tenant | null>;
   tenantExists(domain: string): boolean;
   listTenants(): string[];
 
@@ -422,13 +422,13 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       insertTenant.run(domain, salt, hash);
     },
 
-    verifyTenant(domain, apiKey) {
+    async verifyTenant(domain, apiKey) {
       const row = selectTenantByDomain.get(domain) as
         { domain: string; api_key_salt: string; api_key_hash: string } | undefined;
       if (!row) {
         return null;
       }
-      const ok = verifyApiKey(apiKey, { salt: row.api_key_salt, hash: row.api_key_hash });
+      const ok = await verifyApiKey(apiKey, { salt: row.api_key_salt, hash: row.api_key_hash });
       return ok ? { domain: row.domain } : null;
     },
 

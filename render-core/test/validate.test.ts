@@ -3,12 +3,14 @@ import type { TenantDescriptor } from '../src/descriptor.js';
 import {
   CodeInjectionPreconditionError,
   InvariantViolationError,
+  servedHostnameOf,
   TierMismatchError,
   UnknownDiscriminantError,
   UnknownSchemaVersionError,
   validate,
 } from '../src/validate.js';
 import { FieldValidationError } from '../src/brand.js';
+import type { Instant } from '../src/brand.js';
 import { TEST_ZONES, demoDescriptor, tenantDescriptor } from './fixtures.js';
 
 describe('validate() — descriptors that violate nothing', () => {
@@ -376,14 +378,17 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
   });
 
   it('rejects a demo on MySQL', () => {
+    // name/user are the slug-derived value (`databaseAndUserName('demo-1')`)
+    // rather than an arbitrary string, so this isolates the tier-variant
+    // rule specifically, not `validateDatabaseIdentity`'s own check.
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),
       database: {
         kind: 'mysql',
         host: 'db-t1.internal',
         port: 3306 as never,
-        name: 'x',
-        user: 'x',
+        name: 'ghost_demo_1',
+        user: 'ghost_demo_1',
       },
     };
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
@@ -396,7 +401,9 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
         kind: 's3',
         endpoint: 'https://s3.endpoint.example',
         region: 'eu',
-        bucket: 'demo-1',
+        // The slug-derived bucket name, so this isolates the tier-variant
+        // rule specifically, not `validateMediaBucket`'s own check.
+        bucket: 'branchleft-media-demo-1',
         resize: false,
         srcsets: false,
       },
@@ -1477,5 +1484,105 @@ describe('validate() — path and host fields reject empty values and ".." (item
       transport: { kind: 'smtp', host: '', port: 587 as never, user: 'ghost' },
     };
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+});
+
+describe('servedHostnameOf() — what a certificate-admission decision may admit', () => {
+  it('composes a tenant\'s "ours" hostname under the platform zone', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: { kind: 'ours', sub: 'acme', gated: false },
+    };
+    expect(servedHostnameOf(descriptor, TEST_ZONES)).toBe('acme.platform-domain.example.test');
+  });
+
+  it('passes a tenant\'s "theirs" fqdn through as-is', () => {
+    expect(servedHostnameOf(tenantDescriptor(), TEST_ZONES)).toBe('blog.acme.example');
+  });
+
+  it('never admits a demo\'s "ours" hostname -- demo slots sit under the platform wildcard, not a per-hostname cert', () => {
+    expect(servedHostnameOf(demoDescriptor(), TEST_ZONES)).toBeNull();
+  });
+
+  it('never reads zones.demoZone for a demo descriptor -- the demo branch returns before using it', () => {
+    const poisonedZones = { ...TEST_ZONES, demoZone: 'poison.invalid' };
+    // If this ever read demoZone it would still return null (the branch
+    // returns unconditionally), so this is a proof the field goes unread
+    // at all, not merely that the visible answer happens to be right.
+    expect(servedHostnameOf(demoDescriptor(), poisonedZones)).toBeNull();
+  });
+
+  it('refuses a multi-label "ours" sub (slot/tenant name confusion, not a single DNS label)', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: { kind: 'ours', sub: 'a.b', gated: false },
+    };
+    expect(servedHostnameOf(descriptor, TEST_ZONES)).toBeNull();
+  });
+
+  it('refuses a "theirs" fqdn that is itself one of the platform\'s owned domains', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'platform-domain.example.test',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as Instant,
+      },
+    };
+    expect(servedHostnameOf(descriptor, TEST_ZONES)).toBeNull();
+  });
+
+  it('refuses a "theirs" fqdn that is a subdomain of an owned domain, not only an exact match', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'sub.demo-domain.example.test',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as Instant,
+      },
+    };
+    expect(servedHostnameOf(descriptor, TEST_ZONES)).toBeNull();
+  });
+
+  it('refuses a malformed "theirs" fqdn (IP literal)', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: {
+        kind: 'theirs',
+        fqdn: '203.0.113.5',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as Instant,
+      },
+    };
+    expect(servedHostnameOf(descriptor, TEST_ZONES)).toBeNull();
+  });
+
+  it('refuses an uppercase "ours" sub -- the label pattern is lowercase-only, matching the schema\'s slug', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: { kind: 'ours', sub: 'ACME', gated: false },
+    };
+    expect(servedHostnameOf(descriptor, TEST_ZONES)).toBeNull();
+  });
+
+  it('refuses a "theirs" fqdn with an uppercase label or a trailing dot -- shape rules match validateHostname\'s, not a tolerant normalizer', () => {
+    const uppercase: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'Blog.Acme.Example',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as Instant,
+      },
+    };
+    expect(servedHostnameOf(uppercase, TEST_ZONES)).toBeNull();
+
+    const trailingDot: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'blog.acme.example.',
+        verifiedAt: '2026-09-01T00:00:00.000Z' as Instant,
+      },
+    };
+    expect(servedHostnameOf(trailingDot, TEST_ZONES)).toBeNull();
   });
 });

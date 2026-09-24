@@ -51,7 +51,7 @@ describe('runCli register', () => {
     expect(code).toBe(1);
     expect(stderr.some((line) => line.includes('--rotate'))).toBe(true);
     expect(stdout).toEqual([]);
-    expect(store.verifyTenant('tenant.example.com', 'existing-key')).toEqual({
+    await expect(store.verifyTenant('tenant.example.com', 'existing-key')).resolves.toEqual({
       domain: 'tenant.example.com',
     });
   });
@@ -64,10 +64,10 @@ describe('runCli register', () => {
     const code = await runCli(['register', 'tenant.example.com', '--rotate'], () => store, io);
 
     expect(code).toBe(0);
-    expect(store.verifyTenant('tenant.example.com', 'old-key')).toBeNull();
+    await expect(store.verifyTenant('tenant.example.com', 'old-key')).resolves.toBeNull();
     const keyLine = stdout.find((line) => KEY_SHAPE.test(line));
     expect(keyLine).toBeDefined();
-    expect(store.verifyTenant('tenant.example.com', keyLine!)).toEqual({
+    await expect(store.verifyTenant('tenant.example.com', keyLine!)).resolves.toEqual({
       domain: 'tenant.example.com',
     });
   });

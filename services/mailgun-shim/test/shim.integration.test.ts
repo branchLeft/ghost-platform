@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Interfaces } from 'mailgun.js';
+import nodemailer from 'nodemailer';
 import { createCollector, type Collector } from './helpers/collector.js';
 import { createMailgunClient } from './helpers/mailgunClient.js';
 import { startSmtpSink, type SmtpSink } from './helpers/smtpSink.js';
@@ -415,5 +416,106 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     expect(followUp.id).toBeTruthy();
     await collector.drainOnce();
     await sink.waitForCount(2);
+  });
+});
+
+describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, not two', () => {
+  // One shim instance with BOTH front doors listening, sharing the same
+  // store and wake (exactly server.ts's own wiring) — proves a message
+  // enqueued through the SMTP side is drainable, ackable and never
+  // re-offered exactly like one enqueued through the HTTP side, not
+  // merely that each front door individually reaches the store.
+  let shim: TestShim;
+
+  beforeEach(async () => {
+    shim = await startTestShim({ startSmtpFrontDoor: true });
+    shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+  });
+
+  afterEach(async () => {
+    await shim.close();
+  });
+
+  async function sendOverSmtp(): Promise<void> {
+    const transport = nodemailer.createTransport({
+      host: '127.0.0.1',
+      port: shim.smtpPort,
+      secure: false,
+      ignoreTLS: true,
+      auth: { user: TENANT_DOMAIN, pass: TENANT_API_KEY },
+    });
+    try {
+      await transport.sendMail({
+        from: `noreply@${TENANT_DOMAIN}`,
+        to: 'member@example.com',
+        subject: 'Sign-in link',
+        text: 'Click here to sign in',
+      });
+    } finally {
+      transport.close();
+    }
+  }
+
+  it('a message enqueued over SMTP appears on GET /drain, is acked, and is never re-offered', async () => {
+    await sendOverSmtp();
+
+    const drainRes = await fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    });
+    expect(drainRes.status).toBe(200);
+    const drainBody = (await drainRes.json()) as {
+      messages: Array<{ id: string; to: string; drainCount: number }>;
+    };
+    expect(drainBody.messages).toHaveLength(1);
+    expect(drainBody.messages[0]!.to).toBe('member@example.com');
+    const { id, drainCount } = drainBody.messages[0]!;
+
+    // Still outstanding — held, not yet acked.
+    expect(shim.store.countUndrainedRecipients()).toBe(1);
+
+    const ackRes = await fetch(`${shim.baseUrl}/drain/ack`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${shim.drainToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acks: [{ id, drainCount }] }),
+    });
+    expect(ackRes.status).toBe(200);
+    const ackBody = (await ackRes.json()) as {
+      acked: string[];
+      alreadyHandled: string[];
+      unknown: string[];
+    };
+    expect(ackBody.acked).toEqual([id]);
+
+    // Gone for good — the same store, drained and acked through the same
+    // handover an HTTP-enqueued message would go through.
+    expect(shim.store.countUndrainedRecipients()).toBe(0);
+
+    // Never re-offered: a fresh drain call, immediately, comes back empty
+    // rather than handing the same id out again.
+    const secondDrainRes = await fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    });
+    const secondDrainBody = (await secondDrainRes.json()) as { messages: unknown[] };
+    expect(secondDrainBody.messages).toEqual([]);
+  });
+
+  it('a message enqueued over SMTP wakes an already-held GET /drain, the same as one enqueued over HTTP', async () => {
+    const drainPromise = fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    const start = Date.now();
+    await sendOverSmtp();
+
+    const res = await drainPromise;
+    const elapsedMs = Date.now() - start;
+    const body = (await res.json()) as { messages: Array<{ to: string }> };
+
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]!.to).toBe('member@example.com');
+    // Woken by the SAME drainWake instance the HTTP route's own enqueue
+    // wakes — well under the 200ms holdMs this shim is configured with.
+    expect(elapsedMs).toBeLessThan(150);
   });
 });

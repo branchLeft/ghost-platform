@@ -88,6 +88,21 @@ for (const method of DNS_METHODS) {
   const original = dns[method]?.bind(dns);
   if (!original) continue;
   dns[method] = function patchedDns(hostname, ...rest) {
+    // `dns.lookup()` on a literal IP resolves synchronously, in-process,
+    // with no libuv/network round trip at all (verified empirically: it
+    // returns before the next tick, where a real resolution is always
+    // async) — Node's own net.Server#listen() calls it internally for
+    // EVERY bind, including a bind to a literal address like '0.0.0.0' or
+    // '127.0.0.1'. That is what the SMTP front door's own listen() does on
+    // startup, not an outbound resolution of anything — flagging it would
+    // make "no outbound connection" fail on every server that binds to an
+    // address, including this one legitimately listening for inbound mail.
+    // Only `lookup()` ever legitimately receives a literal IP this way;
+    // `resolve*()` (RR-type record queries) never does, so they stay
+    // reported unconditionally.
+    if (method === 'lookup' && net.isIP(hostname)) {
+      return original(hostname, ...rest);
+    }
     report('dns.' + method, { hostname });
     return original(hostname, ...rest);
   };
@@ -101,6 +116,11 @@ for (const method of DNS_METHODS) {
   const original = dns.promises[method]?.bind(dns.promises);
   if (!original) continue;
   dns.promises[method] = function patchedDnsPromise(hostname, ...rest) {
+    // Same literal-IP exemption as the callback form above, for the same
+    // reason: a bind, not a resolution with any network access.
+    if (method === 'lookup' && net.isIP(hostname)) {
+      return original(hostname, ...rest);
+    }
     report('dns.promises.' + method, { hostname });
     return original(hostname, ...rest);
   };

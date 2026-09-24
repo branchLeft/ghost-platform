@@ -5,7 +5,11 @@ makes against Hetzner Object Storage. `verify-bucket-fence.py` needs exactly
 that signing, against exactly that endpoint, and imports it from here rather
 than carrying a copy: two copies of a security-sensitive signing
 implementation is how one of them silently rots while the tests keep passing
-against the other.
+against the other. `media_backup_restore.py` -- the org/control-side worker
+that pulls a tenant's live media, encrypts it and reads it back on restore --
+is the same shape of caller and re-exports the named operations
+(`get_object`, `put_object`, `list_objects`, `delete_object`) for the same
+reason `verify-bucket-fence.py` re-exports `signed_request`.
 
 IT IS IMPORTED BY PATH RATHER THAN MOVED SOMEWHERE BOTH TREES CAN SEE.
 `db/RUNBOOK-db.md` provisions db1 by copying `db/provision/` to the host with
@@ -61,3 +65,8 @@ parse_owner_id = _module.parse_owner_id
 request_url = _module.request_url
 signed_request = _module.signed_request
 urllib_request = _module.urllib_request
+delete_object = _module.delete_object
+get_object = _module.get_object
+get_object_with_content_type = _module.get_object_with_content_type
+list_objects = _module.list_objects
+put_object = _module.put_object

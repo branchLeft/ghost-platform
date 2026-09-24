@@ -142,6 +142,159 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(cbb.lifecycle_document(35), cbb.lifecycle_document(35))
 
 
+class MediaLifecyclePrefixSplitTests(unittest.TestCase):
+    """Every backup run's own deletion step depends on media/ carrying a
+    SHORT noncurrent-version expiry of its own, split out from the 35-day
+    rule dumps/ and binlogs/ keep; fence-probe/ shares that same short
+    window (see the module docstring). Four prefix-scoped rules, never
+    one bucket-wide rule and never two rules whose prefixes could both match
+    the same key."""
+
+    def test_four_rules_are_present(self):
+        doc = cbb.lifecycle_document(35, 1).decode()
+        self.assertEqual(doc.count("<Rule>"), 4)
+
+    def test_each_rule_is_scoped_to_its_own_prefix(self):
+        doc = cbb.lifecycle_document(35, 1).decode()
+        self.assertIn("<Filter><Prefix>dumps/</Prefix></Filter>", doc)
+        self.assertIn("<Filter><Prefix>binlogs/</Prefix></Filter>", doc)
+        self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", doc)
+        self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", doc)
+
+    def test_db_prefixes_get_the_db_noncurrent_days_media_and_probe_get_their_own(self):
+        doc = cbb.lifecycle_document(35, 1).decode()
+        # dumps/ and binlogs/ each carry their own <NoncurrentDays>35</...>
+        # element -- two occurrences, one per rule -- and media/ and
+        # fence-probe/ each carry an independent <NoncurrentDays>1</...>,
+        # sharing the same value -- two occurrences.
+        self.assertEqual(doc.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
+        self.assertEqual(doc.count("<NoncurrentDays>1</NoncurrentDays>"), 2)
+
+    def test_only_the_media_rule_carries_expired_object_delete_marker(self):
+        # Every deletion a backup run performs leaves a delete marker;
+        # Hetzner's lifecycle how-to documents this element as supported
+        # (ghost-platform-docs/14 SS16 item 3). dumps/, binlogs/ and
+        # fence-probe/ have no equivalent churn and do not carry it.
+        doc = cbb.lifecycle_document(35, 1).decode()
+        self.assertEqual(doc.count("<ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker>"), 1)
+        media_rule = doc.split("<Filter><Prefix>media/</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
+        self.assertIn("<ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker>", media_rule)
+
+    def test_no_two_prefixes_can_ever_match_the_same_key(self):
+        # The actual defence: construct a key under each prefix and confirm
+        # it starts with exactly one of the four, never zero and never two
+        # -- proving the split is genuinely non-overlapping, not merely
+        # "looks like four different strings".
+        sample_keys = [
+            "dumps/11111111-1111-1111-1111-111111111111/db1-20260924T000000Z.sql.age",
+            "binlogs/11111111-1111-1111-1111-111111111111/db1-binlog.000123.age",
+            "media/tenant-a/generations/20260924T000000000000Z-0000000000000000/objects/" + "a" * 64 + ".age",
+            "media/tenant-a/generations/20260924T000000000000Z-0000000000000000/manifest.json.age",
+            "fence-probe/canary",
+        ]
+        prefixes = [cbb.DB_DUMP_PREFIX, cbb.DB_BINLOG_PREFIX, cbb.MEDIA_OBJECT_PREFIX, cbb.FENCE_PROBE_PREFIX]
+        for key in sample_keys:
+            matches = [prefix for prefix in prefixes if key.startswith(prefix)]
+            self.assertEqual(len(matches), 1, f"{key!r} matched {matches!r}, expected exactly one")
+
+    def test_every_real_writers_own_key_shape_is_covered_by_exactly_one_rule(self):
+        # Every prefix a pipeline or verifier actually writes under, in
+        # this bucket, sampled from each writer's own known key shape --
+        # dump_nightly.py's dump_key(), ship_binlogs.py's own f-string,
+        # media_backup_restore.py's generation layout (kept in sync with
+        # that module's own docstring rather than imported cross-directory:
+        # db/provision/ ships standalone to db1 via `scp -r`, so its test
+        # suite must not gain an import dependency on a sibling directory
+        # that copy never carries), and verify-bucket-fence.py's
+        # PROBE_OBJECT_KEY.
+        server_uuid = "11111111-1111-1111-1111-111111111111"
+        dump_key = f"dumps/{server_uuid}/db1-20260924T000000Z.sql.age"
+        binlog_key = f"binlogs/{server_uuid}/db1-binlog.000123.age"
+        media_object_key = (
+            "media/tenant-a/generations/20260924T172233000000Z-0000000000000000/objects/" + "a" * 64 + ".age"
+        )
+        media_manifest_key = "media/tenant-a/generations/20260924T172233000000Z-0000000000000000/manifest.json.age"
+        fence_probe_key = "fence-probe/canary"
+
+        prefixes = [cbb.DB_DUMP_PREFIX, cbb.DB_BINLOG_PREFIX, cbb.MEDIA_OBJECT_PREFIX, cbb.FENCE_PROBE_PREFIX]
+        for key in (dump_key, binlog_key, media_object_key, media_manifest_key, fence_probe_key):
+            matches = [prefix for prefix in prefixes if key.startswith(prefix)]
+            self.assertEqual(len(matches), 1, f"{key!r} matched {matches!r}, expected exactly one rule")
+
+    def test_media_and_a_tenant_named_dumps_or_binlogs_do_not_collide(self):
+        # media/<tenant>/... is scoped under media/ regardless of what the
+        # tenant happens to be named -- a tenant literally named "dumps" or
+        # "binlogs" still lives under media/, not under either db prefix.
+        for tenant in ("dumps", "binlogs"):
+            key = f"media/{tenant}/objects/{'b' * 64}.age"
+            self.assertTrue(key.startswith(cbb.MEDIA_OBJECT_PREFIX))
+            self.assertFalse(key.startswith(cbb.DB_DUMP_PREFIX))
+            self.assertFalse(key.startswith(cbb.DB_BINLOG_PREFIX))
+
+    def test_defaults_match_the_configured_constants(self):
+        doc = cbb.lifecycle_document().decode()
+        self.assertEqual(
+            doc.count(f"<NoncurrentDays>{cbb.NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"), 2
+        )
+        self.assertEqual(
+            doc.count(f"<NoncurrentDays>{cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"),
+            2,  # media/ and fence-probe/ share this value -- two rules
+        )
+
+    def test_configure_backup_bucket_threads_media_noncurrent_days_through(self):
+        calls = []
+
+        def fake_put(**kwargs):
+            calls.append(kwargs)
+
+        cbb.configure_backup_bucket(
+            bucket="b",
+            endpoint="hel1.your-objectstorage.com",
+            region="hel1",
+            access_key="AK",
+            secret_key="SECRET",
+            policy_body=b"{}",
+            noncurrent_days=35,
+            media_noncurrent_days=2,
+            put=fake_put,
+        )
+        lifecycle_call = next(c for c in calls if c["subresource"] == "lifecycle")
+        body = lifecycle_call["body"].decode()
+        self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", body)
+        self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", body)
+        self.assertEqual(body.count("<NoncurrentDays>2</NoncurrentDays>"), 2)  # media/ and fence-probe/
+        self.assertEqual(body.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
+
+    def test_cli_media_noncurrent_days_flag_is_threaded_through(self):
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "policy.json"
+            policy_file.write_text(json.dumps(fence_policy()))
+            environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
+            captured = {}
+
+            def fake_configure(**kwargs):
+                captured.update(kwargs)
+
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                cbb, "owner_id", return_value="p1231234"
+            ), mock.patch.object(cbb, "configure_backup_bucket", fake_configure):
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    code = cbb.main(
+                        [
+                            "--bucket", BUCKET, "--endpoint", "hel1.your-objectstorage.com",
+                            "--region", "hel1", "--policy-file", str(policy_file),
+                            "--engine-diagnostic-passed", "--media-noncurrent-days", "3",
+                        ]
+                    )
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["media_noncurrent_days"], 3)
+
+
 class ConfigureBackupBucketTests(unittest.TestCase):
     def test_enables_versioning_then_sets_the_lifecycle(self):
         calls = []
@@ -606,9 +759,9 @@ class PolicyRefusalTests(unittest.TestCase):
         self.assertIn("s3:PutBucketAcl", str(caught.exception))
 
     def test_narrowing_the_object_denys_actions_to_a_read_list_is_refused(self):
-        # branchLeft/ghost-platform#154's confirmed finding: narrowing this
-        # statement's Action from `s3:*` to a read-only list converts the
-        # catch-all into a denylist, and PutObject/DeleteObject fall open.
+        # Narrowing this statement's Action from `s3:*` to a read-only list
+        # converts the catch-all into a denylist, and PutObject/DeleteObject
+        # fall open.
         policy = fence_policy()
         for statement in policy["Statement"]:
             if statement["Sid"] == "DenyObjectAccessExceptNamedKeys":
@@ -619,11 +772,10 @@ class PolicyRefusalTests(unittest.TestCase):
         self.assertIn("s3:DeleteObject", str(caught.exception))
 
     def test_widening_the_object_denys_notprincipal_to_an_unallowed_key_is_refused(self):
-        # branchLeft/ghost-platform#154's other confirmed finding: widening
-        # this statement's NotPrincipal to also exempt a foreign credential
-        # grants that credential full read/write/delete on every backup
-        # object -- and nothing else in the policy accounts for it, since no
-        # Allow statement names it either.
+        # Widening this statement's NotPrincipal to also exempt a foreign
+        # credential grants that credential full read/write/delete on every
+        # backup object -- and nothing else in the policy accounts for it,
+        # since no Allow statement names it either.
         foreign_arn = "arn:aws:iam:::user/p1231234:FFFFFFFFFFFFFFFFFFFF"
         policy = fence_policy()
         for statement in policy["Statement"]:

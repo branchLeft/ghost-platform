@@ -29,6 +29,24 @@ FROM ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984
 # full guard and its explicit local-dev escape hatch, and
 # scripts/test-storage-guard.sh for the regression test proving both the
 # blocked and permitted paths actually behave as intended.
+# The break-glass SSO adapter (adapters/sso/README.md). It goes into Ghost's
+# own internal adapters directory, never the bind-mounted content directory: a
+# tenant can write to content, and Ghost would load an adapter from there.
+# Inert until a tenant's config sets adapters__sso__active=BreakGlassSSO.
+COPY --chown=node:node adapters/sso/src/BreakGlassSSO.js adapters/sso/src/break-glass.js /var/lib/ghost/current/core/server/adapters/sso/
+
+# Ghost-core overlay (adapters/sso/ghost-core-overlay/README.md): one file,
+# one change, so a break-glass login's session is durably saved before the
+# response can reach a client. Guard first, replace second — if the upstream
+# file this overlay was derived from has changed (a Ghost version bump),
+# fail the build rather than silently layer an old patch over new Ghost
+# code; re-deriving the overlay is then a deliberate step, not automatic.
+COPY adapters/sso/ghost-core-overlay/session-from-token.upstream.sha256 /tmp/session-from-token.upstream.sha256
+RUN cd /var/lib/ghost/current/core/server/services/auth/session \
+    && sha256sum -c /tmp/session-from-token.upstream.sha256 \
+    || (echo "ERROR: upstream Ghost core file session-from-token.js no longer matches the overlay's pinned hash -- re-derive adapters/sso/ghost-core-overlay/ (see its README) before rebuilding" >&2 && exit 1)
+COPY --chown=node:node adapters/sso/ghost-core-overlay/session-from-token.js /var/lib/ghost/current/core/server/services/auth/session/session-from-token.js
+
 COPY docker-entrypoint.branchleft.sh /usr/local/bin/docker-entrypoint.branchleft.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.branchleft.sh
 

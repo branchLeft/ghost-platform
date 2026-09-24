@@ -66,6 +66,8 @@ interface RunResult {
 interface RunOptions {
   dbPath: string;
   port: number;
+  /** The SMTP front door's own listen port — defaults to 25 (privileged) if unset, which fails outside a container that grants an unprivileged bind. Always pass a free unprivileged port here. */
+  smtpPort: number;
   /** Sent as multipart form fields to /v3/:domain/messages right after startup, from THIS (parent, unpatched) process — proves the real request-handling code path, not a direct store write. */
   enqueue?: boolean;
   /** How long to keep the child alive after startup (and after the enqueue, if any) before SIGTERM — long enough to catch a tick-based worker loop, not just a startup-time dial. */
@@ -86,6 +88,12 @@ async function runServerLifecycle(opts: RunOptions): Promise<RunResult> {
         // holds for the whole configured window when nothing is queued.
         SHIM_DRAIN_HOLD_MS: '300',
         PORT: String(opts.port),
+        // Unset, this defaults to 25 — a privileged port this test's own
+        // process (not a container granting ip_unprivileged_port_start=0)
+        // cannot bind, which fails the SMTP front door's own listen() and
+        // crashes the child before this test can observe anything.
+        SMTP_LISTEN_PORT: String(opts.smtpPort),
+        SMTP_LISTEN_HOST: '127.0.0.1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     }
@@ -210,7 +218,8 @@ describe('src/server.ts — the real entrypoint, with real queued mail, makes no
   it('startup alone (nothing ever queued) stays silent — the baseline', async () => {
     const db = await freshDb();
     const port = await findFreePort();
-    const result = await runServerLifecycle({ dbPath: db, port, liveForMs: 1500 });
+    const smtpPort = await findFreePort();
+    const result = await runServerLifecycle({ dbPath: db, port, smtpPort, liveForMs: 1500 });
     // Every one of these kinds (net.connect, dns.*, dgram.send,
     // child_process.*) is unexpected here, with no baseline to filter:
     // this is a spawned child, so the parent's own HTTP client traffic
@@ -224,7 +233,14 @@ describe('src/server.ts — the real entrypoint, with real queued mail, makes no
   it('a real message enqueued through the real HTTP API, then held alive for several seconds, still makes no outbound connection of any kind', async () => {
     const db = await freshDb();
     const port = await findFreePort();
-    const result = await runServerLifecycle({ dbPath: db, port, enqueue: true, liveForMs: 3000 });
+    const smtpPort = await findFreePort();
+    const result = await runServerLifecycle({
+      dbPath: db,
+      port,
+      smtpPort,
+      enqueue: true,
+      liveForMs: 3000,
+    });
     expect(result.connectAttempts).toEqual([]);
   }, 20_000);
 });

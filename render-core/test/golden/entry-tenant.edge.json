@@ -1,0 +1,9 @@
+{
+  "displayHostname": "blog.entry-co.example",
+  "admittedHostname": "blog.entry-co.example",
+  "gate": {
+    "kind": "none"
+  },
+  "requestBodyMaxSize": "64MiB",
+  "contentSecurityPolicy": "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'"
+}

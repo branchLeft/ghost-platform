@@ -102,7 +102,11 @@ function countBatchRows(dbPath: string, batchId: string): number {
   }
 }
 
-async function runServerAndWaitForListening(dbPath: string, port: number): Promise<void> {
+async function runServerAndWaitForListening(
+  dbPath: string,
+  port: number,
+  smtpPort: number
+): Promise<void> {
   const child: ChildProcessByStdio<null, Readable, Readable> = spawn(
     process.execPath,
     [serverJsPath],
@@ -113,6 +117,12 @@ async function runServerAndWaitForListening(dbPath: string, port: number): Promi
         SHIM_DB_PATH: dbPath,
         SHIM_DRAIN_TOKEN: 'cleanup-startup-proof-token',
         PORT: String(port),
+        // Unset, this defaults to the privileged port 25, which this
+        // test's own process cannot bind outside a container granting
+        // ip_unprivileged_port_start=0 — the SMTP front door's listen()
+        // would fail and crash the child before "listening" ever logs.
+        SMTP_LISTEN_PORT: String(smtpPort),
+        SMTP_LISTEN_HOST: '127.0.0.1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     }
@@ -197,7 +207,8 @@ describe('src/server.ts — actually starts the cleanup scheduler (not just impo
     expect(countBatchRows(dbPath, 'recent-batch')).toBe(1);
 
     const port = await findFreePort();
-    await runServerAndWaitForListening(dbPath, port);
+    const smtpPort = await findFreePort();
+    await runServerAndWaitForListening(dbPath, port, smtpPort);
 
     expect(countBatchRows(dbPath, 'old-batch')).toBe(0); // swept
     expect(countBatchRows(dbPath, 'recent-batch')).toBe(1); // untouched — the control

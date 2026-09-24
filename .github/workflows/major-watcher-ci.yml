@@ -1,0 +1,63 @@
+name: Major watcher CI
+
+# Type-checks and unit-tests the Ghost major/preview watcher
+# (services/major-watcher/). The scheduled run that actually sends a page
+# lives in major-watcher-run.yml instead, since it needs write access to
+# the state branch and the ntfy secrets this job must never see.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/major-watcher/**
+      - .github/workflows/major-watcher-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - services/major-watcher/**
+      - .github/workflows/major-watcher-ci.yml
+
+# `packages: read` because this service takes a dev dependency on
+# `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401
+# to an anonymous request even for a public package.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test:
+    name: Major watcher type check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/major-watcher
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/major-watcher/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: services/major-watcher/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run coverage
+
+      - name: Build
+        run: npm run build

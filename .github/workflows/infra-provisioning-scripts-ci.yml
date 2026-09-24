@@ -17,7 +17,13 @@ name: Provisioning scripts CI
 # coverage, carried forward on its own.
 #
 # No npm install, no Node setup: these scripts have no package.json of their
-# own and no third-party dependency -- Python's standard library only.
+# own and no third-party PYTHON dependency -- Python's standard library only.
+# The one external binary is `age` (media_backup_restore.py shells out to
+# it), installed below from a pinned, checksummed release rather than
+# whatever apt happens to carry, so RecipientStanzaCountTests' two real-age
+# cases run in CI instead of skipping -- they are what proves the stanza
+# counter agrees with age's own output, not only with this repo's model of
+# the format.
 
 on:
   push:
@@ -50,6 +56,25 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: .python-version
+
+      # Pinned by version AND checksum, not `apt-get install age` -- an apt
+      # version drifts silently with the runner image, and "pinned" has to
+      # mean the same binary every run, not whatever Ubuntu shipped that
+      # week. The checksum is this release asset's own SHA-256, fetched
+      # directly from FiloSottile/age's GitHub releases over HTTPS.
+      - name: Install age (pinned)
+        working-directory: /tmp
+        run: |
+          set -e
+          AGE_VERSION=v1.3.1
+          AGE_TARBALL=age-${AGE_VERSION}-linux-amd64.tar.gz
+          AGE_SHA256=bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377
+          curl -sL -o "$AGE_TARBALL" \
+            "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/${AGE_TARBALL}"
+          echo "${AGE_SHA256}  ${AGE_TARBALL}" | sha256sum -c -
+          tar -xzf "$AGE_TARBALL"
+          sudo install -m 0755 age/age age/age-keygen /usr/local/bin/
+          age --version
 
       - name: Run provisioning scripts' unit tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v

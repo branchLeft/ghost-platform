@@ -1,0 +1,65 @@
+name: odask image
+
+# Builds the odask image and proves its contract against a real Caddy
+# on_demand_tls in front of it and a real ACME test CA (Pebble) issuing
+# behind it -- scripts/test-odask.sh -- never a second-hand copy of what
+# the image ships, because it's the same image handed to the script.
+#
+# Build-only, mirroring drain-sidecar-image.yml and demo-gate-image.yml's
+# stance: no push, no registry credential. Delivering this image to the
+# tenant estate's edge is a separate story.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/odask/**
+      - render-core/**
+      - scripts/test-odask.sh
+      - .github/workflows/odask-image.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - services/odask/**
+      - render-core/**
+      - scripts/test-odask.sh
+      - .github/workflows/odask-image.yml
+
+# `packages: read` because the image's build stage installs
+# `@branchleft/tsconfig` from GitHub Packages -- read-only, and this
+# workflow never requests a write credential at all.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: docker build + real-Caddy-and-Pebble proof (odask)
+    runs-on: ubuntu-latest
+    # Generous bound: it builds one image (render-core plus the service,
+    # multi-stage in one Dockerfile), pulls Caddy, Pebble and
+    # pebble-challtestsrv, and boots four containers for the live proof's
+    # checks, including a real ACME v2 round trip.
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Built from the repository root: the service depends on render-core
+      # through a relative `file:` link, so the build context must contain
+      # both (see services/odask/Dockerfile). The secret is consumed by a
+      # `RUN --mount` there, so it reaches `npm ci` without entering a
+      # layer or the build history.
+      - name: Build odask image
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build \
+            -f services/odask/Dockerfile \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --tag odask:ci \
+            .
+
+      - name: Real Caddy + real Pebble ACME proof (ask contract, ceiling burst, served handshake, refused handshake, Caddy's own log)
+        run: ./scripts/test-odask.sh odask:ci

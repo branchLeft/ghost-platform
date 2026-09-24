@@ -1,7 +1,7 @@
 {
   "name": "@branchleft/ghost-platform-tenant",
   "version": "4.0.0",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
