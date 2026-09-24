@@ -5,7 +5,12 @@ Stdlib only. The two automated write pipelines (nightly dump, binlog
 shipping) each write one object per run and read nothing back, so they only
 ever use `put_object`. `list_objects` and `delete_object` exist for
 `prune_backups.py`, which has to read the bucket's own listing to decide what
-is safe to remove. The signing algorithm is the same one
+is safe to remove. `get_object` exists for the media backup/restore pipeline
+(`infra/provisioning/scripts/media_backup_restore.py`, reached via
+`shared_objectstorage.py` like every other org/control-side caller): it pulls
+a tenant's live objects to back them up, and reads its own ciphertext back to
+verify a restore, so it is the one caller here that reads an object's body
+rather than only its listing. The signing algorithm is the same one
 `shared-infra/hetzner/scripts/probe-object-storage.py` proves works against
 this endpoint; path-style addressing is mandatory there for the same reason
 it is here -- a dotted bucket name falls outside the endpoint's one-label
@@ -229,6 +234,39 @@ def _urllib_get(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
 
 def _urllib_delete(url: str, headers: dict[str, str]) -> tuple[int, bytes]:
     return urllib_request(url, headers, b"", "DELETE")
+
+
+def get_object(
+    *,
+    bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    key: str,
+    transport=_urllib_get,
+) -> bytes:
+    """Fetches `key`'s current bytes, raising `ObjectStorageError` on anything
+    but 2xx -- including a 404, unlike `delete_object`'s idempotent tolerance.
+    A caller reading an object back (the media backup/restore pipeline pulls
+    a tenant's live objects with this, and reads its own ciphertext back on
+    restore) needs to know when the object is not there rather than silently
+    receiving nothing, so this raises rather than returning an empty body."""
+    headers = build_headers(
+        bucket=bucket,
+        key=key,
+        payload=b"",
+        host=endpoint,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        now=datetime.datetime.now(datetime.timezone.utc),
+        method="GET",
+    )
+    url = request_url(endpoint=endpoint, bucket=bucket, key=key, query=None)
+    status, body = transport(url, headers)
+    _raise_for_status(what=f"GET {bucket}/{key}", status=status, body=body)
+    return body
 
 
 def signed_request(
