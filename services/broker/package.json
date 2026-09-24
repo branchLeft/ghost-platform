@@ -1,0 +1,25 @@
+{
+  "name": "ghost-platform-broker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The demo host's broker: the HTTP endpoints (reconcile, reset, status, drain) LLD-2 specifies, with the privileged sudoers wrapper as the only path to root and a signed-request scheme in front of every side effect (see ghost-platform-docs/19-try-it-now-design/02-broker-and-slot.html §03).",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@branchleft/ghost-platform-render-core": "file:../../render-core"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.4.0",
+    "@types/node": "^26.5.1",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
