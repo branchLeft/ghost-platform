@@ -45,9 +45,8 @@ describe('validateMediaBucket()', () => {
       resize: true,
       srcsets: true,
     };
-    // RED: this is exactly the finding carried from PR ghost-platform#226 —
-    // a descriptor naming another tenant's bucket must be refused, not
-    // silently trusted.
+    // RED: a descriptor naming another tenant's bucket must be refused,
+    // not silently trusted.
     expect(() => validateMediaBucket(slug, foreign)).toThrow(FieldValidationError);
     expect(() => validateMediaBucket(slug, foreign)).toThrow(/must be "branchleft-media-acme"/);
     // GREEN: the slug's own bucket still validates.

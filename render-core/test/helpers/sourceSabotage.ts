@@ -2,10 +2,9 @@
  * Real source-mutation sabotage: reads a module's actual committed source
  * from `src/`, applies a text mutation, writes the mutated text to a
  * throwaway file and imports *that* — never the checked-in file, and never
- * a re-implementation written inline in a test. Carried from the review of
- * workspace#1183, finding 8: an in-suite "sabotage" that only mutates a
- * string inside the test, never the source, is not evidence the source
- * itself would be caught if it regressed.
+ * a re-implementation written inline in a test. An in-suite "sabotage" that
+ * only mutates a string inside the test, never the source, is not evidence
+ * the source itself would be caught if it regressed.
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

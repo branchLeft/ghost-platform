@@ -1,8 +1,7 @@
 /**
- * The real tenant-zero parity proof, replacing the substring-`toContain`
- * check the review of workspace#1183 found made a claim it did not test
- * (finding 3, blocking, false claim): a real key-by-key diff, not a
- * substring check.
+ * The real tenant-zero parity proof: a real key-by-key diff against
+ * `infra/tenant`'s own renderer, not a substring check against a made-up
+ * fixture claiming parity it never tested.
  *
  * `INFRA_TENANT_BLOG_ENV` below is not fabricated or hand-typed: it is the
  * literal, recorded output of `infra/tenant/environment.ts`'s own
@@ -137,11 +136,10 @@ function renderCoreTenantZeroEnv(): Record<string, string | number | boolean> {
 
 /**
  * Every key `TransportSpec` genuinely cannot carry yet — see
- * `environment.ts#transportEnvironment`'s own doc comment.
- * [ISSUE branchLeft/workspace#1250](https://github.com/branchLeft/workspace/issues/1250)
- * ("the descriptor's sending identity") owns closing this; recorded on
- * [ISSUE branchLeft/workspace#1183](https://github.com/branchLeft/workspace/issues/1183)
- * rather than implemented around.
+ * `environment.ts#transportEnvironment`'s own doc comment. The
+ * descriptor's sending identity needs its own field for each of these
+ * before this list can shrink; that is separate work, not implemented
+ * around here.
  */
 const KNOWN_GAP_KEYS = [
   'mail__from',

@@ -1,12 +1,12 @@
 /**
- * The real control BLOCKING finding 1 on workspace#1183's review asked
- * for: a rendered demo does not merely write seven files — it runs.
- * Renders the demo golden fixture's own `compose.yml` (the actual `render()`
- * output, not a hand-written stand-in), provisions its three external
- * volumes exactly as `#1188`'s eventual host-build step would, starts
- * `ghost-a` for real against the platform image, and asserts Ghost answers
- * on loopback while never publishing on the private-IP-shaped address a
- * demo's own `appHostIp` field carries.
+ * The real control this story's review asked for: a rendered demo does
+ * not merely write seven files — it runs. Renders the demo golden
+ * fixture's own `compose.yml` (the actual `render()` output, not a
+ * hand-written stand-in), provisions its three external volumes exactly
+ * as the eventual demo-host build step would, starts `ghost-a` for real
+ * against the platform image, and asserts Ghost answers on loopback while
+ * never publishing on the private-IP-shaped address a demo's own
+ * `appHostIp` field carries.
  *
  * Needs Docker and the `ghost-platform:ci` image (built by this repo's
  * `docker build .` at the repo root — see `build.yml`'s "docker build" job,

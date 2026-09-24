@@ -37,8 +37,8 @@ export interface CodeInjectionSettings {
  * The same text for every tenant on every tier, an administrator meets
  * when they go looking for code injection and find it removed rather than
  * merely defaulted off (LLD-1 §03b: "an administrator who goes looking for
- * it meets an explainer rather than a missing menu"). Prose is Rob's to
- * write; this is a placeholder for the real copy.
+ * it meets an explainer rather than a missing menu"). The owner writes the
+ * real copy; this is a placeholder.
  */
 export const CODE_INJECTION_EXPLAINER = 'ALL_CAPS_PLACEHOLDER: code injection explainer copy';
 

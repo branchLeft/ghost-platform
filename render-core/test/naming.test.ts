@@ -59,8 +59,7 @@ describe('naming.ts', () => {
     });
 
     it.each(RESERVED_STACK_NAMES)('SABOTAGE — rejects the reserved name "%s"', (reserved) => {
-      // RED: this is workspace#1144's own finding, carried onto render-core
-      // by review — a reserved name must never validate.
+      // RED: a reserved stack name must never validate as a tenant slug.
       expect(() => validateSlugAvailability(reserved as Slug)).toThrow(FieldValidationError);
       expect(() => validateSlugAvailability(reserved as Slug)).toThrow(/is reserved/);
       // GREEN: a slug that merely contains a reserved name is unaffected.

@@ -222,8 +222,7 @@ describe('renderIdentity()', () => {
 // The real tenant-zero parity proof lives in test/parity.test.ts — a key-by-
 // key diff against infra/tenant/environment.ts's real output for blog's own
 // Pulumi.blog.yaml values, not a substring check against a made-up fixture
-// (review finding 3 on workspace#1183: this block previously claimed parity
-// it never tested).
+// claiming parity it never tested.
 describe('demo/entry-tenant/professional-tenant compose sanity', () => {
   it('an entry tenant renders mysql/s3 keys with the derived database identity', () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);

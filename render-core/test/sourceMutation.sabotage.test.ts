@@ -1,8 +1,8 @@
 /**
- * Real source-mutation sabotage for the two controls the review of
- * workspace#1183 found were only proven against a string mutated inside
- * the test itself (finding 8): no-secret-in-output and determinism. Each
- * test here imports a *mutated copy of the actual committed source*
+ * Real source-mutation sabotage for two controls that must be proven
+ * against a mutated copy of the actual committed source, not a string
+ * mutated inside the test: no-secret-in-output and determinism. Each test
+ * here imports that mutated copy
  * (`test/helpers/sourceSabotage.ts#importSabotaged`), not a
  * re-implementation, and shows the mutation breaks something a real
  * regression in that source would also break.
