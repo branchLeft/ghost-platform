@@ -2,10 +2,23 @@ name: Recovery image
 
 # Builds db/recovery/Dockerfile and proves its mysql/mysqldump/mysqlbinlog
 # still match the MySQL line db1 runs (db/recovery/check_toolchain_version.py,
-# read live from db/RUNBOOK-db.md). Build-only, like build.yml: this workflow
-# never pushes the image anywhere and requests no registry credential --
-# nothing outside this repo has a row saying where a recovery host would
-# pull it from yet.
+# read live from db/RUNBOOK-db.md) -- on every PR/push touching those paths,
+# and once a week regardless. The weekly run matters because nothing about
+# this image's inputs is pinned by a file in this repo changing: the
+# debian:trixie-slim base is pinned by digest, but repo.mysql.com's apt
+# index, the MySQL signing key, and Debian's own trixie packages can all
+# drift with no PR here to catch it on. A path-filtered trigger alone would
+# only notice on a PR that happens to touch these exact files.
+#
+# On push to `main` this workflow's `push` job also publishes the image to
+# GHCR (ghcr.io/branchleft/db-recovery), tagged with the git SHA and
+# `latest` -- same shape as registry-push.yml's tenant image push. Gating is
+# the trigger itself: `main` is protected by required review, so a publish
+# only ever follows a reviewed and approved merge. There is deliberately no
+# `workflow_dispatch` here (unlike mailgun-shim-image.yml) -- a manually
+# dispatched run can be pointed at any ref, which would let a publish skip
+# the review gate the push-to-main trigger provides; registry-push.yml has
+# the same restriction for the same reason.
 #
 # --platform linux/amd64 is not optional here -- see the Dockerfile's own
 # comment: an unpinned build on an arm64 runner would silently produce an
@@ -26,6 +39,13 @@ on:
       - db/provision/install_host_prereqs.py
       - db/RUNBOOK-db.md
       - .github/workflows/recovery-image.yml
+  schedule:
+    # Weekly, independent of whether anything in this repo changed -- see
+    # the header comment. `schedule` takes no path filter, so this always
+    # builds and checks whatever is on `main` at the time it fires (04:13
+    # UTC on Mondays -- an arbitrary off-the-hour time, not a value to
+    # treat as meaningful).
+    - cron: '13 4 * * 1'
 
 permissions:
   contents: read
@@ -66,3 +86,92 @@ jobs:
       # not a second hardcoded version string.
       - name: Verify toolchain matches the pinned server line
         run: python3 db/recovery/check_toolchain_version.py --recovery-image branchleft-recovery:ci
+
+  # Publishes the exact image build-and-verify just proved. Rebuilds rather
+  # than reusing that job's image -- same reasoning as registry-push.yml's
+  # own comment: passing a multi-hundred-MB image between jobs costs more
+  # than a second `docker build` costs in compute, and this way the image
+  # about to be pushed is checked again, freshly, immediately before it is
+  # pushed. `needs: build-and-verify` still ties this job to that job's
+  # result (including its unit test run, which this job does not repeat) so
+  # a publish never proceeds past a build-and-verify failure on the same
+  # commit.
+  push:
+    name: Build, verify and push recovery image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-verify
+    timeout-minutes: 20
+
+    # Serialises pushes to the one recovery image repository -- same
+    # reasoning as registry-push.yml's workflow-level concurrency group,
+    # scoped to just this job so an unrelated PR's build-and-verify run is
+    # never queued behind it.
+    concurrency:
+      group: ghost-platform-db-recovery-image-push
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      IMAGE: ghcr.io/branchleft/db-recovery
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      # Two tags in one build so there is exactly one image underneath
+      # both: `latest` never points at a different layer set than the SHA
+      # tag pushed alongside it. The runbook pins by digest, never by
+      # either tag -- `latest` exists for convenience (`docker pull` without
+      # a SHA to hand), not as what recovery actually references.
+      - name: Build image
+        run: |
+          docker build --platform linux/amd64 \
+            -f db/recovery/Dockerfile \
+            --tag "$IMAGE:$IMAGE_TAG" \
+            --tag "$IMAGE:latest" \
+            .
+
+      # Same gate build-and-verify just ran, against the exact image about
+      # to be pushed -- so a broken image fails before `docker push`, not
+      # after `latest` already points at it.
+      - name: Verify toolchain matches the pinned server line
+        run: python3 db/recovery/check_toolchain_version.py --recovery-image "$IMAGE:$IMAGE_TAG"
+
+      # `GITHUB_TOKEN` with `packages: write`, same as registry-push.yml and
+      # mailgun-shim-image.yml. No stored credential exists for this: the
+      # run's own token is the whole of it, and it expires with the run.
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GHCR
+        run: docker push "$IMAGE" --all-tags
+
+      - name: Write outcome to job summary
+        if: always()
+        run: |
+          {
+            echo '## Recovery image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Image: \`$IMAGE:$IMAGE_TAG\`"
+            echo 'Also tagged `latest` -- the runbook pins by digest, never by this floating tag.'
+            echo
+            echo 'Resolve the digest to record in db/RUNBOOK-db.md (see its own instructions):'
+            echo '`docker buildx imagetools inspect '"$IMAGE:$IMAGE_TAG"'`'
+          } >> "$GITHUB_STEP_SUMMARY"
