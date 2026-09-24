@@ -76,6 +76,7 @@ export function createCollector(opts: CollectorOptions): Collector {
     }
 
     const toAck: string[] = [];
+    const acks: Array<{ id: string; drainCount: number }> = [];
     for (const message of body.messages) {
       await transport().sendMail({
         from: message.from,
@@ -89,9 +90,14 @@ export function createCollector(opts: CollectorOptions): Collector {
       deliveredIds.push(message.id);
       opts.onDelivered?.(message);
       toAck.push(message.id);
+      // The generation this message was handed over at — an ack must name
+      // it, not just the id, so the store can tell a current claim from
+      // one a lapsed-and-re-offered lease has since superseded (store.ts's
+      // ackDrain doc explains why).
+      acks.push({ id: message.id, drainCount: message.drainCount });
     }
 
-    if (toAck.length === 0) {
+    if (acks.length === 0) {
       return [];
     }
 
@@ -101,7 +107,7 @@ export function createCollector(opts: CollectorOptions): Collector {
         Authorization: `Bearer ${opts.drainToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ ids: toAck }),
+      body: JSON.stringify({ acks }),
     });
     if (!ackRes.ok) {
       throw new Error(`POST /drain/ack failed: ${ackRes.status}`);

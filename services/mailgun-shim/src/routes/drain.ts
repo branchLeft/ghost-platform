@@ -5,7 +5,7 @@ import { requireDrainToken } from '../drainAuth.js';
 import type { DrainWake } from '../drainWake.js';
 import { resolveRecipientTokens } from '../mailgunFields.js';
 import type { Logger } from '../log.js';
-import type { DrainedRecipient, ShimStore } from '../store.js';
+import type { AckRequest, DrainedRecipient, ShimStore } from '../store.js';
 import type { Throttle } from '../throttle.js';
 
 export interface DrainRouterOptions {
@@ -25,6 +25,8 @@ interface WireMessage {
   emailId: string | null;
   from: string;
   to: string;
+  /** The recipient-variables `name`, when present — a drainer formatting `{name, address}` (the old worker's shape) needs it separately from `to`, which stays a bare address. */
+  toName?: string;
   subject: string;
   html: string;
   text: string;
@@ -55,6 +57,7 @@ function toWireMessage(row: DrainedRecipient): WireMessage {
     emailId: row.emailId,
     from: row.payload.from,
     to: row.recipient,
+    toName: vars.name,
     subject: resolveRecipientTokens(row.payload.subject, vars),
     html: resolveRecipientTokens(row.payload.html, vars),
     text: resolveRecipientTokens(row.payload.text, vars),
@@ -64,18 +67,44 @@ function toWireMessage(row: DrainedRecipient): WireMessage {
   };
 }
 
-function parseAckIds(body: unknown): string[] | null {
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+/**
+ * `{ acks: [{ id, drainCount }] }` — drainCount is required, not optional:
+ * it is what lets ackDrain (store.ts) tell a current claim from a
+ * superseded one apart, so a request naming an id with no drainCount is
+ * malformed the same way one with no id would be, not defaulted.
+ */
+function parseAcks(body: unknown): AckRequest[] | null {
+  /* v8 ignore start -- express.json() defaults to strict mode, which
+   * refuses any top-level JSON value that isn't an object or array
+   * (verified empirically: a raw `null` body never reaches this function
+   * at all — body-parser's own regex check on the raw text rejects it
+   * with a 400 from Express's default error handler first). Kept as a
+   * defensive check rather than an assumed invariant, in case that
+   * middleware option is ever relaxed. */
   if (typeof body !== 'object' || body === null) {
     return null;
   }
-  const ids = (body as Record<string, unknown>).ids;
-  if (!Array.isArray(ids) || ids.length === 0) {
+  /* v8 ignore stop */
+  const acks = (body as Record<string, unknown>).acks;
+  if (!Array.isArray(acks) || acks.length === 0) {
     return null;
   }
-  if (!ids.every((id): id is string => typeof id === 'string' && id.length > 0)) {
-    return null;
+  const parsed: AckRequest[] = [];
+  for (const entry of acks) {
+    if (typeof entry !== 'object' || entry === null) {
+      return null;
+    }
+    const { id, drainCount } = entry as Record<string, unknown>;
+    if (typeof id !== 'string' || id.length === 0 || !isPositiveInteger(drainCount)) {
+      return null;
+    }
+    parsed.push({ id, drainCount });
   }
-  return ids;
+  return parsed;
 }
 
 /**
@@ -88,18 +117,30 @@ function parseAckIds(body: unknown): string[] | null {
  *
  *   GET /drain   — long-poll, held up to `holdMs`. Responds `{ messages }`,
  *                  `[]` if nothing became due before the hold expired.
- *                  Every message carries a stable `id`; claiming it moves
- *                  it to a leased 'held' state (claimForDrain) rather than
+ *                  Every message carries a stable `id` and the `drainCount`
+ *                  this hand-over was made under; claiming it moves the row
+ *                  to a leased 'held' state (claimForDrain) rather than
  *                  removing it — a crash before the matching ack causes it
- *                  to be re-offered under the same id once the lease lapses.
- *   POST /drain/ack — body `{ ids: string[] }`. Marks every id whose
- *                  message this drainer actually took delivery of. A
- *                  message leaves the queue for good only here. Acking an
- *                  id twice, or an id whose lease already lapsed and was
- *                  reclaimed, is reported back rather than erroring —
- *                  `alreadyHandled` / `unknown` — so a drainer that crashed
- *                  between receiving a batch and acking it can find out
- *                  what actually landed rather than guessing.
+ *                  to be re-offered under the same id, at the next
+ *                  `drainCount`, once the lease lapses. If the client
+ *                  disconnects while this request is held open, the loop
+ *                  notices before its next claim attempt and stops without
+ *                  claiming anything on that abandoned connection's behalf
+ *                  — see the disconnect check below.
+ *   POST /drain/ack — body `{ acks: [{ id, drainCount }] }`. Marks every
+ *                  id whose message this drainer actually took delivery
+ *                  of, PROVIDED the `drainCount` named still matches the
+ *                  row's current one — an ack naming a `drainCount` the
+ *                  row has since moved past (the lease lapsed and it was
+ *                  re-offered, to this drainer again or to another one, in
+ *                  between) is a late ack from a superseded claim, and is
+ *                  reported `unknown` rather than accepted. A message
+ *                  leaves the queue for good only here. Acking an id twice
+ *                  at its current generation, or one that's stale, is
+ *                  reported back rather than erroring — `alreadyHandled` /
+ *                  `unknown` — so a drainer that crashed between receiving
+ *                  a batch and acking it can find out what actually landed
+ *                  rather than guessing.
  *
  * Both routes require requireDrainToken — the collector's only credential.
  * Neither route ever opens an outbound connection: this module only reads
@@ -124,10 +165,40 @@ export function createDrainRouter(
   router.get(
     '/drain',
     auth,
-    asyncHandler(log, async (_req: Request, res: Response) => {
+    asyncHandler(log, async (req: Request, res: Response) => {
       const deadline = Date.now() + options.holdMs;
 
+      // A held GET can outlive its own client: the collector crashes, the
+      // network drops, or it simply gives up. Without this, the loop below
+      // would still call claimForDrain() on its next wake and lease a
+      // message that can never be delivered on this connection — spending
+      // a throttle token and a lease for nothing (the row does eventually
+      // come back once the lease lapses, but only after sitting uselessly
+      // "drained" the whole time). `req.on('close', ...)` fires on a
+      // genuine client disconnect as well as on normal completion, so the
+      // flag is only trusted before a response has actually been sent —
+      // checked, never written to after headersSent, which res.json()
+      // below sets synchronously in the same tick it writes.
+      // Not airtight against the OS's own reporting delay — a message
+      // that becomes available in the narrow window between the actual
+      // disconnect and Node learning about it can still be claimed once
+      // before this catches up. What it does close is the case that
+      // otherwise never recovers on its own within the hold: an
+      // already-known-gone connection's loop waking on a later
+      // wake()/poll and claiming regardless.
+      let clientGone = false;
+      req.on('close', () => {
+        if (!res.headersSent) {
+          clientGone = true;
+        }
+      });
+
       for (;;) {
+        if (clientGone) {
+          log.info('drain_abandoned', {});
+          return;
+        }
+
         // Re-read on every poll iteration, not once per request: a request
         // held open across the whole holdMs window (LLD-2: "held ~30s")
         // must still pick up an operator's throttle-file edit within that
@@ -160,13 +231,16 @@ export function createDrainRouter(
     auth,
     express.json({ limit: '256kb' }),
     asyncHandler(log, async (req: Request, res: Response) => {
-      const ids = parseAckIds(req.body);
-      if (!ids) {
-        res.status(400).json({ message: 'Body must be { ids: string[] } with at least one id' });
+      const acks = parseAcks(req.body);
+      if (!acks) {
+        res.status(400).json({
+          message:
+            'Body must be { acks: [{ id: string, drainCount: number }] } with at least one entry',
+        });
         return;
       }
 
-      const result = store.ackDrain(ids, now());
+      const result = store.ackDrain(acks, now());
       log.info('drain_ack', {
         acked: result.acked.length,
         alreadyHandled: result.alreadyHandled.length,

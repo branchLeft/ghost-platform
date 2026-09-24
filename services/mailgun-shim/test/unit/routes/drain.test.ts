@@ -79,11 +79,13 @@ describe('GET /drain, POST /drain/ack', () => {
     const res = await fetch(`${server.baseUrl}/drain/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [drained!.id] }),
+      body: JSON.stringify({ acks: [{ id: drained!.id, drainCount: drained!.drainCount }] }),
     });
     expect(res.status).toBe(401);
     // Still held — the unauthenticated ack must not have taken effect.
-    expect(store.ackDrain([drained!.id], 1).acked).toEqual([drained!.id]);
+    expect(store.ackDrain([{ id: drained!.id, drainCount: drained!.drainCount }], 1).acked).toEqual(
+      [drained!.id]
+    );
   });
 
   it('returns an empty message list once the hold expires with nothing queued', async () => {
@@ -148,7 +150,7 @@ describe('GET /drain, POST /drain/ack', () => {
     expect(elapsed).toBeLessThan(FAST_OPTIONS.pollIntervalMs + 20);
   });
 
-  it('POST /drain/ack rejects a body missing "ids" with 400', async () => {
+  it('POST /drain/ack rejects a body missing "acks" with 400', async () => {
     await start();
     const res = await fetch(`${server.baseUrl}/drain/ack`, {
       method: 'POST',
@@ -168,27 +170,69 @@ describe('GET /drain, POST /drain/ack', () => {
     expect(res.status).toBe(400);
   });
 
-  it('POST /drain/ack rejects an empty "ids" array with 400', async () => {
+  it('POST /drain/ack rejects a body that is valid JSON but not an object at all (a bare string) with 400', async () => {
     await start();
     const res = await fetch(`${server.baseUrl}/drain/ack`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${DRAIN_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [] }),
+      body: '"just a string"',
     });
     expect(res.status).toBe(400);
   });
 
-  it('POST /drain/ack rejects "ids" containing a non-string with 400', async () => {
+  it('POST /drain/ack rejects an "acks" array containing a literal null entry with 400', async () => {
     await start();
     const res = await fetch(`${server.baseUrl}/drain/ack`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${DRAIN_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ['real-id', 42] }),
+      body: JSON.stringify({ acks: [null] }),
     });
     expect(res.status).toBe(400);
   });
 
-  it('POST /drain/ack reports acked/alreadyHandled/unknown for a mixed batch of ids', async () => {
+  it('POST /drain/ack rejects an empty "acks" array with 400', async () => {
+    await start();
+    const res = await fetch(`${server.baseUrl}/drain/ack`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acks: [] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /drain/ack rejects an entry with a non-string id with 400', async () => {
+    await start();
+    const res = await fetch(`${server.baseUrl}/drain/ack`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acks: [{ id: 42, drainCount: 1 }] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /drain/ack rejects an entry missing drainCount with 400 — it is required, never defaulted', async () => {
+    await start();
+    const res = await fetch(`${server.baseUrl}/drain/ack`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acks: [{ id: 'real-id' }] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /drain/ack rejects a non-positive-integer drainCount with 400', async () => {
+    await start();
+    for (const badCount of [0, -1, 1.5, '1']) {
+      const res = await fetch(`${server.baseUrl}/drain/ack`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${DRAIN_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acks: [{ id: 'real-id', drainCount: badCount }] }),
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('POST /drain/ack reports acked/alreadyHandled/unknown for a mixed batch', async () => {
     await start();
     store.enqueueBatch({
       batchId: 'b1',
@@ -201,12 +245,18 @@ describe('GET /drain, POST /drain/ack', () => {
     const [rowA, rowB] = store.claimForDrain(0, 30, 10);
 
     // Pre-ack b so the route call below sees it as alreadyHandled.
-    store.ackDrain([rowB!.id], 1);
+    store.ackDrain([{ id: rowB!.id, drainCount: rowB!.drainCount }], 1);
 
     const res = await fetch(`${server.baseUrl}/drain/ack`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${DRAIN_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [rowA!.id, rowB!.id, 'never-issued'] }),
+      body: JSON.stringify({
+        acks: [
+          { id: rowA!.id, drainCount: rowA!.drainCount },
+          { id: rowB!.id, drainCount: rowB!.drainCount },
+          { id: 'never-issued', drainCount: 1 },
+        ],
+      }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -217,6 +267,40 @@ describe('GET /drain, POST /drain/ack', () => {
     expect(body.acked).toEqual([rowA!.id]);
     expect(body.alreadyHandled).toEqual([rowB!.id]);
     expect(body.unknown).toEqual(['never-issued']);
+  });
+
+  it('POST /drain/ack reports unknown for a stale drainCount — a late ack from a claim the lease has already superseded', async () => {
+    await start();
+    store.enqueueBatch({
+      batchId: 'b1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    const [firstClaim] = store.claimForDrain(0, 30, 10);
+    // Lease lapses; re-offered to a second claim under a new drainCount —
+    // simulated directly against the store, the same way the real GET
+    // /drain loop would produce it after 30s.
+    const [secondClaim] = store.claimForDrain(31, 30, 10);
+    expect(secondClaim!.id).toBe(firstClaim!.id);
+    expect(secondClaim!.drainCount).toBeGreaterThan(firstClaim!.drainCount);
+
+    const res = await fetch(`${server.baseUrl}/drain/ack`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        acks: [{ id: firstClaim!.id, drainCount: firstClaim!.drainCount }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      acked: string[];
+      alreadyHandled: string[];
+      unknown: string[];
+    };
+    expect(body).toEqual({ acked: [], alreadyHandled: [], unknown: [firstClaim!.id] });
   });
 
   it('a throttle refusing every token means GET /drain hands over nothing, even with mail queued — the throttle is genuinely wired into the claim, not decorative', async () => {
@@ -244,5 +328,92 @@ describe('GET /drain, POST /drain/ack', () => {
     expect(body.messages).toEqual([]);
     // Still queued — the throttle held it back rather than dropping it.
     expect(store.countUndrainedRecipients()).toBe(1);
+  });
+
+  it("an aborted GET /drain never claims a message on the abandoned connection's behalf, even once one becomes available while it was held", async () => {
+    await start();
+
+    const controller = new AbortController();
+    const drainPromise = fetch(`${server.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}` },
+      signal: controller.signal,
+    });
+    // Let the request actually reach the held-open poll loop before
+    // aborting it — the loop is waiting on wake.waitForSignal() at this
+    // point, with nothing yet queued.
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    await expect(drainPromise).rejects.toThrow();
+    // The server's own req 'close' event fires once the OS reports the
+    // connection actually gone, not the instant the client-side abort
+    // signal fires — give it a moment to arrive before proceeding, the
+    // same gap any real disconnect (not just an abort()) has.
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Something becomes available only AFTER the abort — exactly the
+    // ordering that would let an unguarded loop claim it for a connection
+    // that can never receive the response.
+    store.enqueueBatch({
+      batchId: 'b1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    wake.notify();
+
+    // Give the aborted request's own loop every chance to (wrongly) wake
+    // and claim before checking — it must not have.
+    await new Promise((r) => setTimeout(r, FAST_OPTIONS.holdMs + 40));
+
+    // A fresh, un-aborted request finds the message completely untouched:
+    // drainCount 1, not 2 — proof nothing claimed it in between.
+    const freshRes = await fetch(`${server.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}` },
+    });
+    const freshBody = (await freshRes.json()) as { messages: Array<{ drainCount: number }> };
+    expect(freshBody.messages).toHaveLength(1);
+    expect(freshBody.messages[0]!.drainCount).toBe(1);
+  });
+
+  it('carries the recipient-variables "name" as toName, separate from the bare address in "to"', async () => {
+    await start();
+    store.enqueueBatch({
+      batchId: 'b1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: {
+        ...payload(),
+        recipientVariables: { 'member@example.com': { name: 'Member Name' } },
+      },
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+
+    const res = await fetch(`${server.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}` },
+    });
+    const body = (await res.json()) as { messages: Array<{ to: string; toName?: string }> };
+    expect(body.messages[0]!.to).toBe('member@example.com');
+    expect(body.messages[0]!.toName).toBe('Member Name');
+  });
+
+  it('leaves toName undefined when recipient-variables carries no name for that recipient', async () => {
+    await start();
+    store.enqueueBatch({
+      batchId: 'b1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+
+    const res = await fetch(`${server.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}` },
+    });
+    const body = (await res.json()) as { messages: Array<{ toName?: string }> };
+    expect(body.messages[0]!.toName).toBeUndefined();
   });
 });

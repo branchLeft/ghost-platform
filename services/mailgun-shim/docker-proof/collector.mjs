@@ -29,6 +29,7 @@ async function drainOnce({ ack = true } = {}) {
   }
 
   const delivered = [];
+  const acks = [];
   for (const message of body.messages) {
     const deliverRes = await fetch(`${deliveryBaseUrl}/deliver`, {
       method: 'POST',
@@ -39,6 +40,10 @@ async function drainOnce({ ack = true } = {}) {
       throw new Error(`delivery stub rejected message ${message.id}: ${deliverRes.status}`);
     }
     delivered.push(message.id);
+    // Names the generation this message was handed over at, not just the
+    // id -- required so the shim can tell this claim apart from one a
+    // lapsed-and-re-offered lease has since superseded.
+    acks.push({ id: message.id, drainCount: message.drainCount });
   }
 
   if (!ack) {
@@ -48,7 +53,7 @@ async function drainOnce({ ack = true } = {}) {
   const ackRes = await fetch(`${shimBaseUrl}/drain/ack`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${drainToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids: delivered }),
+    body: JSON.stringify({ acks }),
   });
   if (!ackRes.ok) {
     throw new Error(`POST /drain/ack -> ${ackRes.status}`);

@@ -419,14 +419,14 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
       now: 0,
     });
     const [drained] = store.claimForDrain(0, 30, 10);
-    const result = store.ackDrain([drained!.id], 1);
+    const result = store.ackDrain([{ id: drained!.id, drainCount: drained!.drainCount }], 1);
     expect(result).toEqual({ acked: [drained!.id], alreadyHandled: [], unknown: [] });
 
     // Even well past the lease, an acked row is never re-offered.
     expect(store.claimForDrain(10_000, 30, 10)).toHaveLength(0);
   });
 
-  it('acking the same id twice reports the second ack as alreadyHandled, not an error', () => {
+  it('acking the same id twice at the same generation reports the second ack as alreadyHandled, not an error', () => {
     store.enqueueBatch({
       batchId: 'batch-1',
       domain: DOMAIN,
@@ -436,13 +436,14 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
       now: 0,
     });
     const [drained] = store.claimForDrain(0, 30, 10);
-    store.ackDrain([drained!.id], 1);
-    const second = store.ackDrain([drained!.id], 2);
+    const ack = { id: drained!.id, drainCount: drained!.drainCount };
+    store.ackDrain([ack], 1);
+    const second = store.ackDrain([ack], 2);
     expect(second).toEqual({ acked: [], alreadyHandled: [drained!.id], unknown: [] });
   });
 
   it('acking an id this store has no record of at all is reported unknown, not an error', () => {
-    const result = store.ackDrain(['never-issued-id'], 1);
+    const result = store.ackDrain([{ id: 'never-issued-id', drainCount: 1 }], 1);
     expect(result).toEqual({ acked: [], alreadyHandled: [], unknown: ['never-issued-id'] });
   });
 
@@ -457,6 +458,7 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
     });
     const [drained] = store.claimForDrain(0, 30, 10);
     const staleId = drained!.id;
+    const staleDrainCount = drained!.drainCount;
 
     // The address is suppressed after the hand-over, and the lease lapses
     // without an ack — the next claim re-checks suppression on the lapsed
@@ -467,8 +469,47 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
 
     // The original drainer's ack, arriving late, names an id that is no
     // longer 'held' — reported unknown rather than silently accepted.
-    const result = store.ackDrain([staleId], 32);
+    const result = store.ackDrain([{ id: staleId, drainCount: staleDrainCount }], 32);
     expect(result).toEqual({ acked: [], alreadyHandled: [], unknown: [staleId] });
+  });
+
+  it('a late ack naming a SUPERSEDED generation (the row is still held, just re-offered to a newer claim) is unknown — never credited to the wrong holder', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    const [firstClaim] = store.claimForDrain(0, 30, 10);
+    const firstDrainCount = firstClaim!.drainCount; // 1
+
+    // Lease lapses with no ack; re-offered to a second claim (could be the
+    // same drainer retrying, or a different one — the store can't tell,
+    // and must not assume).
+    const [secondClaim] = store.claimForDrain(31, 30, 10);
+    expect(secondClaim!.id).toBe(firstClaim!.id);
+    expect(secondClaim!.drainCount).toBe(firstDrainCount + 1); // 2
+
+    // The FIRST drainer's ack now arrives, late, naming its own (stale)
+    // generation. The row is genuinely still 'held' — but at generation 2,
+    // not 1 — so this must not be accepted as that holder's success.
+    const lateAck = store.ackDrain([{ id: firstClaim!.id, drainCount: firstDrainCount }], 60);
+    expect(lateAck).toEqual({ acked: [], alreadyHandled: [], unknown: [firstClaim!.id] });
+
+    // The row is untouched by the rejected ack — still held under the
+    // CURRENT (second) claim's generation and lease, exactly as if the
+    // late ack had never arrived.
+    expect(store.claimForDrain(60, 30, 10)).toHaveLength(0); // second lease (until 61) still live
+
+    // The second (current) holder's ack, naming the right generation,
+    // succeeds.
+    const currentAck = store.ackDrain(
+      [{ id: secondClaim!.id, drainCount: secondClaim!.drainCount }],
+      61
+    );
+    expect(currentAck).toEqual({ acked: [secondClaim!.id], alreadyHandled: [], unknown: [] });
   });
 
   it('a suppressed recipient is resolved at claim time — never handed to a drainer, no event, still consumes toward the batch completing', () => {
@@ -489,11 +530,11 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
     expect(store.countUndrainedRecipients()).toBe(1);
   });
 
-  it('an unsafe recipient address is failed in place at claim time, never handed to a drainer', () => {
+  it('an unsafe recipient address is failed in place at claim time, never handed to a drainer, and a failed event is recorded for it', () => {
     store.enqueueBatch({
       batchId: 'batch-1',
       domain: DOMAIN,
-      emailId: null,
+      emailId: 'email-1',
       payload: payload(),
       recipients: ['grp:attacker@evil.com;', 'ok@example.com'],
       now: 0,
@@ -501,6 +542,16 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
     const drained = store.claimForDrain(0, 30, 10);
     expect(drained.map((r) => r.recipient)).toEqual(['ok@example.com']);
     expect(store.countUndrainedRecipients()).toBe(1); // ok@ held, awaiting ack
+
+    const { events } = store.listEvents(DOMAIN, { limit: 10, offset: 0 });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'failed',
+      severity: 'permanent',
+      recipient: 'grp:attacker@evil.com;',
+      emailId: 'email-1',
+      errorMessage: 'Invalid recipient address',
+    });
   });
 
   it('the throttle (canSend) stops the whole claim at the first row it refuses, leaving that row and everything after it untouched', () => {
@@ -579,7 +630,7 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
       now: 0,
     });
     const [drained] = store.claimForDrain(0, 30, 10);
-    store.ackDrain([drained!.id], 5);
+    store.ackDrain([{ id: drained!.id, drainCount: drained!.drainCount }], 5);
     expect(store.oldestUndrainedAgeSeconds(1000)).toBeNull();
   });
 
@@ -606,7 +657,7 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
     expect(drainedA!.recipient).toBe('a@example.com');
     expect(store.countUndrainedRecipients()).toBe(3); // held still counts
 
-    store.ackDrain([drainedA!.id], 1);
+    store.ackDrain([{ id: drainedA!.id, drainCount: drainedA!.drainCount }], 1);
     expect(store.countUndrainedRecipients()).toBe(2);
   });
 
@@ -627,7 +678,7 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
     // 'a' still held (not yet acked) — cleanup must not remove the batch yet.
     expect(store.cleanupCompletedBatches(Date.now() / 1000 + 10_000)).toBe(0);
 
-    store.ackDrain([drainedA!.id], 1);
+    store.ackDrain([{ id: drainedA!.id, drainCount: drainedA!.drainCount }], 1);
 
     // Both recipients are now terminal — completed_at is set, so a
     // sufficiently-future threshold now deletes it.
@@ -671,9 +722,9 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
       });
       const claimed = first.claimForDrain(0, 30, 2);
       expect(claimed.map((r) => r.recipient)).toEqual(['sent@example.com', 'held@example.com']);
-      const sentId = claimed.find((r) => r.recipient === 'sent@example.com')!.id;
+      const sentRow = claimed.find((r) => r.recipient === 'sent@example.com')!;
       const heldId = claimed.find((r) => r.recipient === 'held@example.com')!.id;
-      first.ackDrain([sentId], 1);
+      first.ackDrain([{ id: sentRow.id, drainCount: sentRow.drainCount }], 1);
       // sent -> sent (terminal); held -> held under its 30s lease;
       // pending -> never claimed at all in this session.
       first.close();

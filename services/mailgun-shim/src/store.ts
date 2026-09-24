@@ -74,6 +74,20 @@ export interface DrainedRecipient {
   drainCount: number;
 }
 
+/**
+ * What an ack names: not just the id, but the claim generation (the
+ * `drainCount` the drainer was handed alongside that id). An id alone
+ * cannot distinguish "the drainer that is currently holding this row" from
+ * "a drainer whose lease on it has since lapsed and been re-offered to
+ * someone else" — the id never changes across a re-offer, only
+ * `drain_count` does. Carrying the generation is what lets `ackDrain` tell
+ * those two apart (see its own doc comment).
+ */
+export interface AckRequest {
+  id: string;
+  drainCount: number;
+}
+
 export interface AckDrainResult {
   /** ids that were 'held' and are now 'sent' — this call's own work. */
   acked: string[];
@@ -146,12 +160,23 @@ export interface ShimStore {
   ): DrainedRecipient[];
 
   /**
-   * The other half of the handover: a `held` id becomes `sent` (this
-   * store's job for that message is over), a duplicate ack is reported
-   * rather than erroring, and an id this store does not currently hold
-   * (unknown, or already reclaimed back to `pending` by a lapsed lease)
-   * is reported as `unknown` so the caller can decide what to do rather
-   * than have it silently swallowed.
+   * The other half of the handover: a `held` id at the SAME generation the
+   * ack names becomes `sent` (this store's job for that message is over),
+   * a duplicate ack (already `sent`) is reported rather than erroring, and
+   * anything else — an id this store has no record of, or one whose
+   * `drainCount` no longer matches the row's current one — is reported as
+   * `unknown` so the caller can decide what to do rather than have it
+   * silently swallowed.
+   *
+   * The generation check is load-bearing, not decorative: an id is stable
+   * across a re-offer (the row stays `held`, just with a new `held_until`
+   * and an incremented `drain_count`), so a LATE ack from the drainer that
+   * held it BEFORE that re-offer would otherwise still find `status ===
+   * 'held'` and be accepted — crediting a claim that has since been
+   * superseded, and silently discarding the mail the *new* holder is
+   * responsible for while the old holder wrongly believes it is done. The
+   * generation this ack was issued against, not just the id, is what
+   * "held" has to mean here.
    *
    * Deliberately does not synthesize a "delivered" event: an ack means
    * the drainer took responsibility for the message, not that anyone
@@ -159,7 +184,7 @@ export interface ShimStore {
    * old worker's premature "delivered" event was a defect, and it would
    * be the same defect one hop later to synthesize it here.
    */
-  ackDrain(ids: string[], now: number): AckDrainResult;
+  ackDrain(acks: AckRequest[], now: number): AckDrainResult;
 
   /**
    * Seconds since the oldest recipient still owed a hand-over (`pending`
@@ -357,7 +382,7 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     "UPDATE queue_recipients SET status = 'failed', held_until = NULL, last_error = ? WHERE id = ?"
   );
   const selectRecipientById = db.prepare(
-    'SELECT id, batch_id AS batch_id, status FROM queue_recipients WHERE id = ?'
+    'SELECT id, batch_id AS batch_id, status, drain_count FROM queue_recipients WHERE id = ?'
   );
   const updateSentById = db.prepare(
     "UPDATE queue_recipients SET status = 'sent', held_until = NULL WHERE id = ?"
@@ -523,6 +548,22 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
 
           if (!isSafeRecipientAddress(row.recipient)) {
             updateFailedById.run('Invalid recipient address', row.id);
+            // Recorded so Ghost's own events polling learns about it —
+            // the deleted worker recorded a 'failed' event for every
+            // terminal failure it produced, and an unsafe address is a
+            // terminal failure produced here now instead.
+            insertEvent.run(
+              randomUUID(),
+              row.domain,
+              'failed',
+              'permanent',
+              row.recipient,
+              row.email_id,
+              null,
+              now,
+              null,
+              'Invalid recipient address'
+            );
             maybeCompleteBatch(row.batch_id, now);
             continue;
           }
@@ -558,15 +599,16 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       }
     },
 
-    ackDrain(ids, now) {
+    ackDrain(acks, now) {
       return withTransaction(db, () => {
         const acked: string[] = [];
         const alreadyHandled: string[] = [];
         const unknown: string[] = [];
 
-        for (const id of ids) {
+        for (const { id, drainCount } of acks) {
           const row = selectRecipientById.get(id) as
-            { id: string; batch_id: string; status: QueueRecipientStatus } | undefined;
+            | { id: string; batch_id: string; status: QueueRecipientStatus; drain_count: number }
+            | undefined;
           if (!row) {
             unknown.push(id);
             continue;
@@ -578,6 +620,15 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
           if (row.status !== 'held') {
             // 'pending' (lease lapsed and reclaimed before this ack arrived),
             // 'failed' or 'suppressed' — this ack is stale, not a success.
+            unknown.push(id);
+            continue;
+          }
+          if (row.drain_count !== drainCount) {
+            // Held, but at a NEWER generation than this ack was issued
+            // against: the lease lapsed and the row was re-offered (to
+            // this same drainer or another) between this drainer taking
+            // it and acking it. This ack is from a superseded claim —
+            // reported unknown, never accepted as the current holder's.
             unknown.push(id);
             continue;
           }

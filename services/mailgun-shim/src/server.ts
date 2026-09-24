@@ -1,4 +1,5 @@
 import { createApp } from './app.js';
+import { startCleanupScheduler } from './cleanup.js';
 import { loadConfig } from './config.js';
 import { createDrainWake } from './drainWake.js';
 import { createLogger } from './log.js';
@@ -14,6 +15,7 @@ const throttle = createThrottle({
   envMessagesPerHour: config.messagesPerHour,
   log,
 });
+const cleanup = startCleanupScheduler(store, log);
 
 const app = createApp(
   store,
@@ -35,6 +37,7 @@ const server = app.listen(config.port, () => {
 
 function shutdown(signal: string): void {
   log.info('worker_lifecycle', { event: 'shutdown_start', signal });
+  cleanup.stop();
   server.close(() => {
     store.close();
     log.info('worker_lifecycle', { event: 'shutdown_complete' });

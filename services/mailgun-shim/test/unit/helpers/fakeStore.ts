@@ -206,9 +206,9 @@ export function createFakeStore(): FakeShimStore {
       return drained;
     },
 
-    ackDrain(ids, now) {
+    ackDrain(acks, now) {
       const result: AckDrainResult = { acked: [], alreadyHandled: [], unknown: [] };
-      for (const id of ids) {
+      for (const { id, drainCount } of acks) {
         const location = recipientIndex.get(id);
         const row = location
           ? batches.get(location.batchId)?.recipients.get(location.recipient)
@@ -222,6 +222,12 @@ export function createFakeStore(): FakeShimStore {
           continue;
         }
         if (row.status !== 'held') {
+          result.unknown.push(id);
+          continue;
+        }
+        if (row.drainCount !== drainCount) {
+          // Held, but at a newer generation than this ack names — a late
+          // ack from a superseded claim (see store.ts's own ackDrain doc).
           result.unknown.push(id);
           continue;
         }

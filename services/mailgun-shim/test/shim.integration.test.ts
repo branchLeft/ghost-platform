@@ -4,6 +4,7 @@ import { createCollector, type Collector } from './helpers/collector.js';
 import { createMailgunClient } from './helpers/mailgunClient.js';
 import { startSmtpSink, type SmtpSink } from './helpers/smtpSink.js';
 import { startTestShim, type TestShim } from './helpers/testServer.js';
+import { createThrottle } from '../src/throttle.js';
 
 // mailgun.js is the exact client library Ghost bundles
 // (mailgun-client.js:367-370 constructs it the same way: `new
@@ -143,6 +144,45 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     expect(elapsedMs).toBeLessThan(150);
   });
 
+  it('the first message ever sent, at the PRODUCTION throttle default (50/hour, no override), is still handed over within a second — the cold-start grace token, not the test-only boosted rate', async () => {
+    // A second, independent shim: the outer describe's `shim` uses the
+    // unlimited test throttle everywhere else in this file. This one uses
+    // createThrottle with no envMessagesPerHour override at all, so it
+    // resolves to the exact same 50/hour a real deploy gets — proving the
+    // Done sentence ("handed over ... within a second of enqueue") holds
+    // against what actually ships, not only against a compressed test
+    // rate. Before the grace-token fix, this was ~72 seconds off, not a
+    // typo — 1/50 of an hour, for the very first message a fresh spool
+    // ever queues.
+    const prodShim = await startTestShim({
+      throttle: createThrottle({ envMessagesPerHour: 0 }), // 0 -> createThrottle's own 50/hour default
+    });
+    prodShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    const prodClient = createMailgunClient(prodShim.baseUrl, TENANT_API_KEY);
+    try {
+      await prodClient.messages.create(TENANT_DOMAIN, {
+        to: ['first-ever@example.com'],
+        from: 'noreply@tenant1.example.com',
+        subject: 'Hi',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      });
+
+      const start = Date.now();
+      const res = await fetch(`${prodShim.baseUrl}/drain`, {
+        headers: { Authorization: `Bearer ${prodShim.drainToken}` },
+      });
+      const elapsedMs = Date.now() - start;
+      const body = (await res.json()) as { messages: Array<{ to: string }> };
+      expect(body.messages).toHaveLength(1);
+      expect(body.messages[0]!.to).toBe('first-ever@example.com');
+      expect(elapsedMs).toBeLessThan(1000);
+    } finally {
+      await prodShim.close();
+    }
+  });
+
   it('an unacknowledged message is re-offered under the same id once its lease lapses, and never duplicated while still held', async () => {
     await mailgunClient.messages.create(TENANT_DOMAIN, {
       to: ['crash-before-ack@example.com'],
@@ -227,7 +267,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     const ackWithoutAuth = await fetch(`${shim.baseUrl}/drain/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ['whatever'] }),
+      body: JSON.stringify({ acks: [{ id: 'whatever', drainCount: 1 }] }),
     });
     expect(ackWithoutAuth.status).toBe(401);
 

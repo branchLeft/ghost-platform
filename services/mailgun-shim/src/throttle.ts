@@ -21,16 +21,35 @@ const DEFAULT_MESSAGES_PER_HOUR = 50;
 const SECONDS_PER_HOUR = 3600;
 
 /**
- * Token bucket in messages/hour. Starts empty (not full) on purpose: this
- * gates warm-up sending, so a freshly started worker must not be allowed to
- * burst up to the hourly cap on its first tick — capacity accrues from zero
- * over the configured window, the same as every tick after it.
+ * Token bucket in messages/hour. Starts with exactly ONE grace token, not a
+ * full bucket and not zero.
+ *
+ * Not a full bucket: this gates warm-up sending, so a freshly started
+ * worker must not be allowed to burst up to the hourly cap on its first
+ * tick — capacity above the grace token accrues from zero over the
+ * configured window, the same as every tick after it. A restart-to-bypass
+ * attack is still bounded to one extra message per restart, which is a
+ * much smaller bypass than the full hourly cap a truly full bucket would
+ * hand out on every restart.
+ *
+ * Not zero either: at this component's own production default (50/hour),
+ * a bucket starting at literally zero tokens makes the FIRST message ever
+ * sent through a freshly started spool wait up to 72 seconds (1/50 hour)
+ * for a token to accrue — before anything has actually burst, there is
+ * nothing to protect against yet. That directly broke this story's own
+ * Done criterion ("a message enqueued ... is handed over on a waiting
+ * drain request within a second of enqueue") the first time it was
+ * checked against production defaults rather than a test's boosted rate.
+ * LLD-6 marks a *different* throttle — the demo-mail "two ceilings, not
+ * one" containment in LLD-6 §05, load-bearing at §08 — but says nothing
+ * about this one's cold-start latency, so fixing it is incidental: an
+ * implementer's engineering call, not a redesign of anything LLD-6 pins.
  */
 export function createThrottle(opts: ThrottleOptions): Throttle {
   const now = opts.now ?? (() => Date.now() / 1000);
   let messagesPerHour =
     opts.envMessagesPerHour > 0 ? opts.envMessagesPerHour : DEFAULT_MESSAGES_PER_HOUR;
-  let tokens = 0;
+  let tokens = Math.min(1, messagesPerHour);
   let lastRefillAt = now();
   let lastMtimeMs: number | undefined;
 
