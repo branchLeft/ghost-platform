@@ -10,9 +10,8 @@ export interface AskConfig {
    * its network position"). A wildcard value (`0.0.0.0`, `::`, `[::]`) is
    * refused for the same reason: it is not an unset value, but it produces
    * the identical failure -- reachable from every interface -- so refusing
-   * it here is the load-bearing half of the issue's own control case
-   * (branchLeft/ghost-platform#237 review cycle 1: "bind it to all
-   * interfaces and the reachability test goes red").
+   * it here is the load-bearing half of the story's own done-means control
+   * case: "bind it to all interfaces and the reachability test goes red".
    */
   readonly bindHost: string;
   /** Directory of one JSON tenant descriptor per file, refreshed on a timer. */
