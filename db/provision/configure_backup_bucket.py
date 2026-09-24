@@ -680,8 +680,8 @@ def main(argv: list[str]) -> int:
         f"bucket is still administrable. The fence is not proven to FENCE anything until "
         f"verify-bucket-fence.py passes -- run it now, from this terminal. The media/ expiry is "
         f"not proven to actually expire anything until "
-        f"probe-media-lifecycle-expiration.py's prefix-split check comes back PASS -- see this "
-        f"story's PR for that runbook."
+        f"probe-media-lifecycle-expiration.py's prefix-split check comes back PASS -- run its "
+        f"setup-split against a throwaway bucket, wait 24-48 hours, then run check-split."
     )
     return 0
 

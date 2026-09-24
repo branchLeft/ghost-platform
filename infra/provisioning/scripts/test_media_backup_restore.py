@@ -25,6 +25,7 @@ import unittest
 from unittest import mock
 
 from media_backup_restore import (
+    MediaBackupClockSkewError,
     MediaBackupConfirmedEmptyConflictError,
     MediaBackupError,
     MediaBackupFloorError,
@@ -373,9 +374,9 @@ class BackupTenantMediaTests(unittest.TestCase):
             self.assertNotIn("2026/09", key)
 
     def test_backup_object_keys_are_not_derived_from_the_plaintext_digest(self):
-        # Review cycle 2's finding: a content-addressed key is a
-        # fingerprint that survives crypto-shredding, because it needs no
-        # key at all to recompute from a known or guessed plaintext.
+        # A content-addressed key is a fingerprint that survives
+        # crypto-shredding, because it needs no key at all to recompute
+        # from a known or guessed plaintext.
         self._backup()
         photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
         second_digest = sha256_hex(b"a second uploaded file")
@@ -891,7 +892,13 @@ class ConcurrentRunSafetyTests(unittest.TestCase):
     SMALL_RUN_ID = "20260101T000000000000Z-0000000000000001"
     LARGE_RUN_ID = "20260101T000000000000Z-ffffffffffffffff"
 
-    def test_interleaving_1_the_smaller_id_run_finishes_first_and_is_safely_superseded(self):
+    def test_sequential_smaller_id_then_larger_id_supersedes_in_id_order(self):
+        # Not an interleaving -- both runs complete fully, one after the
+        # other, with no overlap in time. Proves the ordinary case: a run
+        # can only ever delete generations older than ITSELF, so id order
+        # alone determines what a later run supersedes, whichever order the
+        # runs actually started in. See the two tests below for the cases
+        # where the runs' UPLOADS genuinely overlap.
         # A gen0 exists first.
         self._backup("20260101T000000000000Z-0000000000000000")
 
@@ -941,11 +948,62 @@ class ConcurrentRunSafetyTests(unittest.TestCase):
         report = self._restore()
         self.assertEqual(len(report.verified_keys), 3)
         # The smaller-id (slower) run raised before it reached its own
-        # delete step -- it deleted nothing.
+        # delete step -- it deleted nothing. It also never reached its own
+        # manifest write: the presence check that catches its missing
+        # object runs BEFORE that run's manifest is written, so a run
+        # whose own objects got superseded out from under it leaves no
+        # manifest of its own behind either -- only the winner's.
         remaining_manifests = [
             key for key in self.store.buckets["backup"] if key.endswith("manifest.json.age")
         ]
-        self.assertEqual(len(remaining_manifests), 2, "the slower run must not have deleted the winner's manifest")
+        self.assertEqual(len(remaining_manifests), 1, "only the winning (larger-id) run's manifest should exist")
+
+    def test_true_interleaving_the_smaller_id_run_never_deletes_the_larger_id_runs_in_progress_objects(self):
+        # The rule that makes concurrent runs safe -- "never delete a
+        # same-or-later generation" (`_sorts_before`, used by
+        # `_delete_older_generations` for both the end-of-run delete AND
+        # the orphan sweep below) -- proven by TRUE interleaving, not
+        # merely sequential completion: the LARGER-id run is paused mid-upload,
+        # and while it is paused, the SMALLER-id run starts AND completes
+        # its whole backup, including its own delete/orphan-sweep step.
+        # The smaller-id run's cleanup must never remove the larger-id
+        # run's already-written object, because a same-or-later id is
+        # never "older" -- regardless of which run happens to finish
+        # first in wall-clock time.
+        state = {"fired": False, "large_object_key": None}
+        real_put = self.store.put_object
+
+        def large_run_put_hook(**kw):
+            real_put(**kw)
+            if not state["fired"] and "/objects/" in kw["key"] and f"/{self.LARGE_RUN_ID}/" in kw["key"]:
+                state["fired"] = True
+                state["large_object_key"] = kw["key"]
+                # The SMALLER-id run starts and finishes ENTIRELY -- upload,
+                # presence checks, manifest, delete step -- while the
+                # LARGER-id run is paused right here, mid-upload.
+                self._backup(self.SMALL_RUN_ID)
+
+        try:
+            large = self._backup(self.LARGE_RUN_ID, put_object=large_run_put_hook)
+        except MediaBackupObjectVerificationError:
+            # Under a broken guard, the larger run's OWN presence check can
+            # itself be the thing that catches the corruption (its own
+            # object missing) -- that is still a symptom of the same bug,
+            # not a separate outcome, so this is caught here rather than
+            # asserted against directly: the assertion below is the one
+            # that actually distinguishes correct code from broken code.
+            large = None
+
+        self.assertIn(
+            state["large_object_key"],
+            self.store.buckets["backup"],
+            "the smaller-id run's cleanup deleted a still-in-progress larger-id run's own "
+            "object -- a same-or-later id must never be treated as \"older\"",
+        )
+        if large is not None:
+            self.assertEqual(large.object_count, 3)
+            report = self._restore()
+            self.assertEqual(len(report.verified_keys), 3)
 
     def test_nested_run_completes_entirely_during_the_outer_runs_upload(self):
         # Uses the real (wall-clock) generate_run_id rather than injected
@@ -1001,8 +1059,8 @@ class RestoreTenantMediaTests(unittest.TestCase):
             delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
-        # The genuine destroy: the object-storage round trip this story asks
-        # for runs AFTER the source is gone, not merely reasoned about.
+        # The genuine destroy: the object-storage round trip has to run
+        # AFTER the source is gone, not merely be reasoned about.
         del self.store.buckets["live-a"]["content/images/photo.jpg"]
 
     def _manifest(self):
@@ -1185,6 +1243,127 @@ class RestoreTenantMediaTests(unittest.TestCase):
         self.assertNotIn("content/images/second.jpg", self.store.buckets.get("restored-a", {}))
 
 
+class RestoreFallbackTests(unittest.TestCase):
+    """A caught failure must never leave the tenant unrestorable by
+    default. A lossy-put run (this run's own presence check catches a
+    missing object before ever writing a manifest) leaves the PREVIOUS
+    generation as the newest one with a manifest, so a default restore
+    succeeds without needing --run-id at all. A manifest
+    READ-BACK MISMATCH is different: the manifest key DOES exist (the PUT
+    itself reported success), so this run becomes the (broken) newest
+    generation, and the default restore must name the newest OLDER
+    generation with a manifest and the exact --run-id command to recover
+    it -- never fall back on its own."""
+
+    def setUp(self):
+        self.store = FakeObjectStore()
+        self.store.put("live-a", "a.jpg", b"a bytes")
+
+    def _backup(self, **overrides):
+        kwargs = dict(
+            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
+            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
+            list_objects=self.store.list_objects,
+            get_object_with_content_type=self.store.get_object_with_content_type,
+            get_object=self.store.get_object, put_object=self.store.put_object,
+            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
+        )
+        kwargs.update(overrides)
+        return backup_tenant_media(**kwargs)
+
+    def _restore(self, **overrides):
+        kwargs = dict(
+            tenant="tenant-a", backup_bucket="backup", endpoint=ENDPOINT, region=REGION,
+            backup_access_key="x", backup_secret_key="x", identity_path=TENANT_A_IDENTITY,
+            list_objects=self.store.list_objects, get_object=self.store.get_object,
+            put_object=self.store.put_object, decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
+        )
+        kwargs.update(overrides)
+        return restore_tenant_media(**kwargs)
+
+    def test_a_lossy_put_run_leaves_the_previous_generation_as_the_default_restore_target(self):
+        good = self._backup()
+        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
+
+        real_put = self.store.put_object
+        dropped = {"done": False}
+
+        def lossy_put(**kw):
+            if not dropped["done"] and "/objects/" in kw["key"] and kw["key"].endswith(".age"):
+                dropped["done"] = True
+                return  # 2xx in spirit -- no exception -- but never stored
+            return real_put(**kw)
+
+        with self.assertRaises(MediaBackupObjectVerificationError):
+            self._backup(put_object=lossy_put)
+
+        # No manifest was ever written for the lossy run -- a manifest
+        # means a complete generation, so a failure caught before it is
+        # written leaves none behind for the failed run.
+        manifests = [k for k in self.store.buckets["backup"] if k.endswith("manifest.json.age")]
+        self.assertEqual(manifests, [_manifest_key("tenant-a", good.run_id)])
+
+        report = self._restore()
+        self.assertEqual(report.run_id, good.run_id)
+        self.assertEqual(report.verified_keys, ["a.jpg"])
+
+    def test_a_manifest_readback_mismatch_names_the_older_generation_and_the_run_id_command(self):
+        good = self._backup()
+        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
+
+        real_put = self.store.put_object
+
+        def corrupting_put(**kw):
+            if kw["key"].endswith("manifest.json.age"):
+                kw = dict(kw)
+                kw["data"] = kw["data"][:-5]  # the PUT "succeeds"; the stored bytes differ
+            return real_put(**kw)
+
+        with self.assertRaises(MediaBackupManifestVerificationError):
+            self._backup(put_object=corrupting_put)
+
+        # Despite the raise, the corrupted manifest key DOES now exist and
+        # sorts newest -- this is the one failure the reordering alone
+        # cannot prevent (see the module docstring).
+        manifests = {k for k in self.store.buckets["backup"] if k.endswith("manifest.json.age")}
+        self.assertEqual(len(manifests), 2)
+
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        message = str(ctx.exception)
+        self.assertIn(good.run_id, message)
+        self.assertIn(f"--run-id {good.run_id}", message)
+
+        # The explicit --run-id recovery this message names actually works
+        # -- never chosen automatically, only on request.
+        recovered = self._restore(run_id=good.run_id)
+        self.assertEqual(recovered.run_id, good.run_id)
+        self.assertEqual(recovered.verified_keys, ["a.jpg"])
+
+    def test_no_older_generation_says_so_rather_than_inventing_a_run_id(self):
+        real_put = self.store.put_object
+
+        def corrupting_put(**kw):
+            if kw["key"].endswith("manifest.json.age"):
+                kw = dict(kw)
+                kw["data"] = kw["data"][:-5]
+            return real_put(**kw)
+
+        with self.assertRaises(MediaBackupManifestVerificationError):
+            self._backup(put_object=corrupting_put)
+
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn("No older generation", str(ctx.exception))
+
+    def test_an_explicit_run_id_that_has_no_manifest_is_refused_by_name(self):
+        self._backup()
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore(run_id="20260101T000000000000Z-0000000000000000")
+        self.assertIn("no manifest at generation", str(ctx.exception))
+
+
 class KeyShapeDeletionGuardTests(unittest.TestCase):
     """Every key a listing returns under a tenant's
     `generations/` prefix is checked against this module's own exact key
@@ -1237,14 +1416,162 @@ class KeyShapeDeletionGuardTests(unittest.TestCase):
         self.assertIsNone(pattern.match("media/tenant-ab/generations/x/manifest.json.age"))
         self.assertIsNone(pattern.match("media/tenant-a/objects/" + "a" * 64 + ".age"))
 
+    def test_a_persistent_bad_key_fails_before_any_object_is_re_uploaded(self):
+        # The shape check that would abort this run anyway (see the
+        # sabotage test above) now runs BEFORE any object is re-uploaded --
+        # a persistent version of this failure must cost one listing per
+        # run, never a full new copy of the tenant's media every time it
+        # recurs.
+        self._backup()
+        self.store.buckets["backup"]["media/tenant-a/generations/not-a-real-run-id/objects/junk"] = b"x"
+        before = {key for key in self.store.buckets["backup"] if "/objects/" in key}
+        with self.assertRaises(MediaBackupError):
+            self._backup()
+        after = {key for key in self.store.buckets["backup"] if "/objects/" in key}
+        self.assertEqual(
+            before, after, "a persistent shape defect must not upload a full new copy before failing"
+        )
+
+
+class OrphanGenerationCleanupTests(unittest.TestCase):
+    """An orphaned generation (objects with no manifest -- an aborted
+    or a superseded-while-still-uploading run) that is strictly older than
+    this run's own id is reclaimed before this run uploads anything, using
+    the same "never a same-or-later id" rule as every other delete in this
+    module (`_sorts_before`). Reclaiming it here, rather than only as a
+    side effect of a run that itself goes on to succeed, means a run that
+    fails for an unrelated reason still does not leave a previous run's
+    abandoned objects sitting there indefinitely."""
+
+    def setUp(self):
+        self.store = RecordingObjectStore()
+        self.store.put("live-a", "a.jpg", b"a bytes")
+
+    def _backup(self, **overrides):
+        kwargs = dict(
+            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
+            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
+            list_objects=self.store.list_objects,
+            get_object_with_content_type=self.store.get_object_with_content_type,
+            get_object=self.store.get_object, put_object=self.store.put_object,
+            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
+        )
+        kwargs.update(overrides)
+        return backup_tenant_media(**kwargs)
+
+    def test_an_orphan_older_than_this_run_is_reclaimed_even_when_this_run_itself_then_fails(self):
+        # An orphan from a previous run that uploaded one object then never
+        # wrote a manifest at all (a crash, or a lost race).
+        orphan_run_id = "20260101T000000000000Z-0000000000000000"
+        orphan_key = _object_key_for_backup("tenant-a", orphan_run_id, "a" * 64)
+        self.store.put("backup", orphan_key, b"orphaned ciphertext")
+
+        # This run is made to fail for an UNRELATED reason -- an upload
+        # failure partway through its own object loop -- which happens
+        # AFTER the orphan sweep at the top of the function has already
+        # run.
+        def flaky_put(**kw):
+            raise ObjectStorageError("simulated upload failure")
+
+        with self.assertRaises(ObjectStorageError):
+            self._backup(put_object=flaky_put)
+
+        self.assertNotIn(orphan_key, self.store.buckets["backup"])
+
+    def test_an_orphan_newer_than_this_run_is_left_alone(self):
+        # A same-or-later id is never "older" -- an orphan from a
+        # still-in-progress concurrent run with a NEWER id must survive
+        # this run's own sweep.
+        newer_orphan_run_id = "29990101T000000000000Z-0000000000000000"
+        orphan_key = _object_key_for_backup("tenant-a", newer_orphan_run_id, "b" * 64)
+        self.store.put("backup", orphan_key, b"in-progress ciphertext")
+
+        self._backup()
+
+        self.assertIn(orphan_key, self.store.buckets["backup"])
+
+    def test_sabotage_the_shared_ordering_predicate_breaks_the_orphan_sweep_too(self):
+        # The orphan sweep shares `_delete_older_generations` /
+        # `_sorts_before` with the end-of-run supersession delete -- the
+        # same `<` -> `!=` sabotage that breaks the end-of-run delete
+        # makes this run reclaim an orphan that is NEWER than itself,
+        # which is exactly the corruption the shared predicate exists to
+        # prevent.
+        import media_backup_restore as m
+
+        newer_orphan_run_id = "29990101T000000000000Z-0000000000000000"
+        orphan_key = _object_key_for_backup("tenant-a", newer_orphan_run_id, "b" * 64)
+        self.store.put("backup", orphan_key, b"in-progress ciphertext")
+
+        original = m._sorts_before
+        m._sorts_before = lambda candidate, run_id: candidate != run_id
+        try:
+            self._backup()
+        finally:
+            m._sorts_before = original
+
+        self.assertNotIn(orphan_key, self.store.buckets["backup"])
+
+
+class ClockSkewGuardTests(unittest.TestCase):
+    """A generation dated in the future must not let restore silently
+    freeze on stale data while every signal stays green. A run whose own
+    delete step leaves a newer-sorting manifest behind (this run's clock is
+    behind that generation's, or that generation's clock ran ahead of real
+    time) must say so loudly -- nothing else in this module ever would.
+    This run's own backup is not lost; it is simply not the one restore
+    will read."""
+
+    def setUp(self):
+        self.store = FakeObjectStore()
+        self.store.put("live-a", "a.jpg", b"v1")
+
+    def _backup(self, run_id, **overrides):
+        kwargs = dict(
+            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
+            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
+            list_objects=self.store.list_objects,
+            get_object_with_content_type=self.store.get_object_with_content_type,
+            get_object=self.store.get_object, put_object=self.store.put_object,
+            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
+            make_run_id=lambda: run_id,
+        )
+        kwargs.update(overrides)
+        return backup_tenant_media(**kwargs)
+
+    def test_a_future_dated_generation_is_caught_by_a_normal_runs_own_re_list(self):
+        future_run_id = "20990101T000000000000Z-0000000000000000"
+        self._backup(future_run_id)
+        self.store.buckets["live-a"]["a.jpg"] = b"v2"
+
+        normal_run_id = "20260925T000000000000Z-0000000000000000"
+        with self.assertRaises(MediaBackupClockSkewError) as ctx:
+            self._backup(normal_run_id)
+        self.assertIn(future_run_id, str(ctx.exception))
+
+        # GREEN: the normal run's own backup is NOT lost -- only restore's
+        # choice of "newest" is affected until a later-dated run supersedes
+        # the future one too.
+        self.assertTrue(
+            any(f"/{normal_run_id}/" in key for key in self.store.buckets["backup"]),
+            "the normal run's own backup must still exist despite the loud failure",
+        )
+
+    def test_no_future_generation_means_no_raise(self):
+        report = self._backup("20260925T000000000000Z-0000000000000000")
+        self.assertEqual(report.object_count, 1)
+
 
 class MainWiringTests(unittest.TestCase):
     """Proves the CLI's argument parsing actually reaches the function calls
-    it claims to, not only that the process exits the right code -- the
-    exact class of defect the reviewer demonstrated by breaking
-    `assert_media_present=False` inside `main()` while every other test
-    stayed green: mock the two entry points and assert on the KWARGS `main`
-    passed them, not merely on the return code."""
+    it claims to, not only that the process exits the right code -- a
+    flag silently dropped inside `main()` (for example a hardcoded
+    `confirm_tenant_has_no_media=False`) would leave every other test
+    green, since none of them exercise `main()`'s own wiring: mock the two
+    entry points and assert on the KWARGS `main` passed them, not merely
+    on the return code."""
 
     def setUp(self):
         self.env = {
@@ -1322,6 +1649,25 @@ class MainWiringTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(mock_restore.call_args.kwargs["identity_path"], "/tmp/id")
         self.assertEqual(mock_restore.call_args.kwargs["target_bucket"], "tb")
+        self.assertIsNone(mock_restore.call_args.kwargs["run_id"])
+
+    @mock.patch("media_backup_restore.restore_tenant_media")
+    def test_restore_passes_an_explicit_run_id_through(self, mock_restore):
+        mock_restore.return_value = mock.Mock(
+            tenant="t", run_id="20260101T000000000000Z-0000000000000000",
+            verified_keys=["k"], bytes_recovered=5,
+        )
+        rc = main(
+            [
+                "restore", "--tenant", "t", "--backup-bucket", "bb",
+                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id",
+                "--run-id", "20260101T000000000000Z-0000000000000000",
+            ]
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            mock_restore.call_args.kwargs["run_id"], "20260101T000000000000Z-0000000000000000"
+        )
 
     @mock.patch("media_backup_restore.restore_tenant_media")
     def test_restore_exits_1_when_verification_raises(self, mock_restore):

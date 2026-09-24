@@ -44,9 +44,16 @@
 #                restore succeeds afterwards regardless of which process
 #                actually finished last
 #   LOSSY-PUT    an object PUT that answers success without the object
-#                actually landing must be caught before any delete runs --
-#                sabotage the module's own put_object call to silently drop
-#                the second object's ciphertext -> reverted
+#                actually landing must be caught, before this run's own
+#                manifest is ever written -- so a default restore afterwards
+#                still succeeds, reading the untouched previous generation
+#   MANIFEST-MISMATCH  the one failure the LOSSY-PUT ordering cannot itself
+#                prevent: a manifest PUT that reports success but stores
+#                different bytes. The torn manifest key DOES exist, so a
+#                default restore must refuse it rather than invent a
+#                fallback -- and must name the newest OLDER generation and
+#                the exact --run-id command that recovers it, which this
+#                round then runs for real
 # Plus one direct check outside the RED/GREEN frame: restoring with a
 # different tenant's identity is refused (the crypto-shredding property).
 #
@@ -281,16 +288,19 @@ run_backup() {
 }
 
 run_restore() {
-    # $1: --identity-file value  $2: target bucket or ""  $3: tenant (default tenant-a)
-    identity="$1"; target="$2"; tenant="${3:-tenant-a}"
+    # $1: --identity-file value  $2: target bucket or ""  $3: tenant (default
+    # tenant-a)  $4: --run-id value or "" (default: the newest generation)
+    identity="$1"; target="$2"; tenant="${3:-tenant-a}"; run_id="${4:-}"
     target_flag=""
     [ -n "$target" ] && target_flag="--target-bucket $target"
+    run_id_flag=""
+    [ -n "$run_id" ] && run_id_flag="--run-id $run_id"
     # shellcheck disable=SC2086
     MEDIA_LIVE_ACCESS_KEY_ID="$MINIO_ROOT_USER" MEDIA_LIVE_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
         MEDIA_BACKUP_ACCESS_KEY_ID="$MINIO_ROOT_USER" MEDIA_BACKUP_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
         python3 "$SCRIPTS_DIR/media_backup_restore.py" restore \
         --tenant "$tenant" --backup-bucket "$BACKUP_BUCKET" \
-        --endpoint "$MINIO_ENDPOINT" --region "$REGION" --identity-file "$identity" $target_flag
+        --endpoint "$MINIO_ENDPOINT" --region "$REGION" --identity-file "$identity" $target_flag $run_id_flag
 }
 
 # Every run gets its own generation prefix (media/tenant-a/generations/<run
@@ -474,7 +484,7 @@ else
     fail "restore failed on a clean backup after reverting the wiring sabotage -- something else broke"
 fi
 
-note "RED-5: reproduce the reviewer's attack -- a second age recipient in a ciphertext's header must be refused"
+note "RED-5: a second age recipient in a ciphertext's header must be refused"
 cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-red5"
 sed -i.bak "s/argv = \[\"age\", \"-r\", recipient\]/argv = [\"age\", \"-r\", recipient, \"-r\", \"$TENANT_B_RECIPIENT\"]/" \
     "$SCRIPTS_DIR/media_backup_restore.py"
@@ -818,18 +828,17 @@ if [ "$POST_LOSSY_TENANT_COUNT" -ge "$PRE_LOSSY_TENANT_COUNT" ]; then
 else
     fail "LOSSY-PUT: the tenant's total object/manifest count SHRANK ($PRE_LOSSY_TENANT_COUNT -> $POST_LOSSY_TENANT_COUNT) -- something was deleted despite the missing object"
 fi
-# The sabotaged run's OWN manifest was written (and read back verified)
-# before the missing-object check ran -- see media_backup_restore.py's own
-# docstring on why the object-presence check runs right before delete, not
-# before the manifest write. That manifest is now the tenant's NEWEST, and
-# it names an object that does not exist -- so restore must FAIL here,
-# honestly, rather than silently succeed against a generation that never
-# finished. This is the control working, not a bug: R4 exists precisely so
-# an incomplete result is never reported as a successful restore.
+# The sabotaged run's own presence check -- run BEFORE its manifest is ever
+# written -- caught the missing object and raised without writing one. So
+# the tenant's newest generation with a manifest is still the PREVIOUS
+# (good) one, untouched by this run: a default restore must SUCCEED here,
+# reading that previous generation, with no --run-id needed. A manifest
+# existing means the generation it names is complete -- see
+# media_backup_restore.py's own docstring.
 if run_restore "$WORKDIR/tenant-a.identity" ""; then
-    fail "LOSSY-PUT: restore succeeded even though the newest generation's manifest names a missing object -- WRONG, this should never report success"
+    pass "LOSSY-PUT: restore succeeds by default -- the lossy run never wrote a manifest, so the previous (good) generation is still the newest one"
 else
-    pass "LOSSY-PUT: restore correctly refuses against the broken newest generation -- no silent false success"
+    fail "LOSSY-PUT: restore FAILED -- WRONG, the previous generation should still be the newest, unbroken one"
 fi
 echo "-- reverting the lossy-put sabotage --"
 cp "$WORKDIR/media_backup_restore.py.orig-lossyput" "$SCRIPTS_DIR/media_backup_restore.py"
@@ -849,6 +858,82 @@ if run_restore "$WORKDIR/tenant-a.identity" ""; then
     pass "LOSSY-PUT: GREEN: restore succeeds again once a clean run supersedes the broken one"
 else
     fail "LOSSY-PUT: GREEN: restore still fails after a clean run -- the broken generation was not actually superseded"
+fi
+
+note "MANIFEST-MISMATCH: a manifest PUT that reports success but stores different bytes must never be silently trusted"
+GOOD_RUN_ID_BEFORE_MISMATCH="$(resolve_run_id)"
+cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-mismatch"
+python3 - "$SCRIPTS_DIR/media_backup_restore.py" <<'PYEOF'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+marker = "    _assert_valid_tenant_slug(tenant, MediaBackupError)\n\n    live_objects = list_objects("
+assert marker in text, "expected marker not found -- has the function's own opening shape changed?"
+sabotaged = text.replace(
+    marker,
+    "    _assert_valid_tenant_slug(tenant, MediaBackupError)\n\n"
+    "    _SABOTAGE_REAL_PUT_OBJECT = put_object\n"
+    "    def put_object(**kw):  # noqa: F811 -- SABOTAGE: local shadow, manifest only\n"
+    "        if kw.get('key', '').endswith('manifest.json.age'):\n"
+    "            kw = dict(kw)\n"
+    "            kw['data'] = kw['data'][:-5]  # SABOTAGE: PUT 'succeeds'; stored bytes differ\n"
+    "        return _SABOTAGE_REAL_PUT_OBJECT(**kw)\n\n"
+    "    live_objects = list_objects(",
+    1,
+)
+assert sabotaged != text
+open(path, "w").write(sabotaged)
+PYEOF
+if ! diff -q "$WORKDIR/media_backup_restore.py.orig-mismatch" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
+    echo "manifest-mismatch sabotage applied: the manifest PUT now stores truncated bytes"
+else
+    echo "FAILED: the sabotage patch did not change the file -- cannot prove this control" >&2
+    exit 1
+fi
+if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
+    fail "MANIFEST-MISMATCH: backup exited 0 despite a torn manifest read-back -- WRONG"
+else
+    pass "MANIFEST-MISMATCH: the sabotaged run's own exit code is non-zero, as expected"
+fi
+echo "-- reverting the manifest-mismatch sabotage --"
+cp "$WORKDIR/media_backup_restore.py.orig-mismatch" "$SCRIPTS_DIR/media_backup_restore.py"
+if diff -q "$WORKDIR/media_backup_restore.py.orig-mismatch" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
+    echo "manifest-mismatch sabotage reverted: file matches the pre-sabotage original"
+else
+    echo "FAILED: revert did not restore the original file" >&2
+    exit 1
+fi
+# Unlike LOSSY-PUT, the torn manifest key itself DOES now exist -- the PUT
+# reported success -- so this run IS the tenant's newest generation with a
+# manifest present. A default restore must refuse it rather than invent a
+# fallback on its own.
+DEFAULT_RESTORE_OUTPUT="$(run_restore "$WORKDIR/tenant-a.identity" "" 2>&1)" && DEFAULT_RESTORE_RC=0 || DEFAULT_RESTORE_RC=$?
+echo "$DEFAULT_RESTORE_OUTPUT"
+if [ "$DEFAULT_RESTORE_RC" -eq 0 ]; then
+    fail "MANIFEST-MISMATCH: default restore succeeded against the torn newest manifest -- WRONG, this should never report success"
+else
+    pass "MANIFEST-MISMATCH: default restore correctly refuses the torn newest generation -- no silent false success"
+fi
+if echo "$DEFAULT_RESTORE_OUTPUT" | grep -q -- "--run-id $GOOD_RUN_ID_BEFORE_MISMATCH"; then
+    pass "MANIFEST-MISMATCH: the refusal names the newest OLDER generation ($GOOD_RUN_ID_BEFORE_MISMATCH) and the exact --run-id command to recover it"
+else
+    fail "MANIFEST-MISMATCH: the refusal did NOT name the older generation's exact --run-id recovery command"
+fi
+if run_restore "$WORKDIR/tenant-a.identity" "" "" "$GOOD_RUN_ID_BEFORE_MISMATCH"; then
+    pass "MANIFEST-MISMATCH: the named --run-id recovery actually works -- restore succeeds against the older, unbroken generation"
+else
+    fail "MANIFEST-MISMATCH: the named --run-id recovery FAILED -- WRONG, that generation was never touched by the sabotaged run"
+fi
+echo "-- repairing: a clean run supersedes the torn generation --"
+if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
+    pass "MANIFEST-MISMATCH: GREEN: with the sabotage reverted, a clean backup run succeeds again"
+else
+    fail "MANIFEST-MISMATCH: GREEN: a clean backup run failed after reverting the sabotage"
+fi
+if run_restore "$WORKDIR/tenant-a.identity" ""; then
+    pass "MANIFEST-MISMATCH: GREEN: default restore succeeds again once a clean run supersedes the torn one"
+else
+    fail "MANIFEST-MISMATCH: GREEN: restore still fails after a clean run -- the torn generation was not actually superseded"
 fi
 
 note "Direct check: a different tenant's identity cannot restore tenant-a's media"
@@ -899,7 +984,7 @@ fi
 
 note "Summary"
 if [ "$FAILURES" -eq 0 ]; then
-    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code, a second age recipient and a content-derived backup id are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are random, not derived from the live key or the plaintext digest; a second run supersedes the first (fresh generation, old ciphertext genuinely gone, object count steady, restore still verifies) and an upload failure mid-run leaves the previous generation untouched and restorable; two REAL overlapping CLI backup runs against the same tenant never leave it unrestorable; and an object PUT that answers success without landing is caught before any delete, with restore correctly refusing the broken generation rather than silently succeeding."
+    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code, a second age recipient and a content-derived backup id are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are random, not derived from the live key or the plaintext digest; a second run supersedes the first (fresh generation, old ciphertext genuinely gone, object count steady, restore still verifies) and an upload failure mid-run leaves the previous generation untouched and restorable; two REAL overlapping CLI backup runs against the same tenant never leave it unrestorable; an object PUT that answers success without landing is caught before this run's own manifest is ever written, so a default restore afterwards still succeeds against the untouched previous generation; and a manifest PUT that reports success but stores different bytes leaves a default restore refusing rather than guessing, naming the newest older generation and the exact --run-id command that recovers it -- which this proof then runs for real."
     exit 0
 else
     echo "PROOF FAILED: $FAILURES check(s) did not behave as expected -- see the FAIL lines above."

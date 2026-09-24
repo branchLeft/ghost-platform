@@ -226,12 +226,12 @@ USAGE:
     python3 infra/provisioning/scripts/probe-media-lifecycle-expiration.py setup-split \\
       --bucket branchleft-lifecycle-probe-<yyyymmdd> \\
       --endpoint hel1.your-objectstorage.com --region hel1 \\
-      --receipt /tmp/media-lifecycle-split-receipt.json
+      --receipt ~/branchleft-probe-receipts/media-lifecycle-split-<yyyymmdd>.json
     # optional: --media-noncurrent-days (default 1) --db-noncurrent-days (default 35)
 
     # 24-48 hours later:
     python3 infra/provisioning/scripts/probe-media-lifecycle-expiration.py check-split \\
-      --receipt /tmp/media-lifecycle-split-receipt.json
+      --receipt ~/branchleft-probe-receipts/media-lifecycle-split-<yyyymmdd>.json
 """
 
 from __future__ import annotations

@@ -83,10 +83,13 @@ This pipeline cannot know that without either leaking or holding a secret
 leaks, and a per-tenant key to name them safely is a new secret with its own
 destruction obligation). `backup_tenant_media` instead never tries to diff
 against a previous run at all: every run uploads a complete new set under a
-FRESH generation prefix, writes and verifies its own manifest there, then
-deletes every key under this tenant's `generations/` prefix whose run id
-sorts strictly BEFORE this run's own -- never a key belonging to a run id
-that sorts the same or after, whether or not that other run has finished.
+FRESH generation prefix, proves every one of those objects present in a
+fresh listing, only THEN writes and verifies its own manifest there (a
+manifest existing means the generation it names is complete -- see "THE
+DELETE STEP IS TRUSTED WITH NOTHING" below), and only then deletes every
+key under this tenant's `generations/` prefix whose run id sorts strictly
+BEFORE this run's own -- never a key belonging to a run id that sorts the
+same or after, whether or not that other run has finished.
 
 That last clause is what makes two overlapping runs of the same tenant safe
 with no lock and no new secret. Call the two runs' ids R1 < R2, whichever
@@ -116,29 +119,52 @@ supersedes the other), and the one case that could corrupt the winner is
 refused by construction rather than merely made unlikely.
 
 THE DELETE STEP IS TRUSTED WITH NOTHING UNTIL THE NEW GENERATION IS PROVEN
-DURABLE, ON BOTH AXES A `2xx` RESPONSE CANNOT COVER. Immediately after the
-new manifest is PUT, `backup_tenant_media` reads it straight back with
-`get_object` and compares the bytes to what was sent -- this endpoint's own
-2xx is not proof a write landed. Separately, and just as load-bearing:
-before any delete runs, this module lists this tenant's whole
-`generations/` prefix fresh and refuses -- raising, deleting nothing --
-unless every object key this run itself wrote is present in that listing.
-An object PUT that answered 2xx without actually persisting reaches exactly
-that check and is caught by it, the same way the manifest's own read-back
-catches the manifest's. Only once both hold does deletion run; any failure
-before either of them -- an upload, an encrypt, the floor, the manifest
-write or its read-back, or a written object gone missing from the listing --
-raises first and deletes nothing, so a partial, failed, or superseded run
-never removes a generation that is still the tenant's newest verified one.
+DURABLE, ON BOTH AXES A `2xx` RESPONSE CANNOT COVER -- AND NOTHING IS TRUSTED
+WITH A MANIFEST EITHER, UNTIL THE FIRST OF THOSE TWO AXES HOLDS. A manifest
+existing is this module's own definition of "this generation is complete";
+a manifest written before that was true would let a caught, detected
+failure still leave behind one that names an object nobody can find. So the
+order is: upload every object, THEN list this tenant's whole `generations/`
+prefix fresh and refuse -- raising, writing nothing -- unless every object
+key this run itself wrote is present in that listing (an object PUT that
+answered 2xx without actually persisting is caught here), THEN write the
+manifest and read it straight back with `get_object`, comparing the bytes
+to what was sent (this endpoint's own 2xx is not proof THAT write landed
+either). The presence check is repeated once more after the manifest
+write -- an overlapping run with a larger id can delete this run's own
+objects, fair game, in the gap between the two -- and only once every one
+of these checks holds does deletion run. Any failure before all of them --
+an upload, an encrypt, the floor, either presence check, or the manifest
+write or its read-back -- raises first and writes and deletes nothing, so a
+partial, failed, or superseded run never produces a manifest that outlives
+its own missing objects, and never removes a generation that is still the
+tenant's newest verified one. A manifest that DOES get written but fails
+its own read-back (the PUT reported success but what is actually stored
+differs) is the one failure shape this ordering cannot prevent by itself --
+see `restore_tenant_media`'s `run_id` parameter for how a caller recovers
+from that case, since restore never falls back to older data on its own.
 
-The same listing this check reads from is also where the delete set comes
+The same listing these checks read from is also where the delete set comes
 from, and every key in it is matched against this module's own exact key
 shape (tenant, `generations/<run id>/`, then either `objects/<64 hex>.age`
-or `manifest.json.age`) before it is trusted for either purpose -- a listing
-that somehow returned a key outside that shape (a bug elsewhere, a forged
-object, a `prefix` argument silently ignored) aborts the run rather than
-being folded into a presence check or a delete decision it was never meant
-to answer.
+or `manifest.json.age`) before it is trusted for any of these purposes -- a
+listing that somehow returned a key outside that shape (a bug elsewhere, a
+forged object, a `prefix` argument silently ignored) aborts the run rather
+than being folded into a presence check or a delete decision it was never
+meant to answer. That same shape check runs once more, before any of the
+above -- right after this run's own id is generated -- so a stray key that
+would abort the run anyway is caught before a full copy of the tenant's
+media is re-uploaded for nothing; the same pass also reclaims any ORPHANED
+generation (objects with no manifest at all) that is strictly older than
+this run's own id, so a run that itself goes on to fail for an unrelated
+reason still does not leave a previous run's abandoned objects uncollected
+indefinitely. Last, after this run's own delete step, one final listing
+checks that no generation with a manifest still sorts AFTER this run's own
+id -- if one does, this run's clock is behind that generation's (or that
+generation's clock was ahead of real time), and `restore_tenant_media`
+would otherwise keep silently reading that other generation forever. This
+run's own backup is complete and durable by that point regardless; this
+last check only ever reports which generation restore will pick.
 
 Deletion is a plain `DeleteObject`, never a version-scoped
 `DeleteObjectVersion`: the workload credential this pipeline runs under is
@@ -278,6 +304,20 @@ class MediaBackupObjectVerificationError(MediaBackupError):
     missing, so nothing is deleted and the run raises instead."""
 
 
+class MediaBackupClockSkewError(MediaBackupError):
+    """After this run's own delete step, a fresh listing still shows a
+    generation with a manifest whose run id sorts AFTER this run's own --
+    this run's clock is behind that generation's (or that generation's
+    clock was ahead of real time when it ran). `restore_tenant_media`
+    always reads the newest id, so it keeps returning that other
+    generation, not this run's own backup, until a later-dated run
+    finally supersedes it too. Distinguished from `MediaBackupError` so a
+    caller can tell this specific, otherwise-completely-silent failure
+    mode apart from every other one: this run's own backup is NOT lost --
+    it is simply not the one restore will read, and nothing else in this
+    module would ever say so."""
+
+
 class MediaRestoreVerificationError(Exception):
     """A restored object's bytes could not be shown to match the backup --
     missing, corrupt, undecryptable with the identity given, or a manifest
@@ -379,7 +419,7 @@ def _generation_key_pattern(tenant: str) -> re.Pattern[str]:
     )
 
 
-def find_newest_generation(
+def _list_tenant_manifests(
     *,
     tenant: str,
     backup_bucket: str,
@@ -388,16 +428,16 @@ def find_newest_generation(
     access_key: str,
     secret_key: str,
     list_objects,
-) -> tuple[str, str] | None:
-    """Lists this tenant's whole `generations/` prefix and returns
-    `(run_id, manifest_key)` for the lexicographically greatest run id that
-    actually has a manifest present in the listing -- a generation with no
-    manifest is an orphan (an aborted or a superseded-while-still-uploading
-    run) and is never a restore candidate. Returns `None` if no generation
-    has one. Every key considered is checked against this tenant's exact key
-    shape first; anything else in the listing is ignored here (restore reads
-    are not the place that refuses on an unexpected key -- `backup_tenant_media`'s
-    delete-time check is, since restore never deletes anything)."""
+) -> dict[str, str]:
+    """Every `{run_id: manifest_key}` pair under this tenant's
+    `generations/` prefix that actually has a manifest present in the
+    listing -- a generation with no manifest is an orphan (an aborted or a
+    superseded-while-still-uploading run) and is never a restore candidate,
+    whether asked for by name or found as the newest. Every key considered
+    is checked against this tenant's exact key shape first; anything else
+    in the listing is ignored here (restore reads are not the place that
+    refuses on an unexpected key -- `backup_tenant_media`'s own checks are,
+    since restore never deletes anything)."""
     pattern = _generation_key_pattern(tenant)
     entries = list_objects(
         bucket=backup_bucket,
@@ -415,6 +455,31 @@ def find_newest_generation(
         match = pattern.match(key)
         if match:
             manifests[match.group("run_id")] = key
+    return manifests
+
+
+def find_newest_generation(
+    *,
+    tenant: str,
+    backup_bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    list_objects,
+) -> tuple[str, str] | None:
+    """Returns `(run_id, manifest_key)` for the lexicographically greatest
+    run id that has a manifest present -- see `_list_tenant_manifests`.
+    Returns `None` if no generation has one."""
+    manifests = _list_tenant_manifests(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        list_objects=list_objects,
+    )
     if not manifests:
         return None
     newest_run_id = max(manifests)
@@ -559,31 +624,38 @@ def _write_and_verify_manifest(
         )
 
 
-def _verify_and_delete_older_generations(
+def _sorts_before(candidate_run_id: str, run_id: str) -> bool:
+    """Whether `candidate_run_id` is strictly OLDER than `run_id` -- the one
+    predicate this module trusts, everywhere, to decide "safe to delete"
+    against any OTHER generation, complete or still uploading. Never a
+    same-or-later id, regardless of how much of that other run has landed
+    -- see the module docstring's "GENERATIONS, THE ORDERING GUARANTEE"
+    section for why that alone is enough to make two overlapping runs safe
+    with no lock. A single, shared predicate rather than this comparison
+    being repeated at each call site: every place that decides what is
+    "older" agrees with every other one, by construction."""
+    return candidate_run_id < run_id
+
+
+def _list_tenant_generation_keys(
     *,
     tenant: str,
-    run_id: str,
     backup_bucket: str,
     endpoint: str,
     region: str,
     access_key: str,
     secret_key: str,
-    written_this_run: set[str],
     list_objects,
-    delete_object,
-) -> list[str]:
-    """One fresh listing of this tenant's whole `generations/` prefix, used
-    for both of this step's jobs: refusing to delete anything unless every
-    object THIS run wrote is present in it (see
-    `MediaBackupObjectVerificationError`), and computing which generations
-    are strictly older than this run's own id -- the only ones this call
-    ever deletes, regardless of whether a same-tenant run with a NEWER id is
-    mid-flight at the same moment. See the module docstring's "GENERATIONS,
-    THE ORDERING GUARANTEE" section for why that is enough to make two
-    overlapping runs safe with no lock."""
+) -> dict[str, str]:
+    """Every key under this tenant's whole `generations/` prefix, mapped to
+    the run id it belongs to. Every key is checked against this module's
+    own exact key shape first; a listing that returns anything else
+    (a bug elsewhere, a forged object, a `prefix` argument silently
+    ignored) aborts the caller rather than being folded into a presence
+    check or a delete decision it was never meant to answer."""
     prefix = _tenant_generations_prefix(tenant)
     pattern = _generation_key_pattern(tenant)
-    existing = list_objects(
+    entries = list_objects(
         bucket=backup_bucket,
         endpoint=endpoint,
         region=region,
@@ -591,10 +663,8 @@ def _verify_and_delete_older_generations(
         secret_key=secret_key,
         prefix=prefix,
     )
-
-    listed_keys: set[str] = set()
-    older_keys: list[str] = []
-    for entry in existing:
+    keys: dict[str, str] = {}
+    for entry in entries:
         key = entry["key"]
         match = pattern.match(key)
         if not match:
@@ -604,21 +674,54 @@ def _verify_and_delete_older_generations(
                 f"while a listing scoped to this tenant contains a key this module never "
                 f"wrote"
             )
-        listed_keys.add(key)
-        if match.group("run_id") < run_id:
-            older_keys.append(key)
+        keys[key] = match.group("run_id")
+    return keys
 
-    missing = written_this_run - listed_keys
+
+def _assert_written_keys_present(
+    *,
+    tenant: str,
+    run_id: str,
+    written_this_run: set[str],
+    listed_keys,
+    when: str,
+) -> None:
+    """Raises `MediaBackupObjectVerificationError` unless every key in
+    `written_this_run` is present in `listed_keys` -- shared by both the
+    pre-manifest and the post-manifest presence checks (see
+    `backup_tenant_media`), so a 2xx PUT that never actually landed is
+    caught the same way regardless of which of the two catches it. `when`
+    names which check failed, since the two mean different things: caught
+    before the manifest exists at all, or caught after, by an overlapping
+    run's cleanup racing this one."""
+    missing = written_this_run - set(listed_keys)
     if missing:
         raise MediaBackupObjectVerificationError(
             f"tenant {tenant!r}, run {run_id!r}: {len(missing)} object(s) this run itself "
-            f"just wrote are not present in a fresh listing of {prefix!r} -- a 2xx on the "
-            f"PUT is not proof a write landed. Refusing to delete anything while this run's "
-            f"own manifest names objects that cannot be found. One missing key: "
-            f"{sorted(missing)[0]!r}"
+            f"just wrote are not present in a fresh listing, checked {when} -- a 2xx on the "
+            f"PUT is not proof a write landed. Refusing to proceed while this run's own "
+            f"objects cannot be found. One missing key: {sorted(missing)[0]!r}"
         )
 
-    for key in sorted(older_keys):
+
+def _delete_older_generations(
+    *,
+    tenant: str,
+    run_id: str,
+    backup_bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    listed_keys: dict[str, str],
+    delete_object,
+) -> list[str]:
+    """Deletes every key in `listed_keys` whose run id sorts strictly
+    before `run_id` (see `_sorts_before`) and returns them, sorted. The
+    caller decides what `listed_keys` covers -- the whole tenant prefix for
+    an end-of-run supersession, or a narrower orphan sweep."""
+    older_keys = sorted(key for key, candidate in listed_keys.items() if _sorts_before(candidate, run_id))
+    for key in older_keys:
         delete_object(
             bucket=backup_bucket,
             endpoint=endpoint,
@@ -627,7 +730,7 @@ def _verify_and_delete_older_generations(
             secret_key=secret_key,
             key=key,
         )
-    return sorted(older_keys)
+    return older_keys
 
 
 def backup_tenant_media(
@@ -653,13 +756,20 @@ def backup_tenant_media(
     make_run_id=generate_run_id,
 ) -> BackupReport:
     """Pulls every object in `live_bucket`, encrypts each to `recipient`, and
-    writes the ciphertext plus an encrypted manifest to `backup_bucket`
-    under a fresh generation prefix -- then, once that new manifest is
-    proven durable AND every object this run wrote is proven present, deletes
-    every generation under this tenant's own prefix that is strictly older
-    than this run's (see the module docstring for why this mirrors the
-    tenant's media in place without a map, a new secret, or a lock, and why
-    it stays correct under two overlapping runs of the same tenant).
+    writes the ciphertext to `backup_bucket` under a fresh generation prefix.
+    Only once a fresh listing proves every one of those objects is actually
+    present does this run write its own manifest -- a manifest existing
+    means the generation it names is complete, never merely attempted.
+    That presence check is repeated once more after the manifest write, for
+    concurrency; only once BOTH hold does this run delete every generation
+    under this tenant's own prefix that is strictly older than its own (see
+    the module docstring for why this mirrors the tenant's media in place
+    without a map, a new secret, or a lock, and why it stays correct under
+    two overlapping runs of the same tenant). May also raise
+    `MediaBackupClockSkewError` -- this run's own backup already succeeded
+    and is durable by that point; that error only ever reports that some
+    OTHER generation's clock leaves it sorting newer, so restore will not
+    read this run's backup as the current one.
 
     Refuses -- raising `MediaBackupFloorError` and writing nothing -- if the
     live bucket lists zero objects, UNLESS `confirm_tenant_has_no_media` is
@@ -716,6 +826,49 @@ def backup_tenant_media(
 
     run_id = make_run_id()
 
+    # This shape check would abort the run anyway, at the presence checks
+    # below -- checking it
+    # now, before uploading anything, means a persistent version of that
+    # failure costs one listing per run, not a full re-upload of the
+    # tenant's media every time it recurs. The same listing also reclaims
+    # any ORPHANED generation (objects with no manifest -- an aborted or a
+    # superseded-while-still-uploading run) that is strictly older than
+    # this run's own id: safe by the same rule `_delete_older_generations`
+    # applies everywhere else (never a same-or-later id -- see
+    # `_sorts_before`), and done here, before this run's own uploads, so a
+    # run that itself goes on to fail for an unrelated reason still does
+    # not leave a previous run's abandoned objects sitting there
+    # indefinitely, costing storage for nothing.
+    existing_generation_keys = _list_tenant_generation_keys(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=backup_access_key,
+        secret_key=backup_secret_key,
+        list_objects=list_objects,
+    )
+    manifested_run_ids = {
+        candidate for key, candidate in existing_generation_keys.items()
+        if key.endswith("manifest.json.age")
+    }
+    orphaned_keys = {
+        key: candidate
+        for key, candidate in existing_generation_keys.items()
+        if candidate not in manifested_run_ids
+    }
+    reclaimed_orphan_keys = _delete_older_generations(
+        tenant=tenant,
+        run_id=run_id,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=backup_access_key,
+        secret_key=backup_secret_key,
+        listed_keys=orphaned_keys,
+        delete_object=delete_object,
+    )
+
     manifest_objects: dict[str, dict] = {}
     new_backup_keys: set[str] = set()
     for entry in live_objects:
@@ -751,6 +904,30 @@ def backup_tenant_media(
             "backup_id": backup_id,
         }
 
+    # THE ORDERING GUARANTEE, PART 1. A fresh listing, taken right here --
+    # after every upload above and BEFORE this run's manifest is ever
+    # written -- must show every object this run itself wrote. A manifest
+    # existing is meant to mean "this generation is complete": writing one
+    # before this check would let a caught, detected failure still leave
+    # behind a manifest that names an object nobody can find. See the
+    # module docstring's "THE DELETE STEP IS TRUSTED WITH NOTHING" section.
+    pre_manifest_keys = _list_tenant_generation_keys(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=backup_access_key,
+        secret_key=backup_secret_key,
+        list_objects=list_objects,
+    )
+    _assert_written_keys_present(
+        tenant=tenant,
+        run_id=run_id,
+        written_this_run=new_backup_keys,
+        listed_keys=pre_manifest_keys,
+        when="before the manifest was written",
+    )
+
     deliberately_empty = not manifest_objects
     manifest = {
         "tenant": tenant,
@@ -766,11 +943,6 @@ def backup_tenant_media(
         what="the manifest",
     )
 
-    # THE ORDERING GUARANTEE. Nothing above this line can have deleted
-    # anything -- these two calls are the first and only place in this
-    # function that another generation is ever touched, and the second does
-    # not run unless the first returns without raising. See the module
-    # docstring's "THE DELETE STEP IS TRUSTED WITH NOTHING" section.
     _write_and_verify_manifest(
         tenant=tenant,
         run_id=run_id,
@@ -783,7 +955,31 @@ def backup_tenant_media(
         put_object=put_object,
         get_object=get_object,
     )
-    deleted_previous_keys = _verify_and_delete_older_generations(
+
+    # THE ORDERING GUARANTEE, PART 2. Repeated after the manifest write,
+    # for concurrency: an overlapping run with a LARGER id can delete this
+    # run's own objects (fair game -- this run's id sorts before its own)
+    # in the gap between PART 1 above and the manifest actually landing.
+    # Only once this second check also holds does deletion run -- nothing
+    # above this point can have deleted anything.
+    post_manifest_keys = _list_tenant_generation_keys(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=backup_access_key,
+        secret_key=backup_secret_key,
+        list_objects=list_objects,
+    )
+    _assert_written_keys_present(
+        tenant=tenant,
+        run_id=run_id,
+        written_this_run=new_backup_keys,
+        listed_keys=post_manifest_keys,
+        when="after the manifest was written",
+    )
+
+    deleted_previous_keys = _delete_older_generations(
         tenant=tenant,
         run_id=run_id,
         backup_bucket=backup_bucket,
@@ -791,82 +987,75 @@ def backup_tenant_media(
         region=region,
         access_key=backup_access_key,
         secret_key=backup_secret_key,
-        written_this_run=new_backup_keys,
-        list_objects=list_objects,
+        listed_keys=post_manifest_keys,
         delete_object=delete_object,
     )
+
+    # One last listing, after this run's own delete step, catches a
+    # generation whose clock ran ahead of this one's -- see
+    # `MediaBackupClockSkewError`. This run's own backup above is already
+    # complete and durable regardless of what this check finds; it only
+    # ever reports a problem with WHICH generation restore will pick.
+    final_manifests = _list_tenant_manifests(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=backup_access_key,
+        secret_key=backup_secret_key,
+        list_objects=list_objects,
+    )
+    newer_run_ids = sorted(candidate for candidate in final_manifests if candidate > run_id)
+    if newer_run_ids:
+        raise MediaBackupClockSkewError(
+            f"tenant {tenant!r}: this run's own backup (run {run_id!r}) completed and is "
+            f"durable, but a generation with a manifest ({newer_run_ids[-1]!r}) still sorts "
+            f"AFTER it, even after this run's own delete step -- restore_tenant_media always "
+            f"reads the newest id, so it will keep reading that generation, not this run's, "
+            f"until a correctly-dated run supersedes it too. Check this host's clock."
+        )
 
     return BackupReport(
         tenant=tenant,
         run_id=run_id,
         objects=manifest_objects,
         deliberately_empty=deliberately_empty,
-        deleted_previous_keys=deleted_previous_keys,
+        deleted_previous_keys=sorted(set(deleted_previous_keys) | set(reclaimed_orphan_keys)),
     )
 
 
 @dataclasses.dataclass
 class RestoreReport:
     tenant: str
+    run_id: str
     verified_keys: list[str]
     bytes_recovered: int
 
 
-def restore_tenant_media(
+def _restore_generation(
     *,
     tenant: str,
+    run_id: str,
+    manifest_key: str,
     backup_bucket: str,
     endpoint: str,
     region: str,
     backup_access_key: str,
     backup_secret_key: str,
     identity_path: str,
-    target_bucket: str | None = None,
-    target_access_key: str | None = None,
-    target_secret_key: str | None = None,
-    list_objects=_default_list_objects,
-    get_object=_default_get_object,
-    put_object=_default_put_object,
-    decrypt=decrypt_with_age,
+    target_bucket: str | None,
+    target_access_key: str | None,
+    target_secret_key: str | None,
+    get_object,
+    put_object,
+    decrypt,
 ) -> RestoreReport:
-    """Finds this tenant's NEWEST generation (the highest-sorting run id
-    with a manifest present -- see `find_newest_generation`), then decrypts
-    every object that generation's manifest names and checksum-compares it
-    against the digest recorded at backup time. Raises
-    `MediaRestoreVerificationError` and returns nothing -- the RETURN VALUE
-    is never partial -- on the first object that is missing from the backup
-    bucket, that decrypts to different bytes than the manifest recorded, or
-    that the given identity cannot decrypt at all; also raises if the
-    manifest names zero objects without `deliberately_empty: true`, the same
-    R4 shape as a missing or corrupt object, or if no generation with a
-    manifest exists at all. When `target_bucket` is given, each object
-    already verified before a later failure has ALREADY been written there
-    -- a partial restore on disk is real and intended (the objects that did
-    verify are genuinely recovered), only the return value and exit code are
-    all-or-nothing. Each object's backup-bucket key comes from `backup_id`
-    in the manifest, never derived from the live key here; the live key
-    itself is only ever used as the write path into `target_bucket`, and is
-    checked by `_assert_safe_live_key` immediately before that write -- a
-    decrypted manifest is not thereby a trusted one."""
-    _assert_valid_tenant_slug(tenant, MediaRestoreVerificationError)
-
-    found = find_newest_generation(
-        tenant=tenant,
-        backup_bucket=backup_bucket,
-        endpoint=endpoint,
-        region=region,
-        access_key=backup_access_key,
-        secret_key=backup_secret_key,
-        list_objects=list_objects,
-    )
-    if found is None:
-        raise MediaRestoreVerificationError(
-            f"tenant {tenant!r}: no generation with a manifest under "
-            f"{_tenant_generations_prefix(tenant)!r} in {backup_bucket!r} -- nothing to "
-            f"restore, or the backup never ran"
-        )
-    run_id, manifest_key = found
-
+    """Decrypts and checksum-verifies every object that ONE named
+    generation's manifest lists. Never falls back and never tries another
+    generation -- `restore_tenant_media` is the only thing that decides
+    which generation this runs against, and calls this at most once per
+    generation per restore, per the "never silently fall back to older
+    data" contract."""
     try:
         manifest_ciphertext = get_object(
             bucket=backup_bucket,
@@ -882,7 +1071,17 @@ def restore_tenant_media(
             f"from {backup_bucket!r}: {error}"
         ) from error
 
-    manifest = json.loads(decrypt(data=manifest_ciphertext, identity_path=identity_path))
+    manifest_plaintext = decrypt(data=manifest_ciphertext, identity_path=identity_path)
+    try:
+        manifest = json.loads(manifest_plaintext)
+    except json.JSONDecodeError as error:
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: the manifest at {manifest_key!r} decrypted, but is not valid "
+            f"JSON -- exactly the shape a manifest PUT that reported success but did not "
+            f"durably store what was sent would leave behind: a manifest key that exists, but "
+            f"is not the bytes this run actually wrote ({error})"
+        ) from error
+
     if manifest.get("tenant") != tenant:
         raise MediaRestoreVerificationError(
             f"manifest at {manifest_key!r} names tenant {manifest.get('tenant')!r}, expected "
@@ -942,7 +1141,124 @@ def restore_tenant_media(
         verified.append(key)
         bytes_recovered += len(plaintext)
 
-    return RestoreReport(tenant=tenant, verified_keys=verified, bytes_recovered=bytes_recovered)
+    return RestoreReport(tenant=tenant, run_id=run_id, verified_keys=verified, bytes_recovered=bytes_recovered)
+
+
+def restore_tenant_media(
+    *,
+    tenant: str,
+    backup_bucket: str,
+    endpoint: str,
+    region: str,
+    backup_access_key: str,
+    backup_secret_key: str,
+    identity_path: str,
+    run_id: str | None = None,
+    target_bucket: str | None = None,
+    target_access_key: str | None = None,
+    target_secret_key: str | None = None,
+    list_objects=_default_list_objects,
+    get_object=_default_get_object,
+    put_object=_default_put_object,
+    decrypt=decrypt_with_age,
+) -> RestoreReport:
+    """By default, restores this tenant's NEWEST generation (the
+    highest-sorting run id with a manifest present). Pass `run_id` to
+    restore a SPECIFIC generation instead -- the one case this never does
+    on its own: if the newest generation fails verification, this never
+    silently tries an older one. Raises `MediaRestoreVerificationError`
+    naming the newest OLDER generation that has a manifest (if any) and the
+    exact `--run-id` command to restore from it explicitly; a caller that
+    wants that older data has to ask for it by name. `run_id` requested
+    explicitly but not found, or no generation with a manifest at all, both
+    raise the same way. Otherwise raises -- and returns nothing, the RETURN
+    VALUE never partial -- on the first object that is missing from the
+    backup bucket, that decrypts to different bytes than the manifest
+    recorded, or that the given identity cannot decrypt at all; also raises
+    if the manifest names zero objects without `deliberately_empty: true`,
+    the same R4 shape as a missing or corrupt object. When `target_bucket`
+    is given, each object already verified before a later failure has
+    ALREADY been written there -- a partial restore on disk is real and
+    intended (the objects that did verify are genuinely recovered), only
+    the return value and exit code are all-or-nothing. Each object's
+    backup-bucket key comes from `backup_id` in the manifest, never derived
+    from the live key here; the live key itself is only ever used as the
+    write path into `target_bucket`, and is checked by
+    `_assert_safe_live_key` immediately before that write -- a decrypted
+    manifest is not thereby a trusted one."""
+    _assert_valid_tenant_slug(tenant, MediaRestoreVerificationError)
+
+    manifests = _list_tenant_manifests(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        access_key=backup_access_key,
+        secret_key=backup_secret_key,
+        list_objects=list_objects,
+    )
+    if not manifests:
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: no generation with a manifest under "
+            f"{_tenant_generations_prefix(tenant)!r} in {backup_bucket!r} -- nothing to "
+            f"restore, or the backup never ran"
+        )
+
+    restore_kwargs = dict(
+        tenant=tenant,
+        backup_bucket=backup_bucket,
+        endpoint=endpoint,
+        region=region,
+        backup_access_key=backup_access_key,
+        backup_secret_key=backup_secret_key,
+        identity_path=identity_path,
+        target_bucket=target_bucket,
+        target_access_key=target_access_key,
+        target_secret_key=target_secret_key,
+        get_object=get_object,
+        put_object=put_object,
+        decrypt=decrypt,
+    )
+
+    if run_id is not None:
+        if not _RUN_ID_RE.match(run_id):
+            raise MediaRestoreVerificationError(f"not a valid run id: {run_id!r}")
+        if run_id not in manifests:
+            raise MediaRestoreVerificationError(
+                f"tenant {tenant!r}: no manifest at generation {run_id!r}. Generations with a "
+                f"manifest, newest first: {', '.join(sorted(manifests, reverse=True))}"
+            )
+        # Named explicitly -- exactly what the caller asked for, never
+        # silently redirected to a different generation on failure.
+        return _restore_generation(run_id=run_id, manifest_key=manifests[run_id], **restore_kwargs)
+
+    newest_run_id = max(manifests)
+    try:
+        return _restore_generation(
+            run_id=newest_run_id, manifest_key=manifests[newest_run_id], **restore_kwargs
+        )
+    except MediaRestoreVerificationError as error:
+        older_run_ids = sorted((rid for rid in manifests if rid < newest_run_id), reverse=True)
+        if not older_run_ids:
+            raise MediaRestoreVerificationError(
+                f"tenant {tenant!r}: the newest generation ({newest_run_id!r}) failed "
+                f"verification: {error}. No older generation has a manifest either -- "
+                f"nothing to fall back to."
+            ) from error
+        fallback_run_id = older_run_ids[0]
+        command = (
+            f"python3 media_backup_restore.py restore --tenant {tenant} "
+            f"--backup-bucket {backup_bucket} --endpoint {endpoint} --region {region} "
+            f"--identity-file {identity_path} --run-id {fallback_run_id}"
+        )
+        if target_bucket is not None:
+            command += f" --target-bucket {target_bucket}"
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: the newest generation ({newest_run_id!r}) failed "
+            f"verification: {error}. Never falling back automatically -- the newest OLDER "
+            f"generation with a manifest is {fallback_run_id!r}. Restore it explicitly: "
+            f"{command}"
+        ) from error
 
 
 def _require_env(name: str) -> str:
@@ -980,6 +1296,14 @@ def main(argv: list[str] | None = None) -> int:
     restore_p.add_argument("--endpoint", required=True)
     restore_p.add_argument("--region", required=True)
     restore_p.add_argument("--identity-file", required=True)
+    restore_p.add_argument(
+        "--run-id",
+        help=(
+            "restore this specific generation instead of the newest -- never chosen "
+            "automatically; use this after a failed default restore names it as the newest "
+            "generation with a manifest that still verifies"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1016,10 +1340,11 @@ def main(argv: list[str] | None = None) -> int:
                 target_access_key=os.environ.get("MEDIA_LIVE_ACCESS_KEY_ID"),
                 target_secret_key=os.environ.get("MEDIA_LIVE_SECRET_ACCESS_KEY"),
                 identity_path=args.identity_file,
+                run_id=args.run_id,
             )
             print(
-                f"restore: tenant={report.tenant} verified={len(report.verified_keys)} "
-                f"bytes_recovered={report.bytes_recovered}",
+                f"restore: tenant={report.tenant} run_id={report.run_id} "
+                f"verified={len(report.verified_keys)} bytes_recovered={report.bytes_recovered}",
                 file=sys.stderr,
             )
     except (MediaBackupError, MediaRestoreVerificationError, ObjectStorageError) as error:
