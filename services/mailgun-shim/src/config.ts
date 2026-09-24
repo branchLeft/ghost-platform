@@ -7,6 +7,8 @@ export interface SmtpFrontDoorConfig {
   maxMessageBytes: number;
   maxUnauthenticatedConnectionsPerSource: number;
   maxUnauthenticatedConnections: number;
+  maxUnauthenticatedPerSourceWaitQueueDepth: number;
+  maxUnauthenticatedPerSourceWaitMs: number;
   authDeadlineMs: number;
   maxConcurrentDataPhases: number;
   maxConcurrentDataPhasesPerSubmitter: number;
@@ -43,16 +45,35 @@ const DEFAULT_MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 // this one could.
 const DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS = 100;
 
-// Bounds one source address's own share of the unauthenticated pool,
-// checked before the global backstop above. A credential-less peer holding
-// (or churning — replacing each connection the instant it's refused or
-// evicted) idle connections can never occupy more than this many, however
-// many it opens: churn defeats a purely time-based deadline (reconnect
-// faster than it expires) and a purely global count-based cap doesn't need
-// many addresses to exhaust. Each legitimate source is exactly one Ghost
-// container, so this never binds for a well-behaved single source — its
-// own concurrent connection count in practice is 0 or 1.
+// Bounds one source address's own share of the unauthenticated pool that is
+// admitted WITHOUT waiting, checked before the global backstop above. A
+// credential-less peer holding (or churning — replacing each connection the
+// instant it's refused or evicted) idle connections can never occupy more
+// than this many instantly, however many it opens: churn defeats a purely
+// time-based deadline (reconnect faster than it expires) and a purely
+// global count-based cap doesn't need many addresses to exhaust. A single
+// legitimate Ghost source is not always at 0 or 1 concurrent connections —
+// several members signing in at once each open their own connection, and
+// scrypt's own per-AUTH cost means more than a few can be simultaneously
+// unauthenticated for real — so a burst past this cap waits rather than
+// being refused; see the two settings below.
 const DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS_PER_SOURCE = 5;
+
+// How many connections from one source can be queued at once waiting for a
+// per-source slot, once that source is past the cap above. Bounds the
+// queue's own memory (each entry is a still-open, unauthenticated socket
+// plus a closure — negligible individually, but not unbounded); a burst
+// past this depth is refused outright rather than queued further. Sized
+// well past any single legitimate host's realistic simultaneous sign-in
+// count.
+const DEFAULT_MAX_UNAUTHENTICATED_PER_SOURCE_WAIT_QUEUE_DEPTH = 50;
+
+// How long a queued connection waits for its own source's slot to free
+// before being refused outright. scrypt's own AUTH check runs at roughly
+// 20ms — even a full queue at the depth above clears in about a second in
+// the worst case — so this is sized for large headroom under nodemailer's
+// own ~30s greeting timeout, not to match the expected wait.
+const DEFAULT_MAX_UNAUTHENTICATED_PER_SOURCE_WAIT_MS = 5000;
 
 // How long a connection has to complete AUTH before it is closed outright.
 // Short enough that holding a slot open with no credential is not a viable
@@ -133,6 +154,12 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
         DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS_PER_SOURCE,
       maxUnauthenticatedConnections:
         Number(env.SMTP_MAX_UNAUTHENTICATED_CONNECTIONS) || DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS,
+      maxUnauthenticatedPerSourceWaitQueueDepth:
+        Number(env.SMTP_MAX_UNAUTHENTICATED_PER_SOURCE_WAIT_QUEUE_DEPTH) ||
+        DEFAULT_MAX_UNAUTHENTICATED_PER_SOURCE_WAIT_QUEUE_DEPTH,
+      maxUnauthenticatedPerSourceWaitMs:
+        Number(env.SMTP_MAX_UNAUTHENTICATED_PER_SOURCE_WAIT_MS) ||
+        DEFAULT_MAX_UNAUTHENTICATED_PER_SOURCE_WAIT_MS,
       authDeadlineMs: Number(env.SMTP_AUTH_DEADLINE_MS) || DEFAULT_AUTH_DEADLINE_MS,
       maxConcurrentDataPhases:
         Number(env.SMTP_MAX_CONCURRENT_DATA_PHASES) || DEFAULT_MAX_CONCURRENT_DATA_PHASES,

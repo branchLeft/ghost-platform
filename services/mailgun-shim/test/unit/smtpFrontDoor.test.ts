@@ -6,10 +6,14 @@ import {
   createConcurrencyGuard,
   createSmtpFrontDoor,
   createSubmitterLimiter,
+  createUnauthenticatedAdmissionQueue,
   createUnauthenticatedPoolGuard,
   DEFAULT_ALLOWED_SOURCE_CIDRS,
   isAllowedSource,
   type SmtpFrontDoor,
+  type UnauthenticatedAdmissionResult,
+  type UnauthenticatedPoolAdmission,
+  type UnauthenticatedPoolGuard,
 } from '../../src/smtpFrontDoor.js';
 import { createSqliteStore, type ShimStore } from '../../src/store.js';
 import type { WorkerHandle } from '../../src/worker.js';
@@ -112,11 +116,10 @@ describe('createConcurrencyGuard', () => {
   });
 
   it('release() is idempotent — calling it many times only ever frees the slot once', () => {
-    // This is the exact property review cycle 4's fix depends on: the same
-    // unit of work can be released from more than one event (a stream
-    // ending normally, a stream erroring, or the underlying connection
-    // closing without either firing), and a double-release must never
-    // double-free budget that was never actually double-acquired.
+    // The same unit of work can be released from more than one event (a
+    // stream ending normally, a stream erroring, or the underlying
+    // connection closing without either firing), and a double-release must
+    // never double-free budget that was never actually double-acquired.
     // Per-key cap is generous (5) so only the global cap (1) is what's
     // under test here — two DIFFERENT keys isolate the global counter's
     // own correctness from the per-key bookkeeping tested elsewhere.
@@ -159,17 +162,16 @@ describe('createConcurrencyGuard', () => {
 });
 
 describe('createUnauthenticatedPoolGuard', () => {
-  // The bug review cycle 4's live proof found: checking a filtered view of
-  // smtp-server's own `connections` Set counts a connection from the
-  // instant its TCP handshake completes, not from the instant this guard
-  // would have admitted it — smtp-server holds every accepted socket for a
-  // fixed ~100ms "early talker" delay before its onConnect hook even runs.
-  // A burst of connections from one source therefore all land in that Set
-  // together, all still pending their own admission check, and a filter
-  // over the Set counts every one of them as if already admitted. This
-  // guard is the fix: its own counters increment only on a tryAcquire that
-  // itself returns admitted — never from anything outside its control —
-  // so a burst can never inflate its counts beyond what it actually let
+  // Filtering smtp-server's own `connections` Set counts a connection from
+  // the instant its TCP handshake completes, not from the instant this
+  // guard would have admitted it — smtp-server holds every accepted socket
+  // for a fixed ~100ms "early talker" delay before its onConnect hook even
+  // runs. A burst of connections from one source therefore all land in
+  // that Set together, all still pending their own admission check, and a
+  // filter over the Set counts every one of them as if already admitted.
+  // This guard's own counters increment only on a tryAcquire that itself
+  // returns admitted — never from anything outside its control — so a
+  // burst can never inflate its counts beyond what it actually let
   // through, regardless of how many raw sockets are simultaneously open.
   it('admits up to the per-source cap, then refuses further acquisitions from that source with a distinct reason', () => {
     const guard = createUnauthenticatedPoolGuard(100, 2);
@@ -233,6 +235,227 @@ describe('createUnauthenticatedPoolGuard', () => {
   });
 });
 
+describe('createUnauthenticatedAdmissionQueue', () => {
+  // A hand-controlled scheduler in place of real setTimeout/clearTimeout:
+  // every test drives the passage of time explicitly by invoking a
+  // captured callback itself, rather than waiting on the clock — makes
+  // every branch (including ones a real timer would only hit after a real
+  // wait) directly, deterministically reachable.
+  function slotOf(result: UnauthenticatedAdmissionResult | undefined): { release(): void } {
+    if (!result || !result.admitted) {
+      throw new Error('expected an admitted result');
+    }
+    return result.slot;
+  }
+
+  function fakeScheduler(): {
+    schedule: (fn: () => void, ms: number) => { fn: () => void; ms: number; cleared: boolean };
+    cancel: (handle: unknown) => void;
+    scheduled: Array<{ fn: () => void; ms: number; cleared: boolean }>;
+  } {
+    const scheduled: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
+    return {
+      schedule: (fn, ms) => {
+        const handle = { fn, ms, cleared: false };
+        scheduled.push(handle);
+        return handle;
+      },
+      cancel: (handle) => {
+        (handle as { cleared: boolean }).cleared = true;
+      },
+      scheduled,
+    };
+  }
+
+  it('admits immediately when the guard has room, never touching the scheduler', () => {
+    const guard = createUnauthenticatedPoolGuard(10, 5);
+    const { schedule, cancel, scheduled } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(guard, 5, 1000, schedule, cancel);
+
+    const results: UnauthenticatedAdmissionResult[] = [];
+    const pending = queue.request('1.1.1.1', (r) => results.push(r));
+
+    expect(results).toEqual([{ admitted: true, slot: expect.anything() }]);
+    expect(scheduled).toHaveLength(0);
+    // Nothing to withdraw once a result already arrived — cancel() on an
+    // already-resolved request is always safe to call unconditionally.
+    expect(() => pending.cancel()).not.toThrow();
+  });
+
+  it('refuses immediately on the global cap — never queued, matching the design comment', () => {
+    const guard = createUnauthenticatedPoolGuard(1, 5);
+    guard.tryAcquire('someone-else'); // fill the global cap of 1
+    const { schedule, cancel, scheduled } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(guard, 5, 1000, schedule, cancel);
+
+    const results: UnauthenticatedAdmissionResult[] = [];
+    queue.request('1.1.1.1', (r) => results.push(r));
+
+    expect(results).toEqual([{ admitted: false, reason: 'max_unauthenticated_connections' }]);
+    expect(scheduled).toHaveLength(0);
+  });
+
+  it('queues a per-source-refused request instead of refusing it, and admits it once a same-source slot frees', () => {
+    const guard = createUnauthenticatedPoolGuard(10, 1);
+    const { schedule, cancel } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(guard, 5, 1000, schedule, cancel);
+
+    const firstResults: UnauthenticatedAdmissionResult[] = [];
+    queue.request('1.1.1.1', (r) => firstResults.push(r));
+    expect(firstResults[0]).toMatchObject({ admitted: true });
+    const firstSlot = slotOf(firstResults[0]);
+
+    // Second request from the SAME source is over its own cap (1) — queued,
+    // not refused, and no result yet.
+    const secondResults: UnauthenticatedAdmissionResult[] = [];
+    queue.request('1.1.1.1', (r) => secondResults.push(r));
+    expect(secondResults).toHaveLength(0);
+
+    // Releasing the first admits the second — this is the mechanism the
+    // whole fix depends on: a burst waits for the ordinary trickle of
+    // releases rather than being turned away.
+    firstSlot.release();
+    expect(secondResults).toEqual([{ admitted: true, slot: expect.anything() }]);
+  });
+
+  it('refuses outright, not queued, once the per-source wait queue is already at its bound', () => {
+    const guard = createUnauthenticatedPoolGuard(10, 1);
+    const { schedule, cancel } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(guard, 1, 1000, schedule, cancel);
+
+    queue.request('1.1.1.1', () => {}); // admitted, fills the per-source cap of 1
+    queue.request('1.1.1.1', () => {}); // queued, fills the queue depth of 1
+
+    const thirdResults: UnauthenticatedAdmissionResult[] = [];
+    queue.request('1.1.1.1', (r) => thirdResults.push(r));
+
+    expect(thirdResults).toEqual([
+      { admitted: false, reason: 'max_unauthenticated_connections_per_source_queue_full' },
+    ]);
+  });
+
+  it('refuses a queued request once its own wait bound elapses, with a distinct reason', () => {
+    const guard = createUnauthenticatedPoolGuard(10, 1);
+    const { schedule, cancel, scheduled } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(guard, 5, 1000, schedule, cancel);
+
+    queue.request('1.1.1.1', () => {}); // admitted, fills the cap
+    const results: UnauthenticatedAdmissionResult[] = [];
+    queue.request('1.1.1.1', (r) => results.push(r)); // queued
+
+    expect(results).toHaveLength(0);
+    expect(scheduled).toHaveLength(1);
+    scheduled[0]!.fn(); // drive the clock forward by hand
+
+    expect(results).toEqual([
+      { admitted: false, reason: 'max_unauthenticated_connections_per_source_wait_timeout' },
+    ]);
+  });
+
+  it('cancel() withdraws a still-queued request cleanly — no result ever fires, and the scheduled timeout is cleared', () => {
+    const guard = createUnauthenticatedPoolGuard(10, 1);
+    const { schedule, cancel, scheduled } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(guard, 5, 1000, schedule, cancel);
+
+    queue.request('1.1.1.1', () => {}); // fills the cap
+    const results: UnauthenticatedAdmissionResult[] = [];
+    const pending = queue.request('1.1.1.1', (r) => results.push(r));
+
+    pending.cancel();
+
+    expect(scheduled[0]!.cleared).toBe(true);
+    expect(results).toHaveLength(0);
+    // The withdrawn request's own timeout firing anyway (this queue's
+    // `cancelTimeout` is only a promise the real one keeps, not something
+    // this code can force) must still be a no-op, not a late result.
+    scheduled[0]!.fn();
+    expect(results).toHaveLength(0);
+  });
+
+  it('cancel() called twice on the same request is safe — the second call finds nothing left to drop', () => {
+    const guard = createUnauthenticatedPoolGuard(10, 1);
+    const { schedule, cancel } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(guard, 5, 1000, schedule, cancel);
+
+    queue.request('1.1.1.1', () => {}); // fills the cap
+    const pending = queue.request('1.1.1.1', () => {}); // queued
+
+    pending.cancel();
+    // Nothing to assert beyond "this does not throw" — the queue for this
+    // source was already emptied and deleted by the first cancel(), so the
+    // second must find no queue at all and return cleanly.
+    expect(() => pending.cancel()).not.toThrow();
+  });
+
+  it('a slot freeing for one source can only ever admit a waiter of that SAME source, never a different one’s', () => {
+    const guard = createUnauthenticatedPoolGuard(10, 1);
+    const { schedule, cancel } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(guard, 5, 1000, schedule, cancel);
+
+    const aResults: UnauthenticatedAdmissionResult[] = [];
+    queue.request('A', (r) => aResults.push(r));
+    const aSlot = slotOf(aResults[0]);
+    queue.request('A', (r) => aResults.push(r)); // queued behind A's own cap
+
+    const bResults: UnauthenticatedAdmissionResult[] = [];
+    queue.request('B', (r) => bResults.push(r));
+    const bSlot = slotOf(bResults[0]);
+
+    // Releasing B's own slot must never admit A's queued waiter.
+    bSlot.release();
+    expect(aResults).toHaveLength(1); // still just the first admission
+
+    aSlot.release();
+    expect(aResults).toHaveLength(2);
+    expect(aResults[1]).toMatchObject({ admitted: true });
+  });
+
+  it('if the guard itself refuses the immediate re-acquire a freed slot should have won (the global cap filled in between), the waiter keeps its place instead of being dropped', () => {
+    // A hand-rolled guard, not the real one: scripted to admit the first
+    // call for a source and then refuse every call after, so this proves
+    // the queue's own reentrancy defence — not a real race, which
+    // single-threaded JS makes impossible between a release() and the
+    // queue's own very next line, but a guarantee the queue does not rely
+    // on that impossibility silently.
+    // Call 1 (the first request's own immediate check): admits. Call 2
+    // (the second request's own immediate check): refuses per-source, so
+    // the queue holds it rather than refusing it outright. Call 3 (the
+    // re-acquire the queue itself makes when the first slot releases):
+    // refuses on the GLOBAL reason — standing in for "something else took
+    // the last global slot in between" — which is the case this test
+    // exists to prove the queue survives without dropping the waiter.
+    let calls = 0;
+    const scriptedGuard: UnauthenticatedPoolGuard = {
+      tryAcquire(remoteAddress): UnauthenticatedPoolAdmission {
+        calls += 1;
+        void remoteAddress;
+        if (calls === 1) {
+          return { admitted: true, slot: { release(): void {} } };
+        }
+        if (calls === 2) {
+          return { admitted: false, reason: 'max_unauthenticated_connections_per_source' };
+        }
+        return { admitted: false, reason: 'max_unauthenticated_connections' };
+      },
+    };
+
+    const { schedule, cancel } = fakeScheduler();
+    const queue = createUnauthenticatedAdmissionQueue(scriptedGuard, 5, 1000, schedule, cancel);
+
+    const firstResults: UnauthenticatedAdmissionResult[] = [];
+    queue.request('1.1.1.1', (r) => firstResults.push(r));
+    const firstSlot = slotOf(firstResults[0]);
+
+    const secondResults: UnauthenticatedAdmissionResult[] = [];
+    queue.request('1.1.1.1', (r) => secondResults.push(r)); // queued (calls === 1 already spent)
+
+    firstSlot.release(); // triggers a re-acquire that the scripted guard refuses
+    // The waiter is neither admitted nor refused — it keeps its queued
+    // place rather than being dropped on the floor.
+    expect(secondResults).toHaveLength(0);
+  });
+});
+
 interface Harness {
   store: ShimStore;
   worker: WorkerHandle;
@@ -256,6 +479,8 @@ async function startHarness(
     maxMessageBytes: number;
     maxUnauthenticatedConnectionsPerSource: number;
     maxUnauthenticatedConnections: number;
+    maxUnauthenticatedPerSourceWaitQueueDepth: number;
+    maxUnauthenticatedPerSourceWaitMs: number;
     authDeadlineMs: number;
     maxConcurrentDataPhases: number;
     maxConcurrentDataPhasesPerSubmitter: number;
@@ -285,6 +510,9 @@ async function startHarness(
     maxMessageBytes: overrides.maxMessageBytes ?? 1024 * 1024,
     maxUnauthenticatedConnectionsPerSource: overrides.maxUnauthenticatedConnectionsPerSource ?? 20,
     maxUnauthenticatedConnections: overrides.maxUnauthenticatedConnections ?? 20,
+    maxUnauthenticatedPerSourceWaitQueueDepth:
+      overrides.maxUnauthenticatedPerSourceWaitQueueDepth ?? 50,
+    maxUnauthenticatedPerSourceWaitMs: overrides.maxUnauthenticatedPerSourceWaitMs ?? 2000,
     authDeadlineMs: overrides.authDeadlineMs ?? 5000,
     maxConcurrentDataPhases: overrides.maxConcurrentDataPhases ?? 20,
     maxConcurrentDataPhasesPerSubmitter: overrides.maxConcurrentDataPhasesPerSubmitter ?? 5,
@@ -735,6 +963,70 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       return s;
     }
 
+    /** Connects and authenticates, stopping right after AUTH succeeds — never opens DATA, so only the unauthenticated pool's own bookkeeping is exercised, not the separate DATA-phase guard. */
+    async function authenticateOnly(domain: string, key: string): Promise<RawSmtpSession> {
+      const s = rawSmtpSession();
+      await new Promise<void>((resolve) => s.socket.connect(harness.port, '127.0.0.1', resolve));
+      await s.waitFor(/^220 /m);
+      s.write('EHLO test\r\n');
+      await s.waitFor(/^250 /m);
+      s.write(`AUTH PLAIN ${Buffer.from(`\u0000${domain}\u0000${key}`).toString('base64')}\r\n`);
+      await s.waitFor(/^235 /m);
+      return s;
+    }
+
+    it('releases the unauthenticated-pool slot on AUTH success — an authenticated connection held open never keeps counting against its own per-source cap', async () => {
+      // Exactly what finding 1 needed: without this, an authenticated but
+      // still-open connection would keep occupying its source's
+      // unauthenticated budget forever (until it eventually closes), so a
+      // burst of legitimate sign-ins that stay connected for a moment
+      // after authenticating would still exhaust the per-source cap and
+      // start queuing — or, past the queue bound, refusing — connections
+      // that have nothing to do with the pool this cap protects.
+      harness = await startHarness({
+        maxUnauthenticatedConnectionsPerSource: 3,
+        maxUnauthenticatedConnections: 100,
+        // Deliberately short: this proves the fourth connection is
+        // admitted FAST, not merely "eventually, after queuing" — a wait
+        // bound long enough to let queuing alone pass this test would
+        // hide the exact regression this test exists to catch. If release
+        // on AUTH success is broken, the fourth connection queues behind
+        // the cap and this bound is what eventually refuses it — a clean,
+        // fast assertion failure rather than a hung test.
+        maxUnauthenticatedPerSourceWaitMs: 300,
+      });
+
+      // Fill the per-source cap (3) and hold every connection open,
+      // authenticated — none of them close.
+      const held = await Promise.all([
+        authenticateOnly('tenant-a.example.com', 'key-a'),
+        authenticateOnly('tenant-a.example.com', 'key-a'),
+        authenticateOnly('tenant-a.example.com', 'key-a'),
+      ]);
+
+      // A fourth connection from the SAME source must be admitted at once,
+      // well inside the 300ms wait bound above — proving it was never
+      // actually queued, not merely that it didn't time out.
+      const start = Date.now();
+      const fourth = new Socket();
+      const fourthResponse = await new Promise<string>((resolve, reject) => {
+        let buf = '';
+        fourth.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^\d{3} /m.test(buf)) resolve(buf);
+        });
+        fourth.on('error', reject);
+        fourth.connect(harness.port, '127.0.0.1');
+      });
+      const elapsedMs = Date.now() - start;
+
+      expect(fourthResponse).toMatch(/^220 /);
+      expect(elapsedMs).toBeLessThan(150);
+
+      fourth.end();
+      held.forEach((s) => s.socket.end());
+    });
+
     it('refuses a new connection once maxUnauthenticatedConnections idle, never-authenticated connections are already open', async () => {
       harness = await startHarness({ maxUnauthenticatedConnections: 2 });
 
@@ -789,10 +1081,9 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     });
 
     it('one source at (and churning past) its own per-source cap never causes a 421 for a different source', async () => {
-      // The blocking finding review cycle 4 fixed: the unauthenticated pool
-      // was global only, so one credential-less source churning
-      // connections — replacing each one the instant it's refused or
-      // evicted — could hold the whole pool full indefinitely without ever
+      // A global-only unauthenticated pool lets one credential-less source
+      // churning connections — replacing each one the instant it's refused
+      // or evicted — hold the whole pool full indefinitely without ever
       // needing a slot for more than a few seconds, denying a real,
       // different-source submitter (Ghost's own container) a slot at the
       // greeting. `::1` and `127.0.0.1` are two genuinely distinct
@@ -911,6 +1202,153 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       legitimate.end();
 
       expect(legitimateResponse).toMatch(/^220 /);
+    });
+
+    it('a legitimate concurrent burst from ONE source, well past its own per-source cap, is never refused — every send completes', async () => {
+      // The exact shape ordinary traffic produces, not an attack: several
+      // members signing in at once each open their own connection from the
+      // same host. A per-source cap that refuses anything past its own
+      // number turns that into lost mail. Twenty concurrent sends from one
+      // source, cap held at 5, must all still complete — the excess waits
+      // for the ordinary trickle of releases (each one authenticating)
+      // rather than being turned away.
+      harness = await startHarness({
+        maxUnauthenticatedConnectionsPerSource: 5,
+        maxUnauthenticatedConnections: 100,
+        maxConcurrentDataPhases: 100,
+        maxConcurrentDataPhasesPerSubmitter: 100,
+      });
+
+      const sends = Array.from({ length: 20 }, (_, i) => {
+        const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+        return transport.sendMail({
+          from: 'Tenant A <noreply@tenant-a.example.com>',
+          to: `member${i}@example.com`,
+          subject: 'Your sign-in link',
+          text: 'Click here',
+        });
+      });
+
+      const results = await Promise.all(sends);
+      expect(results).toHaveLength(20);
+    });
+
+    it('a burst deeper than the per-source wait queue is refused outright, not queued without bound', async () => {
+      harness = await startHarness({
+        maxUnauthenticatedConnectionsPerSource: 2,
+        maxUnauthenticatedConnections: 100,
+        maxUnauthenticatedPerSourceWaitQueueDepth: 3,
+        maxUnauthenticatedPerSourceWaitMs: 60_000,
+      });
+
+      // Fill the instant-admit cap (2) — these two get a banner right away.
+      const admitted = [await connectAndWaitBanner(), await connectAndWaitBanner()];
+
+      // Fill the wait queue (3) — these three are queued behind the cap
+      // above, so no banner arrives for them; opened without waiting for
+      // one, and given a moment to actually reach the queue.
+      const queued: Socket[] = [];
+      for (let i = 0; i < 3; i++) {
+        const s = new Socket();
+        s.on('error', () => {});
+        s.connect(harness.port, '127.0.0.1');
+        queued.push(s);
+      }
+      await new Promise((r) => setTimeout(r, 100));
+
+      const sixth = new Socket();
+      const sixthResponse = await new Promise<string>((resolve, reject) => {
+        let buf = '';
+        sixth.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^\d{3} /m.test(buf)) resolve(buf);
+        });
+        sixth.on('error', reject);
+        sixth.connect(harness.port, '127.0.0.1');
+      });
+
+      // Refused immediately (queue-full), not after waiting out the 60s
+      // bound above — this test's own timeout is proof it didn't wait.
+      expect(sixthResponse).toMatch(/^421 /);
+      expect(
+        harness.logs.some(
+          (line) =>
+            line.event === 'smtp_connection_refused' &&
+            line.fields.reason === 'max_unauthenticated_connections_per_source_queue_full'
+        )
+      ).toBe(true);
+
+      sixth.end();
+      admitted.forEach((s) => s.destroy());
+      queued.forEach((s) => s.destroy());
+    });
+
+    it('a queued connection that waits past the bound is refused with a distinct reason', async () => {
+      harness = await startHarness({
+        maxUnauthenticatedConnectionsPerSource: 1,
+        maxUnauthenticatedConnections: 100,
+        maxUnauthenticatedPerSourceWaitQueueDepth: 5,
+        maxUnauthenticatedPerSourceWaitMs: 150,
+      });
+
+      const holder = await connectAndWaitBanner();
+
+      const waiter = new Socket();
+      const waiterResponse = await new Promise<string>((resolve, reject) => {
+        let buf = '';
+        waiter.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^\d{3} /m.test(buf)) resolve(buf);
+        });
+        waiter.on('error', reject);
+        waiter.connect(harness.port, '127.0.0.1');
+      });
+
+      expect(waiterResponse).toMatch(/^421 /);
+      expect(
+        harness.logs.some(
+          (line) =>
+            line.event === 'smtp_connection_refused' &&
+            line.fields.reason === 'max_unauthenticated_connections_per_source_wait_timeout'
+        )
+      ).toBe(true);
+
+      holder.end();
+      waiter.end();
+    });
+
+    it('a connection that drops while still queued is withdrawn cleanly — never admitted, never logged as refused', async () => {
+      harness = await startHarness({
+        maxUnauthenticatedConnectionsPerSource: 1,
+        maxUnauthenticatedConnections: 100,
+        maxUnauthenticatedPerSourceWaitQueueDepth: 5,
+        maxUnauthenticatedPerSourceWaitMs: 5000,
+      });
+
+      const holder = await connectAndWaitBanner();
+
+      const waiter = new Socket();
+      const waiterClosed = new Promise<void>((resolve) => waiter.on('close', resolve));
+      waiter.connect(harness.port, '127.0.0.1');
+      // Give it a moment to actually reach the queue (past the greeting the
+      // holder consumed) before pulling it out from under itself.
+      await new Promise((r) => setTimeout(r, 50));
+      waiter.destroy();
+      await waiterClosed;
+
+      // The slot the holder still occupies is untouched by the dropped
+      // waiter — releasing it now must not "admit" a connection that no
+      // longer exists (smtp-server would have nothing to write a response
+      // to), and must not appear in the logs as either admitted or refused.
+      holder.end();
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(
+        harness.logs.some(
+          (line) =>
+            line.event === 'smtp_connection_refused' && line.fields.remoteAddress === '127.0.0.1'
+        )
+      ).toBe(false);
     });
 
     it('closes an unauthenticated connection once its auth deadline passes — even one sending NOOP to stay superficially active', async () => {
@@ -1112,10 +1550,10 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     });
 
     it('releases the concurrency slot when the connection drops mid-DATA — repeated drops never leak the budget permanently', async () => {
-      // The blocking finding review cycle 4 fixed: smtp-server detaches the
-      // data stream (unpipes it and sets it to null — _onClose,
-      // smtp-connection.js) without emitting 'end' or 'error' on it when
-      // the socket closes mid-transfer, so relying on those two events
+      // smtp-server detaches the data stream (unpipes it and sets it to
+      // null — _onClose, smtp-connection.js) without emitting 'end' or
+      // 'error' on it when the socket closes mid-transfer, so relying on
+      // those two events
       // alone leaked the slot forever on every dropped connection, not
       // only a deliberately malicious one — an ordinary network blip or
       // container restart mid-send does this too. Six drops (one more than
@@ -1370,6 +1808,8 @@ describe('SMTP front door — runtime server errors are logged, not swallowed', 
       maxMessageBytes: 1024 * 1024,
       maxUnauthenticatedConnectionsPerSource: 20,
       maxUnauthenticatedConnections: 20,
+      maxUnauthenticatedPerSourceWaitQueueDepth: 50,
+      maxUnauthenticatedPerSourceWaitMs: 2000,
       authDeadlineMs: 5000,
       maxConcurrentDataPhases: 20,
       maxConcurrentDataPhasesPerSubmitter: 5,

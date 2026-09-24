@@ -75,6 +75,8 @@ async function startHarness(): Promise<Harness> {
     maxMessageBytes: 1024 * 1024,
     maxUnauthenticatedConnectionsPerSource: 20,
     maxUnauthenticatedConnections: 20,
+    maxUnauthenticatedPerSourceWaitQueueDepth: 50,
+    maxUnauthenticatedPerSourceWaitMs: 2000,
     authDeadlineMs: 5000,
     maxConcurrentDataPhases: 20,
     maxConcurrentDataPhasesPerSubmitter: 5,

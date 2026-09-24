@@ -182,8 +182,7 @@ export interface UnauthenticatedPoolGuard {
  * such not-yet-checked connections permanently present, which pinned the
  * global count above its cap using connections that were themselves about
  * to be refused a moment later — starving a legitimate connection from a
- * different source thanks to the very source the cap exists to contain
- * (proven live against real Ghost 6.55.0 before this guard existed).
+ * different source thanks to the very source the cap exists to contain.
  * Counting only what this guard itself has let through removes the race:
  * a connection counts here from the instant it is admitted until this
  * guard's own `.release()` is called, never from mere socket acceptance.
@@ -228,15 +227,183 @@ export function createUnauthenticatedPoolGuard(
   };
 }
 
+export type UnauthenticatedAdmissionResult =
+  | { admitted: true; slot: UnauthenticatedPoolSlot }
+  | {
+      admitted: false;
+      reason:
+        | 'max_unauthenticated_connections'
+        | 'max_unauthenticated_connections_per_source_queue_full'
+        | 'max_unauthenticated_connections_per_source_wait_timeout';
+    };
+
+export interface UnauthenticatedAdmissionQueue {
+  /**
+   * Calls `onResult` exactly once: immediately if a slot is free, or later
+   * (still bounded) if this source is at its own cap but a slot for it
+   * frees up before the wait bound. Returns `cancel()` so a caller whose
+   * own connection has gone away while still queued (its socket closed
+   * before being admitted or timed out) can withdraw without ever
+   * receiving a result — otherwise a stale request would either occupy a
+   * queue slot forever or eventually "admit" a connection that no longer
+   * exists.
+   */
+  request(
+    remoteAddress: string,
+    onResult: (result: UnauthenticatedAdmissionResult) => void
+  ): { cancel(): void };
+}
+
+/**
+ * Several members signing in at once each open their own connection from
+ * Ghost's one source address, and scrypt's ~21ms per AUTH check runs
+ * serially, so more than the per-source cap's worth can be genuinely
+ * unauthenticated at the same instant — a burst refused outright loses
+ * real magic links to a `500`, not an attack. A cap sized to refuse
+ * nothing would just move the same problem to a larger number reached by
+ * a large-enough legitimate burst.
+ * Queueing instead means a burst past the per-source cap waits — bounded
+ * in both how many can wait and how long — for the ordinary trickle of
+ * releases (a queued connection's own eventual AUTH, or another
+ * connection from the same source closing) to admit it, rather than
+ * refusing it outright. The global cap is never queued behind: it is the
+ * backstop for many distinct hostile sources at once, a different threat
+ * this queue does nothing about and should not soften.
+ */
+export function createUnauthenticatedAdmissionQueue(
+  guard: UnauthenticatedPoolGuard,
+  maxQueueDepthPerSource: number,
+  maxWaitMs: number,
+  scheduleTimeout: (fn: () => void, ms: number) => unknown = (fn, ms) => setTimeout(fn, ms).unref(),
+  // `any`, not the ambient NodeJS.Timeout type: this file's plain,
+  // non-type-aware eslint config has no @types/node globals to resolve it.
+  cancelTimeout: (handle: unknown) => void = (handle) => clearTimeout(handle as any)
+): UnauthenticatedAdmissionQueue {
+  interface Waiter {
+    onResult: (result: UnauthenticatedAdmissionResult) => void;
+    timeoutHandle: unknown;
+    cancelled: boolean;
+  }
+  const queues = new Map<string, Waiter[]>();
+
+  function dropFromQueue(remoteAddress: string, waiter: Waiter): void {
+    const queue = queues.get(remoteAddress);
+    if (!queue) {
+      return;
+    }
+    const idx = queue.indexOf(waiter);
+    if (idx !== -1) {
+      queue.splice(idx, 1);
+    }
+    if (queue.length === 0) {
+      queues.delete(remoteAddress);
+    }
+  }
+
+  // Wraps every admitted slot (whether admitted immediately or off the
+  // queue) so its own release also wakes the next waiter for the SAME
+  // source, if any — a slot freeing for one source can only ever help a
+  // connection waiting on that same source's own cap, never a different
+  // one's.
+  function wrapSlot(remoteAddress: string, slot: UnauthenticatedPoolSlot): UnauthenticatedPoolSlot {
+    return {
+      release(): void {
+        slot.release();
+        const queue = queues.get(remoteAddress);
+        if (!queue || queue.length === 0) {
+          return;
+        }
+        const waiter = queue.shift()!;
+        if (queue.length === 0) {
+          queues.delete(remoteAddress);
+        }
+        cancelTimeout(waiter.timeoutHandle);
+        const admission = guard.tryAcquire(remoteAddress);
+        if (admission.admitted) {
+          waiter.onResult({ admitted: true, slot: wrapSlot(remoteAddress, admission.slot) });
+        } else {
+          // The slot that just freed for this source was claimed elsewhere
+          // between the release above and this re-attempt (single-threaded
+          // JS makes that a same-tick reentrancy, not a real race, but stay
+          // defensive) — or the global cap has since filled. Either way,
+          // this waiter goes back to the FRONT of its own queue rather than
+          // being refused outright, so a transient loss doesn't cost it its
+          // place; its own timeout is still the only thing that can refuse
+          // it now.
+          queue.unshift(waiter);
+          queues.set(remoteAddress, queue);
+        }
+      },
+    };
+  }
+
+  return {
+    request(remoteAddress, onResult) {
+      // Nothing to withdraw once a result has already been delivered
+      // synchronously — the one shared no-op below is handed back on
+      // every immediate path so callers can always call `.cancel()`
+      // unconditionally without checking which path they got.
+      const noopCancel = { cancel(): void {} };
+
+      const admission = guard.tryAcquire(remoteAddress);
+      if (admission.admitted) {
+        onResult({ admitted: true, slot: wrapSlot(remoteAddress, admission.slot) });
+        return noopCancel;
+      }
+      if (admission.reason === 'max_unauthenticated_connections') {
+        // The global backstop is never queued behind — see this function's
+        // own doc comment.
+        onResult({ admitted: false, reason: 'max_unauthenticated_connections' });
+        return noopCancel;
+      }
+
+      const queue = queues.get(remoteAddress) ?? [];
+      if (queue.length >= maxQueueDepthPerSource) {
+        onResult({
+          admitted: false,
+          reason: 'max_unauthenticated_connections_per_source_queue_full',
+        });
+        return noopCancel;
+      }
+
+      const waiter: Waiter = { onResult, timeoutHandle: undefined, cancelled: false };
+      waiter.timeoutHandle = scheduleTimeout(() => {
+        if (waiter.cancelled) {
+          return;
+        }
+        dropFromQueue(remoteAddress, waiter);
+        onResult({
+          admitted: false,
+          reason: 'max_unauthenticated_connections_per_source_wait_timeout',
+        });
+      }, maxWaitMs);
+      queue.push(waiter);
+      queues.set(remoteAddress, queue);
+
+      return {
+        cancel(): void {
+          waiter.cancelled = true;
+          cancelTimeout(waiter.timeoutHandle);
+          dropFromQueue(remoteAddress, waiter);
+        },
+      };
+    },
+  };
+}
+
 export interface SmtpFrontDoorOptions {
   store: ShimStore;
   worker: WorkerHandle;
   log: Logger;
   maxMessageBytes: number;
-  /** Cap on connections that have not yet authenticated, from any one source address. Checked before the global pool, so one source (e.g. a compromised, credential-less container) can never occupy more than its own share — churning connections defeats a purely time-based deadline, and a purely global count-based cap doesn't need many source addresses to exhaust. Each legitimate source is exactly one Ghost container, so this never binds for a well-behaved single source. */
+  /** How many connections from one source address are admitted into the unauthenticated pool without waiting. Checked before the global pool, so one source (e.g. a compromised, credential-less container) can never occupy more than its own instantly-admitted share — churning connections defeats a purely time-based deadline, and a purely global count-based cap doesn't need many source addresses to exhaust. A legitimate source bursting past this does not get refused outright: see maxUnauthenticatedPerSourceWaitQueueDepth/Ms below. */
   maxUnauthenticatedConnectionsPerSource: number;
-  /** Cap on connections that have not yet authenticated, across every source — the backstop behind the per-source cap above. Never gates an authenticated submitter — this pool and the authenticated one are counted separately. */
+  /** Cap on connections that have not yet authenticated, across every source — the backstop behind the per-source cap above. Never gates an authenticated submitter — this pool and the authenticated one are counted separately. Never queued behind: it bounds many distinct hostile sources at once, a threat a per-source wait does nothing about. */
   maxUnauthenticatedConnections: number;
+  /** How many connections from one source may be waiting at once for a per-source slot to free, once that source is past maxUnauthenticatedConnectionsPerSource. Bounds the queue's own memory; a source past this is refused outright rather than queued further. */
+  maxUnauthenticatedPerSourceWaitQueueDepth: number;
+  /** How long a queued connection waits for its own source's slot to free before being refused. Comfortably under nodemailer's own greeting timeout, so a legitimate burst waits rather than losing the message outright. */
+  maxUnauthenticatedPerSourceWaitMs: number;
   /** How long a connection has to complete AUTH before it is closed outright, freeing its slot in the unauthenticated pool regardless of how it keeps itself alive (e.g. periodic NOOP). */
   authDeadlineMs: number;
   /** Cap on messages actively streaming DATA at once, across every submitter. This is what bounds worst-case retained memory (maxConcurrentDataPhases * maxMessageBytes) — an authenticated connection that is not sending a message costs nothing, so it is never counted here. */
@@ -313,10 +480,17 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
   );
 
   // See createUnauthenticatedPoolGuard's own comment for why this counts
-  // admissions itself rather than filtering server.connections.
+  // admissions itself rather than filtering server.connections, and
+  // createUnauthenticatedAdmissionQueue's for why a per-source burst waits
+  // rather than being refused outright.
   const unauthPoolGuard = createUnauthenticatedPoolGuard(
     opts.maxUnauthenticatedConnections,
     opts.maxUnauthenticatedConnectionsPerSource
+  );
+  const unauthAdmissionQueue = createUnauthenticatedAdmissionQueue(
+    unauthPoolGuard,
+    opts.maxUnauthenticatedPerSourceWaitQueueDepth,
+    opts.maxUnauthenticatedPerSourceWaitMs
   );
 
   const server = new SMTPServer({
@@ -340,66 +514,85 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
 
       // Per-source is checked before global inside the guard itself: one
       // source address (e.g. a compromised, credential-less container) can
-      // never occupy more than its own share of the pool, however fast it
-      // churns connections — replacing each one the instant it's refused or
-      // evicted defeats a purely time-based deadline (reconnect faster than
-      // it) and doesn't need to spread across addresses to defeat a purely
-      // global count-based cap. The global cap is the backstop, sized well
-      // past what the per-source cap alone would ever let one source reach,
-      // so it should never be the binding limit for a single well-behaved
-      // source.
+      // never occupy more than its own instantly-admitted share of the
+      // pool, however fast it churns connections — replacing each one the
+      // instant it's refused or evicted defeats a purely time-based
+      // deadline (reconnect faster than it) and doesn't need to spread
+      // across addresses to defeat a purely global count-based cap. The
+      // global cap is the backstop, sized well past what the per-source
+      // cap alone would ever let one source reach, so it should never be
+      // the binding limit for a single well-behaved source. A legitimate
+      // burst past the per-source cap does not get refused outright: it
+      // waits, bounded, for the ordinary trickle of releases from that same
+      // source — see createUnauthenticatedAdmissionQueue's own comment.
       const remoteAddress = session.remoteAddress ?? '';
-      const admission = unauthPoolGuard.tryAcquire(remoteAddress);
-      if (!admission.admitted) {
-        log.warn('smtp_connection_refused', {
-          remoteAddress: session.remoteAddress,
-          reason: admission.reason,
-        });
-        const err = new Error('Too many connections') as Error & { responseCode: number };
-        err.responseCode = 421;
-        callback(err);
-        return;
-      }
-
       const connections = server.connections as unknown as Set<RawSmtpConnection>;
-
-      // Released the instant this connection leaves the unauthenticated
-      // pool: either it authenticates (onAuth calls this same function on
-      // success, below) or its underlying socket closes first for any
-      // reason — a normal disconnect, the deadline eviction just below, or
-      // a mid-handshake network drop. `.release()` is idempotent, so
-      // whichever of the two fires first is the one that actually frees
-      // the slot; the other is a no-op.
-      session.releaseUnauthSlot = admission.slot.release;
+      let rawConnection: RawSmtpConnection | undefined;
       for (const c of connections) {
         if (c.session === session) {
-          c._socket?.once('close', admission.slot.release);
+          rawConnection = c;
           break;
         }
       }
 
-      callback();
+      // If this connection's own socket goes away while it is still
+      // waiting for a slot — the client gave up, or simply dropped —
+      // withdraw its queued request so it never occupies a queue slot
+      // pointlessly and is never "admitted" after it can no longer be
+      // answered. Removed the instant a result arrives either way, so it
+      // never lingers alongside the DATA-phase close listener a later
+      // message on this same connection attaches.
+      const onEarlyClose = (): void => pending.cancel();
+      rawConnection?._socket?.once('close', onEarlyClose);
+      const pending = unauthAdmissionQueue.request(remoteAddress, (result) => {
+        rawConnection?._socket?.removeListener('close', onEarlyClose);
 
-      // A connection that never authenticates is closed outright once its
-      // deadline passes, regardless of how it keeps itself alive in the
-      // meantime (e.g. a NOOP every few seconds, which resets smtp-server's
-      // own idle timeout but never authenticates) — otherwise the
-      // unauthenticated pool above still fills, just more slowly. A
-      // connection that has authenticated by the time this fires is exempt:
-      // `session.user` is set on this same object by onAuth, so the check
-      // below is a no-op for it.
-      const deadline = setTimeout(() => {
-        if (session.user) {
+        if (!result.admitted) {
+          log.warn('smtp_connection_refused', {
+            remoteAddress: session.remoteAddress,
+            reason: result.reason,
+          });
+          const err = new Error('Too many connections') as Error & { responseCode: number };
+          err.responseCode = 421;
+          callback(err);
           return;
         }
-        log.warn('smtp_auth_deadline_exceeded', { remoteAddress: session.remoteAddress });
-        connections.forEach((c) => {
-          if (c.session === session) {
-            c.close();
+
+        // Released the instant this connection leaves the unauthenticated
+        // pool: either it authenticates (onAuth calls this same function on
+        // success, below) or its underlying socket closes first for any
+        // reason — a normal disconnect, the deadline eviction just below,
+        // or a mid-handshake network drop. `.release()` is idempotent, so
+        // whichever of the two fires first is the one that actually frees
+        // the slot; the other is a no-op.
+        session.releaseUnauthSlot = result.slot.release;
+        rawConnection?._socket?.once('close', result.slot.release);
+
+        callback();
+
+        // A connection that never authenticates is closed outright once its
+        // deadline passes, timed from ADMISSION (not from when it first
+        // connected — time already spent waiting for a slot isn't time it
+        // had to authenticate in), regardless of how it keeps itself alive
+        // in the meantime (e.g. a NOOP every few seconds, which resets
+        // smtp-server's own idle timeout but never authenticates) —
+        // otherwise the unauthenticated pool above still fills, just more
+        // slowly. A connection that has authenticated by the time this
+        // fires is exempt: `session.user` is set on this same object by
+        // onAuth, so the check below is a no-op for it.
+        const deadline = setTimeout(() => {
+          if (session.user) {
+            return;
           }
-        });
-      }, opts.authDeadlineMs);
-      deadline.unref();
+          log.warn('smtp_auth_deadline_exceeded', { remoteAddress: session.remoteAddress });
+          connections.forEach((c) => {
+            if (c.session === session) {
+              c.close();
+            }
+          });
+        }, opts.authDeadlineMs);
+        deadline.unref();
+      });
     },
 
     onAuth(
