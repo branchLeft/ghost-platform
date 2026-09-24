@@ -1,7 +1,7 @@
 {
   "name": "@branchleft/ghost-platform-render-core",
   "version": "0.1.0",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "description": "The tenant descriptor: schema, branded validated types and the three cross-field invariants both reconcilers render from.",
   "type": "module",
   "main": "dist/index.js",

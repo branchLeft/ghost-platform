@@ -172,10 +172,11 @@ async function handleReconcile(
   // allocation, before anything below touches the renderer or the Admin
   // API. LLD-2 §01 is load-bearing on "no port to pick, no uid to compute"
   // -- `slotPort` already keeps the Admin API call itself slot-derived, but
-  // until the renderer exists (workspace#1183) it still receives whatever
-  // `ports`/`uid` the caller sent, unchanged. A mismatch here is malformed
-  // input for *this* slot, not a state conflict, so it is a 400 like the
-  // other descriptor-shape refusals above, not a 409.
+  // the renderer still receives whatever `ports`/`uid` the caller sent,
+  // unchanged (render-core reads them straight off the descriptor rather
+  // than recomputing them). A mismatch here is malformed input for *this*
+  // slot, not a state conflict, so it is a 400 like the other
+  // descriptor-shape refusals above, not a 409.
   const allocation = slotAllocation(deps.uidBase, deps.appPortBase, deps.healthPortBase, slot);
   if (
     descriptor.uid !== allocation.uid ||

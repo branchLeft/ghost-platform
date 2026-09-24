@@ -1,9 +1,9 @@
 /**
  * The render core's descriptor package: the schema every reconciler renders
- * from, and the one place its invariants are enforced. No rendering logic
- * lives here yet — that is `compose.ts`/`environment.ts`/`edge.ts`/
- * `settings.ts` and friends, which this package's dependency closure
- * deliberately does not include.
+ * from, its invariants, and `render()`, the pure descriptor-to-seven-
+ * artefacts step LLD-2 §03 calls "render". Its dependency closure still
+ * contains no Pulumi module and no Node built-in; `test/dependency-closure.test.ts`
+ * enforces both.
  */
 
 export type {
@@ -69,3 +69,44 @@ export {
   validateLeaseId,
   validateSlotName,
 } from './lease.js';
+
+export type { Artefact } from './render.js';
+export {
+  render,
+  renderSecretsTemplate,
+  imageEnvPath,
+  renderEdgeSiteBlock,
+  renderSettings,
+  renderIdentity,
+} from './render.js';
+export type { EdgeGate, EdgeSiteBlock } from './edge.js';
+export type { GhostSettings, CodeInjectionSettings } from './settings.js';
+export { CODE_INJECTION_EXPLAINER } from './settings.js';
+export type { TenantIdentity } from './identity.js';
+
+export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
+export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
+export type { ComposeStackArgs, DemoDataMount } from './compose.js';
+export {
+  MAX_TENANT_SLUG_LENGTH,
+  RESERVED_STACK_NAMES,
+  TENANT_DB_PREFIX,
+  adaptersVolumeName,
+  composeUnitName,
+  contentVolumeName,
+  databaseAndUserName,
+  secretsEnvPath,
+  sqlIdentifier,
+  stackDirectory,
+  stackName,
+  validateDatabaseIdentity,
+  validateSlugAvailability,
+} from './naming.js';
+export { DEFAULT_RSS_BUDGET_MIB, DEFAULT_UPLOAD_CEILING_MIB, uploadLimits } from './runtime.js';
+export type { UploadLimits } from './runtime.js';
+export {
+  MEDIA_BUCKET_PREFIX,
+  mediaBucketName,
+  mediaPublicBaseUrl,
+  validateMediaBucket,
+} from './media.js';

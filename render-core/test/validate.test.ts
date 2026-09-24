@@ -378,14 +378,17 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
   });
 
   it('rejects a demo on MySQL', () => {
+    // name/user are the slug-derived value (`databaseAndUserName('demo-1')`)
+    // rather than an arbitrary string, so this isolates the tier-variant
+    // rule specifically, not `validateDatabaseIdentity`'s own check.
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),
       database: {
         kind: 'mysql',
         host: 'db-t1.internal',
         port: 3306 as never,
-        name: 'x',
-        user: 'x',
+        name: 'ghost_demo_1',
+        user: 'ghost_demo_1',
       },
     };
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
@@ -398,7 +401,9 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
         kind: 's3',
         endpoint: 'https://s3.endpoint.example',
         region: 'eu',
-        bucket: 'demo-1',
+        // The slug-derived bucket name, so this isolates the tier-variant
+        // rule specifically, not `validateMediaBucket`'s own check.
+        bucket: 'branchleft-media-demo-1',
         resize: false,
         srcsets: false,
       },
