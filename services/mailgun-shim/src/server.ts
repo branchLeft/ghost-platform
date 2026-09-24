@@ -30,7 +30,10 @@ const smtpFrontDoor = createSmtpFrontDoor({
   worker,
   log,
   maxMessageBytes: config.smtpFrontDoor.maxMessageBytes,
-  maxConcurrentConnections: config.smtpFrontDoor.maxConcurrentConnections,
+  maxUnauthenticatedConnections: config.smtpFrontDoor.maxUnauthenticatedConnections,
+  authDeadlineMs: config.smtpFrontDoor.authDeadlineMs,
+  maxConcurrentDataPhases: config.smtpFrontDoor.maxConcurrentDataPhases,
+  maxConcurrentDataPhasesPerSubmitter: config.smtpFrontDoor.maxConcurrentDataPhasesPerSubmitter,
   allowedSourceCidrs: config.smtpFrontDoor.allowedSourceCidrs,
   submitterMessagesPerMinute: config.smtpFrontDoor.submitterMessagesPerMinute,
 });

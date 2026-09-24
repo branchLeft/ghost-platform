@@ -107,8 +107,14 @@ export interface SmtpFrontDoorOptions {
   worker: WorkerHandle;
   log: Logger;
   maxMessageBytes: number;
-  /** Total open connections this listener accepts at once. Bounds worst-case retained memory as maxConcurrentConnections * maxMessageBytes, not just one connection's. */
-  maxConcurrentConnections: number;
+  /** Cap on connections that have not yet authenticated. Never gates an authenticated submitter — this pool and the authenticated one are counted separately. */
+  maxUnauthenticatedConnections: number;
+  /** How long a connection has to complete AUTH before it is closed outright, freeing its slot in the unauthenticated pool regardless of how it keeps itself alive (e.g. periodic NOOP). */
+  authDeadlineMs: number;
+  /** Cap on messages actively streaming DATA at once, across every submitter. This is what bounds worst-case retained memory (maxConcurrentDataPhases * maxMessageBytes) — an authenticated connection that is not sending a message costs nothing, so it is never counted here. */
+  maxConcurrentDataPhases: number;
+  /** Cap on messages actively streaming DATA at once, per authenticated submitter. Stops one credential monopolising the global budget. */
+  maxConcurrentDataPhasesPerSubmitter: number;
   allowedSourceCidrs?: readonly string[];
   submitterMessagesPerMinute: number;
   now?: () => number;
@@ -123,6 +129,18 @@ declare module 'smtp-server' {
   interface SMTPServerSession {
     user?: string;
   }
+}
+
+/**
+ * `smtp-server`'s own connection objects, as held in `SMTPServer.connections`
+ * (typed `Set<any>` upstream) — narrowed to exactly what's needed to tell an
+ * authenticated connection from an unauthenticated one and to end one that
+ * has overrun its auth deadline. `session` here is the same object instance
+ * `onAuth` mutates, so `.session.user` reflects live auth state.
+ */
+interface RawSmtpConnection {
+  session?: { user?: string };
+  close(): void;
 }
 
 /**
@@ -143,6 +161,14 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
   const allowList = buildSourceAllowList(opts.allowedSourceCidrs ?? DEFAULT_ALLOWED_SOURCE_CIDRS);
   const limiter = createSubmitterLimiter(opts.submitterMessagesPerMinute, 60_000, now);
 
+  // What actually costs memory is a DATA phase in flight, not a connection —
+  // an authenticated, idle connection retains nothing. Counted globally and
+  // per submitter so worst-case retained memory stays
+  // maxConcurrentDataPhases * maxMessageBytes, and no single credential can
+  // claim the whole budget.
+  let inFlightDataGlobal = 0;
+  const inFlightDataPerSubmitter = new Map<string, number>();
+
   const server = new SMTPServer({
     banner: 'branchLeft mail spool',
     size: opts.maxMessageBytes,
@@ -161,23 +187,49 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         callback(new Error('Connection refused'));
         return;
       }
+
       // `server.connections` already includes this connection (smtp-server
-      // adds it before calling onConnect) — a global cap, not per-source,
-      // because the failure this bounds is the shared spool dying for every
-      // submitter, not one submitter's own budget. The per-message size cap
-      // alone only bounds one connection; many concurrent ones under that
-      // cap can still exhaust the process.
-      if (server.connections.size > opts.maxConcurrentConnections) {
+      // adds it before calling onConnect), with no `session.user` yet, so it
+      // is correctly counted here. Capping ALL connections — authenticated
+      // or not — behind one number let an attacker with no credential hold
+      // every slot with idle connections and get a real submitter refused
+      // at the greeting. This cap counts only the unauthenticated pool, so
+      // an authenticated submitter is never turned away because of it.
+      const connections = server.connections as unknown as Set<RawSmtpConnection>;
+      const unauthenticatedCount = [...connections].filter((c) => !c.session?.user).length;
+      if (unauthenticatedCount > opts.maxUnauthenticatedConnections) {
         log.warn('smtp_connection_refused', {
           remoteAddress: session.remoteAddress,
-          reason: 'max_concurrent_connections',
+          reason: 'max_unauthenticated_connections',
         });
         const err = new Error('Too many connections') as Error & { responseCode: number };
         err.responseCode = 421;
         callback(err);
         return;
       }
+
       callback();
+
+      // A connection that never authenticates is closed outright once its
+      // deadline passes, regardless of how it keeps itself alive in the
+      // meantime (e.g. a NOOP every few seconds, which resets smtp-server's
+      // own idle timeout but never authenticates) — otherwise the
+      // unauthenticated pool above still fills, just more slowly. A
+      // connection that has authenticated by the time this fires is exempt:
+      // `session.user` is set on this same object by onAuth, so the check
+      // below is a no-op for it.
+      const deadline = setTimeout(() => {
+        if (session.user) {
+          return;
+        }
+        log.warn('smtp_auth_deadline_exceeded', { remoteAddress: session.remoteAddress });
+        connections.forEach((c) => {
+          if (c.session === session) {
+            c.close();
+          }
+        });
+      }, opts.authDeadlineMs);
+      deadline.unref();
     },
 
     onAuth(
@@ -253,7 +305,48 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       session: SMTPServerSession,
       callback: (err?: Error | null, message?: string) => void
     ): void {
+      /* v8 ignore start -- proven unreachable: MAIL/RCPT/DATA is a state
+       * machine smtp-server enforces itself, and MAIL FROM already refuses
+       * to proceed without session.user set (see onMailFrom above), so
+       * onData never fires with it unset. Kept as a fail-closed guard
+       * against that contract changing. */
+      if (!session.user) {
+        callback(new Error('Authentication required'));
+        return;
+      }
+      /* v8 ignore stop */
       const submitterId = session.user;
+
+      // Bounds worst-case retained memory as maxConcurrentDataPhases *
+      // maxMessageBytes: a message over either cap is drained and discarded
+      // (never retained) rather than refused outright, reusing the same
+      // proven-safe path as the size cap below — the stream still has to be
+      // consumed to reach 'end' and reply, whichever cap it tripped.
+      const submitterInFlight = inFlightDataPerSubmitter.get(submitterId) ?? 0;
+      const overConcurrencyCap =
+        inFlightDataGlobal >= opts.maxConcurrentDataPhases ||
+        submitterInFlight >= opts.maxConcurrentDataPhasesPerSubmitter;
+      if (overConcurrencyCap) {
+        log.warn('smtp_data_concurrency_refused', { submitter: submitterId });
+      } else {
+        inFlightDataGlobal += 1;
+        inFlightDataPerSubmitter.set(submitterId, submitterInFlight + 1);
+      }
+      let slotReleased = false;
+      const releaseConcurrencySlot = (): void => {
+        if (slotReleased || overConcurrencyCap) {
+          return;
+        }
+        slotReleased = true;
+        inFlightDataGlobal -= 1;
+        const count = inFlightDataPerSubmitter.get(submitterId) ?? 1;
+        if (count <= 1) {
+          inFlightDataPerSubmitter.delete(submitterId);
+        } else {
+          inFlightDataPerSubmitter.set(submitterId, count - 1);
+        }
+      };
+
       const chunks: Buffer[] = [];
       // `size` above only makes smtp-server COUNT bytes past the cap and
       // flip `stream.sizeExceeded` — it keeps emitting every byte regardless.
@@ -264,7 +357,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // can still reach `end` to reply 552. `retainedBytes` at the point the
       // flag flips is logged so retention can be asserted on directly,
       // rather than inferred from process-wide memory measurements.
-      let overCap = false;
+      let overCap = overConcurrencyCap;
       let retainedBytes = 0;
       stream.on('data', (chunk: Buffer) => {
         if (overCap) {
@@ -280,18 +373,18 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         retainedBytes += chunk.length;
         chunks.push(chunk);
       });
-      stream.on('error', (err: Error) => callback(err));
+      stream.on('error', (err: Error) => {
+        releaseConcurrencySlot();
+        callback(err);
+      });
       stream.on('end', () => {
-        /* v8 ignore start -- proven unreachable: MAIL/RCPT/DATA is a state
-         * machine smtp-server enforces itself, and MAIL FROM already refuses
-         * to proceed without session.user set (see onMailFrom above), so
-         * onData never fires with it unset. Kept as a fail-closed guard
-         * against that contract changing. */
-        if (!submitterId) {
-          callback(new Error('Authentication required'));
+        releaseConcurrencySlot();
+        if (overConcurrencyCap) {
+          const err = new Error('Too many concurrent messages') as Error & { responseCode: number };
+          err.responseCode = 450;
+          callback(err);
           return;
         }
-        /* v8 ignore stop */
         if (stream.sizeExceeded) {
           const err = new Error('Message too large') as Error & { responseCode: number };
           err.responseCode = 552;

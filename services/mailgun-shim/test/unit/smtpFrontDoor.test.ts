@@ -105,7 +105,10 @@ async function startHarness(
     omitAllowedSourceCidrs: boolean;
     submitterMessagesPerMinute: number;
     maxMessageBytes: number;
-    maxConcurrentConnections: number;
+    maxUnauthenticatedConnections: number;
+    authDeadlineMs: number;
+    maxConcurrentDataPhases: number;
+    maxConcurrentDataPhasesPerSubmitter: number;
     host: string;
     /** A worker whose `whenIdle()` never resolves — proves the ack can't be coupled to it. */
     workerNeverIdle: boolean;
@@ -130,7 +133,10 @@ async function startHarness(
     worker,
     log: logger,
     maxMessageBytes: overrides.maxMessageBytes ?? 1024 * 1024,
-    maxConcurrentConnections: overrides.maxConcurrentConnections ?? 20,
+    maxUnauthenticatedConnections: overrides.maxUnauthenticatedConnections ?? 20,
+    authDeadlineMs: overrides.authDeadlineMs ?? 5000,
+    maxConcurrentDataPhases: overrides.maxConcurrentDataPhases ?? 20,
+    maxConcurrentDataPhasesPerSubmitter: overrides.maxConcurrentDataPhasesPerSubmitter ?? 5,
     ...(overrides.omitAllowedSourceCidrs
       ? {}
       : { allowedSourceCidrs: overrides.allowedSourceCidrs ?? DEFAULT_CIDRS }),
@@ -503,14 +509,14 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(harness.store.countPendingRecipients()).toBe(0);
   }, 30000);
 
-  it('refuses a new connection once maxConcurrentConnections is already open — bounds the whole spool, not just one connection', async () => {
-    // The per-message size cap only bounds one connection's retention; many
-    // concurrent connections under that cap can still exhaust the process.
-    // This is a global cap (server.connections.size, which already counts
-    // the connection currently arriving), not per-submitter — the failure
-    // it defends against is the shared spool dying for every slot on the
-    // host, not one slot's own budget.
-    harness = await startHarness({ maxConcurrentConnections: 2 });
+  describe('connection admission — unauthenticated pool vs. authenticated DATA phases', () => {
+    // A peer that connects and never authenticates costs almost nothing —
+    // one socket. Refusing NEW connections once too many of THOSE are open
+    // (not once too many connections of any kind are open) means an
+    // authenticated submitter's own connection is never counted against a
+    // budget an unauthenticated attacker controls, and what actually costs
+    // memory — an authenticated DATA phase — is capped on its own,
+    // separately, below.
 
     async function connectAndWaitBanner(): Promise<Socket> {
       const socket = new Socket();
@@ -528,26 +534,278 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       return socket;
     }
 
-    const first = await connectAndWaitBanner();
-    const second = await connectAndWaitBanner();
+    interface RawSmtpSession {
+      socket: Socket;
+      write: (line: string) => void;
+      waitFor: (re: RegExp) => Promise<void>;
+    }
 
-    const third = new Socket();
-    const thirdResponse = await new Promise<string>((resolve, reject) => {
+    /** A raw SMTP session with a `waitFor` helper, for tests that need to hold DATA open mid-transaction — nodemailer's own transport doesn't expose that. */
+    function rawSmtpSession(): RawSmtpSession {
+      const socket = new Socket();
       let buf = '';
-      third.on('data', (chunk: Buffer) => {
-        buf += chunk.toString('utf8');
-        if (/^\d{3} /m.test(buf)) {
-          resolve(buf);
-        }
+      socket.on('data', (chunk: Buffer) => (buf += chunk.toString('utf8')));
+      return {
+        socket,
+        write: (line: string) => {
+          socket.write(line);
+        },
+        waitFor(re: RegExp): Promise<void> {
+          return new Promise((resolve) => {
+            const check = (): void => {
+              if (re.test(buf)) {
+                buf = '';
+                resolve();
+              } else {
+                setTimeout(check, 5);
+              }
+            };
+            check();
+          });
+        },
+      };
+    }
+
+    /** Connects, authenticates as the given tenant and opens DATA, leaving it held open (no terminator sent). */
+    async function authenticateAndOpenData(domain: string, key: string): Promise<RawSmtpSession> {
+      const s = rawSmtpSession();
+      await new Promise<void>((resolve) => s.socket.connect(harness.port, '127.0.0.1', resolve));
+      await s.waitFor(/^220 /m);
+      s.write('EHLO test\r\n');
+      await s.waitFor(/^250 /m);
+      s.write(`AUTH PLAIN ${Buffer.from(`\u0000${domain}\u0000${key}`).toString('base64')}\r\n`);
+      await s.waitFor(/^235 /m);
+      s.write(`MAIL FROM:<a@${domain}>\r\n`);
+      await s.waitFor(/^250 /m);
+      s.write('RCPT TO:<member@example.com>\r\n');
+      await s.waitFor(/^250 /m);
+      s.write('DATA\r\n');
+      await s.waitFor(/^354 /m);
+      return s;
+    }
+
+    it('refuses a new connection once maxUnauthenticatedConnections idle, never-authenticated connections are already open', async () => {
+      harness = await startHarness({ maxUnauthenticatedConnections: 2 });
+
+      const first = await connectAndWaitBanner();
+      const second = await connectAndWaitBanner();
+
+      const third = new Socket();
+      const thirdResponse = await new Promise<string>((resolve, reject) => {
+        let buf = '';
+        third.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^\d{3} /m.test(buf)) {
+            resolve(buf);
+          }
+        });
+        third.on('error', reject);
+        third.connect(harness.port, '127.0.0.1');
       });
-      third.on('error', reject);
-      third.connect(harness.port, '127.0.0.1');
+
+      expect(thirdResponse).toMatch(/^421 /);
+      first.end();
+      second.end();
+      third.end();
     });
 
-    expect(thirdResponse).toMatch(/^421 /);
-    first.end();
-    second.end();
-    third.end();
+    it('closes an unauthenticated connection once its auth deadline passes — even one sending NOOP to stay superficially active', async () => {
+      // The exact shape an unauthenticated attacker can use to survive
+      // smtp-server's own idle timeout without ever authenticating: send
+      // some command periodically. The deadline below is a fixed timer from
+      // connect time, not reset by activity, so it closes the connection
+      // regardless. NOOP is sent slowly (every 300ms) and the deadline is
+      // short (200ms) so this test's own closure is caused by THIS
+      // mechanism, not by smtp-server's separate, built-in
+      // maxAllowedUnauthenticatedCommands limit (default 10) — sabotaging
+      // this deadline alone must leave the connection open for many seconds
+      // (until the default `it()` timeout), not seconds.
+      harness = await startHarness({ maxUnauthenticatedConnections: 1, authDeadlineMs: 200 });
+
+      const socket = new Socket();
+      const closed = new Promise<void>((resolve) => socket.once('close', resolve));
+      let buf = '';
+      socket.on('data', (chunk: Buffer) => (buf += chunk.toString('utf8')));
+      await new Promise<void>((resolve, reject) => {
+        socket.on('error', reject);
+        socket.connect(harness.port, '127.0.0.1', resolve);
+      });
+      await new Promise<void>((resolve) => {
+        const check = (): void => {
+          if (/^220 /m.test(buf)) {
+            resolve();
+          } else {
+            setTimeout(check, 5);
+          }
+        };
+        check();
+      });
+      const noopInterval = setInterval(() => socket.write('NOOP\r\n'), 300);
+
+      const bannerAt = Date.now();
+      await closed;
+      const elapsedMs = Date.now() - bannerAt;
+      clearInterval(noopInterval);
+
+      // Bounds which mechanism closed it: the deadline (200ms) fires well
+      // under a second; smtp-server's own built-in unauthenticated-command
+      // counter (10 commands at this test's 300ms NOOP interval) would take
+      // ~3s. A test that only waited for 'close' with no bound would still
+      // pass if this deadline were sabotaged away entirely.
+      expect(elapsedMs).toBeLessThan(1000);
+
+      // The slot it held is now free — a fresh connection succeeds under
+      // the same cap of 1.
+      const next = await connectAndWaitBanner();
+      next.end();
+    });
+
+    it('an authenticated submission succeeds once idle, never-authenticating connections holding the pool have been evicted by their deadline', async () => {
+      // The finding this defends against: an unauthenticated peer holds
+      // every unauthenticated slot, so a real submitter's own (initially
+      // unauthenticated) connection is refused at the greeting before it
+      // ever gets to try AUTH. Fixed by a deadline short enough that the
+      // attacker's slots free up well within the time a real client would
+      // retry.
+      // A generous deadline relative to this test's own connection setup
+      // time (each connect below is a real TCP round trip): short enough to
+      // still prove eviction happens well within a real client's retry
+      // window, long enough that the attacker connections are reliably both
+      // open before either gets evicted, which is what "pool full" needs.
+      harness = await startHarness({ maxUnauthenticatedConnections: 2, authDeadlineMs: 500 });
+
+      const attacker1 = await connectAndWaitBanner();
+      const attacker2 = await connectAndWaitBanner();
+      // Pool is now full of idle, never-authenticating connections.
+      const blocked = new Socket();
+      await new Promise<void>((resolve, reject) => {
+        let buf = '';
+        blocked.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          if (/^421 /m.test(buf)) resolve();
+        });
+        blocked.on('error', reject);
+        blocked.connect(harness.port, '127.0.0.1');
+      });
+      blocked.end();
+
+      // Wait past the deadline — the attacker's connections are closed
+      // without them doing anything, freeing the pool.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      attacker1.destroy();
+      attacker2.destroy();
+
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+      await expect(
+        transport.sendMail({
+          from: 'noreply@tenant-a.example.com',
+          to: 'member@example.com',
+          subject: 'Hi',
+          text: 'hi',
+        })
+      ).resolves.toBeDefined();
+    });
+
+    it('bounds concurrent authenticated DATA phases globally, independent of the unauthenticated pool', async () => {
+      // What actually costs memory: too many messages being received at
+      // once, not too many connections open. A generous unauthenticated
+      // pool never gates this — only authenticated DATA phases do.
+      harness = await startHarness({
+        maxConcurrentDataPhases: 1,
+        maxConcurrentDataPhasesPerSubmitter: 1,
+      });
+
+      const first = await authenticateAndOpenData('tenant-a.example.com', 'key-a');
+      const second = await authenticateAndOpenData('tenant-b.example.com', 'key-b');
+
+      // The second submitter's DATA is refused even though it is a
+      // DIFFERENT identity — the cap is global, not just per-submitter.
+      // `waitFor` resolving on a 4xx/5xx pattern IS the assertion: it would
+      // hang (and fail the test's own timeout) if no such reply arrived.
+      second.write('some body\r\n.\r\n');
+      await second.waitFor(/^[45]\d\d /m);
+
+      first.write('\r\n.\r\n');
+      first.socket.end();
+      second.socket.end();
+    });
+
+    it('bounds concurrent authenticated DATA phases per submitter, independently of a different submitter', async () => {
+      harness = await startHarness({
+        maxConcurrentDataPhasesPerSubmitter: 1,
+        maxConcurrentDataPhases: 5,
+      });
+
+      const held = await authenticateAndOpenData('tenant-a.example.com', 'key-a');
+
+      // Same submitter, second concurrent DATA phase: refused.
+      const transportA2 = client(harness.port, 'tenant-a.example.com', 'key-a');
+      await expect(
+        transportA2.sendMail({
+          from: 'noreply@tenant-a.example.com',
+          to: 'member@example.com',
+          subject: 'A2',
+          text: 'hi',
+        })
+      ).rejects.toThrow();
+
+      // A different submitter is unaffected by tenant-a's own per-submitter cap.
+      const transportB = client(harness.port, 'tenant-b.example.com', 'key-b');
+      await expect(
+        transportB.sendMail({
+          from: 'noreply@tenant-b.example.com',
+          to: 'member@example.com',
+          subject: 'B',
+          text: 'hi',
+        })
+      ).resolves.toBeDefined();
+
+      held.write('\r\n.\r\n');
+      held.socket.end();
+    });
+
+    it("releases one of a submitter's two concurrent DATA phases without freeing its budget entirely", async () => {
+      // Exercises the decrement path (2 in flight -> 1), not just the
+      // delete-the-entry path (1 in flight -> 0) the tests above already
+      // cover.
+      harness = await startHarness({
+        maxConcurrentDataPhasesPerSubmitter: 2,
+        maxConcurrentDataPhases: 5,
+      });
+
+      const first = await authenticateAndOpenData('tenant-a.example.com', 'key-a');
+      const second = await authenticateAndOpenData('tenant-a.example.com', 'key-a');
+
+      // A third, still concurrent with the first two, is refused.
+      const third = client(harness.port, 'tenant-a.example.com', 'key-a');
+      await expect(
+        third.sendMail({
+          from: 'noreply@tenant-a.example.com',
+          to: 'member@example.com',
+          subject: 'A3',
+          text: 'hi',
+        })
+      ).rejects.toThrow();
+
+      // Releasing one of the two (down to 1 in flight, not 0) frees exactly
+      // one slot back.
+      first.write('\r\n.\r\n');
+      await first.waitFor(/^250 /m);
+
+      const fourth = client(harness.port, 'tenant-a.example.com', 'key-a');
+      await expect(
+        fourth.sendMail({
+          from: 'noreply@tenant-a.example.com',
+          to: 'member@example.com',
+          subject: 'A4',
+          text: 'hi',
+        })
+      ).resolves.toBeDefined();
+
+      second.write('\r\n.\r\n');
+      second.socket.end();
+      first.socket.end();
+    });
   });
 
   it('refuses a connection from outside the configured source allow-list', async () => {
@@ -771,7 +1029,10 @@ describe('SMTP front door — runtime server errors are logged, not swallowed', 
       },
       log: logger2,
       maxMessageBytes: 1024 * 1024,
-      maxConcurrentConnections: 20,
+      maxUnauthenticatedConnections: 20,
+      authDeadlineMs: 5000,
+      maxConcurrentDataPhases: 20,
+      maxConcurrentDataPhasesPerSubmitter: 5,
       submitterMessagesPerMinute: 120,
     });
 
