@@ -165,11 +165,27 @@ restorable one; sweeping by "older than this run" alone would be wrong,
 because this listing is a snapshot; the run that owns an apparent orphan
 may write its own manifest, becoming the newest verified generation,
 moments after the listing was taken and before this sweep's own deletes
-reach the wire. So a run that itself goes on to fail for an unrelated
-reason still does not leave a previous run's abandoned objects uncollected
-indefinitely, without this sweep ever being the thing that deletes a
-generation which is still, or is about to become, the tenant's newest
-verified one. Last, after this run's own delete step, one final listing
+reach the wire.
+
+This sweep, by itself, does NOT bound a persistently failing run's own
+leftover uploads: a run whose live listing keeps refusing the same object
+fails every night before it ever writes a manifest, so its own objects
+never sort before an existing manifest -- they sort AFTER the newest one,
+which is exactly the shape this sweep is built to leave alone. That bound
+comes from a separate mechanism instead: any exception from here up to,
+but never including, the manifest PUT itself (see `_write_and_verify_manifest`)
+deletes -- best effort, logged rather than allowed to replace the failure
+that triggered it, and never changing that failure's own non-zero exit --
+only the object keys this same run itself already wrote, under its own
+`generations/<run id>/objects/` prefix, with a plain `DeleteObject`. With
+no manifest, nothing depends on those objects. Once the manifest PUT has
+been attempted, this generation may be the one restore reads next, so
+nothing past that point ever touches it that way again. The one case
+neither mechanism reaches is a process killed outright: a hard crash
+leaves no code running to write a manifest OR to clean up after itself, so
+that generation's objects sit as a genuine orphan until a later run's own
+manifested generation makes them reclaimable by the sweep above. Last,
+after this run's own delete step, one final listing
 checks that no generation with a manifest still sorts AFTER this run's own
 id -- if one does, this run's clock is behind that generation's (or that
 generation's clock was ahead of real time), and `restore_tenant_media`
@@ -744,6 +760,59 @@ def _delete_older_generations(
     return older_keys
 
 
+def _best_effort_delete_this_runs_own_uploads(
+    *,
+    tenant: str,
+    run_id: str,
+    keys: set[str],
+    backup_bucket: str,
+    endpoint: str,
+    region: str,
+    access_key: str,
+    secret_key: str,
+    delete_object,
+) -> None:
+    """B6: a run that raises before its own manifest PUT has been attempted
+    deletes the object keys it itself already wrote, under its own
+    `generations/<run_id>/objects/` prefix -- no listing needed, since
+    `keys` is exactly what this run's own upload loop tracked. With no
+    manifest, nothing depends on those objects; leaving them is pure cost,
+    never a safety concern the way deleting a MANIFESTED generation would
+    be. A plain `DeleteObject`, the only kind of delete this pipeline can
+    even issue -- see the module docstring's "Deletion is a plain
+    DeleteObject" section.
+
+    Best effort ONLY, and the caller enforces the one rule that matters:
+    this never runs once `_write_and_verify_manifest` has been called, so
+    it can never touch a generation that might already be the tenant's
+    restorable one. A failure deleting one key here is logged and
+    swallowed, not raised -- this function never replaces or hides the
+    original exception that triggered the clean-up, and never turns a
+    caller's non-zero exit into anything else. The one case this cannot
+    reach at all is a process killed outright: nothing runs to clean up
+    after a hard crash, so that generation's objects sit as a genuine
+    orphan until a later run's own manifested generation makes them
+    reclaimable by the sweep above -- a real, named limit, not a claim this
+    function is complete."""
+    for key in sorted(keys):
+        try:
+            delete_object(
+                bucket=backup_bucket,
+                endpoint=endpoint,
+                region=region,
+                access_key=access_key,
+                secret_key=secret_key,
+                key=key,
+            )
+        except Exception as cleanup_error:  # noqa: BLE001 -- best effort, see docstring
+            print(
+                f"media_backup_restore: tenant {tenant!r}, run {run_id!r}: best-effort "
+                f"clean-up of this run's own pre-manifest upload {key!r} failed and is "
+                f"being ignored -- {cleanup_error}",
+                file=sys.stderr,
+            )
+
+
 def backup_tenant_media(
     *,
     tenant: str,
@@ -843,13 +912,16 @@ def backup_tenant_media(
     # failure costs one listing per run, not a full re-upload of the
     # tenant's media every time it recurs. The same listing also reclaims
     # any ORPHANED generation (objects with no manifest -- an aborted or a
-    # superseded-while-still-uploading run) that is strictly older than
-    # this run's own id: safe by the same rule `_delete_older_generations`
-    # applies everywhere else (never a same-or-later id -- see
-    # `_sorts_before`), and done here, before this run's own uploads, so a
-    # run that itself goes on to fail for an unrelated reason still does
-    # not leave a previous run's abandoned objects sitting there
-    # indefinitely, costing storage for nothing.
+    # superseded-while-still-uploading run) that sorts strictly before the
+    # NEWEST generation this same listing already shows a manifest for --
+    # never merely "older than this run's own id" (see the module
+    # docstring's "GENERATIONS, THE ORDERING GUARANTEE" section for why
+    # that alone would be unsafe), and nothing at all when this listing has
+    # no manifest anywhere. This sweep alone does NOT bound a persistently
+    # failing run's own leftover uploads: those sort AFTER the newest
+    # manifested generation, not before it, so they are never this sweep's
+    # to reclaim. That bound is this function's own best-effort clean-up of
+    # this run's pre-manifest uploads on failure, below.
     existing_generation_keys = _list_tenant_generation_keys(
         tenant=tenant,
         backup_bucket=backup_bucket,
@@ -895,79 +967,101 @@ def backup_tenant_media(
         delete_object=delete_object,
     )
 
-    manifest_objects: dict[str, dict] = {}
     new_backup_keys: set[str] = set()
-    for entry in live_objects:
-        key = entry["key"]
-        data, content_type = get_object_with_content_type(
-            bucket=live_bucket,
-            endpoint=endpoint,
-            region=region,
-            access_key=live_access_key,
-            secret_key=live_secret_key,
-            key=key,
-        )
-        digest = sha256_hex(data)
-        backup_id = generate_backup_id(digest=digest)
-        ciphertext = _encrypt_to_exactly_one_recipient(
-            data=data, recipient=recipient, encrypt=encrypt, what=f"object {key!r}"
-        )
-        backup_key = _object_key_for_backup(tenant, run_id, backup_id)
-        put_object(
-            bucket=backup_bucket,
+    # B6: everything from here up to, but never including, the manifest PUT
+    # itself (`_write_and_verify_manifest` below) is covered by this run's
+    # own best-effort clean-up on failure -- see
+    # `_best_effort_delete_this_runs_own_uploads` and the module docstring.
+    # With no manifest ever written, this run's own generation has nothing
+    # else depending on it, so a failure here deletes its own uploads
+    # rather than leaving them as a fresh orphan every time it recurs.
+    try:
+        manifest_objects: dict[str, dict] = {}
+        for entry in live_objects:
+            key = entry["key"]
+            data, content_type = get_object_with_content_type(
+                bucket=live_bucket,
+                endpoint=endpoint,
+                region=region,
+                access_key=live_access_key,
+                secret_key=live_secret_key,
+                key=key,
+            )
+            digest = sha256_hex(data)
+            backup_id = generate_backup_id(digest=digest)
+            ciphertext = _encrypt_to_exactly_one_recipient(
+                data=data, recipient=recipient, encrypt=encrypt, what=f"object {key!r}"
+            )
+            backup_key = _object_key_for_backup(tenant, run_id, backup_id)
+            put_object(
+                bucket=backup_bucket,
+                endpoint=endpoint,
+                region=region,
+                access_key=backup_access_key,
+                secret_key=backup_secret_key,
+                key=backup_key,
+                data=ciphertext,
+            )
+            new_backup_keys.add(backup_key)
+            manifest_objects[key] = {
+                "sha256": digest,
+                "size": len(data),
+                "content_type": content_type,
+                "backup_id": backup_id,
+            }
+
+        # THE ORDERING GUARANTEE, PART 1. A fresh listing, taken right here
+        # -- after every upload above and BEFORE this run's manifest is
+        # ever written -- must show every object this run itself wrote. A
+        # manifest existing is meant to mean "this generation is complete":
+        # writing one before this check would let a caught, detected
+        # failure still leave behind a manifest that names an object nobody
+        # can find. See the module docstring's "THE DELETE STEP IS TRUSTED
+        # WITH NOTHING" section.
+        pre_manifest_keys = _list_tenant_generation_keys(
+            tenant=tenant,
+            backup_bucket=backup_bucket,
             endpoint=endpoint,
             region=region,
             access_key=backup_access_key,
             secret_key=backup_secret_key,
-            key=backup_key,
-            data=ciphertext,
+            list_objects=list_objects,
         )
-        new_backup_keys.add(backup_key)
-        manifest_objects[key] = {
-            "sha256": digest,
-            "size": len(data),
-            "content_type": content_type,
-            "backup_id": backup_id,
+        _assert_written_keys_present(
+            tenant=tenant,
+            run_id=run_id,
+            written_this_run=new_backup_keys,
+            listed_keys=pre_manifest_keys,
+            when="before the manifest was written",
+        )
+
+        deliberately_empty = not manifest_objects
+        manifest = {
+            "tenant": tenant,
+            "run_id": run_id,
+            "objects": manifest_objects,
+            "object_count": len(manifest_objects),
+            "deliberately_empty": deliberately_empty,
         }
-
-    # THE ORDERING GUARANTEE, PART 1. A fresh listing, taken right here --
-    # after every upload above and BEFORE this run's manifest is ever
-    # written -- must show every object this run itself wrote. A manifest
-    # existing is meant to mean "this generation is complete": writing one
-    # before this check would let a caught, detected failure still leave
-    # behind a manifest that names an object nobody can find. See the
-    # module docstring's "THE DELETE STEP IS TRUSTED WITH NOTHING" section.
-    pre_manifest_keys = _list_tenant_generation_keys(
-        tenant=tenant,
-        backup_bucket=backup_bucket,
-        endpoint=endpoint,
-        region=region,
-        access_key=backup_access_key,
-        secret_key=backup_secret_key,
-        list_objects=list_objects,
-    )
-    _assert_written_keys_present(
-        tenant=tenant,
-        run_id=run_id,
-        written_this_run=new_backup_keys,
-        listed_keys=pre_manifest_keys,
-        when="before the manifest was written",
-    )
-
-    deliberately_empty = not manifest_objects
-    manifest = {
-        "tenant": tenant,
-        "run_id": run_id,
-        "objects": manifest_objects,
-        "object_count": len(manifest_objects),
-        "deliberately_empty": deliberately_empty,
-    }
-    manifest_ciphertext = _encrypt_to_exactly_one_recipient(
-        data=json.dumps(manifest, sort_keys=True).encode(),
-        recipient=recipient,
-        encrypt=encrypt,
-        what="the manifest",
-    )
+        manifest_ciphertext = _encrypt_to_exactly_one_recipient(
+            data=json.dumps(manifest, sort_keys=True).encode(),
+            recipient=recipient,
+            encrypt=encrypt,
+            what="the manifest",
+        )
+    except Exception:
+        _best_effort_delete_this_runs_own_uploads(
+            tenant=tenant,
+            run_id=run_id,
+            keys=new_backup_keys,
+            backup_bucket=backup_bucket,
+            endpoint=endpoint,
+            region=region,
+            access_key=backup_access_key,
+            secret_key=backup_secret_key,
+            delete_object=delete_object,
+        )
+        raise
 
     _write_and_verify_manifest(
         tenant=tenant,
@@ -1109,6 +1203,13 @@ def _restore_generation(
             f"is not the bytes this run actually wrote ({error})"
         ) from error
 
+    if not isinstance(manifest, dict):
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: the manifest at {manifest_key!r} decrypted and is valid "
+            f"JSON, but is not a JSON object ({type(manifest).__name__}) -- refusing to "
+            f"treat it as a manifest"
+        )
+
     if manifest.get("tenant") != tenant:
         raise MediaRestoreVerificationError(
             f"manifest at {manifest_key!r} names tenant {manifest.get('tenant')!r}, expected "
@@ -1116,6 +1217,12 @@ def _restore_generation(
         )
 
     manifest_objects = manifest.get("objects") or {}
+    if not isinstance(manifest_objects, dict):
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: manifest at {manifest_key!r} has an 'objects' entry that "
+            f"is not a JSON object ({type(manifest_objects).__name__}) -- refusing to treat "
+            f"it as a per-live-key mapping"
+        )
     if not manifest_objects and not manifest.get("deliberately_empty"):
         raise MediaRestoreVerificationError(
             f"tenant {tenant!r}: manifest at {manifest_key!r} names zero objects and is not "
@@ -1156,12 +1263,20 @@ def _restore_generation(
                 f"for live key {key!r} is missing from {backup_bucket!r}: {error}"
             ) from error
 
+        try:
+            expected_sha256 = expected["sha256"]
+        except (KeyError, TypeError) as error:
+            raise MediaRestoreVerificationError(
+                f"tenant {tenant!r}: the manifest entry for live key {key!r} has no usable "
+                f"'sha256' -- cannot verify the restored bytes"
+            ) from error
+
         plaintext = decrypt(data=ciphertext, identity_path=identity_path)
         digest = sha256_hex(plaintext)
-        if digest != expected["sha256"]:
+        if digest != expected_sha256:
             raise MediaRestoreVerificationError(
                 f"tenant {tenant!r}: object {key!r} restored to a different digest than "
-                f"backup recorded ({digest} != {expected['sha256']}) -- the bytes did not "
+                f"backup recorded ({digest} != {expected_sha256}) -- the bytes did not "
                 f"come back; this is not a restore"
             )
 

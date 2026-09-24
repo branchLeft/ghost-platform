@@ -604,14 +604,26 @@ class GenerationRefreshTests(unittest.TestCase):
         with self.assertRaises(ObjectStorageError):
             self._backup(put_object=flaky_put)
         # RED: the old generation must still be exactly what it was -- a
-        # failed run may leave an orphaned partial object from ITS OWN
-        # attempt behind (the object that uploaded before the failure), but
-        # it must never remove or alter anything from the previous
-        # generation, and it must never delete anything at all.
+        # failed run must never remove or alter anything from the previous
+        # generation. B6's own best-effort clean-up deletes only the failed
+        # run's OWN pre-manifest uploads (the object that landed before the
+        # second one failed), never anything under the previous run's own
+        # prefix.
         self.assertTrue(first_keys.issubset(self._objects_for()))
         for key in first_keys:
             self.assertIn(key, self.store.buckets["backup"])
-        self.assertFalse(any(op == "delete" for op, _, _ in self.store.calls))
+        self.assertFalse(
+            any(op == "delete" and key in first_keys for op, bucket, key in self.store.calls),
+            "the previous generation must never be touched by this run's own clean-up",
+        )
+        # And nothing new is left behind either: the failed run's own
+        # partial upload is cleaned up, not left as a fresh orphan every
+        # time this recurs (B6) -- only the previous generation remains.
+        all_keys_now = {
+            key for key in self.store.buckets["backup"]
+            if key.startswith(_tenant_generations_prefix("tenant-a"))
+        }
+        self.assertEqual(all_keys_now, first_keys | {_manifest_key("tenant-a", first.run_id)})
         # GREEN: revert (no sabotage) and confirm a clean run still succeeds
         # and still supersedes the original generation.
         second = self._backup()
@@ -840,11 +852,23 @@ class ObjectLandedVerificationTests(unittest.TestCase):
         with self.assertRaises(MediaBackupObjectVerificationError) as ctx:
             self._backup(put_object=lossy_put)
         self.assertIn("not present", str(ctx.exception))
-        # GREEN (still within the RED case): nothing was deleted, and the
-        # previous generation is completely untouched -- every one of its
-        # object keys is still exactly where it was.
-        self.assertFalse(any(op == "delete" for op, _, _ in self.store.calls))
+        # GREEN (still within the RED case): the previous generation is
+        # completely untouched -- every one of its object keys is still
+        # exactly where it was. B6's own clean-up only ever deletes THIS
+        # run's own keys, never the previous generation's.
+        self.assertFalse(
+            any(op == "delete" and key in first_object_keys for op, bucket, key in self.store.calls),
+            "the previous generation must never be touched by this run's own clean-up",
+        )
         self.assertTrue(first_object_keys.issubset(self.store.buckets["backup"].keys()))
+        # And the one object this failed run DID manage to land is cleaned
+        # up too (B6), not left behind as a fresh orphan -- only the
+        # previous generation remains.
+        all_keys_now = {
+            key for key in self.store.buckets["backup"]
+            if key.startswith(_tenant_generations_prefix("tenant-a"))
+        }
+        self.assertEqual(all_keys_now, first_object_keys | {_manifest_key("tenant-a", first.run_id)})
 
         # GREEN: revert (no sabotage) -- a clean run succeeds and supersedes
         # the first generation as normal.
@@ -1422,6 +1446,88 @@ class RestoreFallbackTests(unittest.TestCase):
         recovered = self._restore(run_id=good.run_id)
         self.assertEqual(recovered.verified_keys, ["a.jpg"])
 
+    def test_a_manifest_that_is_not_a_json_object_raises_the_normal_verification_error(self):
+        # L7: a decrypted manifest that IS valid JSON, but not an object (a
+        # list, here) must not escape as an AttributeError from
+        # `manifest.get` -- it has to reach the same "restore it explicitly
+        # with --run-id" fallback path as any other verification failure.
+        good = self._backup()
+        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
+        newer_run_id = "20990101T000000000000Z-0000000000000002"
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
+            data=json.dumps(["not", "an", "object"]).encode(), recipient=TENANT_A_RECIPIENT
+        )
+
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        message = str(ctx.exception)
+        self.assertIn("not a JSON object", message)
+        self.assertIn(f"--run-id {good.run_id}", message)
+
+        recovered = self._restore(run_id=good.run_id)
+        self.assertEqual(recovered.verified_keys, ["a.jpg"])
+
+    def test_a_manifest_whose_objects_field_is_not_a_dict_raises_the_normal_verification_error(self):
+        # L7: `objects` that decrypts to a non-dict JSON value (a list,
+        # here) must not escape as an AttributeError from `.items()`.
+        good = self._backup()
+        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
+        newer_run_id = "20990101T000000000000Z-0000000000000003"
+        broken_manifest = {
+            "tenant": "tenant-a",
+            "run_id": newer_run_id,
+            "objects": ["not", "a", "dict"],
+            "object_count": 1,
+            "deliberately_empty": False,
+        }
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
+            data=json.dumps(broken_manifest).encode(), recipient=TENANT_A_RECIPIENT
+        )
+
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        message = str(ctx.exception)
+        self.assertIn("not a JSON object", message)
+        self.assertIn(f"--run-id {good.run_id}", message)
+
+        recovered = self._restore(run_id=good.run_id)
+        self.assertEqual(recovered.verified_keys, ["a.jpg"])
+
+    def test_a_manifest_entry_with_no_sha256_raises_the_normal_verification_error(self):
+        # L7: an entry missing 'sha256' must not escape as a KeyError from
+        # the digest comparison -- the backup object itself is real and
+        # decrypts fine, so this exercises the digest lookup specifically,
+        # not the earlier backup_id/missing-object checks.
+        good = self._backup()
+        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
+        newer_run_id = "20990101T000000000000Z-0000000000000004"
+        backup_id = "b" * 64
+        backup_key = _object_key_for_backup("tenant-a", newer_run_id, backup_id)
+        self.store.buckets["backup"][backup_key] = _fake_encrypt(
+            data=b"some ciphertext content", recipient=TENANT_A_RECIPIENT
+        )
+        broken_manifest = {
+            "tenant": "tenant-a",
+            "run_id": newer_run_id,
+            "objects": {
+                "a.jpg": {"size": 1, "content_type": "image/jpeg", "backup_id": backup_id}
+            },
+            "object_count": 1,
+            "deliberately_empty": False,
+        }
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
+            data=json.dumps(broken_manifest).encode(), recipient=TENANT_A_RECIPIENT
+        )
+
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        message = str(ctx.exception)
+        self.assertIn("sha256", message)
+        self.assertIn(f"--run-id {good.run_id}", message)
+
+        recovered = self._restore(run_id=good.run_id)
+        self.assertEqual(recovered.verified_keys, ["a.jpg"])
+
 
 class KeyShapeDeletionGuardTests(unittest.TestCase):
     """Every key a listing returns under a tenant's
@@ -1519,31 +1625,64 @@ class OrphanGenerationCleanupTests(unittest.TestCase):
         kwargs.update(overrides)
         return backup_tenant_media(**kwargs)
 
-    def test_an_orphan_older_than_this_run_is_reclaimed_even_when_this_run_itself_then_fails(self):
-        # An orphan from a previous run that uploaded one object then never
-        # wrote a manifest at all (a crash, or a lost race) -- older than a
-        # generation that DOES have a manifest in the same listing, which is
-        # what makes it safe to reclaim: it can never become the tenant's
-        # newest restorable generation, because a newer, already-complete
-        # one already exists in this same snapshot.
+    def test_an_orphan_with_no_manifest_anywhere_is_left_alone_by_the_sweep(self):
+        # N11: when this listing has no manifest at all (no prior
+        # generation ever completed), the sweep must reclaim nothing -- the
+        # run that owns an apparent orphan may still write its own manifest
+        # moments after this listing was taken. Proven with no G0 at all,
+        # and with this run itself then failing before it ever reaches its
+        # own end-of-run delete (which is unconditional, not orphan-scoped,
+        # and would otherwise mask what the sweep itself decided), so only
+        # the sweep's own decision is visible in the final state.
         orphan_run_id = "20260101T000000000000Z-0000000000000000"
         orphan_key = _object_key_for_backup("tenant-a", orphan_run_id, "a" * 64)
-        self.store.put("backup", orphan_key, b"orphaned ciphertext")
+        self.store.put("backup", orphan_key, b"orphaned ciphertext, no manifest anywhere")
 
-        # A real, manifested generation, newer than the orphan above.
-        self._backup(make_run_id=lambda: "20260102T000000000000Z-0000000000000000")
-
-        # This run is made to fail for an UNRELATED reason -- an upload
-        # failure partway through its own object loop -- which happens
-        # AFTER the orphan sweep at the top of the function has already
-        # run.
         def flaky_put(**kw):
             raise ObjectStorageError("simulated upload failure")
 
         with self.assertRaises(ObjectStorageError):
-            self._backup(put_object=flaky_put, make_run_id=lambda: "20260103T000000000000Z-0000000000000000")
+            self._backup(put_object=flaky_put, make_run_id=lambda: "20260102T000000000000Z-0000000000000000")
 
-        self.assertNotIn(orphan_key, self.store.buckets["backup"])
+        self.assertIn(orphan_key, self.store.buckets["backup"])
+
+    def test_a_run_that_fails_before_its_manifest_deletes_its_own_uploads_across_repeated_nights(self):
+        # B6: a live object refused every night (adapted from the
+        # reviewer's repro_c5_n7.py) must not let a persistently failing
+        # run accumulate a fresh, orphaned copy of the tenant's OTHER
+        # objects night after night. The narrowed sweep above (B5) cannot
+        # reclaim these -- they sort AFTER the newest manifested
+        # generation, not before it -- so the bound has to come from this
+        # run cleaning up its own pre-manifest uploads on its way out.
+        for key, data in (
+            ("a.jpg", b"a bytes"), ("b.jpg", b"b bytes"),
+            ("c.jpg", b"c bytes"), ("d.jpg", b"d bytes"),
+        ):
+            self.store.put("live-a", key, data)
+
+        self._backup(make_run_id=lambda: "20260101T000000000000Z-0000000000000000")
+
+        def generation_key_count():
+            prefix = _tenant_generations_prefix("tenant-a")
+            return len([k for k in self.store.buckets["backup"] if k.startswith(prefix)])
+
+        baseline = generation_key_count()
+        self.assertEqual(baseline, 5)  # 4 objects + 1 manifest
+
+        def refuse_d(**kw):
+            if kw["key"] == "d.jpg":
+                raise ObjectStorageError("GET live-a/d.jpg failed: HTTP 403")
+            return self.store.get_object_with_content_type(**kw)
+
+        for night in range(2, 8):
+            rid = f"202601{night:02d}T000000000000Z-0000000000000000"
+            with self.assertRaises(ObjectStorageError):
+                self._backup(get_object_with_content_type=refuse_d, make_run_id=lambda r=rid: r)
+            self.assertEqual(
+                generation_key_count(), baseline,
+                f"night {night}: a run that fails before its manifest must clean up its "
+                f"own pre-manifest uploads, not accumulate a fresh orphaned copy",
+            )
 
     def test_a_run_that_completes_before_a_stale_sweeps_deletes_land_must_survive(self):
         # G0 is a good, manifested generation. Run
