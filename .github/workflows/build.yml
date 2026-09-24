@@ -24,8 +24,9 @@ jobs:
   build:
     name: docker build
     runs-on: ubuntu-latest
-    # Observed 1.18-1.63min over the last 20 successful runs (p95 1.57min).
-    timeout-minutes: 15
+    # Observed 1.18-1.63min over the last 20 successful runs (p95 1.57min)
+    # before the break-glass image test, which adds about a minute locally.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -39,3 +40,17 @@ jobs:
 
       - name: Storage guard regression test (blocked vs. permitted configs)
         run: ./scripts/test-storage-guard.sh ghost-platform:ci
+
+      - name: Setup Node for the break-glass image test
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: adapters/sso/.nvmrc
+
+      # Real Ghost, real adapter manager, real session middleware: the adapter
+      # is proven wired in the built image, not only correct in isolation.
+      # Needs no install -- the test uses Node built-ins only.
+      - name: Break-glass SSO adapter against the built image
+        working-directory: adapters/sso
+        run: npm run test:image
+        env:
+          IMAGE: ghost-platform:ci
