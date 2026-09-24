@@ -53,9 +53,26 @@ recorded verbatim in the PR body for branchLeft/workspace#1205 rather than
 kept here — it needs two throwaway MySQL containers and does not belong in
 CI's fast, mocked test path.
 
-## Not done here
+## Publishing
 
-No CI workflow in this repo pushes this image anywhere. `db/recovery/`'s own
-workflow builds and verifies it on every PR and push to `main`, nothing
-more — there is no `.claude/delivery-paths.json` row yet saying where a
-recovery host would pull it from.
+`.github/workflows/recovery-image.yml`'s `push` job publishes this image to
+`ghcr.io/branchleft/db-recovery` on every push to `main` that touches
+`db/recovery/**`, `db/provision/install_host_prereqs.py`,
+`db/RUNBOOK-db.md` or the workflow file itself — tagged with the git SHA
+and `latest`, same shape as `registry-push.yml`'s tenant image push. `main`
+being protected by required review is the whole of the gate: a publish only
+ever follows a reviewed and approved merge, and there is deliberately no
+`workflow_dispatch` trigger to bypass that. The same workflow also runs on
+a weekly schedule (build-and-verify only, no publish) so upstream drift —
+`repo.mysql.com`'s apt index, the MySQL signing key, a Debian trixie
+package change — is caught even when nothing here changes.
+
+`db/RUNBOOK-db.md` records the published image **by digest**, not by tag —
+see its own instructions for exactly how, and for why that field cannot be
+filled in until the workflow has actually run once. A recovery drill or
+incident pulls that digest, never `latest`: `latest` can move at any
+merge, and recovery under incident conditions must pull the exact,
+already-verified image the runbook names, not whatever happens to be newest.
+
+There is no `.claude/delivery-paths.json` row for `db/recovery/**` in this
+repo — that file lives in `branchLeft/workspace`, tracked there.

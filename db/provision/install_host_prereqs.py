@@ -120,6 +120,25 @@ MYSQL_GPG_KEY_URLS = (
     "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023",
 )
 
+# The primary "MySQL Release Engineering <mysql-build@oss.oracle.com>" key
+# (rsa4096/B7B3B788A8D3785C) -- the one whose [S] capability actually signs
+# repo.mysql.com's Release files, not its [E] encryption subkey. Both
+# MYSQL_GPG_KEY_URLS above currently re-export this exact same primary key
+# under different self-signature expiry dates (confirmed live 2026-09-23:
+# `gpg --show-keys --keyid-format long` on both fetched files reports the
+# identical fingerprint below, just `[expired: 2025-10-22]` on the "2023"
+# export versus `[expires: 2027-10-23]` on the "2025" one), which is why one
+# constant covers both fetches. Cross-checked against the exact same value
+# Oracle publishes at
+# https://dev.mysql.com/doc/refman/8.0/en/checking-gpg-signature.html --
+# their spaced, human-readable rendering matches MYSQL_GPG_KEY_FINGERPRINT
+# below byte for byte once the spaces are removed. Without this pin,
+# `http_fetch` trusts whatever repo.mysql.com (or anything between here and
+# it) hands back as "the MySQL key" -- a swapped key would go straight into
+# the keyring `mysql-community.list` trusts for every package this script
+# `apt-get install`s as root.
+MYSQL_GPG_KEY_FINGERPRINT = "BCA43417C3B485DD128EC6D4B7B3B788A8D3785C"
+
 # Pinned filename + hash, not a pool-directory listing -- see module
 # docstring for why "newest by regex" was rejected and how to move this pin.
 LIBAIO1_DEB_FILENAME = "libaio1_0.3.113-4_amd64.deb"
@@ -177,6 +196,41 @@ def _atomic_write_bytes(path: str, data: bytes, *, mode: int = 0o644) -> None:
         raise
 
 
+def _primary_key_fingerprints(armored: bytes, *, run=subprocess.run) -> list[str]:
+    """Primary-key fingerprints found in `armored`, via `gpg --show-keys`
+    (parses and reports on a key without ever importing it into any
+    keyring -- an untrusted or malicious key is inspected, not trusted).
+
+    Only a `fpr:` record immediately following a `pub:` record is
+    collected: each key here also carries an `[E]` encryption subkey with
+    its own `fpr:`, and that subkey is not what apt trusts to verify a
+    Release file's signature -- only the primary key is."""
+    result = run(
+        ["gpg", "--with-colons", "--show-keys"],
+        input=armored,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr if isinstance(result.stderr, str) else result.stderr.decode(errors="replace")
+        raise HostPrereqError(f"gpg --show-keys exited {result.returncode}: {stderr.strip()}")
+    stdout = result.stdout if isinstance(result.stdout, str) else result.stdout.decode()
+
+    fingerprints: list[str] = []
+    awaiting_primary_fpr = False
+    for line in stdout.splitlines():
+        fields = line.split(":")
+        record = fields[0]
+        if record == "pub":
+            awaiting_primary_fpr = True
+        elif record == "sub":
+            awaiting_primary_fpr = False
+        elif record == "fpr" and awaiting_primary_fpr:
+            fingerprints.append(fields[9])
+            awaiting_primary_fpr = False
+    return fingerprints
+
+
 def ensure_mysql_gpg_keyring(*, keyring_path: str = MYSQL_APT_KEYRING_PATH, run=subprocess.run, fetch=http_fetch) -> bool:
     """Builds one keyring from both current signing keys, and re-derives it
     on every call to compare against whatever is already on disk -- gating
@@ -185,8 +239,28 @@ def ensure_mysql_gpg_keyring(*, keyring_path: str = MYSQL_APT_KEYRING_PATH, run=
     with nothing to self-heal it. The write itself is atomic for the same
     reason: this function can be interrupted too.
 
+    Each fetched file is checked against MYSQL_GPG_KEY_FINGERPRINT *before*
+    any of it is dearmored or written -- a wrong, swapped, or *appended* key
+    at either URL refuses here, rather than joining a keyring that
+    `mysql-community.list` then trusts for every `apt-get install` this
+    script runs as root. The check requires the file's primary keys to be
+    *exactly* `[MYSQL_GPG_KEY_FINGERPRINT]` -- membership alone (checking
+    only that the pin is present) would accept the pinned key plus any
+    number of extra, unpinned primary keys appended to the same armored
+    file, and dearmor the whole file including those extras into the
+    trusted keyring.
+
     Returns True if the file was created or changed."""
-    combined_armored = b"".join(fetch(url) for url in MYSQL_GPG_KEY_URLS)
+    fetched = [fetch(url) for url in MYSQL_GPG_KEY_URLS]
+    for url, armored in zip(MYSQL_GPG_KEY_URLS, fetched):
+        fingerprints = _primary_key_fingerprints(armored, run=run)
+        if fingerprints != [MYSQL_GPG_KEY_FINGERPRINT]:
+            raise HostPrereqError(
+                f"{url} does not carry only the pinned MySQL signing key {MYSQL_GPG_KEY_FINGERPRINT} "
+                f"(found {fingerprints or ['no key at all']}) -- refusing to trust it"
+            )
+
+    combined_armored = b"".join(fetched)
     result = run(
         ["gpg", "--dearmor"],
         input=combined_armored,

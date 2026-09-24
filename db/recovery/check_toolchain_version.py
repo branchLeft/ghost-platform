@@ -21,6 +21,23 @@ other only by both having been edited correctly. --server-image overrides
 this for the control case: proving the check fails on a genuine mismatch
 without needing a second real MySQL line to build a server image from.
 
+The runbook carries that command twice (the first, always-fails bootstrap
+run in step 3, and the re-pin that follows it) and both are meant to name
+the same image -- so this reads every occurrence with `findall`, not just
+the first, and refuses to pick a winner when they disagree. A regex that
+stopped at the first match would stay green while the second line alone
+drifted, which is worse than not checking at all: it reports a match that
+was never actually re-verified against what `branchleft-deploy` would
+really pin.
+
+This check compares against the runbook's pin, not against what `db1`
+itself currently reports running -- there is no way to read
+`/etc/branchleft/db.image.env` back from CI (no SSH, no host reachable from
+a GitHub Actions runner). `db/RUNBOOK-db.md` now carries a step for the
+platform owner to read that file back by hand and record the date; until
+that record exists, a green run here is evidence the runbook is internally
+consistent, not evidence it matches what db1 is currently running.
+
 Major.minor, not the full patch version: the same standard
 install_host_prereqs.py's own verify() uses, and design 09's own R5/§05
 language -- "exact-matched to the server's 8.0 line, not merely compatible
@@ -55,10 +72,16 @@ class ToolchainCheckError(Exception):
 def server_image_from_runbook(text: str | None = None, *, runbook_path: pathlib.Path = RUNBOOK_PATH) -> str:
     if text is None:
         text = runbook_path.read_text(encoding="utf-8")
-    match = SERVER_PIN_RE.search(text)
-    if not match:
+    matches = SERVER_PIN_RE.findall(text)
+    if not matches:
         raise ToolchainCheckError(f"no `branchleft-deploy db mysql:...@sha256:...` pin found in {runbook_path}")
-    return match.group(1)
+    unique = sorted(set(matches))
+    if len(unique) > 1:
+        raise ToolchainCheckError(
+            f"{runbook_path} carries disagreeing `branchleft-deploy db mysql:...@sha256:...` pins "
+            f"({len(matches)} occurrences, {len(unique)} distinct values): {unique!r}"
+        )
+    return unique[0]
 
 
 def major_minor(version_output: str, *, label: str) -> str:
