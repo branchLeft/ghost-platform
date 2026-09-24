@@ -231,9 +231,53 @@ class GhostContainer {
   async restart() {
     docker('restart', this.name);
     this.booted = await this.waitForHome();
-    // The adapter refuses tokens issued before its process started, to the
-    // second; minting in that same second would race it.
-    await sleep(1500);
+  }
+
+  // The adapter refuses a token whose iat predates the current process, to
+  // the second (see #startSeconds in break-glass.js), and that is the one
+  // refusal a restart race can legitimately produce. It is retried, with a
+  // fresh token each attempt (an old one would only prove the clock moved,
+  // not that the adapter accepts a *new* one). Any other outcome — a
+  // different refusal reason, or the adapter accepting the token while the
+  // resulting session still fails to authenticate — fails immediately with
+  // the adapter's own reason and the container's log tail, so a real
+  // regression is never absorbed into the same retry loop as the one
+  // legitimate race.
+  async pollUntilFreshTokenAccepted(
+    mintFreshToken,
+    { diagnostic = () => {}, deadlineMs = 30_000 } = {}
+  ) {
+    const RESTART_RACE = 'break-glass: token refused (issued before this process started)';
+    const isOnlyTheRestartRace = (adapterLines) =>
+      adapterLines.length === 1 && adapterLines[0] === RESTART_RACE;
+
+    const deadline = Date.now() + deadlineMs;
+    let attempts = 0;
+    let last;
+    do {
+      attempts += 1;
+      last = await this.attempt(mintFreshToken());
+      if (last.status === 200) {
+        if (attempts > 1) {
+          diagnostic(
+            `fresh token accepted on attempt ${attempts}, after ${attempts - 1} restart-race refusal(s)`
+          );
+        }
+        return last;
+      }
+      if (!isOnlyTheRestartRace(last.adapter)) {
+        throw new Error(
+          `fresh token refused for a reason other than the restart race (attempt ${attempts}): ` +
+            `status=${last.status} email=${JSON.stringify(last.email)} adapter=${JSON.stringify(last.adapter)}\n` +
+            `container log tail:\n${this.logs().slice(-40).join('\n')}`
+        );
+      }
+      diagnostic(
+        `attempt ${attempts}: still the restart race (${JSON.stringify(last.adapter)}), retrying`
+      );
+      await sleep(200);
+    } while (Date.now() < deadline);
+    return last;
   }
 
   remove() {
@@ -264,7 +308,7 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
 
   it('no token: no session', async () => {
     const r = await ghost.attempt();
-    assert.equal(r.status, 403);
+    assert.equal(r.status, 403, `adapter said: ${JSON.stringify(r.adapter)}`);
     assert.equal(r.cookie, '');
     assert.deepEqual(r.adapter, []);
   });
@@ -277,7 +321,11 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
       ghost.sql('select count(*) as n from sessions where user_id = ?', supportId)[0].n;
     const before = sessions();
     const r = await ghost.attempt(validToken());
-    assert.deepEqual({ status: r.status, email: r.email }, { status: 403, email: null });
+    assert.deepEqual(
+      { status: r.status, email: r.email },
+      { status: 403, email: null },
+      `adapter said: ${JSON.stringify(r.adapter)}`
+    );
     assert.equal(sessions(), before, 'a session row was created for a suspended account');
     ghost.setSupportStatus('active');
     assert.equal((await ghost.me(r.cookie || undefined)).status, 403);
@@ -293,8 +341,8 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     liveToken = validToken();
     const r = await ghost.attempt(liveToken);
     assert.deepEqual(r.adapter, ['break-glass: token accepted for the configured identity']);
-    assert.equal(r.status, 200);
-    assert.equal(r.email, SUPPORT);
+    assert.equal(r.status, 200, `adapter said: ${JSON.stringify(r.adapter)}`);
+    assert.equal(r.email, SUPPORT, `adapter said: ${JSON.stringify(r.adapter)}`);
     liveCookie = r.cookie;
   });
 
@@ -327,7 +375,11 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
   ]) {
     it(`${name}: refused, while the support account is active`, async () => {
       const r = await ghost.attempt(build());
-      assert.deepEqual({ status: r.status, email: r.email }, { status: 403, email: null });
+      assert.deepEqual(
+        { status: r.status, email: r.email },
+        { status: 403, email: null },
+        `adapter said: ${JSON.stringify(r.adapter)}`
+      );
       assert.deepEqual(r.adapter, [`break-glass: token refused (${reason})`]);
     });
   }
@@ -343,15 +395,15 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     ghost.revokeSupport(supportId);
     assert.equal((await ghost.me(liveCookie)).status, 403);
     const replay = await ghost.attempt(liveToken);
-    assert.equal(replay.status, 403);
+    assert.equal(replay.status, 403, `adapter said: ${JSON.stringify(replay.adapter)}`);
     assert.deepEqual(replay.adapter, ['break-glass: token refused (replay)']);
   });
 
   it('a fresh grant and a fresh token work again, so every refusal above was specific', async () => {
     ghost.setSupportStatus('active');
     const r = await ghost.attempt(validToken());
-    assert.equal(r.status, 200);
-    assert.equal(r.email, SUPPORT);
+    assert.equal(r.status, 200, `adapter said: ${JSON.stringify(r.adapter)}`);
+    assert.equal(r.email, SUPPORT, `adapter said: ${JSON.stringify(r.adapter)}`);
   });
 
   // express-session's res.end override flushes Set-Cookie before the session
@@ -368,9 +420,9 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
   // login as an independent 50/50 coin understates how often a whole round
   // slips through. Looped over ROUNDS rounds, a fresh-container measurement
   // of exactly this shape (1 CPU, in-container load, 20 independent runs)
-  // came back 0/20 false passes; see the PR body's "Review cycle 2 response"
-  // table for the full counts and the caveat on how far that sample size
-  // can be trusted.
+  // came back 0/20 false passes -- a small sample, so read it as evidence
+  // this shape catches the regression reliably rather than as a guaranteed
+  // bound.
   it('N concurrent fresh-token logins each authenticate on their very first users/me/ request, every round', async () => {
     ghost.setSupportStatus('active');
     const CONCURRENCY = 8;
@@ -396,22 +448,44 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     assert.equal(res.status, 200);
     assert.deepEqual(await ghost.adapterLinesSince(mark), []);
     const r = await ghost.attempt(t);
-    assert.deepEqual({ status: r.status, email: r.email }, { status: 200, email: SUPPORT });
+    assert.deepEqual(
+      { status: r.status, email: r.email },
+      { status: 200, email: SUPPORT },
+      `adapter said: ${JSON.stringify(r.adapter)}`
+    );
   });
 
-  it('a used token is refused after Ghost restarts, although the used-token list is gone', async () => {
+  it('a used token is refused after Ghost restarts, although the used-token list is gone', async (t) => {
     const used = validToken();
     const first = await ghost.attempt(used);
-    assert.equal(first.status, 200);
+    assert.equal(first.status, 200, `adapter said: ${JSON.stringify(first.adapter)}`);
     await ghost.restart();
     assert.ok(ghost.booted, 'Ghost did not come back after restart');
     const replay = await ghost.attempt(used);
-    assert.deepEqual({ status: replay.status, email: replay.email }, { status: 403, email: null });
+    assert.deepEqual(
+      { status: replay.status, email: replay.email },
+      { status: 403, email: null },
+      `adapter said: ${JSON.stringify(replay.adapter)}`
+    );
     assert.deepEqual(replay.adapter, [
       'break-glass: token refused (issued before this process started)',
     ]);
-    const fresh = await ghost.attempt(validToken());
-    assert.deepEqual({ status: fresh.status, email: fresh.email }, { status: 200, email: SUPPORT });
+    // A freshly minted token must be accepted once the new process is truly
+    // live. The adapter is constructed once, at app-build time, well before
+    // Ghost lifts maintenance mode — so only a token minted with a clock
+    // genuinely behind the container's can still land in the second before
+    // #startSeconds. That is the one outcome retried here; anything else
+    // (a different refusal, or the token being accepted but the resulting
+    // session not yet readable) fails immediately, with the adapter's own
+    // reason and the container's log tail, via pollUntilFreshTokenAccepted.
+    const fresh = await ghost.pollUntilFreshTokenAccepted(validToken, {
+      diagnostic: (message) => t.diagnostic(message),
+    });
+    assert.deepEqual(
+      { status: fresh.status, email: fresh.email },
+      { status: 200, email: SUPPORT },
+      `adapter never accepted a fresh token after restart; last refusal: ${JSON.stringify(fresh.adapter)}`
+    );
   });
 });
 
@@ -438,7 +512,7 @@ describe('the adapter on the boot path (LLD-5 B5)', { timeout: 600_000 }, () => 
       try {
         assert.ok(ghost.booted, `Ghost did not boot:\n${ghost.logs().slice(-40).join('\n')}`);
         const r = await ghost.attempt(validToken());
-        assert.equal(r.status, 403);
+        assert.equal(r.status, 403, `adapter said: ${JSON.stringify(r.adapter)}`);
         const lines = await ghost.adapterLinesSince();
         assert.ok(
           lines.includes(`break-glass: disabled (${reason}); every token will be refused`),
@@ -471,7 +545,11 @@ describe('the adapter ships in the image, not the content directory', { timeout:
       assert.ok(ghost.booted, `Ghost did not boot:\n${ghost.logs().slice(-40).join('\n')}`);
       await ghost.setupOwner();
       const r = await ghost.attempt(validToken({ sub: OWNER }, otherKey.privateKey));
-      assert.deepEqual({ status: r.status, email: r.email }, { status: 403, email: null });
+      assert.deepEqual(
+        { status: r.status, email: r.email },
+        { status: 403, email: null },
+        `adapter said: ${JSON.stringify(r.adapter)}`
+      );
       assert.deepEqual(r.adapter, ['break-glass: token refused (signature)']);
     } finally {
       ghost.remove();
