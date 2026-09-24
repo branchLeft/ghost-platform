@@ -5,6 +5,8 @@ export interface AuthDeps {
   readonly verifyKey: Buffer;
   readonly replayWindowSeconds: number;
   readonly nonces: NonceStore;
+  /** See `config.ts`: captured once at process start, never from a request. */
+  readonly processStartSeconds: number;
   readonly nowMs: () => number;
 }
 
@@ -19,15 +21,26 @@ const TIMESTAMP_PATTERN = /^[0-9]{1,20}$/;
 const FORWARD_SKEW_SECONDS = 5;
 
 /**
- * Checked in this order deliberately: format before the nonce store (a
- * malformed nonce must never be claimed -- an attacker who cannot forge a
- * signature could otherwise still burn legitimate nonces by shape alone),
- * and the nonce claimed only once the timestamp is already inside the
- * window (a claim outside the window, even if reused later at a moment the
- * window would admit it, must not have consumed the one-time claim -- the
- * caller may legitimately retry with a fresh nonce once the window is
- * right). The signature itself is checked last: it is the most expensive
- * check, and every cheaper rejection above should short-circuit before it.
+ * Checked in this order deliberately:
+ *
+ * 1. **Format** (timestamp, nonce shape) -- free, and a malformed nonce
+ *    must never reach the store below regardless of what else is wrong.
+ * 2. **The replay window, including the process-start floor** -- stateless,
+ *    no side effect, so checking it before the signature costs nothing and
+ *    rejects a stale or replayed-after-restart request before the
+ *    expensive step. A timestamp older than `processStartSeconds` is
+ *    refused unconditionally: the nonce store is in-memory, so a restart
+ *    forgets every nonce it had claimed, and a request captured seconds
+ *    before a restart can otherwise still be inside an ordinary window
+ *    (default 60s, up to 3600s) once the process comes back.
+ * 3. **The signature** -- the only step with real cost, and the one that
+ *    actually authenticates the caller.
+ * 4. **The nonce claim, last, and only once the signature has verified.**
+ *    Claiming first would let anyone -- signed or not -- burn a nonce by
+ *    sending its shape with a garbage signature, denying the legitimate
+ *    signer the one nonce they meant to use. This ordering is a control in
+ *    its own right, proven by sabotage in auth.test.ts: moving the claim
+ *    above the signature check turns that regression test red.
  */
 export function verifyRequest(
   deps: AuthDeps,
@@ -53,9 +66,8 @@ export function verifyRequest(
   if (ageSeconds > deps.replayWindowSeconds || ageSeconds < -FORWARD_SKEW_SECONDS) {
     return { ok: false, reason: 'timestamp outside the replay window' };
   }
-
-  if (!deps.nonces.claim(nonce, deps.nowMs())) {
-    return { ok: false, reason: 'nonce already used' };
+  if (requestSeconds < deps.processStartSeconds) {
+    return { ok: false, reason: 'timestamp predates this process (replayed after a restart)' };
   }
 
   const verified = verifySignature(
@@ -69,6 +81,10 @@ export function verifyRequest(
   );
   if (!verified) {
     return { ok: false, reason: 'signature does not verify' };
+  }
+
+  if (!deps.nonces.claim(nonce, deps.nowMs())) {
+    return { ok: false, reason: 'nonce already used' };
   }
   return { ok: true };
 }

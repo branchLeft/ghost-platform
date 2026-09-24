@@ -3,15 +3,37 @@ import { verifyRequest } from '../../src/auth.js';
 import { createInMemoryNonceStore } from '../../src/nonceStore.js';
 import { generateTestKeyPair, signHeaders } from '../helpers/signer.js';
 
-function deps(nowMs: number, keyPair = generateTestKeyPair(), windowSeconds = 60) {
+function deps(
+  nowMs: number,
+  keyPair = generateTestKeyPair(),
+  windowSeconds = 60,
+  processStartSeconds = Math.floor(nowMs / 1000) - 1_000_000
+) {
   return {
     keyPair,
     deps: {
       verifyKey: keyPair.publicKeyRaw,
       replayWindowSeconds: windowSeconds,
       nonces: createInMemoryNonceStore(windowSeconds * 1000),
+      processStartSeconds,
       nowMs: () => nowMs,
     },
+  };
+}
+
+function headersFor(
+  keyPair: ReturnType<typeof generateTestKeyPair>,
+  method: string,
+  path: string,
+  body: Buffer,
+  seconds: number,
+  nonce?: string
+): { timestamp: string; nonce: string; signature: string } {
+  const h = signHeaders(keyPair, method, path, body, seconds, nonce);
+  return {
+    timestamp: h['X-Broker-Timestamp'],
+    nonce: h['X-Broker-Nonce'],
+    signature: h['X-Broker-Signature'],
   };
 }
 
@@ -20,18 +42,8 @@ describe('verifyRequest', () => {
     const nowMs = 1_700_000_000_000;
     const { keyPair, deps: d } = deps(nowMs);
     const body = Buffer.from('{"slot":"0"}');
-    const headers = signHeaders(keyPair, 'POST', '/reconcile', body, Math.floor(nowMs / 1000));
-    const result = verifyRequest(
-      d,
-      'POST',
-      '/reconcile',
-      {
-        timestamp: headers['X-Broker-Timestamp'],
-        nonce: headers['X-Broker-Nonce'],
-        signature: headers['X-Broker-Signature'],
-      },
-      body
-    );
+    const headers = headersFor(keyPair, 'POST', '/reconcile', body, Math.floor(nowMs / 1000));
+    const result = verifyRequest(d, 'POST', '/reconcile', headers, body);
     expect(result).toEqual({ ok: true });
   });
 
@@ -40,18 +52,8 @@ describe('verifyRequest', () => {
     const { keyPair, deps: d } = deps(nowMs, undefined, 60);
     const body = Buffer.from('{}');
     const staleSeconds = Math.floor(nowMs / 1000) - 120;
-    const headers = signHeaders(keyPair, 'POST', '/reconcile', body, staleSeconds);
-    const result = verifyRequest(
-      d,
-      'POST',
-      '/reconcile',
-      {
-        timestamp: headers['X-Broker-Timestamp'],
-        nonce: headers['X-Broker-Nonce'],
-        signature: headers['X-Broker-Signature'],
-      },
-      body
-    );
+    const headers = headersFor(keyPair, 'POST', '/reconcile', body, staleSeconds);
+    const result = verifyRequest(d, 'POST', '/reconcile', headers, body);
     expect(result.ok).toBe(false);
   });
 
@@ -60,18 +62,8 @@ describe('verifyRequest', () => {
     const { keyPair, deps: d } = deps(nowMs, undefined, 60);
     const body = Buffer.from('{}');
     const futureSeconds = Math.floor(nowMs / 1000) + 30;
-    const headers = signHeaders(keyPair, 'POST', '/reconcile', body, futureSeconds);
-    const result = verifyRequest(
-      d,
-      'POST',
-      '/reconcile',
-      {
-        timestamp: headers['X-Broker-Timestamp'],
-        nonce: headers['X-Broker-Nonce'],
-        signature: headers['X-Broker-Signature'],
-      },
-      body
-    );
+    const headers = headersFor(keyPair, 'POST', '/reconcile', body, futureSeconds);
+    const result = verifyRequest(d, 'POST', '/reconcile', headers, body);
     expect(result.ok).toBe(false);
   });
 
@@ -79,29 +71,9 @@ describe('verifyRequest', () => {
     const nowMs = 1_700_000_000_000;
     const { keyPair, deps: d } = deps(nowMs);
     const body = Buffer.from('{}');
-    const headers = signHeaders(keyPair, 'POST', '/reconcile', body, Math.floor(nowMs / 1000));
-    const first = verifyRequest(
-      d,
-      'POST',
-      '/reconcile',
-      {
-        timestamp: headers['X-Broker-Timestamp'],
-        nonce: headers['X-Broker-Nonce'],
-        signature: headers['X-Broker-Signature'],
-      },
-      body
-    );
-    const second = verifyRequest(
-      d,
-      'POST',
-      '/reconcile',
-      {
-        timestamp: headers['X-Broker-Timestamp'],
-        nonce: headers['X-Broker-Nonce'],
-        signature: headers['X-Broker-Signature'],
-      },
-      body
-    );
+    const headers = headersFor(keyPair, 'POST', '/reconcile', body, Math.floor(nowMs / 1000));
+    const first = verifyRequest(d, 'POST', '/reconcile', headers, body);
+    const second = verifyRequest(d, 'POST', '/reconcile', headers, body);
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(false);
   });
@@ -142,18 +114,58 @@ describe('verifyRequest', () => {
     const { deps: d } = deps(nowMs);
     const other = generateTestKeyPair();
     const body = Buffer.from('{}');
-    const headers = signHeaders(other, 'POST', '/reconcile', body, Math.floor(nowMs / 1000));
-    const result = verifyRequest(
+    const headers = headersFor(other, 'POST', '/reconcile', body, Math.floor(nowMs / 1000));
+    const result = verifyRequest(d, 'POST', '/reconcile', headers, body);
+    expect(result.ok).toBe(false);
+  });
+
+  // --- F3: a request replayed after a broker restart must be refused. ---
+  it('refuses a timestamp that predates this process, even though it is inside the ordinary window', () => {
+    const nowMs = 1_700_000_000_000;
+    const nowSeconds = Math.floor(nowMs / 1000);
+    const keyPair = generateTestKeyPair();
+    // The process "started" one second after the request's own timestamp --
+    // as a restart seconds after a request was captured would -- while the
+    // ordinary 60s replay window would otherwise still admit it.
+    const { deps: d } = deps(nowMs, keyPair, 60, nowSeconds - 4);
+    const body = Buffer.from('{"slot":"3"}');
+    const headers = headersFor(keyPair, 'POST', '/reset', body, nowSeconds - 5);
+    const result = verifyRequest(d, 'POST', '/reset', headers, body);
+    expect(result.ok).toBe(false);
+  });
+
+  it('admits a timestamp at or after process start, inside the window', () => {
+    const nowMs = 1_700_000_000_000;
+    const nowSeconds = Math.floor(nowMs / 1000);
+    const keyPair = generateTestKeyPair();
+    const { deps: d } = deps(nowMs, keyPair, 60, nowSeconds - 5);
+    const body = Buffer.from('{"slot":"3"}');
+    const headers = headersFor(keyPair, 'POST', '/reset', body, nowSeconds - 5);
+    const result = verifyRequest(d, 'POST', '/reset', headers, body);
+    expect(result.ok).toBe(true);
+  });
+
+  // --- F4: the nonce is claimed only after the signature verifies. ---
+  it('an unsigned (forged-signature) request does not burn the nonce -- the legitimate signer can still use it', () => {
+    const nowMs = 1_700_000_000_000;
+    const { keyPair, deps: d } = deps(nowMs);
+    const body = Buffer.from('{"slot":"0"}');
+    const nonce = 'n'.repeat(16);
+    const forgedSignature = Buffer.alloc(64).toString('base64');
+
+    const forged = verifyRequest(
       d,
       'POST',
-      '/reconcile',
-      {
-        timestamp: headers['X-Broker-Timestamp'],
-        nonce: headers['X-Broker-Nonce'],
-        signature: headers['X-Broker-Signature'],
-      },
+      '/reset',
+      { timestamp: String(Math.floor(nowMs / 1000)), nonce, signature: forgedSignature },
       body
     );
-    expect(result.ok).toBe(false);
+    expect(forged.ok).toBe(false);
+
+    // The exact same nonce, now legitimately signed, must still be usable:
+    // the forged attempt above must not have claimed it.
+    const headers = headersFor(keyPair, 'POST', '/reset', body, Math.floor(nowMs / 1000), nonce);
+    const legit = verifyRequest(d, 'POST', '/reset', headers, body);
+    expect(legit.ok).toBe(true);
   });
 });

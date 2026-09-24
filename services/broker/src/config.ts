@@ -44,6 +44,16 @@ export interface BrokerConfig {
    * slot -> port mapping (workspace#1183, unbuilt, see `render.ts`).
    */
   readonly healthPortBase: number;
+  /** `appPortBase + Number(slot)*2 (+1 for colour b)` -- see `slotPorts.ts`. */
+  readonly appPortBase: number;
+  /**
+   * Captured once, at config load (server start), never from a request or
+   * the caller's clock. A signed request whose timestamp predates this
+   * process refuses regardless of the replay window: a restart is not the
+   * discontinuity a shorter-than-restart-time window would otherwise rely
+   * on to invalidate a captured request (see `auth.ts`).
+   */
+  readonly processStartSeconds: number;
   readonly nowMs: () => number;
 }
 
@@ -113,6 +123,8 @@ export function loadConfig(
     drainPollTimeoutMs: positiveInteger(env, 'BROKER_DRAIN_POLL_TIMEOUT_MS', 30_000, 120_000),
     healthCheckTimeoutMs: positiveInteger(env, 'BROKER_HEALTH_TIMEOUT_MS', 2_000, 30_000),
     healthPortBase: positiveInteger(env, 'BROKER_HEALTH_PORT_BASE', 9100, 65000),
+    appPortBase: positiveInteger(env, 'BROKER_APP_PORT_BASE', 9300, 65000),
+    processStartSeconds: Math.floor(Date.now() / 1000),
     nowMs: () => Date.now(),
   };
 }

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
+  hashIdOf,
   validate,
   type SlotName,
   type TenantDescriptor,
@@ -15,7 +16,16 @@ import { hostOf } from './hostOf.js';
 import { clearLeaseAndHash, writeLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
 import { validateSlotLiteral, type Colour } from './literals.js';
 import type { Renderer } from './render.js';
-import { readSlotState, writeSlotState, type Phase } from './stateStore.js';
+import { type SlotLock } from './slotLock.js';
+import { slotPort } from './slotPorts.js';
+import { HostConflictError, hostHeldByAnotherSlot } from './slotsFile.js';
+import {
+  assertHashRotated,
+  readSlotState,
+  writeSlotState,
+  UnrotatedHashError,
+  type Phase,
+} from './stateStore.js';
 import type { SlotWrapper } from './wrapper.js';
 import { writeArtefacts } from './writeArtefacts.js';
 
@@ -34,8 +44,10 @@ export interface BrokerDeps {
   readonly drainFlags: DrainFlagStore;
   readonly healthChecker: HealthChecker;
   readonly healthPortBase: number;
+  readonly appPortBase: number;
   readonly slotDirBase: string;
   readonly stateDir: string;
+  readonly slotLock: SlotLock;
   readonly drainPollTimeoutMs: number;
   readonly nowMs: () => number;
   readonly log: (line: string) => void;
@@ -151,57 +163,116 @@ async function handleReconcile(
   // inside the closure below: TypeScript's narrowing of the `GateSpec`
   // union above does not carry into a nested function.
   const argon2idHash: string = descriptor.gate.argon2idHash;
-
+  const newHashId = hashIdOf(argon2idHash);
   const hash = descriptorHash(descriptor);
-  const state = await readSlotState(deps.stateDir, slot);
-
-  // Idempotent replay: LLD-2 §04. No side effect runs a second time for an
-  // identical (slot, descriptorHash) pair.
-  if (state.phase === 'running' && state.descriptorHash === hash) {
-    return send(res, 200, { slot, phase: state.phase, colour: state.colour });
-  }
-  if (state.phase !== 'free') {
-    return send(res, 409, { error: `slot "${slot}" is occupied (phase "${state.phase}")` });
-  }
-
   const host = hostOf(descriptor, deps.zones.demoZone);
 
-  async function attempt(): Promise<void> {
-    await deps.drainFlags.set(slot, FRESH_COLOUR);
-    const artefacts = await deps.renderer.render(descriptor);
-    await writeArtefacts(deps.slotDirBase, slot, artefacts);
-    await deps.wrapper.start(slot, FRESH_COLOUR);
-    await deps.adminApi.configure(`http://127.0.0.1:${descriptor.ports[FRESH_COLOUR]}`, descriptor);
-    await writeLeaseAndHash(deps.leaseStoreConfig, host, slot, argon2idHash);
-    await deps.drainFlags.clear(slot, FRESH_COLOUR);
+  // LLD-2 §04's `preparing` phase, restored: nothing below this point runs
+  // for this slot without holding its lock, so a `/reset` (or a second
+  // `/reconcile`) racing this one sees an occupied slot for the whole
+  // attempt, not only after it finishes.
+  if (!deps.slotLock.claim(slot)) {
+    return send(res, 409, { error: `slot "${slot}" is locked by a concurrent request` });
   }
-
   try {
-    await attempt();
-  } catch (firstErr) {
-    deps.log(
-      `reconcile failed for slot "${slot}", resetting and retrying once: ${(firstErr as Error).message}`
-    );
-    await writeSlotState(deps.stateDir, slot, { phase: 'resetting' satisfies Phase });
-    try {
-      await deps.wrapper.reset(slot);
-      await clearLeaseAndHash(deps.leaseStoreConfig, slot);
-      await deps.drainFlags.set(slot, 'a');
-      await deps.drainFlags.set(slot, 'b');
-      await attempt();
-    } catch (secondErr) {
-      deps.log(`reconcile retry also failed for slot "${slot}": ${(secondErr as Error).message}`);
-      await writeSlotState(deps.stateDir, slot, { phase: 'error' satisfies Phase });
-      return send(res, 503, { slot, phase: 'error' });
-    }
-  }
+    const state = await readSlotState(deps.stateDir, slot);
 
-  await writeSlotState(deps.stateDir, slot, {
-    phase: 'running' satisfies Phase,
-    colour: FRESH_COLOUR,
-    descriptorHash: hash,
-  });
-  send(res, 200, { slot, phase: 'running', colour: FRESH_COLOUR });
+    // Idempotent replay: LLD-2 §04. No side effect runs a second time for
+    // an identical (slot, descriptorHash) pair.
+    if (state.phase === 'running' && state.descriptorHash === hash) {
+      return send(res, 200, { slot, phase: state.phase, colour: state.colour });
+    }
+    if (state.phase !== 'free') {
+      return send(res, 409, { error: `slot "${slot}" is occupied (phase "${state.phase}")` });
+    }
+    try {
+      assertHashRotated(state, newHashId, slot);
+    } catch (err) {
+      if (!(err instanceof UnrotatedHashError)) throw err;
+      return send(res, 409, { error: err.message });
+    }
+    const heldBy = await hostHeldByAnotherSlot(deps.leaseStoreConfig.slotsPath, host, slot);
+    if (heldBy !== null) {
+      return send(res, 409, { error: `host "${host}" is already held by slot "${heldBy}"` });
+    }
+
+    await writeSlotState(deps.stateDir, slot, {
+      phase: 'preparing' satisfies Phase,
+      lastHashId: state.lastHashId,
+    });
+
+    async function attempt(): Promise<void> {
+      await deps.drainFlags.set(slot, FRESH_COLOUR);
+      const artefacts = await deps.renderer.render(descriptor);
+      await writeArtefacts(deps.slotDirBase, slot, artefacts);
+      await deps.wrapper.start(slot, FRESH_COLOUR);
+      // The slot's own fixed port, never the descriptor's (LLD-2 §01,
+      // load-bearing: "no port to pick"). See slotPorts.ts.
+      const port = slotPort(deps.appPortBase, slot, FRESH_COLOUR);
+      await deps.adminApi.configure(`http://127.0.0.1:${port}`, descriptor);
+      await writeLeaseAndHash(deps.leaseStoreConfig, host, slot, argon2idHash);
+      await deps.drainFlags.clear(slot, FRESH_COLOUR);
+    }
+
+    try {
+      await attempt();
+    } catch (firstErr) {
+      if (firstErr instanceof HostConflictError) {
+        // The atomic backstop inside upsertSlotEntry, not the pre-check
+        // above: another slot won the same host in the narrow window
+        // between that check and this write. Retrying cannot help (the
+        // conflict persists), so this tears down what `attempt()` already
+        // started and refuses outright, rather than spending the one
+        // automatic retry on something that cannot succeed.
+        deps.log(`reconcile refused for slot "${slot}": ${firstErr.message}`);
+        await writeSlotState(deps.stateDir, slot, {
+          phase: 'resetting' satisfies Phase,
+          lastHashId: state.lastHashId,
+        });
+        await clearLeaseAndHash(deps.leaseStoreConfig, slot).catch(() => undefined);
+        await deps.wrapper.reset(slot).catch(() => undefined);
+        await writeSlotState(deps.stateDir, slot, {
+          phase: 'free' satisfies Phase,
+          lastHashId: state.lastHashId,
+        });
+        return send(res, 409, { error: firstErr.message });
+      }
+      deps.log(
+        `reconcile failed for slot "${slot}", resetting and retrying once: ${(firstErr as Error).message}`
+      );
+      await writeSlotState(deps.stateDir, slot, {
+        phase: 'resetting' satisfies Phase,
+        lastHashId: state.lastHashId,
+      });
+      try {
+        // Revoke first (F10): clearing the lease and hash cannot make
+        // anything less safe, and doing it before the wrapper runs means a
+        // teardown that then fails still leaves no live access behind.
+        await clearLeaseAndHash(deps.leaseStoreConfig, slot);
+        await deps.wrapper.reset(slot);
+        await deps.drainFlags.set(slot, 'a');
+        await deps.drainFlags.set(slot, 'b');
+        await attempt();
+      } catch (secondErr) {
+        deps.log(`reconcile retry also failed for slot "${slot}": ${(secondErr as Error).message}`);
+        await writeSlotState(deps.stateDir, slot, {
+          phase: 'error' satisfies Phase,
+          lastHashId: state.lastHashId,
+        });
+        return send(res, 503, { slot, phase: 'error' });
+      }
+    }
+
+    await writeSlotState(deps.stateDir, slot, {
+      phase: 'running' satisfies Phase,
+      colour: FRESH_COLOUR,
+      descriptorHash: hash,
+      lastHashId: newHashId,
+    });
+    send(res, 200, { slot, phase: 'running', colour: FRESH_COLOUR });
+  } finally {
+    deps.slotLock.release(slot);
+  }
 }
 
 async function handleReset(
@@ -225,22 +296,45 @@ async function handleReset(
     return send(res, 422, { error: (err as Error).message });
   }
 
-  await writeSlotState(deps.stateDir, slot, { phase: 'resetting' satisfies Phase });
-  try {
-    await deps.wrapper.reset(slot);
-  } catch (err) {
-    deps.log(`reset failed for slot "${slot}": ${(err as Error).message}`);
-    await writeSlotState(deps.stateDir, slot, { phase: 'error' satisfies Phase });
-    return send(res, 503, { slot, phase: 'error' });
+  // Same lock as `/reconcile` (F1): a reset racing an in-flight reconcile
+  // must not tear down a slot that reconcile still believes it owns.
+  if (!deps.slotLock.claim(slot)) {
+    return send(res, 409, { error: `slot "${slot}" is locked by a concurrent request` });
   }
-  await clearLeaseAndHash(deps.leaseStoreConfig, slot);
-  // A new colour always boots drained (LLD-2 §01b); setting both here means
-  // the invariant already holds the instant a next `/reconcile` looks at
-  // this slot, rather than depending on `/reconcile` alone to establish it.
-  await deps.drainFlags.set(slot, 'a');
-  await deps.drainFlags.set(slot, 'b');
-  await writeSlotState(deps.stateDir, slot, { phase: 'free' satisfies Phase });
-  send(res, 200, { slot, phase: 'free' });
+  try {
+    const state = await readSlotState(deps.stateDir, slot);
+    await writeSlotState(deps.stateDir, slot, {
+      phase: 'resetting' satisfies Phase,
+      lastHashId: state.lastHashId,
+    });
+    // Revoke first (F10): a teardown that then fails must still leave no
+    // live access behind, rather than leaving the previous visitor's
+    // passphrase admitting for as long as the slot sits in `error`.
+    await clearLeaseAndHash(deps.leaseStoreConfig, slot);
+    try {
+      await deps.wrapper.reset(slot);
+    } catch (err) {
+      deps.log(`reset failed for slot "${slot}": ${(err as Error).message}`);
+      await writeSlotState(deps.stateDir, slot, {
+        phase: 'error' satisfies Phase,
+        lastHashId: state.lastHashId,
+      });
+      return send(res, 503, { slot, phase: 'error' });
+    }
+    // A new colour always boots drained (LLD-2 §01b); setting both here
+    // means the invariant already holds the instant a next `/reconcile`
+    // looks at this slot, rather than depending on `/reconcile` alone to
+    // establish it.
+    await deps.drainFlags.set(slot, 'a');
+    await deps.drainFlags.set(slot, 'b');
+    await writeSlotState(deps.stateDir, slot, {
+      phase: 'free' satisfies Phase,
+      lastHashId: state.lastHashId,
+    });
+    send(res, 200, { slot, phase: 'free' });
+  } finally {
+    deps.slotLock.release(slot);
+  }
 }
 
 async function handleStatus(
@@ -305,7 +399,18 @@ export function createBrokerHandler(deps: BrokerDeps): Handler {
       if (path === '/drain' && req.method === 'GET') return await handleDrain(deps, req, res);
       const statusMatch = /^\/status\/([^/]+)$/.exec(path);
       if (statusMatch && req.method === 'GET') {
-        return await handleStatus(deps, decodeURIComponent(statusMatch[1] ?? ''), res);
+        let slotParam: string;
+        try {
+          slotParam = decodeURIComponent(statusMatch[1] ?? '');
+        } catch {
+          // A malformed percent-escape (e.g. `%zz`) throws URIError. It is
+          // not a shape any of the seven slot literals can ever take, so it
+          // answers exactly like one that decodes cleanly but still isn't
+          // one of them: 404, not a 500 that leaks that decoding was
+          // attempted at all.
+          return send(res, 404);
+        }
+        return await handleStatus(deps, slotParam, res);
       }
       send(res, 404);
     } catch (err) {

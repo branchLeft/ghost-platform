@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
+import { createAsyncMutex, type AsyncMutex } from './asyncMutex.js';
 import { writeFileAtomic } from './atomicFile.js';
 
 /**
@@ -17,6 +18,32 @@ export interface SlotsFileEntry {
 
 interface SlotsFileShape {
   readonly slots: readonly SlotsFileEntry[];
+}
+
+export class HostConflictError extends Error {
+  constructor(
+    readonly host: string,
+    readonly heldBySlot: SlotName
+  ) {
+    super(`host "${host}" is already held by slot "${heldBySlot}"`);
+    this.name = 'HostConflictError';
+  }
+}
+
+// One mutex per slots-file path: this file is the only place that ever
+// writes it, so a read-modify-write anywhere in this process -- across
+// every slot -- goes through the same lock for that path. Keyed rather
+// than a single module-level lock so two independent broker instances in
+// one test process (different temp paths) never serialise against each
+// other for no reason.
+const mutexes = new Map<string, AsyncMutex>();
+function mutexFor(path: string): AsyncMutex {
+  let m = mutexes.get(path);
+  if (!m) {
+    m = createAsyncMutex();
+    mutexes.set(path, m);
+  }
+  return m;
 }
 
 async function readEntries(path: string): Promise<SlotsFileEntry[]> {
@@ -42,23 +69,49 @@ async function writeEntries(path: string, entries: readonly SlotsFileEntry[]): P
 
 /**
  * Replaces whatever entry currently names `slot` (by slot, not by host --
- * a recycle can legitimately change a demo's hostname) with `entry`. The
- * read-modify-write is not itself transactional against a concurrent
- * writer; `wrapper.ts`'s per-slot flock (taken by the sudoers-enumerated
- * wrapper, not by this file) is what serialises two reconciles of the same
- * slot, and this file's own readers (`demo-gate`) tolerate torn reads by
- * refusing to admit rather than by trusting partial state -- see
- * `render-core/src/lease.ts`'s recycle contract.
+ * a recycle can legitimately change a demo's hostname) with `entry`, and
+ * refuses outright if `entry.host` is already held by a *different* slot.
+ *
+ * The whole read-modify-write runs inside `mutexFor(path)`, which is the
+ * only thing that makes this atomic: a per-slot lock (`slotLock.ts`) stops
+ * two requests racing the *same* slot, but this file is shared across every
+ * slot, so two different slots reconciling concurrently -- each holding its
+ * own, different per-slot lock -- would otherwise still interleave their
+ * reads and writes here and lose entries. There is no flock to rely on
+ * either: the sudoers-enumerated wrapper's own per-slot flock (LLD-2 §02)
+ * spans one privileged invocation, never this file, and does not exist yet.
  */
 export async function upsertSlotEntry(path: string, entry: SlotsFileEntry): Promise<void> {
+  await mutexFor(path).run(async () => {
+    const entries = await readEntries(path);
+    const conflict = entries.find((e) => e.host === entry.host && e.slot !== entry.slot);
+    if (conflict) throw new HostConflictError(entry.host, conflict.slot);
+    const next = entries.filter((e) => e.slot !== entry.slot);
+    next.push(entry);
+    await writeEntries(path, next);
+  });
+}
+
+/**
+ * A best-effort, read-only check used to refuse a conflicting reconcile
+ * *before* any side effect runs (`app.ts`'s `attempt()`), rather than only
+ * after the wrapper has already been started -- `upsertSlotEntry`'s own
+ * conflict check is the atomic, race-free backstop this reads ahead of.
+ */
+export async function hostHeldByAnotherSlot(
+  path: string,
+  host: string,
+  slot: SlotName
+): Promise<SlotName | null> {
   const entries = await readEntries(path);
-  const next = entries.filter((e) => e.slot !== entry.slot);
-  next.push(entry);
-  await writeEntries(path, next);
+  const conflict = entries.find((e) => e.host === host && e.slot !== slot);
+  return conflict ? conflict.slot : null;
 }
 
 export async function removeSlotEntry(path: string, slot: SlotName): Promise<void> {
-  const entries = await readEntries(path);
-  const next = entries.filter((e) => e.slot !== slot);
-  if (next.length !== entries.length) await writeEntries(path, next);
+  await mutexFor(path).run(async () => {
+    const entries = await readEntries(path);
+    const next = entries.filter((e) => e.slot !== slot);
+    if (next.length !== entries.length) await writeEntries(path, next);
+  });
 }

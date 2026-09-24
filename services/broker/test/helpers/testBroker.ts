@@ -11,6 +11,7 @@ import { createDrainFlagStore } from '../../src/drainFlag.js';
 import type { DrainPayload, DrainSource } from '../../src/drainSource.js';
 import { createHttpHealthChecker } from '../../src/healthCheck.js';
 import type { Artefact, Renderer } from '../../src/render.js';
+import { createSlotLock } from '../../src/slotLock.js';
 import { createSlotWrapper } from '../../src/wrapper.js';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { TEST_ZONES } from './fixtures.js';
@@ -111,7 +112,8 @@ export async function startTestBroker(): Promise<TestBroker> {
   process.env.FAKE_WRAPPER_LOG = wrapperLogPath;
 
   const keyPair = generateTestKeyPair();
-  let nowMs = 1_700_000_000_000;
+  const START_MS = 1_700_000_000_000;
+  let nowMs = START_MS;
 
   const renderer = createRecordingRenderer();
   const adminApi = createRecordingAdminApi();
@@ -122,6 +124,7 @@ export async function startTestBroker(): Promise<TestBroker> {
       verifyKey: keyPair.publicKeyRaw,
       replayWindowSeconds: 60,
       nonces: createInMemoryNonceStore(60_000),
+      processStartSeconds: Math.floor(START_MS / 1000),
       nowMs: () => nowMs,
     },
     slotLiterals: ['0', '1', '2', '3', '4', '5', '6'],
@@ -138,8 +141,10 @@ export async function startTestBroker(): Promise<TestBroker> {
     drainFlags: createDrainFlagStore(drainFlagDir),
     healthChecker: createHttpHealthChecker('127.0.0.1', 500),
     healthPortBase: 9100,
+    appPortBase: 9300,
     slotDirBase,
     stateDir,
+    slotLock: createSlotLock(),
     drainPollTimeoutMs: 300,
     nowMs: () => nowMs,
     log: () => {

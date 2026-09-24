@@ -54,7 +54,11 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
 
     expect(broker.renderer.calls).toHaveLength(1);
     expect(broker.adminApi.calls).toHaveLength(1);
-    expect(broker.adminApi.calls[0]?.baseUrl).toBe(`http://127.0.0.1:${descriptor.ports.a}`);
+    // The slot's own fixed port (F7): appPortBase=9300, slot '2', colour 'a'
+    // -> 9300 + 2*2 -- never `descriptor.ports.a`, which this test's
+    // fixture leaves at its own unrelated default.
+    expect(broker.adminApi.calls[0]?.baseUrl).toBe('http://127.0.0.1:9304');
+    expect(broker.adminApi.calls[0]?.baseUrl).not.toBe(`http://127.0.0.1:${descriptor.ports.a}`);
 
     const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
       .split('\n')
@@ -356,14 +360,15 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('the router itself answers 500 rather than crashing on a malformed URL it cannot even decode', async () => {
+  it('a malformed percent-escape in the status path answers 404, not 500 (review finding)', async () => {
     broker = await startTestBroker();
     // %zz is not a valid percent-escape; decodeURIComponent throws
-    // URIError, which happens inside the top-level router, not inside
-    // handleStatus's own try/catch -- proving the outer catch-all in
-    // createBrokerHandler, not handleStatus's slot-literal refusal.
+    // URIError. The router catches it at the point of decoding and answers
+    // exactly as it would for any other string that isn't one of the seven
+    // slot literals, rather than letting it fall to the generic 500
+    // catch-all -- a malformed request must never look like a server fault.
     const res = await fetch(`${broker.baseUrl}/status/%zz`);
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(404);
   });
 
   // --- "reaper"-shaped proof: /drain long-polls, answers once data arrives, and never initiates. ---
