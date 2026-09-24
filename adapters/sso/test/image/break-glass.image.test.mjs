@@ -354,6 +354,28 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     assert.equal(r.email, SUPPORT);
   });
 
+  // branchLeft/workspace#1352: express-session's res.end override flushes
+  // Set-Cookie before the session store's write completes, so a client
+  // acting on the cookie immediately (any redirect- or page-follower, not a
+  // test artefact) can be refused on its very next request. This never
+  // showed up sequentially -- it needs concurrent logins racing the same
+  // store to open the window. Every one of these must succeed; a single
+  // 403 here is the race, not flake.
+  it('N concurrent fresh-token logins each authenticate on their very first users/me/ request', async () => {
+    ghost.setSupportStatus('active');
+    const CONCURRENCY = 8;
+    const results = await Promise.all(
+      Array.from({ length: CONCURRENCY }, () => ghost.attempt(validToken()))
+    );
+    results.forEach((r, i) => {
+      assert.deepEqual(
+        { status: r.status, email: r.email },
+        { status: 200, email: SUPPORT },
+        `login ${i} of ${CONCURRENCY}: adapter said ${JSON.stringify(r.adapter)}`
+      );
+    });
+  });
+
   it('a token sent to the site root never reaches the adapter, and stays usable (documented gap)', async () => {
     const t = validToken();
     const mark = ghost.mark();

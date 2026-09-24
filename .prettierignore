@@ -15,3 +15,9 @@ bin/
 # in widgets/pins.json by sha384; reformatting them changes those bytes and
 # breaks the pin.
 widgets/dist/
+
+# A vendored, patched copy of one Ghost-core file (adapters/sso/ghost-core-overlay/README.md).
+# Its build-time guard hashes the upstream file it was derived from; reformatting
+# our copy to house style would widen every future upstream diff with cosmetic
+# noise, making re-derivation on a Ghost upgrade harder to review, not easier.
+adapters/sso/ghost-core-overlay/session-from-token.js
