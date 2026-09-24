@@ -1,0 +1,10 @@
+{
+  "slug": "demo-1",
+  "uid": 30001,
+  "stackName": "demo-1",
+  "contentVolume": "ghost-demo-1-content",
+  "adaptersVolume": "ghost-demo-1-adapters",
+  "appHostPrivateIp": "10.20.1.50",
+  "databaseName": null,
+  "mediaBucket": null
+}

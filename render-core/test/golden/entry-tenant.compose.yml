@@ -1,0 +1,173 @@
+# The entry-co Ghost stack, deployed as `entry-co` under
+# /opt/branchleft/entry-co on an app host.
+#
+# Rendered by @branchleft/ghost-platform-render-core. Do not hand-edit on
+# the host: every line below is a runtime-isolation control, and a stack
+# that omits one still starts, still serves, and silently drops the
+# boundary.
+#
+# `${IMAGE}` is written to /etc/branchleft/<stack>.image.env by
+# /usr/local/sbin/branchleft-deploy and is always a digest, never a tag.
+# Any `${GHOST_*}` reference comes from /etc/branchleft/<stack>.env,
+# which is root-owned 0600 and written by an operator alone.
+name: 'entry-co'
+services:
+  ghost-a:
+    image: '${IMAGE}'
+    restart: 'unless-stopped'
+    user: '30201:30201'
+    init: true
+    read_only: true
+    tmpfs:
+      - '/tmp:rw,noexec,nosuid,nodev,size=128m'
+    cap_drop:
+      - 'ALL'
+    security_opt:
+      - 'no-new-privileges:true'
+    pids_limit: 128
+    mem_limit: '640m'
+    memswap_limit: '640m'
+    cpus: '0.5'
+    cpu_shares: 256
+    ulimits:
+      nofile:
+        soft: 2048
+        hard: 2048
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    ports:
+      - '10.20.2.20:3201:2368'
+    environment:
+      url: 'https://blog.entry-co.example'
+      database__client: 'mysql'
+      database__connection__host: 'db-t1.internal'
+      database__connection__port: 3306
+      database__connection__database: 'ghost_entry_co'
+      database__connection__user: 'ghost_entry_co'
+      database__connection__ssl__rejectUnauthorized: false
+      storage__active: 'S3Storage'
+      storage__S3Storage__bucket: 'branchleft-media-entry-co'
+      storage__S3Storage__region: 'eu'
+      storage__S3Storage__endpoint: 'https://s3.endpoint.example'
+      storage__S3Storage__forcePathStyle: true
+      storage__S3Storage__staticFileURLPrefix: 'content/images'
+      storage__S3Storage__cdnUrl: 'https://s3.endpoint.example/branchleft-media-entry-co'
+      storage__S3Storage__multipartUploadThresholdBytes: 10485760
+      storage__S3Storage__multipartChunkSizeBytes: 5242880
+      mail__transport: 'SMTP'
+      mail__options__host: 'mx.internal'
+      mail__options__port: 587
+      mail__options__secure: false
+      mail__options__auth__user: 'entry-co'
+      security__allowWebhookInternalIPs: false
+      theme__uploadLimits__compressedBytes: 33554432
+      theme__uploadLimits__entryUncompressedBytes: 33554432
+      theme__uploadLimits__totalUncompressedBytes: 67108864
+      privacy__useUpdateCheck: false
+      logging__transports: '["stdout"]'
+      database__connection__password: '${GHOST_DB_PASSWORD:?set GHOST_DB_PASSWORD in /etc/branchleft/entry-co.env}'
+      storage__S3Storage__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/entry-co.env}'
+      storage__S3Storage__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/entry-co.env}'
+      mail__options__auth__pass: '${GHOST_MAIL_PASSWORD:?set GHOST_MAIL_PASSWORD in /etc/branchleft/entry-co.env}'
+    volumes:
+      - 'ghost-entry-co-content:/var/lib/ghost/content'
+      - 'ghost-entry-co-adapters:/var/lib/ghost/content/adapters:ro'
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'wget'
+        - '-q'
+        - '-O'
+        - '/dev/null'
+        - '--header'
+        - 'X-Forwarded-Proto: https'
+        - 'http://127.0.0.1:2368/'
+      interval: '30s'
+      timeout: '5s'
+      retries: 3
+      start_period: '60s'
+  ghost-b:
+    image: '${IMAGE}'
+    restart: 'unless-stopped'
+    user: '30201:30201'
+    init: true
+    read_only: true
+    tmpfs:
+      - '/tmp:rw,noexec,nosuid,nodev,size=128m'
+    cap_drop:
+      - 'ALL'
+    security_opt:
+      - 'no-new-privileges:true'
+    pids_limit: 128
+    mem_limit: '640m'
+    memswap_limit: '640m'
+    cpus: '0.5'
+    cpu_shares: 256
+    ulimits:
+      nofile:
+        soft: 2048
+        hard: 2048
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    ports:
+      - '10.20.2.20:3202:2368'
+    environment:
+      url: 'https://blog.entry-co.example'
+      database__client: 'mysql'
+      database__connection__host: 'db-t1.internal'
+      database__connection__port: 3306
+      database__connection__database: 'ghost_entry_co'
+      database__connection__user: 'ghost_entry_co'
+      database__connection__ssl__rejectUnauthorized: false
+      storage__active: 'S3Storage'
+      storage__S3Storage__bucket: 'branchleft-media-entry-co'
+      storage__S3Storage__region: 'eu'
+      storage__S3Storage__endpoint: 'https://s3.endpoint.example'
+      storage__S3Storage__forcePathStyle: true
+      storage__S3Storage__staticFileURLPrefix: 'content/images'
+      storage__S3Storage__cdnUrl: 'https://s3.endpoint.example/branchleft-media-entry-co'
+      storage__S3Storage__multipartUploadThresholdBytes: 10485760
+      storage__S3Storage__multipartChunkSizeBytes: 5242880
+      mail__transport: 'SMTP'
+      mail__options__host: 'mx.internal'
+      mail__options__port: 587
+      mail__options__secure: false
+      mail__options__auth__user: 'entry-co'
+      security__allowWebhookInternalIPs: false
+      theme__uploadLimits__compressedBytes: 33554432
+      theme__uploadLimits__entryUncompressedBytes: 33554432
+      theme__uploadLimits__totalUncompressedBytes: 67108864
+      privacy__useUpdateCheck: false
+      logging__transports: '["stdout"]'
+      database__connection__password: '${GHOST_DB_PASSWORD:?set GHOST_DB_PASSWORD in /etc/branchleft/entry-co.env}'
+      storage__S3Storage__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/entry-co.env}'
+      storage__S3Storage__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/entry-co.env}'
+      mail__options__auth__pass: '${GHOST_MAIL_PASSWORD:?set GHOST_MAIL_PASSWORD in /etc/branchleft/entry-co.env}'
+    volumes:
+      - 'ghost-entry-co-content:/var/lib/ghost/content'
+      - 'ghost-entry-co-adapters:/var/lib/ghost/content/adapters:ro'
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'wget'
+        - '-q'
+        - '-O'
+        - '/dev/null'
+        - '--header'
+        - 'X-Forwarded-Proto: https'
+        - 'http://127.0.0.1:2368/'
+      interval: '30s'
+      timeout: '5s'
+      retries: 3
+      start_period: '60s'
+volumes:
+  ghost-entry-co-content:
+    external: true
+  ghost-entry-co-adapters:
+    external: true

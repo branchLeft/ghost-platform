@@ -94,3 +94,105 @@ export function tenantDescriptor(): TenantDescriptor {
     expiresAt: null,
   };
 }
+
+/**
+ * A paying tenant on the entry tier: capped members/staff, the smaller
+ * resource caps, `smtp` transport (so `render()`'s smtp branch has a golden
+ * case distinct from `tenantDescriptor()`'s `queue`). `media.bucket`
+ * matches `mediaBucketName(slug)` — `render()`'s own isolation check,
+ * unlike `tenantDescriptor()` above, which predates it and is left alone
+ * so `validate.test.ts` (which never calls `render()`) is unaffected.
+ */
+export function entryTenantDescriptor(): TenantDescriptor {
+  return {
+    version: CURRENT_SCHEMA_VERSION,
+    kind: 'tenant',
+    slug: 'entry-co' as Slug,
+    siteUrl: 'https://blog.entry-co.example' as AbsoluteUrl,
+    image: `ghost:6.55.0-alpine@sha256:${DIGEST}` as DigestPinnedRef,
+    ownerEmail: 'owner@entry-co.example' as EmailAddress,
+    uid: 30201 as TenantUid,
+    ports: { a: 3201 as Port, b: 3202 as Port, health: 3203 as Port },
+    appHostIp: '10.20.2.20' as PrivateIpV4,
+    database: {
+      kind: 'mysql',
+      host: 'db-t1.internal',
+      port: 3306 as Port,
+      name: 'ghost_entry_co',
+      user: 'ghost_entry_co',
+    },
+    media: {
+      kind: 's3',
+      endpoint: 'https://s3.endpoint.example',
+      region: 'eu',
+      bucket: 'branchleft-media-entry-co',
+      resize: false,
+      srcsets: false,
+    },
+    transport: { kind: 'smtp', host: 'mx.internal', port: 587 as Port, user: 'entry-co' },
+    hostname: {
+      kind: 'theirs',
+      fqdn: 'blog.entry-co.example',
+      verifiedAt: '2026-09-01T00:00:00.000Z' as Instant,
+    },
+    gate: { kind: 'none' },
+    backup: { kind: 'bucket-native', encryptionRecipient: 'age1qentrycoexamplerecipient' },
+    codeInjection: { kind: 'blocked' },
+    limits: { membersCap: 500, staffCap: 3 },
+    caps: { cpus: '0.5', cpuShares: 256, pidsLimit: 128, nofile: 2048 },
+    safety: { near: true, exact: true },
+    expiresAt: null,
+  };
+}
+
+/**
+ * A paying tenant on the professional tier: uncapped members/staff, the
+ * larger resource caps, and a `managed` code-injection grant — the one
+ * fixture that exercises `settings.ts`'s non-empty `codeinjection_head`/
+ * `codeinjection_foot` branch.
+ */
+export function professionalTenantDescriptor(): TenantDescriptor {
+  return {
+    version: CURRENT_SCHEMA_VERSION,
+    kind: 'tenant',
+    slug: 'pro-co' as Slug,
+    siteUrl: 'https://news.pro-co.example' as AbsoluteUrl,
+    image: `ghost:6.55.0-alpine@sha256:${DIGEST}` as DigestPinnedRef,
+    ownerEmail: 'owner@pro-co.example' as EmailAddress,
+    uid: 30301 as TenantUid,
+    ports: { a: 3301 as Port, b: 3302 as Port, health: 3303 as Port },
+    appHostIp: '10.20.2.30' as PrivateIpV4,
+    database: {
+      kind: 'mysql',
+      host: 'db-t1.internal',
+      port: 3306 as Port,
+      name: 'ghost_pro_co',
+      user: 'ghost_pro_co',
+    },
+    media: {
+      kind: 's3',
+      endpoint: 'https://s3.endpoint.example',
+      region: 'eu',
+      bucket: 'branchleft-media-pro-co',
+      resize: true,
+      srcsets: true,
+    },
+    transport: { kind: 'smtp', host: 'mx.internal', port: 587 as Port, user: 'pro-co' },
+    hostname: {
+      kind: 'theirs',
+      fqdn: 'news.pro-co.example',
+      verifiedAt: '2026-08-15T00:00:00.000Z' as Instant,
+    },
+    gate: { kind: 'none' },
+    backup: { kind: 'bucket-native', encryptionRecipient: 'age1qprocoexamplerecipient' },
+    codeInjection: {
+      kind: 'managed',
+      head: '<meta name="analytics-consent" content="required">',
+      foot: '<script src="/analytics.js" defer></script>',
+    },
+    limits: { membersCap: null, staffCap: null },
+    caps: { cpus: '2.0', cpuShares: 1024, pidsLimit: 512, nofile: 8192 },
+    safety: { near: true, exact: true },
+    expiresAt: null,
+  };
+}

@@ -1,0 +1,129 @@
+# The demo-1 Ghost stack, deployed as `demo-1` under
+# /opt/branchleft/demo-1 on an app host.
+#
+# Rendered by @branchleft/ghost-platform-render-core. Do not hand-edit on
+# the host: every line below is a runtime-isolation control, and a stack
+# that omits one still starts, still serves, and silently drops the
+# boundary.
+#
+# `${IMAGE}` is written to /etc/branchleft/<stack>.image.env by
+# /usr/local/sbin/branchleft-deploy and is always a digest, never a tag.
+# Any `${GHOST_*}` reference comes from /etc/branchleft/<stack>.env,
+# which is root-owned 0600 and written by an operator alone.
+name: 'demo-1'
+services:
+  ghost-a:
+    image: '${IMAGE}'
+    restart: 'unless-stopped'
+    user: '30001:30001'
+    init: true
+    read_only: true
+    tmpfs:
+      - '/tmp:rw,noexec,nosuid,nodev,size=128m'
+    cap_drop:
+      - 'ALL'
+    security_opt:
+      - 'no-new-privileges:true'
+    pids_limit: 256
+    mem_limit: '640m'
+    memswap_limit: '640m'
+    cpus: '1.0'
+    cpu_shares: 512
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    ports:
+      - '10.20.1.50:3001:2368'
+    environment:
+      url: 'https://k7m-vale-bright.demo-domain.example.test'
+      database__client: 'sqlite3'
+      database__connection__filename: '/data/demo-1/ghost.db'
+      security__allowWebhookInternalIPs: false
+      theme__uploadLimits__compressedBytes: 33554432
+      theme__uploadLimits__entryUncompressedBytes: 33554432
+      theme__uploadLimits__totalUncompressedBytes: 67108864
+      privacy__useUpdateCheck: false
+      logging__transports: '["stdout"]'
+    volumes:
+      - 'ghost-demo-1-content:/var/lib/ghost/content'
+      - 'ghost-demo-1-adapters:/var/lib/ghost/content/adapters:ro'
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'wget'
+        - '-q'
+        - '-O'
+        - '/dev/null'
+        - '--header'
+        - 'X-Forwarded-Proto: https'
+        - 'http://127.0.0.1:2368/'
+      interval: '30s'
+      timeout: '5s'
+      retries: 3
+      start_period: '60s'
+  ghost-b:
+    image: '${IMAGE}'
+    restart: 'unless-stopped'
+    user: '30001:30001'
+    init: true
+    read_only: true
+    tmpfs:
+      - '/tmp:rw,noexec,nosuid,nodev,size=128m'
+    cap_drop:
+      - 'ALL'
+    security_opt:
+      - 'no-new-privileges:true'
+    pids_limit: 256
+    mem_limit: '640m'
+    memswap_limit: '640m'
+    cpus: '1.0'
+    cpu_shares: 512
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    ports:
+      - '10.20.1.50:3002:2368'
+    environment:
+      url: 'https://k7m-vale-bright.demo-domain.example.test'
+      database__client: 'sqlite3'
+      database__connection__filename: '/data/demo-1/ghost.db'
+      security__allowWebhookInternalIPs: false
+      theme__uploadLimits__compressedBytes: 33554432
+      theme__uploadLimits__entryUncompressedBytes: 33554432
+      theme__uploadLimits__totalUncompressedBytes: 67108864
+      privacy__useUpdateCheck: false
+      logging__transports: '["stdout"]'
+    volumes:
+      - 'ghost-demo-1-content:/var/lib/ghost/content'
+      - 'ghost-demo-1-adapters:/var/lib/ghost/content/adapters:ro'
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'wget'
+        - '-q'
+        - '-O'
+        - '/dev/null'
+        - '--header'
+        - 'X-Forwarded-Proto: https'
+        - 'http://127.0.0.1:2368/'
+      interval: '30s'
+      timeout: '5s'
+      retries: 3
+      start_period: '60s'
+volumes:
+  ghost-demo-1-content:
+    external: true
+  ghost-demo-1-adapters:
+    external: true

@@ -1,0 +1,12 @@
+{
+  "codeinjection_head": "",
+  "codeinjection_foot": "",
+  "limits": {
+    "members": {
+      "max": 500
+    },
+    "staff": {
+      "max": 3
+    }
+  }
+}
