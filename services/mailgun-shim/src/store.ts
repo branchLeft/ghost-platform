@@ -140,9 +140,9 @@ export interface ShimStore {
    * is failed in place the same way. Both still count toward `limit`
    * being consumed for this call, so a caller wanting more should call
    * again rather than assume it always gets `limit` drainable rows back.
-   */
-  /**
-   * `canSend` gates the per-tenant hourly throttle (the deleted worker's
+   *
+   * `canSend` gates the hourly throttle — one bucket per shim process,
+   * shared by every tenant that process ever holds (the deleted worker's
    * own `throttle.tryTake()` check immediately before dispatch — see
    * throttle.ts). It is asked once per row that would otherwise become
    * `held`, in claim order; the first `false` stops the whole claim

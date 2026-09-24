@@ -10,8 +10,8 @@
  * store itself (claimForDrain), so a wake is a pure "something might be
  * available now" signal, never a delivery mechanism in its own right. That
  * keeps this module tiny and keeps the store as the single source of truth
- * for what is actually claimable, which matters once #1236's inbound SMTP
- * front door also calls notify() after its own enqueue.
+ * for what is actually claimable, which matters once every route that
+ * enqueues mail calls notify() after its own enqueue, not just this one.
  */
 export interface DrainWake {
   /** Resolves on the next notify() (or the given timeout, whichever comes first) — never rejects. */

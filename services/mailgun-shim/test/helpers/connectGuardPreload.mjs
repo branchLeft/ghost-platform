@@ -9,23 +9,35 @@
 // connection" means for this process's entire lifecycle.
 //
 // Four independent primitives, patched separately, because none of them
-// routes through the others (review cycle 2, non-blocking finding 3 —
-// verified empirically that each one bypasses a guard that only patches
-// net.Socket#connect):
+// routes through the others — verified empirically that each one bypasses
+// a guard that only patches net.Socket#connect:
 //   - net.Socket#connect — every TCP/TLS client (nodemailer's SMTP
 //     transport included: tls.connect constructs a TLSSocket, which
 //     extends net.Socket and calls this same method).
-//   - dns.lookup / dns.resolve* — hostname resolution alone is a
-//     network round trip, and by itself is a DNS-exfiltration channel
-//     even when nothing after it ever calls connect().
+//   - dns.lookup / dns.resolve* (callback and promise forms) — hostname
+//     resolution alone is a network round trip, and by itself is a
+//     DNS-exfiltration channel even when nothing after it ever calls
+//     connect().
 //   - dgram — UDP has its own send path entirely outside net.Socket.
 //   - child_process — spawn/exec/execFile can shell out to `curl` or
 //     anything else and make a network call this process's own patches
 //     can never see, in a separate process.
+//
+// Patching a property on the object a default/namespace import gives you
+// (`import net from 'node:net'; net.X = ...`) does not, by itself, reach
+// a caller that used a named import instead (`import { X } from
+// 'node:net'`) — Node synthesizes a built-in module's named ESM exports
+// once, from a snapshot, and a plain property reassignment afterward
+// never reaches that snapshot. `module.syncBuiltinESMExports()` (called
+// once, after every patch below) re-syncs that snapshot from the current
+// property values, closing the gap for every built-in this file patches
+// at once — verified empirically (see the sabotage tests this guard
+// backs) rather than assumed from documentation.
 import net from 'node:net';
 import dns from 'node:dns';
 import dgram from 'node:dgram';
 import child_process from 'node:child_process';
+import module from 'node:module';
 
 const MARKER = 'CONNECT_ATTEMPT ';
 
@@ -62,7 +74,7 @@ net.Socket.prototype.connect = function patchedConnect(...args) {
   return originalConnect.apply(this, args);
 };
 
-for (const method of [
+const DNS_METHODS = [
   'lookup',
   'resolve',
   'resolve4',
@@ -70,11 +82,26 @@ for (const method of [
   'resolveCname',
   'resolveMx',
   'resolveTxt',
-]) {
+];
+
+for (const method of DNS_METHODS) {
   const original = dns[method]?.bind(dns);
   if (!original) continue;
   dns[method] = function patchedDns(hostname, ...rest) {
     report('dns.' + method, { hostname });
+    return original(hostname, ...rest);
+  };
+}
+
+// The promise-returning API (`dns.promises.*`, and `node:dns/promises`'s
+// own default/named exports — the same underlying object, confirmed
+// empirically) is a separate object from the callback-style methods
+// above and needs its own patch.
+for (const method of DNS_METHODS) {
+  const original = dns.promises[method]?.bind(dns.promises);
+  if (!original) continue;
+  dns.promises[method] = function patchedDnsPromise(hostname, ...rest) {
+    report('dns.promises.' + method, { hostname });
     return original(hostname, ...rest);
   };
 }
@@ -98,18 +125,6 @@ dgram.Socket.prototype.send = function patchedSend(...args) {
   return originalDgramSend.apply(this, args);
 };
 
-// Verified limit, not assumed: this catches `import cp from
-// 'node:child_process'; cp.spawn(...)` and CJS `require('node:child_process')
-// .spawn(...)` (both read the CURRENT property value at call time), but NOT
-// `import { spawn } from 'node:child_process'; spawn(...)` — Node's ESM
-// named exports for built-in modules are synthesized once during its own
-// internal bootstrap, before this preload (or anything else) runs, so a
-// later reassignment here never reaches a caller that imported the name
-// directly. No reflective way around that was found that didn't mean
-// patching before Node's own module system finishes initializing. Real
-// gap, documented rather than hidden — src/ has no child_process usage at
-// all today, so this only matters if code reintroducing one happens to
-// use the named-import form.
 for (const method of ['spawn', 'exec', 'execFile', 'fork']) {
   const original = child_process[method];
   child_process[method] = function patchedChildProcess(command, ...rest) {
@@ -117,3 +132,13 @@ for (const method of ['spawn', 'exec', 'execFile', 'fork']) {
     return original.call(child_process, command, ...rest);
   };
 }
+
+// Re-syncs every built-in module's synthesized ESM named exports from the
+// property values patched above, so a caller using
+// `import { spawn } from 'node:child_process'` or
+// `import { lookup } from 'node:dns'` (this codebase's own house style —
+// e.g. `import { randomUUID } from 'node:crypto'` elsewhere) is covered
+// exactly the same as a default-import or CJS require() caller. Must run
+// after every patch above, not interleaved with them: it snapshots the
+// CURRENT property values at the point it's called.
+module.syncBuiltinESMExports();

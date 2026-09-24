@@ -57,9 +57,10 @@ const SECONDS_PER_HOUR = 3600;
  * anything at the IP: N hosts each independently allowed up to
  * messagesPerHour is N times the intended estate rate against the one
  * address that carries the reputation. The warm-up ceiling then belongs
- * at the single egress point (the #1239 collector, or mx1) rather than
- * here — flagged on that issue, not fixed in this one, since #1237 is the
- * last story before that egress point exists at all.
+ * at the single egress point every host's mail eventually converges on
+ * (whatever drains every spool and submits to mx1) rather than here —
+ * that convergence point doesn't exist yet, so moving it is future work,
+ * not something this per-spool bucket can do on its own.
  */
 export function createThrottle(opts: ThrottleOptions): Throttle {
   const now = opts.now ?? (() => Date.now() / 1000);

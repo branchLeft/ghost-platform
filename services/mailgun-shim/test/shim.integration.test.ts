@@ -13,8 +13,8 @@ import { createThrottle } from '../src/throttle.js';
 // multipart requests means the test exercises the real wire format, not a
 // guess at it.
 //
-// The collector (test/helpers/collector.ts) plays the part LLD-6/#1239
-// give to mx1 or ops1: it is the only caller that ever reaches GET /drain
+// The collector (test/helpers/collector.ts) plays the part LLD-6 gives to
+// mx1 or ops1: it is the only caller that ever reaches GET /drain
 // and POST /drain/ack, over the shim's real HTTP routes, delivering
 // against a real SMTP listener (smtpSink.ts) standing in for the delivery
 // host. Nothing here mocks the drain contract itself.

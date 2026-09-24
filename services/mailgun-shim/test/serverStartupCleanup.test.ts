@@ -10,14 +10,13 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createSqliteStore } from '../src/store.js';
 
 /**
- * Review cycle 2's second blocking finding: the cycle-1 sabotage for
- * `src/cleanup.ts` (removing its own internal `tick()` call) proves the
- * MODULE works, but proves nothing about whether `server.ts` actually
- * calls `startCleanupScheduler` at all. A reviewer swapped the real
- * scheduler for a no-op stub in `server.ts` while keeping the import
- * referenced (`void startCleanupScheduler`, so `tsc`'s unused-import
- * check couldn't out it either) and the whole 219-test suite stayed
- * green — the wiring itself was completely undefended.
+ * `test/unit/cleanup.test.ts` proves the scheduler MODULE works — it
+ * unit-tests `startCleanupScheduler` in isolation. That proves nothing
+ * about whether `server.ts` actually calls it: a stub swapped in for the
+ * real scheduler in `server.ts`, with the import kept referenced so
+ * `tsc`'s unused-import check stays quiet, would leave the whole rest of
+ * the suite green — the module can be perfectly correct and entirely
+ * unwired at the same time.
  *
  * This spawns the real entrypoint against a real file-backed store
  * seeded, before startup, with a batch that finished 31 days ago (past

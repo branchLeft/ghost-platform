@@ -41,8 +41,8 @@ export interface Collector {
 }
 
 /**
- * The test-side stand-in for the mail collector (LLD-6 M3 / #1239: mx1 or
- * ops1 opens the drain connection, this shim only ever answers it). This
+ * The test-side stand-in for the mail collector (LLD-6 M3: mx1 or ops1
+ * opens the drain connection, this shim only ever answers it). This
  * lives in test/, never src/ — the production collector is a separate
  * story's deliverable; this is only enough of one to prove the drain
  * contract end to end against a real delivery host.
