@@ -20,4 +20,8 @@ widgets/dist/
 # Its build-time guard hashes the upstream file it was derived from; reformatting
 # our copy to house style would widen every future upstream diff with cosmetic
 # noise, making re-derivation on a Ghost upgrade harder to review, not easier.
+# session-from-token.upstream.js is the pristine baseline the guard hash and the
+# re-derivation diff both depend on -- same reasoning, it must stay byte-for-byte
+# upstream.
 adapters/sso/ghost-core-overlay/session-from-token.js
+adapters/sso/ghost-core-overlay/session-from-token.upstream.js

@@ -1,10 +1,13 @@
 # Ghost core overlay: session-from-token.js
 
 The only Ghost-core file this platform patches. Upstream `core/server/services/auth/session/session-from-token.js`
-is MIT-licensed as part of Ghost (see Ghost's own `LICENSE`); this directory holds a full copy of that
-one file with a single change, copied into the image by the root `Dockerfile` the same way
-`adapters/sso/src/*` is copied — a `COPY` onto the path Ghost already loads, not a patch applied at
-build time.
+is MIT-licensed as part of Ghost; the base image ships no `LICENSE` file of its own, so `LICENSE-GHOST` in
+this directory carries Ghost's copyright and permission notice, verified against Ghost's own upstream source.
+This directory holds a full copy of that one file with a single change, copied into the image by the root
+`Dockerfile` the same way `adapters/sso/src/*` is copied — a `COPY` onto the path Ghost already loads, not a
+patch applied at build time. `session-from-token.upstream.js` alongside it is the pristine, unmodified form,
+kept only as the baseline for the re-derivation diff below; a unit test pins its hash to
+`session-from-token.upstream.sha256`, the same file the Dockerfile's build guard checks.
 
 ## What it changes
 
@@ -19,6 +22,14 @@ This overlay adds one `await req.session.save()` (promisified) between `createSe
 the session is durably written before Ghost hands off to the response. A failed save calls `next(err)`
 instead of falling through — the request must not look like a normal, unauthenticated response when a real,
 accepted token's session failed to persist.
+
+**A side effect, harmless at break-glass volume:** every login now writes the session row twice.
+`createSessionForUser` calls `req.session.regenerate()` first, and `express-session`'s `Store.prototype.regenerate`
+does not rewrap `save` or update the store's internal `originalId`/`savedHash` bookkeeping. So the explicit
+`save()` this overlay awaits never registers as "already saved" to `res.end`'s own end-of-response save, which
+runs anyway. The second write is an `edit` of the same row this overlay's save already created, not a second
+row, and `Set-Cookie` is unchanged, so no client can observe it. Noted here only so a future reader instrumenting
+`SessionStore.set` does not mistake the second write for a regression.
 
 ## Why
 
@@ -42,15 +53,24 @@ To re-derive after a Ghost upgrade:
    docker cp "$cid:/var/lib/ghost/current/core/server/services/auth/session/session-from-token.js" /tmp/upstream.js
    docker rm "$cid"
    ```
-2. Diff `/tmp/upstream.js` against this directory's previous `session-from-token.js` (its pre-patch form is
-   the tracked history of this file minus the `branchLeft:` block) to see what Ghost changed.
-3. Re-apply the same one change -- await `req.session.save()` before `next()`, `next(err)` on a save failure
+2. Diff `/tmp/upstream.js` against `session-from-token.upstream.js` in this directory -- the pristine,
+   unmodified copy the previous re-derivation pinned, not the patched `session-from-token.js` with the
+   `branchLeft:` block removed. Deleting only that block from the patched file is not the same as the
+   original: the patch also moves `next()` out of the `try` and adds a `return;` to the `catch`, so a diff
+   against the patched file omits those two changes too.
+3. Overwrite `session-from-token.upstream.js` in this directory with `/tmp/upstream.js` -- it must always be
+   the untouched file, never the patched one.
+4. Re-apply the same one change -- await `req.session.save()` before `next()`, `next(err)` on a save failure
    -- onto the new upstream file, and overwrite `session-from-token.js` here with the result.
-4. Recompute the guard hash from the *new* upstream file (not the patched one):
+5. Recompute the guard hash from the *new* upstream file (not the patched one):
    ```sh
    shasum -a 256 /tmp/upstream.js
    ```
    and write `<hash>  session-from-token.js` into `session-from-token.upstream.sha256`.
-5. Rebuild the image; the break-glass image test's concurrent-login subtest must pass. If Ghost's own
+6. Run the unit suite (`npm run coverage` in `adapters/sso/`) -- it asserts `session-from-token.upstream.js`
+   hashes to the pin you just wrote, and exercises both the success and the save-error branch of the patched
+   handler with a deferred fake `session.save`, so a regression here is caught without a container.
+7. Rebuild the image; the break-glass image test must pass, including the looped concurrent-login subtest and
+   the check that the built image's copy of the file hashes to this directory's overlay. If Ghost's own
    session/save handling has changed shape, re-read this file's upstream source rather than assuming the
    same one-line fix still applies.
