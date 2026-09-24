@@ -155,10 +155,21 @@ meant to answer. That same shape check runs once more, before any of the
 above -- right after this run's own id is generated -- so a stray key that
 would abort the run anyway is caught before a full copy of the tenant's
 media is re-uploaded for nothing; the same pass also reclaims any ORPHANED
-generation (objects with no manifest at all) that is strictly older than
-this run's own id, so a run that itself goes on to fail for an unrelated
+generation (objects with no manifest at all, in this listing) that sorts
+strictly before the NEWEST generation this same listing already shows a
+manifest for -- never merely "older than this run's own id", and nothing at
+all when this listing has no manifest anywhere. An orphan can only be ruled
+out this way because a newer, already-complete generation exists in the
+very same snapshot, so the orphan can never become the tenant's newest
+restorable one; sweeping by "older than this run" alone would be wrong,
+because this listing is a snapshot; the run that owns an apparent orphan
+may write its own manifest, becoming the newest verified generation,
+moments after the listing was taken and before this sweep's own deletes
+reach the wire. So a run that itself goes on to fail for an unrelated
 reason still does not leave a previous run's abandoned objects uncollected
-indefinitely. Last, after this run's own delete step, one final listing
+indefinitely, without this sweep ever being the thing that deletes a
+generation which is still, or is about to become, the tenant's newest
+verified one. Last, after this run's own delete step, one final listing
 checks that no generation with a manifest still sorts AFTER this run's own
 id -- if one does, this run's clock is behind that generation's (or that
 generation's clock was ahead of real time), and `restore_tenant_media`
@@ -852,11 +863,26 @@ def backup_tenant_media(
         candidate for key, candidate in existing_generation_keys.items()
         if key.endswith("manifest.json.age")
     }
-    orphaned_keys = {
-        key: candidate
-        for key, candidate in existing_generation_keys.items()
-        if candidate not in manifested_run_ids
-    }
+    # An orphan (no manifest in THIS listing) is only reclaimed here when it
+    # sorts before the newest generation this same listing already shows a
+    # manifest for -- such an orphan can never become the tenant's newest
+    # restorable generation, because a newer, already-complete one exists in
+    # the same snapshot. An orphan that does not clear that bar cannot be
+    # ruled out this way: this listing is a snapshot, and the run that owns
+    # it may write its own manifest moments after the listing was taken,
+    # becoming the newest verified generation while this sweep's deletes are
+    # still in flight -- so this listing having no manifest at all means
+    # nothing here is reclaimed.
+    if manifested_run_ids:
+        newest_manifested_run_id = max(manifested_run_ids)
+        orphaned_keys = {
+            key: candidate
+            for key, candidate in existing_generation_keys.items()
+            if candidate not in manifested_run_ids
+            and _sorts_before(candidate, newest_manifested_run_id)
+        }
+    else:
+        orphaned_keys = {}
     reclaimed_orphan_keys = _delete_older_generations(
         tenant=tenant,
         run_id=run_id,
@@ -1012,7 +1038,8 @@ def backup_tenant_media(
             f"durable, but a generation with a manifest ({newer_run_ids[-1]!r}) still sorts "
             f"AFTER it, even after this run's own delete step -- restore_tenant_media always "
             f"reads the newest id, so it will keep reading that generation, not this run's, "
-            f"until a correctly-dated run supersedes it too. Check this host's clock."
+            f"until a correctly-dated run supersedes it too. A newer generation exists: "
+            f"another run overlapped this one, or this host's clock is behind."
         )
 
     return BackupReport(
@@ -1100,7 +1127,20 @@ def _restore_generation(
     verified: list[str] = []
     bytes_recovered = 0
     for key, expected in sorted(manifest_objects.items()):
-        backup_key = _object_key_for_backup(tenant, run_id, expected["backup_id"])
+        try:
+            backup_id = expected["backup_id"]
+        except (KeyError, TypeError) as error:
+            raise MediaRestoreVerificationError(
+                f"tenant {tenant!r}: the manifest entry for live key {key!r} has no usable "
+                f"'backup_id' -- cannot locate its backup object"
+            ) from error
+        try:
+            backup_key = _object_key_for_backup(tenant, run_id, backup_id)
+        except (MediaBackupError, TypeError) as error:
+            raise MediaRestoreVerificationError(
+                f"tenant {tenant!r}: the manifest entry for live key {key!r} has a malformed "
+                f"'backup_id' ({backup_id!r}): {error}"
+            ) from error
         try:
             ciphertext = get_object(
                 bucket=backup_bucket,

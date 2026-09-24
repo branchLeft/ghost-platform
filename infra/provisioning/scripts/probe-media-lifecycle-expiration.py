@@ -224,14 +224,14 @@ its own 35-day rule allows.
 USAGE:
 
     python3 infra/provisioning/scripts/probe-media-lifecycle-expiration.py setup-split \\
-      --bucket branchleft-lifecycle-probe-<yyyymmdd> \\
+      --bucket branchleft-lifecycle-probe-$PROBE_DATE \\
       --endpoint hel1.your-objectstorage.com --region hel1 \\
-      --receipt ~/branchleft-probe-receipts/media-lifecycle-split-<yyyymmdd>.json
+      --receipt ~/branchleft-probe-receipts/media-lifecycle-split-$PROBE_DATE.json
     # optional: --media-noncurrent-days (default 1) --db-noncurrent-days (default 35)
 
     # 24-48 hours later:
     python3 infra/provisioning/scripts/probe-media-lifecycle-expiration.py check-split \\
-      --receipt ~/branchleft-probe-receipts/media-lifecycle-split-<yyyymmdd>.json
+      --receipt ~/branchleft-probe-receipts/media-lifecycle-split-$PROBE_DATE.json
 """
 
 from __future__ import annotations

@@ -1363,6 +1363,65 @@ class RestoreFallbackTests(unittest.TestCase):
             self._restore(run_id="20260101T000000000000Z-0000000000000000")
         self.assertIn("no manifest at generation", str(ctx.exception))
 
+    def test_a_manifest_entry_with_no_backup_id_raises_the_normal_verification_error(self):
+        # A manifest a hostile or corrupt writer produced, decryptable and
+        # valid JSON, but missing the one field restore needs to locate the
+        # object -- must reach the same fallback path as any other
+        # verification failure, never escape as a KeyError/TypeError
+        # traceback.
+        good = self._backup()
+        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
+        newer_run_id = "20990101T000000000000Z-0000000000000000"
+        broken_manifest = {
+            "tenant": "tenant-a",
+            "run_id": newer_run_id,
+            "objects": {"a.jpg": {"sha256": "0" * 64, "size": 1, "content_type": "image/jpeg"}},
+            "object_count": 1,
+            "deliberately_empty": False,
+        }
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
+            data=json.dumps(broken_manifest).encode(), recipient=TENANT_A_RECIPIENT
+        )
+
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        message = str(ctx.exception)
+        self.assertIn("backup_id", message)
+        self.assertIn(f"--run-id {good.run_id}", message)
+
+        # GREEN: the named fallback still recovers the tenant.
+        recovered = self._restore(run_id=good.run_id)
+        self.assertEqual(recovered.verified_keys, ["a.jpg"])
+
+    def test_a_manifest_entry_with_a_malformed_backup_id_raises_the_normal_verification_error(self):
+        good = self._backup()
+        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
+        newer_run_id = "20990101T000000000000Z-0000000000000001"
+        broken_manifest = {
+            "tenant": "tenant-a",
+            "run_id": newer_run_id,
+            "objects": {
+                "a.jpg": {
+                    "sha256": "0" * 64, "size": 1, "content_type": "image/jpeg",
+                    "backup_id": "not-64-hex-chars",
+                }
+            },
+            "object_count": 1,
+            "deliberately_empty": False,
+        }
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
+            data=json.dumps(broken_manifest).encode(), recipient=TENANT_A_RECIPIENT
+        )
+
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        message = str(ctx.exception)
+        self.assertIn("backup_id", message)
+        self.assertIn(f"--run-id {good.run_id}", message)
+
+        recovered = self._restore(run_id=good.run_id)
+        self.assertEqual(recovered.verified_keys, ["a.jpg"])
+
 
 class KeyShapeDeletionGuardTests(unittest.TestCase):
     """Every key a listing returns under a tenant's
@@ -1462,10 +1521,17 @@ class OrphanGenerationCleanupTests(unittest.TestCase):
 
     def test_an_orphan_older_than_this_run_is_reclaimed_even_when_this_run_itself_then_fails(self):
         # An orphan from a previous run that uploaded one object then never
-        # wrote a manifest at all (a crash, or a lost race).
+        # wrote a manifest at all (a crash, or a lost race) -- older than a
+        # generation that DOES have a manifest in the same listing, which is
+        # what makes it safe to reclaim: it can never become the tenant's
+        # newest restorable generation, because a newer, already-complete
+        # one already exists in this same snapshot.
         orphan_run_id = "20260101T000000000000Z-0000000000000000"
         orphan_key = _object_key_for_backup("tenant-a", orphan_run_id, "a" * 64)
         self.store.put("backup", orphan_key, b"orphaned ciphertext")
+
+        # A real, manifested generation, newer than the orphan above.
+        self._backup(make_run_id=lambda: "20260102T000000000000Z-0000000000000000")
 
         # This run is made to fail for an UNRELATED reason -- an upload
         # failure partway through its own object loop -- which happens
@@ -1475,9 +1541,76 @@ class OrphanGenerationCleanupTests(unittest.TestCase):
             raise ObjectStorageError("simulated upload failure")
 
         with self.assertRaises(ObjectStorageError):
-            self._backup(put_object=flaky_put)
+            self._backup(put_object=flaky_put, make_run_id=lambda: "20260103T000000000000Z-0000000000000000")
 
         self.assertNotIn(orphan_key, self.store.buckets["backup"])
+
+    def test_a_run_that_completes_before_a_stale_sweeps_deletes_land_must_survive(self):
+        # G0 is a good, manifested generation. Run
+        # A uploads its one object -- no manifest yet -- and pauses right
+        # there. Run B starts: it lists the tenant's prefix at that exact
+        # moment (G0 has a manifest; A does not, so a stale-snapshot sweep
+        # could still count A as an orphan), then fails on its own live
+        # read before it ever uploads or writes a manifest of its own --
+        # but its sweep's delete calls were already issued against that
+        # stale listing, and this test applies them only AFTER A has
+        # resumed, passed both its presence checks, written its manifest,
+        # and deleted G0 -- modelling those deletes landing on the wire
+        # late. The tenant must still be restorable afterwards.
+        g0_run_id = "20260101T000000000000Z-0000000000000000"
+        a_run_id = "20260102T000000000000Z-0000000000000000"
+        b_run_id = "20260103T000000000000Z-0000000000000000"
+
+        self._backup(make_run_id=lambda: g0_run_id)  # G0
+        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
+
+        deferred_b_deletes = []
+        state = {"fired": False}
+        real_put = self.store.put_object
+
+        def b_delete_hook(**kw):
+            deferred_b_deletes.append(kw)
+
+        def b_live_read_fails(**kw):
+            raise ObjectStorageError("live read failed")
+
+        def a_put_hook(**kw):
+            real_put(**kw)
+            if not state["fired"] and "/objects/" in kw["key"] and f"/{a_run_id}/" in kw["key"]:
+                state["fired"] = True
+                # Run B starts here, while A's object is uploaded but A has
+                # written no manifest. B's own sweep runs against exactly
+                # this listing; B then fails before writing anything of
+                # its own.
+                with self.assertRaises(ObjectStorageError):
+                    self._backup(
+                        make_run_id=lambda: b_run_id,
+                        delete_object=b_delete_hook,
+                        get_object_with_content_type=b_live_read_fails,
+                    )
+
+        self._backup(put_object=a_put_hook, make_run_id=lambda: a_run_id)
+
+        # The fix's own proof: B's stale listing must never have queued a
+        # delete for any of A's objects in the first place.
+        self.assertFalse(
+            any(f"/{a_run_id}/" in d["key"] for d in deferred_b_deletes),
+            "B's sweep must never target A's objects from a listing that predates A's manifest",
+        )
+
+        # Apply whatever B's sweep DID queue (nothing, once fixed) now that
+        # A has already completed and deleted G0 -- modelling deletes that
+        # were computed from a stale listing landing on the wire late.
+        for kw in deferred_b_deletes:
+            self.store.delete_object(**kw)
+
+        report = restore_tenant_media(
+            tenant="tenant-a", backup_bucket="backup", endpoint=ENDPOINT, region=REGION,
+            backup_access_key="x", backup_secret_key="x", identity_path=TENANT_A_IDENTITY,
+            list_objects=self.store.list_objects, get_object=self.store.get_object,
+            put_object=self.store.put_object, decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
+        )
+        self.assertEqual(report.verified_keys, ["a.jpg"])
 
     def test_an_orphan_newer_than_this_run_is_left_alone(self):
         # A same-or-later id is never "older" -- an orphan from a
