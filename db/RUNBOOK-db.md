@@ -240,6 +240,35 @@ That second run is the one that must return zero. From here on, a
 `branchleft-deploy db` that returns zero is evidence the exporter is
 authenticating against MySQL -- not merely that its process is alive.
 
+**Confirming this pin against what `db1` is actually running (owner step,
+recorded with the date).** `db/recovery/check_toolchain_version.py`
+compares the recovery image's toolchain against the pin written in this
+file, above -- it cannot compare against what `db1` itself is running,
+because `/etc/branchleft/db.image.env` (the file `branchleft-deploy`
+actually writes and the one that decides what `docker compose` runs) is
+only readable over SSH, and nothing with SSH access to `db1` runs in CI.
+**A green run of that check is evidence this file is internally
+consistent, not evidence it matches `db1`.** The platform owner confirms
+that match by hand, the same jump-host pattern as every other command in
+this runbook:
+
+```bash
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'cat /etc/branchleft/db.image.env'
+```
+
+Compare its `mysql:...@sha256:...` value against the two identical
+`branchleft-deploy db` lines above (both in this section and in "First pin
+is also the first deploy"). If they agree, record it -- in this runbook, as
+a dated line directly under whichever `branchleft-deploy db` command was
+just confirmed, e.g. `<!-- confirmed matching db.image.env: 2026-09-23 -->`
+-- so the next reader sees when this was last owner-verified rather than
+assuming today's pin still reflects the last time anyone actually checked.
+If they disagree, `db1` is running something this runbook does not
+document, and that is worth stopping on before doing anything else here.
+
 Verify the socket and TLS posture from `db1` itself, over the socket inside
 the `mysql` container (never `-h 10.20.1.20` -- root has no account
 reachable that way, and base provisioning installs no host-side `mysql`
@@ -580,6 +609,55 @@ see the script's own docstring.
 
 ---
 
+## Recovery image
+
+Both drills below run `age`, `mysql`, `mysqldump` and `mysqlbinlog` out of
+`db/recovery/`'s own pinned container, never out of whatever happens to be
+installed on the machine running the drill -- see `db/recovery/README.md`
+for why (LLD-9 R5: a rebuild at incident time is not reproducible and is
+not the plan; recovery pulls one kept image instead).
+
+```bash
+RECOVERY_IMAGE=ghcr.io/branchleft/db-recovery@sha256:<record after the first publish, below>
+docker pull "$RECOVERY_IMAGE"
+```
+
+**This runbook cannot name that digest yet.**
+`.github/workflows/recovery-image.yml`'s `push` job is what publishes the
+image, and it only runs on a push to `main` -- including the very merge
+that adds it, which is the first time it can possibly run. There is
+nothing to pin here until that first run has happened.
+
+**First publish only -- make the package public.** A container package is
+created private, and a private package needs a pull credential on the host,
+which this estate deliberately does not carry -- the drill's `docker pull`
+above would 401 mid-incident. Go to
+<https://github.com/orgs/branchLeft/packages/container/db-recovery/settings>,
+"Change package visibility", choose Public, confirm. This is a platform-owner
+action; there is no reviewed path to it. Same step as `RUNBOOK-edge.md`
+§1, for the same reason.
+
+**Recording the digest, once it exists (owner step, no placeholder left
+behind afterwards):**
+
+1. Read the published reference off that workflow run's job summary
+   (`Image: ghcr.io/branchleft/db-recovery:<sha>`) -- the `<sha>` is the
+   merge commit that triggered it.
+2. Resolve it to a digest:
+   ```bash
+   docker buildx imagetools inspect ghcr.io/branchleft/db-recovery:<that sha> \
+     --format '{{json .Manifest}}' | python3 -c "import json, sys; print(json.load(sys.stdin)['digest'])"
+   ```
+3. Open a follow-up PR replacing the `RECOVERY_IMAGE=...` line above with
+   the real value (`RECOVERY_IMAGE=ghcr.io/branchleft/db-recovery@sha256:<the
+   resolved digest>`), and re-pin it the same way after any later change to
+   `db/recovery/**` that this workflow republishes.
+
+**That follow-up PR is required, and is not this one.** This PR adds the
+publishing workflow and this instruction; it cannot add the pin itself,
+because nothing to pin exists until after this PR merges and the `push` job
+it adds has actually run once.
+
 ## Restore drill
 
 Both scenarios below are a **parity gate**, not a hope: doc 14 §7.2 states
@@ -605,21 +683,32 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
    # object keys: dumps/<server-uuid>/db1-<timestamp>.sql.age,
    #              binlogs/<server-uuid>/db1-<logname>.age
    ```
-3. Decrypt each with the escrowed **private** age key (never copied to
-   `db1` itself -- restore onto a scratch host or container):
+3. Decrypt each with the escrowed **private** age key, run out of the
+   recovery image above (never copied to `db1` itself -- restore onto a
+   scratch host or container, with the working directory holding the
+   downloaded objects and the retrieved key bind-mounted in):
    ```bash
-   age -d -i age-private-key.txt -o dump.sql "dumps/<server-uuid>/db1-<timestamp>.sql.age"
-   age -d -i age-private-key.txt -o mysql-bin.NNNNNN "binlogs/<server-uuid>/db1-mysql-bin.NNNNNN.age"
+   docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     age -d -i age-private-key.txt -o dump.sql "dumps/<server-uuid>/db1-<timestamp>.sql.age"
+   docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     age -d -i age-private-key.txt -o mysql-bin.NNNNNN "binlogs/<server-uuid>/db1-mysql-bin.NNNNNN.age"
    ```
-4. Load the dump, then replay binlog events up to the target timestamp. The
-   dump's header (from `--source-data=2`) names the exact `MASTER_LOG_FILE`/
-   `MASTER_LOG_POS` to resume from. **`--stop-datetime` is UTC** -- pick the
-   target timestamp in UTC (step 1) and export `TZ=UTC` before running
-   `mysqlbinlog` by hand, since it otherwise evaluates the cutoff in
-   whichever timezone the operator's own shell happens to be in:
+4. Load the dump, then replay binlog events up to the target timestamp,
+   both through the recovery image's own `mysql`/`mysqlbinlog` -- `MYSQL_PWD`
+   rather than an interactive `-p` because stdin here is already the piped
+   dump/binlog stream, the same reason step 3's admin bootstrap above uses
+   it. The dump's header (from `--source-data=2`) names the exact
+   `MASTER_LOG_FILE`/`MASTER_LOG_POS` to resume from. **`--stop-datetime` is
+   UTC** -- pick the target timestamp in UTC (step 1) and pass `-e TZ=UTC`
+   to the `mysqlbinlog` container, since it otherwise evaluates the cutoff
+   in whichever timezone the container's own default happens to be in:
    ```bash
-   mysql --host <scratch-host> -uroot -p < dump.sql
-   TZ=UTC mysqlbinlog --start-position=<pos-from-dump-header> --stop-datetime="<target timestamp, UTC>" mysql-bin.NNNNNN | mysql --host <scratch-host> -uroot -p
+   read -rs MYSQL_PWD; export MYSQL_PWD
+   docker run --rm -i -e MYSQL_PWD -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     mysql --host <scratch-host> -uroot < dump.sql
+   docker run --rm -i -e MYSQL_PWD -e TZ=UTC -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     bash -c 'mysqlbinlog --start-position=<pos-from-dump-header> --stop-datetime="<target timestamp, UTC>" mysql-bin.NNNNNN | mysql --host <scratch-host> -uroot'
+   unset MYSQL_PWD
    ```
 5. Confirm a row known to have changed after the dump and before the target
    timestamp is present, and that nothing after the target timestamp is.
@@ -702,10 +791,17 @@ disk -- and every un-shipped binlog on it -- is gone.
 3. Download only the latest dump from Object Storage (no binlogs -- this is
    the scenario where none were shipped in time, or the bucket's binlog
    objects are also treated as unavailable).
-4. Decrypt with the retrieved key and load it:
+4. Decrypt with the retrieved key and load it, both through the recovery
+   image (`RECOVERY_IMAGE`, above) -- never through whatever `age`/`mysql`
+   happen to be on the scratch host, which is exactly the toolchain this
+   image exists to replace:
    ```bash
-   age -d -i age-private-key.txt -o dump.sql "dumps/<server-uuid>/db1-<latest-timestamp>.sql.age"
-   mysql --host <scratch-host> -uroot -p < dump.sql
+   docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     age -d -i age-private-key.txt -o dump.sql "dumps/<server-uuid>/db1-<latest-timestamp>.sql.age"
+   read -rs MYSQL_PWD; export MYSQL_PWD
+   docker run --rm -i -e MYSQL_PWD -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     mysql --host <scratch-host> -uroot < dump.sql
+   unset MYSQL_PWD
    ```
 5. Confirm every tenant database and its data as of the dump's timestamp is
    present. State the achieved RPO plainly in the drill log: the gap between

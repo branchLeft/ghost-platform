@@ -67,6 +67,38 @@ class ServerImageFromRunbookTests(unittest.TestCase):
         image = ctv.server_image_from_runbook()
         self.assertRegex(image, r"^mysql:\S+@sha256:[0-9a-f]{64}$")
 
+    def test_raises_when_only_the_second_line_disagrees(self):
+        # The exact sabotage this check exists to catch: a `.search` that
+        # stops at the first match would stay green here, having never
+        # actually looked at the second line at all. `str.replace` would
+        # rewrite both identical occurrences at once, so the second line is
+        # changed by rebuilding the text from its two halves instead.
+        first_line, _, second_line = RUNBOOK_TEXT.partition("some prose in between")
+        sabotaged = first_line + "some prose in between" + second_line.replace(
+            "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+            "mysql:8.4@sha256:0744ee5ef89ce6ccfa13de3e579fe6b9e27f93dd70da9c06d2c908b1b193fb8d",
+        )
+        # Confirm the sabotage actually changed only the second occurrence.
+        self.assertEqual(sabotaged.count("mysql:8.0@sha256:"), 1)
+        self.assertEqual(sabotaged.count("mysql:8.4@sha256:"), 1)
+        with self.assertRaises(ctv.ToolchainCheckError) as ctx:
+            ctv.server_image_from_runbook(sabotaged)
+        self.assertIn("disagreeing", str(ctx.exception))
+
+    def test_raises_when_three_occurrences_include_one_outlier(self):
+        # Not just a two-line file: any occurrence disagreeing with the rest
+        # is a refusal, however many total matches exist.
+        text = RUNBOOK_TEXT + "\nbranchleft-deploy db mysql:8.4@sha256:0744ee5ef89ce6ccfa13de3e579fe6b9e27f93dd70da9c06d2c908b1b193fb8d\n"
+        with self.assertRaises(ctv.ToolchainCheckError):
+            ctv.server_image_from_runbook(text)
+
+    def test_agreeing_pins_still_resolve_when_more_than_two_occurrences_exist(self):
+        text = RUNBOOK_TEXT + RUNBOOK_TEXT  # four identical occurrences
+        self.assertEqual(
+            ctv.server_image_from_runbook(text),
+            "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+        )
+
 
 class MajorMinorTests(unittest.TestCase):
     def test_parses_major_minor_from_version_output(self):

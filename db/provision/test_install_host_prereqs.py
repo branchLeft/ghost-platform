@@ -49,6 +49,8 @@ class FakeRun:
         dpkg_i_fail=False,
         version_output=None,
         dearmor_output=b"KEYRING-BYTES",
+        show_keys_fingerprints=None,
+        default_fingerprint=None,
     ):
         self.installed = set(installed or [])
         self.calls = []
@@ -56,6 +58,15 @@ class FakeRun:
         self.dpkg_i_fail = dpkg_i_fail
         self.version_output = version_output or {}
         self.dearmor_output = dearmor_output
+        # Keyed by the exact armored bytes `fetch` returned for one key --
+        # lets a test make only one of the two fetched keys report a wrong
+        # fingerprint. Anything not in this dict reports
+        # `default_fingerprint`, which defaults to the real pinned value so
+        # every test that does not care about this path stays green.
+        self.show_keys_fingerprints = show_keys_fingerprints or {}
+        self.default_fingerprint = (
+            default_fingerprint if default_fingerprint is not None else ihp.MYSQL_GPG_KEY_FINGERPRINT
+        )
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
@@ -76,6 +87,20 @@ class FakeRun:
                     return subprocess.CompletedProcess(argv, 100, stdout="", stderr="boom")
                 self.installed.add(package)
                 return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        if cmd == "gpg" and "--show-keys" in argv:
+            fingerprint = self.show_keys_fingerprints.get(kwargs.get("input"), self.default_fingerprint)
+            if fingerprint is None:
+                colon_output = ""  # no `pub`/`fpr` records at all -- an unparseable or empty key
+            else:
+                colon_output = (
+                    "pub:e:4096:1:B7B3B788A8D3785C:0:0::-:::sc::::::23::0:\n"
+                    f"fpr:::::::::{fingerprint}:\n"
+                    "uid:e::::0::0::MySQL Release Engineering <mysql-build@oss.oracle.com>::::::::::0:\n"
+                    "sub:e:4096:1:C952C9BCDC49A81A:0:0:::::e::::::23:\n"
+                    "fpr:::::::::68D2DF057C2C01E289945C27C952C9BCDC49A81A:\n"
+                )
+            return subprocess.CompletedProcess(argv, 0, stdout=colon_output, stderr="")
 
         if cmd == "gpg" and argv[1] == "--dearmor":
             return subprocess.CompletedProcess(argv, 0, stdout=self.dearmor_output, stderr=b"")
@@ -183,6 +208,12 @@ class MysqlGpgKeyringTests(unittest.TestCase):
 
         def run(argv, input=None, **kwargs):
             calls.append((list(argv), input))
+            if "--show-keys" in argv:
+                colon_output = (
+                    "pub:e:4096:1:B7B3B788A8D3785C:0:0::-:::sc::::::23::0:\n"
+                    f"fpr:::::::::{ihp.MYSQL_GPG_KEY_FINGERPRINT}:\n"
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout=colon_output, stderr="")
             return subprocess.CompletedProcess(argv, 0, stdout=b"KEYRING", stderr=b"")
 
         fetch = FakeFetch({
@@ -190,10 +221,14 @@ class MysqlGpgKeyringTests(unittest.TestCase):
             "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"KEY-2023-",
         })
         ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
-        self.assertEqual(len(calls), 1)
-        argv, piped_input = calls[0]
-        self.assertEqual(argv, ["gpg", "--dearmor"])
+        # Two fingerprint checks (one per fetched key) precede the single
+        # dearmor call that actually builds the keyring.
+        dearmor_calls = [(argv, piped_input) for argv, piped_input in calls if argv == ["gpg", "--dearmor"]]
+        self.assertEqual(len(dearmor_calls), 1)
+        argv, piped_input = dearmor_calls[0]
         self.assertEqual(piped_input, b"KEY-2025-KEY-2023-")
+        show_keys_calls = [c for c in calls if "--show-keys" in c[0]]
+        self.assertEqual(len(show_keys_calls), 2)
 
     def test_writes_the_dearmored_output_to_the_keyring_path(self):
         fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
@@ -241,12 +276,110 @@ class MysqlGpgKeyringTests(unittest.TestCase):
         self.assertEqual(leftovers, [])
 
     def test_raises_when_dearmor_fails(self):
-        def run(argv, **kwargs):
+        def run(argv, input=None, **kwargs):
+            if "--show-keys" in argv:
+                colon_output = (
+                    "pub:e:4096:1:B7B3B788A8D3785C:0:0::-:::sc::::::23::0:\n"
+                    f"fpr:::::::::{ihp.MYSQL_GPG_KEY_FINGERPRINT}:\n"
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout=colon_output, stderr="")
             return subprocess.CompletedProcess(argv, 2, stdout=b"", stderr=b"gpg: no valid data found")
 
         fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
         with self.assertRaises(ihp.HostPrereqError):
             ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+
+    def test_raises_when_a_fetched_key_does_not_carry_the_pinned_fingerprint(self):
+        # The sabotage this pin exists to catch: a key swapped in transit
+        # (or a compromised/rotated repo.mysql.com) parses fine and would
+        # dearmor fine -- only the fingerprint check catches it.
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
+        run = FakeRun(default_fingerprint="0000000000000000000000000000000000000000")
+        with self.assertRaises(ihp.HostPrereqError) as ctx:
+            ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+        self.assertIn(ihp.MYSQL_GPG_KEY_FINGERPRINT, str(ctx.exception))
+        self.assertFalse(os.path.exists(self.keyring_path))
+        # Never reaches dearmor once a fingerprint fails to match.
+        self.assertFalse(any(c[0] == "gpg" and c[1] == "--dearmor" for c in run.calls))
+
+    def test_raises_when_only_the_second_fetched_key_has_the_wrong_fingerprint(self):
+        # Proves both URLs are actually checked, not just the first.
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
+        run = FakeRun(
+            show_keys_fingerprints={
+                MYSQL_GPG_PAGES["https://repo.mysql.com/RPM-GPG-KEY-mysql-2023"]: (
+                    "1111111111111111111111111111111111111111"
+                ),
+            }
+        )
+        with self.assertRaises(ihp.HostPrereqError):
+            ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+        self.assertFalse(os.path.exists(self.keyring_path))
+
+    def test_passes_and_writes_the_keyring_when_both_fetched_keys_match_the_pin(self):
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
+        run = FakeRun()  # default fingerprint matches the pin for both
+        changed = ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+        self.assertTrue(changed)
+        with open(self.keyring_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"KEYRING-BYTES")
+
+    def test_only_the_primary_keys_fpr_is_read_not_the_encryption_subkeys(self):
+        # `_primary_key_fingerprints` must key off the `fpr:` immediately
+        # after `pub:`, not the one after `sub:` -- a key whose *subkey*
+        # happens to carry the pinned value, but whose primary key does
+        # not, must still be refused.
+        fetch = FakeFetch({
+            "https://repo.mysql.com/RPM-GPG-KEY-mysql-2025": b"KEY",
+            "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023": b"KEY",
+        })
+
+        def run(argv, input=None, **kwargs):
+            if "--show-keys" in argv:
+                colon_output = (
+                    "pub:e:4096:1:DEADBEEFDEADBEEF:0:0::-:::sc::::::23::0:\n"
+                    "fpr:::::::::1111111111111111111111111111111111111111:\n"
+                    f"sub:e:4096:1:C952C9BCDC49A81A:0:0:::::e::::::23:\n"
+                    f"fpr:::::::::{ihp.MYSQL_GPG_KEY_FINGERPRINT}:\n"
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout=colon_output, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=b"KEYRING", stderr=b"")
+
+        with self.assertRaises(ihp.HostPrereqError):
+            ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+
+    def test_raises_when_the_pinned_key_has_an_extra_primary_key_appended(self):
+        # The gap the review found live: `MYSQL_GPG_KEY_FINGERPRINT in
+        # fingerprints` (membership) passes as long as the pinned key is
+        # *somewhere* in the file, even if a second, unpinned primary key
+        # ("Attacker") rides along appended to the same armored export --
+        # and the whole file, attacker key included, would then be
+        # dearmored into the trusted keyring. The fix requires the file's
+        # primary keys to be *exactly* `[MYSQL_GPG_KEY_FINGERPRINT]`.
+        fetch = FakeFetch(dict(MYSQL_GPG_PAGES))
+        calls = []
+
+        def run(argv, input=None, **kwargs):
+            calls.append(list(argv))
+            if "--show-keys" in argv:
+                colon_output = (
+                    "pub:e:4096:1:B7B3B788A8D3785C:0:0::-:::sc::::::23::0:\n"
+                    f"fpr:::::::::{ihp.MYSQL_GPG_KEY_FINGERPRINT}:\n"
+                    "pub:e:4096:1:1111111111111111:0:0::-:::sc::::::23::0:\n"
+                    "uid:e::::0::0::Attacker <attacker@example.com>::::::::::0:\n"
+                    "fpr:::::::::1111111111111111111111111111111111111111:\n"
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout=colon_output, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=b"KEYRING", stderr=b"")
+
+        with self.assertRaises(ihp.HostPrereqError) as ctx:
+            ihp.ensure_mysql_gpg_keyring(keyring_path=self.keyring_path, run=run, fetch=fetch)
+        self.assertIn(ihp.MYSQL_GPG_KEY_FINGERPRINT, str(ctx.exception))
+        self.assertFalse(os.path.exists(self.keyring_path))
+        # Never reaches dearmor once a file's primary keys are anything
+        # other than exactly the pin -- the attacker key never gets a
+        # chance to land in the trusted keyring alongside the real one.
+        self.assertFalse(any(argv == ["gpg", "--dearmor"] for argv in calls))
 
 
 class EnsureLibaio1Tests(unittest.TestCase):

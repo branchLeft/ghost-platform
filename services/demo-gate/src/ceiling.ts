@@ -47,9 +47,17 @@ export interface CeilingOptions {
 export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
   const windows = new Map<string, { start: number; count: number }>();
 
+  // Bounded per call: `attempt` keeps `windows` in ascending start-time
+  // order (see its own insertion below), so once iteration reaches a live
+  // entry every entry after it is at least as new and therefore live too.
+  // Stopping there makes a source with no table entry cost O(1) even when
+  // the table is full of live windows, not O(table size) -- otherwise a
+  // flood of addresses outside the table, none of which a refusal ever
+  // adds, could re-walk the whole table on every request.
   const sweep = (nowMs: number): void => {
     for (const [key, entry] of windows) {
       if (nowMs - entry.start >= options.windowMs) windows.delete(key);
+      else break;
     }
   };
 
@@ -96,8 +104,18 @@ export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
       const verdict = decide(key, nowMs);
       if (!verdict.allowed) return verdict;
       const entry = liveEntry(key, nowMs);
-      if (entry) entry.count += 1;
-      else windows.set(key, { start: nowMs, count: 1 });
+      if (entry) {
+        entry.count += 1;
+      } else {
+        // Deleting first, even when `key` is merely stale rather than
+        // absent, is load-bearing: `Map#set` on a key already present
+        // keeps its old iteration position, which would leave a renewed
+        // entry's stale (early) slot out of start-time order and let
+        // `sweep`'s early exit above stop before it reaches genuinely
+        // expired entries that come later in that broken order.
+        windows.delete(key);
+        windows.set(key, { start: nowMs, count: 1 });
+      }
       return { allowed: true };
     },
     peek(key, nowMs) {
