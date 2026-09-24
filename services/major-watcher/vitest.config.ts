@@ -8,10 +8,9 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.ts'],
-      // Process entrypoint only: env wiring, argv parsing and process.exit.
-      // Its behaviour is exercised through the exported `run()` it calls,
-      // which coverage does include.
-      exclude: ['src/cli.ts'],
+      // No file-level exclusion left: src/cli.ts's main() is exercised
+      // directly by test/unit/cli.test.ts, and only its process-entrypoint
+      // guard (main().then(process.exit)) is v8-ignored inline.
       thresholds: { lines: 95, statements: 95, functions: 95, branches: 90 },
     },
   },

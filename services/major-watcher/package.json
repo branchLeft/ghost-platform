@@ -17,6 +17,7 @@
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "4.1.11",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.1"
   }
 }

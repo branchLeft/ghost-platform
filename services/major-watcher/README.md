@@ -106,17 +106,64 @@ Before the scheduled workflow can page for real:
 
 The schedule (`major-watcher-run.yml`, every 6 hours) is live from this PR
 -- no separate step to enable it once the secret exists. Until `NTFY_URL`
-is set, each run is a deliberate, clean no-op (exit 0, one log line: "not
-deployed yet") rather than a red run: a schedule failing every 6 hours for
-however long the ntfy story takes would desensitise exactly the signal
-this exists to protect, the same failure class branchLeft/workspace#1163
-calls out ("the control plane stops, nothing pages, because the thing that
-would page is the thing that is down"). A red run stays reserved for
-something actually wrong once the secret exists: an unreachable GitHub API, a corrupt state
-file, or ntfy itself rejecting the publish (auth, network, a bad topic) --
-all of which still throw and exit 1, per `src/cli.ts`.
+is set, each run is a deliberate, clean no-op (exit 0) rather than a red
+run: a schedule failing every 6 hours for however long the ntfy story
+takes would desensitise exactly the signal this exists to protect, the
+same failure class branchLeft/workspace#1163 calls out ("the control plane
+stops, nothing pages, because the thing that would page is the thing that
+is down"). A red run stays reserved for something actually wrong once the
+secret exists: an unreachable GitHub API, a corrupt state file, or ntfy
+itself rejecting the publish (auth, network, a bad topic).
+
+**Neither state is silent, though.** A green run and a green run mean
+different things here -- "nothing new happened" and "nothing new happened,
+also nobody would have been paged even if there had been" look identical
+in the Actions run list otherwise. `src/cli.ts`'s `main()` writes a GitHub
+Actions `::warning::` annotation and a `$GITHUB_STEP_SUMMARY` line on
+every no-op-because-not-configured run, and an `::error::` annotation plus
+a summary line (on top of the non-zero exit) on a hard failure -- both
+checked directly against `main()`, not against a log line nobody reads
+until they think to look (`test/unit/cli.test.ts`).
 
 ## What "a day" means here
 
 `major-watcher-run.yml` runs every 6 hours (`0 */6 * * *`), well inside the
 Done criterion's day-long SLA even allowing for a missed run or two.
+
+## Accepted risk: the state branch is not access-controlled
+
+`state/major-watcher` deliberately carries no ruleset (see "State" above)
+so a dedupe-only write needs no PR, no review and no signed commit. The
+consequence: anyone with ordinary repo write access -- or a compromised
+token that has it -- can push `{"lastNotifiedMajor": 999}` to that branch
+directly, no review step in the way, and silently, permanently suppress
+every future real major announcement from then on. This is the specific
+failure mode of the tradeoff, named rather than left implicit.
+
+**Cheap mitigation, an owner step (a repo settings change, not something
+this PR does):** add a ruleset scoped to `refs/heads/state/major-watcher`
+that restricts pushes to the workflow's own identity (a "restrict who can
+push" rule naming the Actions bypass actor, mirroring the shape of this
+repo's existing `Protect default branch` and `release tags` rulesets). A
+related, separate owner option worth deciding alongside it: **`Major
+watcher type check and test` (`major-watcher-ci.yml`) is not currently
+one of this repo's required status checks** (`docker build`, `Tenant type
+check`, `Format and lint`, `docs-lint / docs-lint`, `standards / Standards
+gates` are), so a future PR touching `services/major-watcher/` can merge
+without its own 43 tests having run green.
+
+## Known limitations
+
+- **GitHub disables a scheduled workflow after 60 days with no repository
+  activity in it** (the same trap branchLeft/workspace#1252's own story
+  names for its watcher). `ghost-platform` sees frequent commits, so this
+  is immaterial today, but nothing here defends against or alerts on it --
+  a silently disabled schedule and "nothing new to report" look the same
+  from outside the Actions UI.
+- **The signal is a published GitHub Release object, never a bare git
+  tag.** If TryGhost ever tagged a preview well before publishing the
+  corresponding Release, this watcher would not see it until the Release
+  object appears. Checked against real data for the entire 6.0.0 sequence
+  (alpha through GA): tag and `published_at` land together every time, so
+  this is a hedge against a practice change, not a defect against current
+  practice.
