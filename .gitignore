@@ -5,6 +5,7 @@ infra/tenant/dist
 infra/tenant/*.tgz
 services/*/dist
 services/*/coverage
+adapters/sso/coverage
 render-core/dist
 render-core/coverage
 render-core/*.tgz
