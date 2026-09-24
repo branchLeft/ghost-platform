@@ -420,9 +420,9 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
   // login as an independent 50/50 coin understates how often a whole round
   // slips through. Looped over ROUNDS rounds, a fresh-container measurement
   // of exactly this shape (1 CPU, in-container load, 20 independent runs)
-  // came back 0/20 false passes; see the PR body's "Review cycle 2 response"
-  // table for the full counts and the caveat on how far that sample size
-  // can be trusted.
+  // came back 0/20 false passes -- a small sample, so read it as evidence
+  // this shape catches the regression reliably rather than as a guaranteed
+  // bound.
   it('N concurrent fresh-token logins each authenticate on their very first users/me/ request, every round', async () => {
     ghost.setSupportStatus('active');
     const CONCURRENCY = 8;
