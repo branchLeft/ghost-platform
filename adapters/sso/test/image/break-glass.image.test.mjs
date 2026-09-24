@@ -234,20 +234,40 @@ class GhostContainer {
   }
 
   // The adapter refuses a token whose iat predates the current process, to
-  // the second (see #startSeconds in break-glass.js). waitForHome() proves
-  // the site is answering HTTP, not that this particular second boundary
-  // has passed under whatever load the runner is under, so a fixed delay
-  // afterwards is a guess that a slow or contended host can beat. Mint a
-  // fresh token on every attempt (an old one would only prove the clock
-  // moved, not that the adapter accepts a *new* one) and poll for real
-  // acceptance up to `deadlineMs`, returning the last refusal so a caller
-  // can report the adapter's own reason instead of a bare timeout.
-  async pollUntilFreshTokenAccepted(mintFreshToken, deadlineMs = 30_000) {
+  // the second (see #startSeconds in break-glass.js), and that is the one
+  // refusal a restart race can legitimately produce. It is retried, with a
+  // fresh token each attempt (an old one would only prove the clock moved,
+  // not that the adapter accepts a *new* one). Any other outcome — a
+  // different refusal reason, or the adapter accepting the token while the
+  // resulting session still fails to authenticate — fails immediately with
+  // the adapter's own reason and the container's log tail, so a real
+  // regression is never absorbed into the same retry loop as the one
+  // legitimate race.
+  async pollUntilFreshTokenAccepted(mintFreshToken, { diagnostic = () => {}, deadlineMs = 30_000 } = {}) {
+    const RESTART_RACE = 'break-glass: token refused (issued before this process started)';
+    const isOnlyTheRestartRace = (adapterLines) =>
+      adapterLines.length === 1 && adapterLines[0] === RESTART_RACE;
+
     const deadline = Date.now() + deadlineMs;
+    let attempts = 0;
     let last;
     do {
+      attempts += 1;
       last = await this.attempt(mintFreshToken());
-      if (last.status === 200) return last;
+      if (last.status === 200) {
+        if (attempts > 1) {
+          diagnostic(`fresh token accepted on attempt ${attempts}, after ${attempts - 1} restart-race refusal(s)`);
+        }
+        return last;
+      }
+      if (!isOnlyTheRestartRace(last.adapter)) {
+        throw new Error(
+          `fresh token refused for a reason other than the restart race (attempt ${attempts}): ` +
+            `status=${last.status} email=${JSON.stringify(last.email)} adapter=${JSON.stringify(last.adapter)}\n` +
+            `container log tail:\n${this.logs().slice(-40).join('\n')}`
+        );
+      }
+      diagnostic(`attempt ${attempts}: still the restart race (${JSON.stringify(last.adapter)}), retrying`);
       await sleep(200);
     } while (Date.now() < deadline);
     return last;
@@ -393,7 +413,7 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     );
   });
 
-  it('a used token is refused after Ghost restarts, although the used-token list is gone', async () => {
+  it('a used token is refused after Ghost restarts, although the used-token list is gone', async (t) => {
     const used = validToken();
     const first = await ghost.attempt(used);
     assert.equal(first.status, 200, `adapter said: ${JSON.stringify(first.adapter)}`);
@@ -409,12 +429,16 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
       'break-glass: token refused (issued before this process started)',
     ]);
     // A freshly minted token must be accepted once the new process is truly
-    // live. waitForHome() only proves HTTP is answering, not that the
-    // adapter's own restart-second boundary has passed under load, so this
-    // polls with a newly minted token (never the same one twice: reusing one
-    // would only prove the clock moved, not that the adapter accepts a new
-    // one) rather than trusting a fixed delay.
-    const fresh = await ghost.pollUntilFreshTokenAccepted(validToken);
+    // live. The adapter is constructed once, at app-build time, well before
+    // Ghost lifts maintenance mode — so only a token minted with a clock
+    // genuinely behind the container's can still land in the second before
+    // #startSeconds. That is the one outcome retried here; anything else
+    // (a different refusal, or the token being accepted but the resulting
+    // session not yet readable) fails immediately, with the adapter's own
+    // reason and the container's log tail, via pollUntilFreshTokenAccepted.
+    const fresh = await ghost.pollUntilFreshTokenAccepted(validToken, {
+      diagnostic: (message) => t.diagnostic(message),
+    });
     assert.deepEqual(
       { status: fresh.status, email: fresh.email },
       { status: 200, email: SUPPORT },
