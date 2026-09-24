@@ -1,12 +1,5 @@
 {
   "codeinjection_head": "<meta name=\"analytics-consent\" content=\"required\">",
   "codeinjection_foot": "<script src=\"/analytics.js\" defer></script>",
-  "limits": {
-    "members": {
-      "max": null
-    },
-    "staff": {
-      "max": null
-    }
-  }
+  "codeInjectionExplainer": "ALL_CAPS_PLACEHOLDER: code injection explainer copy"
 }

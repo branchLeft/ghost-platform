@@ -4,6 +4,7 @@ import { GHOST_CONTAINER_PORT, assertRuntimePosture, renderComposeStack } from '
 import type { YamlValue } from '../src/yaml.js';
 
 const baseArgs = {
+  kind: 'tenant' as const,
   slug: 'acme' as Slug,
   uid: 30123 as TenantUid,
   appHostPrivateIp: '10.20.1.50' as PrivateIpV4,
@@ -18,6 +19,7 @@ const baseArgs = {
     memoryLimit: '640m',
   },
   caps: { cpus: '1.0', cpuShares: 512, pidsLimit: 256, nofile: 4096 },
+  dataMount: null,
 };
 
 /** A minimal, posture-compliant service, for building sabotaged variants. */

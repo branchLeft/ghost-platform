@@ -115,13 +115,11 @@ describe('render() — the seven artefacts', () => {
 });
 
 describe('render() — sabotage: the invariants a real defect could silently drop', () => {
-  it('DETERMINISM — sabotage: a render seeded from Date.now() breaks byte-stability, reverted', () => {
-    // Simulates the class of defect this test guards against without
-    // editing source: a "deterministic" renderer that secretly reads
-    // wall-clock time would make two renders of one descriptor disagree.
-    // We assert the real render() does NOT do this (the control), then
-    // show what a broken one would look like (the red), then confirm the
-    // real one stays green (the revert).
+  // DETERMINISM's real sabotage (a mutated copy of render.ts's own source,
+  // not a string mutated inside the test) lives in
+  // test/sourceMutation.sabotage.test.ts. This is the plain control: the
+  // real, unmutated render() is deterministic.
+  it('DETERMINISM — the real render() is byte-stable across two calls on one descriptor', () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
     const first = render(descriptor, TEST_ZONES)
       .map((a) => a.content)
@@ -129,12 +127,6 @@ describe('render() — sabotage: the invariants a real defect could silently dro
     const second = render(descriptor, TEST_ZONES)
       .map((a) => a.content)
       .join('\n');
-    // RED (what a non-deterministic renderer produces): two different
-    // Date.now()-seeded strings never match.
-    const brokenFirst = `${first}\n${Date.now()}`;
-    const brokenSecond = `${second}\n${Date.now() + 1}`;
-    expect(brokenFirst).not.toBe(brokenSecond);
-    // GREEN (the real render()): identical input, byte-identical output.
     expect(first).toBe(second);
   });
 
@@ -182,27 +174,22 @@ describe('render() — sabotage: the invariants a real defect could silently dro
     expect(compose).not.toContain(`:${base.ports.a}:2368`);
   });
 
-  it('NO-SECRET-IN-OUTPUT — sabotage: a renderer that inlined the password reference as a literal would be caught by the no-literal-assignment check', () => {
+  // NO-SECRET-IN-OUTPUT's real sabotage (a mutated copy of environment.ts's
+  // own `required()`, not a string mutated inside the test) lives in
+  // test/sourceMutation.sabotage.test.ts. This is the plain control: the
+  // real, unmutated render() never emits a literal secret value.
+  it('NO-SECRET-IN-OUTPUT — the real render() emits a reference, never a literal value', () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
     const artefacts = render(descriptor, TEST_ZONES);
     const compose = artefacts.find((a) => a.path === 'compose.yml')!.content;
-    // GREEN: the real render() emits a reference.
     expect(compose).toContain('GHOST_DB_PASSWORD:?set GHOST_DB_PASSWORD');
-    // RED (what the sabotage would look like): a literal value assigned
-    // to the same key must never appear. Both colour services carry the
-    // reference (one per service block), so every occurrence is replaced.
-    const sabotaged = compose.replaceAll(/\$\{GHOST_DB_PASSWORD:\?[^}]*\}/g, 'hunter2');
-    expect(sabotaged).toContain('hunter2');
-    expect(sabotaged).not.toContain('GHOST_DB_PASSWORD:?');
+    expect(compose).not.toContain('hunter2');
   });
 });
 
 describe('renderSettings() — codeInjection continuously reconciled', () => {
   it('emits empty codeinjection_head/foot for blocked (never omits the key)', () => {
-    const settings = renderSettings({
-      codeInjection: { kind: 'blocked' },
-      limits: { membersCap: null, staffCap: null },
-    });
+    const settings = renderSettings({ codeInjection: { kind: 'blocked' } });
     expect(settings.codeinjection_head).toBe('');
     expect(settings.codeinjection_foot).toBe('');
     expect(Object.keys(settings)).toContain('codeinjection_head');
@@ -232,17 +219,18 @@ describe('renderIdentity()', () => {
   });
 });
 
-describe('tenant zero — environment value parity with infra/tenant/environment.ts today', () => {
-  it('renders the same mysql database__* keys infra/tenant renders for an equivalent tenant', () => {
-    // See render.ts's own doc comment: the Compose *document* now differs
-    // (two services, not one) because of LLD-1 §03b's blue/green ruling —
-    // not resolved here. What this asserts is the part that is unchanged:
-    // the environment *values* infra/tenant/environment.ts renders for a
-    // mysql/s3 tenant appear identically in render-core's own output.
+// The real tenant-zero parity proof lives in test/parity.test.ts — a key-by-
+// key diff against infra/tenant/environment.ts's real output for blog's own
+// Pulumi.blog.yaml values, not a substring check against a made-up fixture
+// (review finding 3 on workspace#1183: this block previously claimed parity
+// it never tested).
+describe('demo/entry-tenant/professional-tenant compose sanity', () => {
+  it('an entry tenant renders mysql/s3 keys with the derived database identity', () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
     const artefacts = render(descriptor, TEST_ZONES);
     const compose = artefacts.find((a) => a.path === 'compose.yml')!.content;
     expect(compose).toContain("database__client: 'mysql'");
+    expect(compose).toContain("database__connection__database: 'ghost_entry_co'");
     expect(compose).toContain("database__connection__host: 'db-t1.internal'");
     expect(compose).toContain('database__connection__port: 3306');
     expect(compose).toContain("storage__active: 'S3Storage'");

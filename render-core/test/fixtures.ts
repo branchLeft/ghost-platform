@@ -75,7 +75,7 @@ export function tenantDescriptor(): TenantDescriptor {
       kind: 's3',
       endpoint: 'https://s3.endpoint.example',
       region: 'eu',
-      bucket: 'acme-media',
+      bucket: 'branchleft-media-acme',
       resize: true,
       srcsets: true,
     },

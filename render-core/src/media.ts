@@ -6,12 +6,13 @@
  * local-path derivation beside the bucket derivation. Both still derive from
  * the slug alone, which is the isolation control"). The bucket derivation
  * being a pure function of the slug — never a configurable field — is what
- * keeps a descriptor from being able to name another tenant's bucket; see
- * `descriptor.ts`'s `MediaSpec` doc comment and the review comment on
- * workspace#1183 this module resolves: `MediaSpec`'s `s3` variant carries a
- * `bucket` field, so this module derives the expected bucket from the slug
- * and `validateMediaBucket` below refuses a descriptor whose `bucket`
- * disagrees, rather than ever trusting the field's own value.
+ * keeps a descriptor from being able to name another tenant's bucket: the
+ * schema's `s3` media variant carries a free-text `bucket` field, so this
+ * module derives the *expected* bucket from the slug and
+ * `validateMediaBucket` below refuses a descriptor whose `bucket` disagrees,
+ * rather than ever trusting the field's own value. Both `validate()` and
+ * `render()` call it, so a foreign bucket is refused at the earliest point
+ * either reconciler could catch it, not merely written around later.
  */
 
 import type { Slug } from './brand.js';
@@ -29,15 +30,8 @@ export function mediaBucketName(slug: Slug): string {
 
 /**
  * Refuses a `MediaSpec` s3 `bucket` that disagrees with the slug-derived
- * name. Carried from the review of PR ghost-platform#226: the free-text
- * field must never be trusted, or a descriptor could name another tenant's
- * bucket while still passing shape validation. Called by `validate()`'s
- * caller-supplied media check would be the natural home, but `validate()`
- * has no `slug`-to-`media` cross-check today (workspace#1224 tracks the
- * general input-hardening pass on `render-core`'s `validate()`); calling it
- * here means `render()` refuses this specific case even before that lands,
- * because the renderer must never emit a stack pointed at a bucket the
- * slug does not own, regardless of which layer catches it first.
+ * name — the free-text field must never be trusted, or a descriptor could
+ * name another tenant's bucket while still passing shape validation.
  */
 export function validateMediaBucket(slug: Slug, media: MediaSpec): void {
   if (media.kind !== 's3') return;

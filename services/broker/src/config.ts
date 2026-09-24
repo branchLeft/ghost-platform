@@ -40,8 +40,9 @@ export interface BrokerConfig {
    * `healthPortBase + Number(slot)` is this slot's sidecar health port --
    * incidental (LLD-2 §01's figcaption: "the uid base and the port base are
    * all arbitrary within their constraints"), mirrored here rather than
-   * computed from `render-core` because no package yet owns the
-   * slot -> port mapping (workspace#1183, unbuilt, see `render.ts`).
+   * computed from `render-core`, which has no slot concept of its own and
+   * reads `uid`/`ports` straight off the descriptor -- the slot -> port
+   * mapping stays owned by `slotPorts.ts`, in this service.
    */
   readonly healthPortBase: number;
   /** `appPortBase + Number(slot)*2 (+1 for colour b)` -- see `slotPorts.ts`. */
@@ -82,6 +83,25 @@ function positiveInteger(env: BrokerEnv, name: string, fallback: number, max: nu
 }
 
 /**
+ * The one place `BROKER_DEMO_ZONE`/`BROKER_PLATFORM_ZONE`/`BROKER_OWNED_DOMAINS`
+ * are read. Exported so a plugin loaded by `loadPlugin` (which only ever
+ * `import()`s a module path and reads its default export -- it has no
+ * channel to receive `BrokerConfig.zones` directly) can call the exact
+ * same parsing this module uses, rather than keeping its own copy that
+ * could drift from it.
+ */
+export function zonesFromEnv(env: BrokerEnv): ZoneConfig {
+  return {
+    demoZone: requireEnv(env, 'BROKER_DEMO_ZONE'),
+    platformZone: requireEnv(env, 'BROKER_PLATFORM_ZONE'),
+    ownedDomains: requireEnv(env, 'BROKER_OWNED_DOMAINS')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  };
+}
+
+/**
  * Every input that decides who may cause a side effect has no default: the
  * verify key, the slots path and the lease/state/drain-flag directories. An
  * unset value refuses to start rather than guessing -- the same posture
@@ -115,14 +135,7 @@ export function loadConfig(
     wrapperPrefix:
       wrapperPrefixRaw === undefined ? ['sudo', '-n'] : wrapperPrefixRaw.split(' ').filter(Boolean),
     wrapperTimeoutMs: positiveInteger(env, 'BROKER_WRAPPER_TIMEOUT_MS', 30_000, 300_000),
-    zones: {
-      demoZone: requireEnv(env, 'BROKER_DEMO_ZONE'),
-      platformZone: requireEnv(env, 'BROKER_PLATFORM_ZONE'),
-      ownedDomains: requireEnv(env, 'BROKER_OWNED_DOMAINS')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean),
-    },
+    zones: zonesFromEnv(env),
     slotLiterals: (env.BROKER_SLOT_LITERALS ?? '0,1,2,3,4,5,6')
       .split(',')
       .map((s) => s.trim())

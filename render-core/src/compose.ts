@@ -13,8 +13,20 @@
  * complete, swappable stack.
  *
  * `ports.health` is not a Compose port at all: the drain-flag health
- * sidecar (workspace#1187, already shipped) is a separate process the edge
- * probes directly, not a service this file defines.
+ * sidecar is a separate, already-shipped process the edge probes directly,
+ * not a service this file defines.
+ *
+ * **Load-bearing: a demo binds to loopback, never `appHostIp`.** LLD-2 §01b
+ * (load-bearing): "Publishing the slots on a non-loopback address instead
+ * would put every demo's Ghost on demo1's network, around the gate." A
+ * paying tenant keeps publishing on `appHostIp` — infra/tenant's existing,
+ * unchanged posture, needed because a tenant's app host and edge host are
+ * different machines reached over the private network. A demo's broker,
+ * edge and Ghost all run on the same host, so loopback is both sufficient
+ * and the thing that keeps every demo's Ghost from being reachable at all
+ * except through the gate (and the broker's own `adminApi.configure` call,
+ * `services/broker/src/app.ts`, which is itself a loopback call for
+ * exactly this reason).
  *
  * See the module's own note in `render.ts` on why this makes render's
  * output for a "tenant zero"-equivalent descriptor structurally different
@@ -41,7 +53,27 @@ const HEALTHCHECK_FORWARDED_PROTO = 'X-Forwarded-Proto: https';
 const CONTENT_MOUNT_PATH = '/var/lib/ghost/content';
 const ADAPTERS_MOUNT_PATH = `${CONTENT_MOUNT_PATH}/adapters`;
 
+/** Loopback: what every demo slot binds to instead of `appHostIp` — see the
+ * module doc comment's "Load-bearing" note. */
+const DEMO_BIND_ADDRESS = '127.0.0.1';
+
+/**
+ * Where a demo's SQLite file and local media directory are mounted from —
+ * `database.path`'s and `media.path`'s own common parent, computed by
+ * `render.ts` (which is where both paths are already validated against
+ * each other) and passed through rather than recomputed here.
+ */
+export interface DemoDataMount {
+  /** Host-provisioned once, at demo-host build time (LLD-2 §01, matching
+   * how the rest of a slot's fixed resources are provisioned) — named by
+   * `uid`, the stable per-slot identity, never by `slug` (a demo's slug is
+   * a throwaway per-lease value; see `lease.ts`'s own doc comment). */
+  readonly volumeName: string;
+  readonly path: string;
+}
+
 export interface ComposeStackArgs {
+  readonly kind: TenantDescriptor['kind'];
   readonly slug: TenantDescriptor['slug'];
   readonly uid: TenantDescriptor['uid'];
   readonly appHostPrivateIp: TenantDescriptor['appHostIp'];
@@ -49,9 +81,17 @@ export interface ComposeStackArgs {
   readonly environment: Record<string, string | number | boolean>;
   readonly limits: UploadLimits;
   readonly caps: ResourceCaps;
+  /** Non-null exactly for a `sqlite` + `local` (demo) descriptor. */
+  readonly dataMount: DemoDataMount | null;
 }
 
 type Colour = 'a' | 'b';
+
+/** The address every published port binds to — see the module doc
+ * comment's "Load-bearing" note. */
+function bindAddress(args: ComposeStackArgs): string {
+  return args.kind === 'demo' ? DEMO_BIND_ADDRESS : args.appHostPrivateIp;
+}
 
 function ghostService(
   args: ComposeStackArgs,
@@ -60,6 +100,10 @@ function ghostService(
   adapters: string
 ): Record<string, YamlValue> {
   const hostPort = colour === 'a' ? args.ports.a : args.ports.b;
+  const volumes = [`${content}:${CONTENT_MOUNT_PATH}`, `${adapters}:${ADAPTERS_MOUNT_PATH}:ro`];
+  if (args.dataMount) {
+    volumes.push(`${args.dataMount.volumeName}:${args.dataMount.path}`);
+  }
   return {
     image: '${IMAGE}',
     restart: 'unless-stopped',
@@ -83,9 +127,9 @@ function ghostService(
       driver: 'json-file',
       options: { 'max-size': '10m', 'max-file': '3' },
     },
-    ports: [`${args.appHostPrivateIp}:${hostPort}:${GHOST_CONTAINER_PORT}`],
+    ports: [`${bindAddress(args)}:${hostPort}:${GHOST_CONTAINER_PORT}`],
     environment: args.environment as YamlValue,
-    volumes: [`${content}:${CONTENT_MOUNT_PATH}`, `${adapters}:${ADAPTERS_MOUNT_PATH}:ro`],
+    volumes,
     healthcheck: {
       test: [
         'CMD',
@@ -109,6 +153,14 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
   const content = contentVolumeName(args.slug);
   const adapters = adaptersVolumeName(args.slug);
 
+  const volumes: Record<string, YamlValue> = {
+    [content]: { external: true },
+    [adapters]: { external: true },
+  };
+  if (args.dataMount) {
+    volumes[args.dataMount.volumeName] = { external: true };
+  }
+
   return {
     name: stackName(args.slug),
     services: {
@@ -119,10 +171,7 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
     // these volumes before this stack ever starts — see
     // `infra/tenant/compose.ts`'s own comment on why Compose must never be
     // the thing that first populates one.
-    volumes: {
-      [content]: { external: true },
-      [adapters]: { external: true },
-    },
+    volumes,
   };
 }
 
@@ -145,7 +194,7 @@ function header(slug: TenantDescriptor['slug']): string {
 
 export function renderComposeStack(args: ComposeStackArgs): string {
   const document = composeDocument(args);
-  assertRuntimePosture(document, args.appHostPrivateIp);
+  assertRuntimePosture(document, bindAddress(args));
   return `${header(args.slug)}\n${toYaml(document)}`;
 }
 
@@ -224,15 +273,19 @@ function healthProbe(service: Record<string, YamlValue>): HealthProbe {
  */
 export function assertRuntimePosture(
   document: Record<string, YamlValue>,
-  appHostPrivateIp: string
+  expectedBindAddress: string
 ): void {
   // Validated here rather than taken on trust: every port check below
   // compares the rendered ports against this value, and an unchecked
-  // `appHostPrivateIp` of `0.0.0.0` would produce `0.0.0.0:<port>:2368`,
-  // which passes a naive comparison against itself. `validatePrivateIpV4`
-  // throwing here is the refusal — a check whose expectation comes from
-  // its own subject can never fail.
-  validatePrivateIpV4(appHostPrivateIp);
+  // `expectedBindAddress` of `0.0.0.0` would produce `0.0.0.0:<port>:2368`,
+  // which passes a naive comparison against itself. Loopback is the one
+  // exception to `validatePrivateIpV4` — a demo's own load-bearing bind
+  // address (see the module doc comment) — checked explicitly rather than
+  // relaxing the shared validator, which must stay strict for every other
+  // caller (`appHostIp` itself is never legitimately loopback).
+  if (expectedBindAddress !== '127.0.0.1') {
+    validatePrivateIpV4(expectedBindAddress);
+  }
 
   const services = document.services as Record<string, Record<string, YamlValue>>;
   const problems: string[] = [];
@@ -279,7 +332,7 @@ export function assertRuntimePosture(
     const ports = Array.isArray(service.ports) ? service.ports : [];
     for (const port of ports) {
       const parts = typeof port === 'string' ? port.split(':') : [];
-      if (parts.length !== 3 || parts[0] !== appHostPrivateIp) {
+      if (parts.length !== 3 || parts[0] !== expectedBindAddress) {
         at(
           `publishes \`${String(port)}\` — every port must be ` +
             `<app-host-private-ip>:<host-port>:<container-port>`

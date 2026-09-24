@@ -1,9 +1,9 @@
 /**
  * The render core's descriptor package: the schema every reconciler renders
- * from, its invariants, and — from workspace#1183 — `render()`, the pure
- * descriptor-to-seven-artefacts step LLD-2 §03 calls "render". Its
- * dependency closure still contains no Pulumi module and no Node built-in;
- * `test/dependency-closure.test.ts` enforces both.
+ * from, its invariants, and `render()`, the pure descriptor-to-seven-
+ * artefacts step LLD-2 §03 calls "render". Its dependency closure still
+ * contains no Pulumi module and no Node built-in; `test/dependency-closure.test.ts`
+ * enforces both.
  */
 
 export type {
@@ -80,13 +80,16 @@ export {
   renderIdentity,
 } from './render.js';
 export type { EdgeGate, EdgeSiteBlock } from './edge.js';
-export type { GhostSettings, CodeInjectionSettings, HostLimitsSettings } from './settings.js';
+export type { GhostSettings, CodeInjectionSettings } from './settings.js';
+export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
 export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
 export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
-export type { ComposeStackArgs } from './compose.js';
+export type { ComposeStackArgs, DemoDataMount } from './compose.js';
 export {
+  MAX_TENANT_SLUG_LENGTH,
+  RESERVED_STACK_NAMES,
   TENANT_DB_PREFIX,
   adaptersVolumeName,
   composeUnitName,
@@ -96,6 +99,8 @@ export {
   sqlIdentifier,
   stackDirectory,
   stackName,
+  validateDatabaseIdentity,
+  validateSlugAvailability,
 } from './naming.js';
 export { DEFAULT_RSS_BUDGET_MIB, DEFAULT_UPLOAD_CEILING_MIB, uploadLimits } from './runtime.js';
 export type { UploadLimits } from './runtime.js';

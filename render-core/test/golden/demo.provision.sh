@@ -1,5 +1,4 @@
 #!/bin/sh
-# Provisions demo-1's two named volumes before demo-1's
-# unit is enabled. Idempotent; safe to re-run.
 set -eu
-provision_tenant_volume.py --uid 30001 demo-1
+# demo-1's slot data directory is host-provisioned once, at demo-host
+# build time (LLD-2 §01) -- there is nothing for this script to do per recycle.

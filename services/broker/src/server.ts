@@ -24,14 +24,14 @@ function isDrainSource(candidate: unknown): candidate is DrainSource {
 }
 
 /**
- * `Renderer`, `AdminApiClient` and `DrainSource` are seams this story
- * deliberately leaves unimplemented (see each file's own doc comment):
- * the descriptor-to-artefacts renderer is workspace#1183's unbuilt "seven
- * artefacts, pure" package; the Admin API call's content is unspecified by
- * any design document; the drain source depends on LLD-6's unbuilt mail
- * spool and an unbuilt "reaper". Rather than ship a fake implementation of
- * any of them -- which would silently pass its own tests while doing
- * nothing real in production -- this entrypoint loads each from a module
+ * `Renderer`, `AdminApiClient` and `DrainSource` are all loaded as plugin
+ * modules rather than built into this entrypoint, for the same reason in
+ * each case: a fake implementation would silently pass its own tests while
+ * doing nothing real in production. `Renderer` is filled for real today
+ * (`plugins/renderCorePlugin.ts`, adapting `render-core`'s own `render()`).
+ * The Admin API call's content is unspecified by any design document; the
+ * drain source depends on LLD-6's unbuilt mail spool and an unbuilt
+ * "reaper" -- both still seams. This entrypoint loads each from a module
  * path named by its own environment variable and refuses to start if one
  * is missing *or if its default export does not have the seam's required
  * function*: a module that loads cleanly but exports nothing usable must

@@ -62,6 +62,8 @@ services:
       mail__options__port: 587
       mail__options__secure: false
       mail__options__auth__user: 'entry-co'
+      hostSettings__limits__members__max: 500
+      hostSettings__limits__staff__max: 3
       security__allowWebhookInternalIPs: false
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
@@ -139,6 +141,8 @@ services:
       mail__options__port: 587
       mail__options__secure: false
       mail__options__auth__user: 'entry-co'
+      hostSettings__limits__members__max: 500
+      hostSettings__limits__staff__max: 3
       security__allowWebhookInternalIPs: false
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
