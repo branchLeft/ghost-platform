@@ -772,7 +772,7 @@ def _best_effort_delete_this_runs_own_uploads(
     secret_key: str,
     delete_object,
 ) -> None:
-    """B6: a run that raises before its own manifest PUT has been attempted
+    """A run that raises before its own manifest PUT has been attempted
     deletes the object keys it itself already wrote, under its own
     `generations/<run_id>/objects/` prefix -- no listing needed, since
     `keys` is exactly what this run's own upload loop tracked. With no
@@ -968,7 +968,7 @@ def backup_tenant_media(
     )
 
     new_backup_keys: set[str] = set()
-    # B6: everything from here up to, but never including, the manifest PUT
+    # Everything from here up to, but never including, the manifest PUT
     # itself (`_write_and_verify_manifest` below) is covered by this run's
     # own best-effort clean-up on failure -- see
     # `_best_effort_delete_this_runs_own_uploads` and the module docstring.

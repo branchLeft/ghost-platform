@@ -647,15 +647,15 @@ python3 - "$SCRIPTS_DIR/media_backup_restore.py" <<'PYEOF'
 import sys
 path = sys.argv[1]
 text = open(path).read()
-marker = "        backup_key = _object_key_for_backup(tenant, run_id, backup_id)\n        put_object(\n"
+marker = "            backup_key = _object_key_for_backup(tenant, run_id, backup_id)\n            put_object(\n"
 assert marker in text, "expected marker not found -- has the loop shape changed?"
 sabotaged = text.replace(
     marker,
-    "        backup_key = _object_key_for_backup(tenant, run_id, backup_id)\n"
-    "        _SABOTAGE_UPLOAD_COUNT[0] += 1\n"
-    "        if _SABOTAGE_UPLOAD_COUNT[0] == 2:\n"
-    "            raise ObjectStorageError('SABOTAGE: simulated upload failure mid-run')\n"
-    "        put_object(\n",
+    "            backup_key = _object_key_for_backup(tenant, run_id, backup_id)\n"
+    "            _SABOTAGE_UPLOAD_COUNT[0] += 1\n"
+    "            if _SABOTAGE_UPLOAD_COUNT[0] == 2:\n"
+    "                raise ObjectStorageError('SABOTAGE: simulated upload failure mid-run')\n"
+    "            put_object(\n",
     1,
 )
 assert sabotaged != text
