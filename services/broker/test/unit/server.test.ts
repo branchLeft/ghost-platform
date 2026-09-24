@@ -34,6 +34,7 @@ function fakeConfig(overrides: Partial<BrokerConfig> = {}): BrokerConfig {
     healthCheckTimeoutMs: 1000,
     healthPortBase: 9100,
     appPortBase: 9300,
+    uidBase: 30001,
     processStartSeconds: 1_700_000_000,
     nowMs: () => 1_700_000_000_000,
     ...overrides,
@@ -194,6 +195,15 @@ describe('the real dist/server.js entrypoint', () => {
     });
     const { port } = await broker.waitListening(8000);
     const baseUrl = `http://127.0.0.1:${port}`;
+
+    // Item 2's floor is now `<=`: a request timestamped in the same
+    // wall-clock second as `processStartSeconds` is refused (N1's
+    // accepted cost). A fast local spawn can still be within that same
+    // second by the time `waitListening` resolves, so every authenticated
+    // request below waits past it first -- the real-server proof this
+    // test exists for is replay protection, not the same-second edge
+    // (auth.test.ts proves that edge directly and deterministically).
+    await new Promise((resolve) => setTimeout(resolve, 1100));
 
     // Wrong key: the process must refuse, proving it verifies against the
     // BROKER_VERIFY_KEY_FILE it was actually started with, not merely

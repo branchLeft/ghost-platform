@@ -134,13 +134,30 @@ describe('verifyRequest', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('admits a timestamp at or after process start, inside the window', () => {
+  // --- Item 2: the floor is `<=`, not `<` -- a capture, crash and restart
+  // that all land inside one wall-clock second must still be refused. ---
+  it('refuses a timestamp equal to process start (same-second capture, crash and restart)', () => {
+    const nowMs = 1_700_000_000_000;
+    const nowSeconds = Math.floor(nowMs / 1000);
+    const keyPair = generateTestKeyPair();
+    // The original request was captured at second T; the process crashed
+    // and restarted inside that same second, so `processStartSeconds`
+    // equals the captured request's own timestamp exactly, not merely
+    // "before" it -- the narrower edge N1 describes and `<` alone misses.
+    const { deps: d } = deps(nowMs, keyPair, 60, nowSeconds);
+    const body = Buffer.from('{"slot":"3"}');
+    const headers = headersFor(keyPair, 'POST', '/reset', body, nowSeconds);
+    const result = verifyRequest(d, 'POST', '/reset', headers, body);
+    expect(result.ok).toBe(false);
+  });
+
+  it('admits a timestamp strictly after process start, inside the window', () => {
     const nowMs = 1_700_000_000_000;
     const nowSeconds = Math.floor(nowMs / 1000);
     const keyPair = generateTestKeyPair();
     const { deps: d } = deps(nowMs, keyPair, 60, nowSeconds - 5);
     const body = Buffer.from('{"slot":"3"}');
-    const headers = headersFor(keyPair, 'POST', '/reset', body, nowSeconds - 5);
+    const headers = headersFor(keyPair, 'POST', '/reset', body, nowSeconds - 4);
     const result = verifyRequest(d, 'POST', '/reset', headers, body);
     expect(result.ok).toBe(true);
   });

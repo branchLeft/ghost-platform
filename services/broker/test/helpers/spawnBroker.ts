@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -22,20 +22,47 @@ export async function findFreePort(): Promise<number> {
 }
 
 const SERVICE_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const SRC_DIR = join(SERVICE_ROOT, 'src');
 const DIST_SERVER = join(SERVICE_ROOT, 'dist', 'server.js');
 const TSC = join(SERVICE_ROOT, 'node_modules', '.bin', 'tsc');
+
+/**
+ * The newest mtime under `src/`, recursively. Compared against
+ * `dist/server.js`'s own mtime, this is what "stale" means below: a `.ts`
+ * edited after the last build produced JS the edit never reached.
+ */
+function newestSourceMtimeMs(dir: string): number {
+  let newest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, newestSourceMtimeMs(path));
+    } else if (entry.isFile()) {
+      newest = Math.max(newest, statSync(path).mtimeMs);
+    }
+  }
+  return newest;
+}
 
 /**
  * The F5 proof this whole file exists for has to run against the actual
  * built entrypoint (`dist/server.js`), not against `src/server.ts` imported
  * in-process -- an in-process import proves the wiring function, never that
  * `node dist/server.js` (what a real deploy runs) behaves the same way.
- * Builds once per test run if `dist/` is stale or missing; `npm run
- * coverage` alone (no separate build step) still works this way, and
- * `broker-ci.yml`'s explicit build step just means this is a no-op there.
+ *
+ * Rebuilds whenever `dist/server.js` is missing *or* older than the newest
+ * file under `src/` -- not merely missing (S2). A build that exists but
+ * predates the latest edit is exactly the shape a sabotage-then-test cycle
+ * produces locally: `dist/` from a clean tree, `src/` edited afterwards, and
+ * an `existsSync`-only check would run the stale JS and report the
+ * sabotage's regression test green. `broker-ci.yml`'s explicit build step
+ * means every check here is a no-op there (a build that just ran is never
+ * older than its own source).
  */
 export function ensureBuilt(): void {
-  if (existsSync(DIST_SERVER)) return;
+  if (existsSync(DIST_SERVER) && statSync(DIST_SERVER).mtimeMs >= newestSourceMtimeMs(SRC_DIR)) {
+    return;
+  }
   try {
     execFileSync(TSC, ['-p', 'tsconfig.build.json'], { cwd: SERVICE_ROOT, stdio: 'pipe' });
   } catch (err) {

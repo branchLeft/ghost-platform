@@ -7,12 +7,24 @@ import {
   type Port,
   type PrivateIpV4,
   type Slug,
+  type SlotName,
   type TenantDescriptor,
   type TenantUid,
   type ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
+import { slotAllocation } from '../../src/slotPorts.js';
 
 const DIGEST = 'a'.repeat(64);
+
+// The test harness's own fixed allocation (`testBroker.ts`'s `BrokerDeps`):
+// uidBase 30001, appPortBase 9300, healthPortBase 9100. `demoDescriptor()`'s
+// own default (slot "0") is exactly this base, so it matches slot "0" with
+// no override; `descriptorForSlot` computes the same allocation for any
+// other slot, so a fixture reconciled onto slot N never trips item 1's
+// mismatch refusal by construction.
+const UID_BASE = 30001;
+const APP_PORT_BASE = 9300;
+const HEALTH_PORT_BASE = 9100;
 
 /** RFC 2606 example domains, matching `render-core/test/fixtures.ts`'s own convention. */
 export const TEST_ZONES: ZoneConfig = {
@@ -29,8 +41,11 @@ export function demoDescriptor(overrides: Partial<TenantDescriptor> = {}): Tenan
     siteUrl: 'https://k7m-vale-bright.demo-domain.example.test' as AbsoluteUrl,
     image: `ghost:6.55.0-alpine@sha256:${DIGEST}` as DigestPinnedRef,
     ownerEmail: 'owner@example.com' as EmailAddress,
+    // Slot "0"'s own derived allocation under the test harness's fixed
+    // bases -- see `UID_BASE`/`APP_PORT_BASE`/`HEALTH_PORT_BASE` above.
+    // `descriptorForSlot` computes the equivalent for any other slot.
     uid: 30001 as TenantUid,
-    ports: { a: 3001 as Port, b: 3002 as Port, health: 3003 as Port },
+    ports: { a: 9300 as Port, b: 9301 as Port, health: 9100 as Port },
     appHostIp: '10.20.1.50' as PrivateIpV4,
     database: { kind: 'sqlite', path: '/data/demo-1/ghost.db' },
     media: { kind: 'local', path: '/data/demo-1/content', resize: false, srcsets: false },
@@ -45,6 +60,28 @@ export function demoDescriptor(overrides: Partial<TenantDescriptor> = {}): Tenan
     expiresAt: '2026-09-30T00:00:00.000Z' as Instant,
     ...overrides,
   };
+}
+
+/**
+ * `demoDescriptor()`, retargeted at a specific slot: its `uid` and `ports`
+ * are overridden to that slot's own derived allocation (item 1), so a test
+ * reconciling this descriptor onto slot `slot` is never refused for a
+ * mismatch it did not mean to test.
+ */
+export function descriptorForSlot(
+  slot: SlotName,
+  overrides: Partial<TenantDescriptor> = {}
+): TenantDescriptor {
+  const allocation = slotAllocation(UID_BASE, APP_PORT_BASE, HEALTH_PORT_BASE, slot);
+  return demoDescriptor({
+    uid: allocation.uid as TenantUid,
+    ports: {
+      a: allocation.ports.a as Port,
+      b: allocation.ports.b as Port,
+      health: allocation.ports.health as Port,
+    },
+    ...overrides,
+  });
 }
 
 /**

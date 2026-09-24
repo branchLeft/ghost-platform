@@ -66,7 +66,12 @@ export function verifyRequest(
   if (ageSeconds > deps.replayWindowSeconds || ageSeconds < -FORWARD_SKEW_SECONDS) {
     return { ok: false, reason: 'timestamp outside the replay window' };
   }
-  if (requestSeconds < deps.processStartSeconds) {
+  // `<=`, not `<`: a request captured, then replayed after a crash and
+  // restart that both land inside the same wall-clock second, has a
+  // timestamp exactly equal to `processStartSeconds`. Refusing that too
+  // costs a legitimate caller only the process's first second (N1) -- a
+  // replay window that would otherwise still admit it.
+  if (requestSeconds <= deps.processStartSeconds) {
     return { ok: false, reason: 'timestamp predates this process (replayed after a restart)' };
   }
 

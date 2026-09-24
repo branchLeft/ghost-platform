@@ -47,6 +47,7 @@ export interface TestBroker {
   readonly leaseDir: string;
   readonly slotsPath: string;
   readonly nowMs: () => number;
+  readonly processStartSeconds: number;
   setNowMs(value: number): void;
   signedFetch(method: string, path: string, body?: unknown): Promise<Response>;
   close(): Promise<void>;
@@ -113,7 +114,14 @@ export async function startTestBroker(): Promise<TestBroker> {
 
   const keyPair = generateTestKeyPair();
   const START_MS = 1_700_000_000_000;
-  let nowMs = START_MS;
+  const processStartSeconds = Math.floor(START_MS / 1000);
+  // Ordinary "now" starts a comfortable five seconds after the process's own
+  // start second, not at exactly the same instant: `auth.ts`'s replay floor
+  // is now `<=` (F3's same-second edge, item 2), so a `nowMs` that started
+  // equal to `processStartSeconds` would refuse every test's very first
+  // request. Tests that specifically want the same-second edge call
+  // `setNowMs` to move it back to `START_MS` deliberately.
+  let nowMs = START_MS + 5_000;
 
   const renderer = createRecordingRenderer();
   const adminApi = createRecordingAdminApi();
@@ -124,7 +132,7 @@ export async function startTestBroker(): Promise<TestBroker> {
       verifyKey: keyPair.publicKeyRaw,
       replayWindowSeconds: 60,
       nonces: createInMemoryNonceStore(60_000),
-      processStartSeconds: Math.floor(START_MS / 1000),
+      processStartSeconds,
       nowMs: () => nowMs,
     },
     slotLiterals: ['0', '1', '2', '3', '4', '5', '6'],
@@ -142,6 +150,7 @@ export async function startTestBroker(): Promise<TestBroker> {
     healthChecker: createHttpHealthChecker('127.0.0.1', 500),
     healthPortBase: 9100,
     appPortBase: 9300,
+    uidBase: 30001,
     slotDirBase,
     stateDir,
     slotLock: createSlotLock(),
@@ -170,6 +179,7 @@ export async function startTestBroker(): Promise<TestBroker> {
     leaseDir,
     slotsPath,
     nowMs: () => nowMs,
+    processStartSeconds,
     setNowMs: (value) => {
       nowMs = value;
     },

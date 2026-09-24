@@ -8,7 +8,7 @@ import {
   type SlotName,
 } from '@branchleft/ghost-platform-render-core';
 import { startTestBroker, type TestBroker } from '../helpers/testBroker.js';
-import { demoDescriptor, tenantDescriptorFixture } from '../helpers/fixtures.js';
+import { demoDescriptor, descriptorForSlot, tenantDescriptorFixture } from '../helpers/fixtures.js';
 import { generateTestKeyPair, signHeaders } from '../helpers/signer.js';
 
 describe('the broker HTTP endpoints (LLD-2 §03)', () => {
@@ -47,7 +47,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
 
   it('reconcile drives the wrapper, the renderer and the admin API in order, and writes the lease/hash contract', async () => {
     broker = await startTestBroker();
-    const descriptor = demoDescriptor({ slug: 'demo-recycle' as Slug });
+    const descriptor = descriptorForSlot('2' as SlotName, { slug: 'demo-recycle' as Slug });
 
     const res = await broker.signedFetch('POST', '/reconcile', { slot: '2', descriptor });
     expect(res.status).toBe(200);
@@ -55,10 +55,14 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(broker.renderer.calls).toHaveLength(1);
     expect(broker.adminApi.calls).toHaveLength(1);
     // The slot's own fixed port (F7): appPortBase=9300, slot '2', colour 'a'
-    // -> 9300 + 2*2 -- never `descriptor.ports.a`, which this test's
-    // fixture leaves at its own unrelated default.
+    // -> 9300 + 2*2. Item 1 now refuses a descriptor whose ports disagree
+    // with the slot's own allocation before this handler ever runs, so
+    // `descriptor.ports.a` is bound to equal this by construction --
+    // app.test.ts's "refuses a descriptor whose ports don't match the
+    // slot" test is what proves the Admin API call stays slot-derived
+    // rather than descriptor-derived, by making them disagree on purpose.
     expect(broker.adminApi.calls[0]?.baseUrl).toBe('http://127.0.0.1:9304');
-    expect(broker.adminApi.calls[0]?.baseUrl).not.toBe(`http://127.0.0.1:${descriptor.ports.a}`);
+    expect(broker.adminApi.calls[0]?.baseUrl).toBe(`http://127.0.0.1:${descriptor.ports.a}`);
 
     const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
       .split('\n')
@@ -92,7 +96,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
   // --- "harness"-shaped proof: reconcile, replay the identical request, reset. ---
   it('harness: an identical (slot, descriptor) retry is idempotent -- no second side effect', async () => {
     broker = await startTestBroker();
-    const descriptor = demoDescriptor();
+    const descriptor = descriptorForSlot('1' as SlotName);
 
     const first = await broker.signedFetch('POST', '/reconcile', { slot: '1', descriptor });
     expect(first.status).toBe(200);
@@ -144,7 +148,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
 
     const res = await broker.signedFetch('POST', '/reconcile', {
       slot: '4',
-      descriptor: demoDescriptor(),
+      descriptor: descriptorForSlot('4' as SlotName),
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ slot: '4', phase: 'error' });
@@ -173,7 +177,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
 
     const res = await broker.signedFetch('POST', '/reconcile', {
       slot: '5',
-      descriptor: demoDescriptor(),
+      descriptor: descriptorForSlot('5' as SlotName),
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ slot: '5', phase: 'running', colour: 'a' });
@@ -195,6 +199,43 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
     expect(res.status).toBe(400);
     expect(broker.renderer.calls).toHaveLength(0);
+  });
+
+  // --- Item 1: a descriptor whose ports or uid disagree with the slot's
+  // own allocation is refused before the renderer or the Admin API ever
+  // see it (workspace#1323, ghost-platform#244 review finding S1). ---
+  it("refuses a descriptor whose ports don't match the slot's own derived allocation", async () => {
+    broker = await startTestBroker();
+    // slot "0"'s own port `a` is 9300 (see fixtures.ts); 4101 is a
+    // different slot's port entirely -- exactly F7's attack shape.
+    const bad = demoDescriptor({
+      ports: { a: 4101 as never, b: 9301 as never, health: 9100 as never },
+    });
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "descriptor's uid/ports don't match slot \"0\"'s own allocation",
+    });
+    expect(broker.renderer.calls).toHaveLength(0);
+    expect(broker.adminApi.calls).toHaveLength(0);
+  });
+
+  it("refuses a descriptor whose uid doesn't match the slot's own derived uid", async () => {
+    broker = await startTestBroker();
+    // slot "0"'s own uid is 30001 (see fixtures.ts); 30123 belongs to a
+    // different slot's reserved range.
+    const bad = demoDescriptor({ uid: 30123 as never });
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
+    expect(res.status).toBe(400);
+    expect(broker.renderer.calls).toHaveLength(0);
+    expect(broker.adminApi.calls).toHaveLength(0);
+  });
+
+  it('accepts a descriptor whose ports and uid match the target slot exactly (the positive case S1 needs alongside the refusal)', async () => {
+    broker = await startTestBroker();
+    const good = descriptorForSlot('3' as SlotName);
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '3', descriptor: good });
+    expect(res.status).toBe(200);
   });
 
   it('a paying-tenant descriptor is refused -- the broker reconciles demos only -- using a descriptor that is otherwise genuinely valid', async () => {
@@ -340,6 +381,19 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     });
     expect(first.status).toBe(200);
     expect(second.status).toBe(401);
+  });
+
+  // --- Item 2: a request timestamped in the same wall-clock second as this
+  // process's own start is refused, not only one that predates it. ---
+  it('refuses a same-second replay: a request timestamped exactly at process start (capture, crash, restart, all within one second)', async () => {
+    broker = await startTestBroker();
+    // testBroker's own `processStartSeconds` is `floor(START_MS / 1000)`;
+    // pointing `nowMs` back at exactly `START_MS` makes this signed
+    // request's timestamp equal to it -- the same-second edge a capture,
+    // a crash and a restart landing in one wall-clock second produce.
+    broker.setNowMs(broker.processStartSeconds * 1000);
+    const res = await broker.signedFetch('POST', '/reset', { slot: '0' });
+    expect(res.status).toBe(401);
   });
 
   it('/status/<slot> needs no signature at all (deliberately unauthenticated, LLD-2 §03)', async () => {
