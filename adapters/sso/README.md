@@ -23,13 +23,37 @@ If any of the three is missing, is not a string, or the key is not an Ed25519 ke
 base64url(JSON claims) "." base64url(Ed25519 signature over the first segment, as sent)
 ```
 
-Claims: `sub` (must equal `supportIdentity`), `aud` (must equal `tenant`), `exp` (integer Unix seconds, in the future and at most 900 seconds away), `jti` (a unique string of 1 to 128 characters). The token arrives as the `bl_break_glass` query parameter on any `/ghost/` URL, up to 4096 characters.
+The claims are:
 
-Checks run in this order, all offline: signature, audience, expiry, subject, single use. The claims are not parsed until the signature has verified. Ghost then refuses the session on every request if the account is suspended.
+| Claim | Rule |
+|---|---|
+| `sub` | Must equal `supportIdentity`. |
+| `aud` | Must equal `tenant`. |
+| `iat` | Integer Unix seconds. No more than 60 seconds ahead of the tenant's clock, and not before this Ghost process started. |
+| `exp` | Integer Unix seconds, in the future, after `iat`. At most 900 seconds after `iat` and after now. |
+| `jti` | A string of 1 to 128 characters, unique and unpredictable. Use 128 random bits. |
 
-Each `jti` is accepted once per Ghost process and remembered until its token expires. A used token is therefore worthless. This matters because Ghost writes the full request URL, token included, to its request log, and redirects the browser to `/ghost/#/?bl_break_glass=…`, so the token also stays in browser history.
+The token arrives as the `bl_break_glass` query parameter on any `/ghost/` URL, up to 4096 characters.
+
+**For the minter:** mint with a lifetime of 600 seconds or less. The 900-second cap has no margin for clock skew, so a token minted at exactly the cap is refused whenever the minter's clock runs ahead of the tenant's.
+
+The checks run in this order, all offline: signature, audience, expiry and issue time, subject, then not already used. The claims are not parsed until the signature has verified. Ghost then refuses the session on every request while the account is suspended.
+
+### Single use, and where it stops
+
+A `jti` is recorded only after every check has passed and the account has been found. A refused token therefore never uses up a legitimate `jti`. The record is kept in memory until the token expires, and an entry lost to a restart does not matter: a token issued before the current process started is refused outright. This costs one thing: a token minted shortly before a Ghost restart must be minted again. Nothing is persisted, because the content directory is tenant-writable and a file on the boot path is a boot risk.
+
+Single use covers the request that opens the session. It does not make the URL safe to expose:
+
+- **First fetch wins.** Whatever requests the URL first gets the session. That includes a link previewer in a chat tool, a mail security scanner, or a browser prefetch. The minter must deliver the URL through a channel that fetches nothing on the operator's behalf.
+- **The token lands in logs and history.** Ghost writes the full request URL, token included, to its request log. Its 302 then sends the browser to `/ghost/#/?bl_break_glass=…`, so the token also stays in browser history. After use, the token is refused on every path the adapter sees.
+- **The adapter only sees `/ghost/`.** A token sent to any other path, such as the site root, is written to Ghost's request log and is not seen, refused or consumed by the adapter. It stays usable until it expires. This is proven by an image test. Closing it would need something outside Ghost, such as the edge, because the adapter is mounted only on `/ghost/`.
 
 Every decision is logged without the token itself: `break-glass: token accepted for the configured identity`, or `break-glass: token refused (<reason>)`. Ghost swallows adapter failures and shows the login page, so these lines are the only way to tell a refusal from an adapter that is not running.
+
+## Turning it on for a tenant
+
+**Never render `adapters__sso__active=BreakGlassSSO` for a tenant whose image predates this adapter.** Ghost cannot find the adapter and refuses to boot: `Unable to find sso adapter BreakGlassSSO in …`. The image pin bump has to land and deploy before the config that selects the adapter. The partial-triple rule works the other way round: a missing setting disables the adapter, and the site still boots.
 
 ## What Ghost's extension point does, and the traps in it
 
@@ -43,7 +67,7 @@ Ghost 6.55.0 constructs the adapter while building the admin app (`core/server/s
 
 ## Known residual
 
-A valid, unused token presented while the account is suspended makes Ghost create a verified session row for that account. The row is refused while the account stays suspended, but it becomes a live Administrator session the next time the account is un-suspended. Measured on 6.55.0, un-suspending by setting the status column. Nothing in Ghost's source destroys a user's sessions when their status changes. Single use and the 900-second lifetime cap narrow this to a stolen token that has not been used, presented after a revoke and before it expires. Closing it fully means the adapter must read the account's status, which the repository Ghost provides does not expose.
+A valid, unused token presented while the account is suspended makes Ghost create a verified session row for that account. The adapter cannot see an account's status, so it accepts the token. The row is refused while the account stays suspended. It becomes a live Administrator session when the account is un-suspended, through the Staff screen as well as the database, for as long as Ghost keeps sessions (180 days by default). Nothing in Ghost destroys a user's sessions when their status changes. A revoke cannot reach the row either, because the row is created after the revoke. The image test asserts that the row exists. Closing this fully needs a decision outside this adapter's current bounds, and until then no tenant should have break-glass turned on.
 
 ## Tests
 
@@ -53,4 +77,4 @@ docker build -t ghost-platform:ci ../..
 IMAGE=ghost-platform:ci npm run test:image       # real Ghost 6.55.0 in Docker
 ```
 
-The image test (`test/image/`) runs the built image through every case the design measured: a suspended and an active account, no token, a tampered, forged, expired or other-tenant token, a replay, a revoke, a token naming the owner, boot and 200 with a malformed key and with each value missing, and a planted content adapter. Every refusal asserts both Ghost's 403 and the adapter's logged reason. `build.yml` runs it on every PR.
+The image test (`test/image/`) runs the built image through every case the design measured: a suspended and an active account, no token, a tampered, forged, expired or other-tenant token, a replay, a revoke, a token naming the owner, boot and 200 with a malformed key and with each value missing, and a planted content adapter. It also covers a replay across a Ghost restart, and a token sent to the site root. Every refusal asserts both Ghost's 403 and the adapter's logged reason. `build.yml` runs it on every PR.
