@@ -309,7 +309,15 @@ def get_object_with_content_type(
     of rendering -- silently wrong for video, audio and any direct link,
     while every checksum still matches. Falls back to
     `application/octet-stream` only if the response genuinely carries no
-    Content-Type header, never as a way to skip reading one that is there."""
+    Content-Type header, never as a way to skip reading one that is there.
+
+    The lookup is case-insensitive: HTTP header names are case-insensitive
+    by spec (RFC 9110 SS5.1), and `transport` may hand back whatever casing
+    a given server or a test's fake happened to use -- `Content-Type`,
+    `content-type`, or anything else. Matching only the canonical spelling
+    would silently fall back to octet-stream against a server that sends a
+    differently-cased header, exactly the failure this function exists to
+    avoid."""
     headers = build_headers(
         bucket=bucket,
         key=key,
@@ -324,7 +332,8 @@ def get_object_with_content_type(
     url = request_url(endpoint=endpoint, bucket=bucket, key=key, query=None)
     status, body, response_headers = transport(url, headers)
     _raise_for_status(what=f"GET {bucket}/{key}", status=status, body=body)
-    content_type = response_headers.get("Content-Type") or "application/octet-stream"
+    lowercased_headers = {name.lower(): value for name, value in response_headers.items()}
+    content_type = lowercased_headers.get("content-type") or "application/octet-stream"
     return body, content_type
 
 

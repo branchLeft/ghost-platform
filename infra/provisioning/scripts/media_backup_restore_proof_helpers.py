@@ -3,12 +3,12 @@
 `media_backup_restore.py` deliberately does not expose -- reading one
 object's digest to verify what Ghost itself wrote, corrupting a backup
 object in place, counting a bucket's objects for the "genuine destroy" and
-"backup skipped media" checks, and reading back the (opaque, content-
-addressed) backup key or the decrypted manifest for a live key the proof
-uploaded -- since the production module's own key scheme is deliberately not
-derivable from a live key by anyone outside it (that opacity is finding 2's
-own fix), the proof asks the module for its own key rather than
-reimplementing the derivation.
+"backup skipped media" checks, and reading back the (opaque, RANDOM) backup
+key or the decrypted manifest for a live key the proof uploaded -- since the
+production module's own key scheme is deliberately unrelated to a live key
+or its content (review cycle 2's fix: a content-derived key is a fingerprint
+that survives crypto-shredding), the proof asks the module for its own key
+rather than reimplementing the derivation.
 
 Never imported by `media_backup_restore.py` or by anything that ships:
 this is proof-only tooling, kept separate so the production module's own
@@ -84,10 +84,10 @@ def main(argv: list[str] | None = None) -> int:
 
     backup_key_p = sub.add_parser(
         "backup-object-key",
-        help="print the backup bucket key for a live object, given its SHA-256 (from `manifest`)",
+        help="print the backup bucket key for a live object, given its backup_id (from `manifest`)",
     )
     backup_key_p.add_argument("--tenant", required=True)
-    backup_key_p.add_argument("--sha256", required=True)
+    backup_key_p.add_argument("--backup-id", required=True)
 
     args = parser.parse_args(argv)
     # Built lazily, per command: `backup-object-key` is pure local
@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(manifest, indent=2, sort_keys=True))
         elif args.command == "backup-object-key":
-            print(_object_key_for_backup(args.tenant, args.sha256))
+            print(_object_key_for_backup(args.tenant, args.backup_id))
     except ObjectStorageError as error:
         print(f"media-backup-restore-proof-helpers: {error}", file=sys.stderr)
         return 1

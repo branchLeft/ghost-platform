@@ -4,7 +4,7 @@
 No real network here -- `list_objects` / `get_object_with_content_type` /
 `get_object` / `put_object` are injected as fakes, so these tests pin the
 module's own logic (the floor, the checksum comparison, per-tenant
-isolation, key-safety, the recipient-count guard) rather than re-proving the
+isolation, key-opacity, the recipient-count guard) rather than re-proving the
 SigV4 signer (`test_objectstorage.py` already does that). `age` itself IS
 real in `RecipientStanzaCountTests` -- the count this module trusts is
 checked against real `age` output, not only against a value this file
@@ -28,9 +28,12 @@ from media_backup_restore import (
     MediaBackupFloorError,
     MediaBackupRecipientError,
     MediaRestoreVerificationError,
+    _manifest_key,
+    _object_key_for_backup,
     backup_tenant_media,
     count_age_recipient_stanzas,
     encrypt_with_age,
+    generate_backup_object_id,
     main,
     restore_tenant_media,
     sha256_hex,
@@ -132,6 +135,35 @@ IDENTITY_TO_RECIPIENT = {
 }
 
 
+def _decrypt_manifest(store: FakeObjectStore, *, bucket: str, tenant: str, identity_path: str) -> dict:
+    ciphertext = store.get_object(
+        bucket=bucket, endpoint=ENDPOINT, region=REGION, access_key="x", secret_key="x",
+        key=_manifest_key(tenant),
+    )
+    plaintext = _fake_decrypt(IDENTITY_TO_RECIPIENT)(data=ciphertext, identity_path=identity_path)
+    return json.loads(plaintext)
+
+
+class GenerateBackupObjectIdTests(unittest.TestCase):
+    def test_is_64_lowercase_hex_characters(self):
+        object_id = generate_backup_object_id(digest="irrelevant")
+        self.assertRegex(object_id, r"\A[0-9a-f]{64}\Z")
+
+    def test_two_calls_never_collide_in_a_reasonable_sample(self):
+        ids = {generate_backup_object_id(digest="d") for _ in range(1000)}
+        self.assertEqual(len(ids), 1000)
+
+    def test_ignores_the_digest_it_is_given(self):
+        # The parameter exists so a test (or, hypothetically, a caller) can
+        # inject a content-derived replacement and show what this function
+        # itself refuses to do -- it must not do that by default.
+        same_digest = "a" * 64
+        first = generate_backup_object_id(digest=same_digest)
+        second = generate_backup_object_id(digest=same_digest)
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first, same_digest)
+
+
 class RecipientStanzaCountTests(unittest.TestCase):
     """The counter this module's runtime guard trusts, checked against real
     `age` output -- a passing table only evidences the counter's MODEL of
@@ -226,30 +258,35 @@ class BackupTenantMediaTests(unittest.TestCase):
         kwargs.update(overrides)
         return backup_tenant_media(**kwargs)
 
-    def test_writes_one_ciphertext_object_per_live_object(self):
+    def _manifest(self, tenant="tenant-a", identity_path=TENANT_A_IDENTITY):
+        return _decrypt_manifest(self.store, bucket="backup", tenant=tenant, identity_path=identity_path)
+
+    def test_writes_one_ciphertext_object_per_live_object_addressed_by_backup_id(self):
         report = self._backup()
+        manifest = self._manifest()
         backed_up = self.store.buckets["backup"]
-        photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
-        second_digest = sha256_hex(b"a second uploaded file")
-        self.assertIn(f"media/tenant-a/objects/{photo_digest}.age", backed_up)
-        self.assertIn(f"media/tenant-a/objects/{second_digest}.age", backed_up)
+        for live_key in ("content/images/2026/09/photo.jpg", "content/images/2026/09/second.png"):
+            backup_id = manifest["objects"][live_key]["backup_id"]
+            self.assertIn(_object_key_for_backup("tenant-a", backup_id), backed_up)
         self.assertEqual(report.object_count, 2)
         self.assertFalse(report.deliberately_empty)
 
     def test_ciphertext_is_encrypted_to_exactly_the_given_recipient(self):
         self._backup()
-        photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
-        ciphertext = self.store.buckets["backup"][f"media/tenant-a/objects/{photo_digest}.age"]
+        manifest = self._manifest()
+        backup_id = manifest["objects"]["content/images/2026/09/photo.jpg"]["backup_id"]
+        ciphertext = self.store.buckets["backup"][_object_key_for_backup("tenant-a", backup_id)]
         self.assertEqual(count_age_recipient_stanzas(ciphertext), 1)
         self.assertIn(TENANT_A_RECIPIENT.encode(), ciphertext)
 
-    def test_manifest_records_sha256_size_and_content_type(self):
+    def test_manifest_records_sha256_size_content_type_and_a_backup_id(self):
         report = self._backup()
         expected_digest = sha256_hex(b"a real jpeg's bytes, honest")
         entry = report.objects["content/images/2026/09/photo.jpg"]
         self.assertEqual(entry["sha256"], expected_digest)
         self.assertEqual(entry["size"], len(b"a real jpeg's bytes, honest"))
         self.assertEqual(entry["content_type"], "image/jpeg")
+        self.assertRegex(entry["backup_id"], r"\A[0-9a-f]{64}\Z")
 
     def test_manifest_object_itself_is_encrypted(self):
         self._backup()
@@ -259,28 +296,44 @@ class BackupTenantMediaTests(unittest.TestCase):
             json.loads(manifest_ciphertext)
 
     def test_backup_object_keys_never_contain_the_live_key(self):
-        # The live key is a tenant's own filename; a listing of the backup
-        # bucket must not leak it even before any key is destroyed.
         self._backup()
         for key in self.store.buckets["backup"]:
             self.assertNotIn("photo.jpg", key)
             self.assertNotIn("second.png", key)
             self.assertNotIn("2026/09", key)
 
+    def test_backup_object_keys_are_not_derived_from_the_plaintext_digest(self):
+        # Review cycle 2's finding: a content-addressed key is a
+        # fingerprint that survives crypto-shredding, because it needs no
+        # key at all to recompute from a known or guessed plaintext.
+        self._backup()
+        photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
+        second_digest = sha256_hex(b"a second uploaded file")
+        backup_keys = list(self.store.buckets["backup"])
+        self.assertFalse(any(photo_digest in key for key in backup_keys))
+        self.assertFalse(any(second_digest in key for key in backup_keys))
+
+    def test_sabotage_a_digest_derived_backup_id_is_caught_by_that_assertion(self):
+        # Reproduces the exact regression review cycle 2 found -- an id
+        # generator that returns the plaintext digest instead of a random
+        # id -- and shows the assertion above would have caught it.
+        self._backup(generate_backup_id=lambda *, digest: digest)
+        photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
+        backup_keys = list(self.store.buckets["backup"])
+        with self.assertRaises(AssertionError):
+            self.assertFalse(any(photo_digest in key for key in backup_keys))
+        # And, directly: the sabotaged run's key IS the digest.
+        self.assertIn(_object_key_for_backup("tenant-a", photo_digest), backup_keys)
+
     def test_a_live_object_literally_named_manifest_json_does_not_collide(self):
         self.store.put("live-a", "manifest.json", b"not actually a manifest")
         report = self._backup()
-        manifest_ciphertext = self.store.buckets["backup"]["media/tenant-a/manifest.json.age"]
-        manifest = json.loads(
-            manifest_ciphertext[len(f"-> X25519 {TENANT_A_RECIPIENT}\nstanza-body\n---\n".encode()) :]
-        )
+        manifest = self._manifest()
         self.assertEqual(manifest["tenant"], "tenant-a")
         self.assertEqual(manifest["object_count"], 3)
         self.assertIn("manifest.json", report.objects)
-        # The colliding live key's own ciphertext lives under objects/, at
-        # its content digest -- nowhere near the manifest key.
-        digest = sha256_hex(b"not actually a manifest")
-        self.assertIn(f"media/tenant-a/objects/{digest}.age", self.store.buckets["backup"])
+        backup_id = manifest["objects"]["manifest.json"]["backup_id"]
+        self.assertIn(_object_key_for_backup("tenant-a", backup_id), self.store.buckets["backup"])
 
     def test_floor_refuses_an_empty_live_bucket_by_default(self):
         self.store.buckets["live-a"] = {}
@@ -295,15 +348,10 @@ class BackupTenantMediaTests(unittest.TestCase):
         report = self._backup(confirm_tenant_has_no_media=True)
         self.assertEqual(report.object_count, 0)
         self.assertTrue(report.deliberately_empty)
-        manifest_ciphertext = self.store.buckets["backup"]["media/tenant-a/manifest.json.age"]
-        manifest = json.loads(
-            manifest_ciphertext[len(f"-> X25519 {TENANT_A_RECIPIENT}\nstanza-body\n---\n".encode()) :]
-        )
+        manifest = self._manifest()
         self.assertTrue(manifest["deliberately_empty"])
 
     def test_confirm_flag_is_ignored_when_media_actually_exists(self):
-        # The flag only relaxes the floor; it never marks a real backup as
-        # deliberately empty.
         report = self._backup(confirm_tenant_has_no_media=True)
         self.assertFalse(report.deliberately_empty)
         self.assertEqual(report.object_count, 2)
@@ -313,10 +361,6 @@ class BackupTenantMediaTests(unittest.TestCase):
             self._backup(encrypt=_fake_encrypt_two_recipients)
 
     def test_a_second_recipient_in_the_manifest_ciphertext_is_also_refused(self):
-        # Same guard, exercised on the manifest's own encrypt call rather
-        # than an object's -- both call sites go through
-        # _encrypt_to_exactly_one_recipient, but this proves it is not only
-        # wired to the first one.
         calls = []
 
         def encrypt_manifest_with_two_recipients(*, data, recipient):
@@ -331,17 +375,20 @@ class BackupTenantMediaTests(unittest.TestCase):
 
     def test_second_tenants_backup_does_not_touch_the_firsts(self):
         self._backup()
+        manifest_a = self._manifest()
         self.store.put("live-b", "content/images/only-b.jpg", b"tenant b's own bytes")
         self._backup(
             tenant="tenant-b",
             live_bucket="live-b",
             recipient=TENANT_B_RECIPIENT,
         )
+        manifest_b = self._manifest(tenant="tenant-b", identity_path=TENANT_B_IDENTITY)
         backed_up = self.store.buckets["backup"]
-        photo_digest = sha256_hex(b"a real jpeg's bytes, honest")
-        b_digest = sha256_hex(b"tenant b's own bytes")
-        self.assertIn(f"media/tenant-a/objects/{photo_digest}.age", backed_up)
-        self.assertIn(f"media/tenant-b/objects/{b_digest}.age", backed_up)
+        a_backup_id = manifest_a["objects"]["content/images/2026/09/photo.jpg"]["backup_id"]
+        b_backup_id = manifest_b["objects"]["content/images/only-b.jpg"]["backup_id"]
+        self.assertIn(_object_key_for_backup("tenant-a", a_backup_id), backed_up)
+        self.assertIn(_object_key_for_backup("tenant-b", b_backup_id), backed_up)
+        self.assertNotEqual(a_backup_id, b_backup_id)
 
 
 class RestoreTenantMediaTests(unittest.TestCase):
@@ -370,6 +417,13 @@ class RestoreTenantMediaTests(unittest.TestCase):
         # The genuine destroy: the object-storage round trip this story asks
         # for runs AFTER the source is gone, not merely reasoned about.
         del self.store.buckets["live-a"]["content/images/photo.jpg"]
+
+    def _manifest(self):
+        return _decrypt_manifest(self.store, bucket="backup", tenant="tenant-a", identity_path=TENANT_A_IDENTITY)
+
+    def _backup_key_for(self, live_key: str) -> str:
+        manifest = self._manifest()
+        return _object_key_for_backup("tenant-a", manifest["objects"][live_key]["backup_id"])
 
     def _restore(self, **overrides):
         kwargs = dict(
@@ -408,15 +462,14 @@ class RestoreTenantMediaTests(unittest.TestCase):
             self._restore()
 
     def test_control_missing_backup_object_fails_the_restore(self):
-        digest = sha256_hex(b"a real jpeg's bytes, honest")
-        del self.store.buckets["backup"][f"media/tenant-a/objects/{digest}.age"]
+        backup_key = self._backup_key_for("content/images/photo.jpg")
+        del self.store.buckets["backup"][backup_key]
         with self.assertRaises(MediaRestoreVerificationError):
             self._restore()
 
     def test_control_corrupt_backup_object_fails_the_checksum_comparison(self):
-        digest = sha256_hex(b"a real jpeg's bytes, honest")
-        key = f"media/tenant-a/objects/{digest}.age"
-        self.store.buckets["backup"][key] = self.store.buckets["backup"][key] + b"CORRUPTED"
+        backup_key = self._backup_key_for("content/images/photo.jpg")
+        self.store.buckets["backup"][backup_key] += b"CORRUPTED"
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
             self._restore()
         self.assertIn("different digest", str(ctx.exception))
@@ -436,9 +489,6 @@ class RestoreTenantMediaTests(unittest.TestCase):
         self.assertIn("cross-tenant", str(ctx.exception))
 
     def test_control_zero_objects_without_the_deliberate_mark_is_refused(self):
-        # Same shape as the reviewer's finding: an empty manifest that was
-        # NOT written by an explicit confirm_tenant_has_no_media call must
-        # not read as a successful restore of nothing.
         manifest_key = "media/tenant-a/manifest.json.age"
         tampered = json.dumps({"tenant": "tenant-a", "objects": {}}).encode()  # no deliberately_empty at all
         self.store.buckets["backup"][manifest_key] = _fake_encrypt(
@@ -447,6 +497,26 @@ class RestoreTenantMediaTests(unittest.TestCase):
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
             self._restore()
         self.assertIn("deliberately_empty", str(ctx.exception))
+
+    def test_control_an_unsafe_live_key_from_a_forged_manifest_is_refused_before_writing_to_target(self):
+        # A manifest is decrypted, not thereby trusted (branchLeft/workspace#1346).
+        # This constructs one naming a path-escaping live key and confirms
+        # restore refuses it before any write to the target bucket, rather
+        # than trusting whatever the manifest says to write.
+        real_manifest = self._manifest()
+        real_entry = real_manifest["objects"]["content/images/photo.jpg"]
+        forged = {
+            "tenant": "tenant-a",
+            "objects": {"../../escape.jpg": real_entry},
+            "deliberately_empty": False,
+        }
+        self.store.buckets["backup"]["media/tenant-a/manifest.json.age"] = _fake_encrypt(
+            data=json.dumps(forged).encode(), recipient=TENANT_A_RECIPIENT
+        )
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore(target_bucket="restored-a", target_access_key="ak", target_secret_key="sk")
+        self.assertIn("unsafe live key", str(ctx.exception))
+        self.assertNotIn("restored-a", self.store.buckets)
 
     def test_a_genuinely_deliberately_empty_manifest_restores_as_success(self):
         self.store.buckets["backup"] = {}
@@ -502,9 +572,8 @@ class RestoreTenantMediaTests(unittest.TestCase):
             put_object=self.store.put_object,
             encrypt=_fake_encrypt,
         )
-        digest = sha256_hex(b"second file bytes")
-        key = f"media/tenant-a/objects/{digest}.age"
-        self.store.buckets["backup"][key] += b"CORRUPTED"
+        backup_key = self._backup_key_for("content/images/second.jpg")
+        self.store.buckets["backup"][backup_key] += b"CORRUPTED"
         with self.assertRaises(MediaRestoreVerificationError):
             self._restore(target_bucket="restored-a", target_access_key="ak", target_secret_key="sk")
         # "photo.jpg" sorts before "second.jpg", so it was verified and

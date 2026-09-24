@@ -30,18 +30,28 @@ touches another tenant's backup or restore.
 Layout in the backup bucket, under a `media/<tenant>/` prefix so a tenant's
 media backup can never collide with another tenant's or with the database
 dumps sharing the same bucket:
-  media/<tenant>/objects/<sha256 of the plaintext>.age  -- ciphertext, one per distinct object
-  media/<tenant>/manifest.json.age                      -- {tenant, objects: {live key: {sha256, size, content_type}}, deliberately_empty}
+  media/<tenant>/objects/<random 64-hex-character id>.age  -- ciphertext, one per object
+  media/<tenant>/manifest.json.age                         -- {tenant, objects: {live key: {sha256, size, content_type, backup_id}}, deliberately_empty}
 
-Object keys are content-addressed, never the live key, on purpose: the live
-key is the tenant's own filename, and a listing of the backup bucket must not
-leak it even after the tenant's key is destroyed and the ciphertext itself is
-unreadable -- the mapping from a live key back to its digest lives only
-inside the encrypted manifest. Content-addressing also means the manifest key
-can never collide with an object key: every object lives under `objects/`,
-literally the string `objects/<64 lowercase hex characters>.age`, and the
-manifest never does, whatever a tenant happens to have uploaded a file named
--- including a file literally named `manifest.json`.
+Object keys are RANDOM, never the live key and never derived from the
+plaintext -- both were tried and both leak. The live key is the tenant's own
+filename; the plaintext's own SHA-256 is a content fingerprint that survives
+the tenant's key being destroyed just as easily, because it is computed
+before encryption and needs no key at all to recompute -- anyone who already
+knows (or can guess) a piece of content can check a tenant's backup listing
+for its hash forever, which is pseudonymisation, not erasure. A per-tenant
+HMAC does not fix this either: verifying it needs the HMAC key, and unless
+that key is destroyed in lockstep with the tenant's `age` identity it
+outlives the erasure the whole scheme exists to provide, which defeats the
+point more quietly than the plaintext digest did. So the backup id carries no
+relationship to the object's content or its live key at all -- see
+`generate_backup_object_id` -- and the live-key-to-id mapping, alongside the
+plaintext digest restore verification still uses, lives only inside the
+encrypted manifest. Content-addressing by a random id also means the
+manifest key can never collide with an object key: every object lives under
+`objects/`, literally the string `objects/<64 lowercase hex characters>.age`,
+and the manifest never does, whatever a tenant happens to have uploaded a
+file named -- including a file literally named `manifest.json`.
 
 The empty-backup floor is on by default, the same way `dump_tenant.py`'s
 row-count floor is not opt-in: a backup that lists zero live objects raises
@@ -67,6 +77,7 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import subprocess
 import sys
 
@@ -82,7 +93,14 @@ from shared_objectstorage import (  # noqa: E402
 MEDIA_PREFIX = "media"
 OBJECTS_PREFIX = "objects"
 
-_SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
+# Shape-checked, not content-checked: a backup id is 64 lowercase hex
+# characters, the same shape `secrets.token_hex(32)` produces and, not
+# coincidentally, the same shape a SHA-256 hex digest has -- the pattern
+# cannot and does not distinguish "random" from "content-derived" by
+# inspection, which is exactly why `generate_backup_object_id` is the one
+# function trusted to produce this value rather than any call site being
+# allowed to pass a digest directly.
+_OPAQUE_ID_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 
 # One line per `age` recipient stanza, e.g. "-> X25519 <base64>" or the
 # scrypt form "-> scrypt <base64> <n>". The `age` binary format spells this
@@ -131,16 +149,32 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _object_key_for_backup(tenant: str, digest_hex: str) -> str:
-    """The backup bucket's key for one object, addressed by the SHA-256 of
-    its plaintext rather than by the live key it came from -- see the module
-    docstring for why. `digest_hex` is always this module's own
-    `sha256_hex` output; the format check is defence in depth against a
-    corrupt manifest steering a restore at an unintended key, not a trust
-    boundary on external input."""
-    if not _SHA256_HEX.match(digest_hex):
-        raise MediaBackupError(f"not a SHA-256 hex digest: {digest_hex!r}")
-    return f"{MEDIA_PREFIX}/{tenant}/{OBJECTS_PREFIX}/{digest_hex}.age"
+def generate_backup_object_id(*, digest: str) -> str:
+    """A random id for one object's backup-bucket key, unrelated to its
+    content or its live key -- see the module docstring's "Object keys are
+    RANDOM" section for why a content-derived or per-tenant-HMAC-derived id
+    both leak. `digest` (the object's plaintext SHA-256) is accepted and
+    IGNORED: the parameter exists so a caller -- in practice, only this
+    module's own tests -- can inject a deliberately content-derived
+    replacement and demonstrate exactly what this function refuses to do,
+    not because the real implementation needs to see it.
+    `secrets.token_hex`, not `random` or a hash of anything: this value
+    never has to be reproduced from anything else, only generated once and
+    carried in the manifest, so there is no argument for it being anything
+    but unpredictable."""
+    del digest
+    return secrets.token_hex(32)
+
+
+def _object_key_for_backup(tenant: str, backup_id: str) -> str:
+    """The backup bucket's key for one object, addressed by its random
+    `backup_id` (see `generate_backup_object_id`) rather than by the live
+    key or the plaintext digest. The format check is defence in depth
+    against a corrupt or forged manifest steering a restore at an
+    unintended key, not a trust boundary on external input."""
+    if not _OPAQUE_ID_HEX.match(backup_id):
+        raise MediaBackupError(f"not a valid backup object id: {backup_id!r}")
+    return f"{MEDIA_PREFIX}/{tenant}/{OBJECTS_PREFIX}/{backup_id}.age"
 
 
 def _manifest_key(tenant: str) -> str:
@@ -149,6 +183,18 @@ def _manifest_key(tenant: str) -> str:
     # every one of those keys starts with `media/<tenant>/objects/` and this
     # one does not.
     return f"{MEDIA_PREFIX}/{tenant}/manifest.json.age"
+
+
+def _assert_safe_live_key(key: str) -> None:
+    """Refuses a live key read out of a DECRYPTED manifest before it is used
+    to build a target-bucket write path. A manifest is decrypted, not
+    thereby trusted -- see branchLeft/workspace#1346 on forged manifests --
+    so a `../` segment or a leading `/` that would write outside the
+    restore's intended location is refused here, on the way out, the same
+    way backup once refused it on the way in before object keys stopped
+    being derived from the live key at all."""
+    if key.startswith("/") or ".." in key.split("/"):
+        raise MediaRestoreVerificationError(f"refusing an unsafe live key from the manifest: {key!r}")
 
 
 def count_age_recipient_stanzas(ciphertext: bytes) -> int:
@@ -247,6 +293,7 @@ def backup_tenant_media(
     get_object_with_content_type=_default_get_object_with_content_type,
     put_object=_default_put_object,
     encrypt=encrypt_with_age,
+    generate_backup_id=generate_backup_object_id,
 ) -> BackupReport:
     """Pulls every object in `live_bucket`, encrypts each to `recipient`, and
     writes the ciphertext plus an encrypted manifest to `backup_bucket`.
@@ -289,6 +336,7 @@ def backup_tenant_media(
             key=key,
         )
         digest = sha256_hex(data)
+        backup_id = generate_backup_id(digest=digest)
         ciphertext = _encrypt_to_exactly_one_recipient(
             data=data, recipient=recipient, encrypt=encrypt, what=f"object {key!r}"
         )
@@ -298,10 +346,15 @@ def backup_tenant_media(
             region=region,
             access_key=backup_access_key,
             secret_key=backup_secret_key,
-            key=_object_key_for_backup(tenant, digest),
+            key=_object_key_for_backup(tenant, backup_id),
             data=ciphertext,
         )
-        manifest_objects[key] = {"sha256": digest, "size": len(data), "content_type": content_type}
+        manifest_objects[key] = {
+            "sha256": digest,
+            "size": len(data),
+            "content_type": content_type,
+            "backup_id": backup_id,
+        }
 
     deliberately_empty = not manifest_objects
     manifest = {
@@ -363,7 +416,11 @@ def restore_tenant_media(
     each object already verified before a later failure has ALREADY been
     written there -- a partial restore on disk is real and intended (the
     objects that did verify are genuinely recovered), only the return value
-    and exit code are all-or-nothing."""
+    and exit code are all-or-nothing. Each object's backup-bucket key comes
+    from `backup_id` in the manifest, never derived from the live key here;
+    the live key itself is only ever used as the write path into
+    `target_bucket`, and is checked by `_assert_safe_live_key` immediately
+    before that write -- a decrypted manifest is not thereby a trusted one."""
     try:
         manifest_ciphertext = get_object(
             bucket=backup_bucket,
@@ -398,7 +455,7 @@ def restore_tenant_media(
     verified: list[str] = []
     bytes_recovered = 0
     for key, expected in sorted(manifest_objects.items()):
-        backup_key = _object_key_for_backup(tenant, expected["sha256"])
+        backup_key = _object_key_for_backup(tenant, expected["backup_id"])
         try:
             ciphertext = get_object(
                 bucket=backup_bucket,
@@ -424,6 +481,7 @@ def restore_tenant_media(
             )
 
         if target_bucket is not None:
+            _assert_safe_live_key(key)
             put_object(
                 bucket=target_bucket,
                 endpoint=endpoint,

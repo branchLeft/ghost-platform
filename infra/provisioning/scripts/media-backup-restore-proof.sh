@@ -13,7 +13,7 @@
 # recovered bytes' digest, and every sabotage checks that the wrong outcome
 # is caught rather than reported as success.
 #
-# Six rounds:
+# Seven rounds:
 #   GREEN-1   real backup + restore, genuine destroy in between, digest match
 #   RED-1     a corrupted backup object must fail the restore  -> repaired
 #   RED-2     a missing backup object must fail the restore    -> repaired
@@ -25,6 +25,10 @@
 #   RED-5     a second age recipient in a ciphertext's own header must be
 #             refused, even though `encrypt_with_age`'s argv never carries
 #             one -> reverted
+#   RED-6     a backup id derived from the plaintext digest (review cycle
+#             2's finding: a content fingerprint that survives crypto-
+#             shredding) must not appear in the backup bucket's listing
+#             -> reverted
 # Plus one direct check outside the RED/GREEN frame: restoring with a
 # different tenant's identity is refused (the crypto-shredding property).
 #
@@ -75,12 +79,13 @@ fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
 cleanup() {
     docker rm -f "$GHOST_NAME" "$MINIO_NAME" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
-    # Belt-and-braces revert of the RED-4 and RED-5 sabotages, in case the
-    # script exited before their own explicit reverts ran. A saved copy on
-    # disk, not `git checkout --`: the latter depends on this file's commit
-    # state, which this trap has no reason to assume anything about, while a
-    # copy taken immediately before the sabotage is unconditionally correct.
-    for saved in "$WORKDIR/media_backup_restore.py.orig" "$WORKDIR/media_backup_restore.py.orig-red5"; do
+    # Belt-and-braces revert of the RED-4, RED-5 and RED-6 sabotages, in
+    # case the script exited before their own explicit reverts ran. A saved
+    # copy on disk, not `git checkout --`: the latter depends on this file's
+    # commit state, which this trap has no reason to assume anything about,
+    # while a copy taken immediately before the sabotage is unconditionally
+    # correct.
+    for saved in "$WORKDIR/media_backup_restore.py.orig" "$WORKDIR/media_backup_restore.py.orig-red5" "$WORKDIR/media_backup_restore.py.orig-red6"; do
         [ -f "$saved" ] && cp "$saved" "$SCRIPTS_DIR/media_backup_restore.py"
     done
     rm -rf "$WORKDIR"
@@ -257,6 +262,29 @@ run_restore() {
         --endpoint "$MINIO_ENDPOINT" --region "$REGION" --identity-file "$identity" $target_flag
 }
 
+# Backup ids are RANDOM (review cycle 2's own fix), so re-running a backup
+# -- every "repairing" step below does exactly that -- gives the SAME live
+# object a DIFFERENT backup key each time. A `BACKUP_KEY` computed once at
+# the top of this script would go stale the moment the first repair ran,
+# silently sabotaging every sabotage after it: corrupting or deleting an
+# orphaned key from a previous backup generation touches nothing the
+# manifest still points at, and the restore that follows "passes" for the
+# wrong reason. Resolved fresh, from the manifest, immediately before each
+# use instead.
+resolve_backup_key() {
+    manifest_json="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" manifest \
+        --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+        --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+        --bucket "$BACKUP_BUCKET" --tenant tenant-a --identity-file "$WORKDIR/tenant-a.identity")"
+    backup_id="$(echo "$manifest_json" | jq -r --arg k "$LIVE_KEY" '.objects[$k].backup_id')"
+    if [ -z "$backup_id" ] || [ "$backup_id" = "null" ]; then
+        echo "FAILED: resolve_backup_key: no backup_id for $LIVE_KEY in the current manifest: $manifest_json" >&2
+        exit 1
+    fi
+    python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" backup-object-key \
+        --tenant tenant-a --backup-id "$backup_id"
+}
+
 note "Backing up tenant-a's media through the real CLI entry point"
 if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
     pass "backup: exit 0, manifest + ciphertext written to the backup bucket"
@@ -264,28 +292,40 @@ else
     fail "backup: unexpected non-zero exit on a healthy backup"
 fi
 
-# The backup key is opaque and content-addressed (finding 2's fix), so this
-# proof cannot derive it from LIVE_KEY the way it used to -- it asks the
+# The backup key is opaque and RANDOM (review cycle 2's fix), so this proof
+# cannot derive it from LIVE_KEY -- or from the plaintext digest, tried in
+# cycle 1 and found to leak just as much -- the way it used to. It asks the
 # module for its own key, the same way any real caller would have to.
 MANIFEST_JSON="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" manifest \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
     --bucket "$BACKUP_BUCKET" --tenant tenant-a --identity-file "$WORKDIR/tenant-a.identity")"
 LIVE_KEY_SHA256="$(echo "$MANIFEST_JSON" | jq -r --arg k "$LIVE_KEY" '.objects[$k].sha256')"
+LIVE_KEY_BACKUP_ID="$(echo "$MANIFEST_JSON" | jq -r --arg k "$LIVE_KEY" '.objects[$k].backup_id')"
 [ -n "$LIVE_KEY_SHA256" ] && [ "$LIVE_KEY_SHA256" != "null" ] || {
     echo "FAILED: manifest did not record a sha256 for $LIVE_KEY: $MANIFEST_JSON" >&2
     exit 1
 }
+[ -n "$LIVE_KEY_BACKUP_ID" ] && [ "$LIVE_KEY_BACKUP_ID" != "null" ] || {
+    echo "FAILED: manifest did not record a backup_id for $LIVE_KEY: $MANIFEST_JSON" >&2
+    exit 1
+}
 BACKUP_KEY="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" backup-object-key \
-    --tenant tenant-a --sha256 "$LIVE_KEY_SHA256")"
-echo "manifest's live-key -> digest mapping resolved; backup object key: $BACKUP_KEY"
+    --tenant tenant-a --backup-id "$LIVE_KEY_BACKUP_ID")"
+echo "manifest's live-key -> backup_id mapping resolved; backup object key: $BACKUP_KEY"
 if echo "$BACKUP_KEY" | grep -qF "$LIVE_KEY"; then
     fail "the backup object key contains the live key's own text -- opacity is broken"
 else
-    pass "the backup object key is content-addressed and carries no trace of the live key or its path"
+    pass "the backup object key carries no trace of the live key or its path"
+fi
+if [ "$LIVE_KEY_BACKUP_ID" = "$LIVE_KEY_SHA256" ]; then
+    fail "the backup id equals the plaintext digest -- content fingerprint present (review cycle 2's finding)"
+else
+    pass "the backup id is not the plaintext digest -- random, not content-derived"
 fi
 
 note "RED-1: a corrupted backup object must fail the restore"
+BACKUP_KEY="$(resolve_backup_key)"
 python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" corrupt \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
@@ -299,6 +339,7 @@ echo "-- repairing: re-running a clean backup (source is still live) --"
 run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 
 note "RED-2: a missing backup object must fail the restore"
+BACKUP_KEY="$(resolve_backup_key)"
 python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" delete \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
@@ -341,6 +382,7 @@ else
     echo "FAILED: the sed sabotage did not change the file -- cannot prove the wiring test" >&2
     exit 1
 fi
+BACKUP_KEY="$(resolve_backup_key)"
 python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" corrupt \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
@@ -394,6 +436,68 @@ fi
 echo "-- repairing: re-running a clean backup (source is still live) --"
 run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
 
+note "RED-6: reproduce review cycle 2's attack -- a content-derived backup id must not appear in the listing"
+cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-red6"
+sed -i.bak \
+    -e "s/    del digest$/    pass  # SABOTAGE: digest kept rather than discarded/" \
+    -e "s/    return secrets.token_hex(32)$/    return digest  # SABOTAGE: content-derived id, not random/" \
+    "$SCRIPTS_DIR/media_backup_restore.py"
+if ! diff -q "$WORKDIR/media_backup_restore.py.orig-red6" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
+    echo "digest-derived-id sabotage applied: generate_backup_object_id now returns the plaintext digest"
+else
+    echo "FAILED: the sed sabotage did not change the file -- cannot prove this control" >&2
+    exit 1
+fi
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
+SABOTAGED_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" --bucket "$BACKUP_BUCKET")"
+if echo "$SABOTAGED_LISTING" | grep -qF "$LIVE_KEY_SHA256"; then
+    pass "RED-6: with the sabotage applied, the backup bucket's listing now contains the plaintext digest (control proven -- this is exactly what review cycle 2 found)"
+else
+    fail "RED-6: sabotaged backup did NOT leak the plaintext digest into the listing -- unexpected"
+fi
+echo "-- reverting the digest-derived-id sabotage --"
+cp "$WORKDIR/media_backup_restore.py.orig-red6" "$SCRIPTS_DIR/media_backup_restore.py"
+rm -f "$SCRIPTS_DIR/media_backup_restore.py.bak"
+if diff -q "$WORKDIR/media_backup_restore.py.orig-red6" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
+    echo "digest-derived-id sabotage reverted: file matches the pre-sabotage original"
+else
+    echo "FAILED: revert did not restore the original file" >&2
+    exit 1
+fi
+# The sabotaged run's object -- keyed by the digest itself -- is now
+# orphaned by a fresh backup (a new random id), not overwritten: reverting
+# the CODE does not un-leak an object a prior, sabotaged run already wrote.
+# That is real and worth being honest about rather than papering over, so
+# this cleans it up explicitly rather than letting a stale "clean" listing
+# check quietly stop meaning what it says.
+python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" delete \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" \
+    --key "$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" backup-object-key --tenant tenant-a --backup-id "$LIVE_KEY_SHA256")"
+echo "-- repairing: re-running a clean backup (source is still live) --"
+run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
+REPAIRED_BACKUP_ID="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" manifest \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
+    --bucket "$BACKUP_BUCKET" --tenant tenant-a --identity-file "$WORKDIR/tenant-a.identity" \
+    | jq -r --arg k "$LIVE_KEY" '.objects[$k].backup_id')"
+if [ "$REPAIRED_BACKUP_ID" = "$LIVE_KEY_SHA256" ]; then
+    fail "RED-6 revert: the repaired backup's own backup_id is STILL the plaintext digest"
+else
+    pass "RED-6 reverted: the repaired backup's id is random again, not the plaintext digest"
+fi
+REPAIRED_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
+    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
+    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" --bucket "$BACKUP_BUCKET")"
+if echo "$REPAIRED_LISTING" | grep -qF "$LIVE_KEY_SHA256"; then
+    fail "RED-6 revert: the plaintext digest is STILL in the listing after cleaning up the orphan"
+else
+    pass "RED-6 reverted: the backup bucket's listing no longer contains the plaintext digest"
+fi
+
 note "Direct check: a different tenant's identity cannot restore tenant-a's media"
 if run_restore "$WORKDIR/tenant-b.identity" ""; then
     fail "restore succeeded with tenant-b's identity against tenant-a's backup -- crypto-shredding property broken"
@@ -442,7 +546,7 @@ fi
 
 note "Summary"
 if [ "$FAILURES" -eq 0 ]; then
-    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code and a second age recipient are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are opaque and content-addressed."
+    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code, a second age recipient and a content-derived backup id are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are random, not derived from the live key or the plaintext digest."
     exit 0
 else
     echo "PROOF FAILED: $FAILURES check(s) did not behave as expected -- see the FAIL lines above."

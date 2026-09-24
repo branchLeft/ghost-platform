@@ -393,6 +393,36 @@ class GetObjectWithContentTypeTests(unittest.TestCase):
                 access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
             )
 
+    def test_the_lookup_is_case_insensitive_lowercase(self):
+        def fake_transport(url, headers):
+            return 200, b"bytes", {"content-type": "video/mp4"}
+
+        _, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(content_type, "video/mp4")
+
+    def test_the_lookup_is_case_insensitive_uppercase(self):
+        def fake_transport(url, headers):
+            return 200, b"bytes", {"CONTENT-TYPE": "audio/mpeg"}
+
+        _, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(content_type, "audio/mpeg")
+
+    def test_the_lookup_is_case_insensitive_mixed_case(self):
+        def fake_transport(url, headers):
+            return 200, b"bytes", {"Content-type": "application/pdf"}
+
+        _, content_type = os3.get_object_with_content_type(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="SECRET", key="k", transport=fake_transport,
+        )
+        self.assertEqual(content_type, "application/pdf")
+
 
 class OwnerIdTests(unittest.TestCase):
     """The account a credential belongs to, which is half of every policy principal.
