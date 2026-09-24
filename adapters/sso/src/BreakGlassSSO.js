@@ -13,4 +13,13 @@ try {
   logger = undefined;
 }
 
-module.exports = defineBreakGlassSSO(SSOBase, { logger });
+// The one read this adapter makes of Ghost's own data: is the configured
+// account active right now, by the same test Ghost's session lookup applies.
+// Required lazily, at request time, so the boot path never loads the models.
+async function isAccountActive(email, id) {
+  const models = require('../../models');
+  const user = await models.User.findOne({ id, email, status: 'active' });
+  return Boolean(user);
+}
+
+module.exports = defineBreakGlassSSO(SSOBase, { logger, isAccountActive });

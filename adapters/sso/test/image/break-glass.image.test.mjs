@@ -269,18 +269,21 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     assert.deepEqual(r.adapter, []);
   });
 
-  // The adapter cannot see an account's status, so it accepts the token and
-  // Ghost creates a session row; Ghost then refuses that session on every
-  // request while the account stays suspended. The row is left in place: it is
-  // the known residual (README, "Known residual") and this test shows it.
-  it('support SUSPENDED + valid token: no usable session, but a dormant session row (known residual)', async () => {
+  // Ghost's own lookup returns suspended accounts, and a session created for
+  // one wakes up when the account is un-suspended. The adapter reads the
+  // account's status and refuses first, so no session exists to wake.
+  it('support SUSPENDED + valid token: refused by the adapter, no session row, nothing wakes on un-suspend', async () => {
     const sessions = () =>
       ghost.sql('select count(*) as n from sessions where user_id = ?', supportId)[0].n;
     const before = sessions();
     const r = await ghost.attempt(validToken());
     assert.deepEqual({ status: r.status, email: r.email }, { status: 403, email: null });
-    assert.deepEqual(r.adapter, ['break-glass: token accepted for the configured identity']);
-    assert.equal(sessions(), before + 1);
+    assert.deepEqual(r.adapter, ['break-glass: token refused (account not active)']);
+    assert.equal(sessions(), before);
+    ghost.setSupportStatus('active');
+    assert.equal((await ghost.me(r.cookie || undefined)).status, 403);
+    assert.equal(sessions(), before);
+    ghost.setSupportStatus('inactive');
   });
 
   let liveToken;

@@ -41,7 +41,7 @@ The checks run in this order, all offline: signature, audience, expiry and issue
 
 ### Single use, and where it stops
 
-A `jti` is recorded only after every check has passed and the account has been found. A refused token therefore never uses up a legitimate `jti`. The record is kept in memory until the token expires, and an entry lost to a restart does not matter: a token issued before the current process started is refused outright. This costs one thing: a token minted shortly before a Ghost restart must be minted again. Nothing is persisted, because the content directory is tenant-writable and a file on the boot path is a boot risk.
+A `jti` is recorded only after every check has passed and the account has been found active. A refused token therefore never uses up a legitimate `jti`. The record is kept in memory until the token expires, and an entry lost to a restart does not matter: a token issued before the current process started is refused outright. This costs one thing: a token minted shortly before a Ghost restart must be minted again. Nothing is persisted, because the content directory is tenant-writable and a file on the boot path is a boot risk.
 
 Single use covers the request that opens the session. It does not make the URL safe to expose:
 
@@ -61,13 +61,15 @@ Ghost 6.55.0 constructs the adapter while building the admin app (`core/server/s
 
 1. **It runs on the boot path.** A throw from the module load, the constructor, or a static `validate` stops Ghost starting, and readers are not served. The constructor cannot throw, there is no static `validate`, and the adapter requires only `node:crypto` and modules Ghost already resolves from its own directory.
 2. **The obvious adapter lets a token log in as anybody.** An adapter that resolves the token's subject can mint an Owner session. This one checks the subject against its configuration and only ever looks up the configured identity.
-3. **Suspension is Ghost's check, not the adapter's.** The adapter receives only `getByEmail` and `getOwner`, and `getByEmail` returns suspended users too. Ghost refuses a suspended account on every request, so a cookie issued while suspended is refused at once. See *Known residual* below.
+3. **Ghost's lookup returns suspended accounts.** The adapter receives only `getByEmail` and `getOwner`, and `getByEmail` finds users of any status. Ghost refuses a suspended account's session on every request, but it would still create one. The adapter therefore checks the status itself (see below).
 4. **Failures are silent.** Ghost mounts the adapter with `callNextWithError: false`, so any error falls through to the login page.
 5. **Load order.** Ghost looks in `node_modules`, then `core/server/adapters/`, then the content directory, and stops at the first hit. Shipping in `core/server/adapters/` means a planted content adapter with the same name is never loaded. The image test proves this.
 
-## Known residual
+## The one read of Ghost's data: account status
 
-A valid, unused token presented while the account is suspended makes Ghost create a verified session row for that account. The adapter cannot see an account's status, so it accepts the token. The row is refused while the account stays suspended. It becomes a live Administrator session when the account is un-suspended, through the Staff screen as well as the database, for as long as Ghost keeps sessions (180 days by default). Nothing in Ghost destroys a user's sessions when their status changes. A revoke cannot reach the row either, because the row is created after the revoke. The image test asserts that the row exists. Closing this fully needs a decision outside this adapter's current bounds, and until then no tenant should have break-glass turned on.
+Ghost's user lookup for SSO returns suspended accounts too. Left alone, Ghost would create a verified session for a suspended account, refuse it while the account stays suspended, and bring it back to life when the account is un-suspended. That can happen through the Staff screen, and for as long as Ghost keeps sessions (180 days by default). Nothing in Ghost destroys a user's sessions when their status changes, and a revoke cannot reach a session created after it.
+
+So before returning the account, the adapter asks Ghost's `User` model whether the configured account, by id and email, is active now. It applies the same test Ghost's own session lookup uses (`status: 'active'`, which covers Ghost's active states). A suspended or otherwise inactive account is refused, with the reason `account not active`, and no session is created. A failed read is refused too (`account status unreadable`). This is a read, never a write. It is the only access the adapter has beyond the two lookups Ghost hands it, and the models are required at request time, never on the boot path. The image test proves that a token presented while suspended leaves no session row, and that nothing wakes when the account is un-suspended.
 
 ## Tests
 

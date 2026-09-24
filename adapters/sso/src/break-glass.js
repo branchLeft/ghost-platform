@@ -70,7 +70,7 @@ function parseConfig(config) {
  * Builds the adapter class over Ghost's SSO base class. Kept apart from the
  * entry file so the logic is testable without Ghost's module tree.
  */
-function defineBreakGlassSSO(SSOBase, { logger, now = Date.now } = {}) {
+function defineBreakGlassSSO(SSOBase, { logger, now = Date.now, isAccountActive } = {}) {
   const log =
     logger && typeof logger.warn === 'function' && typeof logger.info === 'function'
       ? logger
@@ -232,6 +232,20 @@ function defineBreakGlassSSO(SSOBase, { logger, now = Date.now } = {}) {
         const user = await this.getUserByEmail(this.#identity);
         if (!user) {
           return this.#refuse('no such account');
+        }
+        // Ghost's lookup returns suspended accounts too, and Ghost would create
+        // a session that wakes up when the account is un-suspended. So the
+        // account must be active now; anything unreadable is a refusal.
+        let active = false;
+        try {
+          active =
+            typeof isAccountActive === 'function' &&
+            (await isAccountActive(this.#identity, user.id)) === true;
+        } catch {
+          return this.#refuse('account status unreadable');
+        }
+        if (!active) {
+          return this.#refuse('account not active');
         }
         // Synchronous from here to the set, so concurrent requests carrying
         // the same token cannot both pass.

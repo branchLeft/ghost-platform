@@ -35,15 +35,21 @@ function makeLogger() {
   return { info: vi.fn(), warn: vi.fn() };
 }
 
-function makeAdapter({ config, logger = makeLogger(), now = () => NOW_MS, users } = {}) {
-  const BreakGlassSSO = defineBreakGlassSSO(SSOBase, { logger, now });
+function makeAdapter({
+  config,
+  logger = makeLogger(),
+  now = () => NOW_MS,
+  users,
+  isAccountActive = vi.fn(async () => true),
+} = {}) {
+  const BreakGlassSSO = defineBreakGlassSSO(SSOBase, { logger, now, isAccountActive });
   const adapter = new BreakGlassSSO(config ?? goodConfig);
   const repository = users ?? {
     getByEmail: vi.fn(async (email) => ({ id: `id-of-${email}`, email })),
     getOwner: vi.fn(async () => ({ id: 'owner-id', email: OWNER })),
   };
   adapter.setUserRepository(repository);
-  return { adapter, logger, repository };
+  return { adapter, logger, repository, isAccountActive };
 }
 
 function token(overrides = {}, key = tenantKey.privateKey) {
@@ -160,7 +166,10 @@ describe('construction on the boot path', () => {
   });
 
   it('falls back to a silent logger when the one given is incomplete, and to Date.now by default', async () => {
-    const BreakGlassSSO = defineBreakGlassSSO(SSOBase, { logger: { warn() {} } });
+    const BreakGlassSSO = defineBreakGlassSSO(SSOBase, {
+      logger: { warn() {} },
+      isAccountActive: async () => true,
+    });
     const adapter = new BreakGlassSSO(goodConfig);
     adapter.setUserRepository({
       getByEmail: async (email) => ({ id: 'x', email }),
@@ -417,6 +426,50 @@ describe('single use', () => {
     expect(refusalReasons(logger)).toEqual(['break-glass: token refused (replay cache full)']);
     expect(await present(adapter, token({ jti: 'fill-0' }))).toBeNull();
   }, 30_000);
+});
+
+describe('account status', () => {
+  it('asks whether the configured account, by its id, is active', async () => {
+    const { adapter, isAccountActive } = makeAdapter();
+    expect(await present(adapter, token())).toMatchObject({ email: SUPPORT });
+    expect(isAccountActive).toHaveBeenCalledExactlyOnceWith(SUPPORT, `id-of-${SUPPORT}`);
+  });
+
+  it('refuses a suspended account, creates no session, and does not consume the token', async () => {
+    let active = false;
+    const { adapter, logger } = makeAdapter({ isAccountActive: async () => active });
+    const t = token();
+    expect(await present(adapter, t)).toBeNull();
+    expect(refusalReasons(logger)).toEqual(['break-glass: token refused (account not active)']);
+    expect(logger.info).not.toHaveBeenCalled();
+    active = true;
+    expect(await present(adapter, t)).toMatchObject({ email: SUPPORT });
+  });
+
+  it.each([
+    ['a truthy non-boolean answer', async () => 'yes', 'account not active'],
+    ['no status reader at all', undefined, 'account not active'],
+    [
+      'a status read that fails',
+      async () => {
+        throw new Error('db down');
+      },
+      'account status unreadable',
+    ],
+  ])('refuses on %s', async (_name, isAccountActive, reason) => {
+    const logger = makeLogger();
+    const adapter = new (defineBreakGlassSSO(SSOBase, {
+      logger,
+      now: () => NOW_MS,
+      isAccountActive,
+    }))(goodConfig);
+    adapter.setUserRepository({
+      getByEmail: async (email) => ({ id: 'support-id', email }),
+      getOwner: async () => null,
+    });
+    expect(await present(adapter, token())).toBeNull();
+    expect(refusalReasons(logger)).toEqual([`break-glass: token refused (${reason})`]);
+  });
 });
 
 describe('getUserForIdentity', () => {
