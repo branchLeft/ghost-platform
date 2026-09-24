@@ -13,12 +13,17 @@ import { CLI_ENV_VARS } from '../../src/env.js';
 // checks both the GitHub annotation prefix on stdout/stderr and the
 // $GITHUB_STEP_SUMMARY file content, not just the return code.
 
-const GITHUB_RELEASES_URL = 'api.github.com';
+const GITHUB_RELEASES_HOST = 'api.github.com';
 
 function fetchStub(githubBody: unknown, ntfyOk = true) {
   return vi.fn(async (url: string | URL) => {
-    const href = String(url);
-    if (href.includes(GITHUB_RELEASES_URL)) {
+    // An exact hostname match, not a substring check -- a substring like
+    // `href.includes('api.github.com')` would also match an attacker host
+    // such as `api.github.com.evil.example`, which is exactly what this
+    // stub must not model: it fakes ghostReleases.ts's real request
+    // target, so it needs the same precision that code has to have.
+    const { hostname } = new URL(String(url));
+    if (hostname === GITHUB_RELEASES_HOST) {
       return { ok: true, status: 200, statusText: 'OK', json: async () => githubBody } as Response;
     }
     return {
