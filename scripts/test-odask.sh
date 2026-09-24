@@ -62,7 +62,7 @@ ODASK="odask-proof-odask-$RUN_ID"
 WORK="$(mktemp -d)"
 mkdir -m 0755 "$WORK/descriptors"
 cat >"$WORK/descriptors/tenant-one.json" <<EOF
-{"hostname": {"kind": "ours", "sub": "tenant-one", "gated": false}}
+{"kind": "tenant", "hostname": {"kind": "ours", "sub": "tenant-one", "gated": false}}
 EOF
 FAILURES=0
 
@@ -102,8 +102,13 @@ docker run -d --name "$PEBBLE" --network "$NET" --ip "$PEBBLE_IP" --network-alia
     -v "$PROOF/pebble-config.json:/test/config/pebble-config.json:ro" \
     "$PEBBLE_IMAGE" -config /test/config/pebble-config.json -dnsserver "$CHALLTESTSRV_IP:8053" >/dev/null
 
+# BIND_HOST is the container's own fixed address, not 0.0.0.0 -- config.ts
+# refuses a wildcard bind outright, and this proof's own point is to show
+# what a correctly bound deployment looks like, not merely what odask
+# happens to accept.
 docker run -d --name "$ODASK" --network "$NET" --ip "$ODASK_IP" --network-alias odask \
-    -e "BIND_HOST=0.0.0.0" -e "DESCRIPTOR_DIR=/descriptors" -e "BASE_DOMAIN=$BASE_DOMAIN" \
+    -e "BIND_HOST=$ODASK_IP" -e "DESCRIPTOR_DIR=/descriptors" -e "BASE_DOMAIN=$BASE_DOMAIN" \
+    -e "OWNED_DOMAINS=publicpress.co.uk,trypublicpress.co.uk" \
     -e "RATE_LIMIT_CAPACITY=10" -e "RATE_LIMIT_REFILL_PER_SECOND=1" \
     -v "$WORK/descriptors:/descriptors:ro" \
     "$ODASK_IMAGE" >/dev/null
