@@ -122,6 +122,7 @@ describe('the real dist/server.js entrypoint', () => {
   async function baseEnv(): Promise<{
     env: Record<string, string>;
     keyPair: ReturnType<typeof generateTestKeyPair>;
+    stateDir: string;
   }> {
     const root = await makeTempDir('broker-spawn-');
     const keyPair = generateTestKeyPair();
@@ -137,6 +138,7 @@ describe('the real dist/server.js entrypoint', () => {
     await mkdir(slotDirBase, { recursive: true });
     return {
       keyPair,
+      stateDir,
       env: {
         PORT: String(await findFreePort()),
         LISTEN_HOST: '127.0.0.1',
@@ -255,5 +257,46 @@ describe('the real dist/server.js entrypoint', () => {
     const statusRes = await fetch(`${baseUrl}/status/0`);
     expect(statusRes.status).toBe(200);
     expect(await statusRes.json()).toEqual({ slot: '0', phase: 'running', healthy: false });
+  });
+
+  // --- Item 4: a slot left "preparing" by a process whose lock holder
+  // died is recovered at boot, before this process ever listens. ---
+  it('recovers a slot left "preparing" by a dead process: /status reads "error", one /reset then frees it', async () => {
+    const root = await makeTempDir('broker-plugin-');
+    const { env, keyPair, stateDir } = await baseEnv();
+    // The exact shape a crash mid-`/reconcile` leaves: the per-slot lock
+    // was in that dead process's memory, so nothing here can still be
+    // holding it.
+    await writeFile(join(stateDir, '2.json'), JSON.stringify({ phase: 'preparing' }));
+
+    const renderer = await writeValidRendererPlugin(root);
+    const adminApi = await writeValidAdminApiPlugin(root);
+    const drainSource = await writeValidDrainSourcePlugin(root);
+    broker = spawnBroker({
+      ...env,
+      BROKER_RENDERER_MODULE: renderer,
+      BROKER_ADMIN_API_MODULE: adminApi,
+      BROKER_DRAIN_SOURCE_MODULE: drainSource,
+    });
+    const { port } = await broker.waitListening(8000);
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    // Recovered, not left looking like a live in-flight reconcile.
+    const statusRes = await fetch(`${baseUrl}/status/2`);
+    expect(await statusRes.json()).toEqual({ slot: '2', phase: 'error', healthy: false });
+
+    await new Promise((resolve) => setTimeout(resolve, 1100)); // past item 2's same-second floor
+
+    const body = Buffer.from(JSON.stringify({ slot: '2' }));
+    const headers = signHeaders(keyPair, 'POST', '/reset', body, Math.floor(Date.now() / 1000));
+    const resetRes = await fetch(`${baseUrl}/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body,
+    });
+    expect(resetRes.status).toBe(200);
+
+    const statusAfterReset = await fetch(`${baseUrl}/status/2`);
+    expect(await statusAfterReset.json()).toEqual({ slot: '2', phase: 'free', healthy: false });
   });
 });

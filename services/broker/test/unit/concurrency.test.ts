@@ -228,6 +228,38 @@ describe('concurrency and recycle-contract regressions', () => {
     expect(newHash.status).toBe(200);
   });
 
+  // Item 5 (N2, ghost-platform#244 review): `assertHashRotated` compares
+  // only against the immediately previous tenancy, so a hash from two
+  // recycles back is accepted on a third reconcile -- documented in
+  // `stateStore.ts` as within `render-core/src/lease.ts`'s contract as
+  // written ("replaced on every recycle" is a one-step comparison), not a
+  // gap. Pinned here so a future reader sees this is deliberate, not
+  // untested.
+  it('accepts a hash from two recycles back (A -> B -> A): the one-step rotation contract as documented, not a gap', async () => {
+    broker = await startTestBroker();
+    const first = await broker.signedFetch('POST', '/reconcile', {
+      slot: '6',
+      descriptor: descFor('rotate-history', 'HIST-A', '6'),
+    });
+    expect(first.status).toBe(200);
+
+    await broker.signedFetch('POST', '/reset', { slot: '6' });
+    const second = await broker.signedFetch('POST', '/reconcile', {
+      slot: '6',
+      descriptor: descFor('rotate-history', 'HIST-B', '6'),
+    });
+    expect(second.status).toBe(200);
+
+    await broker.signedFetch('POST', '/reset', { slot: '6' });
+    // Hash "HIST-A" again -- two recycles back, not the immediately
+    // previous tenancy ("HIST-B"), so `assertHashRotated` admits it.
+    const third = await broker.signedFetch('POST', '/reconcile', {
+      slot: '6',
+      descriptor: descFor('rotate-history', 'HIST-A', '6'),
+    });
+    expect(third.status).toBe(200);
+  });
+
   // F10: a reset whose teardown fails must not leave the previous visitor
   // admitted -- revoke (clear lease/hash) happens before the wrapper runs.
   it('a reset whose wrapper call fails has already cleared the lease and hash', async () => {
