@@ -34,12 +34,14 @@ import { afterEach, describe, expect, it } from 'vitest';
  * non-empty string (config.ts throws otherwise), so the `&&` is a no-op in
  * disguise -- every request still reads as "bound to config.bindHost" in
  * a log line or a config dump, while the process actually binds every
- * interface. BIND_HOST itself cannot be set to a wildcard value to
- * reproduce this (config.ts refuses `0.0.0.0`/`::`/`[::]` outright, in
- * config.test.ts) -- this is the other half of the same claim: a correctly
- * *configured* wildcard is refused before the process starts at all, and a
- * *mis-wired* specific one is caught here, once the process is actually
- * running.
+ * interface.
+ *
+ * A second sabotage the second describe block below guards, the same way:
+ * delete the post-listen `isEveryInterfaceAddress` check in server.ts
+ * entirely. `BIND_HOST=0.0.0.0` is still refused (config.ts's own string
+ * check), but `BIND_HOST=0` -- and `::0`, `0::`, `::ffff:0.0.0.0` -- are
+ * not spellings that check lists, so with the post-listen guard gone all
+ * four start, bind every interface, and this suite is what notices.
  */
 const otherInterfaceAddress = (): string | undefined => {
   for (const addrs of Object.values(networkInterfaces())) {
@@ -110,13 +112,21 @@ async function spawnRealServer(bindHost: string): Promise<RunningServer> {
     });
   });
 
-  await Promise.race([
-    listening,
-    exited,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('odask did not report listening within 5s')), 5000)
-    ),
-  ]);
+  try {
+    await Promise.race([
+      listening,
+      exited,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('odask did not report listening within 5s')), 5000)
+      ),
+    ]);
+  } catch (error) {
+    // The process never reached a state kill() would otherwise clean up
+    // after (it exited on its own, or timed out) -- this is the only
+    // place that outcome's descriptor dir gets removed.
+    rmSync(descriptorDir, { recursive: true, force: true });
+    throw error;
+  }
 
   return {
     port,
@@ -175,3 +185,18 @@ describe.skipIf(OTHER_ADDRESS === undefined)(
     }, 10000);
   }
 );
+
+/**
+ * Four spellings that all normalise to "every interface" at the kernel
+ * (Node's own `net` module), none of which `config.ts`'s string check
+ * happens to list. Each is proven against the real built entrypoint: the
+ * process must refuse to run, not merely start and (as it did before this
+ * fix) still answer on an interface the string check never considered.
+ */
+describe('the real dist/server.js refuses to run on any BIND_HOST that resolves to every interface', () => {
+  it.each(['0', '::0', '0::', '::ffff:0.0.0.0'])('%j', async (bindHost) => {
+    await expect(spawnRealServer(bindHost)).rejects.toThrow(
+      /exited early \(code 1\).*every interface/s
+    );
+  });
+});

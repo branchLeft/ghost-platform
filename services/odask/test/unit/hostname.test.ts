@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isSyntacticallyValidHostname, normalizeHostname } from '../../src/hostname.js';
+import {
+  isEveryInterfaceAddress,
+  isSyntacticallyValidHostname,
+  normalizeHostname,
+} from '../../src/hostname.js';
 
 describe('isSyntacticallyValidHostname', () => {
   it.each([
@@ -46,4 +50,17 @@ describe('normalizeHostname', () => {
     const b = normalizeHostname('tenant-one.example');
     expect(a).toBe(b);
   });
+});
+
+describe('isEveryInterfaceAddress', () => {
+  it.each(['0.0.0.0', '::'])('treats %j as every interface', (address) => {
+    expect(isEveryInterfaceAddress(address)).toBe(true);
+  });
+
+  it.each(['127.0.0.1', '10.20.1.50', '::1', 'fd00::1', '0.0.0.1', ':::', '0.0.0.0.', ''])(
+    'does not treat %j as every interface',
+    (address) => {
+      expect(isEveryInterfaceAddress(address)).toBe(false);
+    }
+  );
 });

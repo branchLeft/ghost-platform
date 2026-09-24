@@ -35,6 +35,23 @@ export function normalizeHostname(value: string): string {
   return lower.endsWith('.') ? lower.slice(0, -1) : lower;
 }
 
+/**
+ * Whether `address` is what Node's `net` module actually binds an "every
+ * interface" request to, once `listen()` has succeeded -- not what an
+ * operator typed. `0`, `0.0.0.0`, `::`, `::0`, `0::` and
+ * `::ffff:0.0.0.0` (among others) all normalise to exactly one of these
+ * two strings in `server.address().address`. The set of spellings an
+ * operator could type is unbounded; the kernel's own answer is not --
+ * config.ts's string check on `BIND_HOST` itself is only ever a fast,
+ * friendly early error for the spellings it happens to list, never the
+ * real guard. server.ts checks this function's answer against the real
+ * bound address after `listen()`, which is why it catches every spelling
+ * by construction rather than by enumeration.
+ */
+export function isEveryInterfaceAddress(address: string): boolean {
+  return address === '0.0.0.0' || address === '::';
+}
+
 // Deriving which hostname a descriptor is served on -- and which
 // descriptors must never reach a per-hostname certificate decision at all
 // (a demo's `ours` hostname; a `theirs` fqdn that is itself one of the
