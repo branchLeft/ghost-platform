@@ -158,7 +158,7 @@ describe('runCli set-sender-domain', () => {
 
     expect(code).toBe(0);
     expect(stderr).toEqual([]);
-    expect(stdout.some((line) => line.includes('branchleft.co.uk'))).toBe(true);
+    expect(stdout).toEqual(["Set blog.branchleft.co.uk's sender domain to branchleft.co.uk."]);
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
