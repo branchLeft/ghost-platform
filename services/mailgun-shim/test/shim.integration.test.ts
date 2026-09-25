@@ -1,11 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Interfaces } from 'mailgun.js';
 import nodemailer from 'nodemailer';
-import { createCollector, type Collector } from './helpers/collector.js';
+import { createCollector, type Collector, type DrainedWireMessage } from './helpers/collector.js';
 import { createMailgunClient } from './helpers/mailgunClient.js';
 import { startSmtpSink, type SmtpSink } from './helpers/smtpSink.js';
 import { startTestShim, type TestShim } from './helpers/testServer.js';
 import { createThrottle } from '../src/throttle.js';
+
+/**
+ * Reads `GET /drain` directly, the same real route the production collector
+ * will eventually poll, but without also routing the result through
+ * nodemailer's own rendering (`collector.ts`'s `drainOnce`) — a collector
+ * that renders via nodemailer happens to mask a raw `headers.From` (or a
+ * CRLF-carrying value) surviving into the wire payload, because
+ * nodemailer's own `setHeader` overrides a custom `From` and folds a bare
+ * CRLF when it later builds the outgoing message. Proving the drain
+ * payload itself is clean — independent of whatever eventually consumes it
+ * — is the point of the tests that use this helper. Never acks, so it
+ * never competes with `collector` for the same row within one test.
+ */
+async function rawDrainOnce(shim: TestShim): Promise<{ messages: DrainedWireMessage[] }> {
+  const res = await fetch(`${shim.baseUrl}/drain`, {
+    headers: { Authorization: `Bearer ${shim.drainToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`GET /drain failed: ${res.status}`);
+  }
+  return (await res.json()) as { messages: DrainedWireMessage[] };
+}
 
 // mailgun.js is the exact client library Ghost bundles
 // (mailgun-client.js:367-370 constructs it the same way: `new
@@ -694,6 +716,151 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     // addHeader would for a header setHeader never touches.
     const fromLines = received[0]!.parsed.headerLines.filter((l) => l.key === 'from');
     expect(fromLines).toHaveLength(1);
+  });
+
+  // Review cycle 6: intake (mailgunFields.ts) now drops every h:* key that
+  // normalises to 'From' too, the same way it already drops 'Sender' —
+  // proven here directly against the raw GET /drain payload (rawDrainOnce,
+  // above), not through the collector's nodemailer rendering, which the
+  // previous "an h:From override never reaches the wire" test used and
+  // which review found proved nothing about what the drain payload itself
+  // carries: nodemailer's own setHeader happens to override a custom From
+  // regardless of whether intake ever stored one.
+  it('drops every h:* key that normalises to From, on every spelling, through the real HTTP route and the real GET /drain payload', async () => {
+    for (const key of ['h:From', 'h:from', 'h:FROM']) {
+      const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        [key]: 'ceo@evil.example',
+        subject: `From override via ${key}`,
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      });
+      expect(response.id).toBeTruthy();
+
+      const drained = await rawDrainOnce(shim);
+      const message = drained.messages.find((m) => m.subject === `From override via ${key}`);
+      expect(message).toBeDefined();
+      expect(Object.keys(message!.headers).some((h) => h.toLowerCase() === 'from')).toBe(false);
+      expect(message!.from).toBe(`Tenant <noreply@${TENANT_DOMAIN}>`);
+    }
+  });
+
+  it('drops an h:From carrying a %recipient.*% token, through the real HTTP route and the real GET /drain payload — resolved or not, no From header reaches it', async () => {
+    const recipientData = { 'member@example.com': { x: 'ceo@evil.example' } };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:From': '%recipient.x%',
+      subject: 'From override via a recipient token',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const drained = await rawDrainOnce(shim);
+    const message = drained.messages.find(
+      (m) => m.subject === 'From override via a recipient token'
+    );
+    expect(message).toBeDefined();
+    expect(Object.keys(message!.headers).some((h) => h.toLowerCase() === 'from')).toBe(false);
+    expect(message!.from).toBe(`Tenant <noreply@${TENANT_DOMAIN}>`);
+  });
+
+  // Review cycle 6: CR, LF and NUL are refused at intake in every
+  // header-bound field — from, every h:* value, subject and every
+  // recipient-variables value — because any of them can inject a second
+  // header line (or truncate one) once the drain payload eventually
+  // reaches a real header-based renderer (#1239's collector, not built
+  // yet). html/text are deliberately exempt: Ghost's own bodies legitimately
+  // carry newlines, and this rule only applies to header-bound fields — see
+  // the CONTROL test below.
+  it("refuses a 'from' whose display name carries a CRLF header-injection attempt, with a 400, through the real HTTP route, and queues nothing", async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `"x\r\nSender: ceo@evil.com" <blog@${TENANT_DOMAIN}>`,
+        subject: 'CRLF in from',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it('refuses a CRLF-injecting h:* value with a 400, through the real HTTP route, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        'h:X-Foo': 'a\r\nSender: ceo@evil.com',
+        subject: 'CRLF in an h:* value',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it('refuses a CRLF-injecting subject with a 400, through the real HTTP route, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        subject: 'a\r\nSender: ceo@evil.com',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it('refuses a CRLF-injecting recipient-variables value, nested inside an object, with a 400, through the real HTTP route, and queues nothing', async () => {
+    const recipientData = {
+      'member@example.com': { nested: { x: 'a\r\nSender: ceo@evil.com' } },
+    };
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        subject: 'CRLF nested in recipient-variables',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': JSON.stringify(recipientData),
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it("CONTROL: Ghost's real newsletter — a multi-line html/text body — still gives 200; the CR/LF/NUL rule never applies to html or text", async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      subject: 'Weekly digest',
+      html: '<p>Paragraph one.</p>\r\n<p>Paragraph two.</p>\n<p>Paragraph three.</p>',
+      text: 'Paragraph one.\r\nParagraph two.\nParagraph three.',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    const drained = await rawDrainOnce(shim);
+    const message = drained.messages.find((m) => m.subject === 'Weekly digest');
+    expect(message).toBeDefined();
+    expect(message!.html).toContain('\r\n');
+    expect(message!.text).toContain('\n');
   });
 
   // `from` must never be %recipient.*%-substituted downstream, the way a

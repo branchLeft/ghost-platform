@@ -2,6 +2,8 @@ import FormData from 'form-data';
 import type { Request } from 'express';
 import { describe, expect, it } from 'vitest';
 import {
+  containsHeaderInjectionChars,
+  findHeaderInjectionInRecipientVariables,
   isValidHeaderFieldName,
   normalizeMailHeaderKey,
   parseMailgunMessageFields,
@@ -197,6 +199,29 @@ describe('parseMailgunMessageFields', () => {
     await expect(parseMailgunMessageFields(req)).rejects.toThrow();
   });
 
+  it('drops an h:From field before it ever reaches `headers`, whatever its value', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:From', 'ceo@evil.example'],
+    ]);
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.headers).toEqual({});
+    expect(parsed.from).toBe('noreply@tenant1.example.com');
+  });
+
+  it('drops every h:* field whose key normalises to From — every case variant, and a %recipient.*% token in the value, all at once', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:From', 'ceo@evil.example'],
+      ['h:from', 'also-ceo@evil.example'],
+      ['h:FROM', `%recipient.x%`],
+      ['h:X-Custom', 'kept'],
+    ]);
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.headers).toEqual({ 'X-Custom': 'kept' });
+    expect(parsed.from).toBe('noreply@tenant1.example.com');
+  });
+
   it('accepts every other h:* header unchanged — validation and the Sender drop are scoped to their own cases, not the whole field', async () => {
     const req = multipartRequest([
       ['from', 'noreply@tenant1.example.com'],
@@ -208,6 +233,67 @@ describe('parseMailgunMessageFields', () => {
       'List-Unsubscribe': '<mailto:unsub@tenant1.example.com>',
       'Auto-Submitted': 'auto-generated',
     });
+  });
+
+  it("rejects a CR, LF or NUL in 'from' with a rejected promise, before it is stored", async () => {
+    for (const bad of ['"x\r\nSender: ceo@evil.com" <blog@tenant1.example.com>', 'a\nb', 'a\0b']) {
+      const req = multipartRequest([['from', bad]]);
+      await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+    }
+  });
+
+  it("rejects a CR, LF or NUL in 'subject' with a rejected promise, before it is stored", async () => {
+    for (const bad of ['a\r\nSender: ceo@evil.com', 'a\nb', 'a\0b']) {
+      const req = multipartRequest([
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', bad],
+      ]);
+      await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+    }
+  });
+
+  it('rejects a CR, LF or NUL in an h:* value, even for a header name that would otherwise be kept', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:X-Foo', 'a\r\nSender: ceo@evil.com'],
+    ]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+  });
+
+  it('rejects a CR, LF or NUL inside a recipient-variables value', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      [
+        'recipient-variables',
+        JSON.stringify({ 'member@example.com': { x: 'a\r\nSender: ceo@evil.com' } }),
+      ],
+    ]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+  });
+
+  it('rejects a CR, LF or NUL nested two levels deep inside a recipient-variables value — the check recurses, not just the declared shape', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      [
+        'recipient-variables',
+        JSON.stringify({
+          'member@example.com': { nested: { deeper: ['fine', 'a\nSender: ceo@evil.com'] } },
+        }),
+      ],
+    ]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+  });
+
+  it('never applies the CR/LF/NUL rule to html or text — Ghost legitimately sends multi-line bodies', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['subject', 'Weekly digest'],
+      ['html', '<p>Line one</p>\r\n<p>Line two</p>\n<p>Line three</p>'],
+      ['text', 'Line one\r\nLine two\nLine three'],
+    ]);
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.html).toContain('\r\n');
+    expect(parsed.text).toContain('\n');
   });
 
   it('defaults every field to an empty/absent shape when the body has none of them', async () => {
@@ -275,6 +361,37 @@ describe('normalizeMailHeaderKey', () => {
 
   it('does not fold a key carrying a trailing colon to Sender — the colon survives normalisation', () => {
     expect(normalizeMailHeaderKey('Sender:')).toBe('Sender:');
+  });
+});
+
+describe('containsHeaderInjectionChars', () => {
+  it('detects a bare CR, a bare LF, and a NUL', () => {
+    expect(containsHeaderInjectionChars('a\rb')).toBe(true);
+    expect(containsHeaderInjectionChars('a\nb')).toBe(true);
+    expect(containsHeaderInjectionChars('a\0b')).toBe(true);
+  });
+
+  it('is false for an ordinary value with none of the three', () => {
+    expect(containsHeaderInjectionChars('blog@tenant1.example.com')).toBe(false);
+    expect(containsHeaderInjectionChars('')).toBe(false);
+  });
+});
+
+describe('findHeaderInjectionInRecipientVariables', () => {
+  it('finds a bad character at the top level', () => {
+    expect(findHeaderInjectionInRecipientVariables({ a: 'x\r\ny' })).toBe(true);
+  });
+
+  it('finds a bad character nested inside an object inside an array', () => {
+    expect(findHeaderInjectionInRecipientVariables({ a: [{ b: 'fine' }, { c: 'x\ny' }] })).toBe(
+      true
+    );
+  });
+
+  it('is false for a clean, deeply-nested structure', () => {
+    expect(
+      findHeaderInjectionInRecipientVariables({ a: { b: ['fine', 'also fine'] }, c: 1, d: null })
+    ).toBe(false);
   });
 });
 

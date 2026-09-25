@@ -423,9 +423,7 @@ describe('GET /drain, POST /drain/ack', () => {
   // toWireMessage's own narrower defence for a row that predates that
   // intake change — the exact literal key Ghost itself always sends — by
   // writing a payload straight into the store, bypassing intake entirely,
-  // the way such a legacy row would already exist on disk. toWireMessage
-  // is the direct successor of the deleted worker.ts's processRow; this is
-  // the drain-world equivalent of that file's own now-deleted test.
+  // the way such a legacy row would already exist on disk.
   it('strips a stored "Sender" header (the one exact spelling it still special-cases) before it reaches the wire message', async () => {
     await start();
     store.enqueueBatch({

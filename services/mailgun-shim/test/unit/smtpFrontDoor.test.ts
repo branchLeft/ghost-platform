@@ -719,6 +719,82 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(due[0]!.payload.headers['Reply-To']).toContain('support@tenant-a.example.com');
   });
 
+  describe('CR/LF/NUL header injection is refused before queueing', () => {
+    // The HTTP route (mailgunFields.ts) refuses these on the raw wire value.
+    // This route parses with mailparser first (simpleParser, onData above),
+    // which already applies its own MIME decoding — an encoded-word Subject
+    // can decode to a CRLF that was never literally present on the wire, so
+    // the same check has to run AFTER that decoding, not before it. Review
+    // found this exact shape reaching the drain payload as an injected
+    // Sender line, from a Subject alone.
+    it('refuses an encoded-word Subject that decodes to a CRLF-injected header line, with 550, and queues nothing', async () => {
+      harness = await startHarness();
+      const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+
+      const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+        'EHLO test',
+        `AUTH PLAIN ${authPlain}`,
+        'MAIL FROM:<noreply@tenant-a.example.com>',
+        'RCPT TO:<member@example.com>',
+        'DATA',
+        'Subject: =?utf-8?Q?a=0D=0ASender:_ceo@evil.com?=\r\n\r\nBody\r\n.',
+        'QUIT',
+      ]);
+
+      expect(responses.some((line) => /^550 /.test(line))).toBe(true);
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it('refuses a header From whose display name decodes to an embedded CRLF, with 550, and queues nothing', async () => {
+      // No literal ':' inside the encoded word here (unlike the Subject
+      // PoC above, which doesn't need one) — verified separately that a
+      // literal ':' inside an address header's encoded word makes
+      // nodemailer's addressparser split on it as RFC 5322 group syntax
+      // before decoding ever runs, so the specific "Sender:" shape never
+      // reaches parsed.from.text as one decoded token. A decoded CRLF
+      // anywhere in the display name is dangerous regardless of whether it
+      // spells a specific header name, so that's what this proves.
+      harness = await startHarness();
+      const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+
+      const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+        'EHLO test',
+        `AUTH PLAIN ${authPlain}`,
+        'MAIL FROM:<noreply@tenant-a.example.com>',
+        'RCPT TO:<member@example.com>',
+        'DATA',
+        'From: =?utf-8?Q?x=0D=0AInjected_line?= <noreply@tenant-a.example.com>\r\nSubject: hi\r\n\r\nBody\r\n.',
+        'QUIT',
+      ]);
+
+      expect(responses.some((line) => /^550 /.test(line))).toBe(true);
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it('CONTROL: an ordinary Subject and a plain multi-line body still enqueue normally — the rule never applies to html/text, and an unencoded Subject is unaffected', async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        to: 'member@example.com',
+        subject: 'Weekly digest',
+        html: '<p>Paragraph one.</p>\r\n<p>Paragraph two.</p>',
+        text: 'Paragraph one.\r\nParagraph two.',
+      });
+
+      const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
+      expect(due).toHaveLength(1);
+      expect(due[0]!.payload.subject).toBe('Weekly digest');
+      // nodemailer's own client normalises the line ending it puts on the
+      // wire (CRLF in, LF on this leg) — the newline itself survives the
+      // round trip, which is the only thing this control needs to prove;
+      // the exact byte form isn't this route's concern.
+      expect(due[0]!.payload.html).toContain('Paragraph two.');
+      expect(due[0]!.payload.html.split('\n').length).toBeGreaterThan(1);
+    });
+  });
+
   it('falls back to the envelope sender and empty subject/text when a message carries no From/Subject/body', async () => {
     // A minimal, protocol-legal message: mailparser leaves `from`, `subject`
     // and `text` all undefined when the message has none of those, which is

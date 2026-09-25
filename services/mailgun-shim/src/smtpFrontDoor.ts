@@ -9,6 +9,7 @@ import {
   type SMTPServerSession,
 } from 'smtp-server';
 import { simpleParser } from 'mailparser';
+import { containsHeaderInjectionChars } from './mailgunFields.js';
 import { isSafeRecipientAddress } from './recipientSafety.js';
 import type { DrainWake } from './drainWake.js';
 import type { Logger } from './log.js';
@@ -948,6 +949,47 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
               callback(err);
               return;
             }
+
+            const replyTo =
+              parsed.replyTo && !Array.isArray(parsed.replyTo) ? parsed.replyTo.text : undefined;
+            const subject = parsed.subject ?? '';
+            const from =
+              (parsed.from && parsed.from.text) ||
+              /* v8 ignore next -- session.envelope.mailFrom is only ever
+               * unset before MAIL FROM has been accepted, and MAIL FROM is
+               * required (smtp-server itself refuses RCPT/DATA without it)
+               * before onData can run at all; the ternary's false arm
+               * defends a state the protocol never lets this handler see. */
+              (session.envelope.mailFrom ? session.envelope.mailFrom.address : '');
+
+            // Refuses, never strips: the HTTP route (mailgunFields.ts's
+            // containsHeaderInjectionChars) refuses outright on the same
+            // three characters, and a message this front door has already
+            // decided to enqueue should give this connection the same
+            // definite, checkable outcome — a 550 the sender's own MTA can
+            // act on — rather than accepting a message whose displayed
+            // From/Subject/Reply-To silently differs from what was
+            // submitted. mailparser has already run its own MIME decoding
+            // by this point (simpleParser, above), so this also catches an
+            // encoded-word that decodes to a CRLF or NUL never literally
+            // present on the wire — the exact shape review found: a Subject
+            // of `=?utf-8?Q?a=0D=0ASender:_ceo@evil.com?=` decodes to a
+            // second, injected header line.
+            for (const [label, value] of [
+              ['From', from],
+              ['Subject', subject],
+              ...(replyTo !== undefined ? ([['Reply-To', replyTo]] as const) : []),
+            ] as const) {
+              if (containsHeaderInjectionChars(value)) {
+                log.warn('smtp_header_injection_refused', { submitter: submitterId, field: label });
+                const err = new Error(
+                  `5.6.0 Message content rejected: ${label} contains a disallowed control character`
+                ) as Error & { responseCode: number };
+                err.responseCode = 550;
+                callback(err);
+                return;
+              }
+            }
             // Sender is never taken from the tenant, on this route either —
             // stripped, not validated-then-refused. A submitted header
             // Sender (any value, matching or not) is simply never copied
@@ -966,20 +1008,9 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             // structural problem the HTTP-side fix above exists to close.
 
             const headers: Record<string, string> = {};
-            const replyTo =
-              parsed.replyTo && !Array.isArray(parsed.replyTo) ? parsed.replyTo.text : undefined;
             if (replyTo) {
               headers['Reply-To'] = replyTo;
             }
-
-            const from =
-              (parsed.from && parsed.from.text) ||
-              /* v8 ignore next -- session.envelope.mailFrom is only ever
-               * unset before MAIL FROM has been accepted, and MAIL FROM is
-               * required (smtp-server itself refuses RCPT/DATA without it)
-               * before onData can run at all; the ternary's false arm
-               * defends a state the protocol never lets this handler see. */
-              (session.envelope.mailFrom ? session.envelope.mailFrom.address : '');
 
             const batchId = `<${now()}.${randomUUID()}@${submitterId}>`;
 
@@ -993,7 +1024,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
               emailId: null,
               payload: {
                 from,
-                subject: parsed.subject ?? '',
+                subject,
                 html: typeof parsed.html === 'string' ? parsed.html : '',
                 text: parsed.text ?? '',
                 headers,
