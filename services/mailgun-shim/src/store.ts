@@ -236,7 +236,7 @@ export function assertWalEnabled(filename: string, journalMode: string | undefin
 
 /**
  * True once `queue_recipients` is in the shape `createSqliteStore` writes
- * to: has an `id` column. False for the pre-#238 shape (`attempts`,
+ * to: has an `id` column. False for the pre-drain-handover shape (`attempts`,
  * `next_attempt_at`, no `id` — see `ensureDrainShapedQueueRecipients`'s own
  * doc comment) and, trivially, for a database with no `queue_recipients`
  * table at all yet — the `CREATE TABLE IF NOT EXISTS` a few lines below
@@ -253,7 +253,7 @@ function hasDrainShapedQueueRecipients(db: DatabaseSync): boolean {
 }
 
 /**
- * Migrates a pre-#238 `queue_recipients` table in place, losing no queued
+ * Migrates a pre-drain-handover `queue_recipients` table in place, losing no queued
  * mail: `attempts` and `next_attempt_at` are exactly the same counters the
  * new drain protocol needs (a monotonic per-row generation, and "not
  * claimable before this time"), just under new names, so this is a rename
@@ -287,19 +287,31 @@ function hasDrainShapedQueueRecipients(db: DatabaseSync): boolean {
  * makes every call after the first a no-op, on both a genuinely fresh
  * database and an already-migrated one.
  *
- * Concurrent openers: two processes can reach this against the same
- * pre-migration file at once (the service and an operator's CLI
- * invocation run directly against it, or two CLI invocations back to
- * back) — the same race `ensureSenderDomainColumn` documents for
- * `tenants.sender_domain`. `BEGIN IMMEDIATE` plus the busy timeout set
- * above means the loser's transaction simply waits for the winner's to
- * commit, then starts against the now-already-migrated table: its own
- * first statement (`RENAME COLUMN attempts`) fails with "no such column:
- * attempts", because the winner already renamed it away. That specific,
- * expected failure is caught and re-verified with a fresh
+ * Concurrent openers are safe only between two processes that both run
+ * this code (the new image): the service and an operator's CLI
+ * invocation run directly against the same pre-migration file at once, or
+ * two CLI invocations back to back — the same race
+ * `ensureSenderDomainColumn` documents for `tenants.sender_domain`.
+ * `BEGIN IMMEDIATE` plus the busy timeout set above means the loser's
+ * transaction simply waits for the winner's to commit, then starts
+ * against the now-already-migrated table: its own first statement
+ * (`RENAME COLUMN attempts`) fails with "no such column: attempts",
+ * because the winner already renamed it away. That specific, expected
+ * failure is caught and re-verified with a fresh
  * `hasDrainShapedQueueRecipients` read rather than left to crash startup;
  * any other error (a real schema problem, a wait that outlasts the busy
  * timeout) still propagates.
+ *
+ * An OLD process — one still running the pre-drain-handover code, with
+ * the same file already open — is not one of the two openers above: it
+ * never calls this function, so it can't be the race's "loser" and
+ * nothing here protects it. Once any new-image process migrates the file
+ * out from under it, its own prepared statements still name the old
+ * `attempts`/`next_attempt_at` columns, and every one of them starts
+ * failing for as long as it keeps running against the now-migrated file
+ * — its enqueue with "no such column: attempts", its claim with "no such
+ * column: qr.attempts". An old process sharing this file has to be
+ * stopped before the first new-image open, not raced against it.
  */
 export function ensureDrainShapedQueueRecipients(db: DatabaseSync): void {
   if (hasDrainShapedQueueRecipients(db)) {
@@ -352,7 +364,15 @@ export function ensureDrainShapedQueueRecipients(db: DatabaseSync): void {
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_recipients_id ON queue_recipients (id)');
     db.exec('COMMIT');
   } catch (err) {
-    db.exec('ROLLBACK');
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite had already rolled the transaction back itself (e.g.
+      // SQLITE_FULL, an IOERR class) — ROLLBACK then has nothing left to
+      // undo and throws "cannot rollback - no transaction is active".
+      // `err` below is still the real cause; swallowed here so it isn't
+      // replaced by this housekeeping failure.
+    }
     const message = err instanceof Error ? err.message : String(err);
     // Matched on both substrings rather than the exact quoted form: node's
     // sqlite driver renders this as `no such column: "attempts"` (quoted),
@@ -423,7 +443,7 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     /* v8 ignore stop */
   }
 
-  // Patches a database created by the pre-#238 worker (mx1's live
+  // Patches a database created by the pre-drain-handover worker (mx1's live
   // production state) before the CREATE TABLE below runs: `CREATE TABLE
   // IF NOT EXISTS queue_recipients` is a no-op against an existing table
   // whatever shape it's in, so the drain-shaped `CREATE UNIQUE INDEX ...

@@ -216,7 +216,13 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
   it('the tenant survives the migration intact', async () => {
     const store = createSqliteStore(dbPath);
     expect(store.tenantExists(DOMAIN)).toBe(true);
-    expect(store.listTenants()).toEqual([DOMAIN]);
+    // Shape-agnostic on purpose: listTenants() returns bare domain strings
+    // on this branch, but a sibling in-flight change returns
+    // { domain, senderDomain } objects instead — whichever of the two
+    // lands second on main, this assertion must not need editing.
+    const entries = store.listTenants() as Array<string | { domain: string }>;
+    const domains = entries.map((entry) => (typeof entry === 'string' ? entry : entry.domain));
+    expect(domains).toEqual([DOMAIN]);
     store.close();
   });
 
