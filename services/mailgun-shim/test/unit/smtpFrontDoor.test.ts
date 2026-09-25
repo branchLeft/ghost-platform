@@ -883,7 +883,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       expect(Object.keys(due[0]!.payload.headers)).toEqual([]);
     });
 
-    it("accepts a header Reply-To outside the tenant's domain — it names where a reply goes, not who sent the mail, and the SMTP route treats Reply-To the same as the HTTP route (never checked, unlike Sender)", async () => {
+    it("accepts a header Reply-To outside the tenant's domain — it names where a reply goes, not who sent the mail, and unlike Sender it is relayed rather than dropped", async () => {
       harness = await startHarness();
       const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
 
