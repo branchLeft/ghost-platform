@@ -501,16 +501,19 @@ describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, n
 
   it('a message enqueued over SMTP wakes an already-held GET /drain, the same as one enqueued over HTTP', async () => {
     // A generous holdMs, not the outer describe's 200ms default: an SMTP
-    // submission is several protocol round trips plus AUTH's own scrypt
-    // cost (LLD-6/#239's own async-AUTH change), not the single HTTP
-    // request the equivalent HTTP-side test sends — comfortably fast
-    // locally, but with far less headroom against a loaded CI runner than
-    // one HTTP POST has. What this test proves is that the wait ends on
-    // notify(), not on the hold timing out — that property holds however
-    // long the hold is configured for, so it is generous here on purpose.
+    // submission is several protocol round trips plus AUTH's own async
+    // scrypt check, not the single HTTP request the equivalent HTTP-side
+    // test sends — comfortably fast locally, but with far less headroom
+    // against a loaded CI runner than one HTTP POST has. pollIntervalMs is
+    // raised to at least holdMs too: with the default 20ms poll, the held
+    // request would pick the message up on its next poll regardless of
+    // whether notify() ever fired, and the sabotage below would stay green.
+    // Only notify() can end this hold before it lapses. What this test
+    // proves is that the wait ends on notify(), not on the hold timing out.
+    const holdMs = 5000;
     const wakeShim = await startTestShim({
       startSmtpFrontDoor: true,
-      drainOptions: { holdMs: 5000 },
+      drainOptions: { holdMs, pollIntervalMs: holdMs * 2 },
     });
     wakeShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
     try {
@@ -519,7 +522,6 @@ describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, n
       });
       await new Promise((r) => setTimeout(r, 30));
 
-      const start = Date.now();
       const transport = nodemailer.createTransport({
         host: '127.0.0.1',
         port: wakeShim.smtpPort,
@@ -538,17 +540,30 @@ describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, n
         transport.close();
       }
 
+      // Timed from the front door's own record of when the message became
+      // real (enqueueBatch, just before wake.notify() — see
+      // smtpFrontDoor.ts), not from when this client started the SMTP
+      // submission: the submission itself (AUTH's scrypt check, MAIL/RCPT/
+      // DATA) is several times the bound below, so timing from its start
+      // would pass on protocol overhead alone rather than on the wake.
+      const enqueueLine = wakeShim.smtpLogLines?.find((line) => line.event === 'smtp_enqueue');
+      if (!enqueueLine) {
+        throw new Error('smtp_enqueue was never logged by the front door');
+      }
+      const enqueueTime = new Date(enqueueLine.ts).getTime();
+
       const res = await drainPromise;
-      const elapsedMs = Date.now() - start;
+      const elapsedMs = Date.now() - enqueueTime;
       const body = (await res.json()) as { messages: Array<{ to: string }> };
 
       expect(body.messages).toHaveLength(1);
       expect(body.messages[0]!.to).toBe('member@example.com');
       // Woken by the SAME drainWake instance the HTTP route's own enqueue
-      // wakes — comfortably under the 5s holdMs configured above, which is
-      // the property under test: ended by notify(), not by the hold
-      // timing out (a timeout would land at ~5000ms, not well under it).
-      expect(elapsedMs).toBeLessThan(3000);
+      // wakes — under a second from enqueue, matching the Done sentence.
+      // With pollIntervalMs raised above holdMs, a stalled notify() has no
+      // poll to fall back on: the hold would run out at ~holdMs (5000ms)
+      // after the request began, not within this bound.
+      expect(elapsedMs).toBeLessThan(1000);
     } finally {
       await wakeShim.close();
     }

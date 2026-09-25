@@ -7,7 +7,7 @@ import { createDrainWake } from '../../src/drainWake.js';
 import { createSmtpFrontDoor, type SmtpFrontDoor } from '../../src/smtpFrontDoor.js';
 import { createSqliteStore, type ShimStore } from '../../src/store.js';
 import type { Throttle } from '../../src/throttle.js';
-import { createTestLogger } from './testLogger.js';
+import { createTestLogger, type CapturedLogLine } from './testLogger.js';
 import { createUnlimitedThrottle } from './testThrottle.js';
 
 export interface TestShim {
@@ -16,6 +16,8 @@ export interface TestShim {
   drainToken: string;
   /** Only set when `startSmtpFrontDoor` is passed — the SMTP front door's own listen port, sharing this shim's store and wake instance exactly like the real server.ts wires them. */
   smtpPort?: number;
+  /** Only set when `startSmtpFrontDoor` is passed — the SMTP front door's own captured log lines, so a test can read back the timestamp the front door itself recorded for `smtp_enqueue` rather than timing from the outside (a client-observed submission includes protocol round trips and AUTH's own scrypt cost, which enqueue itself does not). */
+  smtpLogLines?: CapturedLogLine[];
   close(): Promise<void>;
 }
 
@@ -62,11 +64,13 @@ export async function startTestShim(options: StartTestShimOptions = {}): Promise
 
   let smtpPort: number | undefined;
   let smtpFrontDoor: SmtpFrontDoor | undefined;
+  let smtpLogLines: CapturedLogLine[] | undefined;
   if (options.startSmtpFrontDoor) {
     // Shares `store` and `wake` with the HTTP app above — exactly how
     // server.ts wires the two front doors onto one queue, not two
     // independently-plumbed ones that happen to look alike.
-    const { logger } = createTestLogger();
+    const { logger, lines } = createTestLogger();
+    smtpLogLines = lines;
     smtpFrontDoor = createSmtpFrontDoor({
       store,
       wake,
@@ -91,6 +95,7 @@ export async function startTestShim(options: StartTestShimOptions = {}): Promise
     store,
     drainToken,
     smtpPort,
+    smtpLogLines,
     async close() {
       await smtpFrontDoor?.close();
       await new Promise<void>((res) => server.close(() => res()));

@@ -6,6 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import nodemailer from 'nodemailer';
 import { createSqliteStore } from '../src/store.js';
 
 /**
@@ -20,11 +21,13 @@ import { createSqliteStore } from '../src/store.js';
  * it dialled once per QUEUED ROW, on a tick loop. A test that enqueues
  * nothing and lives under a second stays green for exactly that shape
  * restored. This version enqueues a real message through the child's own
- * HTTP API (a file-backed store, not `:memory:`, since the property
- * under test is what the real entrypoint does with real state) and keeps
- * the child alive for several seconds afterward — comfortably longer
- * than any plausible tick interval a re-introduced worker loop would use
- * — before asserting silence and only then sending SIGTERM.
+ * HTTP API AND its SMTP front door — both are real ways in, and a dial
+ * made only on SMTP acceptance stays invisible to a proof that submits
+ * over HTTP alone — (a file-backed store, not `:memory:`, since the
+ * property under test is what the real entrypoint does with real state)
+ * and keeps the child alive for several seconds afterward — comfortably
+ * longer than any plausible tick interval a re-introduced worker loop
+ * would use — before asserting silence and only then sending SIGTERM.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -70,6 +73,8 @@ interface RunOptions {
   smtpPort: number;
   /** Sent as multipart form fields to /v3/:domain/messages right after startup, from THIS (parent, unpatched) process — proves the real request-handling code path, not a direct store write. */
   enqueue?: boolean;
+  /** Sent over real SMTP (AUTH PLAIN, MAIL/RCPT/DATA) to the child's own SMTP front door right after startup, from THIS (parent, unpatched) process — the reconcile gave the spool a second front door, and this proves that path too rather than only the HTTP one. */
+  enqueueSmtp?: boolean;
   /** How long to keep the child alive after startup (and after the enqueue, if any) before SIGTERM — long enough to catch a tick-based worker loop, not just a startup-time dial. */
   liveForMs: number;
 }
@@ -163,6 +168,39 @@ async function runServerLifecycle(opts: RunOptions): Promise<RunResult> {
     }
   }
 
+  if (opts.enqueueSmtp) {
+    const transport = nodemailer.createTransport({
+      host: '127.0.0.1',
+      port: opts.smtpPort,
+      secure: false,
+      ignoreTLS: true,
+      auth: { user: TENANT_DOMAIN, pass: TENANT_API_KEY },
+    });
+    try {
+      // A rejected sendMail (bad AUTH, refused RCPT, anything short of the
+      // 250 this front door replies with on success) throws — there is no
+      // separate status check to make, unlike the HTTP form above.
+      await transport.sendMail({
+        from: `noreply@${TENANT_DOMAIN}`,
+        to: 'member@example.com',
+        subject: 'Hi',
+        text: 'hi',
+      });
+    } finally {
+      transport.close();
+    }
+
+    // Same sanity check as the HTTP form above, against the same child —
+    // confirms the SMTP submission genuinely reached the store rather than
+    // only getting a 250 from a front door that then dropped it.
+    const metricsRes = await fetch(`${base}/metrics`);
+    const metricsText = await metricsRes.text();
+    const expectedCount = opts.enqueue ? 2 : 1;
+    if (!metricsText.includes(`mailgun_shim_undrained_recipients ${expectedCount}`)) {
+      throw new Error(`SMTP enqueue did not register as queued:\n${metricsText}`);
+    }
+  }
+
   // Live for several seconds — long enough for a tick-based worker loop
   // (the deleted one ticked every second; a plausible re-introduction
   // would tick at least that often) to have fired multiple times.
@@ -230,7 +268,7 @@ describe('src/server.ts — the real entrypoint, with real queued mail, makes no
     expect(result.connectAttempts).toEqual([]);
   }, 20_000);
 
-  it('a real message enqueued through the real HTTP API, then held alive for several seconds, still makes no outbound connection of any kind', async () => {
+  it('a real message enqueued through the real HTTP API and another through the real SMTP front door, then held alive for several seconds, still makes no outbound connection of any kind', async () => {
     const db = await freshDb();
     const port = await findFreePort();
     const smtpPort = await findFreePort();
@@ -239,6 +277,7 @@ describe('src/server.ts — the real entrypoint, with real queued mail, makes no
       port,
       smtpPort,
       enqueue: true,
+      enqueueSmtp: true,
       liveForMs: 3000,
     });
     expect(result.connectAttempts).toEqual([]);
