@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Interfaces } from 'mailgun.js';
+import nodemailer from 'nodemailer';
+import { createCollector, type Collector } from './helpers/collector.js';
 import { createMailgunClient } from './helpers/mailgunClient.js';
 import { startSmtpSink, type SmtpSink } from './helpers/smtpSink.js';
 import { startTestShim, type TestShim } from './helpers/testServer.js';
+import { createThrottle } from '../src/throttle.js';
 
 // mailgun.js is the exact client library Ghost bundles
 // (mailgun-client.js:367-370 constructs it the same way: `new
@@ -10,31 +13,45 @@ import { startTestShim, type TestShim } from './helpers/testServer.js';
 // Driving the shim through this library rather than hand-building
 // multipart requests means the test exercises the real wire format, not a
 // guess at it.
+//
+// The collector (test/helpers/collector.ts) plays the part LLD-6 gives to
+// mx1 or ops1: it is the only caller that ever reaches GET /drain
+// and POST /drain/ack, over the shim's real HTTP routes, delivering
+// against a real SMTP listener (smtpSink.ts) standing in for the delivery
+// host. Nothing here mocks the drain contract itself.
 
 const TENANT_DOMAIN = 'tenant1.example.com';
 const TENANT_API_KEY = 'test-tenant-1-api-key';
-const SMTP_USER = 'shim-submission-user';
-const SMTP_PASS = 'shim-submission-pass';
+const SMTP_USER = 'collector-submission-user';
+const SMTP_PASS = 'collector-submission-pass';
 
-describe('mailgun-shaped shim', () => {
+describe('mailgun-shaped shim — the drain handover, end to end', () => {
   let sink: SmtpSink;
   let shim: TestShim;
+  let collector: Collector;
   let mailgunClient: Interfaces.IMailgunClient;
 
   beforeEach(async () => {
     sink = await startSmtpSink(SMTP_USER, SMTP_PASS);
-    shim = await startTestShim(sink.port, SMTP_USER, SMTP_PASS);
+    shim = await startTestShim();
     shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
-
     mailgunClient = createMailgunClient(shim.baseUrl, TENANT_API_KEY);
+    collector = createCollector({
+      shimBaseUrl: shim.baseUrl,
+      drainToken: shim.drainToken,
+      smtpPort: sink.port,
+      smtpUser: SMTP_USER,
+      smtpPass: SMTP_PASS,
+    });
   });
 
   afterEach(async () => {
+    collector.stop();
     await shim.close();
     await sink.close();
   });
 
-  it('accepts a Ghost-shaped bulk send, delivers it over SMTP with recipient batching and email-id correlation intact', async () => {
+  it('accepts a Ghost-shaped bulk send, and the collector drains it over SMTP with recipient batching and email-id correlation intact', async () => {
     // Shaped exactly like MailgunClient#send's messageData
     // (mailgun-client.js:63-92): recipient-variables personalisation,
     // %recipient.*% tokens, the v:email-id correlation value, and the
@@ -71,6 +88,9 @@ describe('mailgun-shaped shim', () => {
 
     expect(response.id).toBeTruthy();
 
+    // Nothing drains until the collector polls — the spool never dials out.
+    await collector.drainOnce();
+
     const received = await sink.waitForCount(2);
     const byRecipient = new Map(received.map((m) => [m.envelopeTo[0], m]));
 
@@ -90,23 +110,170 @@ describe('mailgun-shaped shim', () => {
     // Correlation: v:email-id survives to the delivery host as a header.
     expect(toA!.parsed.headers.get('x-ghost-email-id')).toBe('email-record-42');
 
-    // The events endpoint then reflects the send, with the same
-    // email-id/message-id pair Ghost's normalizeEvent() requires
-    // (mailgun-client.js:304-328) to associate an event back to an email.
-    const page = await mailgunClient.events.get(TENANT_DOMAIN, {
-      event: 'delivered OR failed',
-      limit: 10,
+    // Acked — the queue is empty and the age gauge has gone quiet.
+    expect(shim.store.countUndrainedRecipients()).toBe(0);
+    expect(shim.store.oldestUndrainedAgeSeconds(Date.now() / 1000)).toBeNull();
+  });
+
+  it('a message enqueued while a GET /drain is already held open is handed over within the hold, not on the next poll', async () => {
+    const drainPromise = fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
     });
-    expect(page.items.length).toBe(2);
-    for (const item of page.items as unknown as Array<{
-      event: string;
-      'user-variables': { 'email-id': string };
-      message: { headers: { 'message-id': string } };
-    }>) {
-      expect(item.event).toBe('delivered');
-      expect(item['user-variables']['email-id']).toBe('email-record-42');
-      expect(item.message.headers['message-id']).toBeTruthy();
+
+    // Give the held request time to actually be waiting before enqueueing.
+    await new Promise((r) => setTimeout(r, 30));
+
+    const start = Date.now();
+    await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: 'noreply@tenant1.example.com',
+      subject: 'Hi',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+
+    const res = await drainPromise;
+    const elapsedMs = Date.now() - start;
+    const body = (await res.json()) as { messages: Array<{ id: string; to: string }> };
+
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]!.to).toBe('member@example.com');
+    // Woken by drainWake.notify(), not by waiting out the poll interval —
+    // comfortably under the 200ms holdMs this test's shim is configured
+    // with, let alone LLD-2's ~30s hold.
+    expect(elapsedMs).toBeLessThan(150);
+  });
+
+  it('the first message ever sent, at the PRODUCTION throttle default (50/hour, no override), is still handed over within a second — the cold-start grace token, not the test-only boosted rate', async () => {
+    // A second, independent shim: the outer describe's `shim` uses the
+    // unlimited test throttle everywhere else in this file. This one uses
+    // createThrottle with no envMessagesPerHour override at all, so it
+    // resolves to the exact same 50/hour a real deploy gets — proving the
+    // Done sentence ("handed over ... within a second of enqueue") holds
+    // against what actually ships, not only against a compressed test
+    // rate. Before the grace-token fix, this was ~72 seconds off, not a
+    // typo — 1/50 of an hour, for the very first message a fresh spool
+    // ever queues.
+    const prodShim = await startTestShim({
+      throttle: createThrottle({ envMessagesPerHour: 0 }), // 0 -> createThrottle's own 50/hour default
+    });
+    prodShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    const prodClient = createMailgunClient(prodShim.baseUrl, TENANT_API_KEY);
+    try {
+      await prodClient.messages.create(TENANT_DOMAIN, {
+        to: ['first-ever@example.com'],
+        from: 'noreply@tenant1.example.com',
+        subject: 'Hi',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      });
+
+      const start = Date.now();
+      const res = await fetch(`${prodShim.baseUrl}/drain`, {
+        headers: { Authorization: `Bearer ${prodShim.drainToken}` },
+      });
+      const elapsedMs = Date.now() - start;
+      const body = (await res.json()) as { messages: Array<{ to: string }> };
+      expect(body.messages).toHaveLength(1);
+      expect(body.messages[0]!.to).toBe('first-ever@example.com');
+      expect(elapsedMs).toBeLessThan(1000);
+    } finally {
+      await prodShim.close();
     }
+  });
+
+  it('an unacknowledged message is re-offered under the same id once its lease lapses, and never duplicated while still held', async () => {
+    await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['crash-before-ack@example.com'],
+      from: 'noreply@tenant1.example.com',
+      subject: 'Hi',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+
+    const first = await fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    }).then((r) => r.json() as Promise<{ messages: Array<{ id: string }> }>);
+    expect(first.messages).toHaveLength(1);
+    const firstId = first.messages[0]!.id;
+
+    // Simulates a collector that took the batch and crashed before acking —
+    // no ack is ever sent for this id.
+
+    // Still within the 5s test lease — not re-offered yet.
+    const stillHeld = await fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    }).then((r) => r.json() as Promise<{ messages: unknown[] }>);
+    expect(stillHeld.messages).toHaveLength(0);
+
+    // Past the lease — re-offered under the same id.
+    await new Promise((r) => setTimeout(r, 5200));
+    const reoffered = await fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    }).then((r) => r.json() as Promise<{ messages: Array<{ id: string; drainCount: number }> }>);
+    expect(reoffered.messages).toHaveLength(1);
+    expect(reoffered.messages[0]!.id).toBe(firstId);
+    expect(reoffered.messages[0]!.drainCount).toBe(2);
+  }, 10_000);
+
+  it('the producer-side oldest-undrained-age gauge rises while nothing drains and falls once the collector catches up', async () => {
+    const before = await fetch(`${shim.baseUrl}/metrics`).then((r) => r.text());
+    expect(before).toContain('mailgun_shim_oldest_undrained_age_seconds 0');
+
+    await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: 'noreply@tenant1.example.com',
+      subject: 'Hi',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+
+    await new Promise((r) => setTimeout(r, 300));
+    const whileQueued = await fetch(`${shim.baseUrl}/metrics`).then((r) => r.text());
+    const match = /mailgun_shim_oldest_undrained_age_seconds (\d+(?:\.\d+)?)/.exec(whileQueued);
+    expect(match).toBeTruthy();
+    expect(Number(match![1])).toBeGreaterThan(0);
+    expect(whileQueued).toContain('mailgun_shim_undrained_recipients 1');
+
+    await collector.drainOnce();
+    await sink.waitForCount(1);
+
+    const afterDrain = await fetch(`${shim.baseUrl}/metrics`).then((r) => r.text());
+    expect(afterDrain).toContain('mailgun_shim_oldest_undrained_age_seconds 0');
+    expect(afterDrain).toContain('mailgun_shim_undrained_recipients 0');
+  });
+
+  it('GET /drain and POST /drain/ack both refuse a request with no valid bearer token, and never hand over mail to it', async () => {
+    await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: 'noreply@tenant1.example.com',
+      subject: 'Hi',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+
+    const noAuth = await fetch(`${shim.baseUrl}/drain`);
+    expect(noAuth.status).toBe(401);
+
+    const wrongToken = await fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: 'Bearer not-the-real-token' },
+    });
+    expect(wrongToken.status).toBe(401);
+
+    const ackWithoutAuth = await fetch(`${shim.baseUrl}/drain/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acks: [{ id: 'whatever', drainCount: 1 }] }),
+    });
+    expect(ackWithoutAuth.status).toBe(401);
+
+    // Still fully queued — an unauthenticated caller took nothing.
+    expect(shim.store.countUndrainedRecipients()).toBe(1);
   });
 
   it('paginates events using the cursor mailgun.js extracts from paging.next', async () => {
@@ -141,7 +308,7 @@ describe('mailgun-shaped shim', () => {
     expect(seen.size).toBe(5);
   });
 
-  it('un-suppresses via DELETE /v3/{domain}/{type}/{email} and re-enables sending', async () => {
+  it('a suppressed recipient is resolved at drain time — never delivered, and un-suppressing re-enables it for the next send', async () => {
     shim.store.addSuppression(TENANT_DOMAIN, 'bounces', 'bounced@example.com');
 
     const recipientData = { 'bounced@example.com': { name: 'Bounced Member' } };
@@ -154,9 +321,12 @@ describe('mailgun-shaped shim', () => {
       'recipient-variables': JSON.stringify(recipientData),
     });
 
-    // Give the async delivery path a moment to (not) run.
+    await collector.drainOnce();
+    // Give the (non-existent, for this recipient) delivery a moment to
+    // (not) happen.
     await new Promise((r) => setTimeout(r, 200));
     expect(sink.messages).toHaveLength(0);
+    expect(shim.store.countUndrainedRecipients()).toBe(0); // resolved suppressed, not left pending
 
     const result = await mailgunClient.suppressions.destroy(
       TENANT_DOMAIN,
@@ -175,6 +345,7 @@ describe('mailgun-shaped shim', () => {
       'recipient-variables': JSON.stringify(recipientData),
     });
 
+    await collector.drainOnce();
     const received = await sink.waitForCount(1);
     expect(received[0]!.parsed.subject).toBe('Should send now');
   });
@@ -209,7 +380,7 @@ describe('mailgun-shaped shim', () => {
     ).rejects.toMatchObject({ status: 401 });
   });
 
-  it('a recipient listed twice in one send (well-formed — real Mailgun tolerates this) delivers exactly once and the shim stays up for the next request', async () => {
+  it('a recipient listed twice in one send (well-formed — real Mailgun tolerates this) is drained exactly once and the shim stays up for the next request', async () => {
     // mailgun.js serialises each array entry as its own repeated multipart
     // field (see mailgunFields.ts's own docstring on this) — sending the
     // same address twice here exercises the real wire format the shim's
@@ -226,6 +397,7 @@ describe('mailgun-shaped shim', () => {
     });
     expect(response.id).toBeTruthy();
 
+    await collector.drainOnce();
     const received = await sink.waitForCount(1);
     expect(received).toHaveLength(1);
 
@@ -242,6 +414,158 @@ describe('mailgun-shaped shim', () => {
       'recipient-variables': '{}',
     });
     expect(followUp.id).toBeTruthy();
+    await collector.drainOnce();
     await sink.waitForCount(2);
+  });
+});
+
+describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, not two', () => {
+  // One shim instance with BOTH front doors listening, sharing the same
+  // store and wake (exactly server.ts's own wiring) — proves a message
+  // enqueued through the SMTP side is drainable, ackable and never
+  // re-offered exactly like one enqueued through the HTTP side, not
+  // merely that each front door individually reaches the store.
+  let shim: TestShim;
+
+  beforeEach(async () => {
+    shim = await startTestShim({ startSmtpFrontDoor: true });
+    shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+  });
+
+  afterEach(async () => {
+    await shim.close();
+  });
+
+  async function sendOverSmtp(): Promise<void> {
+    const transport = nodemailer.createTransport({
+      host: '127.0.0.1',
+      port: shim.smtpPort,
+      secure: false,
+      ignoreTLS: true,
+      auth: { user: TENANT_DOMAIN, pass: TENANT_API_KEY },
+    });
+    try {
+      await transport.sendMail({
+        from: `noreply@${TENANT_DOMAIN}`,
+        to: 'member@example.com',
+        subject: 'Sign-in link',
+        text: 'Click here to sign in',
+      });
+    } finally {
+      transport.close();
+    }
+  }
+
+  it('a message enqueued over SMTP appears on GET /drain, is acked, and is never re-offered', async () => {
+    await sendOverSmtp();
+
+    const drainRes = await fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    });
+    expect(drainRes.status).toBe(200);
+    const drainBody = (await drainRes.json()) as {
+      messages: Array<{ id: string; to: string; drainCount: number }>;
+    };
+    expect(drainBody.messages).toHaveLength(1);
+    expect(drainBody.messages[0]!.to).toBe('member@example.com');
+    const { id, drainCount } = drainBody.messages[0]!;
+
+    // Still outstanding — held, not yet acked.
+    expect(shim.store.countUndrainedRecipients()).toBe(1);
+
+    const ackRes = await fetch(`${shim.baseUrl}/drain/ack`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${shim.drainToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acks: [{ id, drainCount }] }),
+    });
+    expect(ackRes.status).toBe(200);
+    const ackBody = (await ackRes.json()) as {
+      acked: string[];
+      alreadyHandled: string[];
+      unknown: string[];
+    };
+    expect(ackBody.acked).toEqual([id]);
+
+    // Gone for good — the same store, drained and acked through the same
+    // handover an HTTP-enqueued message would go through.
+    expect(shim.store.countUndrainedRecipients()).toBe(0);
+
+    // Never re-offered: a fresh drain call, immediately, comes back empty
+    // rather than handing the same id out again.
+    const secondDrainRes = await fetch(`${shim.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${shim.drainToken}` },
+    });
+    const secondDrainBody = (await secondDrainRes.json()) as { messages: unknown[] };
+    expect(secondDrainBody.messages).toEqual([]);
+  });
+
+  it('a message enqueued over SMTP wakes an already-held GET /drain, the same as one enqueued over HTTP', async () => {
+    // A generous holdMs, not the outer describe's 200ms default: an SMTP
+    // submission is several protocol round trips plus AUTH's own async
+    // scrypt check, not the single HTTP request the equivalent HTTP-side
+    // test sends — comfortably fast locally, but with far less headroom
+    // against a loaded CI runner than one HTTP POST has. pollIntervalMs is
+    // raised to at least holdMs too: with the default 20ms poll, the held
+    // request would pick the message up on its next poll regardless of
+    // whether notify() ever fired, and the sabotage below would stay green.
+    // Only notify() can end this hold before it lapses. What this test
+    // proves is that the wait ends on notify(), not on the hold timing out.
+    const holdMs = 5000;
+    const wakeShim = await startTestShim({
+      startSmtpFrontDoor: true,
+      drainOptions: { holdMs, pollIntervalMs: holdMs * 2 },
+    });
+    wakeShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    try {
+      const drainPromise = fetch(`${wakeShim.baseUrl}/drain`, {
+        headers: { Authorization: `Bearer ${wakeShim.drainToken}` },
+      });
+      await new Promise((r) => setTimeout(r, 30));
+
+      const transport = nodemailer.createTransport({
+        host: '127.0.0.1',
+        port: wakeShim.smtpPort,
+        secure: false,
+        ignoreTLS: true,
+        auth: { user: TENANT_DOMAIN, pass: TENANT_API_KEY },
+      });
+      try {
+        await transport.sendMail({
+          from: `noreply@${TENANT_DOMAIN}`,
+          to: 'member@example.com',
+          subject: 'Sign-in link',
+          text: 'Click here to sign in',
+        });
+      } finally {
+        transport.close();
+      }
+
+      // Timed from the front door's own record of when the message became
+      // real (enqueueBatch, just before wake.notify() — see
+      // smtpFrontDoor.ts), not from when this client started the SMTP
+      // submission: the submission itself (AUTH's scrypt check, MAIL/RCPT/
+      // DATA) is several times the bound below, so timing from its start
+      // would pass on protocol overhead alone rather than on the wake.
+      const enqueueLine = wakeShim.smtpLogLines?.find((line) => line.event === 'smtp_enqueue');
+      if (!enqueueLine) {
+        throw new Error('smtp_enqueue was never logged by the front door');
+      }
+      const enqueueTime = new Date(enqueueLine.ts).getTime();
+
+      const res = await drainPromise;
+      const elapsedMs = Date.now() - enqueueTime;
+      const body = (await res.json()) as { messages: Array<{ to: string }> };
+
+      expect(body.messages).toHaveLength(1);
+      expect(body.messages[0]!.to).toBe('member@example.com');
+      // Woken by the SAME drainWake instance the HTTP route's own enqueue
+      // wakes — under a second from enqueue, matching the Done sentence.
+      // With pollIntervalMs raised above holdMs, a stalled notify() has no
+      // poll to fall back on: the hold would run out at ~holdMs (5000ms)
+      // after the request began, not within this bound.
+      expect(elapsedMs).toBeLessThan(1000);
+    } finally {
+      await wakeShim.close();
+    }
   });
 });

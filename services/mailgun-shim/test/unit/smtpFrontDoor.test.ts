@@ -16,7 +16,7 @@ import {
   type UnauthenticatedPoolGuard,
 } from '../../src/smtpFrontDoor.js';
 import { createSqliteStore, type ShimStore } from '../../src/store.js';
-import type { WorkerHandle } from '../../src/worker.js';
+import { createDrainWake, type DrainWake } from '../../src/drainWake.js';
 import { createTestLogger, type CapturedLogLine } from '../helpers/testLogger.js';
 
 // The real shipped default, not a hand copy — a hand copy would drift
@@ -458,7 +458,8 @@ describe('createUnauthenticatedAdmissionQueue', () => {
 
 interface Harness {
   store: ShimStore;
-  worker: WorkerHandle;
+  wake: DrainWake;
+  notify: ReturnType<typeof vi.fn>;
   frontDoor: SmtpFrontDoor;
   port: number;
   logs: ReturnType<typeof createTestLogger>['lines'];
@@ -486,27 +487,25 @@ async function startHarness(
     maxConcurrentDataPhases: number;
     maxConcurrentDataPhasesPerSubmitter: number;
     host: string;
-    /** A worker whose `whenIdle()` never resolves — proves the ack can't be coupled to it. */
-    workerNeverIdle: boolean;
   }> = {}
 ): Promise<Harness> {
   const store = createSqliteStore(':memory:');
   store.registerTenant('tenant-a.example.com', 'key-a');
   store.registerTenant('tenant-b.example.com', 'key-b');
 
-  const kick = vi.fn();
-  const worker: WorkerHandle = {
-    kick,
-    whenIdle: () => (overrides.workerNeverIdle ? new Promise<void>(() => {}) : Promise.resolve()),
-    stop: () => Promise.resolve(),
-    status: () => ({ lastTickAt: null, stopped: false }),
-  };
+  // The real implementation, not a hand-rolled fake — notify() is void and
+  // synchronous by its own contract (drainWake.ts), so there is no
+  // "never resolves" hazard left to simulate the way a worker's whenIdle()
+  // once needed one; spying on the real instance's own method is enough to
+  // prove it was called without re-deriving its behaviour.
+  const wake = createDrainWake();
+  const notify = vi.spyOn(wake, 'notify');
 
   const { logger, lines } = createTestLogger();
 
   const frontDoor = createSmtpFrontDoor({
     store,
-    worker,
+    wake,
     log: logger,
     maxMessageBytes: overrides.maxMessageBytes ?? 1024 * 1024,
     maxRecipientsPerMessage: overrides.maxRecipientsPerMessage ?? 50,
@@ -529,7 +528,8 @@ async function startHarness(
 
   return {
     store,
-    worker,
+    wake,
+    notify,
     frontDoor,
     port,
     logs: lines,
@@ -609,8 +609,8 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     });
 
     expect(info.accepted).toEqual(['member@example.com']);
-    expect(harness.worker.kick).toHaveBeenCalledTimes(1);
-    expect(harness.store.countPendingRecipients()).toBe(1);
+    expect(harness.notify).toHaveBeenCalledTimes(1);
+    expect(harness.store.countUndrainedRecipients()).toBe(1);
   });
 
   it('the enqueued row carries the authenticated tenant as its domain, not anything from the message body', async () => {
@@ -624,7 +624,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       text: 'hi',
     });
 
-    const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+    const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
     expect(due).toHaveLength(1);
     expect(due[0]!.domain).toBe('tenant-a.example.com');
   });
@@ -654,7 +654,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       slotB.sendMail({ from: sharedFrom, to: 'member@example.com', subject: 'B', text: 'hi' })
     ).resolves.toBeDefined();
 
-    const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+    const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
     expect(due.map((r) => r.domain).sort()).toEqual([
       'tenant-a.example.com',
       'tenant-b.example.com',
@@ -673,7 +673,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       text: 'hi',
     });
 
-    const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+    const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
     expect(due[0]!.payload.subject).toBe('Your sign-in link');
     expect(due[0]!.payload.html).toContain('<p>hi</p>');
     expect(due[0]!.payload.text).toContain('hi');
@@ -691,7 +691,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       text: 'hi',
     });
 
-    const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+    const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
     expect(due[0]!.payload.headers['Reply-To']).toContain('support@tenant-a.example.com');
   });
 
@@ -714,7 +714,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     ]);
 
     expect(responses.some((line) => /^250 /.test(line))).toBe(true);
-    const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+    const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
     expect(due).toHaveLength(1);
     expect(due[0]!.payload.from).toBe('envelope-sender@tenant-a.example.com');
     expect(due[0]!.payload.subject).toBe('');
@@ -734,8 +734,8 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).rejects.toThrow();
 
-    expect(harness.store.countPendingRecipients()).toBe(0);
-    expect(harness.worker.kick).not.toHaveBeenCalled();
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
+    expect(harness.notify).not.toHaveBeenCalled();
   });
 
   it('fails closed (an auth failure, not a crash) when verifyTenant rejects — a store/crypto error, not a failed check', async () => {
@@ -752,7 +752,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).rejects.toThrow();
 
-    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
     expect(harness.logs.some((line) => line.event === 'smtp_auth_failed')).toBe(true);
   });
 
@@ -769,7 +769,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).rejects.toThrow();
 
-    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
   });
 
   it("rejects group/list-syntax recipient syntax (smtp-server's own grammar refuses it before this front door sees it)", async () => {
@@ -786,7 +786,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
 
     const rcptResponse = responses.find((line) => /^5\d\d /.test(line));
     expect(rcptResponse).toBeDefined();
-    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
   });
 
   it("rejects a recipient address isSafeRecipientAddress itself refuses, via this front door's own onRcptTo check", async () => {
@@ -808,7 +808,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
 
     const rcptResponse = responses.find((line) => /^501 /.test(line));
     expect(rcptResponse).toBeDefined();
-    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
   });
 
   it('accepts the first 50 recipients on a message, refuses the 51st with 452 4.5.3, and enqueues exactly those 50', async () => {
@@ -844,7 +844,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     // this one still completes for the 50 that were accepted.
     expect(responses[dataAcceptedIndex + 1]).toMatch(/^250 /);
 
-    const due = harness.store.claimDueRecipients(Date.now() / 1000, 1000);
+    const due = harness.store.claimForDrain(Date.now() / 1000, 30, 1000);
     expect(due).toHaveLength(50);
     expect(new Set(due.map((r) => r.recipient))).toEqual(new Set(recipients.slice(0, 50)));
     expect(due.some((r) => r.recipient === 'member50@example.com')).toBe(false);
@@ -863,7 +863,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).rejects.toThrow();
 
-    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
   });
 
   it('does not retain a message past its size cap — memory stays bounded while streaming, not just the eventual reply', async () => {
@@ -944,7 +944,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     // relative to the cap too (not a fixed constant), since this measure is
     // inherently noisier than the exact byte count above.
     expect(duringMiB).toBeLessThan((capBytes / 1048576) * 100);
-    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
   }, 30000);
 
   describe('connection admission — unauthenticated pool vs. authenticated DATA phases', () => {
@@ -1728,7 +1728,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).rejects.toThrow();
 
-    expect(harness.store.countPendingRecipients()).toBe(0);
+    expect(harness.store.countUndrainedRecipients()).toBe(0);
   });
 
   it('applies the shipped default allow-list when none is configured', async () => {
@@ -1750,7 +1750,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
         text: 'hi',
       })
     ).resolves.toBeDefined();
-    expect(harness.store.countPendingRecipients()).toBe(1);
+    expect(harness.store.countUndrainedRecipients()).toBe(1);
   });
 
   it('rate-limits a submitter that exceeds its per-minute ceiling, keyed on identity not address', async () => {
@@ -1773,7 +1773,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).rejects.toThrow();
 
-    expect(harness.store.countPendingRecipients()).toBe(1);
+    expect(harness.store.countUndrainedRecipients()).toBe(1);
   });
 
   it('a different tenant is never limited by another tenant exhausting its ceiling', async () => {
@@ -1806,7 +1806,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).resolves.toBeDefined();
 
-    expect(harness.store.countPendingRecipients()).toBe(2);
+    expect(harness.store.countUndrainedRecipients()).toBe(2);
   });
 
   it('the same tenant sharing one ceiling across an IPv4 and an IPv6 connection, keyed correctly', async () => {
@@ -1833,7 +1833,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).rejects.toThrow();
 
-    expect(harness.store.countPendingRecipients()).toBe(1);
+    expect(harness.store.countUndrainedRecipients()).toBe(1);
   });
 
   it('two different tenants connecting over the same IPv6 address get independent ceilings', async () => {
@@ -1856,7 +1856,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       })
     ).resolves.toBeDefined();
 
-    expect(harness.store.countPendingRecipients()).toBe(2);
+    expect(harness.store.countUndrainedRecipients()).toBe(2);
   });
 });
 
@@ -1881,32 +1881,15 @@ describe('SMTP front door — answered at once, sabotage-provable', () => {
     const elapsedMs = Date.now() - start;
 
     expect(elapsedMs).toBeLessThan(1000);
-    // The worker was told to kick, but this test never gave it anywhere
-    // reachable to send to — the ack above did not wait on that call
-    // resolving anything, only on the durable write.
-    expect(harness.store.countPendingRecipients()).toBe(1);
+    // wake.notify() was called, but this test never gave it a waiting
+    // drain request — the ack above did not wait on that call resolving
+    // anything, only on the durable write. notify() is void and
+    // synchronous by its own contract (drainWake.ts), so there is no
+    // "never resolves" coupling hazard left to prove against separately —
+    // unlike the deleted worker's whenIdle(), nothing here returns a
+    // promise the ack path could ever be made to wait on.
+    expect(harness.store.countUndrainedRecipients()).toBe(1);
   });
-
-  it('still acknowledges within a bound when the worker never goes idle — the ack is not coupled to the drain', async () => {
-    // A worker whose `whenIdle()` resolves immediately can't distinguish "no
-    // coupling" from "coupled but fast" — this one never resolves at all, so
-    // an ack wired to wait on it hangs forever rather than merely running
-    // slow.
-    harness = await startHarness({ workerNeverIdle: true });
-    const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
-
-    const start = Date.now();
-    await transport.sendMail({
-      from: 'noreply@tenant-a.example.com',
-      to: 'member@example.com',
-      subject: 'Timed, worker never idle',
-      text: 'hi',
-    });
-    const elapsedMs = Date.now() - start;
-
-    expect(elapsedMs).toBeLessThan(1000);
-    expect(harness.store.countPendingRecipients()).toBe(1);
-  }, 10000);
 });
 
 describe('SMTP front door — runtime server errors are logged, not swallowed', () => {
@@ -1925,12 +1908,7 @@ describe('SMTP front door — runtime server errors are logged, not swallowed', 
     const { logger: logger2, lines: logs2 } = createTestLogger();
     second = createSmtpFrontDoor({
       store: store2,
-      worker: {
-        kick: vi.fn(),
-        whenIdle: () => Promise.resolve(),
-        stop: () => Promise.resolve(),
-        status: () => ({ lastTickAt: null, stopped: false }),
-      },
+      wake: createDrainWake(),
       log: logger2,
       maxMessageBytes: 1024 * 1024,
       maxRecipientsPerMessage: 50,
