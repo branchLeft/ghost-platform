@@ -125,6 +125,74 @@ describe('runCli register', () => {
     expect(stderr.length).toBeGreaterThan(0);
   });
 
+  // A flag consumed as the positional it was never meant to fill.
+  it('refuses a flag in place of the positional credential-domain argument, and registers nothing', async () => {
+    const store = createFakeStore();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['register', '--sender-domain', 'x', 'd'], () => store, io);
+
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(stdout).toEqual([]);
+    expect(store.tenantExists('--sender-domain')).toBe(false);
+    expect(store.tenantExists('d')).toBe(false);
+  });
+
+  // A flag consumed as another flag's own value, because nothing checked
+  // what followed --sender-domain before taking it.
+  it('refuses a flag as the value of --sender-domain, and registers nothing', async () => {
+    const store = createFakeStore();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['register', 'd.example.com', '--sender-domain', '--rotate'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(stdout).toEqual([]);
+    expect(store.tenantExists('d.example.com')).toBe(false);
+  });
+
+  // Nothing validated the domain shape, so a typo (a leading '@', a bare
+  // local-part, whitespace) registered successfully and failed silently
+  // downstream — every real send against it refused, reading as the
+  // sender-binding control being broken, not as a bad CLI argument.
+  it('refuses a credential domain that is not a plain lowercase hostname, and registers nothing', async () => {
+    const store = createFakeStore();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['register', '@branchleft.co.uk', '--sender-domain', 'branchleft.co.uk'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(stdout).toEqual([]);
+    expect(store.tenantExists('@branchleft.co.uk')).toBe(false);
+  });
+
+  it('refuses a --sender-domain value that is not a plain lowercase hostname, and registers nothing', async () => {
+    const store = createFakeStore();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['register', 'd.example.com', '--sender-domain', 'Not A Domain'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(stdout).toEqual([]);
+    expect(store.tenantExists('d.example.com')).toBe(false);
+  });
+
   it('closes the store it opened, even when registration fails', async () => {
     const store = createFakeStore();
     store.registerTenant('tenant.example.com', 'existing-key', 'tenant.example.com');
@@ -188,6 +256,47 @@ describe('runCli set-sender-domain', () => {
     expect(stderr.length).toBeGreaterThan(0);
   });
 
+  // Same two shapes as `register`'s own parsing.
+  it('refuses a flag in place of either positional argument, and changes nothing', async () => {
+    const store = createFakeStore();
+    store.registerTenant('blog.branchleft.co.uk', 'blog-key', 'blog.branchleft.co.uk');
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['set-sender-domain', 'blog.branchleft.co.uk', '--rotate'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(stdout).toEqual([]);
+    await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: 'blog.branchleft.co.uk',
+    });
+  });
+
+  it('refuses a sender-domain argument that is not a plain lowercase hostname, and changes nothing', async () => {
+    const store = createFakeStore();
+    store.registerTenant('blog.branchleft.co.uk', 'blog-key', null);
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['set-sender-domain', 'blog.branchleft.co.uk', 'BRANCHLEFT.CO.UK'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(stdout).toEqual([]);
+    await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: null,
+    });
+  });
+
   it('closes the store it opened, even when the domain is unknown', async () => {
     const store = createFakeStore();
     let closed = false;
@@ -216,8 +325,28 @@ describe('runCli list', () => {
     const code = await runCli(['list'], () => store, io);
 
     expect(code).toBe(0);
-    expect(stdout).toEqual(['a.example.com', 'b.example.com']);
+    expect(stdout).toEqual([
+      'a.example.com (sender domain: a.example.com)',
+      'b.example.com (sender domain: b.example.com)',
+    ]);
     expect(stdout.some((line) => KEY_SHAPE.test(line))).toBe(false);
+  });
+
+  // The credential domain alone can't distinguish "set-sender-domain ran"
+  // from "it didn't" — this is the real post-deploy diagnostic.
+  it('shows NOT SET for a tenant with no sender domain, distinguishing it from a configured one', async () => {
+    const store = createFakeStore();
+    store.registerTenant('configured.example.com', 'key-a', 'configured.example.com');
+    store.registerTenant('legacy.example.com', 'key-b', null);
+    const { io, stdout } = captureIo();
+
+    const code = await runCli(['list'], () => store, io);
+
+    expect(code).toBe(0);
+    expect(stdout).toEqual([
+      'configured.example.com (sender domain: configured.example.com)',
+      'legacy.example.com (sender domain: NOT SET)',
+    ]);
   });
 });
 

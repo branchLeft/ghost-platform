@@ -183,6 +183,114 @@ describe('createSqliteStore — migrating a database that predates sender_domain
     expect(() => ensureSenderDomainColumn(db)).not.toThrow();
     db.close();
   });
+
+  it('propagates an ALTER failure that is not the concurrent-migrator race — a real schema problem must not be swallowed', () => {
+    createPreMigrationDatabase();
+    const db = new DatabaseSync(dbPath);
+    const brokenDb = {
+      prepare: (sql: string) => db.prepare(sql),
+      exec: (sql: string) => {
+        if (sql.includes('ALTER TABLE tenants ADD COLUMN sender_domain')) {
+          throw new Error('disk I/O error');
+        }
+        db.exec(sql);
+      },
+    } as unknown as DatabaseSync;
+
+    expect(() => ensureSenderDomainColumn(brokenDb)).toThrowError('disk I/O error');
+    db.close();
+  });
+
+  /**
+   * Two connections opening the same pre-migration file can both read
+   * "column missing" before either has written it, and the loser's
+   * `ALTER` then fails with sqlite's own
+   * "duplicate column name: sender_domain" — mx1 runs exactly this shape
+   * (the service's own container plus an operator's `docker run`/`exec`
+   * CLI invocation against the same bind-mounted file). Two REAL
+   * connections to the same on-disk file drive this: `racedDb` is a thin
+   * wrapper around `loserConn` whose `exec` — at the exact moment the real
+   * `ensureSenderDomainColumn` under test calls it for the `ALTER` —
+   * opens a SEPARATE real connection, runs the real winning `ALTER` on
+   * it, closes it, then lets `loserConn` attempt the identical `ALTER`
+   * for real. That produces sqlite's actual error, not a fabricated one,
+   * so this also proves the catch's string match is correct against real
+   * sqlite behaviour, not just against a guessed message.
+   */
+  it("recovers when a concurrent connection adds the column between this connection's own table_info read and its own ALTER, rather than crashing startup", () => {
+    createPreMigrationDatabase();
+    const loserConn = new DatabaseSync(dbPath);
+    loserConn.exec('PRAGMA busy_timeout = 5000');
+    loserConn.exec('PRAGMA journal_mode = WAL');
+
+    let alterAttempted = false;
+    const racedDb = {
+      prepare: (sql: string) => loserConn.prepare(sql),
+      exec: (sql: string) => {
+        if (sql.includes('ALTER TABLE tenants ADD COLUMN sender_domain') && !alterAttempted) {
+          alterAttempted = true;
+          const winner = new DatabaseSync(dbPath);
+          winner.exec('PRAGMA busy_timeout = 5000');
+          winner.exec('ALTER TABLE tenants ADD COLUMN sender_domain TEXT');
+          winner.close();
+        }
+        loserConn.exec(sql);
+      },
+    } as unknown as DatabaseSync;
+
+    expect(() => ensureSenderDomainColumn(racedDb)).not.toThrow();
+    expect(alterAttempted).toBe(true);
+
+    const columns = loserConn.prepare('PRAGMA table_info(tenants)').all() as Array<{
+      name: string;
+    }>;
+    expect(columns.some((col) => col.name === 'sender_domain')).toBe(true);
+
+    // The real row this cycle's other migration tests already cover
+    // survived untouched — this test's own focus is the race, not
+    // re-proving data survival, so a light check is enough here.
+    const row = loserConn
+      .prepare('SELECT domain FROM tenants WHERE domain = ?')
+      .get('blog.branchleft.co.uk') as { domain: string } | undefined;
+    expect(row?.domain).toBe('blog.branchleft.co.uk');
+
+    loserConn.close();
+  });
+
+  /**
+   * `node:sqlite`'s `DatabaseSync` is fully synchronous — nothing in one
+   * process can genuinely interleave two of its calls on a microtask
+   * boundary, so this does not reproduce true concurrency the way the
+   * review's own 8-process reproduction did (that's the previous test's
+   * job, driving two real connections through a hand-orchestrated
+   * interleaving instead). What this proves: several real connections
+   * opening — and each fully migrating — the SAME pre-migration file, one
+   * after another with nothing but real sqlite state between them, never
+   * throw and never leave the schema or the row in a bad state, over
+   * several repetitions of the exact sequence a live host runs on every
+   * restart.
+   */
+  it('several connections opening the same pre-migration database in turn all succeed, none throwing', () => {
+    createPreMigrationDatabase();
+    const OPENS = 8;
+
+    for (let i = 0; i < OPENS; i += 1) {
+      const db = new DatabaseSync(dbPath);
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.exec('PRAGMA journal_mode = WAL');
+      expect(() => ensureSenderDomainColumn(db)).not.toThrow();
+      db.close();
+    }
+
+    const verify = new DatabaseSync(dbPath);
+    const columns = verify.prepare('PRAGMA table_info(tenants)').all() as Array<{ name: string }>;
+    expect(columns.some((col) => col.name === 'sender_domain')).toBe(true);
+    const row = verify
+      .prepare('SELECT domain FROM tenants WHERE domain = ?')
+      .get('blog.branchleft.co.uk') as { domain: string } | undefined;
+    expect(row?.domain).toBe('blog.branchleft.co.uk');
+    verify.close();
+  });
 });
 
 describe('createSqliteStore — suppressions', () => {
@@ -412,10 +520,13 @@ describe('createSqliteStore — tenant listing', () => {
     expect(store.tenantExists(DOMAIN)).toBe(true);
   });
 
-  it('listTenants returns every registered domain, sorted', () => {
+  it('listTenants returns every registered domain and its sender domain, sorted', () => {
     store.registerTenant('b.example.com', 'key-b', 'b.example.com');
-    store.registerTenant('a.example.com', 'key-a', 'a.example.com');
-    expect(store.listTenants()).toEqual(['a.example.com', 'b.example.com']);
+    store.registerTenant('a.example.com', 'key-a', null);
+    expect(store.listTenants()).toEqual([
+      { domain: 'a.example.com', senderDomain: null },
+      { domain: 'b.example.com', senderDomain: 'b.example.com' },
+    ]);
   });
 
   it('ping succeeds against an open connection and throws once closed', () => {

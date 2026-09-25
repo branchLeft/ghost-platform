@@ -82,7 +82,9 @@ export function createFakeStore(): FakeShimStore {
     },
 
     listTenants() {
-      return [...tenants.keys()].sort();
+      return [...tenants.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([domain, tenant]) => ({ domain, senderDomain: tenant.senderDomain }));
     },
 
     setSenderDomain(domain, senderDomain) {
