@@ -8,12 +8,13 @@
 // refusing adapter from one that is not wired in at all.
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { claimsFor, generateKeyPair, mint } from '../helpers/token.mjs';
 
 const IMAGE = process.env.IMAGE;
@@ -31,6 +32,36 @@ const otherKey = generateKeyPair();
 
 function docker(...args) {
   return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+const execFileAsync = promisify(execFile);
+
+// Setup-critical docker calls (create/start/cp, the ones a describe's shared
+// `before` hook awaits before any subtest can run) go through the real
+// child_process, not execFileSync. A synchronous exec has no async handle of
+// its own: for the instant between the child failing and that failure
+// unwinding through the promise chain, nothing is pending, and node:test's
+// own idle-and-cancel watchdog (the "Promise resolution is still pending but
+// the event loop has already resolved" cancellation) can race ahead of it on
+// a loaded runner and cancel the whole file before the hook's real rejection
+// is ever attributed. A real child process is itself a pending handle for
+// its whole lifetime, so there is no such window: the failure always
+// arrives as a normal async event, and its error (with the real docker
+// stderr) always reaches the awaiting hook or test.
+async function dockerAsync(...args) {
+  try {
+    const { stdout } = await execFileAsync('docker', args, {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout;
+  } catch (err) {
+    // Printed immediately, not only reported through node:test's TAP output:
+    // if the runner's own cancellation still loses the structured error, the
+    // raw docker failure is still on stderr.
+    console.error(`docker ${args.join(' ')} failed:\n${err.stderr || err.message}`);
+    throw err;
+  }
 }
 
 async function freePort() {
@@ -63,16 +94,16 @@ class GhostContainer {
       env[`adapters__sso__BreakGlassSSO__${key}`] = value;
     }
     const envArgs = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
-    docker('create', '--name', name, '-p', `127.0.0.1:${port}:2368`, ...envArgs, IMAGE);
+    await dockerAsync('create', '--name', name, '-p', `127.0.0.1:${port}:2368`, ...envArgs, IMAGE);
     const container = new GhostContainer(name, port);
     if (plant) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-plant-'));
       fs.mkdirSync(path.join(dir, 'adapters', 'sso'), { recursive: true });
       fs.writeFileSync(path.join(dir, 'adapters', 'sso', 'BreakGlassSSO.js'), plant);
-      docker('cp', path.join(dir, 'adapters'), `${name}:/var/lib/ghost/content/`);
+      await dockerAsync('cp', path.join(dir, 'adapters'), `${name}:/var/lib/ghost/content/`);
       fs.rmSync(dir, { recursive: true, force: true });
     }
-    docker('start', name);
+    await dockerAsync('start', name);
     container.booted = await container.waitForHome();
     return container;
   }
@@ -298,10 +329,19 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
   let supportId;
 
   before(async () => {
-    ghost = await GhostContainer.start({ adapterConfig: goodConfig });
-    assert.ok(ghost.booted, `Ghost did not boot:\n${ghost.logs().slice(-40).join('\n')}`);
-    await ghost.setupOwner();
-    supportId = ghost.createSupportUser('inactive');
+    try {
+      ghost = await GhostContainer.start({ adapterConfig: goodConfig });
+      assert.ok(ghost.booted, `Ghost did not boot:\n${ghost.logs().slice(-40).join('\n')}`);
+      await ghost.setupOwner();
+      supportId = ghost.createSupportUser('inactive');
+    } catch (err) {
+      // Every subtest below depends on this hook. If it throws, node:test
+      // cancels them all rather than reporting the real reason on each --
+      // logged here so the actual cause survives even if that cancellation
+      // ever loses the hook's own error.
+      console.error(`setup for "break-glass against a real Ghost" failed: ${err.message || err}`);
+      throw err;
+    }
   });
 
   after(() => ghost?.remove());
@@ -568,18 +608,18 @@ describe(
     // ship plain upstream. This checks the artefact that actually reaches a
     // tenant: the built image's own copy of the file, by content hash against
     // this repo's overlay and against the pinned upstream hash.
-    it("the built image's session-from-token.js hashes to this repo's overlay, not to upstream", () => {
-      const cid = execFileSync('docker', ['create', IMAGE], { encoding: 'utf8' }).trim();
+    it("the built image's session-from-token.js hashes to this repo's overlay, not to upstream", async () => {
+      const cid = (await dockerAsync('create', IMAGE)).trim();
       let inImageBytes;
       try {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-overlay-check-'));
         try {
           const dest = path.join(tmp, 'in-image.js');
-          execFileSync('docker', [
+          await dockerAsync(
             'cp',
             `${cid}:/var/lib/ghost/current/core/server/services/auth/session/session-from-token.js`,
-            dest,
-          ]);
+            dest
+          );
           inImageBytes = fs.readFileSync(dest);
         } finally {
           fs.rmSync(tmp, { recursive: true, force: true });
