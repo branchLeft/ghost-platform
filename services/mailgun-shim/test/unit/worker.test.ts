@@ -96,6 +96,91 @@ describe('worker — restart recovery', () => {
   });
 });
 
+describe('worker — Sender is never relayed, even from an already-queued row', () => {
+  let store: ShimStore;
+
+  beforeEach(() => {
+    store = createSqliteStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  // Intake (mailgunFields.ts) drops every h:* key that normalises to
+  // 'Sender' before a batch is ever enqueued, so a NEW row can never carry
+  // one, under any spelling. This proves the worker's own unchanged,
+  // narrower defence — the exact key Ghost itself always sends — still
+  // holds for a row that predates that intake change and is still sitting
+  // in the queue (at-least-once redelivery re-processes a row that crashed
+  // mid-send), by writing a payload straight into the store, bypassing
+  // intake entirely, the way such a legacy row would already exist on disk.
+  it('strips a stored "Sender" header (Ghost\'s own exact spelling) before handing headers to the transport', async () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload({
+        headers: {
+          Sender: 'ceo@evil.example',
+          'X-Custom': 'kept',
+        },
+      }),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+
+    const sendMail = vi.fn(async (_params: { headers: Record<string, string> }) => ({}));
+    const transport = { sendMail } as unknown as Transporter;
+    const worker = createWorker({
+      store,
+      transport,
+      throttle: createUnlimitedThrottle(),
+      log: createTestLogger().logger,
+    });
+
+    await worker.whenIdle();
+    await worker.stop();
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0]![0].headers).toEqual({ 'X-Custom': 'kept' });
+  });
+
+  it('never resolves a %recipient.*% token inside `from`, unlike subject — a real recipientVariables map is provided, so a wired-in substitution would visibly change `from` and does not', async () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload({
+        from: 'blog+%recipient.token%@tenant.example.com',
+        subject: 'Hi %recipient.token%',
+        recipientVariables: { 'member@example.com': { token: 'evil' } },
+      }),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+
+    const sendMail = vi.fn(async (_params: { from: string; subject: string }) => ({}));
+    const transport = { sendMail } as unknown as Transporter;
+    const worker = createWorker({
+      store,
+      transport,
+      throttle: createUnlimitedThrottle(),
+      log: createTestLogger().logger,
+    });
+
+    await worker.whenIdle();
+    await worker.stop();
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    // subject DOES resolve — proving the variable was actually available and
+    // the token machinery is live for this send, so `from` staying literal
+    // below is a real negative, not an artefact of an empty variables map.
+    expect(sendMail.mock.calls[0]![0].subject).toBe('Hi evil');
+    expect(sendMail.mock.calls[0]![0].from).toBe('blog+%recipient.token%@tenant.example.com');
+  });
+});
+
 describe('worker — suppression checked at send time', () => {
   let store: ShimStore;
 

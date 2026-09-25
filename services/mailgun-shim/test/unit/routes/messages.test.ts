@@ -258,7 +258,7 @@ describe('POST /v3/:domain/messages', () => {
     expect(sendMail).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses an h:Sender override naming a foreign domain, and queues nothing', async () => {
+  it('drops an h:Sender override naming a foreign domain rather than refusing the request — it never reaches nodemailer', async () => {
     const res = await post(
       multipartBody([
         ['to', 'member@example.com'],
@@ -270,12 +270,14 @@ describe('POST /v3/:domain/messages', () => {
         ['recipient-variables', '{}'],
       ])
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
     await worker.whenIdle();
-    expect(sendMail).not.toHaveBeenCalled();
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const headersSent = sendMail.mock.calls[0]![0].headers as Record<string, string>;
+    expect(Object.keys(headersSent)).toEqual([]);
   });
 
-  it('catches an h:Sender override spelled with different casing — the check is case-insensitive on the header name, not just the domain', async () => {
+  it('drops an h:Sender override spelled with different casing — the drop is keyed on nodemailer normalisation, not a literal match', async () => {
     const res = await post(
       multipartBody([
         ['to', 'member@example.com'],
@@ -287,12 +289,14 @@ describe('POST /v3/:domain/messages', () => {
         ['recipient-variables', '{}'],
       ])
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
     await worker.whenIdle();
-    expect(sendMail).not.toHaveBeenCalled();
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const headersSent = sendMail.mock.calls[0]![0].headers as Record<string, string>;
+    expect(Object.keys(headersSent)).toEqual([]);
   });
 
-  it("CONTROL: an h:Reply-To/h:Sender at the tenant's own domain is accepted (Sender is checked; Reply-To never is)", async () => {
+  it("CONTROL: an h:Reply-To/h:Sender at the tenant's own domain is accepted, Reply-To reaches the wire and Sender is dropped regardless", async () => {
     const res = await post(
       multipartBody([
         ['to', 'member@example.com'],
@@ -308,6 +312,26 @@ describe('POST /v3/:domain/messages', () => {
     expect(res.status).toBe(200);
     await worker.whenIdle();
     expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0]![0].replyTo).toBe(`support@${DOMAIN}`);
+    const headersSent = sendMail.mock.calls[0]![0].headers as Record<string, string>;
+    expect(Object.keys(headersSent)).toEqual([]);
+  });
+
+  it('refuses an h:* field name that is not a valid RFC 5322 field name, with a 400, and queues nothing', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `noreply@${DOMAIN}`],
+        ['h:Sender:', 'ceo@evil.example'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(400);
+    await worker.whenIdle();
+    expect(sendMail).not.toHaveBeenCalled();
   });
 
   it('401s without valid tenant credentials, and never attempts delivery', async () => {

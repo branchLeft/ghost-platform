@@ -105,6 +105,14 @@ export function createWorker(opts: WorkerOptions): WorkerHandle {
     const vars = row.payload.recipientVariables[row.recipient] ?? {};
     const resolvedHeaders: Record<string, string> = {};
     for (const [name, value] of Object.entries(row.payload.headers)) {
+      // Reply-To is handled separately below (as `replyTo`, not a raw
+      // header) so it is never duplicated. A stored 'Sender' should never
+      // be present here at all — intake (mailgunFields.ts) is now the one
+      // place that decides this, dropping every h:* key that normalises to
+      // 'Sender' before a batch is ever enqueued, on any spelling — so
+      // there is nothing left for this loop to filter beyond the one exact
+      // key Ghost itself always sends, kept here unchanged for a row that
+      // predates that intake change.
       if (name === 'Reply-To' || name === 'Sender') {
         continue;
       }
@@ -112,6 +120,13 @@ export function createWorker(opts: WorkerOptions): WorkerHandle {
     }
 
     const result = await sendToRecipient(transport, {
+      // Never run through resolveRecipientTokens: `from` is the identity
+      // routes/messages.ts and smtpFrontDoor.ts already checked against the
+      // tenant's sender domain, at intake, before this row was ever
+      // enqueued — resolving a %recipient.*% token in it here would let a
+      // value the check approved turn into a different, unchecked one by
+      // the time it reaches the wire, which is exactly the class of bug
+      // that made a %recipient.*% token in a Sender header a bypass.
       from: row.payload.from,
       to: row.recipient,
       toName: vars.name,

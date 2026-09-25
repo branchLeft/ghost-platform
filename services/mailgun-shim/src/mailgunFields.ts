@@ -1,5 +1,57 @@
 import Busboy from 'busboy';
 import type { Request } from 'express';
+// nodemailer's own header-key normalisation, not reimplemented. Any h:* key
+// this shim later stores as a header reaches nodemailer's mail-composer via
+// addHeader, which keys each custom header by this same normalisation before
+// appending it — verified against the installed package
+// (nodemailer/lib/mime-node/index.js, MimeNode.prototype._normalizeHeaderKey:
+// strips control characters, trims (which also removes NBSP/BOM — both are
+// ECMAScript whitespace — but not a zero-width space, which is not), then
+// lower/upper-cases into nodemailer's canonical form; 'sender', 'SENDER',
+// ' Sender' and 'Sender ' all normalise to 'Sender'). The method reads only
+// its `key` argument, so calling it straight off the prototype needs no
+// MimeNode instance. `@types/nodemailer`'s own .d.ts for this path declares
+// the public shape only — `_normalizeHeaderKey` is private/undocumented — so
+// it is reached through a narrow local cast rather than a `declare module`
+// augmentation, which would have to redeclare (and could drift from) that
+// published type.
+import MimeNode from 'nodemailer/lib/mime-node/index.js';
+
+interface MimeNodePrototypeWithNormalizer {
+  _normalizeHeaderKey(key: string): string;
+}
+
+/** See the import comment above — this is nodemailer's real normalisation, not a reimplementation. */
+export function normalizeMailHeaderKey(key: string): string {
+  return (MimeNode.prototype as unknown as MimeNodePrototypeWithNormalizer)._normalizeHeaderKey(
+    key
+  );
+}
+
+/**
+ * RFC 5322's field-name grammar: one or more printable US-ASCII characters
+ * (33-126) other than ':', the character that ends a field name on the
+ * wire. An `h:*` multipart field name that fails this can't be emitted as a
+ * real header line at all (a literal colon reads as the name/value
+ * separator to any RFC 5322 parser, so `h:Sender:` becomes the line
+ * `Sender:: value`, which a parser reads as field name `Sender`), or
+ * normalises inconsistently across parsers (a control character, NBSP,
+ * ZWSP or BOM in the name) — refusing the whole class up front, rather than
+ * the exact shapes a past review happened to try, is what closes it against
+ * a shape nobody has tried yet.
+ */
+export function isValidHeaderFieldName(name: string): boolean {
+  if (name.length === 0) {
+    return false;
+  }
+  for (let i = 0; i < name.length; i += 1) {
+    const code = name.charCodeAt(i);
+    if (code < 0x21 || code > 0x7e || code === 0x3a /* ':' */) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export interface ParsedMessageFields {
   to: string[];
@@ -81,7 +133,28 @@ export function parseMailgunMessageFields(req: Request): Promise<ParsedMessageFi
 
       for (const [key, value] of Object.entries(fields)) {
         if (key.startsWith('h:')) {
-          headers[key.slice(2)] = asString(value);
+          const fieldName = key.slice(2);
+          if (!isValidHeaderFieldName(fieldName)) {
+            reject(new Error(`Invalid header field name: ${JSON.stringify(fieldName)}`));
+            return;
+          }
+          // Sender is never taken from the tenant, on any spelling
+          // nodemailer will later fold into one: Ghost's own request always
+          // carries 'h:Sender' equal to its own From (mailgun-client.js:65,71,
+          // forks/Ghost tag v6.55.0 — `from: message.from` and
+          // `'h:Sender': message.from` are the same value), and `from` is
+          // still checked (routes/messages.ts, senderBelongsToTenant), so
+          // nothing legitimate is ever lost by dropping this unconditionally
+          // — the value is never inspected, because there is nothing a
+          // dropped header could still do. This runs at parse time, before
+          // a batch is ever enqueued — the one point every HTTP-side
+          // delivery mechanism this shim could route a message through has
+          // to pass, so the guarantee "no tenant-supplied Sender is ever
+          // stored" doesn't depend on which one is currently wired up.
+          if (normalizeMailHeaderKey(fieldName) === 'Sender') {
+            continue;
+          }
+          headers[fieldName] = asString(value);
         } else if (key.startsWith('o:')) {
           options[key.slice(2)] = value;
         } else if (key.startsWith('v:')) {

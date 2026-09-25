@@ -260,51 +260,53 @@ describe('mailgun-shaped shim', () => {
     expect(received[0]!.parsed.subject).toBe('Foreign reply-to');
   });
 
-  it('refuses an h:Sender override naming a foreign domain, through the real HTTP route, and queues nothing', async () => {
-    await expect(
-      mailgunClient.messages.create(TENANT_DOMAIN, {
-        to: ['member@example.com'],
-        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
-        'h:Sender': 'sender@evil.example',
-        subject: 'Sender spoof',
-        html: '<p>hi</p>',
-        text: 'hi',
-        'recipient-variables': '{}',
-      })
-    ).rejects.toMatchObject({ status: 400 });
+  // Sender is never taken from the tenant, on any spelling — dropped at
+  // intake (mailgunFields.ts), never stored, never relayed. Every one of these is accepted (Ghost's own From is still
+  // checked and still carries the send), and every one of them arrives
+  // with NO Sender header at all — not the foreign value, not even a
+  // matching one. Each case below is a distinct multipart field name
+  // mailgun.js sends verbatim (verified separately against a raw HTTP
+  // capture), so this proves the drop covers each field name individually,
+  // not just the one nodemailer happens to normalise first.
+  it('drops an h:Sender override naming a foreign domain, through the real HTTP route — the message still delivers with no Sender header', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:Sender': 'sender@evil.example',
+      subject: 'Sender spoof',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
 
-    await new Promise((r) => setTimeout(r, 200));
-    expect(sink.messages).toHaveLength(0);
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
   });
 
-  // A naive case-insensitive first-match check only ever inspected ONE
-  // h:* key, and never trimmed
-  // whitespace/control characters — nodemailer's own addHeader appends
-  // rather than replaces, so an unchecked second key reached the recipient
-  // as a real Sender line. Each case below is a distinct multipart field
-  // name mailgun.js sends verbatim (verified separately against a raw HTTP
-  // capture) — a legitimate `h:Sender` cannot make any of these safe,
-  // because the foreign value travels on its OWN field name, not the
-  // checked one.
-  it('refuses a duplicate h:Sender spelled with a different case even alongside a legitimate one, through the real HTTP route, and queues nothing', async () => {
-    await expect(
-      mailgunClient.messages.create(TENANT_DOMAIN, {
-        to: ['member@example.com'],
-        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
-        'h:Sender': `legit@${TENANT_DOMAIN}`,
-        'h:sender': 'ceo@evil.example',
-        subject: 'Sender spoof via a duplicate, differently-cased key',
-        html: '<p>hi</p>',
-        text: 'hi',
-        'recipient-variables': '{}',
-      })
-    ).rejects.toMatchObject({ status: 400 });
+  it('drops a duplicate h:Sender spelled with a different case even alongside a legitimate one, through the real HTTP route — no Sender line reaches the sink, on either key', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:Sender': `legit@${TENANT_DOMAIN}`,
+      'h:sender': 'ceo@evil.example',
+      subject: 'Sender spoof via a duplicate, differently-cased key',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
 
-    await new Promise((r) => setTimeout(r, 200));
-    expect(sink.messages).toHaveLength(0);
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
   });
 
-  it('refuses an h:Sender key padded with a trailing space, through the real HTTP route, and queues nothing', async () => {
+  // A space is not a valid RFC 5322 field-name character at all (it's
+  // outside 33-126), so a whitespace-padded key is caught by field-name
+  // validation before the Sender drop ever gets to run on it — refused
+  // with 400, same outward effect (no tenant Sender reaches the sink) via
+  // the more general rule.
+  it('refuses an h:Sender key padded with a trailing space, through the real HTTP route, with a 400, and queues nothing', async () => {
     await expect(
       mailgunClient.messages.create(TENANT_DOMAIN, {
         to: ['member@example.com'],
@@ -321,7 +323,7 @@ describe('mailgun-shaped shim', () => {
     expect(sink.messages).toHaveLength(0);
   });
 
-  it('refuses an h:Sender key padded with a leading space, through the real HTTP route, and queues nothing', async () => {
+  it('refuses an h:Sender key padded with a leading space, through the real HTTP route, with a 400, and queues nothing', async () => {
     await expect(
       mailgunClient.messages.create(TENANT_DOMAIN, {
         to: ['member@example.com'],
@@ -338,13 +340,29 @@ describe('mailgun-shaped shim', () => {
     expect(sink.messages).toHaveLength(0);
   });
 
-  it('refuses an h:Sender key spelled with mixed case, through the real HTTP route, and queues nothing', async () => {
+  it('drops an h:Sender key spelled with mixed case, through the real HTTP route', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:SeNdEr': 'ceo@evil.example',
+      subject: 'Sender spoof via a mixed-case key',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+  });
+
+  it('refuses an h:Sender: key (a literal trailing colon) with a 400, through the real HTTP route, and queues nothing — nodemailer normalisation keeps the colon, so this cannot be caught by the Sender drop and must be caught by field-name validation instead', async () => {
     await expect(
       mailgunClient.messages.create(TENANT_DOMAIN, {
         to: ['member@example.com'],
         from: `Tenant <noreply@${TENANT_DOMAIN}>`,
-        'h:SeNdEr': 'ceo@evil.example',
-        subject: 'Sender spoof via a mixed-case key',
+        'h:Sender:': 'ceo@evil.example',
+        subject: 'Sender spoof via a trailing colon in the key',
         html: '<p>hi</p>',
         text: 'hi',
         'recipient-variables': '{}',
@@ -355,7 +373,95 @@ describe('mailgun-shaped shim', () => {
     expect(sink.messages).toHaveLength(0);
   });
 
-  it("CONTROL: Ghost's own h:Sender shape (one canonical key, matching the tenant's domain) is accepted and delivered, through the real HTTP route", async () => {
+  it('refuses an h:*Sender key carrying an NBSP, a ZWSP, or a BOM, each with a 400, through the real HTTP route, and queues nothing', async () => {
+    for (const [label, key] of [
+      ['NBSP', 'h:\u00a0Sender'],
+      ['ZWSP', 'h:\u200bSender'],
+      ['BOM', 'h:Sender\ufeff'],
+    ] as const) {
+      await expect(
+        mailgunClient.messages.create(TENANT_DOMAIN, {
+          to: ['member@example.com'],
+          from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+          [key]: 'ceo@evil.example',
+          subject: `Sender spoof via ${label}`,
+          html: '<p>hi</p>',
+          text: 'hi',
+          'recipient-variables': '{}',
+        })
+      ).rejects.toMatchObject({ status: 400 });
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  it('refuses a tab or a control character inside an h:* field name with a 400, through the real HTTP route, and queues nothing', async () => {
+    for (const key of ['h:Sen\tder', 'h:Sen\x01der']) {
+      await expect(
+        mailgunClient.messages.create(TENANT_DOMAIN, {
+          to: ['member@example.com'],
+          from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+          [key]: 'ceo@evil.example',
+          subject: 'Sender spoof via a control character',
+          html: '<p>hi</p>',
+          text: 'hi',
+          'recipient-variables': '{}',
+        })
+      ).rejects.toMatchObject({ status: 400 });
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  // A %recipient.*% token in a Sender header, resolved by the worker AFTER
+  // a per-request check, used to be able to reach the recipient with a
+  // foreign address in either the local part or the display name — the
+  // check approved the unresolved token string, and substitution then
+  // turned it into something the check never saw. Dropping Sender
+  // unconditionally at intake closes this by construction: the value
+  // (token or not) is never stored, so it is never a candidate for
+  // token resolution in the first place. Spelled `h:sender` (lower-case)
+  // deliberately — this is the one spelling this shim's own worker does
+  // NOT special-case for an already-queued legacy row (it only keeps
+  // Ghost's own exact `Sender`), so these two tests are a genuine proof of
+  // the intake drop specifically, not of the worker's narrower fallback.
+  it('drops an h:sender carrying a %recipient.*% token in the local part, through the real HTTP route — no Sender header, resolved or not, reaches the sink', async () => {
+    const recipientData = { 'member@example.com': { s: 'x@evil.com (' } };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:sender': `blog+%recipient.s%@${TENANT_DOMAIN}`,
+      subject: 'Sender spoof via a recipient token in the local part',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+  });
+
+  it('drops an h:sender carrying a %recipient.*% token in the display name, through the real HTTP route — no Sender header, resolved or not, reaches the sink', async () => {
+    const recipientData = { 'member@example.com': { s: 'x" <ceo@evil.com>, "y' } };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:sender': `"%recipient.s%" <blog@${TENANT_DOMAIN}>`,
+      subject: 'Sender spoof via a recipient token in the display name',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+  });
+
+  it("CONTROL: Ghost's own h:Sender shape (one canonical key, matching the tenant's domain) is accepted and delivered, through the real HTTP route, with no Sender header on the wire at all", async () => {
     const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
       to: ['member@example.com'],
       from: `Tenant <noreply@${TENANT_DOMAIN}>`,
@@ -369,6 +475,11 @@ describe('mailgun-shaped shim', () => {
 
     const received = await sink.waitForCount(1);
     expect(received[0]!.parsed.subject).toBe("Ghost's own shape");
+    // Ghost's own h:Sender always equals its own From (mailgun-client.js:65,71,
+    // forks/Ghost tag v6.55.0), so dropping it loses nothing — the message
+    // still carries the checked From, just no separate Sender line.
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+    expect(received[0]!.parsed.from?.value[0]?.address).toBe(`noreply@${TENANT_DOMAIN}`);
   });
 
   // Proves, rather than assumes: an h:From cannot override the checked
@@ -385,7 +496,7 @@ describe('mailgun-shaped shim', () => {
       from: `Tenant <noreply@${TENANT_DOMAIN}>`,
       'h:From': 'ceo@evil.example',
       'h:from': 'also-ceo@evil.example',
-      'h:From ': 'trailing-space@evil.example',
+      'h:FROM': 'still-ceo@evil.example',
       subject: 'From override attempt',
       html: '<p>hi</p>',
       text: 'hi',
@@ -401,6 +512,32 @@ describe('mailgun-shaped shim', () => {
     // addHeader would for a header setHeader never touches.
     const fromLines = received[0]!.parsed.headerLines.filter((l) => l.key === 'from');
     expect(fromLines).toHaveLength(1);
+  });
+
+  // `from` must never be %recipient.*%-substituted downstream, the way a
+  // Sender header's value used to be able to be — because `from` is the
+  // value the intake check already approved, and resolving a token in it
+  // after that check would let an approved value turn into a different,
+  // unchecked one on the wire. worker.ts's
+  // `from: row.payload.from` deliberately bypasses resolveRecipientTokens
+  // (unlike subject/html/text/headers); this proves that holds through the
+  // real HTTP route and worker, not just by reading the source.
+  it('never resolves a %recipient.*% token inside `from` — it reaches the wire literally, unsubstituted, even though it belongs to the tenant and passes the check', async () => {
+    const recipientData = { 'member@example.com': { token: 'evil' } };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <blog+%recipient.token%@${TENANT_DOMAIN}>`,
+      subject: 'From token attempt',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.from?.value[0]?.address).toBe(
+      `blog+%recipient.token%@${TENANT_DOMAIN}`
+    );
   });
 
   it('a recipient listed twice in one send (well-formed — real Mailgun tolerates this) delivers exactly once and the shim stays up for the next request', async () => {

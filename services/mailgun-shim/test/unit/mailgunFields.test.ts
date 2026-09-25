@@ -1,7 +1,12 @@
 import FormData from 'form-data';
 import type { Request } from 'express';
 import { describe, expect, it } from 'vitest';
-import { parseMailgunMessageFields, resolveRecipientTokens } from '../../src/mailgunFields.js';
+import {
+  isValidHeaderFieldName,
+  normalizeMailHeaderKey,
+  parseMailgunMessageFields,
+  resolveRecipientTokens,
+} from '../../src/mailgunFields.js';
 
 /**
  * Builds a real multipart/form-data body via the `form-data` package (the
@@ -117,6 +122,94 @@ describe('parseMailgunMessageFields', () => {
     expect(parsed.customVars).toEqual({});
   });
 
+  it('drops an h:Sender field before it ever reaches `headers`, whatever its value', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:Sender', 'sender@evil.example'],
+    ]);
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.headers).toEqual({});
+  });
+
+  it('drops every h:* field whose key normalises to Sender — duplicated and differently cased, all at once', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:Sender', 'legit@tenant1.example.com'],
+      ['h:sender', 'ceo@evil.example'],
+      ['h:SeNdEr', 'also-ceo@evil.example'],
+      ['h:X-Custom', 'kept'],
+    ]);
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.headers).toEqual({ 'X-Custom': 'kept' });
+  });
+
+  it('rejects a whitespace-padded h:Sender key outright — a space is not a valid RFC 5322 field-name character at all, so this is caught by field-name validation before the Sender drop ever runs', async () => {
+    const trailing = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:Sender ', 'ceo@evil.example'],
+    ]);
+    await expect(parseMailgunMessageFields(trailing)).rejects.toThrow();
+
+    const leading = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h: Sender', 'ceo@evil.example'],
+    ]);
+    await expect(parseMailgunMessageFields(leading)).rejects.toThrow();
+  });
+
+  it('rejects an h:* field name carrying a colon (e.g. "Sender:") with a rejected promise, before it is stored', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:Sender:', 'ceo@evil.example'],
+    ]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+  });
+
+  it('rejects an h:* field name carrying a control character (a tab)', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:Sen\tder', 'ceo@evil.example'],
+    ]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+  });
+
+  it('rejects an h:* field name carrying a non-ASCII character (NBSP)', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:\u00a0Sender', 'ceo@evil.example'],
+    ]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+  });
+
+  it('rejects an h:* field name carrying a zero-width space, which nodemailer normalisation does not strip', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:\u200bSender', 'ceo@evil.example'],
+    ]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+  });
+
+  it('rejects an h:* field name carrying a BOM', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:Sender\ufeff', 'ceo@evil.example'],
+    ]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+  });
+
+  it('accepts every other h:* header unchanged — validation and the Sender drop are scoped to their own cases, not the whole field', async () => {
+    const req = multipartRequest([
+      ['from', 'noreply@tenant1.example.com'],
+      ['h:List-Unsubscribe', '<mailto:unsub@tenant1.example.com>'],
+      ['h:Auto-Submitted', 'auto-generated'],
+    ]);
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.headers).toEqual({
+      'List-Unsubscribe': '<mailto:unsub@tenant1.example.com>',
+      'Auto-Submitted': 'auto-generated',
+    });
+  });
+
   it('defaults every field to an empty/absent shape when the body has none of them', async () => {
     // A part-less multipart body is itself malformed (busboy rejects it as
     // "Unexpected end of form"), so this uses one unrelated field to keep
@@ -134,6 +227,54 @@ describe('parseMailgunMessageFields', () => {
       options: {},
       customVars: {},
     });
+  });
+});
+
+describe('isValidHeaderFieldName', () => {
+  it('accepts an ordinary field name', () => {
+    expect(isValidHeaderFieldName('Sender')).toBe(true);
+    expect(isValidHeaderFieldName('X-Custom-Header')).toBe(true);
+  });
+
+  it('rejects an empty string', () => {
+    expect(isValidHeaderFieldName('')).toBe(false);
+  });
+
+  it('rejects a colon anywhere in the name', () => {
+    expect(isValidHeaderFieldName('Sender:')).toBe(false);
+    expect(isValidHeaderFieldName(':Sender')).toBe(false);
+  });
+
+  it('rejects a control character (tab)', () => {
+    expect(isValidHeaderFieldName('Sen\tder')).toBe(false);
+  });
+
+  it('rejects non-ASCII characters (NBSP, ZWSP, BOM)', () => {
+    expect(isValidHeaderFieldName(' Sender')).toBe(false);
+    expect(isValidHeaderFieldName('​Sender')).toBe(false);
+    expect(isValidHeaderFieldName('Sender﻿')).toBe(false);
+  });
+
+  it('rejects DEL (0x7f), just past the printable-ASCII upper bound', () => {
+    expect(isValidHeaderFieldName('Sender\x7f')).toBe(false);
+  });
+
+  it('accepts the printable-ASCII boundary characters themselves (0x21 and 0x7e)', () => {
+    expect(isValidHeaderFieldName('\x21\x7e')).toBe(true);
+  });
+});
+
+describe('normalizeMailHeaderKey', () => {
+  it("folds case and whitespace variants of 'Sender' to the same canonical form", () => {
+    expect(normalizeMailHeaderKey('sender')).toBe('Sender');
+    expect(normalizeMailHeaderKey('SENDER')).toBe('Sender');
+    expect(normalizeMailHeaderKey(' Sender')).toBe('Sender');
+    expect(normalizeMailHeaderKey('Sender ')).toBe('Sender');
+    expect(normalizeMailHeaderKey('SeNdEr')).toBe('Sender');
+  });
+
+  it('does not fold a key carrying a trailing colon to Sender — the colon survives normalisation', () => {
+    expect(normalizeMailHeaderKey('Sender:')).toBe('Sender:');
   });
 });
 

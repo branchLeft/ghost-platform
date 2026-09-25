@@ -845,21 +845,42 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       expect(harness.store.countPendingRecipients()).toBe(0);
     });
 
-    it("refuses a header Sender outside the tenant's domain even when From and envelope are both legitimate, with 550 5.7.1, and queues nothing", async () => {
+    it("strips a header Sender outside the tenant's domain rather than refusing the message — it is never copied into the queued headers, so nothing foreign reaches the sink", async () => {
       harness = await startHarness();
       const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
 
-      await expect(
-        transport.sendMail({
-          from: 'Tenant A <noreply@tenant-a.example.com>',
-          sender: 'Attacker <noreply@evil.example>',
-          to: 'member@example.com',
-          subject: 'Header Sender spoof',
-          text: 'hi',
-        })
-      ).rejects.toMatchObject({ responseCode: 550 });
+      const info = await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        sender: 'Attacker <noreply@evil.example>',
+        to: 'member@example.com',
+        subject: 'Header Sender spoof',
+        text: 'hi',
+      });
 
-      expect(harness.store.countPendingRecipients()).toBe(0);
+      expect(info.accepted).toEqual(['member@example.com']);
+      expect(harness.store.countPendingRecipients()).toBe(1);
+
+      const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+      expect(due[0]!.payload.headers['Sender']).toBeUndefined();
+      expect(due[0]!.payload.headers['sender']).toBeUndefined();
+      expect(Object.keys(due[0]!.payload.headers)).toEqual([]);
+    });
+
+    it("strips a header Sender even when it matches the tenant's own domain — Sender is never taken from the tenant, checked or not", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      const info = await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        sender: 'Tenant A <noreply@tenant-a.example.com>',
+        to: 'member@example.com',
+        subject: "Ghost's own shape",
+        text: 'hi',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      const due = harness.store.claimDueRecipients(Date.now() / 1000 + 1, 10);
+      expect(Object.keys(due[0]!.payload.headers)).toEqual([]);
     });
 
     it("accepts a header Reply-To outside the tenant's domain — it names where a reply goes, not who sent the mail, and the SMTP route treats Reply-To the same as the HTTP route (never checked, unlike Sender)", async () => {

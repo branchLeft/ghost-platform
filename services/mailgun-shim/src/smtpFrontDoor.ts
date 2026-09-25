@@ -948,22 +948,22 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
               callback(err);
               return;
             }
-            const senderHeaderValue = parsed.headers.get('sender');
-            const headerSender =
-              senderHeaderValue &&
-              typeof senderHeaderValue === 'object' &&
-              'text' in senderHeaderValue
-                ? (senderHeaderValue as { text: string }).text
-                : undefined;
-            if (headerSender !== undefined && !senderBelongsToTenant(headerSender, senderDomain)) {
-              log.warn('smtp_header_sender_domain_mismatch', { submitter: submitterId });
-              const err = new Error(
-                '5.7.1 Sender address rejected: domain not authorised for this account'
-              ) as Error & { responseCode: number };
-              err.responseCode = 550;
-              callback(err);
-              return;
-            }
+            // Sender is never taken from the tenant, on this route either —
+            // stripped, not validated-then-refused. A submitted header
+            // Sender (any value, matching or not) is simply never copied
+            // into `headers` below, which only ever carries Reply-To — so
+            // it never reaches nodemailer and never reaches the delivery
+            // host, and there is nothing left here worth inspecting first.
+            // The alternative this route could have taken instead —
+            // parsing the header and refusing the message on a mismatch,
+            // the way the HTTP route's now-removed h:Sender check used to —
+            // was rejected: that value was already never relayed either
+            // way (this route builds its own `headers` object rather than
+            // forwarding mailparser's parsed headers wholesale), so
+            // checking it bought no protection, only a second place a
+            // parsing difference between mailparser and nodemailer's own
+            // normalisation could reopen a bypass, which is exactly the
+            // structural problem the HTTP-side fix above exists to close.
 
             const headers: Record<string, string> = {};
             const replyTo =
