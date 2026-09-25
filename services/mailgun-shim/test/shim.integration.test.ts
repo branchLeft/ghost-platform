@@ -24,7 +24,7 @@ describe('mailgun-shaped shim', () => {
   beforeEach(async () => {
     sink = await startSmtpSink(SMTP_USER, SMTP_PASS);
     shim = await startTestShim(sink.port, SMTP_USER, SMTP_PASS);
-    shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY, TENANT_DOMAIN);
 
     mailgunClient = createMailgunClient(shim.baseUrl, TENANT_API_KEY);
   });
@@ -195,7 +195,11 @@ describe('mailgun-shaped shim', () => {
   });
 
   it('rejects a valid key used against a domain it does not own', async () => {
-    shim.store.registerTenant('other-tenant.example.com', 'other-tenants-key');
+    shim.store.registerTenant(
+      'other-tenant.example.com',
+      'other-tenants-key',
+      'other-tenant.example.com'
+    );
 
     await expect(
       mailgunClient.messages.create('other-tenant.example.com', {
@@ -240,21 +244,20 @@ describe('mailgun-shaped shim', () => {
     expect(received[0]!.parsed.subject).toBe('Legitimate');
   });
 
-  it('refuses an h:Reply-To override naming a foreign domain, through the real HTTP route, and queues nothing', async () => {
-    await expect(
-      mailgunClient.messages.create(TENANT_DOMAIN, {
-        to: ['member@example.com'],
-        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
-        'h:Reply-To': 'reply@evil.example',
-        subject: 'Reply-To spoof',
-        html: '<p>hi</p>',
-        text: 'hi',
-        'recipient-variables': '{}',
-      })
-    ).rejects.toMatchObject({ status: 400 });
+  it('accepts an h:Reply-To naming a foreign domain, through the real HTTP route, and delivers it with that reply-to intact — it names where a reply goes, not who sent the mail', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:Reply-To': 'reply@evil.example',
+      subject: 'Foreign reply-to',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
 
-    await new Promise((r) => setTimeout(r, 200));
-    expect(sink.messages).toHaveLength(0);
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.subject).toBe('Foreign reply-to');
   });
 
   it('refuses an h:Sender override naming a foreign domain, through the real HTTP route, and queues nothing', async () => {

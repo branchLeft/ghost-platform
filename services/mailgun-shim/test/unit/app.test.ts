@@ -42,7 +42,7 @@ describe('createApp — wires all three Mailgun-shaped routers plus healthz at t
 
   beforeEach(async () => {
     store = createFakeStore();
-    store.registerTenant(DOMAIN, API_KEY);
+    store.registerTenant(DOMAIN, API_KEY, DOMAIN);
     transport = { sendMail: vi.fn(async () => ({})) } as unknown as Transporter;
     worker = createTestWorker(store, transport);
     server = await listenApp(createApp(store, worker));
@@ -120,7 +120,7 @@ describe('POST /v3/:domain/messages — Ghost bulk newsletter batches', () => {
 
   beforeEach(async () => {
     store = createFakeStore();
-    store.registerTenant(DOMAIN, API_KEY);
+    store.registerTenant(DOMAIN, API_KEY, DOMAIN);
     sendMail = vi.fn(async () => ({}));
     transport = { sendMail } as unknown as Transporter;
     worker = createTestWorker(store, transport);

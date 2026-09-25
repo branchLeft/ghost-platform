@@ -29,7 +29,7 @@ describe('POST /v3/:domain/messages', () => {
 
   beforeEach(async () => {
     store = createFakeStore();
-    store.registerTenant(DOMAIN, API_KEY);
+    store.registerTenant(DOMAIN, API_KEY, DOMAIN);
     sendMail = vi.fn(async () => ({}));
     transport = { sendMail } as unknown as Transporter;
     testLogger = createTestLogger();
@@ -240,7 +240,7 @@ describe('POST /v3/:domain/messages', () => {
     expect(sendMail).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses an h:Reply-To override naming a foreign domain, and queues nothing', async () => {
+  it('accepts an h:Reply-To naming a foreign domain — it names where a reply goes, not who sent the mail, and Ghost lets admins set any newsletter reply-to', async () => {
     const res = await post(
       multipartBody([
         ['to', 'member@example.com'],
@@ -252,9 +252,9 @@ describe('POST /v3/:domain/messages', () => {
         ['recipient-variables', '{}'],
       ])
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
     await worker.whenIdle();
-    expect(sendMail).not.toHaveBeenCalled();
+    expect(sendMail).toHaveBeenCalledTimes(1);
   });
 
   it('refuses an h:Sender override naming a foreign domain, and queues nothing', async () => {
@@ -291,7 +291,7 @@ describe('POST /v3/:domain/messages', () => {
     expect(sendMail).not.toHaveBeenCalled();
   });
 
-  it("CONTROL: an h:Reply-To/h:Sender at the tenant's own domain is accepted", async () => {
+  it("CONTROL: an h:Reply-To/h:Sender at the tenant's own domain is accepted (Sender is checked; Reply-To never is)", async () => {
     const res = await post(
       multipartBody([
         ['to', 'member@example.com'],
@@ -418,5 +418,65 @@ describe('POST /v3/:domain/messages', () => {
       ])
     );
     expect(followUp.status).toBe(200);
+  });
+
+  it('fails closed with a 500 when the authenticated tenant has no registered sender domain (e.g. a pre-migration row), rather than falling back to the credential key', async () => {
+    const legacyDomain = 'legacy-tenant.example.com';
+    const legacyKey = 'legacy-tenant-api-key';
+    store.registerTenant(legacyDomain, legacyKey, null);
+
+    const res = await fetch(`${server.baseUrl}/v3/${legacyDomain}/messages`, {
+      method: 'POST',
+      headers: { Authorization: basicAuthHeader('api', legacyKey) },
+      body: multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `noreply@${legacyDomain}`],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ]),
+    });
+
+    expect(res.status).toBe(500);
+    await worker.whenIdle();
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(
+      testLogger.lines.some(
+        (line) =>
+          line.event === 'sender_domain_not_registered' &&
+          line.fields.domain === legacyDomain &&
+          line.fields.route === 'http'
+      )
+    ).toBe(true);
+  });
+
+  it("accepts exactly Ghost's real newsletter field set for tenant zero — the LIVE credential key (blog.branchleft.co.uk) registered with its real sender domain (branchleft.co.uk), from/h:Sender/h:Reply-To as mailgun-client.js sends them", async () => {
+    // The credential key is NOT the sending domain for the only live
+    // tenant. mailgun-client.js posts `from` and
+    // `h:Sender` as the same address, and (with sender_reply_to=newsletter)
+    // `h:Reply-To` as the newsletter's own reply-to, which for tenant zero
+    // is the same apex address.
+    const senderKey = 'blog-tenant-zero-key';
+    store.registerTenant('blog.branchleft.co.uk', senderKey, 'branchleft.co.uk');
+
+    const res = await fetch(`${server.baseUrl}/v3/blog.branchleft.co.uk/messages`, {
+      method: 'POST',
+      headers: { Authorization: basicAuthHeader('api', senderKey) },
+      body: multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'branchLeft blog <blog@branchleft.co.uk>'],
+        ['h:Sender', 'blog@branchleft.co.uk'],
+        ['h:Reply-To', 'blog@branchleft.co.uk'],
+        ['subject', 'Your sign-in link'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ]),
+    });
+
+    expect(res.status).toBe(200);
+    await worker.whenIdle();
+    expect(sendMail).toHaveBeenCalledTimes(1);
   });
 });

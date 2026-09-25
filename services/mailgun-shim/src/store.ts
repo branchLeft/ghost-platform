@@ -12,6 +12,17 @@ export const SUPPRESSION_TYPES: readonly SuppressionType[] = [
 
 export interface Tenant {
   domain: string;
+  /**
+   * The domain this tenant actually sends From — held separately from
+   * `domain` (the credential's lookup key) because the two are not
+   * guaranteed equal: tenant zero's credential key is the Mailgun
+   * `bulkEmailDomain` (`blog.branchleft.co.uk`), but its real newsletters
+   * go out From the apex (`branchleft.co.uk`). `null` for a tenant that
+   * predates this field (a row migrated in from before it existed) or was
+   * never given one — callers must fail closed on `null`, never fall back
+   * to `domain`.
+   */
+  senderDomain: string | null;
 }
 
 export interface StoredEvent {
@@ -80,7 +91,15 @@ export interface DueRecipient {
  * single-tenant-credentials scale.
  */
 export interface ShimStore {
-  registerTenant(domain: string, apiKey: string): void;
+  /**
+   * `senderDomain` is required, never defaulted from `domain` — a caller
+   * that only has the credential key must decide explicitly (the CLI's
+   * `register` command refuses to run without `--sender-domain` for
+   * exactly this reason; see cli.ts). Pass `null` only for a test
+   * reproducing a pre-migration row; every real registration path must
+   * supply a real domain.
+   */
+  registerTenant(domain: string, apiKey: string, senderDomain: string | null): void;
   /**
    * Looks up the tenant by domain (always present in the URL path — see
    * doc 13 §2.6) and verifies the presented key against that tenant's
@@ -91,6 +110,14 @@ export interface ShimStore {
   verifyTenant(domain: string, apiKey: string): Promise<Tenant | null>;
   tenantExists(domain: string): boolean;
   listTenants(): string[];
+  /**
+   * Sets a tenant's sending domain without touching its API key — the
+   * operator path for a tenant that already exists (every row migrated in
+   * from before this field existed) rather than re-registering it, which
+   * would rotate its credential out from under it. Returns false if the
+   * domain isn't a registered tenant at all.
+   */
+  setSenderDomain(domain: string, senderDomain: string): boolean;
 
   recordEvent(event: Omit<StoredEvent, 'id'>): void;
   listEvents(domain: string, options: ListEventsOptions): ListEventsResult;
@@ -156,6 +183,29 @@ export function assertWalEnabled(filename: string, journalMode: string | undefin
   }
 }
 
+/**
+ * `CREATE TABLE IF NOT EXISTS` below already gives a brand-new database
+ * `sender_domain` from the start — this only patches a database created
+ * before the column existed, which is the shim's live production state
+ * (mx1's SQLite file predates this field). `PRAGMA table_info` is cheap
+ * (no table scan) and safe to run on every startup, so this always runs
+ * rather than being gated behind a version check: it is a no-op the
+ * instant the column is already there, on both the fresh-install and the
+ * already-migrated path.
+ */
+export function ensureSenderDomainColumn(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(tenants)').all() as Array<{ name: string }>;
+  const hasSenderDomain = columns.some((col) => col.name === 'sender_domain');
+  if (!hasSenderDomain) {
+    // Existing rows get NULL, never a guessed default (e.g. the credential
+    // key) — a tenant migrated in this way must fail closed until an
+    // operator sets its real sending domain explicitly (setSenderDomain /
+    // the CLI's set-sender-domain command), never be silently bound to a
+    // value nobody confirmed.
+    db.exec('ALTER TABLE tenants ADD COLUMN sender_domain TEXT');
+  }
+}
+
 function withTransaction<T>(db: DatabaseSync, fn: () => T): T {
   db.exec('BEGIN');
   try {
@@ -197,7 +247,8 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     CREATE TABLE IF NOT EXISTS tenants (
       domain TEXT PRIMARY KEY,
       api_key_salt TEXT NOT NULL,
-      api_key_hash TEXT NOT NULL
+      api_key_hash TEXT NOT NULL,
+      sender_domain TEXT
     );
 
     CREATE TABLE IF NOT EXISTS events (
@@ -246,12 +297,19 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       ON queue_recipients (status, next_attempt_at);
   `);
 
+  // Patches a database created before sender_domain existed — see the
+  // function's own doc comment. Runs after the CREATE TABLE above (which
+  // already gives a brand-new database the column) so this is always a
+  // no-op except on a database that predates the column.
+  ensureSenderDomainColumn(db);
+
   const insertTenant = db.prepare(
-    'INSERT OR REPLACE INTO tenants (domain, api_key_salt, api_key_hash) VALUES (?, ?, ?)'
+    'INSERT OR REPLACE INTO tenants (domain, api_key_salt, api_key_hash, sender_domain) VALUES (?, ?, ?, ?)'
   );
   const selectTenantByDomain = db.prepare(
-    'SELECT domain, api_key_salt, api_key_hash FROM tenants WHERE domain = ?'
+    'SELECT domain, api_key_salt, api_key_hash, sender_domain FROM tenants WHERE domain = ?'
   );
+  const updateSenderDomain = db.prepare('UPDATE tenants SET sender_domain = ? WHERE domain = ?');
   const selectAllDomains = db.prepare('SELECT domain FROM tenants ORDER BY domain ASC');
   const insertEvent = db.prepare(`
     INSERT INTO events
@@ -319,19 +377,25 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
   }
 
   return {
-    registerTenant(domain, apiKey) {
+    registerTenant(domain, apiKey, senderDomain) {
       const { salt, hash } = hashApiKey(apiKey);
-      insertTenant.run(domain, salt, hash);
+      insertTenant.run(domain, salt, hash, senderDomain);
     },
 
     async verifyTenant(domain, apiKey) {
       const row = selectTenantByDomain.get(domain) as
-        { domain: string; api_key_salt: string; api_key_hash: string } | undefined;
+        | {
+            domain: string;
+            api_key_salt: string;
+            api_key_hash: string;
+            sender_domain: string | null;
+          }
+        | undefined;
       if (!row) {
         return null;
       }
       const ok = await verifyApiKey(apiKey, { salt: row.api_key_salt, hash: row.api_key_hash });
-      return ok ? { domain: row.domain } : null;
+      return ok ? { domain: row.domain, senderDomain: row.sender_domain } : null;
     },
 
     tenantExists(domain) {
@@ -340,6 +404,13 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
 
     listTenants() {
       return (selectAllDomains.all() as Array<{ domain: string }>).map((row) => row.domain);
+    },
+
+    setSenderDomain(domain, senderDomain) {
+      const result = updateSenderDomain.run(senderDomain, domain);
+      // `changes` is typed `number | bigint` (node:sqlite) — Number() first
+      // so this never risks a bigint/number operator mismatch.
+      return Number(result.changes) > 0;
     },
 
     recordEvent(event) {

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { senderBelongsToTenant } from '../../src/senderAuthorization.js';
+import { describe, expect, it, vi } from 'vitest';
+import { resolveSenderDomain, senderBelongsToTenant } from '../../src/senderAuthorization.js';
+import type { Logger } from '../../src/log.js';
 
 describe('senderBelongsToTenant', () => {
   it('accepts an exact-match bare address', () => {
@@ -92,5 +93,48 @@ describe('senderBelongsToTenant', () => {
 
   it('refuses when the stored tenant domain itself is unparseable', () => {
     expect(senderBelongsToTenant('a@tenant.example.com', '')).toBe(false);
+  });
+});
+
+function fakeLogger(): Logger {
+  return { log: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+}
+
+describe('resolveSenderDomain', () => {
+  it("returns the tenant's registered sender domain when one is set", () => {
+    const log = fakeLogger();
+    expect(
+      resolveSenderDomain(
+        { domain: 'blog.branchleft.co.uk', senderDomain: 'branchleft.co.uk' },
+        log,
+        'http'
+      )
+    ).toBe('branchleft.co.uk');
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it('fails closed (returns null, never the credential key) for a tenant with no registered sender domain, logging which tenant and route', () => {
+    const log = fakeLogger();
+    const result = resolveSenderDomain(
+      { domain: 'blog.branchleft.co.uk', senderDomain: null },
+      log,
+      'smtp'
+    );
+    expect(result).toBeNull();
+    expect(log.error).toHaveBeenCalledWith('sender_domain_not_registered', {
+      domain: 'blog.branchleft.co.uk',
+      route: 'smtp',
+    });
+  });
+
+  it('never falls back to tenant.domain (the credential key) when senderDomain is unset', () => {
+    const log = fakeLogger();
+    const result = resolveSenderDomain(
+      { domain: 'blog.branchleft.co.uk', senderDomain: null },
+      log,
+      'http'
+    );
+    expect(result).not.toBe('blog.branchleft.co.uk');
+    expect(result).toBeNull();
   });
 });

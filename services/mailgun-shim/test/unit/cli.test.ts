@@ -31,7 +31,11 @@ describe('runCli register', () => {
     const store = createFakeStore();
     const { io, stdout, stderr } = captureIo();
 
-    const code = await runCli(['register', 'tenant.example.com'], () => store, io);
+    const code = await runCli(
+      ['register', 'tenant.example.com', '--sender-domain', 'tenant.example.com'],
+      () => store,
+      io
+    );
 
     expect(code).toBe(0);
     expect(stderr).toEqual([]);
@@ -41,27 +45,67 @@ describe('runCli register', () => {
     expect(keyLines).toHaveLength(1);
   });
 
-  it('refuses to overwrite an existing domain without --rotate, and leaves the old key working', async () => {
+  it('records the given --sender-domain, separately from the credential domain', async () => {
     const store = createFakeStore();
-    store.registerTenant('tenant.example.com', 'existing-key');
+    const { io, stdout } = captureIo();
+
+    const code = await runCli(
+      ['register', 'blog.branchleft.co.uk', '--sender-domain', 'branchleft.co.uk'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(0);
+    const apiKey = stdout.find((line) => KEY_SHAPE.test(line));
+    expect(apiKey).toBeDefined();
+    await expect(store.verifyTenant('blog.branchleft.co.uk', apiKey!)).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: 'branchleft.co.uk',
+    });
+  });
+
+  it('refuses to register without --sender-domain, and creates nothing', async () => {
+    const store = createFakeStore();
     const { io, stdout, stderr } = captureIo();
 
     const code = await runCli(['register', 'tenant.example.com'], () => store, io);
+
+    expect(code).toBe(1);
+    expect(stderr.some((line) => line.includes('--sender-domain'))).toBe(true);
+    expect(stdout).toEqual([]);
+    expect(store.tenantExists('tenant.example.com')).toBe(false);
+  });
+
+  it('refuses to overwrite an existing domain without --rotate, and leaves the old key working', async () => {
+    const store = createFakeStore();
+    store.registerTenant('tenant.example.com', 'existing-key', 'tenant.example.com');
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['register', 'tenant.example.com', '--sender-domain', 'tenant.example.com'],
+      () => store,
+      io
+    );
 
     expect(code).toBe(1);
     expect(stderr.some((line) => line.includes('--rotate'))).toBe(true);
     expect(stdout).toEqual([]);
     await expect(store.verifyTenant('tenant.example.com', 'existing-key')).resolves.toEqual({
       domain: 'tenant.example.com',
+      senderDomain: 'tenant.example.com',
     });
   });
 
   it('rotates an existing domain key with --rotate, invalidating the old one', async () => {
     const store = createFakeStore();
-    store.registerTenant('tenant.example.com', 'old-key');
+    store.registerTenant('tenant.example.com', 'old-key', 'tenant.example.com');
     const { io, stdout } = captureIo();
 
-    const code = await runCli(['register', 'tenant.example.com', '--rotate'], () => store, io);
+    const code = await runCli(
+      ['register', 'tenant.example.com', '--sender-domain', 'tenant.example.com', '--rotate'],
+      () => store,
+      io
+    );
 
     expect(code).toBe(0);
     await expect(store.verifyTenant('tenant.example.com', 'old-key')).resolves.toBeNull();
@@ -69,6 +113,7 @@ describe('runCli register', () => {
     expect(keyLine).toBeDefined();
     await expect(store.verifyTenant('tenant.example.com', keyLine!)).resolves.toEqual({
       domain: 'tenant.example.com',
+      senderDomain: 'tenant.example.com',
     });
   });
 
@@ -82,7 +127,7 @@ describe('runCli register', () => {
 
   it('closes the store it opened, even when registration fails', async () => {
     const store = createFakeStore();
-    store.registerTenant('tenant.example.com', 'existing-key');
+    store.registerTenant('tenant.example.com', 'existing-key', 'tenant.example.com');
     let closed = false;
     const originalClose = store.close.bind(store);
     store.close = () => {
@@ -90,7 +135,73 @@ describe('runCli register', () => {
       originalClose();
     };
     const { io } = captureIo();
-    await runCli(['register', 'tenant.example.com'], () => store, io);
+    await runCli(
+      ['register', 'tenant.example.com', '--sender-domain', 'tenant.example.com'],
+      () => store,
+      io
+    );
+    expect(closed).toBe(true);
+  });
+});
+
+describe('runCli set-sender-domain', () => {
+  it("updates an already-registered tenant's sender domain without rotating its key", async () => {
+    const store = createFakeStore();
+    store.registerTenant('blog.branchleft.co.uk', 'blog-key', null);
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['set-sender-domain', 'blog.branchleft.co.uk', 'branchleft.co.uk'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    expect(stdout.some((line) => line.includes('branchleft.co.uk'))).toBe(true);
+    await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: 'branchleft.co.uk',
+    });
+  });
+
+  it('refuses for a domain that was never registered, and prints no key-like output', async () => {
+    const store = createFakeStore();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['set-sender-domain', 'never-registered.example.com', 'branchleft.co.uk'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(stdout).toEqual([]);
+  });
+
+  it('requires both arguments', async () => {
+    const store = createFakeStore();
+    const { io, stderr } = captureIo();
+    const code = await runCli(['set-sender-domain', 'blog.branchleft.co.uk'], () => store, io);
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+  });
+
+  it('closes the store it opened, even when the domain is unknown', async () => {
+    const store = createFakeStore();
+    let closed = false;
+    const originalClose = store.close.bind(store);
+    store.close = () => {
+      closed = true;
+      originalClose();
+    };
+    const { io } = captureIo();
+    await runCli(
+      ['set-sender-domain', 'never-registered.example.com', 'branchleft.co.uk'],
+      () => store,
+      io
+    );
     expect(closed).toBe(true);
   });
 });
@@ -98,8 +209,8 @@ describe('runCli register', () => {
 describe('runCli list', () => {
   it('lists registered domains only, sorted, with nothing key-like in the output', async () => {
     const store = createFakeStore();
-    store.registerTenant('b.example.com', 'key-b');
-    store.registerTenant('a.example.com', 'key-a');
+    store.registerTenant('b.example.com', 'key-b', 'b.example.com');
+    store.registerTenant('a.example.com', 'key-a', 'a.example.com');
     const { io, stdout } = captureIo();
 
     const code = await runCli(['list'], () => store, io);

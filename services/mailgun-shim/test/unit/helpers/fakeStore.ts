@@ -39,8 +39,13 @@ function suppressionKey(domain: string, type: string, email: string): string {
  * queue's ordering (oldest batch first, insertion order within a batch)
  * and its "no pending rows left" batch-completion rule.
  */
+interface FakeTenant {
+  apiKey: string;
+  senderDomain: string | null;
+}
+
 export function createFakeStore(): FakeShimStore {
-  const tenants = new Map<string, string>();
+  const tenants = new Map<string, FakeTenant>();
   const suppressionKeys = new Set<string>();
   const events: StoredEvent[] = [];
   const batches = new Map<string, BatchRow>();
@@ -61,13 +66,15 @@ export function createFakeStore(): FakeShimStore {
     events,
     suppressionKeys,
 
-    registerTenant(domain, apiKey) {
-      tenants.set(domain, apiKey);
+    registerTenant(domain, apiKey, senderDomain) {
+      tenants.set(domain, { apiKey, senderDomain });
     },
 
     async verifyTenant(domain, apiKey) {
       const stored = tenants.get(domain);
-      return stored !== undefined && stored === apiKey ? { domain } : null;
+      return stored !== undefined && stored.apiKey === apiKey
+        ? { domain, senderDomain: stored.senderDomain }
+        : null;
     },
 
     tenantExists(domain) {
@@ -76,6 +83,15 @@ export function createFakeStore(): FakeShimStore {
 
     listTenants() {
       return [...tenants.keys()].sort();
+    },
+
+    setSenderDomain(domain, senderDomain) {
+      const stored = tenants.get(domain);
+      if (!stored) {
+        return false;
+      }
+      stored.senderDomain = senderDomain;
+      return true;
     },
 
     recordEvent(event) {

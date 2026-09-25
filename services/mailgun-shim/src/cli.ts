@@ -27,8 +27,10 @@ export async function runCli(
   switch (command) {
     case 'register': {
       const domain = rest[0];
-      if (!domain) {
-        io.stderr('Usage: register <domain> [--rotate]');
+      const senderDomainIndex = rest.indexOf('--sender-domain');
+      const senderDomain = senderDomainIndex !== -1 ? rest[senderDomainIndex + 1] : undefined;
+      if (!domain || !senderDomain) {
+        io.stderr('Usage: register <credential-domain> --sender-domain <domain> [--rotate]');
         return 1;
       }
       const rotate = rest.includes('--rotate');
@@ -36,16 +38,39 @@ export async function runCli(
       try {
         // registerTenant is INSERT OR REPLACE — without this guard a
         // second `register` for a live domain would silently rotate its
-        // key out from under it.
+        // key (and sender domain) out from under it. To change only the
+        // sender domain on an existing tenant without re-keying it, use
+        // set-sender-domain instead.
         if (store.tenantExists(domain) && !rotate) {
           io.stderr(`Tenant ${domain} already exists. Pass --rotate to replace its key.`);
           return 1;
         }
         const apiKey = generateApiKey();
-        store.registerTenant(domain, apiKey);
-        io.stdout(`Registered ${domain}.`);
+        store.registerTenant(domain, apiKey, senderDomain);
+        io.stdout(`Registered ${domain} (sender domain: ${senderDomain}).`);
         io.stdout('API key (shown once — it will not be shown again):');
         io.stdout(apiKey);
+        return 0;
+      } finally {
+        store.close();
+      }
+    }
+
+    case 'set-sender-domain': {
+      const domain = rest[0];
+      const senderDomain = rest[1];
+      if (!domain || !senderDomain) {
+        io.stderr('Usage: set-sender-domain <credential-domain> <sender-domain>');
+        return 1;
+      }
+      const store = openStore();
+      try {
+        const updated = store.setSenderDomain(domain, senderDomain);
+        if (!updated) {
+          io.stderr(`Tenant ${domain} is not registered. Use register to create it.`);
+          return 1;
+        }
+        io.stdout(`Set ${domain}'s sender domain to ${senderDomain}.`);
         return 0;
       } finally {
         store.close();
@@ -87,7 +112,7 @@ export async function runCli(
 
     default:
       io.stderr(`Unknown command: ${command ?? '(none)'}`);
-      io.stderr('Usage: cli.js <register|list|events> ...');
+      io.stderr('Usage: cli.js <register|set-sender-domain|list|events> ...');
       return 1;
   }
 }

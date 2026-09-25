@@ -6,7 +6,7 @@ import { requireTenantForDomain } from '../auth.js';
 import type { Logger } from '../log.js';
 import { parseMailgunMessageFields } from '../mailgunFields.js';
 import { tenantRateLimiter } from '../rateLimit.js';
-import { senderBelongsToTenant } from '../senderAuthorization.js';
+import { resolveSenderDomain, senderBelongsToTenant } from '../senderAuthorization.js';
 import type { ShimStore } from '../store.js';
 import type { WorkerHandle } from '../worker.js';
 
@@ -76,36 +76,60 @@ export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log
         return;
       }
 
-      // A tenant credential may only send as its own domain — mx1's
-      // mustMatchSender binds the envelope to the shim's own relaying
-      // login once mail leaves this process, never to the tenant that
-      // submitted a given send, so this intake is the only hop that can
-      // still tell tenants apart. A real Mailgun 400 for "not a valid
+      const tenant = res.locals.tenant;
+      /* v8 ignore start -- proven unreachable: requireTenantForDomain
+       * (auth.ts) runs before this handler on every route that reaches
+       * here and only calls next() once it has set res.locals.tenant.
+       * Kept as a fail-closed guard against that contract changing. */
+      if (!tenant) {
+        res.status(401).json({ message: 'Unauthorized' });
+        return;
+      }
+      /* v8 ignore stop */
+
+      // The fail-closed gate: a tenant with no registered sender domain
+      // (every row that predates this field) is refused rather than
+      // silently checked against its credential key — see
+      // resolveSenderDomain's own doc comment for why that fallback is
+      // exactly the bug this exists to prevent.
+      const senderDomain = resolveSenderDomain(tenant, log, 'http');
+      if (!senderDomain) {
+        res
+          .status(500)
+          .json({ message: 'Sender domain not registered for this tenant; contact the operator.' });
+        return;
+      }
+
+      // A tenant credential may only send as its own registered sender
+      // domain — mx1's mustMatchSender binds the envelope to the shim's own
+      // relaying login once mail leaves this process, never to the tenant
+      // that submitted a given send, so this intake is the only hop that
+      // can still tell tenants apart. A real Mailgun 400 for "not a valid
       // address" is the shape this mirrors — permanent, not one of the
       // codes worth an automatic retry.
-      if (!senderBelongsToTenant(fields.from, domain)) {
-        res.status(400).json({ message: `'from' address must belong to the domain ${domain}` });
-        return;
-      }
-      // A Reply-To header changes what the recipient sees as the reply
-      // address, and worker.ts's own send path DOES forward it (as
-      // nodemailer's `replyTo` option) even though it drops a raw h:Reply-To
-      // header from the extra-headers map — so this is a real, live
-      // visible-sender surface, not a defensive-only one. A Sender header
-      // is dropped everywhere downstream today and reaches no recipient,
-      // but is refused here too: defence in depth against that changing
-      // silently, and it is the exact header MTAs treat as the
-      // responsible-submitter override when a From is a mailing-list address.
-      const replyTo = findHeader(fields.headers, 'Reply-To');
-      if (replyTo !== undefined && !senderBelongsToTenant(replyTo, domain)) {
+      if (!senderBelongsToTenant(fields.from, senderDomain)) {
         res
           .status(400)
-          .json({ message: `'h:Reply-To' address must belong to the domain ${domain}` });
+          .json({ message: `'from' address must belong to the domain ${senderDomain}` });
         return;
       }
+      // Reply-To is deliberately NOT checked here — it names where a
+      // reply goes, not who sent the mail, and Ghost lets admins set any
+      // newsletter reply-to freely (email-address-service.ts's validate()
+      // allows it self-hosted). Refusing a foreign one would refuse
+      // legitimate mail: only From and the envelope sender identify the
+      // sender.
+      //
+      // A Sender header is dropped everywhere downstream today and
+      // reaches no recipient, but is refused here too: defence in depth
+      // against that changing silently, and it is the exact header MTAs
+      // treat as the responsible-submitter override when a From is a
+      // mailing-list address.
       const senderHeader = findHeader(fields.headers, 'Sender');
-      if (senderHeader !== undefined && !senderBelongsToTenant(senderHeader, domain)) {
-        res.status(400).json({ message: `'h:Sender' address must belong to the domain ${domain}` });
+      if (senderHeader !== undefined && !senderBelongsToTenant(senderHeader, senderDomain)) {
+        res
+          .status(400)
+          .json({ message: `'h:Sender' address must belong to the domain ${senderDomain}` });
         return;
       }
 

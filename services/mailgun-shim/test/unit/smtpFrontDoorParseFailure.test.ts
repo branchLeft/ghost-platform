@@ -59,7 +59,7 @@ interface Harness {
 
 async function startHarness(): Promise<Harness> {
   const store = createSqliteStore(':memory:');
-  store.registerTenant('tenant-a.example.com', 'key-a');
+  store.registerTenant('tenant-a.example.com', 'key-a', 'tenant-a.example.com');
   const worker: WorkerHandle = {
     kick: vi.fn(),
     whenIdle: () => Promise.resolve(),

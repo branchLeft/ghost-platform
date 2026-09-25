@@ -491,8 +491,8 @@ async function startHarness(
   }> = {}
 ): Promise<Harness> {
   const store = createSqliteStore(':memory:');
-  store.registerTenant('tenant-a.example.com', 'key-a');
-  store.registerTenant('tenant-b.example.com', 'key-b');
+  store.registerTenant('tenant-a.example.com', 'key-a', 'tenant-a.example.com');
+  store.registerTenant('tenant-b.example.com', 'key-b', 'tenant-b.example.com');
 
   const kick = vi.fn();
   const worker: WorkerHandle = {
@@ -862,17 +862,35 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       expect(harness.store.countPendingRecipients()).toBe(0);
     });
 
-    it("accepts Ghost's real transactional sender shape for a tenant (mailFrom exactly as configured in ghost-tenant-blog's Pulumi.blog.yaml) and queues it", async () => {
-      // `blog-infra:mailFrom: branchLeft blog <blog@branchleft.co.uk>` is the
-      // live value for branchLeft's own tenant-zero blog — copied verbatim,
-      // not paraphrased, so this proves the exact real shape is never
-      // refused. The credential identity (AUTH username = the tenant's
-      // registered domain) mirrors this suite's own existing convention,
-      // e.g. 'tenant-a.example.com' above — every other test in this file
-      // authenticates the same way.
+    it("accepts a header Reply-To outside the tenant's domain — it names where a reply goes, not who sent the mail, and the SMTP route treats Reply-To the same as the HTTP route (never checked, unlike Sender)", async () => {
       harness = await startHarness();
-      harness.store.registerTenant('branchleft.co.uk', 'blog-key');
-      const transport = client(harness.port, 'branchleft.co.uk', 'blog-key');
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      const info = await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        replyTo: 'someone@evil.example',
+        to: 'member@example.com',
+        subject: 'Foreign reply-to',
+        text: 'hi',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      expect(harness.store.countPendingRecipients()).toBe(1);
+    });
+
+    it("accepts Ghost's real transactional sender shape for tenant zero — the LIVE credential key (blog.branchleft.co.uk, the Mailgun bulkEmailDomain) registered with its real sender domain (branchleft.co.uk), authenticating and sending exactly as configured in ghost-tenant-blog's Pulumi.blog.yaml — and queues it", async () => {
+      // The credential key and the sending domain are DIFFERENT values for
+      // tenant zero: mx1's own provisioning runbook registers the
+      // credential as 'blog.branchleft.co.uk'
+      // (RUNBOOK-mx1-provision.md's tenant-registration section), and only
+      // a test authenticating as THAT value, with 'branchleft.co.uk' set as
+      // its separate sender domain, reproduces what actually happens in
+      // production. `blog-infra:mailFrom: branchLeft blog
+      // <blog@branchleft.co.uk>` is the live From value, copied verbatim,
+      // not paraphrased.
+      harness = await startHarness();
+      harness.store.registerTenant('blog.branchleft.co.uk', 'blog-key', 'branchleft.co.uk');
+      const transport = client(harness.port, 'blog.branchleft.co.uk', 'blog-key');
 
       const info = await transport.sendMail({
         from: 'branchLeft blog <blog@branchleft.co.uk>',
@@ -883,6 +901,31 @@ describe('SMTP front door — acceptance into the durable queue', () => {
 
       expect(info.accepted).toEqual(['member@example.com']);
       expect(harness.store.countPendingRecipients()).toBe(1);
+    });
+
+    it('fails closed with 450 on MAIL FROM when the authenticated tenant has no registered sender domain (e.g. a pre-migration row), rather than falling back to the credential key', async () => {
+      harness = await startHarness();
+      harness.store.registerTenant('legacy-tenant.example.com', 'legacy-key', null);
+      const authPlain = Buffer.from('\u0000legacy-tenant.example.com\u0000legacy-key').toString(
+        'base64'
+      );
+
+      const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+        'EHLO test',
+        `AUTH PLAIN ${authPlain}`,
+        'MAIL FROM:<noreply@legacy-tenant.example.com>',
+      ]);
+
+      expect(responses.some((line) => line.startsWith('450'))).toBe(true);
+      expect(harness.store.countPendingRecipients()).toBe(0);
+      expect(
+        harness.logs.some(
+          (line) =>
+            line.event === 'sender_domain_not_registered' &&
+            line.fields.domain === 'legacy-tenant.example.com' &&
+            line.fields.route === 'smtp'
+        )
+      ).toBe(true);
     });
 
     it('falls back to the already-verified envelope sender when a message has no header From at all — nothing left to spoof, so it is not refused', async () => {

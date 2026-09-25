@@ -11,7 +11,7 @@ import {
 import { simpleParser } from 'mailparser';
 import { isSafeRecipientAddress } from './smtp.js';
 import type { Logger } from './log.js';
-import { senderBelongsToTenant } from './senderAuthorization.js';
+import { resolveSenderDomain, senderBelongsToTenant } from './senderAuthorization.js';
 import type { ShimStore } from './store.js';
 import type { WorkerHandle } from './worker.js';
 
@@ -428,6 +428,17 @@ declare module 'smtp-server' {
     user?: string;
     /** Set once this connection is admitted into the unauthenticated pool (onConnect); called from onAuth on success so the slot frees the instant it stops being needed, without waiting for the connection to eventually close. Idempotent — also called from the connection's own 'close', whichever fires first. */
     releaseUnauthSlot?: () => void;
+    /**
+     * The authenticated tenant's registered sending domain (store.ts's
+     * `Tenant.senderDomain`), set once by onAuth and never re-derived from
+     * a message — never the same as `user` (the credential key) for a
+     * tenant whose two values differ, e.g. tenant zero. `null` means "no
+     * sender domain registered": onMailFrom refuses every message for such
+     * a tenant before RCPT/DATA can run, so a later handler seeing this
+     * still null on a message that reached onData would be a state-machine
+     * violation, not a normal case.
+     */
+    tenantSenderDomain?: string | null;
   }
 }
 
@@ -648,6 +659,10 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // that opens many short-lived connections in a row (one per message)
       // never accumulates against its own per-source cap.
       session.releaseUnauthSlot?.();
+      // Cached on the session, not re-looked-up per message: it can only
+      // change by an operator rotating this credential, which ends the
+      // connection anyway (a fresh AUTH is required either way).
+      session.tenantSenderDomain = tenant.senderDomain;
       callback(null, { user: tenant.domain });
     },
 
@@ -668,12 +683,31 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         return;
       }
       /* v8 ignore stop */
+      // The fail-closed gate: a tenant with no registered sender domain
+      // (every row that predates this field) is refused rather than
+      // silently checked against its credential key. This is the only
+      // place this runs for a given message — onData's own header checks
+      // below trust session.tenantSenderDomain because a message can only
+      // reach onData after MAIL FROM has already passed this gate for it.
+      const senderDomain = resolveSenderDomain(
+        { domain: submitterId, senderDomain: session.tenantSenderDomain ?? null },
+        log,
+        'smtp'
+      );
+      if (!senderDomain) {
+        const err = new Error(
+          '4.3.5 System not accepting network messages: sender domain not registered for this account'
+        ) as Error & { responseCode: number };
+        err.responseCode = 450;
+        callback(err);
+        return;
+      }
       // The envelope half of the sender-binding control: mustMatchSender at
       // mx1 can only bind the envelope to the shim's own relaying login
       // once mail leaves this process, never to which tenant credential
       // submitted it — this is the only hop that still knows that. A
-      // credential may only submit as its own domain.
-      if (!senderBelongsToTenant(address.address, submitterId)) {
+      // credential may only submit as its own registered sender domain.
+      if (!senderBelongsToTenant(address.address, senderDomain)) {
         log.warn('smtp_mail_from_domain_mismatch', {
           submitter: submitterId,
           remoteAddress: session.remoteAddress,
@@ -882,8 +916,30 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             // `from` fallback below), so there is nothing left to spoof.
             // Refused before enqueueBatch/callback below — never a 250 for
             // a message that is then dropped.
+            // session.tenantSenderDomain is guaranteed non-null here: this
+            // is the SAME message onMailFrom already ran its own
+            // resolveSenderDomain gate for (MAIL FROM always precedes DATA
+            // in the SMTP state machine, and onMailFrom refuses the whole
+            // message before RCPT/DATA can run if that gate fails) — never
+            // re-derived or re-checked, just trusted.
+            const senderDomain = session.tenantSenderDomain;
+            /* v8 ignore start -- proven unreachable: onMailFrom's own
+             * resolveSenderDomain gate refuses every message for a tenant
+             * with no sender domain before DATA can run, so onData never
+             * sees this unset. Kept as a fail-closed guard against that
+             * contract changing. */
+            if (!senderDomain) {
+              log.error('sender_domain_not_registered', { domain: submitterId, route: 'smtp' });
+              const safeErr = new Error('Temporary failure, please try again later') as Error & {
+                responseCode: number;
+              };
+              safeErr.responseCode = 450;
+              callback(safeErr);
+              return;
+            }
+            /* v8 ignore stop */
             const headerFrom = parsed.from?.text;
-            if (headerFrom !== undefined && !senderBelongsToTenant(headerFrom, submitterId)) {
+            if (headerFrom !== undefined && !senderBelongsToTenant(headerFrom, senderDomain)) {
               log.warn('smtp_header_from_domain_mismatch', { submitter: submitterId });
               const err = new Error(
                 '5.7.1 Sender address rejected: domain not authorised for this account'
@@ -899,7 +955,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
               'text' in senderHeaderValue
                 ? (senderHeaderValue as { text: string }).text
                 : undefined;
-            if (headerSender !== undefined && !senderBelongsToTenant(headerSender, submitterId)) {
+            if (headerSender !== undefined && !senderBelongsToTenant(headerSender, senderDomain)) {
               log.warn('smtp_header_sender_domain_mismatch', { submitter: submitterId });
               const err = new Error(
                 '5.7.1 Sender address rejected: domain not authorised for this account'
