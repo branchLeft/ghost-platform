@@ -5,6 +5,7 @@ import type { WorkerHandle } from '../../../src/worker.js';
 import { createTestLogger, type TestLogger } from '../../helpers/testLogger.js';
 import { createTestWorker } from '../../helpers/testWorker.js';
 import { createFakeStore, type FakeShimStore } from '../helpers/fakeStore.js';
+import { ghostStringify } from '../../helpers/ghostAddress.js';
 import { basicAuthHeader, startRouter, type StartedRouter } from '../helpers/startRouter.js';
 import { vi } from 'vitest';
 
@@ -451,23 +452,29 @@ describe('POST /v3/:domain/messages', () => {
     ).toBe(true);
   });
 
-  it("accepts exactly Ghost's real newsletter field set for tenant zero — the LIVE credential key (blog.branchleft.co.uk) registered with its real sender domain (branchleft.co.uk), from/h:Sender/h:Reply-To as mailgun-client.js sends them", async () => {
+  it("accepts exactly Ghost's real newsletter field set for tenant zero — the LIVE credential key (blog.branchleft.co.uk) registered with its real sender domain (branchleft.co.uk), from/h:Sender/h:Reply-To built the way EmailAddressParser.stringify actually builds them", async () => {
     // The credential key is NOT the sending domain for the only live
-    // tenant. mailgun-client.js posts `from` and
-    // `h:Sender` as the same address, and (with sender_reply_to=newsletter)
-    // `h:Reply-To` as the newsletter's own reply-to, which for tenant zero
-    // is the same apex address.
+    // tenant. mailgun-client.js posts `from` and `h:Sender` as the same
+    // address, and (with sender_reply_to=newsletter) `h:Reply-To` as the
+    // newsletter's own reply-to, which for tenant zero is the same apex
+    // address — all three built by EmailAddressParser.stringify
+    // (email-address-parser.js, forks/Ghost tag v6.55.0), which ALWAYS
+    // double-quotes a present name (`"${name}" <${address}>`, backslash
+    // and `"` escaped first), never emits it bare — an unquoted name here
+    // would prove nothing about the real wire shape. ghostFrom below is
+    // that exact function, not a hand-typed guess at its output.
     const senderKey = 'blog-tenant-zero-key';
     store.registerTenant('blog.branchleft.co.uk', senderKey, 'branchleft.co.uk');
+    const ghostFrom = ghostStringify('branchLeft blog', 'blog@branchleft.co.uk');
 
     const res = await fetch(`${server.baseUrl}/v3/blog.branchleft.co.uk/messages`, {
       method: 'POST',
       headers: { Authorization: basicAuthHeader('api', senderKey) },
       body: multipartBody([
         ['to', 'member@example.com'],
-        ['from', 'branchLeft blog <blog@branchleft.co.uk>'],
-        ['h:Sender', 'blog@branchleft.co.uk'],
-        ['h:Reply-To', 'blog@branchleft.co.uk'],
+        ['from', ghostFrom],
+        ['h:Sender', ghostFrom],
+        ['h:Reply-To', ghostFrom],
         ['subject', 'Your sign-in link'],
         ['html', '<p>hi</p>'],
         ['text', 'hi'],
