@@ -338,7 +338,7 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
       // Every subtest below depends on this hook. If it throws, node:test
       // cancels them all rather than reporting the real reason on each --
       // logged here so the actual cause survives even if that cancellation
-      // ever loses the hook's own error (branchLeft/workspace#1364).
+      // ever loses the hook's own error.
       console.error(`setup for "break-glass against a real Ghost" failed: ${err.message || err}`);
       throw err;
     }
