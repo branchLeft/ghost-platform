@@ -25,7 +25,7 @@ describe('GET /v3/:domain/events', () => {
 
   beforeEach(async () => {
     store = createFakeStore();
-    store.registerTenant(DOMAIN, API_KEY);
+    store.registerTenant(DOMAIN, API_KEY, DOMAIN);
     server = await startRouter(createEventsRouter(store));
   });
 

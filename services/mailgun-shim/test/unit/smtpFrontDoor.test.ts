@@ -490,8 +490,8 @@ async function startHarness(
   }> = {}
 ): Promise<Harness> {
   const store = createSqliteStore(':memory:');
-  store.registerTenant('tenant-a.example.com', 'key-a');
-  store.registerTenant('tenant-b.example.com', 'key-b');
+  store.registerTenant('tenant-a.example.com', 'key-a', 'tenant-a.example.com');
+  store.registerTenant('tenant-b.example.com', 'key-b', 'tenant-b.example.com');
 
   // The real implementation, not a hand-rolled fake — notify() is void and
   // synchronous by its own contract (drainWake.ts), so there is no
@@ -613,12 +613,21 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(harness.store.countUndrainedRecipients()).toBe(1);
   });
 
-  it('the enqueued row carries the authenticated tenant as its domain, not anything from the message body', async () => {
+  it('the enqueued row carries the authenticated tenant as its domain, taken from the credential rather than re-derived from the message body', async () => {
+    // This test's From used to be a domain unrelated to the credential
+    // entirely, to prove `due[0].domain` came from `session.user` and not
+    // from parsing the message. The sender-binding control
+    // (senderBelongsToTenant in onMailFrom/onData) now refuses that
+    // combination outright — a foreign-domain From can no longer reach the
+    // queue at all, on either credential — so the two are inseparable for a
+    // message that gets enqueued. What still distinguishes "read from the
+    // credential" from "read from the body" is the display name/local
+    // part, which the queued row must ignore just as before.
     harness = await startHarness();
     const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
 
     await transport.sendMail({
-      from: 'Someone Else <noreply@not-tenant-a.example>',
+      from: 'Someone Else <noreply@tenant-a.example.com>',
       to: 'member@example.com',
       subject: 'Hi',
       text: 'hi',
@@ -629,29 +638,44 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(due[0]!.domain).toBe('tenant-a.example.com');
   });
 
-  it('two credentials sharing one claimed sending domain in the message body are still kept apart by their own identity', async () => {
-    // A demo host's slots can share one visible sending domain, so a
-    // per-domain tenant key alone can't tell them apart. Identity here is
-    // the authenticated credential (tenants.domain, the AUTH username) —
-    // never the domain the message body claims to send as. Two different
-    // slot credentials both send `From:` the identical literal domain and
-    // must still be attributed, ceilinged and queued as two separate
-    // submitters.
+  it('two credentials, each sending as their own domain, are still throttled and queued as two separate submitters', async () => {
+    // Both slots used to send `From:` one shared demo domain neither of
+    // them owned, to prove throttle/queue identity is the authenticated
+    // credential (tenants.domain, the AUTH username) and never anything the
+    // message body claims. The sender-binding control now requires each
+    // From to belong to its own sender's domain, so the shared-domain shape
+    // is gone — each slot sends as itself instead, which still proves the
+    // same property: two different credentials are attributed, ceilinged
+    // and queued independently rather than being merged onto one identity.
     harness = await startHarness({ submitterMessagesPerMinute: 1 });
     const slotA = client(harness.port, 'tenant-a.example.com', 'key-a');
     const slotB = client(harness.port, 'tenant-b.example.com', 'key-b');
-    const sharedFrom = 'Prospect <prospect@shareddemo.example.com>';
 
-    await slotA.sendMail({ from: sharedFrom, to: 'member@example.com', subject: 'A', text: 'hi' });
+    await slotA.sendMail({
+      from: 'Prospect <prospect@tenant-a.example.com>',
+      to: 'member@example.com',
+      subject: 'A',
+      text: 'hi',
+    });
 
     // Slot A's own ceiling (1/min) is already spent by the send above. Slot
-    // B — sharing the exact same body-level "From" domain, never having
-    // sent yet — is untouched by that: its own first send still succeeds.
+    // B — a different credential, never having sent yet — is untouched by
+    // that: its own first send still succeeds.
     await expect(
-      slotA.sendMail({ from: sharedFrom, to: 'member@example.com', subject: 'A2', text: 'hi' })
+      slotA.sendMail({
+        from: 'Prospect <prospect@tenant-a.example.com>',
+        to: 'member@example.com',
+        subject: 'A2',
+        text: 'hi',
+      })
     ).rejects.toThrow();
     await expect(
-      slotB.sendMail({ from: sharedFrom, to: 'member@example.com', subject: 'B', text: 'hi' })
+      slotB.sendMail({
+        from: 'Prospect <prospect@tenant-b.example.com>',
+        to: 'member@example.com',
+        subject: 'B',
+        text: 'hi',
+      })
     ).resolves.toBeDefined();
 
     const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
@@ -693,6 +717,82 @@ describe('SMTP front door — acceptance into the durable queue', () => {
 
     const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
     expect(due[0]!.payload.headers['Reply-To']).toContain('support@tenant-a.example.com');
+  });
+
+  describe('CR/LF/NUL header injection is refused before queueing', () => {
+    // The HTTP route (mailgunFields.ts) refuses these on the raw wire value.
+    // This route parses with mailparser first (simpleParser, onData above),
+    // which already applies its own MIME decoding — an encoded-word Subject
+    // can decode to a CRLF that was never literally present on the wire, so
+    // the same check has to run AFTER that decoding, not before it. Review
+    // found this exact shape reaching the drain payload as an injected
+    // Sender line, from a Subject alone.
+    it('refuses an encoded-word Subject that decodes to a CRLF-injected header line, with 550, and queues nothing', async () => {
+      harness = await startHarness();
+      const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+
+      const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+        'EHLO test',
+        `AUTH PLAIN ${authPlain}`,
+        'MAIL FROM:<noreply@tenant-a.example.com>',
+        'RCPT TO:<member@example.com>',
+        'DATA',
+        'Subject: =?utf-8?Q?a=0D=0ASender:_ceo@evil.com?=\r\n\r\nBody\r\n.',
+        'QUIT',
+      ]);
+
+      expect(responses.some((line) => /^550 /.test(line))).toBe(true);
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it('refuses a header From whose display name decodes to an embedded CRLF, with 550, and queues nothing', async () => {
+      // No literal ':' inside the encoded word here (unlike the Subject
+      // PoC above, which doesn't need one) — verified separately that a
+      // literal ':' inside an address header's encoded word makes
+      // nodemailer's addressparser split on it as RFC 5322 group syntax
+      // before decoding ever runs, so the specific "Sender:" shape never
+      // reaches parsed.from.text as one decoded token. A decoded CRLF
+      // anywhere in the display name is dangerous regardless of whether it
+      // spells a specific header name, so that's what this proves.
+      harness = await startHarness();
+      const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+
+      const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+        'EHLO test',
+        `AUTH PLAIN ${authPlain}`,
+        'MAIL FROM:<noreply@tenant-a.example.com>',
+        'RCPT TO:<member@example.com>',
+        'DATA',
+        'From: =?utf-8?Q?x=0D=0AInjected_line?= <noreply@tenant-a.example.com>\r\nSubject: hi\r\n\r\nBody\r\n.',
+        'QUIT',
+      ]);
+
+      expect(responses.some((line) => /^550 /.test(line))).toBe(true);
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it('CONTROL: an ordinary Subject and a plain multi-line body still enqueue normally — the rule never applies to html/text, and an unencoded Subject is unaffected', async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        to: 'member@example.com',
+        subject: 'Weekly digest',
+        html: '<p>Paragraph one.</p>\r\n<p>Paragraph two.</p>',
+        text: 'Paragraph one.\r\nParagraph two.',
+      });
+
+      const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
+      expect(due).toHaveLength(1);
+      expect(due[0]!.payload.subject).toBe('Weekly digest');
+      // nodemailer's own client normalises the line ending it puts on the
+      // wire (CRLF in, LF on this leg) — the newline itself survives the
+      // round trip, which is the only thing this control needs to prove;
+      // the exact byte form isn't this route's concern.
+      expect(due[0]!.payload.html).toContain('Paragraph two.');
+      expect(due[0]!.payload.html.split('\n').length).toBeGreaterThan(1);
+    });
   });
 
   it('falls back to the envelope sender and empty subject/text when a message carries no From/Subject/body', async () => {
@@ -770,6 +870,211 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     ).rejects.toThrow();
 
     expect(harness.store.countUndrainedRecipients()).toBe(0);
+  });
+
+  describe('the visible sender is bound to the authenticated tenant', () => {
+    it("refuses an envelope sender (MAIL FROM) outside the authenticated tenant's domain, with 553 5.7.1, and queues nothing", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      await expect(
+        transport.sendMail({
+          from: 'Attacker <noreply@evil.example>',
+          to: 'member@example.com',
+          subject: 'Envelope spoof',
+          text: 'hi',
+        })
+      ).rejects.toMatchObject({ responseCode: 553 });
+
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it("CONTROL: the tenant's own domain, as both envelope and header From, is accepted and enqueued", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      const info = await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        to: 'member@example.com',
+        subject: 'Legitimate',
+        text: 'hi',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      expect(harness.store.countUndrainedRecipients()).toBe(1);
+    });
+
+    it("refuses a header From outside the tenant's domain even when the envelope sender is legitimate, with 550 5.7.1, and queues nothing", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      await expect(
+        transport.sendMail({
+          envelope: { from: 'noreply@tenant-a.example.com', to: 'member@example.com' },
+          from: 'Attacker <noreply@evil.example>',
+          to: 'member@example.com',
+          subject: 'Header From spoof',
+          text: 'hi',
+        })
+      ).rejects.toMatchObject({ responseCode: 550 });
+
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it("strips a header Sender outside the tenant's domain rather than refusing the message — it is never copied into the queued headers, so nothing foreign reaches the sink", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      const info = await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        sender: 'Attacker <noreply@evil.example>',
+        to: 'member@example.com',
+        subject: 'Header Sender spoof',
+        text: 'hi',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      expect(harness.store.countUndrainedRecipients()).toBe(1);
+
+      const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
+      expect(due[0]!.payload.headers['Sender']).toBeUndefined();
+      expect(due[0]!.payload.headers['sender']).toBeUndefined();
+      expect(Object.keys(due[0]!.payload.headers)).toEqual([]);
+    });
+
+    it("strips a header Sender even when it matches the tenant's own domain — Sender is never taken from the tenant, checked or not", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      const info = await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        sender: 'Tenant A <noreply@tenant-a.example.com>',
+        to: 'member@example.com',
+        subject: "Ghost's own shape",
+        text: 'hi',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
+      expect(Object.keys(due[0]!.payload.headers)).toEqual([]);
+    });
+
+    it("accepts a header Reply-To outside the tenant's domain — it names where a reply goes, not who sent the mail, and unlike Sender it is relayed rather than dropped", async () => {
+      harness = await startHarness();
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      const info = await transport.sendMail({
+        from: 'Tenant A <noreply@tenant-a.example.com>',
+        replyTo: 'someone@evil.example',
+        to: 'member@example.com',
+        subject: 'Foreign reply-to',
+        text: 'hi',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      expect(harness.store.countUndrainedRecipients()).toBe(1);
+    });
+
+    it("accepts Ghost's real transactional sender shape for tenant zero — the LIVE credential key (blog.branchleft.co.uk, the Mailgun bulkEmailDomain) registered with its real sender domain (branchleft.co.uk), authenticating and sending exactly as configured in ghost-tenant-blog's Pulumi.blog.yaml — and queues it", async () => {
+      // The credential key and the sending domain are DIFFERENT values for
+      // tenant zero: mx1's own provisioning runbook registers the
+      // credential as 'blog.branchleft.co.uk'
+      // (RUNBOOK-mx1-provision.md's tenant-registration section), and only
+      // a test authenticating as THAT value, with 'branchleft.co.uk' set as
+      // its separate sender domain, reproduces what actually happens in
+      // production. `blog-infra:mailFrom: branchLeft blog
+      // <blog@branchleft.co.uk>` is the live From value, copied verbatim,
+      // not paraphrased.
+      harness = await startHarness();
+      harness.store.registerTenant('blog.branchleft.co.uk', 'blog-key', 'branchleft.co.uk');
+      const transport = client(harness.port, 'blog.branchleft.co.uk', 'blog-key');
+
+      const info = await transport.sendMail({
+        from: 'branchLeft blog <blog@branchleft.co.uk>',
+        to: 'member@example.com',
+        subject: 'Your sign-in link',
+        text: 'Click here',
+      });
+
+      expect(info.accepted).toEqual(['member@example.com']);
+      expect(harness.store.countUndrainedRecipients()).toBe(1);
+    });
+
+    it('fails closed with 450 on MAIL FROM when the authenticated tenant has no registered sender domain (e.g. a pre-migration row), rather than falling back to the credential key', async () => {
+      harness = await startHarness();
+      harness.store.registerTenant('legacy-tenant.example.com', 'legacy-key', null);
+      const authPlain = Buffer.from('\u0000legacy-tenant.example.com\u0000legacy-key').toString(
+        'base64'
+      );
+
+      const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+        'EHLO test',
+        `AUTH PLAIN ${authPlain}`,
+        'MAIL FROM:<noreply@legacy-tenant.example.com>',
+      ]);
+
+      expect(responses.some((line) => line.startsWith('450'))).toBe(true);
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+      expect(
+        harness.logs.some(
+          (line) =>
+            line.event === 'sender_domain_not_registered' &&
+            line.fields.domain === 'legacy-tenant.example.com' &&
+            line.fields.route === 'smtp'
+        )
+      ).toBe(true);
+    });
+
+    it('falls back to the already-verified envelope sender when a message has no header From at all — nothing left to spoof, so it is not refused', async () => {
+      // Same minimal-message shape as the pre-existing "falls back to the
+      // envelope sender" test above, retained deliberately: a header From
+      // is only checked when it is actually present (see smtpFrontDoor.ts's
+      // own comment on this), so this must still succeed under the
+      // sender-binding control too.
+      harness = await startHarness();
+      const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+
+      const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+        'EHLO test',
+        `AUTH PLAIN ${authPlain}`,
+        'MAIL FROM:<envelope-sender@tenant-a.example.com>',
+        'RCPT TO:<member@example.com>',
+        'DATA',
+        'To: member@example.com\r\n\r\n.',
+      ]);
+
+      expect(responses.some((line) => /^250 /.test(line))).toBe(true);
+      expect(harness.store.countUndrainedRecipients()).toBe(1);
+    });
+
+    it('an enqueue failure (e.g. a SQLite error) returns a generic temporary 4xx, never the raw internal error text, over the real SMTP wire', async () => {
+      harness = await startHarness();
+      const enqueueSpy = vi.spyOn(harness.store, 'enqueueBatch').mockImplementation(() => {
+        throw new Error(
+          'SQLITE_CONSTRAINT: UNIQUE constraint failed: queue_recipients.batch_id, queue_recipients.recipient'
+        );
+      });
+      const transport = client(harness.port, 'tenant-a.example.com', 'key-a');
+
+      let caught: (Error & { responseCode?: number }) | undefined;
+      try {
+        await transport.sendMail({
+          from: 'Tenant A <noreply@tenant-a.example.com>',
+          to: 'member@example.com',
+          subject: 'Hi',
+          text: 'hi',
+        });
+      } catch (err) {
+        caught = err as Error & { responseCode?: number };
+      }
+
+      expect(caught).toBeDefined();
+      expect(caught!.responseCode).toBe(450);
+      expect(caught!.message).not.toMatch(/SQLITE|constraint/i);
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+
+      enqueueSpy.mockRestore();
+    });
   });
 
   it("rejects group/list-syntax recipient syntax (smtp-server's own grammar refuses it before this front door sees it)", async () => {

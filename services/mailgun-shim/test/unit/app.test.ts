@@ -46,7 +46,7 @@ describe('createApp — wires the Mailgun-shaped routers, the drain handover, he
 
   beforeEach(async () => {
     store = createFakeStore();
-    store.registerTenant(DOMAIN, API_KEY);
+    store.registerTenant(DOMAIN, API_KEY, DOMAIN);
     wake = createDrainWake();
     server = await listenApp(
       createApp(store, wake, DRAIN_TOKEN, DRAIN_OPTIONS, createUnlimitedThrottle())

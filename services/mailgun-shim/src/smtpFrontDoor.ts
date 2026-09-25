@@ -9,9 +9,11 @@ import {
   type SMTPServerSession,
 } from 'smtp-server';
 import { simpleParser } from 'mailparser';
+import { containsHeaderInjectionChars } from './mailgunFields.js';
 import { isSafeRecipientAddress } from './recipientSafety.js';
 import type { DrainWake } from './drainWake.js';
 import type { Logger } from './log.js';
+import { resolveSenderDomain, senderBelongsToTenant } from './senderAuthorization.js';
 import type { ShimStore } from './store.js';
 
 /**
@@ -427,6 +429,17 @@ declare module 'smtp-server' {
     user?: string;
     /** Set once this connection is admitted into the unauthenticated pool (onConnect); called from onAuth on success so the slot frees the instant it stops being needed, without waiting for the connection to eventually close. Idempotent — also called from the connection's own 'close', whichever fires first. */
     releaseUnauthSlot?: () => void;
+    /**
+     * The authenticated tenant's registered sending domain (store.ts's
+     * `Tenant.senderDomain`), set once by onAuth and never re-derived from
+     * a message — never the same as `user` (the credential key) for a
+     * tenant whose two values differ, e.g. tenant zero. `null` means "no
+     * sender domain registered": onMailFrom refuses every message for such
+     * a tenant before RCPT/DATA can run, so a later handler seeing this
+     * still null on a message that reached onData would be a state-machine
+     * violation, not a normal case.
+     */
+    tenantSenderDomain?: string | null;
   }
 }
 
@@ -647,11 +660,15 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // that opens many short-lived connections in a row (one per message)
       // never accumulates against its own per-source cap.
       session.releaseUnauthSlot?.();
+      // Cached on the session, not re-looked-up per message: it can only
+      // change by an operator rotating this credential, which ends the
+      // connection anyway (a fresh AUTH is required either way).
+      session.tenantSenderDomain = tenant.senderDomain;
       callback(null, { user: tenant.domain });
     },
 
     onMailFrom(
-      _address: SMTPServerAddress,
+      address: SMTPServerAddress,
       session: SMTPServerSession,
       callback: (err?: Error | null) => void
     ): void {
@@ -667,6 +684,42 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         return;
       }
       /* v8 ignore stop */
+      // The fail-closed gate: a tenant with no registered sender domain
+      // (every row that predates this field) is refused rather than
+      // silently checked against its credential key. This is the only
+      // place this runs for a given message — onData's own header checks
+      // below trust session.tenantSenderDomain because a message can only
+      // reach onData after MAIL FROM has already passed this gate for it.
+      const senderDomain = resolveSenderDomain(
+        { domain: submitterId, senderDomain: session.tenantSenderDomain ?? null },
+        log,
+        'smtp'
+      );
+      if (!senderDomain) {
+        const err = new Error(
+          '4.3.5 System not accepting network messages: sender domain not registered for this account'
+        ) as Error & { responseCode: number };
+        err.responseCode = 450;
+        callback(err);
+        return;
+      }
+      // The envelope half of the sender-binding control: mustMatchSender at
+      // mx1 can only bind the envelope to the shim's own relaying login
+      // once mail leaves this process, never to which tenant credential
+      // submitted it — this is the only hop that still knows that. A
+      // credential may only submit as its own registered sender domain.
+      if (!senderBelongsToTenant(address.address, senderDomain)) {
+        log.warn('smtp_mail_from_domain_mismatch', {
+          submitter: submitterId,
+          remoteAddress: session.remoteAddress,
+        });
+        const err = new Error(
+          '5.7.1 Sender address rejected: domain not authorised for this account'
+        ) as Error & { responseCode: number };
+        err.responseCode = 553;
+        callback(err);
+        return;
+      }
       if (!limiter.tryTake(submitterId)) {
         log.warn('smtp_submitter_rate_limited', { submitter: submitterId });
         const err = new Error('Too many messages') as Error & { responseCode: number };
@@ -853,13 +906,53 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
 
         void simpleParser(Buffer.concat(chunks))
           .then((parsed) => {
-            const headers: Record<string, string> = {};
-            const replyTo =
-              parsed.replyTo && !Array.isArray(parsed.replyTo) ? parsed.replyTo.text : undefined;
-            if (replyTo) {
-              headers['Reply-To'] = replyTo;
+            // The header half of the sender-binding control. onMailFrom above
+            // already bound the envelope to this tenant, but a message's
+            // VISIBLE identity is its header From (and, if present, Sender)
+            // — a header this front door parses only now, from the body it
+            // is still holding, so this is the earliest point either can be
+            // checked. Only enforced when the header is actually present:
+            // a message with no header From at all displays the
+            // already-verified envelope address instead (see the
+            // `from` fallback below), so there is nothing left to spoof.
+            // Refused before enqueueBatch/callback below — never a 250 for
+            // a message that is then dropped.
+            // session.tenantSenderDomain is guaranteed non-null here: this
+            // is the SAME message onMailFrom already ran its own
+            // resolveSenderDomain gate for (MAIL FROM always precedes DATA
+            // in the SMTP state machine, and onMailFrom refuses the whole
+            // message before RCPT/DATA can run if that gate fails) — never
+            // re-derived or re-checked, just trusted.
+            const senderDomain = session.tenantSenderDomain;
+            /* v8 ignore start -- proven unreachable: onMailFrom's own
+             * resolveSenderDomain gate refuses every message for a tenant
+             * with no sender domain before DATA can run, so onData never
+             * sees this unset. Kept as a fail-closed guard against that
+             * contract changing. */
+            if (!senderDomain) {
+              log.error('sender_domain_not_registered', { domain: submitterId, route: 'smtp' });
+              const safeErr = new Error('Temporary failure, please try again later') as Error & {
+                responseCode: number;
+              };
+              safeErr.responseCode = 450;
+              callback(safeErr);
+              return;
+            }
+            /* v8 ignore stop */
+            const headerFrom = parsed.from?.text;
+            if (headerFrom !== undefined && !senderBelongsToTenant(headerFrom, senderDomain)) {
+              log.warn('smtp_header_from_domain_mismatch', { submitter: submitterId });
+              const err = new Error(
+                '5.7.1 Sender address rejected: domain not authorised for this account'
+              ) as Error & { responseCode: number };
+              err.responseCode = 550;
+              callback(err);
+              return;
             }
 
+            const replyTo =
+              parsed.replyTo && !Array.isArray(parsed.replyTo) ? parsed.replyTo.text : undefined;
+            const subject = parsed.subject ?? '';
             const from =
               (parsed.from && parsed.from.text) ||
               /* v8 ignore next -- session.envelope.mailFrom is only ever
@@ -868,6 +961,56 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
                * before onData can run at all; the ternary's false arm
                * defends a state the protocol never lets this handler see. */
               (session.envelope.mailFrom ? session.envelope.mailFrom.address : '');
+
+            // Refuses, never strips: the HTTP route (mailgunFields.ts's
+            // containsHeaderInjectionChars) refuses outright on the same
+            // three characters, and a message this front door has already
+            // decided to enqueue should give this connection the same
+            // definite, checkable outcome — a 550 the sender's own MTA can
+            // act on — rather than accepting a message whose displayed
+            // From/Subject/Reply-To silently differs from what was
+            // submitted. mailparser has already run its own MIME decoding
+            // by this point (simpleParser, above), so this also catches an
+            // encoded-word that decodes to a CRLF or NUL never literally
+            // present on the wire — for example, a Subject of
+            // `=?utf-8?Q?a=0D=0ASender:_ceo@evil.com?=` decodes to a
+            // second, injected header line.
+            for (const [label, value] of [
+              ['From', from],
+              ['Subject', subject],
+              ...(replyTo !== undefined ? ([['Reply-To', replyTo]] as const) : []),
+            ] as const) {
+              if (containsHeaderInjectionChars(value)) {
+                log.warn('smtp_header_injection_refused', { submitter: submitterId, field: label });
+                const err = new Error(
+                  `5.6.0 Message content rejected: ${label} contains a disallowed control character`
+                ) as Error & { responseCode: number };
+                err.responseCode = 550;
+                callback(err);
+                return;
+              }
+            }
+            // Sender is never taken from the tenant, on this route either —
+            // stripped, not validated-then-refused. A submitted header
+            // Sender (any value, matching or not) is simply never copied
+            // into `headers` below, which only ever carries Reply-To — so
+            // it never reaches nodemailer and never reaches the delivery
+            // host, and there is nothing left here worth inspecting first.
+            // The alternative this route could have taken instead —
+            // parsing the header and refusing the message on a mismatch,
+            // the way the HTTP route's now-removed h:Sender check used to —
+            // was rejected: that value was already never relayed either
+            // way (this route builds its own `headers` object rather than
+            // forwarding mailparser's parsed headers wholesale), so
+            // checking it bought no protection, only a second place a
+            // parsing difference between mailparser and nodemailer's own
+            // normalisation could reopen a bypass, which is exactly the
+            // structural problem the HTTP-side fix above exists to close.
+
+            const headers: Record<string, string> = {};
+            if (replyTo) {
+              headers['Reply-To'] = replyTo;
+            }
 
             const batchId = `<${now()}.${randomUUID()}@${submitterId}>`;
 
@@ -881,7 +1024,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
               emailId: null,
               payload: {
                 from,
-                subject: parsed.subject ?? '',
+                subject,
                 html: typeof parsed.html === 'string' ? parsed.html : '',
                 text: parsed.text ?? '',
                 headers,
@@ -904,11 +1047,22 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             // This catch spans the `.then()` chain too, so it also reports a
             // synchronous `store.enqueueBatch` failure (e.g. a SQLite write
             // error), not only a `simpleParser` rejection — hence the name.
+            // The real error is logged (server-side only) but never handed
+            // to `callback`: smtp-server writes an Error's own `.message`
+            // straight onto the wire, and a raw SQLite constraint/IO message
+            // is internal detail no submitter should see. A temporary 4xx
+            // (not the permanent domain-mismatch 550s above) since this is
+            // this process's own failure, not a policy refusal — retrying
+            // later is the right client behaviour.
             log.error('smtp_message_processing_failed', {
               submitter: submitterId,
               error: err instanceof Error ? err.message : String(err),
             });
-            callback(err instanceof Error ? err : new Error('Failed to parse message'));
+            const safeErr = new Error('Temporary failure, please try again later') as Error & {
+              responseCode: number;
+            };
+            safeErr.responseCode = 450;
+            callback(safeErr);
           });
       });
     },

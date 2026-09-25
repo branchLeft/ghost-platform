@@ -2,10 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { hashApiKey } from '../../src/crypto.js';
 import {
   assertWalEnabled,
   createSqliteStore,
+  ensureSenderDomainColumn,
   type QueueBatchPayload,
   type ShimStore,
   type StoredEvent,
@@ -40,8 +43,11 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
   });
 
   it('registers a tenant and verifies its own key against its own domain', async () => {
-    store.registerTenant(DOMAIN, 'the-secret-key');
-    await expect(store.verifyTenant(DOMAIN, 'the-secret-key')).resolves.toEqual({ domain: DOMAIN });
+    store.registerTenant(DOMAIN, 'the-secret-key', DOMAIN);
+    await expect(store.verifyTenant(DOMAIN, 'the-secret-key')).resolves.toEqual({
+      domain: DOMAIN,
+      senderDomain: DOMAIN,
+    });
   });
 
   it('returns null for an unknown domain', async () => {
@@ -51,15 +57,239 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
   });
 
   it('returns null for a known domain with the wrong key', async () => {
-    store.registerTenant(DOMAIN, 'the-secret-key');
+    store.registerTenant(DOMAIN, 'the-secret-key', DOMAIN);
     await expect(store.verifyTenant(DOMAIN, 'wrong-key')).resolves.toBeNull();
   });
 
   it('re-registering a domain (INSERT OR REPLACE) replaces its key rather than erroring', async () => {
-    store.registerTenant(DOMAIN, 'old-key');
-    store.registerTenant(DOMAIN, 'new-key');
+    store.registerTenant(DOMAIN, 'old-key', DOMAIN);
+    store.registerTenant(DOMAIN, 'new-key', DOMAIN);
     await expect(store.verifyTenant(DOMAIN, 'old-key')).resolves.toBeNull();
-    await expect(store.verifyTenant(DOMAIN, 'new-key')).resolves.toEqual({ domain: DOMAIN });
+    await expect(store.verifyTenant(DOMAIN, 'new-key')).resolves.toEqual({
+      domain: DOMAIN,
+      senderDomain: DOMAIN,
+    });
+  });
+
+  it("registers a tenant whose sender domain differs from its credential key — tenant zero's own live shape", async () => {
+    // The credential key (bulkEmailDomain) and the tenant's real sending
+    // domain are not the same value.
+    store.registerTenant('blog.branchleft.co.uk', 'blog-key', 'branchleft.co.uk');
+    await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: 'branchleft.co.uk',
+    });
+  });
+
+  it('setSenderDomain updates an existing tenant without touching its API key', async () => {
+    store.registerTenant('blog.branchleft.co.uk', 'blog-key', null);
+    expect(store.setSenderDomain('blog.branchleft.co.uk', 'branchleft.co.uk')).toBe(true);
+    await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: 'branchleft.co.uk',
+    });
+  });
+
+  it('setSenderDomain returns false and changes nothing for a domain that was never registered', () => {
+    expect(store.setSenderDomain('never-registered.example.com', 'branchleft.co.uk')).toBe(false);
+    expect(store.tenantExists('never-registered.example.com')).toBe(false);
+  });
+});
+
+describe('createSqliteStore — migrating a database that predates sender_domain', () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-store-migration-test-'));
+    dbPath = join(dir, 'shim.sqlite');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Reproduces the live shim's SQLite file on mx1: a `tenants` table
+   * created before `sender_domain` existed, already holding a real
+   * tenant row. `createSqliteStore` must not choke on it, and must not
+   * invent a value for the column it adds — see `ensureSenderDomainColumn`
+   * (store.ts) and its own doc comment.
+   */
+  function createPreMigrationDatabase(): void {
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE tenants (
+        domain TEXT PRIMARY KEY,
+        api_key_salt TEXT NOT NULL,
+        api_key_hash TEXT NOT NULL
+      );
+    `);
+    const { salt, hash } = hashApiKey('legacy-key');
+    db.prepare('INSERT INTO tenants (domain, api_key_salt, api_key_hash) VALUES (?, ?, ?)').run(
+      'blog.branchleft.co.uk',
+      salt,
+      hash
+    );
+    db.close();
+  }
+
+  it('opens a pre-existing database with no sender_domain column, adding it with every existing row NULL rather than refusing to start', async () => {
+    createPreMigrationDatabase();
+
+    const store = createSqliteStore(dbPath);
+    try {
+      await expect(store.verifyTenant('blog.branchleft.co.uk', 'legacy-key')).resolves.toEqual({
+        domain: 'blog.branchleft.co.uk',
+        senderDomain: null,
+      });
+      // The pre-existing key still works — the migration touches only the
+      // schema, never the row's own credential.
+      await expect(store.verifyTenant('blog.branchleft.co.uk', 'wrong-key')).resolves.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('the migration is idempotent — re-opening the same file a second time neither errors nor clobbers a sender domain set in between', async () => {
+    createPreMigrationDatabase();
+
+    const first = createSqliteStore(dbPath);
+    first.setSenderDomain('blog.branchleft.co.uk', 'branchleft.co.uk');
+    first.close();
+
+    const second = createSqliteStore(dbPath);
+    try {
+      await expect(second.verifyTenant('blog.branchleft.co.uk', 'legacy-key')).resolves.toEqual({
+        domain: 'blog.branchleft.co.uk',
+        senderDomain: 'branchleft.co.uk',
+      });
+    } finally {
+      second.close();
+    }
+  });
+
+  it("ensureSenderDomainColumn is a no-op against a database that already has the column (exercised directly, mirroring assertWalEnabled's own pattern)", () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`
+      CREATE TABLE tenants (
+        domain TEXT PRIMARY KEY,
+        api_key_salt TEXT NOT NULL,
+        api_key_hash TEXT NOT NULL,
+        sender_domain TEXT
+      );
+    `);
+    expect(() => ensureSenderDomainColumn(db)).not.toThrow();
+    expect(() => ensureSenderDomainColumn(db)).not.toThrow();
+    db.close();
+  });
+
+  it('propagates an ALTER failure that is not the concurrent-migrator race — a real schema problem must not be swallowed', () => {
+    createPreMigrationDatabase();
+    const db = new DatabaseSync(dbPath);
+    const brokenDb = {
+      prepare: (sql: string) => db.prepare(sql),
+      exec: (sql: string) => {
+        if (sql.includes('ALTER TABLE tenants ADD COLUMN sender_domain')) {
+          throw new Error('disk I/O error');
+        }
+        db.exec(sql);
+      },
+    } as unknown as DatabaseSync;
+
+    expect(() => ensureSenderDomainColumn(brokenDb)).toThrowError('disk I/O error');
+    db.close();
+  });
+
+  /**
+   * Two connections opening the same pre-migration file can both read
+   * "column missing" before either has written it, and the loser's
+   * `ALTER` then fails with sqlite's own
+   * "duplicate column name: sender_domain" — mx1 runs exactly this shape
+   * (the service's own container plus an operator's `docker run`/`exec`
+   * CLI invocation against the same bind-mounted file). Two REAL
+   * connections to the same on-disk file drive this: `racedDb` is a thin
+   * wrapper around `loserConn` whose `exec` — at the exact moment the real
+   * `ensureSenderDomainColumn` under test calls it for the `ALTER` —
+   * opens a SEPARATE real connection, runs the real winning `ALTER` on
+   * it, closes it, then lets `loserConn` attempt the identical `ALTER`
+   * for real. That produces sqlite's actual error, not a fabricated one,
+   * so this also proves the catch's string match is correct against real
+   * sqlite behaviour, not just against a guessed message.
+   */
+  it("recovers when a concurrent connection adds the column between this connection's own table_info read and its own ALTER, rather than crashing startup", () => {
+    createPreMigrationDatabase();
+    const loserConn = new DatabaseSync(dbPath);
+    loserConn.exec('PRAGMA busy_timeout = 5000');
+    loserConn.exec('PRAGMA journal_mode = WAL');
+
+    let alterAttempted = false;
+    const racedDb = {
+      prepare: (sql: string) => loserConn.prepare(sql),
+      exec: (sql: string) => {
+        if (sql.includes('ALTER TABLE tenants ADD COLUMN sender_domain') && !alterAttempted) {
+          alterAttempted = true;
+          const winner = new DatabaseSync(dbPath);
+          winner.exec('PRAGMA busy_timeout = 5000');
+          winner.exec('ALTER TABLE tenants ADD COLUMN sender_domain TEXT');
+          winner.close();
+        }
+        loserConn.exec(sql);
+      },
+    } as unknown as DatabaseSync;
+
+    expect(() => ensureSenderDomainColumn(racedDb)).not.toThrow();
+    expect(alterAttempted).toBe(true);
+
+    const columns = loserConn.prepare('PRAGMA table_info(tenants)').all() as Array<{
+      name: string;
+    }>;
+    expect(columns.some((col) => col.name === 'sender_domain')).toBe(true);
+
+    // The real row this cycle's other migration tests already cover
+    // survived untouched — this test's own focus is the race, not
+    // re-proving data survival, so a light check is enough here.
+    const row = loserConn
+      .prepare('SELECT domain FROM tenants WHERE domain = ?')
+      .get('blog.branchleft.co.uk') as { domain: string } | undefined;
+    expect(row?.domain).toBe('blog.branchleft.co.uk');
+
+    loserConn.close();
+  });
+
+  /**
+   * `node:sqlite`'s `DatabaseSync` is fully synchronous — nothing in one
+   * process can genuinely interleave two of its calls on a microtask
+   * boundary, so this does not reproduce true concurrency the way the
+   * review's own 8-process reproduction did (that's the previous test's
+   * job, driving two real connections through a hand-orchestrated
+   * interleaving instead). What this proves: several real connections
+   * opening — and each fully migrating — the SAME pre-migration file, one
+   * after another with nothing but real sqlite state between them, never
+   * throw and never leave the schema or the row in a bad state, over
+   * several repetitions of the exact sequence a live host runs on every
+   * restart.
+   */
+  it('several connections opening the same pre-migration database in turn all succeed, none throwing', () => {
+    createPreMigrationDatabase();
+    const OPENS = 8;
+
+    for (let i = 0; i < OPENS; i += 1) {
+      const db = new DatabaseSync(dbPath);
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.exec('PRAGMA journal_mode = WAL');
+      expect(() => ensureSenderDomainColumn(db)).not.toThrow();
+      db.close();
+    }
+
+    const verify = new DatabaseSync(dbPath);
+    const columns = verify.prepare('PRAGMA table_info(tenants)').all() as Array<{ name: string }>;
+    expect(columns.some((col) => col.name === 'sender_domain')).toBe(true);
+    const row = verify
+      .prepare('SELECT domain FROM tenants WHERE domain = ?')
+      .get('blog.branchleft.co.uk') as { domain: string } | undefined;
+    expect(row?.domain).toBe('blog.branchleft.co.uk');
+    verify.close();
   });
 });
 
@@ -226,7 +456,7 @@ describe('createSqliteStore — durability and concurrency', () => {
 
   it('survives a store restart against the same file', async () => {
     const first = createSqliteStore(dbPath);
-    first.registerTenant(DOMAIN, 'persisted-key');
+    first.registerTenant(DOMAIN, 'persisted-key', DOMAIN);
     first.addSuppression(DOMAIN, 'bounces', 'bounced@example.com');
     first.recordEvent(makeEvent({ recipient: 'member@example.com' }));
     first.close();
@@ -234,6 +464,7 @@ describe('createSqliteStore — durability and concurrency', () => {
     const reopened = createSqliteStore(dbPath);
     await expect(reopened.verifyTenant(DOMAIN, 'persisted-key')).resolves.toEqual({
       domain: DOMAIN,
+      senderDomain: DOMAIN,
     });
     expect(reopened.isSuppressed(DOMAIN, 'bounces', 'bounced@example.com')).toBe(true);
     const { events } = reopened.listEvents(DOMAIN, { limit: 10, offset: 0 });
@@ -245,7 +476,7 @@ describe('createSqliteStore — durability and concurrency', () => {
     const store = createSqliteStore(dbPath);
     const domains = ['tenant-a.example.com', 'tenant-b.example.com', 'tenant-c.example.com'];
     for (const domain of domains) {
-      store.registerTenant(domain, `key-for-${domain}`);
+      store.registerTenant(domain, `key-for-${domain}`, domain);
     }
 
     const writeCount = 60;
@@ -285,14 +516,17 @@ describe('createSqliteStore — tenant listing', () => {
 
   it('tenantExists is false until registered, true after', () => {
     expect(store.tenantExists(DOMAIN)).toBe(false);
-    store.registerTenant(DOMAIN, 'a-key');
+    store.registerTenant(DOMAIN, 'a-key', DOMAIN);
     expect(store.tenantExists(DOMAIN)).toBe(true);
   });
 
-  it('listTenants returns every registered domain, sorted', () => {
-    store.registerTenant('b.example.com', 'key-b');
-    store.registerTenant('a.example.com', 'key-a');
-    expect(store.listTenants()).toEqual(['a.example.com', 'b.example.com']);
+  it('listTenants returns every registered domain and its sender domain, sorted', () => {
+    store.registerTenant('b.example.com', 'key-b', 'b.example.com');
+    store.registerTenant('a.example.com', 'key-a', null);
+    expect(store.listTenants()).toEqual([
+      { domain: 'a.example.com', senderDomain: null },
+      { domain: 'b.example.com', senderDomain: 'b.example.com' },
+    ]);
   });
 
   it('ping succeeds against an open connection and throws once closed', () => {

@@ -1,11 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Interfaces } from 'mailgun.js';
 import nodemailer from 'nodemailer';
-import { createCollector, type Collector } from './helpers/collector.js';
+import { createCollector, type Collector, type DrainedWireMessage } from './helpers/collector.js';
 import { createMailgunClient } from './helpers/mailgunClient.js';
 import { startSmtpSink, type SmtpSink } from './helpers/smtpSink.js';
 import { startTestShim, type TestShim } from './helpers/testServer.js';
 import { createThrottle } from '../src/throttle.js';
+
+/**
+ * Reads `GET /drain` directly, the same real route the production collector
+ * will eventually poll, but without also routing the result through
+ * nodemailer's own rendering (`collector.ts`'s `drainOnce`) — a collector
+ * that renders via nodemailer happens to mask a raw `headers.From` (or a
+ * CRLF-carrying value) surviving into the wire payload, because
+ * nodemailer's own `setHeader` overrides a custom `From` and folds a bare
+ * CRLF when it later builds the outgoing message. Proving the drain
+ * payload itself is clean — independent of whatever eventually consumes it
+ * — is the point of the tests that use this helper. Never acks, so it
+ * never competes with `collector` for the same row within one test.
+ */
+async function rawDrainOnce(shim: TestShim): Promise<{ messages: DrainedWireMessage[] }> {
+  const res = await fetch(`${shim.baseUrl}/drain`, {
+    headers: { Authorization: `Bearer ${shim.drainToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`GET /drain failed: ${res.status}`);
+  }
+  return (await res.json()) as { messages: DrainedWireMessage[] };
+}
 
 // mailgun.js is the exact client library Ghost bundles
 // (mailgun-client.js:367-370 constructs it the same way: `new
@@ -34,7 +56,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
   beforeEach(async () => {
     sink = await startSmtpSink(SMTP_USER, SMTP_PASS);
     shim = await startTestShim();
-    shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY, TENANT_DOMAIN);
     mailgunClient = createMailgunClient(shim.baseUrl, TENANT_API_KEY);
     collector = createCollector({
       shimBaseUrl: shim.baseUrl,
@@ -82,7 +104,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
       'h:X-Auto-Response-Suppress': 'OOF, AutoReply',
       'h:List-Unsubscribe': '<%recipient.list_unsubscribe%>',
       'h:List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-      'v:email-id': 'email-record-42',
+      'v:email-id': '64f1a2b3c4d5e6f7a8b9c0d1',
       'o:tag': ['bulk-email', 'ghost-email'],
     });
 
@@ -108,7 +130,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     expect(toB!.parsed.html).toContain('unsubscribe/b');
 
     // Correlation: v:email-id survives to the delivery host as a header.
-    expect(toA!.parsed.headers.get('x-ghost-email-id')).toBe('email-record-42');
+    expect(toA!.parsed.headers.get('x-ghost-email-id')).toBe('64f1a2b3c4d5e6f7a8b9c0d1');
 
     // Acked — the queue is empty and the age gauge has gone quiet.
     expect(shim.store.countUndrainedRecipients()).toBe(0);
@@ -158,7 +180,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     const prodShim = await startTestShim({
       throttle: createThrottle({ envMessagesPerHour: 0 }), // 0 -> createThrottle's own 50/hour default
     });
-    prodShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    prodShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY, TENANT_DOMAIN);
     const prodClient = createMailgunClient(prodShim.baseUrl, TENANT_API_KEY);
     try {
       await prodClient.messages.create(TENANT_DOMAIN, {
@@ -366,7 +388,11 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
   });
 
   it('rejects a valid key used against a domain it does not own', async () => {
-    shim.store.registerTenant('other-tenant.example.com', 'other-tenants-key');
+    shim.store.registerTenant(
+      'other-tenant.example.com',
+      'other-tenants-key',
+      'other-tenant.example.com'
+    );
 
     await expect(
       mailgunClient.messages.create('other-tenant.example.com', {
@@ -378,6 +404,564 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
         'recipient-variables': '{}',
       })
     ).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("refuses a From whose domain is not the authenticated tenant's, through the real HTTP route, and queues nothing", async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: 'Attacker <noreply@evil.example>',
+        subject: 'Spoofed',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  it("CONTROL: the tenant's own domain is accepted through the same real HTTP route", async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      subject: 'Legitimate',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.subject).toBe('Legitimate');
+  });
+
+  it('accepts an h:Reply-To naming a foreign domain, through the real HTTP route, and delivers it with that reply-to intact — it names where a reply goes, not who sent the mail', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:Reply-To': 'reply@evil.example',
+      subject: 'Foreign reply-to',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.subject).toBe('Foreign reply-to');
+  });
+
+  // Sender is never taken from the tenant, on any spelling — dropped at
+  // intake (mailgunFields.ts), never stored, never relayed. Every one of these is accepted (Ghost's own From is still
+  // checked and still carries the send), and every one of them arrives
+  // with NO Sender header at all — not the foreign value, not even a
+  // matching one. Each case below is a distinct multipart field name
+  // mailgun.js sends verbatim (verified separately against a raw HTTP
+  // capture), so this proves the drop covers each field name individually,
+  // not just the one nodemailer happens to normalise first.
+  it('drops an h:Sender override naming a foreign domain, through the real HTTP route — the message still delivers with no Sender header', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:Sender': 'sender@evil.example',
+      subject: 'Sender spoof',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+  });
+
+  it('drops a duplicate h:Sender spelled with a different case even alongside a legitimate one, through the real HTTP route — no Sender line reaches the sink, on either key', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:Sender': `legit@${TENANT_DOMAIN}`,
+      'h:sender': 'ceo@evil.example',
+      subject: 'Sender spoof via a duplicate, differently-cased key',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+  });
+
+  // A space is not a valid RFC 5322 field-name character at all (it's
+  // outside 33-126), so a whitespace-padded key is caught by field-name
+  // validation before the Sender drop ever gets to run on it — refused
+  // with 400, same outward effect (no tenant Sender reaches the sink) via
+  // the more general rule.
+  it('refuses an h:Sender key padded with a trailing space, through the real HTTP route, with a 400, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        'h:Sender ': 'ceo@evil.example',
+        subject: 'Sender spoof via a trailing-space key',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  it('refuses an h:Sender key padded with a leading space, through the real HTTP route, with a 400, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        'h: Sender': 'ceo@evil.example',
+        subject: 'Sender spoof via a leading-space key',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  it('drops an h:Sender key spelled with mixed case, through the real HTTP route', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:SeNdEr': 'ceo@evil.example',
+      subject: 'Sender spoof via a mixed-case key',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+  });
+
+  it('refuses an h:Sender: key (a literal trailing colon) with a 400, through the real HTTP route, and queues nothing — nodemailer normalisation keeps the colon, so this cannot be caught by the Sender drop and must be caught by field-name validation instead', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        'h:Sender:': 'ceo@evil.example',
+        subject: 'Sender spoof via a trailing colon in the key',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  it('refuses an h:*Sender key carrying an NBSP, a ZWSP, or a BOM, each with a 400, through the real HTTP route, and queues nothing', async () => {
+    for (const [label, key] of [
+      ['NBSP', 'h:\u00a0Sender'],
+      ['ZWSP', 'h:\u200bSender'],
+      ['BOM', 'h:Sender\ufeff'],
+    ] as const) {
+      await expect(
+        mailgunClient.messages.create(TENANT_DOMAIN, {
+          to: ['member@example.com'],
+          from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+          [key]: 'ceo@evil.example',
+          subject: `Sender spoof via ${label}`,
+          html: '<p>hi</p>',
+          text: 'hi',
+          'recipient-variables': '{}',
+        })
+      ).rejects.toMatchObject({ status: 400 });
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  it('refuses a tab or a control character inside an h:* field name with a 400, through the real HTTP route, and queues nothing', async () => {
+    for (const key of ['h:Sen\tder', 'h:Sen\x01der']) {
+      await expect(
+        mailgunClient.messages.create(TENANT_DOMAIN, {
+          to: ['member@example.com'],
+          from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+          [key]: 'ceo@evil.example',
+          subject: 'Sender spoof via a control character',
+          html: '<p>hi</p>',
+          text: 'hi',
+          'recipient-variables': '{}',
+        })
+      ).rejects.toMatchObject({ status: 400 });
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sink.messages).toHaveLength(0);
+  });
+
+  // A %recipient.*% token in a Sender header, resolved AFTER a per-request
+  // check, used to be able to reach the recipient with a foreign address in
+  // either the local part or the display name — the check approved the
+  // unresolved token string, and substitution then turned it into something
+  // the check never saw (token resolution happens in routes/drain.ts's
+  // toWireMessage now, the direct successor of the deleted worker.ts's
+  // processRow). Dropping Sender unconditionally at intake closes this by
+  // construction: the value (token or not) is never stored, so it is never
+  // a candidate for token resolution in the first place. Spelled
+  // `h:sender` (lower-case) deliberately — this is the one spelling
+  // toWireMessage does NOT special-case for an already-queued legacy row
+  // (it only keeps Ghost's own exact `Sender`), so these two tests are a
+  // genuine proof of the intake drop specifically, not of that narrower
+  // fallback.
+  it('drops an h:sender carrying a %recipient.*% token in the local part, through the real HTTP route — no Sender header, resolved or not, reaches the sink', async () => {
+    const recipientData = { 'member@example.com': { s: 'x@evil.com (' } };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:sender': `blog+%recipient.s%@${TENANT_DOMAIN}`,
+      subject: 'Sender spoof via a recipient token in the local part',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+  });
+
+  it('drops an h:sender carrying a %recipient.*% token in the display name, through the real HTTP route — no Sender header, resolved or not, reaches the sink', async () => {
+    const recipientData = { 'member@example.com': { s: 'x" <ceo@evil.com>, "y' } };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:sender': `"%recipient.s%" <blog@${TENANT_DOMAIN}>`,
+      subject: 'Sender spoof via a recipient token in the display name',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+  });
+
+  it("CONTROL: Ghost's own h:Sender shape (one canonical key, matching the tenant's domain) is accepted and delivered, through the real HTTP route, with no Sender header on the wire at all", async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:Sender': `noreply@${TENANT_DOMAIN}`,
+      subject: "Ghost's own shape",
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.subject).toBe("Ghost's own shape");
+    // Ghost's own h:Sender always equals its own From (mailgun-client.js:65,71,
+    // forks/Ghost tag v6.55.0), so dropping it loses nothing — the message
+    // still carries the checked From, just no separate Sender line.
+    expect(received[0]!.parsed.headers.get('sender')).toBeUndefined();
+    expect(received[0]!.parsed.from?.value[0]?.address).toBe(`noreply@${TENANT_DOMAIN}`);
+  });
+
+  // Proves, rather than assumes: an h:From cannot override the checked
+  // `from` field, on any spelling of the key, because nodemailer's
+  // mail-composer always applies the real `from` LAST via
+  // setHeader, which replaces every custom header of the same normalised
+  // name (mail-composer.js: "Add headers to the root node, always
+  // overrides custom headers") — the request is accepted (h:From is never
+  // itself checked, since it never reaches the wire), and delivered with
+  // the real From intact, not the h:From value.
+  it('an h:From override never reaches the wire, on any spelling of the key — the real From is what nodemailer sends', async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:From': 'ceo@evil.example',
+      'h:from': 'also-ceo@evil.example',
+      'h:FROM': 'still-ceo@evil.example',
+      subject: 'From override attempt',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.from?.value[0]?.address).toBe(`noreply@${TENANT_DOMAIN}`);
+    // Only one From line reached the wire — nodemailer's setHeader
+    // replaces the first match and removes the rest (mime-node/index.js),
+    // it does not leave an extra, unchecked From line behind the way
+    // addHeader would for a header setHeader never touches.
+    const fromLines = received[0]!.parsed.headerLines.filter((l) => l.key === 'from');
+    expect(fromLines).toHaveLength(1);
+  });
+
+  // Review cycle 6: intake (mailgunFields.ts) now drops every h:* key that
+  // normalises to 'From' too, the same way it already drops 'Sender' —
+  // proven here directly against the raw GET /drain payload (rawDrainOnce,
+  // above), not through the collector's nodemailer rendering, which the
+  // previous "an h:From override never reaches the wire" test used and
+  // which review found proved nothing about what the drain payload itself
+  // carries: nodemailer's own setHeader happens to override a custom From
+  // regardless of whether intake ever stored one.
+  it('drops every h:* key that normalises to From, on every spelling, through the real HTTP route and the real GET /drain payload', async () => {
+    for (const key of ['h:From', 'h:from', 'h:FROM']) {
+      const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        [key]: 'ceo@evil.example',
+        subject: `From override via ${key}`,
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      });
+      expect(response.id).toBeTruthy();
+
+      const drained = await rawDrainOnce(shim);
+      const message = drained.messages.find((m) => m.subject === `From override via ${key}`);
+      expect(message).toBeDefined();
+      expect(Object.keys(message!.headers).some((h) => h.toLowerCase() === 'from')).toBe(false);
+      expect(message!.from).toBe(`Tenant <noreply@${TENANT_DOMAIN}>`);
+    }
+  });
+
+  it('drops an h:From carrying a %recipient.*% token, through the real HTTP route and the real GET /drain payload — resolved or not, no From header reaches it', async () => {
+    const recipientData = { 'member@example.com': { x: 'ceo@evil.example' } };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      'h:From': '%recipient.x%',
+      subject: 'From override via a recipient token',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const drained = await rawDrainOnce(shim);
+    const message = drained.messages.find(
+      (m) => m.subject === 'From override via a recipient token'
+    );
+    expect(message).toBeDefined();
+    expect(Object.keys(message!.headers).some((h) => h.toLowerCase() === 'from')).toBe(false);
+    expect(message!.from).toBe(`Tenant <noreply@${TENANT_DOMAIN}>`);
+  });
+
+  // Review cycle 6: CR, LF and NUL are refused at intake in every
+  // header-bound field — from, every h:* value, subject and every
+  // recipient-variables value — because any of them can inject a second
+  // header line (or truncate one) once the drain payload eventually
+  // reaches a real header-based renderer (#1239's collector, not built
+  // yet). html/text are deliberately exempt: Ghost's own bodies legitimately
+  // carry newlines, and this rule only applies to header-bound fields — see
+  // the CONTROL test below.
+  it("refuses a 'from' whose display name carries a CRLF header-injection attempt, with a 400, through the real HTTP route, and queues nothing", async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `"x\r\nSender: ceo@evil.com" <blog@${TENANT_DOMAIN}>`,
+        subject: 'CRLF in from',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it('refuses a CRLF-injecting h:* value with a 400, through the real HTTP route, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        'h:X-Foo': 'a\r\nSender: ceo@evil.com',
+        subject: 'CRLF in an h:* value',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it('refuses a CRLF-injecting subject with a 400, through the real HTTP route, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        subject: 'a\r\nSender: ceo@evil.com',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  // Review cycle 7: unlike from/h:*/subject (tenant-authored, refused
+  // outright above), a recipient-variables value is member-supplied — a
+  // signup name Ghost does not sanitise — so a CR/LF/NUL there is replaced
+  // with a space rather than refusing the whole batch. Refusing would let
+  // one member's uncontrolled name fail delivery to every other recipient
+  // in the same Ghost newsletter send.
+  it("replaces a CR, LF or NUL in a member's recipient-variables value with a space rather than failing the whole batch, through the real HTTP route and the real GET /drain payload", async () => {
+    const recipientData = {
+      'member@example.com': { name: 'Ann\r\nSender: ceo@evil.com' },
+    };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      subject: 'Hello %recipient.name%',
+      html: '<p>Hi %recipient.name%</p>',
+      text: 'Hi %recipient.name%',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const drained = await rawDrainOnce(shim);
+    const message = drained.messages.find((m) => m.to === 'member@example.com');
+    expect(message).toBeDefined();
+    // The %recipient.name% substitution (routes/drain.ts's toWireMessage)
+    // is what would splice an unsanitised member name into a header-bound
+    // field — this proves the value it substitutes is already clean.
+    expect(message!.subject).not.toMatch(/[\r\n\0]/);
+    expect(message!.html).not.toMatch(/[\r\n\0]/);
+    expect(message!.subject).toBe('Hello Ann  Sender: ceo@evil.com');
+  });
+
+  it('replaces a CR, LF or NUL nested inside an object in a recipient-variables value, not just a top-level one, through the real HTTP route and the real GET /drain payload', async () => {
+    const recipientData = {
+      'member@example.com': { nested: { x: 'a\r\nSender: ceo@evil.com' } },
+    };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      subject: 'CRLF nested in recipient-variables',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const drained = await rawDrainOnce(shim);
+    const message = drained.messages.find(
+      (m) => m.subject === 'CRLF nested in recipient-variables'
+    );
+    expect(message).toBeDefined();
+  });
+
+  // Review cycle 6's blocking finding 1: v:email-id is tenant-authored
+  // (Ghost's own request sets it, never a member), so — unlike
+  // recipient-variables — it is refused outright, the same as from/h:*/
+  // subject, not sanitised. It reaches headers['X-Ghost-Email-Id']
+  // unresolved (routes/drain.ts's toWireMessage), so a CRLF there was an
+  // injected header line on GET /drain's own payload before this fix.
+  it('refuses a v:email-id carrying a CRLF-injected Sender line with a 400, through the real HTTP route, and queues nothing — measured on the real GET /drain payload', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        subject: 'v:email-id CRLF',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+        'v:email-id': 'a\r\nSender: ceo@evil.com',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it('refuses a v:email-id that is not a real Ghost object id shape, with a 400, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        subject: 'v:email-id not an object id',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+        'v:email-id': 'not-an-object-id',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it("CONTROL: Ghost's real newsletter — a multi-line html/text body — still gives 200; the CR/LF/NUL rule never applies to html or text", async () => {
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      subject: 'Weekly digest',
+      html: '<p>Paragraph one.</p>\r\n<p>Paragraph two.</p>\n<p>Paragraph three.</p>',
+      text: 'Paragraph one.\r\nParagraph two.\nParagraph three.',
+      'recipient-variables': '{}',
+    });
+    expect(response.id).toBeTruthy();
+
+    const drained = await rawDrainOnce(shim);
+    const message = drained.messages.find((m) => m.subject === 'Weekly digest');
+    expect(message).toBeDefined();
+    expect(message!.html).toContain('\r\n');
+    expect(message!.text).toContain('\n');
+  });
+
+  // `from` must never be %recipient.*%-substituted downstream, the way a
+  // Sender header's value used to be able to be — because `from` is the
+  // value the intake check already approved, and resolving a token in it
+  // after that check would let an approved value turn into a different,
+  // unchecked one on the wire. routes/drain.ts's toWireMessage builds
+  // `from: row.payload.from` deliberately outside the resolveRecipientTokens
+  // calls it makes for subject/html/text/headers; this proves that holds
+  // through the real HTTP route and the real drain handover, not just by
+  // reading the source.
+  it('never resolves a %recipient.*% token inside `from` — it reaches the wire literally, unsubstituted, even though it belongs to the tenant and passes the check', async () => {
+    const recipientData = { 'member@example.com': { token: 'evil' } };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <blog+%recipient.token%@${TENANT_DOMAIN}>`,
+      subject: 'From token attempt',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    await collector.drainOnce();
+    const received = await sink.waitForCount(1);
+    expect(received[0]!.parsed.from?.value[0]?.address).toBe(
+      `blog+%recipient.token%@${TENANT_DOMAIN}`
+    );
   });
 
   it('a recipient listed twice in one send (well-formed — real Mailgun tolerates this) is drained exactly once and the shim stays up for the next request', async () => {
@@ -429,7 +1013,7 @@ describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, n
 
   beforeEach(async () => {
     shim = await startTestShim({ startSmtpFrontDoor: true });
-    shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    shim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY, TENANT_DOMAIN);
   });
 
   afterEach(async () => {
@@ -515,7 +1099,7 @@ describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, n
       startSmtpFrontDoor: true,
       drainOptions: { holdMs, pollIntervalMs: holdMs * 2 },
     });
-    wakeShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    wakeShim.store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY, TENANT_DOMAIN);
     try {
       const drainPromise = fetch(`${wakeShim.baseUrl}/drain`, {
         headers: { Authorization: `Bearer ${wakeShim.drainToken}` },

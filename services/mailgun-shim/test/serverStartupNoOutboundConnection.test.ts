@@ -248,7 +248,7 @@ describe('src/server.ts — the real entrypoint, with real queued mail, makes no
     // Tenant registration touches only the store, no network — safe setup
     // done directly rather than by spawning the CLI as a second process.
     const store = createSqliteStore(dbPath);
-    store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY);
+    store.registerTenant(TENANT_DOMAIN, TENANT_API_KEY, TENANT_DOMAIN);
     store.close();
     return dbPath;
   }

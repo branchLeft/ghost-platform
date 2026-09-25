@@ -416,4 +416,66 @@ describe('GET /drain, POST /drain/ack', () => {
     const body = (await res.json()) as { messages: Array<{ toName?: string }> };
     expect(body.messages[0]!.toName).toBeUndefined();
   });
+
+  // Intake (mailgunFields.ts) drops every h:* key that normalises to
+  // 'Sender' before a batch is ever enqueued, so a row this route reads
+  // back can never carry one under normal operation. This proves
+  // toWireMessage's own narrower defence for a row that predates that
+  // intake change — the exact literal key Ghost itself always sends — by
+  // writing a payload straight into the store, bypassing intake entirely,
+  // the way such a legacy row would already exist on disk.
+  it('strips a stored "Sender" header (the one exact spelling it still special-cases) before it reaches the wire message', async () => {
+    await start();
+    store.enqueueBatch({
+      batchId: 'b1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: {
+        ...payload(),
+        headers: { Sender: 'ceo@evil.example', 'X-Custom': 'kept' },
+      },
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+
+    const res = await fetch(`${server.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}` },
+    });
+    const body = (await res.json()) as { messages: Array<{ headers: Record<string, string> }> };
+    expect(body.messages[0]!.headers).toEqual({ 'X-Custom': 'kept' });
+  });
+
+  // `from` must never be %recipient.*%-substituted the way a Sender
+  // header's value used to be able to be (the class of bug a foreign
+  // %recipient.*% token in Sender used to exploit) — it is the value the
+  // intake check already approved, and resolving a token in it here would
+  // let an approved value turn into a different, unchecked one on the
+  // wire. A real matching recipientVariables entry is provided so a
+  // wired-in substitution would visibly change `from`, and a control field
+  // (subject) in the same message proves the token machinery is live for
+  // this send — `from` staying literal is a real negative, not an
+  // artefact of an empty variables map.
+  it('never resolves a %recipient.*% token inside `from`, unlike subject in the same message', async () => {
+    await start();
+    store.enqueueBatch({
+      batchId: 'b1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: {
+        ...payload(),
+        from: 'blog+%recipient.token%@tenant1.example.com',
+        subject: 'Hi %recipient.token%',
+        recipientVariables: { 'member@example.com': { token: 'evil' } },
+      },
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+
+    const res = await fetch(`${server.baseUrl}/drain`, {
+      headers: { Authorization: `Bearer ${DRAIN_TOKEN}` },
+    });
+    const body = (await res.json()) as { messages: Array<{ from: string; subject: string }> };
+    expect(body.messages[0]!.subject).toBe('Hi evil');
+    expect(body.messages[0]!.from).toBe('blog+%recipient.token%@tenant1.example.com');
+  });
 });
