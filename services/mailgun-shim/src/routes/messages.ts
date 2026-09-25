@@ -1,6 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
+// nodemailer's own header-key normalisation, not reimplemented. The h:Sender
+// check below must refuse exactly the set of h:* keys nodemailer will later
+// treat as a Sender line once it builds the outgoing message (worker.ts's
+// extraHeaders reach nodemailer's mail-composer via addHeader, which keys
+// each custom header by this same normalisation before appending it) —
+// verified against the installed package
+// (nodemailer/lib/mime-node/index.js, MimeNode.prototype._normalizeHeaderKey:
+// strips control characters, trims, then lower/upper-cases into
+// nodemailer's canonical form; 'sender', 'SENDER', ' Sender' and 'Sender '
+// all normalise to 'Sender'). The method reads only its `key` argument, so
+// calling it straight off the prototype needs no MimeNode instance.
+// `@types/nodemailer`'s own .d.ts for this path declares the public shape
+// only — `_normalizeHeaderKey` is private/undocumented — so it is reached
+// through a narrow local cast rather than a `declare module` augmentation,
+// which would have to redeclare (and could drift from) that published type.
+import MimeNode from 'nodemailer/lib/mime-node/index.js';
 import { asyncHandler } from '../asyncHandler.js';
 import { requireTenantForDomain } from '../auth.js';
 import type { Logger } from '../log.js';
@@ -9,6 +25,17 @@ import { tenantRateLimiter } from '../rateLimit.js';
 import { resolveSenderDomain, senderBelongsToTenant } from '../senderAuthorization.js';
 import type { ShimStore } from '../store.js';
 import type { WorkerHandle } from '../worker.js';
+
+interface MimeNodePrototypeWithNormalizer {
+  _normalizeHeaderKey(key: string): string;
+}
+
+/** See the import comment above — this is nodemailer's real normalisation, not a reimplementation. */
+function normalizeMailHeaderKey(key: string): string {
+  return (MimeNode.prototype as unknown as MimeNodePrototypeWithNormalizer)._normalizeHeaderKey(
+    key
+  );
+}
 
 /**
  * Options fields ('o:*') map to Mailgun boolean-shaped values of "yes"/"no"
@@ -21,21 +48,29 @@ function isYes(value: string | string[] | undefined): boolean {
 }
 
 /**
- * Case-insensitive lookup into the `h:*`-derived headers map. Mailgun's
- * wire shape carries a header's name as a literal multipart field name
- * (`h:Reply-To`, `h:Sender`) rather than as a real MIME header, so nothing
- * upstream of this shim normalises its case — a caller free to spell it
- * `h:reply-to` must not slip past a check keyed on the exact casing every
- * other caller happens to use.
+ * Every value of every `h:*` key whose nodemailer-normalised name is
+ * 'Sender' — never just the first case-insensitive match. Mailgun's wire
+ * shape carries each header as its own literal multipart field name
+ * (`h:Sender`, `h:sender`, `h:Sender ` with a trailing space are three
+ * distinct field names, hence three distinct keys in the parsed `headers`
+ * map), and worker.ts forwards every one of them nodemailer's own
+ * `addHeader` doesn't drop straight through to the outgoing message —
+ * `addHeader` APPENDS rather than replaces, so a submission carrying more
+ * than one key that nodemailer will treat as Sender reaches the recipient
+ * with as many Sender lines as it sent. A check keyed on a single naive
+ * case-insensitive match (or on nodemailer's normalisation but stopping at
+ * the first hit) leaves every OTHER such key completely unchecked; this
+ * returns all of them so the caller can refuse the request if any one
+ * fails to belong to the tenant.
  */
-function findHeader(headers: Record<string, string>, name: string): string | undefined {
-  const target = name.toLowerCase();
+function findAllSenderHeaderValues(headers: Record<string, string>): string[] {
+  const values: string[] = [];
   for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === target) {
-      return value;
+    if (normalizeMailHeaderKey(key) === 'Sender') {
+      values.push(value);
     }
   }
-  return undefined;
+  return values;
 }
 
 /**
@@ -120,17 +155,30 @@ export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log
       // legitimate mail: only From and the envelope sender identify the
       // sender.
       //
-      // A Sender header is dropped everywhere downstream today and
-      // reaches no recipient, but is refused here too: defence in depth
-      // against that changing silently, and it is the exact header MTAs
-      // treat as the responsible-submitter override when a From is a
-      // mailing-list address.
-      const senderHeader = findHeader(fields.headers, 'Sender');
-      if (senderHeader !== undefined && !senderBelongsToTenant(senderHeader, senderDomain)) {
-        res
-          .status(400)
-          .json({ message: `'h:Sender' address must belong to the domain ${senderDomain}` });
-        return;
+      // A Sender header is NOT dropped everywhere downstream — that was
+      // true only for Ghost's own canonical request shape, and only by
+      // accident of a different mechanism: worker.ts strips exactly one
+      // literal key, `'Sender'` (case-sensitive, unpadded), before handing
+      // headers to nodemailer, and Ghost always spells it that way. Every
+      // other spelling of the same logical header — `sender`, `SENDER`,
+      // `' Sender'`, `'Sender '` — is NOT stripped there: nodemailer's
+      // `addHeader` (mail-composer.js) appends it as a real custom header,
+      // and this shim never sets the root `sender` field that would
+      // otherwise override it (verified against the installed nodemailer
+      // package with both a foreign and a from-matching Sender value —
+      // nodemailer relays both; it does not omit an equal-to-From Sender
+      // either). So this is the only place a foreign Sender is ever
+      // stopped, and it has to catch every h:* key nodemailer will
+      // normalise to Sender, not just one spelling of it — it is the exact
+      // header MTAs treat as the responsible-submitter override for a From
+      // that is a mailing-list address.
+      for (const senderHeader of findAllSenderHeaderValues(fields.headers)) {
+        if (!senderBelongsToTenant(senderHeader, senderDomain)) {
+          res
+            .status(400)
+            .json({ message: `'h:Sender' address must belong to the domain ${senderDomain}` });
+          return;
+        }
       }
 
       if (fields.to.length === 0) {
