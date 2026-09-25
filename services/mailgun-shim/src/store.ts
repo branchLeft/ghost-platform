@@ -271,6 +271,169 @@ export function assertWalEnabled(filename: string, journalMode: string | undefin
 }
 
 /**
+ * True once `queue_recipients` is in the shape `createSqliteStore` writes
+ * to: has an `id` column. False for the pre-drain-handover shape (`attempts`,
+ * `next_attempt_at`, no `id` — see `ensureDrainShapedQueueRecipients`'s own
+ * doc comment) and, trivially, for a database with no `queue_recipients`
+ * table at all yet — the `CREATE TABLE IF NOT EXISTS` a few lines below
+ * gives a brand-new database the drain-shaped table directly, so there is
+ * nothing to migrate on that path either. `PRAGMA table_info` is cheap (no
+ * table scan) and safe to run on every startup, so this always runs rather
+ * than being gated behind a version check.
+ */
+function hasDrainShapedQueueRecipients(db: DatabaseSync): boolean {
+  const columns = db.prepare('PRAGMA table_info(queue_recipients)').all() as Array<{
+    name: string;
+  }>;
+  return columns.length === 0 || columns.some((col) => col.name === 'id');
+}
+
+/**
+ * Migrates a pre-drain-handover `queue_recipients` table in place, losing no queued
+ * mail: `attempts` and `next_attempt_at` are exactly the same counters the
+ * new drain protocol needs (a monotonic per-row generation, and "not
+ * claimable before this time"), just under new names, so this is a rename
+ * rather than a value recompute — `drain_count`/`available_at` inherit
+ * whatever the old worker had already counted, and `claimForDrain`/
+ * `ackDrain` treat that as any other starting generation. `status` values
+ * ('pending'/'sent'/'failed'/'suppressed') are identical strings in both
+ * models — the new model adds 'held' but never requires an old row to
+ * hold it, since the old worker never left one mid-lease — so no status
+ * rewrite is needed either: a migrated 'sent'/'failed'/'suppressed' row
+ * simply stays exactly as terminal as it already was, kept as history the
+ * same way a row inserted under the new code is (cleanupCompletedBatches
+ * removes it once its batch is old enough, unchanged by this migration),
+ * and a migrated 'pending' row becomes drainable through the same
+ * `claimForDrain` path as a freshly-enqueued one. Net effect: nothing is
+ * dropped, and nothing already 'sent' can be re-offered.
+ *
+ * Only `id` is genuinely new — the old table never had a stable
+ * drain-facing identity — so every existing row is backfilled with a
+ * fresh one. The migrated table's `id` column can't be declared `NOT
+ * NULL` the way a fresh `CREATE TABLE` declares it (`ALTER TABLE ... ADD
+ * COLUMN` can't retroactively add that constraint without a full table
+ * rebuild this function doesn't do) — but every row is backfilled with a
+ * real id in the same transaction below, and every future INSERT
+ * (`insertRecipient`) always supplies one, so the practical invariant
+ * holds even though the schema text technically still allows NULL on
+ * this one migrated table.
+ *
+ * Transactional (BEGIN IMMEDIATE...COMMIT, so a reader never observes a
+ * half-renamed table) and idempotent: `hasDrainShapedQueueRecipients`
+ * makes every call after the first a no-op, on both a genuinely fresh
+ * database and an already-migrated one.
+ *
+ * Concurrent openers are safe only between two processes that both run
+ * this code (the new image): the service and an operator's CLI
+ * invocation run directly against the same pre-migration file at once, or
+ * two CLI invocations back to back — the same race
+ * `ensureSenderDomainColumn` documents for `tenants.sender_domain`.
+ * `BEGIN IMMEDIATE` plus the busy timeout set above means the loser's
+ * transaction simply waits for the winner's to commit, then starts
+ * against the now-already-migrated table: its own first statement
+ * (`RENAME COLUMN attempts`) fails with "no such column: attempts",
+ * because the winner already renamed it away. That specific, expected
+ * failure is caught and re-verified with a fresh
+ * `hasDrainShapedQueueRecipients` read rather than left to crash startup;
+ * any other error (a real schema problem, a wait that outlasts the busy
+ * timeout) still propagates.
+ *
+ * An OLD process — one still running the pre-drain-handover code, with
+ * the same file already open — is not one of the two openers above: it
+ * never calls this function, so it can't be the race's "loser" and
+ * nothing here protects it. Once any new-image process migrates the file
+ * out from under it, its own prepared statements still name the old
+ * `attempts`/`next_attempt_at` columns, and every one of them starts
+ * failing for as long as it keeps running against the now-migrated file
+ * — its enqueue with "no such column: attempts", its claim with "no such
+ * column: qr.attempts". An old process sharing this file has to be
+ * stopped before the first new-image open, not raced against it.
+ */
+export function ensureDrainShapedQueueRecipients(db: DatabaseSync): void {
+  if (hasDrainShapedQueueRecipients(db)) {
+    return;
+  }
+  try {
+    db.exec('BEGIN IMMEDIATE');
+  } catch (err) {
+    /* v8 ignore start -- structurally close to unreachable through the
+     * real driver: BEGIN IMMEDIATE only fails outright once the busy
+     * timeout set above is fully exhausted (multiple seconds) waiting on
+     * another writer's lock. Within that window a concurrent migration
+     * finishing normally is exactly the two-real-processes scenario this
+     * module composes with (see the concurrency test in
+     * store.preDrainMigration.test.ts) — and there, this connection's own
+     * BEGIN IMMEDIATE succeeds once the winner commits and releases the
+     * lock, so it never reaches this catch at all; the very next
+     * statement (the RENAME below) is what sees the now-migrated table
+     * and hits the *other* catch instead. Reaching genuine SQLITE_BUSY
+     * here means the lock-holder didn't finish within the timeout, and a
+     * migration that hasn't finished can't have made this true either —
+     * so the branch below is retained as a fail-closed guard against a
+     * future sqlite/timeout tuning change making that combination
+     * possible, not because it is exercised today. */
+    if (hasDrainShapedQueueRecipients(db)) {
+      return;
+    }
+    /* v8 ignore stop */
+    throw err;
+  }
+  try {
+    db.exec('ALTER TABLE queue_recipients RENAME COLUMN attempts TO drain_count');
+    db.exec('ALTER TABLE queue_recipients RENAME COLUMN next_attempt_at TO available_at');
+    db.exec('ALTER TABLE queue_recipients ADD COLUMN held_until REAL');
+    db.exec('ALTER TABLE queue_recipients ADD COLUMN id TEXT');
+
+    const unmigratedRows = db
+      .prepare('SELECT rowid AS rowid FROM queue_recipients WHERE id IS NULL')
+      .all() as Array<{ rowid: number }>;
+    const assignId = db.prepare('UPDATE queue_recipients SET id = ? WHERE rowid = ?');
+    for (const row of unmigratedRows) {
+      assignId.run(randomUUID(), row.rowid);
+    }
+
+    // Superseded by idx_queue_recipients_status_available below, over the
+    // same (status, available_at) pair the rename just gave this old
+    // index's definition — dropped rather than left as permanent dead
+    // weight on every write.
+    db.exec('DROP INDEX IF EXISTS idx_queue_recipients_status_next');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_recipients_id ON queue_recipients (id)');
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // SQLite had already rolled the transaction back itself (e.g.
+      // SQLITE_FULL, an IOERR class) — ROLLBACK then has nothing left to
+      // undo and throws "cannot rollback - no transaction is active".
+      // `err` below is still the real cause; swallowed here so it isn't
+      // replaced by this housekeeping failure.
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    // Matched on both substrings rather than the exact quoted form: node's
+    // sqlite driver renders this as `no such column: "attempts"` (quoted),
+    // which a plain `'no such column: attempts'` substring check misses
+    // entirely — caught by the two-real-processes concurrency test below
+    // before this was corrected.
+    if (!message.includes('no such column') || !message.includes('attempts')) {
+      throw err;
+    }
+    // Re-verified rather than trusted on the message match alone: a
+    // genuine concurrent winner's migration is one transaction, so by the
+    // time this fails with this exact message the table really is fully
+    // migrated (proven by the two-real-processes test in
+    // store.preDrainMigration.test.ts) and this returns normally. Anything
+    // else that manages to produce the same message without actually
+    // finishing the migration — proven directly by that test file's own
+    // "genuine, non-race RENAME failure" case — still throws here rather
+    // than being swallowed.
+    if (!hasDrainShapedQueueRecipients(db)) {
+      throw err;
+    }
+  }
+}
+
+/**
  * `CREATE TABLE IF NOT EXISTS` below already gives a brand-new database
  * `sender_domain` from the start — this only patches a database created
  * before the column existed, which is the shim's live production state
@@ -377,6 +540,16 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     throw err;
     /* v8 ignore stop */
   }
+
+  // Patches a database created by the pre-drain-handover worker (mx1's live
+  // production state) before the CREATE TABLE below runs: `CREATE TABLE
+  // IF NOT EXISTS queue_recipients` is a no-op against an existing table
+  // whatever shape it's in, so the drain-shaped `CREATE UNIQUE INDEX ...
+  // ON queue_recipients (id)` a few lines down would otherwise be the
+  // first statement to notice the old table has no `id` column at all —
+  // and it would fail startup outright ("no such column: id") rather than
+  // migrate anything. See the function's own doc comment.
+  ensureDrainShapedQueueRecipients(db);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS tenants (
