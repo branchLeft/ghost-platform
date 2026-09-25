@@ -42,13 +42,12 @@ const execFileAsync = promisify(execFile);
 // its own: for the instant between the child failing and that failure
 // unwinding through the promise chain, nothing is pending, and node:test's
 // own idle-and-cancel watchdog (the "Promise resolution is still pending but
-// the event loop has already resolved" cancellation, seen for every subtest
-// in branchLeft/workspace#1364) can race ahead of it on a loaded runner and
-// cancel the whole file before the hook's real rejection is ever attributed.
-// A real child process is itself a pending handle for its whole lifetime, so
-// there is no such window: the failure always arrives as a normal async
-// event, and its error (with the real docker stderr) always reaches the
-// awaiting hook or test.
+// the event loop has already resolved" cancellation) can race ahead of it on
+// a loaded runner and cancel the whole file before the hook's real rejection
+// is ever attributed. A real child process is itself a pending handle for
+// its whole lifetime, so there is no such window: the failure always
+// arrives as a normal async event, and its error (with the real docker
+// stderr) always reaches the awaiting hook or test.
 async function dockerAsync(...args) {
   try {
     const { stdout } = await execFileAsync('docker', args, {
