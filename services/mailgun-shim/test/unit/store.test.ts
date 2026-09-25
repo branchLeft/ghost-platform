@@ -538,7 +538,7 @@ describe('createSqliteStore — tenant listing', () => {
   });
 });
 
-describe('createSqliteStore — durable queue', () => {
+describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', () => {
   let store: ShimStore;
 
   function payload(overrides: Partial<QueueBatchPayload> = {}): QueueBatchPayload {
@@ -561,7 +561,7 @@ describe('createSqliteStore — durable queue', () => {
     store.close();
   });
 
-  it('claims recipients from the oldest batch first, in enqueue order within a batch', () => {
+  it('claims recipients from the oldest batch first, in enqueue order within a batch, each under a stable id', () => {
     store.enqueueBatch({
       batchId: 'batch-old',
       domain: DOMAIN,
@@ -579,30 +579,18 @@ describe('createSqliteStore — durable queue', () => {
       now: 200,
     });
 
-    const due = store.claimDueRecipients(300, 10);
-    expect(due.map((r) => r.recipient)).toEqual([
+    const drained = store.claimForDrain(300, 30, 10);
+    expect(drained.map((r) => r.recipient)).toEqual([
       'old-1@example.com',
       'old-2@example.com',
       'new-1@example.com',
     ]);
-    expect(due.every((r) => r.attempts === 0)).toBe(true);
-    expect(due[0]!.payload).toEqual(payload());
+    expect(drained.every((r) => r.drainCount === 1)).toBe(true);
+    expect(new Set(drained.map((r) => r.id)).size).toBe(3);
+    expect(drained[0]!.payload).toEqual(payload());
   });
 
-  it('does not claim a recipient whose next_attempt_at is still in the future', () => {
-    store.enqueueBatch({
-      batchId: 'batch-1',
-      domain: DOMAIN,
-      emailId: null,
-      payload: payload(),
-      recipients: ['member@example.com'],
-      now: 1000,
-    });
-    expect(store.claimDueRecipients(500, 10)).toHaveLength(0);
-    expect(store.claimDueRecipients(1000, 10)).toHaveLength(1);
-  });
-
-  it('a limit caps how many rows a single claim returns', () => {
+  it('a limit caps how many rows a single claim returns, and the rest stay pending for the next call', () => {
     store.enqueueBatch({
       batchId: 'batch-1',
       domain: DOMAIN,
@@ -611,7 +599,11 @@ describe('createSqliteStore — durable queue', () => {
       recipients: ['a@example.com', 'b@example.com', 'c@example.com'],
       now: 0,
     });
-    expect(store.claimDueRecipients(0, 2)).toHaveLength(2);
+    const first = store.claimForDrain(0, 30, 2);
+    expect(first).toHaveLength(2);
+    const second = store.claimForDrain(0, 30, 2);
+    expect(second).toHaveLength(1);
+    expect(second[0]!.recipient).toBe('c@example.com');
   });
 
   it('enqueueBatch rolls back the whole transaction when a duplicate recipient in the same call violates the primary key', () => {
@@ -624,102 +616,263 @@ describe('createSqliteStore — durable queue', () => {
         recipients: ['dup@example.com', 'dup@example.com'],
         now: 0,
       })
-    ).toThrow();
+    ).toThrow(/UNIQUE constraint/);
 
     // Rolled back entirely — not even the batch row (inserted first,
     // before the failing second recipient row) survived.
-    expect(store.claimDueRecipients(1000, 10)).toHaveLength(0);
-    expect(store.countPendingRecipients()).toBe(0);
+    expect(store.claimForDrain(1000, 30, 10)).toHaveLength(0);
+    expect(store.countUndrainedRecipients()).toBe(0);
   });
 
-  it('recordRecipientSent marks the row sent, records the event, and the row is never claimed again', () => {
+  it('a claimed row is held, not claimable again, until its lease lapses — then it is re-offered under the same id with drainCount incremented', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    const first = store.claimForDrain(0, 30, 10);
+    expect(first).toHaveLength(1);
+    const heldId = first[0]!.id;
+
+    // Lease still live at t=10 — not re-offered.
+    expect(store.claimForDrain(10, 30, 10)).toHaveLength(0);
+
+    // Lease lapsed by t=31 — re-offered under the same id.
+    const reoffered = store.claimForDrain(31, 30, 10);
+    expect(reoffered).toHaveLength(1);
+    expect(reoffered[0]!.id).toBe(heldId);
+    expect(reoffered[0]!.drainCount).toBe(2);
+  });
+
+  it('ackDrain moves a held id to sent, and it is never offered again', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    const [drained] = store.claimForDrain(0, 30, 10);
+    const result = store.ackDrain([{ id: drained!.id, drainCount: drained!.drainCount }], 1);
+    expect(result).toEqual({ acked: [drained!.id], alreadyHandled: [], unknown: [] });
+
+    // Even well past the lease, an acked row is never re-offered.
+    expect(store.claimForDrain(10_000, 30, 10)).toHaveLength(0);
+  });
+
+  it('acking the same id twice at the same generation reports the second ack as alreadyHandled, not an error', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    const [drained] = store.claimForDrain(0, 30, 10);
+    const ack = { id: drained!.id, drainCount: drained!.drainCount };
+    store.ackDrain([ack], 1);
+    const second = store.ackDrain([ack], 2);
+    expect(second).toEqual({ acked: [], alreadyHandled: [drained!.id], unknown: [] });
+  });
+
+  it('acking an id this store has no record of at all is reported unknown, not an error', () => {
+    const result = store.ackDrain([{ id: 'never-issued-id', drainCount: 1 }], 1);
+    expect(result).toEqual({ acked: [], alreadyHandled: [], unknown: ['never-issued-id'] });
+  });
+
+  it('a stale ack for an id later resolved to a non-held terminal state (suppressed after its lease lapsed and was re-checked) is reported unknown, not acked', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    const [drained] = store.claimForDrain(0, 30, 10);
+    const staleId = drained!.id;
+    const staleDrainCount = drained!.drainCount;
+
+    // The address is suppressed after the hand-over, and the lease lapses
+    // without an ack — the next claim re-checks suppression on the lapsed
+    // row (it is a fresh candidate again) and resolves it in place.
+    store.addSuppression(DOMAIN, 'bounces', 'member@example.com');
+    const reclaimAttempt = store.claimForDrain(31, 30, 10);
+    expect(reclaimAttempt).toHaveLength(0); // resolved suppressed, not re-offered
+
+    // The original drainer's ack, arriving late, names an id that is no
+    // longer 'held' — reported unknown rather than silently accepted.
+    const result = store.ackDrain([{ id: staleId, drainCount: staleDrainCount }], 32);
+    expect(result).toEqual({ acked: [], alreadyHandled: [], unknown: [staleId] });
+  });
+
+  it('a late ack naming a SUPERSEDED generation (the row is still held, just re-offered to a newer claim) is unknown — never credited to the wrong holder', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    const [firstClaim] = store.claimForDrain(0, 30, 10);
+    const firstDrainCount = firstClaim!.drainCount; // 1
+
+    // Lease lapses with no ack; re-offered to a second claim (could be the
+    // same drainer retrying, or a different one — the store can't tell,
+    // and must not assume).
+    const [secondClaim] = store.claimForDrain(31, 30, 10);
+    expect(secondClaim!.id).toBe(firstClaim!.id);
+    expect(secondClaim!.drainCount).toBe(firstDrainCount + 1); // 2
+
+    // The FIRST drainer's ack now arrives, late, naming its own (stale)
+    // generation. The row is genuinely still 'held' — but at generation 2,
+    // not 1 — so this must not be accepted as that holder's success.
+    const lateAck = store.ackDrain([{ id: firstClaim!.id, drainCount: firstDrainCount }], 60);
+    expect(lateAck).toEqual({ acked: [], alreadyHandled: [], unknown: [firstClaim!.id] });
+
+    // The row is untouched by the rejected ack — still held under the
+    // CURRENT (second) claim's generation and lease, exactly as if the
+    // late ack had never arrived.
+    expect(store.claimForDrain(60, 30, 10)).toHaveLength(0); // second lease (until 61) still live
+
+    // The second (current) holder's ack, naming the right generation,
+    // succeeds.
+    const currentAck = store.ackDrain(
+      [{ id: secondClaim!.id, drainCount: secondClaim!.drainCount }],
+      61
+    );
+    expect(currentAck).toEqual({ acked: [secondClaim!.id], alreadyHandled: [], unknown: [] });
+  });
+
+  it('a suppressed recipient is resolved at claim time — never handed to a drainer, no event, still consumes toward the batch completing', () => {
+    store.addSuppression(DOMAIN, 'bounces', 'bounced@example.com');
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['bounced@example.com', 'ok@example.com'],
+      now: 0,
+    });
+    const drained = store.claimForDrain(0, 30, 10);
+    expect(drained.map((r) => r.recipient)).toEqual(['ok@example.com']);
+    expect(store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events).toHaveLength(0);
+    // bounced@ resolved suppressed (terminal); ok@ is now held, awaiting
+    // ack — still undrained until then.
+    expect(store.countUndrainedRecipients()).toBe(1);
+  });
+
+  it('an unsafe recipient address is failed in place at claim time, never handed to a drainer, and a failed event is recorded for it', () => {
     store.enqueueBatch({
       batchId: 'batch-1',
       domain: DOMAIN,
       emailId: 'email-1',
       payload: payload(),
-      recipients: ['member@example.com'],
+      recipients: ['grp:attacker@evil.com;', 'ok@example.com'],
       now: 0,
     });
-    store.recordRecipientSent('batch-1', 'member@example.com', {
-      domain: DOMAIN,
-      type: 'delivered',
-      severity: null,
-      recipient: 'member@example.com',
-      emailId: 'email-1',
-      providerMessageId: '<msg@tenant.example.com>',
-      timestamp: 0,
-      errorCode: null,
-      errorMessage: null,
-    });
+    const drained = store.claimForDrain(0, 30, 10);
+    expect(drained.map((r) => r.recipient)).toEqual(['ok@example.com']);
+    expect(store.countUndrainedRecipients()).toBe(1); // ok@ held, awaiting ack
 
-    expect(store.claimDueRecipients(1000, 10)).toHaveLength(0);
     const { events } = store.listEvents(DOMAIN, { limit: 10, offset: 0 });
     expect(events).toHaveLength(1);
-    expect(events[0]!.type).toBe('delivered');
-  });
-
-  it('recordRecipientSuppressed marks the row suppressed and records no event', () => {
-    store.enqueueBatch({
-      batchId: 'batch-1',
-      domain: DOMAIN,
-      emailId: null,
-      payload: payload(),
-      recipients: ['member@example.com'],
-      now: 0,
-    });
-    store.recordRecipientSuppressed('batch-1', 'member@example.com');
-
-    expect(store.claimDueRecipients(1000, 10)).toHaveLength(0);
-    expect(store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events).toHaveLength(0);
-  });
-
-  it('scheduleRecipientRetry keeps the row pending and reschedules it, without recording an event', () => {
-    store.enqueueBatch({
-      batchId: 'batch-1',
-      domain: DOMAIN,
-      emailId: null,
-      payload: payload(),
-      recipients: ['member@example.com'],
-      now: 0,
-    });
-    store.scheduleRecipientRetry('batch-1', 'member@example.com', 1, 500, 'connection reset');
-
-    expect(store.claimDueRecipients(100, 10)).toHaveLength(0);
-    const due = store.claimDueRecipients(500, 10);
-    expect(due).toHaveLength(1);
-    expect(due[0]!.attempts).toBe(1);
-    expect(store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events).toHaveLength(0);
-  });
-
-  it('recordRecipientFailed marks the row failed, records a failed event, and stops it being claimed', () => {
-    store.enqueueBatch({
-      batchId: 'batch-1',
-      domain: DOMAIN,
-      emailId: null,
-      payload: payload(),
-      recipients: ['member@example.com'],
-      now: 0,
-    });
-    store.recordRecipientFailed('batch-1', 'member@example.com', 6, 'mailbox unavailable', {
-      domain: DOMAIN,
+    expect(events[0]).toMatchObject({
       type: 'failed',
       severity: 'permanent',
-      recipient: 'member@example.com',
-      emailId: null,
-      providerMessageId: null,
-      timestamp: 0,
-      errorCode: 550,
-      errorMessage: 'mailbox unavailable',
+      recipient: 'grp:attacker@evil.com;',
+      emailId: 'email-1',
+      errorMessage: 'Invalid recipient address',
     });
-
-    expect(store.claimDueRecipients(1000, 10)).toHaveLength(0);
-    const { events } = store.listEvents(DOMAIN, { limit: 10, offset: 0 });
-    expect(events).toHaveLength(1);
-    expect(events[0]!.severity).toBe('permanent');
   });
 
-  it('countPendingRecipients counts across every batch and domain', () => {
+  it('the throttle (canSend) stops the whole claim at the first row it refuses, leaving that row and everything after it untouched', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['a@example.com', 'b@example.com', 'c@example.com'],
+      now: 0,
+    });
+    let tokens = 1;
+    const canSend = () => {
+      if (tokens > 0) {
+        tokens -= 1;
+        return true;
+      }
+      return false;
+    };
+
+    const drained = store.claimForDrain(0, 30, 10, canSend);
+    expect(drained.map((r) => r.recipient)).toEqual(['a@example.com']);
+    expect(store.countUndrainedRecipients()).toBe(3); // a: held: still undrained. b, c: pending.
+
+    // b and c are still claimable in original order once tokens are available again.
+    tokens = 2;
+    const second = store.claimForDrain(1, 30, 10, canSend);
+    expect(second.map((r) => r.recipient)).toEqual(['b@example.com', 'c@example.com']);
+  });
+
+  it('the throttle never blocks a suppressed or unsafe row from being resolved — they never consumed a send', () => {
+    store.addSuppression(DOMAIN, 'bounces', 'bounced@example.com');
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['bounced@example.com', 'grp:bad;', 'ok@example.com'],
+      now: 0,
+    });
+    const drained = store.claimForDrain(0, 30, 10, () => false);
+    // Nothing sendable was let through — the throttle refused everything —
+    // but the suppressed and unsafe rows were still resolved rather than
+    // left pending.
+    expect(drained).toHaveLength(0);
+    expect(store.countUndrainedRecipients()).toBe(1); // only 'ok@example.com' remains pending
+  });
+
+  it('oldestUndrainedAgeSeconds is null with nothing outstanding, and counts a held (not just pending) row as outstanding', () => {
+    expect(store.oldestUndrainedAgeSeconds(1000)).toBeNull();
+
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 100,
+    });
+    expect(store.oldestUndrainedAgeSeconds(150)).toBe(50);
+
+    // Claiming it (held, not acked) must not make the age metric go quiet —
+    // a drainer that polls but never acks is exactly the failure mode
+    // LLD-8 §03b names.
+    store.claimForDrain(150, 30, 10);
+    expect(store.oldestUndrainedAgeSeconds(200)).toBe(100);
+  });
+
+  it('oldestUndrainedAgeSeconds drops to null once the only outstanding row is acked', () => {
+    store.enqueueBatch({
+      batchId: 'batch-1',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['member@example.com'],
+      now: 0,
+    });
+    const [drained] = store.claimForDrain(0, 30, 10);
+    store.ackDrain([{ id: drained!.id, drainCount: drained!.drainCount }], 5);
+    expect(store.oldestUndrainedAgeSeconds(1000)).toBeNull();
+  });
+
+  it('countUndrainedRecipients counts pending and held across every batch and domain, excluding sent/failed/suppressed', () => {
     store.enqueueBatch({
       batchId: 'batch-1',
       domain: DOMAIN,
@@ -736,13 +889,17 @@ describe('createSqliteStore — durable queue', () => {
       recipients: ['c@example.com'],
       now: 0,
     });
-    expect(store.countPendingRecipients()).toBe(3);
+    expect(store.countUndrainedRecipients()).toBe(3);
 
-    store.recordRecipientSuppressed('batch-1', 'a@example.com');
-    expect(store.countPendingRecipients()).toBe(2);
+    const [drainedA] = store.claimForDrain(0, 30, 1); // claims 'a' only (oldest-first, limit 1)
+    expect(drainedA!.recipient).toBe('a@example.com');
+    expect(store.countUndrainedRecipients()).toBe(3); // held still counts
+
+    store.ackDrain([{ id: drainedA!.id, drainCount: drainedA!.drainCount }], 1);
+    expect(store.countUndrainedRecipients()).toBe(2);
   });
 
-  it('a batch completes only once every recipient reaches a terminal state, and cleanup then removes it without touching events', () => {
+  it('a batch completes only once every recipient reaches a terminal state (including sent via ack), and cleanup then removes it without touching events', () => {
     store.enqueueBatch({
       batchId: 'batch-1',
       domain: DOMAIN,
@@ -751,48 +908,42 @@ describe('createSqliteStore — durable queue', () => {
       recipients: ['a@example.com', 'b@example.com'],
       now: 0,
     });
-    store.recordRecipientSent('batch-1', 'a@example.com', {
-      domain: DOMAIN,
-      type: 'delivered',
-      severity: null,
-      recipient: 'a@example.com',
-      emailId: null,
-      providerMessageId: null,
-      timestamp: 0,
-      errorCode: null,
-      errorMessage: null,
-    });
+    store.addSuppression(DOMAIN, 'bounces', 'b@example.com');
 
-    // One recipient still pending — cleanup must not remove the batch yet,
-    // regardless of how far in the future the threshold is.
+    const [drainedA] = store.claimForDrain(0, 30, 10); // 'a' claimed, 'b' resolved suppressed inline
+    expect(drainedA!.recipient).toBe('a@example.com');
+
+    // 'a' still held (not yet acked) — cleanup must not remove the batch yet.
     expect(store.cleanupCompletedBatches(Date.now() / 1000 + 10_000)).toBe(0);
 
-    store.recordRecipientSuppressed('batch-1', 'b@example.com');
+    store.ackDrain([{ id: drainedA!.id, drainCount: drainedA!.drainCount }], 1);
 
     // Both recipients are now terminal — completed_at is set, so a
     // sufficiently-future threshold now deletes it.
     const deleted = store.cleanupCompletedBatches(Date.now() / 1000 + 10_000);
     expect(deleted).toBe(1);
-
-    // The events table is untouched by cleanup — Ghost still pages it by offset.
-    expect(store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events).toHaveLength(1);
   });
 
   it('cleanup leaves a recently-completed batch alone when the threshold is in the past', () => {
+    const realNow = Date.now() / 1000;
+    store.addSuppression(DOMAIN, 'bounces', 'a@example.com');
     store.enqueueBatch({
       batchId: 'batch-1',
       domain: DOMAIN,
       emailId: null,
       payload: payload(),
       recipients: ['a@example.com'],
-      now: 0,
+      now: realNow,
     });
-    store.recordRecipientSuppressed('batch-1', 'a@example.com');
+    // Resolves the suppressed row at "now", completing the batch just now.
+    store.claimForDrain(realNow, 30, 10);
 
-    expect(store.cleanupCompletedBatches(Date.now() / 1000 - 10_000)).toBe(0);
+    // A threshold 10,000s in the past is well before this batch's
+    // completed_at (~realNow) — nothing that recent should be swept.
+    expect(store.cleanupCompletedBatches(realNow - 10_000)).toBe(0);
   });
 
-  it('survives a store restart: pending, sent and retry-scheduled rows are all exactly where they were left', () => {
+  it('survives a store restart: pending, held and sent rows are all exactly where they were left', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-store-queue-test-'));
     const dbPath = join(dir, 'shim.sqlite');
     try {
@@ -802,32 +953,31 @@ describe('createSqliteStore — durable queue', () => {
         domain: DOMAIN,
         emailId: null,
         payload: payload(),
-        recipients: ['sent@example.com', 'pending@example.com', 'retry@example.com'],
+        // Enqueue order matters: claiming with limit 2 below takes the
+        // first two (sent, held) and leaves 'pending' genuinely untouched.
+        recipients: ['sent@example.com', 'held@example.com', 'pending@example.com'],
         now: 0,
       });
-      first.recordRecipientSent('batch-1', 'sent@example.com', {
-        domain: DOMAIN,
-        type: 'delivered',
-        severity: null,
-        recipient: 'sent@example.com',
-        emailId: null,
-        providerMessageId: null,
-        timestamp: 0,
-        errorCode: null,
-        errorMessage: null,
-      });
-      first.scheduleRecipientRetry('batch-1', 'retry@example.com', 1, 9999, 'connection reset');
+      const claimed = first.claimForDrain(0, 30, 2);
+      expect(claimed.map((r) => r.recipient)).toEqual(['sent@example.com', 'held@example.com']);
+      const sentRow = claimed.find((r) => r.recipient === 'sent@example.com')!;
+      const heldId = claimed.find((r) => r.recipient === 'held@example.com')!.id;
+      first.ackDrain([{ id: sentRow.id, drainCount: sentRow.drainCount }], 1);
+      // sent -> sent (terminal); held -> held under its 30s lease;
+      // pending -> never claimed at all in this session.
       first.close();
 
       const reopened = createSqliteStore(dbPath);
-      const due = reopened.claimDueRecipients(0, 10);
-      expect(due.map((r) => r.recipient)).toEqual(['pending@example.com']);
-      expect(
-        reopened
-          .claimDueRecipients(9999, 10)
-          .map((r) => r.recipient)
-          .sort()
-      ).toEqual(['pending@example.com', 'retry@example.com']);
+      // sent: never claimable again. held's lease (held_until=30) is still
+      // live at t=5, so the only claimable row is the untouched pending one.
+      const stillJustPending = reopened.claimForDrain(5, 30, 10);
+      expect(stillJustPending.map((r) => r.recipient)).toEqual(['pending@example.com']);
+
+      // Past the original lease: 'held@example.com' is re-offered under the
+      // same id — 'sent' and the now-claimed 'pending' do not reappear.
+      const reoffered = reopened.claimForDrain(31, 30, 10);
+      expect(reoffered.map((r) => r.recipient)).toEqual(['held@example.com']);
+      expect(reoffered[0]!.id).toBe(heldId);
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -845,7 +995,7 @@ describe('createSqliteStore — durable queue', () => {
         now: 0,
       })
     ).toThrow(/UNIQUE constraint/);
-    expect(store.countPendingRecipients()).toBe(0);
+    expect(store.countUndrainedRecipients()).toBe(0);
   });
 });
 

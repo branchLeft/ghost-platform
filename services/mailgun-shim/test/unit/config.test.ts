@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 
-const baseEnv = { SMTP_HOST: 'smtp.example.com' };
+const baseEnv = { SHIM_DRAIN_TOKEN: 'the-drain-token' };
 
 describe('loadConfig', () => {
   it('throws when SHIM_DB_PATH is unset and the ephemeral escape hatch is not opted into', () => {
@@ -22,18 +22,20 @@ describe('loadConfig', () => {
     expect(config.dbPath).toBe('/data/shim.sqlite');
   });
 
-  it('requires SMTP_HOST', () => {
-    expect(() => loadConfig({ SHIM_ALLOW_EPHEMERAL_DB: 'true' })).toThrow(/SMTP_HOST/);
+  it('requires SHIM_DRAIN_TOKEN', () => {
+    expect(() => loadConfig({ SHIM_ALLOW_EPHEMERAL_DB: 'true' })).toThrow(/SHIM_DRAIN_TOKEN/);
   });
 
-  it('defaults port, SMTP port/secure and messagesPerHour', () => {
+  it('defaults port, messagesPerHour and every drain option', () => {
     const config = loadConfig({ ...baseEnv, SHIM_ALLOW_EPHEMERAL_DB: 'true' });
     expect(config.port).toBe(8080);
-    expect(config.smtp.port).toBe(587);
-    expect(config.smtp.secure).toBe(false);
-    expect(config.smtp.auth).toBeUndefined();
     expect(config.messagesPerHour).toBe(50);
     expect(config.throttlePath).toBeUndefined();
+    expect(config.drainToken).toBe('the-drain-token');
+    expect(config.drainHoldMs).toBe(30_000);
+    expect(config.drainLeaseSeconds).toBe(30);
+    expect(config.drainBatchLimit).toBe(25);
+    expect(config.drainPollIntervalMs).toBe(250);
     expect(config.maxRecipientsPerMessage).toBe(50);
   });
 
@@ -55,22 +57,23 @@ describe('loadConfig', () => {
     expect(config.maxRecipientsPerMessage).toBe(50);
   });
 
-  it('reads PORT, SMTP_PORT, SMTP_SECURE, SMTP_USER/PASS and SHIM_MESSAGES_PER_HOUR', () => {
+  it('reads PORT, SHIM_MESSAGES_PER_HOUR and every SHIM_DRAIN_* override', () => {
     const config = loadConfig({
       ...baseEnv,
       SHIM_ALLOW_EPHEMERAL_DB: 'true',
       PORT: '9090',
-      SMTP_PORT: '2525',
-      SMTP_SECURE: 'true',
-      SMTP_USER: 'user',
-      SMTP_PASS: 'pass',
       SHIM_MESSAGES_PER_HOUR: '120',
+      SHIM_DRAIN_HOLD_MS: '5000',
+      SHIM_DRAIN_LEASE_SECONDS: '60',
+      SHIM_DRAIN_BATCH_LIMIT: '10',
+      SHIM_DRAIN_POLL_INTERVAL_MS: '100',
     });
     expect(config.port).toBe(9090);
-    expect(config.smtp.port).toBe(2525);
-    expect(config.smtp.secure).toBe(true);
-    expect(config.smtp.auth).toEqual({ user: 'user', pass: 'pass' });
     expect(config.messagesPerHour).toBe(120);
+    expect(config.drainHoldMs).toBe(5000);
+    expect(config.drainLeaseSeconds).toBe(60);
+    expect(config.drainBatchLimit).toBe(10);
+    expect(config.drainPollIntervalMs).toBe(100);
   });
 
   it('falls back to 50 for a non-positive SHIM_MESSAGES_PER_HOUR', () => {
@@ -82,6 +85,15 @@ describe('loadConfig', () => {
     expect(config.messagesPerHour).toBe(50);
   });
 
+  it('falls back to the default for a non-positive SHIM_DRAIN_HOLD_MS', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      SHIM_ALLOW_EPHEMERAL_DB: 'true',
+      SHIM_DRAIN_HOLD_MS: '0',
+    });
+    expect(config.drainHoldMs).toBe(30_000);
+  });
+
   it('passes through SHIM_THROTTLE_PATH', () => {
     const config = loadConfig({
       ...baseEnv,
@@ -89,15 +101,6 @@ describe('loadConfig', () => {
       SHIM_THROTTLE_PATH: '/etc/shim/throttle.json',
     });
     expect(config.throttlePath).toBe('/etc/shim/throttle.json');
-  });
-
-  it('leaves smtp.auth undefined when only one of SMTP_USER/SMTP_PASS is set', () => {
-    const config = loadConfig({
-      ...baseEnv,
-      SHIM_ALLOW_EPHEMERAL_DB: 'true',
-      SMTP_USER: 'user-only',
-    });
-    expect(config.smtp.auth).toBeUndefined();
   });
 
   it("defaults smtpFrontDoor to port 25, matching LLD-6's diagram", () => {

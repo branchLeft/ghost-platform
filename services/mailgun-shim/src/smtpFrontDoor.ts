@@ -9,11 +9,11 @@ import {
   type SMTPServerSession,
 } from 'smtp-server';
 import { simpleParser } from 'mailparser';
-import { isSafeRecipientAddress } from './smtp.js';
+import { isSafeRecipientAddress } from './recipientSafety.js';
+import type { DrainWake } from './drainWake.js';
 import type { Logger } from './log.js';
 import { resolveSenderDomain, senderBelongsToTenant } from './senderAuthorization.js';
 import type { ShimStore } from './store.js';
-import type { WorkerHandle } from './worker.js';
 
 /**
  * Ghost's own transactional sender is the only intended caller (LLD-6 §03):
@@ -394,7 +394,7 @@ export function createUnauthenticatedAdmissionQueue(
 
 export interface SmtpFrontDoorOptions {
   store: ShimStore;
-  worker: WorkerHandle;
+  wake: DrainWake;
   log: Logger;
   maxMessageBytes: number;
   /** Cap on RCPT commands accepted for a single message — the (N+1)th and later get a temporary refusal (452), every earlier one stays accepted. Counted per-message (smtp-server replaces the whole envelope on RSET/EHLO/HELO and after each completed DATA), never cumulative across a connection's lifetime. */
@@ -473,12 +473,12 @@ interface RawSmtpConnection {
  * (routes/messages.ts) — one queue, two front doors, exactly the LOAD-BEARING
  * shape LLD-6 §03 sets out.
  *
- * `worker.kick()` below is fire-and-forget by its own contract (worker.ts) —
+ * `wake.notify()` below is fire-and-forget by its own contract (drainWake.ts) —
  * nothing here awaits a network hop, which is the whole property this
  * component exists to hold.
  */
 export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
-  const { store, worker, log } = opts;
+  const { store, wake, log } = opts;
   const now = opts.now ?? Date.now;
   const allowList = buildSourceAllowList(opts.allowedSourceCidrs ?? DEFAULT_ALLOWED_SOURCE_CIDRS);
   const limiter = createSubmitterLimiter(opts.submitterMessagesPerMinute, 60_000, now);
@@ -984,7 +984,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             const batchId = `<${now()}.${randomUUID()}@${submitterId}>`;
 
             // Durable write, synchronous, no network hop — this is the ack
-            // Ghost's own request is waiting on (LLD-6 M1). worker.kick()
+            // Ghost's own request is waiting on (LLD-6 M1). wake.notify()
             // just below is documented fire-and-forget; nothing after this
             // point is awaited before callback() responds.
             store.enqueueBatch({
@@ -1008,7 +1008,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
               batchId,
               recipientCount: recipients.length,
             });
-            worker.kick();
+            wake.notify();
 
             callback(null, 'Queued. Thank you.');
           })

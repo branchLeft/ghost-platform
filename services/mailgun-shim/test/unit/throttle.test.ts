@@ -5,8 +5,24 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createThrottle } from '../../src/throttle.js';
 
 describe('createThrottle — token bucket', () => {
-  it('starts empty — a fresh throttle grants nothing at time zero', () => {
+  it('starts with exactly one grace token — the very first call at time zero succeeds, a second one immediately after does not', () => {
+    // Not a full bucket (no burst-to-cap on a fresh start) and not zero
+    // either (a bucket starting at literal zero made the first message
+    // ever sent through a freshly started spool wait up to an hour/rate
+    // for a token to accrue — see the reasoning in throttle.ts's own doc
+    // comment).
     const throttle = createThrottle({ envMessagesPerHour: 10, now: () => 0 });
+    expect(throttle.tryTake()).toBe(true);
+    expect(throttle.tryTake()).toBe(false);
+  });
+
+  it('the grace token never exceeds messagesPerHour itself — a sub-1 rate starts with no usable grace at all', () => {
+    // Defensive: config.ts's positiveIntEnv never actually produces a
+    // sub-1 rate, but createThrottle's own contract (ThrottleOptions.
+    // envMessagesPerHour: number) doesn't forbid one, and the bucket must
+    // never hold more capacity than the rate it's configured for, even at
+    // the very first tick.
+    const throttle = createThrottle({ envMessagesPerHour: 0.5, now: () => 0 });
     expect(throttle.tryTake()).toBe(false);
   });
 
@@ -31,8 +47,9 @@ describe('createThrottle — token bucket', () => {
   it('accrues capacity linearly and caps at messagesPerHour', () => {
     let now = 0;
     const throttle = createThrottle({ envMessagesPerHour: 60, now: () => now });
-    // 60/hour == 1/minute; after 5 minutes exactly 5 tokens are available,
-    // in one burst, none more until further time passes.
+    // 60/hour == 1/minute; after 5 minutes, 5 tokens have accrued on top
+    // of the 1 grace token the bucket started with — 6 available in one
+    // burst, none more until further time passes.
     now = 5 * 60;
     let granted = 0;
     for (let i = 0; i < 10; i += 1) {
@@ -40,7 +57,7 @@ describe('createThrottle — token bucket', () => {
         granted += 1;
       }
     }
-    expect(granted).toBe(5);
+    expect(granted).toBe(6);
   });
 
   it('defaults to 50/hour when no env value is given', () => {

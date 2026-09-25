@@ -8,7 +8,7 @@ import { parseMailgunMessageFields } from '../mailgunFields.js';
 import { tenantRateLimiter } from '../rateLimit.js';
 import { resolveSenderDomain, senderBelongsToTenant } from '../senderAuthorization.js';
 import type { ShimStore } from '../store.js';
-import type { WorkerHandle } from '../worker.js';
+import type { DrainWake } from '../drainWake.js';
 
 /**
  * Options fields ('o:*') map to Mailgun boolean-shaped values of "yes"/"no"
@@ -40,7 +40,7 @@ function dedupeRecipients(recipients: string[]): string[] {
   return deduped;
 }
 
-export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log: Logger): Router {
+export function createMessagesRouter(store: ShimStore, wake: DrainWake, log: Logger): Router {
   const router = createRouter();
 
   router.post(
@@ -148,7 +148,7 @@ export function createMessagesRouter(store: ShimStore, worker: WorkerHandle, log
       });
 
       log.info('enqueue', { domain, batchId, recipientCount: recipients.length });
-      worker.kick();
+      wake.notify();
 
       res.status(200).json({ id: batchId, message: 'Queued. Thank you.' });
     })
