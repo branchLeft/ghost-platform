@@ -104,7 +104,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
       'h:X-Auto-Response-Suppress': 'OOF, AutoReply',
       'h:List-Unsubscribe': '<%recipient.list_unsubscribe%>',
       'h:List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-      'v:email-id': 'email-record-42',
+      'v:email-id': '64f1a2b3c4d5e6f7a8b9c0d1',
       'o:tag': ['bulk-email', 'ghost-email'],
     });
 
@@ -130,7 +130,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     expect(toB!.parsed.html).toContain('unsubscribe/b');
 
     // Correlation: v:email-id survives to the delivery host as a header.
-    expect(toA!.parsed.headers.get('x-ghost-email-id')).toBe('email-record-42');
+    expect(toA!.parsed.headers.get('x-ghost-email-id')).toBe('64f1a2b3c4d5e6f7a8b9c0d1');
 
     // Acked — the queue is empty and the age gauge has gone quiet.
     expect(shim.store.countUndrainedRecipients()).toBe(0);
@@ -826,18 +826,91 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     expect(drained.messages).toHaveLength(0);
   });
 
-  it('refuses a CRLF-injecting recipient-variables value, nested inside an object, with a 400, through the real HTTP route, and queues nothing', async () => {
+  // Review cycle 7: unlike from/h:*/subject (tenant-authored, refused
+  // outright above), a recipient-variables value is member-supplied — a
+  // signup name Ghost does not sanitise — so a CR/LF/NUL there is replaced
+  // with a space rather than refusing the whole batch. Refusing would let
+  // one member's uncontrolled name fail delivery to every other recipient
+  // in the same Ghost newsletter send.
+  it("replaces a CR, LF or NUL in a member's recipient-variables value with a space rather than failing the whole batch, through the real HTTP route and the real GET /drain payload", async () => {
+    const recipientData = {
+      'member@example.com': { name: 'Ann\r\nSender: ceo@evil.com' },
+    };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      subject: 'Hello %recipient.name%',
+      html: '<p>Hi %recipient.name%</p>',
+      text: 'Hi %recipient.name%',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const drained = await rawDrainOnce(shim);
+    const message = drained.messages.find((m) => m.to === 'member@example.com');
+    expect(message).toBeDefined();
+    // The %recipient.name% substitution (routes/drain.ts's toWireMessage)
+    // is what would splice an unsanitised member name into a header-bound
+    // field — this proves the value it substitutes is already clean.
+    expect(message!.subject).not.toMatch(/[\r\n\0]/);
+    expect(message!.html).not.toMatch(/[\r\n\0]/);
+    expect(message!.subject).toBe('Hello Ann  Sender: ceo@evil.com');
+  });
+
+  it('replaces a CR, LF or NUL nested inside an object in a recipient-variables value, not just a top-level one, through the real HTTP route and the real GET /drain payload', async () => {
     const recipientData = {
       'member@example.com': { nested: { x: 'a\r\nSender: ceo@evil.com' } },
     };
+    const response = await mailgunClient.messages.create(TENANT_DOMAIN, {
+      to: ['member@example.com'],
+      from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+      subject: 'CRLF nested in recipient-variables',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': JSON.stringify(recipientData),
+    });
+    expect(response.id).toBeTruthy();
+
+    const drained = await rawDrainOnce(shim);
+    const message = drained.messages.find(
+      (m) => m.subject === 'CRLF nested in recipient-variables'
+    );
+    expect(message).toBeDefined();
+  });
+
+  // Review cycle 6's blocking finding 1: v:email-id is tenant-authored
+  // (Ghost's own request sets it, never a member), so — unlike
+  // recipient-variables — it is refused outright, the same as from/h:*/
+  // subject, not sanitised. It reaches headers['X-Ghost-Email-Id']
+  // unresolved (routes/drain.ts's toWireMessage), so a CRLF there was an
+  // injected header line on GET /drain's own payload before this fix.
+  it('refuses a v:email-id carrying a CRLF-injected Sender line with a 400, through the real HTTP route, and queues nothing — measured on the real GET /drain payload', async () => {
     await expect(
       mailgunClient.messages.create(TENANT_DOMAIN, {
         to: ['member@example.com'],
         from: `Tenant <noreply@${TENANT_DOMAIN}>`,
-        subject: 'CRLF nested in recipient-variables',
+        subject: 'v:email-id CRLF',
         html: '<p>hi</p>',
         text: 'hi',
-        'recipient-variables': JSON.stringify(recipientData),
+        'recipient-variables': '{}',
+        'v:email-id': 'a\r\nSender: ceo@evil.com',
+      })
+    ).rejects.toMatchObject({ status: 400 });
+
+    const drained = await rawDrainOnce(shim);
+    expect(drained.messages).toHaveLength(0);
+  });
+
+  it('refuses a v:email-id that is not a real Ghost object id shape, with a 400, and queues nothing', async () => {
+    await expect(
+      mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member@example.com'],
+        from: `Tenant <noreply@${TENANT_DOMAIN}>`,
+        subject: 'v:email-id not an object id',
+        html: '<p>hi</p>',
+        text: 'hi',
+        'recipient-variables': '{}',
+        'v:email-id': 'not-an-object-id',
       })
     ).rejects.toMatchObject({ status: 400 });
 

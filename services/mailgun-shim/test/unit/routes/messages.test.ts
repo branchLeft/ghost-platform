@@ -137,13 +137,45 @@ describe('POST /v3/:domain/messages', () => {
         ['html', '<p>hi</p>'],
         ['text', 'hi'],
         ['recipient-variables', '{}'],
-        ['v:email-id', 'email-record-42'],
+        ['v:email-id', '64f1a2b3c4d5e6f7a8b9c0d1'],
       ])
     );
     expect(res.status).toBe(200);
 
     const claimed = claimOne(store);
-    expect(claimed[0]!.emailId).toBe('email-record-42');
+    expect(claimed[0]!.emailId).toBe('64f1a2b3c4d5e6f7a8b9c0d1');
+  });
+
+  it('refuses a v:email-id carrying a CR, LF or NUL with a 400, and queues nothing', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+        ['v:email-id', 'a\r\nSender: ceo@evil.com'],
+      ])
+    );
+    expect(res.status).toBe(400);
+    expect(claimOne(store)).toHaveLength(0);
+  });
+
+  it('refuses a v:email-id that is not a 24-character lowercase hex Ghost object id, with a 400, and queues nothing', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', 'noreply@tenant1.example.com'],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+        ['v:email-id', 'not-an-object-id'],
+      ])
+    );
+    expect(res.status).toBe(400);
+    expect(claimOne(store)).toHaveLength(0);
   });
 
   it('rejects a request with no recipients, and never enqueues anything', async () => {

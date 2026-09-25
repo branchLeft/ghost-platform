@@ -74,27 +74,68 @@ export function containsHeaderInjectionChars(value: string): boolean {
 }
 
 /**
- * recipient-variables is caller-controlled JSON (`JSON.parse` on an
+ * recipient-variables carries member-supplied data (a signup name, not
+ * anything the tenant wrote), and Ghost does not sanitise it before it
+ * reaches here — a member's own `name` comes straight from their signup
+ * request body (members-api/controllers/router-controller.js:1046,
+ * forks/Ghost tag v6.55.0) with no CR/LF/NUL stripping on that path. From,
+ * subject and every h:* value are refused outright on the same characters
+ * (containsHeaderInjectionChars, above) because those are tenant-authored
+ * and a tenant can simply be asked to resend a corrected request — but
+ * refusing here would fail an entire Ghost newsletter batch (real Mailgun's
+ * batch size is 1,000 recipients) over one member's uncontrolled name, and
+ * Ghost retries the batch a fixed number of times before giving up
+ * (email-service/batch-sending-service.js:43's MAILGUN_API_RETRY_CONFIG)
+ * rather than dropping just that recipient. Replacing the character instead
+ * keeps the rest of the batch delivering, and is still safe against
+ * injection: the sanitised value is what %recipient.*% substitution
+ * (routes/drain.ts's toWireMessage) later splices into subject, html, text
+ * or a header, so nothing it produces can carry a CR, LF or NUL through to
+ * become a second header line.
+ *
+ * recipient-variables is also caller-controlled JSON (`JSON.parse` on an
  * untrusted string), so its shape is not guaranteed to match
  * ParsedMessageFields' declared `Record<string, Record<string, string>>` —
  * a value can be a nested object or array with a string somewhere inside
- * it that resolveRecipientTokens would later splice into subject, html,
- * text or a header. This walks whatever JSON.parse actually returned,
- * recursively, so a string buried under an extra level of nesting is still
- * caught rather than silently passed through because it didn't match the
- * declared shape.
+ * it. This walks whatever JSON.parse actually returned, recursively, so a
+ * string buried under an extra level of nesting is still sanitised rather
+ * than silently passed through because it didn't match the declared shape.
  */
-export function findHeaderInjectionInRecipientVariables(value: unknown): boolean {
+export function sanitizeRecipientVariables<T>(value: T): T {
   if (typeof value === 'string') {
-    return containsHeaderInjectionChars(value);
+    return value.replace(/[\r\n\0]/g, ' ') as unknown as T;
   }
   if (Array.isArray(value)) {
-    return value.some((entry) => findHeaderInjectionInRecipientVariables(entry));
+    return value.map((entry: unknown) => sanitizeRecipientVariables(entry)) as unknown as T;
   }
   if (value !== null && typeof value === 'object') {
-    return Object.values(value).some((entry) => findHeaderInjectionInRecipientVariables(entry));
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      sanitized[key] = sanitizeRecipientVariables(entry);
+    }
+    return sanitized as T;
   }
-  return false;
+  return value;
+}
+
+/**
+ * Ghost's own `v:email-id` is always the Email model's row id, a
+ * MongoDB-style ObjectId minted by bson-objectid's
+ * `ObjectId().toHexString()` on create — every Bookshelf model's `id` is
+ * assigned this way (forks/Ghost tag v6.55.0,
+ * models/base/utils.js:38, models/base/plugins/events.js:260) — and
+ * threaded through unchanged from there (batch-sending-service.js's
+ * `emailId: email.id` → mailgun-email-provider.js's `id: emailId` →
+ * mailgun-client.js's `messageData['v:email-id'] = message.id`, only ever
+ * set when `message.id` is present). It is always exactly 24 lowercase hex
+ * characters, never anything a tenant chooses, so checking the fixed shape
+ * (rather than only refusing the three injection characters) loses nothing
+ * legitimate.
+ */
+const GHOST_EMAIL_ID_PATTERN = /^[a-f0-9]{24}$/;
+
+export function isValidGhostEmailId(value: string): boolean {
+  return GHOST_EMAIL_ID_PATTERN.test(value);
 }
 
 /**
@@ -178,15 +219,14 @@ export function parseMailgunMessageFields(req: Request): Promise<ParsedMessageFi
           // rather than crash the whole batch.
         }
       }
-      // Checked on whatever JSON.parse actually returned, not on the
-      // declared Record<string, Record<string, string>> shape — see
-      // findHeaderInjectionInRecipientVariables' own doc comment. A
-      // malformed-JSON caller never reaches here: the catch above already
-      // left recipientVariables at {}, which has nothing to find.
-      if (findHeaderInjectionInRecipientVariables(recipientVariables)) {
-        reject(new Error('recipient-variables contains a CR, LF or NUL character'));
-        return;
-      }
+      // Replaced, not refused — see sanitizeRecipientVariables' own doc
+      // comment for why member-supplied recipient-variables get different
+      // treatment from every other header-bound field below. Walked on
+      // whatever JSON.parse actually returned, not on the declared
+      // Record<string, Record<string, string>> shape. A malformed-JSON
+      // caller never reaches here: the catch above already left
+      // recipientVariables at {}, which has nothing to sanitize.
+      recipientVariables = sanitizeRecipientVariables(recipientVariables);
 
       const from = asString(fields.from);
       if (containsHeaderInjectionChars(from)) {
@@ -239,7 +279,26 @@ export function parseMailgunMessageFields(req: Request): Promise<ParsedMessageFi
         } else if (key.startsWith('o:')) {
           options[key.slice(2)] = value;
         } else if (key.startsWith('v:')) {
-          customVars[key.slice(2)] = asString(value);
+          const varName = key.slice(2);
+          const varValue = asString(value);
+          // v:* is tenant-authored (Ghost's own request only ever sets
+          // v:email-id), not member-supplied like recipient-variables, so
+          // it gets the same refuse-outright treatment as from/subject/h:*
+          // rather than sanitizeRecipientVariables' replacement — see
+          // containsHeaderInjectionChars' own doc comment. Today only
+          // email-id reaches a header (routes/drain.ts's
+          // headers['X-Ghost-Email-Id']); this check covers every v:* key
+          // so a future one that starts flowing into a header is already
+          // closed.
+          if (containsHeaderInjectionChars(varValue)) {
+            reject(new Error(`v:${varName} value contains a CR, LF or NUL character`));
+            return;
+          }
+          if (varName === 'email-id' && !isValidGhostEmailId(varValue)) {
+            reject(new Error('v:email-id must be a 24-character lowercase hex Ghost object id'));
+            return;
+          }
+          customVars[varName] = varValue;
         }
       }
 

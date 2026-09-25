@@ -3,12 +3,16 @@ import type { Request } from 'express';
 import { describe, expect, it } from 'vitest';
 import {
   containsHeaderInjectionChars,
-  findHeaderInjectionInRecipientVariables,
+  isValidGhostEmailId,
   isValidHeaderFieldName,
   normalizeMailHeaderKey,
   parseMailgunMessageFields,
   resolveRecipientTokens,
+  sanitizeRecipientVariables,
 } from '../../src/mailgunFields.js';
+
+/** A real Ghost email-id shape — 24 lowercase hex characters, bson-objectid's ObjectId().toHexString(). */
+const GHOST_EMAIL_ID = '64f1a2b3c4d5e6f7a8b9c0d1';
 
 /**
  * Builds a real multipart/form-data body via the `form-data` package (the
@@ -90,9 +94,34 @@ describe('parseMailgunMessageFields', () => {
   });
 
   it('captures v:email-id as a custom var with the "v:" prefix stripped', async () => {
-    const req = multipartRequest([['v:email-id', 'email-record-42']]);
+    const req = multipartRequest([['v:email-id', GHOST_EMAIL_ID]]);
     const parsed = await parseMailgunMessageFields(req);
-    expect(parsed.customVars['email-id']).toBe('email-record-42');
+    expect(parsed.customVars['email-id']).toBe(GHOST_EMAIL_ID);
+  });
+
+  it('rejects a CR, LF or NUL in v:email-id with a rejected promise, before it is stored', async () => {
+    for (const bad of ['a\r\nSender: ceo@evil.com', 'a\nb', 'a\0b']) {
+      const req = multipartRequest([['v:email-id', bad]]);
+      await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+    }
+  });
+
+  it('rejects a v:email-id that is not a 24-character lowercase hex Ghost object id, even with no injection characters', async () => {
+    for (const bad of [
+      'email-record-42',
+      GHOST_EMAIL_ID.toUpperCase(),
+      GHOST_EMAIL_ID.slice(1),
+      `${GHOST_EMAIL_ID}f`,
+      '',
+    ]) {
+      const req = multipartRequest([['v:email-id', bad]]);
+      await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+    }
+  });
+
+  it('rejects a CR, LF or NUL in a v:* value other than email-id, the same as email-id — the check covers every v:* key', async () => {
+    const req = multipartRequest([['v:some-other-var', 'a\r\nSender: ceo@evil.com']]);
+    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
   });
 
   it('keeps repeated "o:tag" fields as an array (batch tags) — including a third repeat appended to that array, not just the first pair', async () => {
@@ -260,7 +289,7 @@ describe('parseMailgunMessageFields', () => {
     await expect(parseMailgunMessageFields(req)).rejects.toThrow();
   });
 
-  it('rejects a CR, LF or NUL inside a recipient-variables value', async () => {
+  it('replaces a CR, LF or NUL inside a recipient-variables value with a space, rather than refusing the request — a member-supplied name is not tenant-authored', async () => {
     const req = multipartRequest([
       ['from', 'noreply@tenant1.example.com'],
       [
@@ -268,10 +297,14 @@ describe('parseMailgunMessageFields', () => {
         JSON.stringify({ 'member@example.com': { x: 'a\r\nSender: ceo@evil.com' } }),
       ],
     ]);
-    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.recipientVariables).toEqual({
+      'member@example.com': { x: 'a  Sender: ceo@evil.com' },
+    });
+    expect(parsed.recipientVariables['member@example.com']!.x).not.toMatch(/[\r\n\0]/);
   });
 
-  it('rejects a CR, LF or NUL nested two levels deep inside a recipient-variables value — the check recurses, not just the declared shape', async () => {
+  it('replaces a CR, LF or NUL nested two levels deep inside a recipient-variables value — the sanitiser recurses, not just the declared shape', async () => {
     const req = multipartRequest([
       ['from', 'noreply@tenant1.example.com'],
       [
@@ -281,7 +314,10 @@ describe('parseMailgunMessageFields', () => {
         }),
       ],
     ]);
-    await expect(parseMailgunMessageFields(req)).rejects.toThrow();
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.recipientVariables).toEqual({
+      'member@example.com': { nested: { deeper: ['fine', 'a Sender: ceo@evil.com'] } },
+    });
   });
 
   it('never applies the CR/LF/NUL rule to html or text — Ghost legitimately sends multi-line bodies', async () => {
@@ -377,21 +413,34 @@ describe('containsHeaderInjectionChars', () => {
   });
 });
 
-describe('findHeaderInjectionInRecipientVariables', () => {
-  it('finds a bad character at the top level', () => {
-    expect(findHeaderInjectionInRecipientVariables({ a: 'x\r\ny' })).toBe(true);
+describe('sanitizeRecipientVariables', () => {
+  it('replaces a bad character at the top level with a space, one space per character', () => {
+    expect(sanitizeRecipientVariables({ a: 'x\r\ny' })).toEqual({ a: 'x  y' });
+    expect(sanitizeRecipientVariables({ a: 'x\0y' })).toEqual({ a: 'x y' });
   });
 
-  it('finds a bad character nested inside an object inside an array', () => {
-    expect(findHeaderInjectionInRecipientVariables({ a: [{ b: 'fine' }, { c: 'x\ny' }] })).toBe(
-      true
-    );
+  it('replaces a bad character nested inside an object inside an array', () => {
+    expect(sanitizeRecipientVariables({ a: [{ b: 'fine' }, { c: 'x\ny' }] })).toEqual({
+      a: [{ b: 'fine' }, { c: 'x y' }],
+    });
   });
 
-  it('is false for a clean, deeply-nested structure', () => {
-    expect(
-      findHeaderInjectionInRecipientVariables({ a: { b: ['fine', 'also fine'] }, c: 1, d: null })
-    ).toBe(false);
+  it('leaves a clean, deeply-nested structure — including non-string values — unchanged', () => {
+    const clean = { a: { b: ['fine', 'also fine'] }, c: 1, d: null };
+    expect(sanitizeRecipientVariables(clean)).toEqual(clean);
+  });
+});
+
+describe('isValidGhostEmailId', () => {
+  it('accepts a 24-character lowercase hex string', () => {
+    expect(isValidGhostEmailId(GHOST_EMAIL_ID)).toBe(true);
+  });
+
+  it('rejects anything else — wrong length, uppercase, non-hex, or empty', () => {
+    expect(isValidGhostEmailId(GHOST_EMAIL_ID.slice(1))).toBe(false);
+    expect(isValidGhostEmailId(GHOST_EMAIL_ID.toUpperCase())).toBe(false);
+    expect(isValidGhostEmailId('email-record-42')).toBe(false);
+    expect(isValidGhostEmailId('')).toBe(false);
   });
 });
 

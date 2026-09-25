@@ -972,8 +972,8 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             // submitted. mailparser has already run its own MIME decoding
             // by this point (simpleParser, above), so this also catches an
             // encoded-word that decodes to a CRLF or NUL never literally
-            // present on the wire — the exact shape review found: a Subject
-            // of `=?utf-8?Q?a=0D=0ASender:_ceo@evil.com?=` decodes to a
+            // present on the wire — for example, a Subject of
+            // `=?utf-8?Q?a=0D=0ASender:_ceo@evil.com?=` decodes to a
             // second, injected header line.
             for (const [label, value] of [
               ['From', from],
