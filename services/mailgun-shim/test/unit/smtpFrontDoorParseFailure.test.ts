@@ -59,7 +59,7 @@ interface Harness {
 
 async function startHarness(): Promise<Harness> {
   const store = createSqliteStore(':memory:');
-  store.registerTenant('tenant-a.example.com', 'key-a');
+  store.registerTenant('tenant-a.example.com', 'key-a', 'tenant-a.example.com');
   const wake = createDrainWake();
   const notify = vi.spyOn(wake, 'notify');
   const { logger, lines } = createTestLogger();

@@ -87,7 +87,7 @@ describe('the spool makes no outbound connection', () => {
     });
     appPort = (server.address() as AddressInfo).port;
     baseUrl = `http://127.0.0.1:${appPort}`;
-    store.registerTenant('tenant1.example.com', 'the-api-key');
+    store.registerTenant('tenant1.example.com', 'the-api-key', 'tenant1.example.com');
   });
 
   afterEach(async () => {

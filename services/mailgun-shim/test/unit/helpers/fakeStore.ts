@@ -47,8 +47,13 @@ function suppressionKey(domain: string, type: string, email: string): string {
  * its "no pending/held rows left" batch-completion rule, and the
  * claim/lease/ack shape claimForDrain and ackDrain give real drainers.
  */
+interface FakeTenant {
+  apiKey: string;
+  senderDomain: string | null;
+}
+
 export function createFakeStore(): FakeShimStore {
-  const tenants = new Map<string, string>();
+  const tenants = new Map<string, FakeTenant>();
   const suppressionKeys = new Set<string>();
   const events: StoredEvent[] = [];
   const batches = new Map<string, BatchRow>();
@@ -78,13 +83,15 @@ export function createFakeStore(): FakeShimStore {
     events,
     suppressionKeys,
 
-    registerTenant(domain, apiKey) {
-      tenants.set(domain, apiKey);
+    registerTenant(domain, apiKey, senderDomain) {
+      tenants.set(domain, { apiKey, senderDomain });
     },
 
     async verifyTenant(domain, apiKey) {
       const stored = tenants.get(domain);
-      return stored !== undefined && stored === apiKey ? { domain } : null;
+      return stored !== undefined && stored.apiKey === apiKey
+        ? { domain, senderDomain: stored.senderDomain }
+        : null;
     },
 
     tenantExists(domain) {
@@ -92,7 +99,18 @@ export function createFakeStore(): FakeShimStore {
     },
 
     listTenants() {
-      return [...tenants.keys()].sort();
+      return [...tenants.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([domain, tenant]) => ({ domain, senderDomain: tenant.senderDomain }));
+    },
+
+    setSenderDomain(domain, senderDomain) {
+      const stored = tenants.get(domain);
+      if (!stored) {
+        return false;
+      }
+      stored.senderDomain = senderDomain;
+      return true;
     },
 
     recordEvent(event) {

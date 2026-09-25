@@ -6,6 +6,7 @@ import { requireTenantForDomain } from '../auth.js';
 import type { Logger } from '../log.js';
 import { parseMailgunMessageFields } from '../mailgunFields.js';
 import { tenantRateLimiter } from '../rateLimit.js';
+import { resolveSenderDomain, senderBelongsToTenant } from '../senderAuthorization.js';
 import type { ShimStore } from '../store.js';
 import type { DrainWake } from '../drainWake.js';
 
@@ -56,6 +57,61 @@ export function createMessagesRouter(store: ShimStore, wake: DrainWake, log: Log
         res.status(400).json({ message: 'Failed to parse request' });
         return;
       }
+
+      const tenant = res.locals.tenant;
+      /* v8 ignore start -- proven unreachable: requireTenantForDomain
+       * (auth.ts) runs before this handler on every route that reaches
+       * here and only calls next() once it has set res.locals.tenant.
+       * Kept as a fail-closed guard against that contract changing. */
+      if (!tenant) {
+        res.status(401).json({ message: 'Unauthorized' });
+        return;
+      }
+      /* v8 ignore stop */
+
+      // The fail-closed gate: a tenant with no registered sender domain
+      // (every row that predates this field) is refused rather than
+      // silently checked against its credential key — see
+      // resolveSenderDomain's own doc comment for why that fallback is
+      // exactly the bug this exists to prevent.
+      const senderDomain = resolveSenderDomain(tenant, log, 'http');
+      if (!senderDomain) {
+        res
+          .status(500)
+          .json({ message: 'Sender domain not registered for this tenant; contact the operator.' });
+        return;
+      }
+
+      // A tenant credential may only send as its own registered sender
+      // domain — mx1's mustMatchSender binds the envelope to the shim's own
+      // relaying login once mail leaves this process, never to the tenant
+      // that submitted a given send, so this intake is the only hop that
+      // can still tell tenants apart. A real Mailgun 400 for "not a valid
+      // address" is the shape this mirrors — permanent, not one of the
+      // codes worth an automatic retry.
+      if (!senderBelongsToTenant(fields.from, senderDomain)) {
+        res
+          .status(400)
+          .json({ message: `'from' address must belong to the domain ${senderDomain}` });
+        return;
+      }
+      // Reply-To is deliberately NOT checked here — it names where a
+      // reply goes, not who sent the mail, and Ghost lets admins set any
+      // newsletter reply-to freely (email-address-service.ts's validate()
+      // allows it self-hosted). Refusing a foreign one would refuse
+      // legitimate mail: only From and the envelope sender identify the
+      // sender.
+      //
+      // Sender is never taken from the tenant; From is the checked
+      // identity. There is no Sender check here because there is nothing
+      // left to check: parseMailgunMessageFields (mailgunFields.ts) drops
+      // every h:* key that nodemailer's own normalisation would fold into
+      // 'Sender' before it ever reaches `fields.headers`, on any spelling —
+      // matching, foreign, duplicated, padded, differently cased. Ghost's
+      // own request always carries a canonical `h:Sender` equal to its own
+      // From (mailgun-client.js:65,71, forks/Ghost tag v6.55.0), so nothing
+      // legitimate is lost by dropping it unconditionally rather than
+      // validating a value that would only ever restate the check above.
 
       if (fields.to.length === 0) {
         res.status(400).json({ message: 'No recipients' });

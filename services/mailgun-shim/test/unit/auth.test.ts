@@ -173,8 +173,8 @@ describe('tenant isolation with a real store — the core property', () => {
 
   beforeEach(() => {
     store = createSqliteStore(':memory:');
-    store.registerTenant('tenant-a.example.com', 'tenant-a-secret-key');
-    store.registerTenant('tenant-b.example.com', 'tenant-b-secret-key');
+    store.registerTenant('tenant-a.example.com', 'tenant-a-secret-key', 'tenant-a.example.com');
+    store.registerTenant('tenant-b.example.com', 'tenant-b-secret-key', 'tenant-b.example.com');
   });
 
   afterEach(() => {
@@ -188,7 +188,10 @@ describe('tenant isolation with a real store — the core property', () => {
     const next = vi.fn() as unknown as NextFunction;
     await middleware(req, res as unknown as Response, next);
     expect(next).toHaveBeenCalled();
-    expect(res.locals.tenant).toEqual({ domain: 'tenant-a.example.com' });
+    expect(res.locals.tenant).toEqual({
+      domain: 'tenant-a.example.com',
+      senderDomain: 'tenant-a.example.com',
+    });
   });
 
   it("a valid key for tenant A never authorises tenant B's domain", async () => {
