@@ -1,7 +1,8 @@
-import type { DeliveredTracker } from './dedupe.js';
+import type { SubmittedTracker } from './dedupe.js';
 import type { DrainClient } from './drainClient.js';
 import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
+import type { HealthState } from './health.js';
 import type { Logger } from './log.js';
 import type { Throttle } from './throttle.js';
 
@@ -10,7 +11,8 @@ export interface CollectorLoopDeps {
   drainClient: DrainClient;
   deliveryClient: DeliveryClient;
   throttle: Throttle;
-  dedupe: DeliveredTracker;
+  dedupe: SubmittedTracker;
+  health: HealthState;
   log: Logger;
   descriptorRefreshMs: number;
   drainRetryBackoffMs: number;
@@ -34,6 +36,14 @@ const DEFAULT_DEDUPE_SWEEP_MS = 5 * 60 * 1000;
  * later, never gets a loop at all: this is the mechanism behind LLD-6 §09's
  * load-bearing property, that a host not in the drain list is a host whose
  * mail is never collected, however reachable it stays on the network.
+ *
+ * `deps.throttle` and `deps.health` are each shared across EVERY target
+ * loop this function starts -- one instance, passed once, never
+ * constructed per-target. That sharing is what makes the throttle an
+ * estate-wide ceiling rather than N independent per-host ones (see the PR
+ * body's Design section and its review-response proof), and what lets
+ * `health` reflect the collector's submission health as a whole rather
+ * than one host's routine outage.
  */
 export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntime {
   const running = new Map<string, { stopped: boolean; done: Promise<void> }>();
@@ -78,6 +88,17 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       if (!target) {
         return;
       }
+
+      // Re-read on every iteration, not once at start-up: an operator's
+      // throttle-file edit (the estate-wide ceiling this story relocates
+      // here) must take effect within one poll cycle across every host
+      // this process drains, the same reasoning the shim's own drain.ts
+      // calls `throttle.reload()` on every hold-loop iteration for.
+      // `reload()` is a single stat() call when the file's mtime hasn't
+      // changed, so paying for it once per target per poll costs nothing
+      // on the common path.
+      deps.throttle.reload();
+
       let messages;
       try {
         messages = await deps.drainClient.drain(target);
@@ -101,21 +122,27 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           try {
             await deps.deliveryClient.deliver(message);
           } catch (error) {
-            deps.log.warn('delivery_failed', {
+            deps.health.recordFailure();
+            deps.log.warn('submission_failed', {
               target: initialTarget.id,
               message: message.id,
               error: (error as Error).message,
             });
             // Leave this message and the rest of the batch unacked -- the
             // shim's lease lapses and re-offers them; nothing here has
-            // been marked delivered, so a retry (here or on another
+            // been marked submitted, so a retry (here or on another
             // collector) still runs deliver() exactly once per id.
             break;
           }
-          deps.dedupe.markDelivered(message.id);
-          deps.log.info('delivered', { target: initialTarget.id, message: message.id });
+          deps.health.recordSuccess();
+          deps.dedupe.markSubmitted(message.id);
+          // "submitted", not "delivered" -- see dedupe.ts's own doc
+          // comment (LLD-6 M5): this only means mx1's SMTP front accepted
+          // the message, never that it confirmed delivery to the
+          // recipient.
+          deps.log.info('submitted', { target: initialTarget.id, message: message.id });
         } else {
-          deps.log.info('redelivery_skipped', {
+          deps.log.info('resubmission_skipped', {
             target: initialTarget.id,
             message: message.id,
           });
@@ -131,9 +158,9 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
             target: initialTarget.id,
             error: (error as Error).message,
           });
-          // The ack is lost, not the delivery: dedupe already holds every
-          // id acks contains, so the next re-offer (once the lease lapses)
-          // is recognised and only re-acked, never redelivered.
+          // The ack is lost, not the submission: dedupe already holds
+          // every id acks contains, so the next re-offer (once the lease
+          // lapses) is recognised and only re-acked, never resubmitted.
         }
       }
     }

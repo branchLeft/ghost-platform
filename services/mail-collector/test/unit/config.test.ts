@@ -28,6 +28,8 @@ describe('loadConfig', () => {
       pass: 'secret',
     });
     expect(config.heartbeatIntervalMs).toBe(60000);
+    expect(config.shimScheme).toBe('http');
+    expect(config.heartbeatFailureThreshold).toBe(5);
   });
 
   it.each([
@@ -61,5 +63,21 @@ describe('loadConfig', () => {
   it('ignores a non-positive override and falls back to the default', () => {
     const config = loadConfig({ ...BASE_ENV, COLLECTOR_MESSAGES_PER_HOUR: '-5' });
     expect(config.messagesPerHour).toBe(50);
+  });
+
+  it('accepts an explicit https shim scheme -- the real mx1 topology, per the PR body runbook', () => {
+    const config = loadConfig({ ...BASE_ENV, COLLECTOR_SHIM_SCHEME: 'https' });
+    expect(config.shimScheme).toBe('https');
+  });
+
+  it('rejects a shim scheme that is neither http nor https', () => {
+    expect(() => loadConfig({ ...BASE_ENV, COLLECTOR_SHIM_SCHEME: 'ftp' })).toThrow(
+      /COLLECTOR_SHIM_SCHEME must be "http" or "https"/
+    );
+  });
+
+  it('honours an overridden heartbeat failure threshold', () => {
+    const config = loadConfig({ ...BASE_ENV, COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD: '10' });
+    expect(config.heartbeatFailureThreshold).toBe(10);
   });
 });

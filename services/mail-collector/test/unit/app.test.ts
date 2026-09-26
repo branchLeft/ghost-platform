@@ -28,6 +28,7 @@ describe('createApp', () => {
   it('healthz reports the current target count and staleness', async () => {
     const store = new DescriptorTargetStore({
       descriptorDir: '/does/not/exist',
+      shimScheme: 'http',
       shimPort: 8080,
       maxStalenessMs: 60_000,
       log: createLogger(() => {}),

@@ -10,6 +10,8 @@ import { simpleParser, type ParsedMail } from 'mailparser';
 export interface ReceivedMessage {
   envelopeTo: string[];
   parsed: ParsedMail;
+  /** Wall-clock time this sink accepted the message -- lets a test measure spacing between deliveries (e.g. proving a shared rate limit serializes them), not just their count. */
+  receivedAt: number;
 }
 
 export interface SmtpSink {
@@ -56,6 +58,7 @@ export function startSmtpSink(authUser: string, authPass: string): Promise<SmtpS
             messages.push({
               envelopeTo: session.envelope.rcptTo.map((r) => r.address),
               parsed,
+              receivedAt: Date.now(),
             });
             callback();
           })

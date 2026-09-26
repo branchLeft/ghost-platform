@@ -3,10 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createCollectorRuntime } from '../../src/collectorLoop.js';
-import { createDeliveredTracker } from '../../src/dedupe.js';
+import { createSubmittedTracker } from '../../src/dedupe.js';
 import { createDeliveryClient } from '../../src/deliveryClient.js';
 import { createDrainClient } from '../../src/drainClient.js';
 import { DescriptorTargetStore } from '../../src/descriptorTargets.js';
+import { createHealthState } from '../../src/health.js';
 import { createLogger } from '../../src/log.js';
 import { createThrottle } from '../../src/throttle.js';
 import { FakeShimServer } from '../helpers/fakeShimServer.js';
@@ -88,6 +89,7 @@ describe('end-to-end wiring: a real DescriptorTargetStore feeding the real colle
     const log = createLogger(() => {});
     const store = new DescriptorTargetStore({
       descriptorDir: dir,
+      shimScheme: 'http',
       shimPort,
       maxStalenessMs: 60_000,
       log,
@@ -101,13 +103,15 @@ describe('end-to-end wiring: a real DescriptorTargetStore feeding the real colle
       pass: 'sink-secret',
     });
     const throttle = createThrottle({ messagesPerHour: 360_000 });
-    const dedupe = createDeliveredTracker(60_000);
+    const dedupe = createSubmittedTracker(60_000);
+    const health = createHealthState();
     const runtime = createCollectorRuntime({
       store,
       drainClient,
       deliveryClient,
       throttle,
       dedupe,
+      health,
       log,
       descriptorRefreshMs: 50,
       drainRetryBackoffMs: 50,

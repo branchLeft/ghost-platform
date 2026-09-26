@@ -1,9 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCollectorRuntime } from '../../src/collectorLoop.js';
-import { createDeliveredTracker } from '../../src/dedupe.js';
+import { createSubmittedTracker } from '../../src/dedupe.js';
 import { createDrainClient, type DrainAck, type DrainClient } from '../../src/drainClient.js';
 import { createDeliveryClient } from '../../src/deliveryClient.js';
-import { createThrottle } from '../../src/throttle.js';
+import { createHealthState } from '../../src/health.js';
+import { createThrottle, type Throttle } from '../../src/throttle.js';
 import { createLogger } from '../../src/log.js';
 import { FakeShimServer, type QueuedMessage } from '../helpers/fakeShimServer.js';
 import { startSmtpSink, type SmtpSink } from '../helpers/smtpSink.js';
@@ -52,7 +56,10 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     await sink.close();
   });
 
-  function buildRuntime(targets: DrainTarget[], overrides: { drainClient?: DrainClient } = {}) {
+  function buildRuntime(
+    targets: DrainTarget[],
+    overrides: { drainClient?: DrainClient; throttle?: Throttle } = {}
+  ) {
     const store = createFakeTargetStore(targets);
     const drainClient =
       overrides.drainClient ?? createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
@@ -63,8 +70,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       user: 'collector',
       pass: 'sink-secret',
     });
-    const throttle = createThrottle({ messagesPerHour: 360_000 }); // generous -- not the throttle test's job
-    const dedupe = createDeliveredTracker(60_000);
+    // Generous by default -- not the throttle test's job, except in the
+    // tests below that override it specifically to prove the throttle
+    // itself.
+    const throttle = overrides.throttle ?? createThrottle({ messagesPerHour: 360_000 });
+    const dedupe = createSubmittedTracker(60_000);
+    const health = createHealthState();
     const log = createLogger(() => {});
     const runtime = createCollectorRuntime({
       store,
@@ -72,12 +83,13 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       deliveryClient,
       throttle,
       dedupe,
+      health,
       log,
       descriptorRefreshMs: 50,
       drainRetryBackoffMs: 50,
       emptyPollBackoffMs: 20,
     });
-    return { runtime, store, deliveryClient, dedupe };
+    return { runtime, store, deliveryClient, dedupe, health, throttle };
   }
 
   it('a message enqueued on a described host reaches the sink within a second', async () => {
@@ -151,7 +163,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
     const ackedIds = shimA.ackRequests.flat().map((a) => a.id);
     expect(ackedIds).toEqual(['m1']);
-    // The shim's own queue is empty -- acked, not merely delivered.
+    // The shim's own queue is empty -- acked, not merely submitted.
     const remaining = await createDrainClient({
       drainToken: DRAIN_TOKEN,
       drainTimeoutMs: 5000,
@@ -199,7 +211,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     await runtime.stop();
     deliveryClient.close();
 
-    expect(sink.messages).toHaveLength(1); // delivered exactly once despite the re-offer
+    expect(sink.messages).toHaveLength(1); // submitted exactly once despite the re-offer
     expect(sink.messages[0]!.envelopeTo).toEqual(['reader-m1@example.com']);
 
     const remaining = await realDrainClient.drain({ id: 'tenant-a', baseUrl: baseUrlA });
@@ -244,7 +256,8 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       pass: 'not-the-real-secret',
     });
     const throttle = createThrottle({ messagesPerHour: 360_000 });
-    const dedupe = createDeliveredTracker(60_000);
+    const dedupe = createSubmittedTracker(60_000);
+    const health = createHealthState();
     const log = createLogger(() => {});
     const runtime = createCollectorRuntime({
       store,
@@ -252,6 +265,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       deliveryClient,
       throttle,
       dedupe,
+      health,
       log,
       descriptorRefreshMs: 50,
       drainRetryBackoffMs: 20,
@@ -262,9 +276,10 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     await runtime.stop();
     deliveryClient.close();
 
-    expect(sink.messages).toHaveLength(0); // never delivered
-    expect(dedupe.has('m1')).toBe(false); // never marked delivered
+    expect(sink.messages).toHaveLength(0); // never submitted
+    expect(dedupe.has('m1')).toBe(false); // never marked submitted
     expect(shimA.ackRequests.flat()).toHaveLength(0); // never acked either
+    expect(health.consecutiveFailures).toBeGreaterThanOrEqual(1); // the health signal noticed
   });
 
   it('a descriptor refresh failure is logged and does not stop the loop', async () => {
@@ -293,7 +308,8 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       pass: 'sink-secret',
     });
     const throttle = createThrottle({ messagesPerHour: 360_000 });
-    const dedupe = createDeliveredTracker(60_000);
+    const dedupe = createSubmittedTracker(60_000);
+    const health = createHealthState();
     const log = createLogger(() => {});
     const runtime = createCollectorRuntime({
       store: flakyStore,
@@ -301,6 +317,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       deliveryClient,
       throttle,
       dedupe,
+      health,
       log,
       descriptorRefreshMs: 30,
       drainRetryBackoffMs: 20,
@@ -312,5 +329,126 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     expect(refreshCalls).toBeGreaterThanOrEqual(1);
     await runtime.stop();
     deliveryClient.close();
+  });
+
+  describe('the estate-wide throttle, proven at the seam it actually changed', () => {
+    let throttleDir: string;
+
+    beforeEach(() => {
+      throttleDir = mkdtempSync(join(tmpdir(), 'collector-throttle-wiring-'));
+    });
+
+    afterEach(() => {
+      rmSync(throttleDir, { recursive: true, force: true });
+    });
+
+    it('a message queued shortly AFTER an edit, on an otherwise-idle collector, sees the new rate -- proactive reload, not only reload-while-waiting', async () => {
+      // throttle.ts's own `waitForToken()` already calls `reload()` on
+      // every attempt while a message is actively waiting for a token --
+      // that path was never the gap. The gap is a collector with NO
+      // message in flight at all: nothing calls `waitForToken()`, so
+      // nothing reloads, unless the main loop itself reloads on every
+      // iteration regardless of drain content (collectorLoop.ts's own
+      // call, right after re-reading the live target). This test isolates
+      // exactly that: the collector sits idle on empty drains for a while,
+      // the file is edited, and ONLY THEN does a message get enqueued --
+      // proving the new rate was already loaded before there was
+      // anything to throttle, not fetched reactively once needed.
+      const configPath = join(throttleDir, 'throttle.json');
+      writeFileSync(configPath, JSON.stringify({ messagesPerHour: 5 }));
+      const throttle = createThrottle({ configPath, messagesPerHour: 5 });
+
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+        throttle,
+      });
+      runtime.start();
+      await new Promise((r) => setTimeout(r, 150)); // several empty-poll iterations with nothing queued
+
+      writeFileSync(configPath, JSON.stringify({ messagesPerHour: 999 }));
+      await new Promise((r) => setTimeout(r, 150)); // more idle iterations -- the ONLY way this rate can already be loaded
+
+      expect(throttle.currentRate()).toBe(999);
+
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('SHARED BUCKET: two hosts drained concurrently draw from ONE estate-wide ceiling, not one bucket each', async () => {
+      const throttle = createThrottle({ messagesPerHour: 3600 }); // 1 token/second of real wall-clock time
+      shimA.enqueue(message('from-a'));
+      shimB.enqueue(message('from-b'));
+      const { runtime, deliveryClient } = buildRuntime(
+        [
+          { id: 'tenant-a', baseUrl: baseUrlA },
+          { id: 'tenant-b', baseUrl: baseUrlB },
+        ],
+        { throttle }
+      );
+      runtime.start();
+
+      const received = await sink.waitForCount(2, 3000);
+      const [first, second] = [...received].sort((a, b) => a.receivedAt - b.receivedAt);
+      // One shared bucket starting with exactly one grace token means the
+      // FIRST message (whichever host it came from) goes out immediately,
+      // and the SECOND -- regardless of which host it is on -- has to wait
+      // for the bucket to refill at 1/second. A comfortable margin under
+      // the full second accounts for scheduler jitter without weakening
+      // the property: two independent per-host buckets (the sabotage
+      // below) would both have their own grace token and this gap would
+      // read close to zero.
+      expect(second!.receivedAt - first!.receivedAt).toBeGreaterThanOrEqual(700);
+
+      await runtime.stop();
+      deliveryClient.close();
+    });
+  });
+
+  describe('the heartbeat reflects real submission health through the running loop', () => {
+    it('a collector failing every real submission becomes unhealthy through health.recordFailure(), wired to an actual delivery failure', async () => {
+      shimA.enqueue(message('m1'));
+      const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+      const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+      // Wrong credentials -- every submission mx1 (the sink) is offered fails, as if the estate's real credential were rejected.
+      const deliveryClient = createDeliveryClient({
+        host: '127.0.0.1',
+        port: sink.port,
+        secure: false,
+        user: 'collector',
+        pass: 'not-the-real-secret',
+      });
+      const throttle = createThrottle({ messagesPerHour: 360_000 });
+      const dedupe = createSubmittedTracker(60_000);
+      const health = createHealthState();
+      const log = createLogger(() => {});
+      const runtime = createCollectorRuntime({
+        store,
+        drainClient,
+        deliveryClient,
+        throttle,
+        dedupe,
+        health,
+        log,
+        descriptorRefreshMs: 50,
+        drainRetryBackoffMs: 20,
+        emptyPollBackoffMs: 20,
+      });
+
+      runtime.start();
+      // m1 is claimed ('held') on the first drain and its delivery fails,
+      // leaving it held and unacked -- exactly the real shim's behaviour
+      // (routes/drain.ts). Nothing re-offers a held row until its lease
+      // lapses; simulateLostAck() stands in for that lapse so the SAME
+      // message keeps failing to submit across several real drain/deliver
+      // cycles, the way a genuinely wedged credential would in production.
+      await vi.waitFor(() => expect(health.consecutiveFailures).toBeGreaterThanOrEqual(1));
+      shimA.simulateLostAck();
+      await vi.waitFor(() => expect(health.consecutiveFailures).toBeGreaterThanOrEqual(2));
+      shimA.simulateLostAck();
+      await vi.waitFor(() => expect(health.consecutiveFailures).toBeGreaterThanOrEqual(3));
+      expect(health.isHealthy(3)).toBe(false); // this is what a wired heartbeat's shouldPing() would read
+
+      await runtime.stop();
+      deliveryClient.close();
+    });
   });
 });

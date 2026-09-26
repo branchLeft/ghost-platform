@@ -1,10 +1,11 @@
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createCollectorRuntime } from './collectorLoop.js';
-import { createDeliveredTracker } from './dedupe.js';
+import { createSubmittedTracker } from './dedupe.js';
 import { DescriptorTargetStore } from './descriptorTargets.js';
 import { createDrainClient } from './drainClient.js';
 import { createDeliveryClient } from './deliveryClient.js';
+import { createHealthState } from './health.js';
 import { startHeartbeat } from './heartbeat.js';
 import { createLogger } from './log.js';
 import { createThrottle } from './throttle.js';
@@ -14,6 +15,7 @@ const log = createLogger();
 
 const store = new DescriptorTargetStore({
   descriptorDir: config.descriptorDir,
+  shimScheme: config.shimScheme,
   shimPort: config.shimPort,
   maxStalenessMs: config.descriptorMaxStalenessMs,
   log,
@@ -32,7 +34,9 @@ const drainClient = createDrainClient({
 
 const deliveryClient = createDeliveryClient(config.smtp);
 
-const dedupe = createDeliveredTracker(config.dedupeTtlMs);
+const dedupe = createSubmittedTracker(config.dedupeTtlMs);
+
+const health = createHealthState();
 
 const runtime = createCollectorRuntime({
   store,
@@ -40,6 +44,7 @@ const runtime = createCollectorRuntime({
   deliveryClient,
   throttle,
   dedupe,
+  health,
   log,
   descriptorRefreshMs: config.descriptorRefreshMs,
   drainRetryBackoffMs: config.drainRetryBackoffMs,
@@ -50,6 +55,7 @@ const heartbeat = startHeartbeat({
   url: config.heartbeatUrl,
   intervalMs: config.heartbeatIntervalMs,
   log,
+  shouldPing: () => health.isHealthy(config.heartbeatFailureThreshold),
 });
 
 // The initial descriptor read happens before the first drain attempt, so

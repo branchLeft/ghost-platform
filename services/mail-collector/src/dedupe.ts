@@ -1,6 +1,21 @@
-export interface DeliveredTracker {
+/**
+ * Named `submitted`, not `delivered` -- LLD-6 M5 (load-bearing, per the
+ * review this responds to): "delivered must come from mx1's delivery
+ * outcome, not the submission hop... otherwise a tenant's delivery rate is
+ * a submission rate and silent bounces never surface." What this tracker
+ * actually knows, the moment it records something, is that mx1's SMTP
+ * front accepted the DATA command for that message -- nothing about
+ * whether mx1 went on to relay it, or whether it bounced afterwards. The
+ * shim's own `ackDrain` doc comment (`services/mailgun-shim/src/store.ts`)
+ * draws the identical line for the same reason: "an ack means the drainer
+ * took responsibility for the message, not that anyone received it."
+ * Relaying mx1's real delivery outcome back through this pipeline is a
+ * mechanism LLD-6 §09 leaves undecided -- Rob's call, not built here (see
+ * the PR body's "Open for the owner" section).
+ */
+export interface SubmittedTracker {
   has(id: string): boolean;
-  markDelivered(id: string): void;
+  markSubmitted(id: string): void;
   /** Drops entries older than the configured TTL. Called on a timer by the caller, not internally, so tests can drive it deterministically. */
   sweep(): void;
   readonly size: number;
@@ -9,11 +24,11 @@ export interface DeliveredTracker {
 /**
  * What turns the shim's documented at-least-once drain (routes/drain.ts: a
  * lease that lapses before an ack is re-offered "to this drainer again or
- * to another one") into exactly-once delivery at the sink. A message id is
+ * to another one") into exactly-once SUBMISSION at mx1. A message id is
  * stable across re-offers (the shim's own contract), so remembering which
- * ids this process has already handed to the delivery host is enough: a
- * re-offer caused by a lost ack is recognised here and skipped, not
- * redelivered -- only re-acked, to finally clear it from the shim's queue.
+ * ids this process has already handed to mx1 is enough: a re-offer caused
+ * by a lost ack is recognised here and skipped, not resubmitted -- only
+ * re-acked, to finally clear it from the shim's queue.
  *
  * Bounded by a TTL rather than kept forever, so a long-running process does
  * not accumulate one entry per message ever sent. The TTL only needs to
@@ -21,29 +36,29 @@ export interface DeliveredTracker {
  * arrive (bounded by the shim's lease length plus however long an ack can
  * stay lost); the default in config.ts is an hour, comfortably past that.
  */
-export function createDeliveredTracker(
+export function createSubmittedTracker(
   ttlMs: number,
   now: () => number = Date.now
-): DeliveredTracker {
-  const deliveredAt = new Map<string, number>();
+): SubmittedTracker {
+  const submittedAt = new Map<string, number>();
 
   return {
     has(id: string): boolean {
-      return deliveredAt.has(id);
+      return submittedAt.has(id);
     },
-    markDelivered(id: string): void {
-      deliveredAt.set(id, now());
+    markSubmitted(id: string): void {
+      submittedAt.set(id, now());
     },
     sweep(): void {
       const cutoff = now() - ttlMs;
-      for (const [id, at] of deliveredAt) {
+      for (const [id, at] of submittedAt) {
         if (at < cutoff) {
-          deliveredAt.delete(id);
+          submittedAt.delete(id);
         }
       }
     },
     get size(): number {
-      return deliveredAt.size;
+      return submittedAt.size;
     },
   };
 }

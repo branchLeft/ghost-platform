@@ -66,4 +66,51 @@ describe('startHeartbeat', () => {
     expect(warnings[0]).toMatchObject({ event: 'heartbeat_rejected' });
     heartbeat.stop();
   });
+
+  it('shouldPing() returning false suppresses the fetch for that tick, and logs it', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const warnings: unknown[] = [];
+    const log = createLogger(() => {});
+    log.warn = (event, fields) => warnings.push({ event, fields });
+    const heartbeat = startHeartbeat({
+      url: 'https://heartbeat.example/ping',
+      intervalMs: 20,
+      log,
+      fetchImpl,
+      shouldPing: () => false,
+    });
+    await vi.waitFor(() => expect(warnings.length).toBeGreaterThanOrEqual(2));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(warnings[0]).toMatchObject({ event: 'heartbeat_suppressed' });
+    heartbeat.stop();
+  });
+
+  it('the timer keeps running while suppressed, so pinging resumes the moment shouldPing() recovers', async () => {
+    let healthy = false;
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const heartbeat = startHeartbeat({
+      url: 'https://heartbeat.example/ping',
+      intervalMs: 20,
+      log: silentLogger(),
+      fetchImpl,
+      shouldPing: () => healthy,
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    healthy = true;
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    heartbeat.stop();
+  });
+
+  it('with no shouldPing supplied, pings unconditionally (the plain liveness default)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const heartbeat = startHeartbeat({
+      url: 'https://heartbeat.example/ping',
+      intervalMs: 20,
+      log: silentLogger(),
+      fetchImpl,
+    });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    heartbeat.stop();
+  });
 });

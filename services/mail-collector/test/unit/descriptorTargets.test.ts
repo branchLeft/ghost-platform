@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DescriptorTargetStore } from '../../src/descriptorTargets.js';
+import {
+  DescriptorTargetStore,
+  DuplicateDescriptorSlugError,
+} from '../../src/descriptorTargets.js';
 import { createLogger } from '../../src/log.js';
 
 function silentLogger() {
@@ -31,10 +34,16 @@ describe('DescriptorTargetStore', () => {
   });
 
   function store(
-    overrides: Partial<{ shimPort: number; maxStalenessMs: number; now: () => number }> = {}
+    overrides: Partial<{
+      shimScheme: string;
+      shimPort: number;
+      maxStalenessMs: number;
+      now: () => number;
+    }> = {}
   ) {
     return new DescriptorTargetStore({
       descriptorDir: dir,
+      shimScheme: overrides.shimScheme ?? 'http',
       shimPort: overrides.shimPort ?? 8080,
       maxStalenessMs: overrides.maxStalenessMs ?? 60_000,
       log: silentLogger(),
@@ -66,6 +75,45 @@ describe('DescriptorTargetStore', () => {
       ])
     );
     expect(s.targets).toHaveLength(2);
+  });
+
+  it('addresses a target by the configured scheme, not a hardcoded http', async () => {
+    writeFileSync(
+      join(dir, 'a.json'),
+      JSON.stringify(descriptor({ slug: 'a', appHostIp: 'mx1.branchleft.co.uk' }))
+    );
+    const s = store({ shimScheme: 'https', shimPort: 8443 });
+    await s.refresh();
+    expect(s.targets).toEqual([{ id: 'a', baseUrl: 'https://mx1.branchleft.co.uk:8443' }]);
+  });
+
+  it('refuses two descriptors sharing one slug, with a named error, and keeps the last good list', async () => {
+    writeFileSync(
+      join(dir, 'one.json'),
+      JSON.stringify(descriptor({ slug: 'dup', appHostIp: '10.0.0.11' }))
+    );
+    writeFileSync(
+      join(dir, 'two.json'),
+      JSON.stringify(descriptor({ slug: 'dup', appHostIp: '10.0.0.12' }))
+    );
+    const s = store();
+    await expect(s.refresh()).rejects.toThrow(DuplicateDescriptorSlugError);
+    await expect(s.refresh()).rejects.toThrow(/Duplicate descriptor slug "dup"/);
+    expect(s.targets).toEqual([]); // never refreshed successfully, so still the pre-boot empty state
+  });
+
+  it('a duplicate slug appearing after a good refresh keeps the previous good list rather than adopting the ambiguous one', async () => {
+    writeFileSync(join(dir, 'a.json'), JSON.stringify(descriptor({ slug: 'a' })));
+    const s = store();
+    await s.refresh();
+    expect(s.targets.map((t) => t.id)).toEqual(['a']);
+
+    writeFileSync(
+      join(dir, 'b.json'),
+      JSON.stringify(descriptor({ slug: 'a', appHostIp: '10.0.0.99' }))
+    );
+    await expect(s.refresh()).rejects.toThrow(DuplicateDescriptorSlugError);
+    expect(s.targets.map((t) => t.id)).toEqual(['a']); // unchanged -- the ambiguous batch was refused, not adopted
   });
 
   it('the control case: a host with no descriptor file contributes no target, however reachable', async () => {

@@ -12,12 +12,23 @@ export interface CollectorConfig {
    */
   descriptorMaxStalenessMs: number;
   /**
-   * The HTTP port every host's mailgun-shim listens on for its drain
+   * The scheme every host's shim is reached on. `http` by default for a
+   * local proof; the one shim actually live today answers only over TLS
+   * (`https://mx1.branchleft.co.uk:8443` -- Caddy's front, per
+   * shared-infra's `mail/provision/shim-compose.yml` and `Caddyfile` on
+   * `origin/main`; the shim's own loopback bind is unreachable off-host).
+   * See the PR body's runbook.
+   */
+  shimScheme: string;
+  /**
+   * The port every host's mailgun-shim is reached on for its drain
    * surface. A deployment convention (every shim binds the same port,
    * distinguished by the descriptor's own `appHostIp`), not a descriptor
    * field -- render-core's TenantDescriptor carries no per-host port for
    * this because nothing renders a shim onto a host yet (see the PR body's
-   * Design section).
+   * Design section). Defaults to the shim's own container-internal port
+   * (8080), not the TLS front's published port -- a real deployment behind
+   * TLS must set this to match its front's published port explicitly.
    */
   shimPort: number;
   /**
@@ -60,6 +71,16 @@ export interface CollectorConfig {
 
   heartbeatUrl: string;
   heartbeatIntervalMs: number;
+  /**
+   * How many CONSECUTIVE delivery failures (mx1 submissions, not drain
+   * fetches) suppress the heartbeat ping. A collector that cannot submit
+   * anything to mx1 -- every credential rejected, every connection refused
+   * -- must not keep paging "healthy" forever just because its own liveness
+   * loop is still running (LLD-8 §10b names this failure mode explicitly).
+   * Reset to zero on the next successful delivery, so recovery resumes
+   * paging immediately rather than waiting out a cooldown.
+   */
+  heartbeatFailureThreshold: number;
 }
 
 export type CollectorEnv = Record<string, string | undefined>;
@@ -86,6 +107,19 @@ const DEFAULT_EMPTY_POLL_BACKOFF_MS = 250;
 const DEFAULT_MESSAGES_PER_HOUR = 50;
 const DEFAULT_DEDUPE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
+const DEFAULT_SHIM_SCHEME = 'http';
+const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD = 5;
+
+function shimSchemeEnv(env: CollectorEnv): string {
+  const raw = env.COLLECTOR_SHIM_SCHEME;
+  if (!raw) {
+    return DEFAULT_SHIM_SCHEME;
+  }
+  if (raw !== 'http' && raw !== 'https') {
+    throw new Error(`COLLECTOR_SHIM_SCHEME must be "http" or "https", got "${raw}"`);
+  }
+  return raw;
+}
 
 export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
   return {
@@ -101,6 +135,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       'COLLECTOR_DESCRIPTOR_MAX_STALENESS_MS',
       DEFAULT_DESCRIPTOR_MAX_STALENESS_MS
     ),
+    shimScheme: shimSchemeEnv(env),
     shimPort: positiveIntEnv(env, 'COLLECTOR_SHIM_PORT', DEFAULT_SHIM_PORT),
     // No default: an empty or guessable token defeats the drain endpoint's
     // one credential check, the same reasoning as the shim's own
@@ -132,6 +167,11 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       env,
       'COLLECTOR_HEARTBEAT_INTERVAL_MS',
       DEFAULT_HEARTBEAT_INTERVAL_MS
+    ),
+    heartbeatFailureThreshold: positiveIntEnv(
+      env,
+      'COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD',
+      DEFAULT_HEARTBEAT_FAILURE_THRESHOLD
     ),
   };
 }

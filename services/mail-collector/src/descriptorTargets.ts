@@ -25,10 +25,44 @@ export interface TargetStore {
 
 export interface DescriptorTargetStoreOptions {
   readonly descriptorDir: string;
+  /**
+   * `http` by default, so a purely local proof (a plain fake shim server)
+   * needs no TLS setup -- but not hardcoded, because the one shim actually
+   * live today is reachable only as `https://mx1.branchleft.co.uk:8443`
+   * (Caddy's TLS front; the shim's own `127.0.0.1:8825`/container `:8080`
+   * are both loopback-only -- verified against shared-infra's
+   * `mail/provision/shim-compose.yml` and `Caddyfile` on `origin/main`).
+   * See the PR body's runbook for what this collector's first real
+   * deployment has to set it to.
+   */
+  readonly shimScheme: string;
   readonly shimPort: number;
   readonly maxStalenessMs: number;
   readonly log: Logger;
   readonly now?: () => number;
+}
+
+/**
+ * A named, thrown error -- not just a log line -- because "which of two
+ * descriptors wins" is not a decision this store is willing to make
+ * silently. `collectorLoop.ts`'s `reconcile()` keys its running drain
+ * loops by `target.id` (the slug); two descriptor files sharing one would
+ * mean only the first-seen ever gets a loop, and the second's host would
+ * never be drained despite being named in a live, well-shaped descriptor
+ * -- exactly the failure LLD-6 §09 exists to prevent, just reached through
+ * a duplicate rather than an absence.
+ */
+export class DuplicateDescriptorSlugError extends Error {
+  constructor(
+    readonly slug: string,
+    readonly firstFile: string,
+    readonly duplicateFile: string
+  ) {
+    super(
+      `Duplicate descriptor slug "${slug}": already seen in "${firstFile}", seen again in "${duplicateFile}"`
+    );
+    this.name = 'DuplicateDescriptorSlugError';
+  }
 }
 
 /**
@@ -90,6 +124,7 @@ function isLive(expiresAt: string | null, nowMs: number): boolean {
 export class DescriptorTargetStore implements TargetStore {
   private current: readonly DrainTarget[] = [];
   private readonly descriptorDir: string;
+  private readonly shimScheme: string;
   private readonly shimPort: number;
   private readonly maxStalenessMs: number;
   private readonly log: Logger;
@@ -103,6 +138,7 @@ export class DescriptorTargetStore implements TargetStore {
 
   constructor(options: DescriptorTargetStoreOptions) {
     this.descriptorDir = options.descriptorDir;
+    this.shimScheme = options.shimScheme;
     this.shimPort = options.shimPort;
     this.maxStalenessMs = options.maxStalenessMs;
     this.log = options.log;
@@ -146,6 +182,7 @@ export class DescriptorTargetStore implements TargetStore {
 
     const nowMs = this.now();
     const next: DrainTarget[] = [];
+    const seenSlugs = new Map<string, string>(); // slug -> the file it was first seen in
     for (const file of files) {
       const full = path.join(this.descriptorDir, file);
       let raw: unknown;
@@ -162,7 +199,32 @@ export class DescriptorTargetStore implements TargetStore {
       if (!isLive(raw.expiresAt, nowMs)) {
         continue;
       }
-      next.push({ id: raw.slug, baseUrl: `http://${raw.appHostIp}:${this.shimPort}` });
+      const firstFile = seenSlugs.get(raw.slug);
+      if (firstFile !== undefined) {
+        // Refuse the WHOLE batch rather than pick a winner: which of two
+        // descriptors naming the same slug is "right" is not this store's
+        // call, and adopting either one silently would look identical to
+        // the healthy case from every caller's point of view. THROWN, not
+        // just logged -- "refuse... at load": server.ts's un-caught
+        // startup `await store.refresh()` fails closed on this rather than
+        // booting with an ambiguous host list, while collectorLoop.ts's
+        // periodic refresh already `.catch()`es a rejected refresh() and
+        // keeps its last good target list, the same fallback a directory-
+        // read failure above gets -- a pre-existing, unambiguous set keeps
+        // draining while this is fixed upstream.
+        const err = new DuplicateDescriptorSlugError(raw.slug, firstFile, file);
+        this.log.warn('duplicate_descriptor_slug', {
+          slug: err.slug,
+          firstFile: err.firstFile,
+          duplicateFile: err.duplicateFile,
+        });
+        throw err;
+      }
+      seenSlugs.set(raw.slug, file);
+      next.push({
+        id: raw.slug,
+        baseUrl: `${this.shimScheme}://${raw.appHostIp}:${this.shimPort}`,
+      });
     }
     this.current = next;
     this.lastGoodRefreshAtMs = nowMs;
