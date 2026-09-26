@@ -70,8 +70,12 @@ class DialInTransportError(Exception):
 def assert_no_forbidden_env(env: Mapping[str, str]) -> None:
     """Refuses an env dict carrying a storage or encryption credential
     prefix, before it ever reaches a transport. `pull_encrypt_store.py`
-    calls this too -- two independent call sites checking the same
-    property, on purpose."""
+    calls this exact function too, at its own boundary -- two call sites
+    sharing one implementation, not two independent ones: a bug in this
+    function would defeat the check at both sites at once. The two-call-site
+    shape still matters -- a caller of either module gets the refusal at
+    the earliest point it invokes -- but it is not defense in depth against
+    a defect in this function itself."""
     present = sorted(name for name in env if name.startswith(FORBIDDEN_ENV_PREFIXES))
     if present:
         raise DialInTransportError(

@@ -214,14 +214,32 @@ def run_tenant_dump(
 
 # The two copies' env-var prefixes. "primary" is the backup-only Hetzner
 # project the platform owner has ruled this bucket belongs in -- provisioning
-# it is an owner action, see the accompanying PR body. "secondary" is the
-# off-supplier second copy 09-backup-and-recovery.html's own custody figure
-# names ("Second copy, off-supplier -- survives losing the account, not
-# merely losing a host"); which provider holds it is a still-open decision
-# this module does not make, so its credentials are read from the same
-# env-var shape regardless of which compatible object-storage provider
-# eventually issues them.
-COPY_NAMES: tuple[str, ...] = ("primary", "secondary")
+# it is an owner action, see the accompanying PR body, and it is REQUIRED:
+# main() refuses to run at all without it. "secondary" is the off-supplier
+# second copy 09-backup-and-recovery.html's own custody figure names
+# ("Second copy, off-supplier -- survives losing the account, not merely
+# losing a host"); which provider holds it is a still-open decision this
+# module does not make, so it is OPTIONAL until that decision names one --
+# entirely absent, this worker still runs with the primary copy alone,
+# which is the interim plan the accompanying PR body's Owner-action section
+# states. A copy that is PARTIALLY configured (some but not all of its five
+# credential vars set) is never accepted either way, required or optional:
+# that shape is far more likely to be a typo or a half-finished rollout than
+# a deliberate choice, and running on it would silently drop the copy the
+# operator thought they had just configured.
+REQUIRED_COPY_NAMES: tuple[str, ...] = ("primary",)
+OPTIONAL_COPY_NAMES: tuple[str, ...] = ("secondary",)
+
+# The five credential vars every copy needs -- OBJECT_KEY_PREFIX is a
+# separate, independently-defaulted override and never counts toward
+# whether a copy is "configured" at all.
+_COPY_CREDENTIAL_VAR_SUFFIXES: tuple[str, ...] = (
+    "BUCKET",
+    "ENDPOINT",
+    "REGION",
+    "ACCESS_KEY_ID",
+    "SECRET_ACCESS_KEY",
+)
 
 
 def _require_env(name: str) -> str:
@@ -231,17 +249,43 @@ def _require_env(name: str) -> str:
     return value
 
 
-def _copy_target_from_env(*, copy_name: str, tenant: str) -> CopyTarget:
-    """Builds one `CopyTarget` from `BACKUP_WORKER_COPY_<NAME>_*` env vars.
+def _copy_target_from_env(*, copy_name: str, tenant: str, required: bool) -> CopyTarget | None:
+    """Builds one `CopyTarget` from `BACKUP_WORKER_COPY_<NAME>_*` env vars,
+    or returns `None` for an OPTIONAL copy that is entirely unconfigured.
     This function is the only place in this module that reads a storage
     credential, and it never returns it -- `put` below closes over it and
-    the credential itself is never stored on the `CopyTarget` or logged."""
+    the credential itself is never stored on the `CopyTarget` or logged.
+
+    Three outcomes, never a fourth: every credential var present (a
+    `CopyTarget`); none of them present and `required=False` (`None`, this
+    copy is skipped); anything else -- a required copy missing any of its
+    vars, or an optional copy with SOME but not all of them set -- refuses
+    outright, naming exactly which vars are missing."""
     prefix = f"BACKUP_WORKER_COPY_{copy_name.upper()}_"
-    bucket = _require_env(prefix + "BUCKET")
-    endpoint = _require_env(prefix + "ENDPOINT")
-    region = _require_env(prefix + "REGION")
-    access_key = _require_env(prefix + "ACCESS_KEY_ID")
-    secret_key = _require_env(prefix + "SECRET_ACCESS_KEY")
+    var_names = tuple(prefix + suffix for suffix in _COPY_CREDENTIAL_VAR_SUFFIXES)
+    values = {name: os.environ.get(name) for name in var_names}
+    set_names = [name for name, value in values.items() if value]
+    missing_names = [name for name, value in values.items() if not value]
+
+    if not set_names and not required:
+        return None
+
+    if missing_names:
+        raise SystemExit(
+            f"backup_worker: the {copy_name!r} copy is missing {', '.join(sorted(missing_names))} -- "
+            + (
+                "every one of its credential vars must be set"
+                if required
+                else "either set every one of its credential vars, or none at all to leave this "
+                "optional copy unconfigured"
+            )
+        )
+
+    bucket = values[prefix + "BUCKET"]
+    endpoint = values[prefix + "ENDPOINT"]
+    region = values[prefix + "REGION"]
+    access_key = values[prefix + "ACCESS_KEY_ID"]
+    secret_key = values[prefix + "SECRET_ACCESS_KEY"]
     key_prefix = os.environ.get(prefix + "OBJECT_KEY_PREFIX", "dumps/")
 
     def _put(ciphertext: bytes) -> None:
@@ -258,6 +302,24 @@ def _copy_target_from_env(*, copy_name: str, tenant: str) -> CopyTarget:
         )
 
     return CopyTarget(name=copy_name, put=_put)
+
+
+def _copies_from_env(*, tenant: str) -> list[CopyTarget]:
+    """Every copy `main()` should write to today: every REQUIRED copy
+    (refuses if any is missing or partially configured), plus every
+    OPTIONAL copy that is either fully configured or entirely absent --
+    never one that is half set up. Which copies come back is driven by
+    what is actually configured in the environment, not a fixed count."""
+    copies: list[CopyTarget] = []
+    for name in REQUIRED_COPY_NAMES:
+        target = _copy_target_from_env(copy_name=name, tenant=tenant, required=True)
+        assert target is not None  # required=True never returns None
+        copies.append(target)
+    for name in OPTIONAL_COPY_NAMES:
+        target = _copy_target_from_env(copy_name=name, tenant=tenant, required=False)
+        if target is not None:
+            copies.append(target)
+    return copies
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -289,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
 
     mysql_pwd = _require_env("DB_DUMP_MYSQL_PWD")
     age_recipient = _require_env("AGE_RECIPIENT_PUBLIC_KEY")
-    copies = [_copy_target_from_env(copy_name=name, tenant=args.tenant) for name in COPY_NAMES]
+    copies = _copies_from_env(tenant=args.tenant)
 
     try:
         result = run_tenant_dump(

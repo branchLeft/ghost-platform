@@ -25,8 +25,12 @@ producer's own review round:
      hangs on a half-written stdin) but its output is discarded, unread.
   2. Never pass a storage or encryption credential into the producer's
      invocation channel. `assert_no_forbidden_env` runs before anything
-     else -- see dial_in_transport.py, which enforces the same property a
-     second, independent time inside the transport itself.
+     else here, and `dial_in_transport.LocalProcessTransport` calls that
+     same function again at its own boundary -- one shared implementation,
+     called from two sites, so a caller reaching either module gets the
+     refusal at the earliest point it invokes. That is not defense in
+     depth against a defect inside `assert_no_forbidden_env` itself; both
+     sites would miss the same case together.
 
 Plaintext touches this process only in transit (piped into `age`'s stdin);
 the one file this function ever writes to disk holds ciphertext from the
