@@ -1,0 +1,42 @@
+name: Demo host drain-flag directory CI
+
+# Proves demo-host/provision/drain_flag_dir.py's permission shape against
+# real uids in a throwaway container: the broker account can write, the
+# sidecar's own uid (1000) can read and traverse but never write, and a
+# slot uid gets the same refusal. test_drain_flag_dir.py (unit tests, run
+# by repo-tooling-ci.yml alongside the other demo-host/provision suites)
+# covers the logic; this covers what the installed bits actually permit.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - demo-host/provision/drain_flag_dir.py
+      - demo-host/provision/render_slot_sudoers.py
+      - scripts/test-drain-flag-dir-permissions.sh
+      - .github/workflows/demo-host-drain-flag-dir-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - demo-host/provision/drain_flag_dir.py
+      - demo-host/provision/render_slot_sudoers.py
+      - scripts/test-drain-flag-dir-permissions.sh
+      - .github/workflows/demo-host-drain-flag-dir-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  permissions-proof:
+    name: real-uid permission proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the permission proof
+        run: ./scripts/test-drain-flag-dir-permissions.sh
