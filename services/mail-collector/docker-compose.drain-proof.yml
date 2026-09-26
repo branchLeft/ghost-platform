@@ -1,0 +1,196 @@
+# Local sandbox for the Done-means proof run-drain-proof.sh drives: two real
+# mailgun-shim instances as spools, a real authenticated SMTP sink standing
+# in for mx1, and the real collector image between them.
+#
+# `descriptors/tenant-a.json` and `tenant-b.json` name shim-a and shim-b by
+# their Compose service name in `appHostIp` -- a real deployment's
+# descriptor carries a private IPv4 there (render-core's TenantDescriptor
+# requires it); this sandbox has no such address to hand out, and Compose's
+# own internal DNS resolves a service name exactly the way the collector's
+# `http://${appHostIp}:${shimPort}` construction expects to resolve a real
+# one. `shim-undescribed` gets no descriptor file at all -- reachable on
+# `proof_net` like the other two, never named, which is the sabotage the
+# issue asks for made physical rather than only unit-tested.
+services:
+  # `dist/cli.js register` (run below via `docker compose exec`) opens its
+  # own SQLite connection at SHIM_DB_PATH -- it must be a real file the
+  # long-running server process ALSO reads, not the server's in-memory
+  # option, or registering a tenant via the CLI would write to a database
+  # the server never sees. One volume, one subdirectory per shim, chowned
+  # once before any shim starts -- the volume Docker creates is root-owned
+  # until something does that, the same reasoning services/mailgun-shim's
+  # own docker-compose.drain-proof.yml gives for its init-shim-data step.
+  init-shim-data:
+    image: node:26.5.0-bookworm-slim
+    user: root
+    volumes:
+      - shim_data:/data
+    command: ['sh', '-c', 'mkdir -p /data/a /data/b /data/undescribed && chown -R 1000:1000 /data']
+
+  shim-a:
+    build:
+      context: ../mailgun-shim
+      secrets:
+        - node_auth_token
+    networks:
+      - proof_net
+    volumes:
+      - shim_data:/data
+    depends_on:
+      init-shim-data:
+        condition: service_completed_successfully
+    environment:
+      SHIM_DB_PATH: /data/a/shim.sqlite
+      SHIM_DRAIN_TOKEN: estate-drain-token
+      SHIM_DRAIN_HOLD_MS: '2000'
+      SHIM_DRAIN_LEASE_SECONDS: '5'
+      PORT: '8080'
+      # Generous on purpose -- the shim's per-spool bucket is not what this
+      # proof exercises (throttle.test.ts already proves the collector's OWN
+      # relocated bucket); a tight one here would just make enqueue/register
+      # round trips flaky.
+      SHIM_MESSAGES_PER_HOUR: '360000'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  shim-b:
+    build:
+      context: ../mailgun-shim
+      secrets:
+        - node_auth_token
+    networks:
+      - proof_net
+    volumes:
+      - shim_data:/data
+    depends_on:
+      init-shim-data:
+        condition: service_completed_successfully
+    environment:
+      SHIM_DB_PATH: /data/b/shim.sqlite
+      SHIM_DRAIN_TOKEN: estate-drain-token
+      SHIM_DRAIN_HOLD_MS: '2000'
+      SHIM_DRAIN_LEASE_SECONDS: '5'
+      PORT: '8080'
+      SHIM_MESSAGES_PER_HOUR: '360000'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  shim-undescribed:
+    build:
+      context: ../mailgun-shim
+      secrets:
+        - node_auth_token
+    networks:
+      - proof_net
+    volumes:
+      - shim_data:/data
+    depends_on:
+      init-shim-data:
+        condition: service_completed_successfully
+    environment:
+      SHIM_DB_PATH: /data/undescribed/shim.sqlite
+      SHIM_DRAIN_TOKEN: estate-drain-token
+      SHIM_DRAIN_HOLD_MS: '2000'
+      SHIM_DRAIN_LEASE_SECONDS: '5'
+      PORT: '8080'
+      SHIM_MESSAGES_PER_HOUR: '360000'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # Same reasoning as init-shim-data above: the named volume is root-owned
+  # until something chowns it, and the sink also runs as the unprivileged
+  # `node` user.
+  init-sink-data:
+    image: node:26.5.0-bookworm-slim
+    user: root
+    volumes:
+      - sink_data:/data
+    command: ['chown', '1000:1000', '/data']
+
+  smtp-sink:
+    build:
+      context: docker-proof/smtp-sink
+    networks:
+      - proof_net
+    volumes:
+      - sink_data:/data
+    depends_on:
+      init-sink-data:
+        condition: service_completed_successfully
+    environment:
+      SINK_SMTP_USER: collector
+      SINK_SMTP_PASS: sink-secret
+
+  collector:
+    build:
+      context: .
+      secrets:
+        - node_auth_token
+    networks:
+      - proof_net
+    volumes:
+      - ./docker-proof/descriptors:/descriptors:ro
+    environment:
+      COLLECTOR_DESCRIPTOR_DIR: /descriptors
+      COLLECTOR_DESCRIPTOR_REFRESH_MS: '500'
+      COLLECTOR_SHIM_PORT: '8080'
+      COLLECTOR_DRAIN_TOKEN: estate-drain-token
+      COLLECTOR_DRAIN_HOLD_MS: '2000'
+      COLLECTOR_MESSAGES_PER_HOUR: '360000'
+      COLLECTOR_SMTP_HOST: smtp-sink
+      COLLECTOR_SMTP_PORT: '2525'
+      COLLECTOR_SMTP_USER: collector
+      COLLECTOR_SMTP_PASS: sink-secret
+      # A real endpoint this sandbox already has, so the heartbeat's pings
+      # genuinely succeed rather than logging a warning every tick --
+      # The estate's real dead-man's-switch is a production URL this
+      # sandbox has no business calling.
+      COLLECTOR_HEARTBEAT_URL: http://shim-a:8080/healthz
+      COLLECTOR_HEARTBEAT_INTERVAL_MS: '2000'
+    depends_on:
+      shim-a:
+        condition: service_healthy
+      shim-b:
+        condition: service_healthy
+      shim-undescribed:
+        condition: service_healthy
+      smtp-sink:
+        condition: service_started
+
+networks:
+  proof_net: {}
+
+volumes:
+  sink_data:
+  shim_data:
+
+secrets:
+  node_auth_token:
+    environment: NODE_AUTH_TOKEN

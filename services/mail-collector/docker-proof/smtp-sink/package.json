@@ -1,0 +1,11 @@
+{
+  "name": "mail-collector-proof-smtp-sink",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A real local SMTP AUTH listener standing in for mx1, for the mail-collector docker-proof only -- never shipped, never part of any published image the collector itself uses.",
+  "type": "module",
+  "dependencies": {
+    "mailparser": "^3.7.1",
+    "smtp-server": "^3.13.5"
+  }
+}
