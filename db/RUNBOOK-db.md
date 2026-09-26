@@ -618,15 +618,13 @@ for why (LLD-9 R5: a rebuild at incident time is not reproducible and is
 not the plan; recovery pulls one kept image instead).
 
 ```bash
-RECOVERY_IMAGE=ghcr.io/branchleft/db-recovery@sha256:<record after the first publish, below>
+RECOVERY_IMAGE=ghcr.io/branchleft/db-recovery@sha256:ceae7d89523d695bf60e98e874ae3430fb8c03566721108c9a21e26171ce2666
 docker pull "$RECOVERY_IMAGE"
 ```
 
-**This runbook cannot name that digest yet.**
-`.github/workflows/recovery-image.yml`'s `push` job is what publishes the
-image, and it only runs on a push to `main` -- including the very merge
-that adds it, which is the first time it can possibly run. There is
-nothing to pin here until that first run has happened.
+The pin is the image `.github/workflows/recovery-image.yml`'s `push` job
+published from `d1573ea` on `main` (workflow run 35945381142), tagged
+`d1573ea83055915a11bddddffefce1afd071b3e9` and `latest`.
 
 **First publish only -- make the package public.** A container package is
 created private, and a private package needs a pull credential on the host,
@@ -637,8 +635,7 @@ above would 401 mid-incident. Go to
 action; there is no reviewed path to it. Same step as `RUNBOOK-edge.md`
 §1, for the same reason.
 
-**Recording the digest, once it exists (owner step, no placeholder left
-behind afterwards):**
+**Re-pinning after `db/recovery/**` changes and the workflow republishes:**
 
 1. Read the published reference off that workflow run's job summary
    (`Image: ghcr.io/branchleft/db-recovery:<sha>`) -- the `<sha>` is the
@@ -648,15 +645,10 @@ behind afterwards):**
    docker buildx imagetools inspect ghcr.io/branchleft/db-recovery:<that sha> \
      --format '{{json .Manifest}}' | python3 -c "import json, sys; print(json.load(sys.stdin)['digest'])"
    ```
-3. Open a follow-up PR replacing the `RECOVERY_IMAGE=...` line above with
+3. Open a PR replacing the `RECOVERY_IMAGE=...` line above with
    the real value (`RECOVERY_IMAGE=ghcr.io/branchleft/db-recovery@sha256:<the
    resolved digest>`), and re-pin it the same way after any later change to
    `db/recovery/**` that this workflow republishes.
-
-**That follow-up PR is required, and is not this one.** This PR adds the
-publishing workflow and this instruction; it cannot add the pin itself,
-because nothing to pin exists until after this PR merges and the `push` job
-it adds has actually run once.
 
 ## Restore drill
 
