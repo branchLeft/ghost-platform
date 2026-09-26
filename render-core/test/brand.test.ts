@@ -185,6 +185,23 @@ describe('validateInstant', () => {
   it('rejects an unparsable string', () => {
     expect(() => validateInstant('not-a-date')).toThrow(FieldValidationError);
   });
+
+  it('rejects a calendar date that does not exist -- Date.parse rolls it over to March 2nd instead of returning NaN', () => {
+    expect(() => validateInstant('2026-02-30T00:00:00.000Z')).toThrow(FieldValidationError);
+  });
+
+  it('rejects an hour of 24 -- the pattern alone accepts it; only the round-trip check catches the rollover', () => {
+    expect(() => validateInstant('2026-09-23T24:00:00.000Z')).toThrow(FieldValidationError);
+  });
+
+  it('accepts a leap-day instant in a real leap year', () => {
+    const value = '2028-02-29T00:00:00.000Z';
+    expect(validateInstant(value)).toBe(value);
+  });
+
+  it('rejects a leap-day instant in a non-leap year', () => {
+    expect(() => validateInstant('2026-02-29T00:00:00.000Z')).toThrow(FieldValidationError);
+  });
 });
 
 describe('validateEmailAddress', () => {

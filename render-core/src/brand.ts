@@ -188,14 +188,54 @@ export function validatePrivateIpV4(value: string): PrivateIpV4 {
   return value as PrivateIpV4;
 }
 
-const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+const INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+
+/**
+ * Rejects a calendar date `Date.UTC` would silently roll over instead of
+ * refusing — `Date.parse('2026-02-30T00:00:00.000Z')` does not return `NaN`,
+ * it returns March 2nd, so the pattern match and a bare `Date.parse` check
+ * both accept an instant that never happened. Re-reading the constructed
+ * date's own fields back out and comparing them to what was typed is what
+ * catches the rollover: a real date always round-trips, and a rolled-over
+ * one never does.
+ */
+function isRealCalendarInstant(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number
+): boolean {
+  const asDate = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return (
+    asDate.getUTCFullYear() === year &&
+    asDate.getUTCMonth() === month - 1 &&
+    asDate.getUTCDate() === day &&
+    asDate.getUTCHours() === hour &&
+    asDate.getUTCMinutes() === minute &&
+    asDate.getUTCSeconds() === second
+  );
+}
 
 export function validateInstant(value: string, field = 'instant'): Instant {
   assertString(value, field);
-  if (!INSTANT_PATTERN.test(value) || Number.isNaN(Date.parse(value))) {
+  const match = INSTANT_PATTERN.exec(value);
+  const isReal =
+    match !== null &&
+    isRealCalendarInstant(
+      Number(match[1]),
+      Number(match[2]),
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      Number(match[6])
+    );
+  if (!isReal) {
     throw new FieldValidationError(
       field,
-      `${field} "${value}" must be an ISO-8601 UTC instant, e.g. "2026-09-23T00:00:00.000Z".`
+      `${field} "${value}" must be a real ISO-8601 UTC calendar instant, e.g. ` +
+        `"2026-09-23T00:00:00.000Z".`
     );
   }
   return value as Instant;

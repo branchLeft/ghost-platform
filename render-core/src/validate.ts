@@ -20,7 +20,7 @@ import {
 } from './brand.js';
 import type { TenantDescriptor } from './descriptor.js';
 import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
-import { validateMediaBucket } from './media.js';
+import { mediaPublicBaseUrl, validateMediaBucket } from './media.js';
 
 export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3';
 
@@ -218,26 +218,37 @@ function assertNullableNumber(value: unknown, field: string): void {
 }
 
 /**
- * Finite, positive, whole — the container-runtime numbers where 0 or a
- * negative value carries a *different* meaning to a validator that skips
- * range-checking: Compose reads a `pids_limit` of 0 or -1 as "unlimited",
- * on a host shared with every other demo tenant.
+ * Finite, positive, whole and no larger than `ceiling` — the container-runtime
+ * numbers where 0 or a negative value carries a *different* meaning to a
+ * validator that skips range-checking: Compose reads a `pids_limit` of 0 or
+ * -1 as "unlimited", on a host shared with every other demo tenant.
+ * `Number.isSafeInteger` alone stops at ±2^53-1 — well above every ceiling
+ * below, so a value like `1e300` or `2^53+2` needs the ceiling to be
+ * rejected at all, not merely the safe-integer check.
  */
-function assertFinitePositiveInteger(value: number, field: string): void {
-  if (!Number.isInteger(value) || value <= 0) {
+function assertFinitePositiveInteger(value: number, field: string, ceiling: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > ceiling) {
     throw new FieldValidationError(
       field,
-      `${field} must be a finite positive integer, got ${value}.`
+      `${field} must be a finite positive integer of at most ${ceiling}, got ${value}.`
     );
   }
 }
 
-/** A cap of `null` means "no cap" — a negative or fractional one means nothing at all. */
-function assertNonNegativeIntegerOrNull(value: number | null, field: string): void {
-  if (value !== null && (!Number.isInteger(value) || value < 0)) {
+/**
+ * A cap of `null` means "no cap" — a negative or fractional one means
+ * nothing at all, and anything past `ceiling` is not a real Ghost site's
+ * membership or staff count, whatever `Number.isSafeInteger` lets through.
+ */
+function assertNonNegativeIntegerOrNull(
+  value: number | null,
+  field: string,
+  ceiling: number
+): void {
+  if (value !== null && (!Number.isSafeInteger(value) || value < 0 || value > ceiling)) {
     throw new FieldValidationError(
       field,
-      `${field} must be a finite non-negative integer or null, got ${value}.`
+      `${field} must be a finite non-negative integer of at most ${ceiling}, or null, got ${value}.`
     );
   }
 }
@@ -248,6 +259,12 @@ function assertNonNegativeIntegerOrNull(value: number | null, field: string): vo
 // ./brand.ts for why a length cap always runs before a pattern does here.
 const CPUS_PATTERN = /^(0\.\d*[1-9]\d*|[1-9]\d*(\.\d+)?)$/;
 const MAX_CPUS_LENGTH = 32;
+
+// No app host in this estate's fleet carries anywhere near this many cores;
+// the ceiling exists to reject a value like a 32-digit string (which the
+// length cap above alone does not: it is exactly at the character limit)
+// while leaving every real allocation far under it.
+const MAX_CPUS_VALUE = 128;
 
 function validateCpus(value: string): void {
   if (value.length === 0 || value.length > MAX_CPUS_LENGTH) {
@@ -260,6 +277,13 @@ function validateCpus(value: string): void {
     throw new FieldValidationError(
       'caps.cpus',
       `caps.cpus "${value}" must be a positive decimal, e.g. "1.0" or "0.5".`
+    );
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric > MAX_CPUS_VALUE) {
+    throw new FieldValidationError(
+      'caps.cpus',
+      `caps.cpus "${value}" must be at most ${MAX_CPUS_VALUE}.`
     );
   }
 }
@@ -386,14 +410,38 @@ function assertShape(descriptor: TenantDescriptor): void {
   }
 }
 
-/** The range half of `assertShape`'s type checks, for the fields item 2 named. */
+// cgroup v1's own kernel-enforced ceiling for `cpu.shares` — Docker's
+// `--cpu-shares` cannot exceed it either.
+const MAX_CPU_SHARES = 262144;
+// Generous headroom over any real tenant's process count, well under a
+// value that could exhaust the host's own pid space.
+const MAX_PIDS_LIMIT = 100000;
+// Linux's own default `fs.nr_open` ceiling — the kernel refuses a higher
+// open-file limit without a sysctl change, so nothing rendered here could
+// ever be honoured past it anyway.
+const MAX_NOFILE = 1048576;
+// Sane ceilings for a single Ghost site's membership and staff counts —
+// comfortably above any tenant this platform has ever hosted, and nowhere
+// near `Number.MAX_SAFE_INTEGER`.
+const MAX_MEMBERS_CAP = 10_000_000;
+const MAX_STAFF_CAP = 10_000;
+
+/**
+ * The range half of `assertShape`'s type checks: presence and JS type are
+ * checked there; numeric bounds — including the safe-integer-ness and the
+ * upper ceilings below — are checked here.
+ */
 function checkRanges(descriptor: TenantDescriptor): void {
-  assertNonNegativeIntegerOrNull(descriptor.limits.membersCap, 'limits.membersCap');
-  assertNonNegativeIntegerOrNull(descriptor.limits.staffCap, 'limits.staffCap');
+  assertNonNegativeIntegerOrNull(
+    descriptor.limits.membersCap,
+    'limits.membersCap',
+    MAX_MEMBERS_CAP
+  );
+  assertNonNegativeIntegerOrNull(descriptor.limits.staffCap, 'limits.staffCap', MAX_STAFF_CAP);
   validateCpus(descriptor.caps.cpus);
-  assertFinitePositiveInteger(descriptor.caps.cpuShares, 'caps.cpuShares');
-  assertFinitePositiveInteger(descriptor.caps.pidsLimit, 'caps.pidsLimit');
-  assertFinitePositiveInteger(descriptor.caps.nofile, 'caps.nofile');
+  assertFinitePositiveInteger(descriptor.caps.cpuShares, 'caps.cpuShares', MAX_CPU_SHARES);
+  assertFinitePositiveInteger(descriptor.caps.pidsLimit, 'caps.pidsLimit', MAX_PIDS_LIMIT);
+  assertFinitePositiveInteger(descriptor.caps.nofile, 'caps.nofile', MAX_NOFILE);
 }
 
 /** Below 1024, a rendered port would collide with a privileged service on a
@@ -431,11 +479,43 @@ function assertNonEmptyString(value: string, field: string): void {
   }
 }
 
-/** A traversal segment reaches outside whatever directory the render core placed the tenant in. */
+/**
+ * A traversal segment reaches outside whatever directory the render core
+ * placed the tenant in, and it must be absolute — every path this schema
+ * carries names a fixed location under `/data`, `/var/spool` or similar, so
+ * a relative one would resolve against whatever directory happened to be
+ * the working one when a renderer's output ran, not a place this validator
+ * ever inspected. A backslash is rejected outright rather than treated as a
+ * separator: this schema's paths are Linux container paths, which never
+ * need one, and allowing it would let a ".." segment hide from the
+ * forward-slash split below (`"..\\x"` is a single segment to `split('/')`).
+ */
 function assertNonEmptyPath(value: string, field: string): void {
   assertNonEmptyString(value, field);
+  if (value.includes('\\')) {
+    throw new FieldValidationError(field, `${field} must not contain a backslash.`);
+  }
+  if (!value.startsWith('/')) {
+    throw new FieldValidationError(field, `${field} must be an absolute path, got "${value}".`);
+  }
   if (value.split('/').includes('..')) {
     throw new FieldValidationError(field, `${field} must not contain a ".." path segment.`);
+  }
+}
+
+// A hostname or IPv4 literal's own character set — nothing a MySQL
+// connection string or a shell reads specially. Rejecting anything outside
+// it (a space, a ";") stops a value that merely fails to *name* a real host
+// from being read as a second argument or command by whatever consumes it.
+const HOST_CHAR_PATTERN = /^[A-Za-z0-9.-]+$/;
+
+function assertValidHost(value: string, field: string): void {
+  assertNonEmptyString(value, field);
+  if (!HOST_CHAR_PATTERN.test(value)) {
+    throw new FieldValidationError(
+      field,
+      `${field} "${value}" must contain only letters, digits, "." and "-".`
+    );
   }
 }
 
@@ -447,7 +527,7 @@ function validateDatabase(
     assertNonEmptyPath(database.path, 'database.path');
     return;
   }
-  assertNonEmptyString(database.host, 'database.host');
+  assertValidHost(database.host, 'database.host');
   validatePort(database.port, 'database.port');
   // A descriptor must never be able to name another tenant's database — the
   // same isolation control `validateMediaBucket` below applies to the
@@ -460,6 +540,12 @@ function validateMedia(slug: TenantDescriptor['slug'], media: TenantDescriptor['
     assertNonEmptyPath(media.path, 'media.path');
     return;
   }
+  assertNonEmptyString(media.region, 'media.region');
+  // Throws for anything but a bare https host — see `mediaPublicBaseUrl`'s
+  // own doc comment. Calling it here, at validate() time, is what stops
+  // "javascript:alert(1)" (or an http endpoint, or one carrying a path)
+  // from ever reaching a renderer inside an already-"valid" descriptor.
+  mediaPublicBaseUrl(media.endpoint, slug);
   // A descriptor naming another tenant's bucket must not validate, not
   // merely be refused later by a caller that happens to re-check it.
   validateMediaBucket(slug, media);
@@ -555,22 +641,81 @@ function isOutsideOwnedDomains(fqdn: string, ownedDomains: readonly string[]): b
 const HOSTNAME_LABEL_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_FQDN_LENGTH = 253;
 
+// A last label that is all digits, or `0x` hex, is what `new URL(...).host`
+// reads back as an IPv4 address in shorthand notation —
+// `new URL('https://127.1').host` is `127.0.0.1`, and the same holds for
+// `127.0.1`, `0x7f.1` and `0x7f.0.0.1`. Every label in a shorthand form is
+// already digits (or hex) only, which is what lets this tell it apart from
+// a DNS name without needing a separate IP-literal check: no real DNS TLD
+// is, or could ever register as, purely numeric.
+const NUMERIC_SHORTHAND_LAST_LABEL = /^(0x[0-9a-f]+|[0-9]+)$/i;
+
 function isWellFormedFqdn(fqdn: string): boolean {
   if (fqdn.length === 0 || fqdn.length > MAX_FQDN_LENGTH) {
     return false;
   }
   const labels = fqdn.split('.');
-  return labels.length >= 2 && labels.every((label) => HOSTNAME_LABEL_PATTERN.test(label));
+  if (labels.length < 2 || !labels.every((label) => HOSTNAME_LABEL_PATTERN.test(label))) {
+    return false;
+  }
+  return !NUMERIC_SHORTHAND_LAST_LABEL.test(labels[labels.length - 1]);
 }
 
-// Bounded repetition only ({1,3} four times) — no ReDoS exposure, same
-// reasoning as HOSTNAME_LABEL_PATTERN above. This only needs to recognise
-// the *shape* of an IPv4 literal, not validate one: every label in it is
-// already digits-only, which is enough to tell it apart from a DNS name.
-const IPV4_LITERAL_SHAPE = /^\d{1,3}(\.\d{1,3}){3}$/;
-
-function looksLikeIpLiteral(value: string): boolean {
-  return IPV4_LITERAL_SHAPE.test(value) || value.includes(':');
+/**
+ * Every field of `zones` is caller-supplied, unbranded input — unlike the
+ * descriptor, nothing upstream of `validate()` has ever checked it — so an
+ * `ownedDomains` of `[]`, `[""]`, `[" x"]` or `[".x"]` must be refused here
+ * rather than silently making every "theirs" fqdn look like it is outside
+ * every owned domain (an empty or malformed entry can never match anything,
+ * so `isOutsideOwnedDomains` would wrongly say "outside" for a domain that
+ * is really inside), and `ownedDomains` arriving `undefined` (an unset env
+ * var, split and never checked) must throw a named error rather than a raw
+ * `TypeError` from `.some`. `demoZone`/`platformZone` are checked the same
+ * way: each must be well-formed *and* equal to, or a subdomain of, an owned
+ * domain — otherwise an empty `demoZone` renders every demo's `siteUrl` as
+ * `https://<sub>.`, which is exactly as ill-formed as the fqdn checks below
+ * exist to reject. Well-formedness is checked against each value
+ * *normalised* (trailing dot trimmed, lowercased), matching how
+ * `isEqualToOrSubdomainOf` already compares them below — a zone config is
+ * caller-authored, not attacker-supplied, and case or a trailing dot is not
+ * itself a defect the way it is in a "theirs" fqdn (see `validateHostname`'s
+ * own comment on why *that* string is held to an exact-case standard).
+ */
+function validateZoneConfig(zones: ZoneConfig): void {
+  if (typeof zones !== 'object' || zones === null) {
+    throw new FieldValidationError('zones', `zones must be an object, got ${describeType(zones)}.`);
+  }
+  if (!Array.isArray(zones.ownedDomains) || zones.ownedDomains.length === 0) {
+    throw new FieldValidationError(
+      'zones.ownedDomains',
+      `zones.ownedDomains must be a non-empty array of domain names, got ` +
+        `${describeType(zones.ownedDomains)}.`
+    );
+  }
+  zones.ownedDomains.forEach((domain, index) => {
+    if (typeof domain !== 'string' || !isWellFormedFqdn(normalizeDomain(domain))) {
+      throw new FieldValidationError(
+        'zones.ownedDomains',
+        `zones.ownedDomains[${index}] ${JSON.stringify(domain)} must be a well-formed domain name.`
+      );
+    }
+  });
+  for (const field of ['demoZone', 'platformZone'] as const) {
+    const value = zones[field];
+    if (typeof value !== 'string' || !isWellFormedFqdn(normalizeDomain(value))) {
+      throw new FieldValidationError(
+        `zones.${field}`,
+        `zones.${field} ${JSON.stringify(value)} must be a well-formed domain name.`
+      );
+    }
+    if (isOutsideOwnedDomains(value, zones.ownedDomains)) {
+      throw new FieldValidationError(
+        `zones.${field}`,
+        `zones.${field} "${value}" must be equal to, or a subdomain of, one of zones.ownedDomains ` +
+          `(${zones.ownedDomains.join(', ')}).`
+      );
+    }
+  }
 }
 
 function validateHostname(hostname: TenantDescriptor['hostname'], zones: ZoneConfig): void {
@@ -588,13 +733,8 @@ function validateHostname(hostname: TenantDescriptor['hostname'], zones: ZoneCon
   if (!isWellFormedFqdn(hostname.fqdn)) {
     throw new FieldValidationError(
       'hostname.fqdn',
-      `hostname.fqdn "${hostname.fqdn}" must be a well-formed, non-empty domain name.`
-    );
-  }
-  if (looksLikeIpLiteral(hostname.fqdn)) {
-    throw new FieldValidationError(
-      'hostname.fqdn',
-      `hostname.fqdn "${hostname.fqdn}" must be a domain name, not an IP address literal.`
+      `hostname.fqdn "${hostname.fqdn}" must be a well-formed, non-empty domain name, and not an ` +
+        `IP address literal or shorthand for one.`
     );
   }
   if (!isOutsideOwnedDomains(hostname.fqdn, zones.ownedDomains)) {
@@ -664,7 +804,7 @@ export function servedHostnameOf(
     return normalizeDomain(`${descriptor.hostname.sub}.${zones.platformZone}`);
   }
   const fqdn = descriptor.hostname.fqdn;
-  if (!isWellFormedFqdn(fqdn) || looksLikeIpLiteral(fqdn)) {
+  if (!isWellFormedFqdn(fqdn)) {
     return null;
   }
   if (!isOutsideOwnedDomains(fqdn, zones.ownedDomains)) {
@@ -857,17 +997,23 @@ function checkHostnameGateConsistency(descriptor: TenantDescriptor): void {
 
 /**
  * Validates a complete descriptor against the caller's zone configuration:
- * closed-set discriminants and unknown-key checks first (so nothing below
- * reads a field a wrong `kind` would not have, or trusts a key nothing
- * declared), then the schema version, then every field's own format and
- * range, then the three named invariants, the code-injection hostname
- * precondition, the per-tier variant rules, and the hostname/gate and
- * siteUrl/hostname consistency checks. Returns the same descriptor on
- * success so a caller can chain it into `render()`; throws on the first
- * violation found rather than collecting every one, because both callers
- * reject before any side effect regardless of how many things are wrong.
+ * the zone configuration itself first (it is exactly as unchecked as the
+ * descriptor, and every hostname check below trusts it), then closed-set
+ * discriminants and unknown-key checks (so nothing below reads a field a
+ * wrong `kind` would not have, or trusts a key nothing declared), then the
+ * schema version, then every field's own format and range, then the three
+ * named invariants, the code-injection hostname precondition, the per-tier
+ * variant rules, and the hostname/gate and siteUrl/hostname consistency
+ * checks. Returns the same descriptor on success so a caller can chain it
+ * into `render()`; throws on the first violation found rather than
+ * collecting every one, because both callers reject before any side effect
+ * regardless of how many things are wrong.
  */
 export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): TenantDescriptor {
+  // The caller's own input, checked before anything below trusts it to mean
+  // what its fields say — see validateZoneConfig's own doc comment.
+  validateZoneConfig(zones);
+
   assertDiscriminant(descriptor, 'kind', TENANT_KIND_VALUES);
   assertDiscriminant(descriptor.database, 'database', DATABASE_KIND_VALUES);
   assertDiscriminant(descriptor.media, 'media', MEDIA_KIND_VALUES);
