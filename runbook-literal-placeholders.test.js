@@ -186,6 +186,110 @@ test('every RUNBOOK-*.md this repo ships is covered by the scan above', () => {
   assert.deepEqual(found.sort(), [...RUNBOOK_PATHS].sort());
 });
 
+// The Teardown section must not delete the directory that holds a tenant's
+// Compose file before anything stops the containers that file describes --
+// the unit that starts them carries no ExecStop, so nothing else in the
+// section can stop them once the file backing `docker compose down` is
+// gone. This check pins the fix at the text level:
+// a `docker compose ... down` command has to appear, and it has to appear
+// before the line that removes the tenant's directory and before the line
+// that removes its named volumes, wherever those sit across the section's
+// fenced blocks.
+const TEARDOWN_HEADING_RE = /^##\s+Teardown\s*$/m;
+const NEXT_HEADING_RE = /^##\s+\S/m;
+const COMPOSE_DOWN_RE = /docker compose\b.*\bdown\b/;
+const RM_TENANT_DIR_RE = /rm\s+-rf\s+\/opt\/branchleft\/<slug>/;
+const VOLUME_RM_RE = /docker volume rm\b/;
+
+/**
+ * The `## Teardown` section's text, from its heading up to (but not
+ * including) the next `## ` heading or end of file. Throws if the file has
+ * no such heading, so a renamed section fails loudly rather than silently
+ * emptying the check below.
+ */
+function teardownSectionText(fullText) {
+  const start = fullText.search(TEARDOWN_HEADING_RE);
+  assert.notEqual(start, -1, 'no "## Teardown" heading found');
+  const afterHeading = fullText.slice(start + fullText.slice(start).indexOf('\n') + 1);
+  const nextHeadingOffset = afterHeading.search(NEXT_HEADING_RE);
+  return nextHeadingOffset === -1 ? afterHeading : afterHeading.slice(0, nextHeadingOffset);
+}
+
+/**
+ * Violations of the teardown order above, found in `sectionText`'s fenced
+ * bash/sql blocks. Order is judged across the whole section, concatenating
+ * every command block's lines in document order -- a stop step in one
+ * fenced block still has to precede a removal step in a later one.
+ */
+function teardownOrderViolations(sectionText) {
+  const lines = commandBlocks(sectionText).flatMap((b) => b.lines);
+  const composeDownIdx = lines.findIndex((l) => COMPOSE_DOWN_RE.test(l));
+  const rmTenantDirIdx = lines.findIndex((l) => RM_TENANT_DIR_RE.test(l));
+  const volumeRmIdx = lines.findIndex((l) => VOLUME_RM_RE.test(l));
+  const violations = [];
+  if (composeDownIdx === -1) {
+    violations.push('no `docker compose ... down` command in the Teardown section');
+  }
+  if (rmTenantDirIdx !== -1 && composeDownIdx !== -1 && composeDownIdx > rmTenantDirIdx) {
+    violations.push(
+      '`docker compose ... down` must come before `rm -rf /opt/branchleft/<slug>` ' +
+        '(the compose file it needs lives under that directory)'
+    );
+  }
+  if (volumeRmIdx !== -1 && composeDownIdx !== -1 && composeDownIdx > volumeRmIdx) {
+    violations.push(
+      '`docker compose ... down` must come before `docker volume rm` ' +
+        '(the containers holding the volumes must be stopped first)'
+    );
+  }
+  return violations;
+}
+
+test('RUNBOOK-tenant-onboarding.md stops the containers before removing the tenant directory or its volumes', () => {
+  const text = readFileSync(path.join(ROOT, 'RUNBOOK-tenant-onboarding.md'), 'utf8');
+  const violations = teardownOrderViolations(teardownSectionText(text));
+  assert.deepEqual(violations, [], violations.join('\n'));
+});
+
+test('self-test: the teardown-order check flags a stop step placed after the removals', () => {
+  const sample = [
+    '```bash',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    'docker compose -p <slug> -f /opt/branchleft/<slug>/compose.yml down',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(violations.length > 0, 'expected the reordered sample to be flagged');
+});
+
+test('self-test: the teardown-order check flags a missing stop step', () => {
+  const sample = [
+    '```bash',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(violations.length > 0, 'expected the missing-stop-step sample to be flagged');
+});
+
+test('self-test: the teardown-order check passes the correct order, even split across blocks', () => {
+  const sample = [
+    '```bash',
+    'docker compose -p <slug> -f /opt/branchleft/<slug>/compose.yml down',
+    '```',
+    '',
+    'some prose in between',
+    '',
+    '```bash',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    '```',
+  ].join('\n');
+  assert.deepEqual(teardownOrderViolations(sample), []);
+});
+
 // Self-tests: prove the scanner still draws the distinctions it exists for,
 // against synthetic input rather than today's tree, so a coincidentally
 // clean tree can't hide a scanner that quietly stopped matching.
