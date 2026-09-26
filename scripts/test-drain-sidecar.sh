@@ -86,11 +86,27 @@ docker run -d \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE="true" \
     "$GHOST_IMAGE" >/dev/null
 
-echo "--- starting sidecar immediately (sharing Ghost's network namespace), flag directory mounted read-only ---"
+# Freezes every process in Ghost's container (cgroup freezer) before it can
+# finish booting -- issued straight after `docker run -d` returns, well
+# inside the several-second boot Ghost measures elsewhere. This is what
+# makes "Ghost not ready" deterministic rather than a race the sidecar
+# might or might not win: a local run that boots Ghost quickly used to make
+# the window the next block probes vanish before the first curl ever fired.
+# Pausing removes the variable entirely -- Ghost cannot become ready while
+# frozen, however fast the machine is.
+docker pause "$GHOST_NAME" >/dev/null
+
+echo "--- starting sidecar (sharing Ghost's network namespace), flag directory mounted read-only via --mount type=bind ---"
+# `--mount type=bind` (never `-v`, i.e. never the short form) is the load-
+# bearing part of this line: `docker run -v` on a missing host path creates
+# an empty, readable directory, silently, and the sidecar would then read
+# "flag clear" from a directory nobody ever provisioned. `--mount type=bind`
+# refuses to start against a missing source instead -- proven directly,
+# below, in "a missing host path is refused rather than silently created".
 docker run -d \
     --name "$SIDECAR_NAME" \
     --network "container:$GHOST_NAME" \
-    -v "$FLAG_DIR:/var/run/branchleft:ro" \
+    --mount "type=bind,source=$FLAG_DIR,target=/var/run/branchleft,readonly" \
     -e DRAIN_FLAG_PATH="/var/run/branchleft/drain" \
     -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
     -e PORT="8080" \
@@ -110,15 +126,30 @@ http_status() {
     http_probe "$1" /dev/null
 }
 
-echo "--- state: flag clear, Ghost not ready -> 503 ---"
+echo "--- state: flag clear, Ghost deterministically not ready (paused) -> 503, every sample ---"
+# Three samples rather than one: the sidecar's own probe can time out
+# (GHOST_PROBE_TIMEOUT_MS, 2s default) as readily as it can see a refused
+# connection while Ghost is frozen, and both are "not ready" -- sampling
+# more than once is what would catch a flaky pass-on-the-first-try that a
+# single request could hide.
+body_file="$(mktemp)"
+for _ in 1 2 3; do
+    status="$(http_probe "http://localhost:$SIDECAR_PORT/healthz" "$body_file")"
+    if [ "$status" != "503" ] || ! grep -q '"ghost_unhealthy"' "$body_file"; then
+        echo "FAIL: expected 503 \"ghost_unhealthy\" while Ghost is paused, got $status: $(cat "$body_file" 2>/dev/null)"
+        FAILURES=$((FAILURES + 1))
+        break
+    fi
+done
+echo "PASS: sidecar answered 503 \"ghost_unhealthy\" on every sample while Ghost was paused"
+rm -f "$body_file"
+
+docker unpause "$GHOST_NAME" >/dev/null
+
 deadline=$(($(date +%s) + 60))
-saw_503_while_ghost_not_ready=false
 ghost_ready=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
     status="$(http_status "http://localhost:$SIDECAR_PORT/healthz")"
-    if [ "$status" = "503" ]; then
-        saw_503_while_ghost_not_ready=true
-    fi
     if [ "$status" = "200" ]; then
         ghost_ready=true
         break
@@ -126,20 +157,34 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     sleep 0.1
 done
 if [ "$ghost_ready" != "true" ]; then
-    echo "FAIL: sidecar never answered 200 within 60s of Ghost starting (Ghost never became ready, last: $status)"
+    echo "FAIL: sidecar never answered 200 within 60s of Ghost being unpaused (last: $status)"
     echo "--- Ghost logs ---"
     docker logs "$GHOST_NAME" 2>&1 | tail -40
     echo "--- sidecar logs ---"
     docker logs "$SIDECAR_NAME" 2>&1 | tail -40
     exit 1
 fi
-if [ "$saw_503_while_ghost_not_ready" = "true" ]; then
-    echo "PASS: sidecar answered 503 while the flag was clear and Ghost was not yet ready"
-else
-    echo "FAIL: never observed a 503 from the sidecar before Ghost became ready"
-    FAILURES=$((FAILURES + 1))
-fi
 echo "Ghost and sidecar both ready."
+echo
+
+echo "--- state: --mount type=bind against a missing host path is refused rather than silently created ---"
+MISSING_FLAG_DIR="$(mktemp -d)/does-not-exist"
+missing_path_output="$(mktemp)"
+if docker run --rm \
+    --network "container:$GHOST_NAME" \
+    --mount "type=bind,source=$MISSING_FLAG_DIR,target=/var/run/branchleft,readonly" \
+    -e DRAIN_FLAG_PATH="/var/run/branchleft/drain" \
+    -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
+    -e PORT="8082" \
+    "$SIDECAR_IMAGE" true >"$missing_path_output" 2>&1; then
+    echo "FAIL: docker accepted --mount type=bind against a missing host path -- exactly the silent-empty-directory bug this mount form exists to avoid"
+    cat "$missing_path_output"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "PASS: docker refused to start against a missing host path"
+fi
+rm -f "$missing_path_output"
+rmdir "$(dirname "$MISSING_FLAG_DIR")" 2>/dev/null || true
 echo
 
 echo "--- state: flag cleared, Ghost healthy (baseline) ---"
