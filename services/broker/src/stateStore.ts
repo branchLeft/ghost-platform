@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { HashId, SlotName } from '@branchleft/ghost-platform-render-core';
 import { writeFileAtomic } from './atomicFile.js';
 import type { DrainFlagStore } from './drainFlag.js';
-import type { GhostReadinessChecker } from './ghostReadiness.js';
+import { waitUntilReady, type GhostReadinessChecker } from './ghostReadiness.js';
 import { clearLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
 import type { Colour } from './literals.js';
 import { slotPort } from './slotPorts.js';
@@ -146,35 +146,53 @@ const LOCK_HELD_PHASES: readonly Phase[] = ['preparing', 'resetting'];
  * answering at its own app port -- the same two conditions `services/
  * drain-sidecar` combines into one `/healthz` verdict, checked here
  * directly rather than through the sidecar (this runs at broker boot,
- * before any caller has reached the edge at all).
+ * before any caller has reached the edge at all). Each check polls with
+ * `waitUntilReady`, the swap's own bring-up semantics, rather than a
+ * single probe: Ghost's post-boot maintenance window (a couple of
+ * seconds, `ghostReadiness.ts`) would otherwise read a genuinely-healthy
+ * colour as not-ready on the one unlucky instant this runs at, and a
+ * false `error` here sends an operator toward `/reset`, which stops
+ * *both* colours.
  *
- * Three outcomes, in order of preference:
- * 1. **The target is confirmed live** (flag clear, Ghost answering): the
- *    swap reached the point where the target became this slot's own live
- *    colour -- whether or not the crash *also* happened before the source
- *    was drained (the swap's own `'a'`-direction never drains the source
- *    at all, by design, so a live source alongside a live target is the
- *    *intended* end state for that direction, not a fault). Adopts the
- *    target, with the swap's own carried-forward `swapDescriptorHash`/
- *    `swapHashId` so idempotent replay works correctly for the descriptor
- *    that crash interrupted, not merely safely.
- * 2. **Only the source is confirmed live**: the swap never got the target
- *    safely up. Reverts to the source, exactly as `attemptColourSwap`'s
- *    own synchronous failure path already does when it catches an error
- *    instead of crashing -- this is that same recovery, taken by the next
- *    boot instead of the same process.
- * 3. **Neither is confirmed live**: fails closed, the same `error` phase
- *    `preparing`/`resetting` recovery already uses for "nothing here knows
- *    enough to guess" -- guessing which colour to trust with no evidence
- *    either way is exactly the failure mode this function exists to avoid.
+ * **Direction matters, and the two directions are not symmetric (LLD-4
+ * §U3b).** Deploying into `'a'` (first-listed): clearing its flag is
+ * already the one flag change that moves everything, and the source
+ * (`'b'`) is never drained at all by that direction's own design -- a live
+ * source alongside a live target is the *intended* end state, not a
+ * fault. Deploying into `'b'` (second-listed): clearing its flag moves
+ * *nothing* on its own (`'a'` is still preferred); only draining `'a'`
+ * afterwards actually moves traffic. So for `target === 'b'`, "the target
+ * is live" is not the same question as "the swap moved traffic" -- both
+ * colours can be live and undrained at once, in the exact window between
+ * `attemptColourSwap` clearing `'b'`'s flag and draining `'a'`, and a
+ * crash there must never be read as success while `'a'` is still what
+ * every real reader is actually being served from.
+ *
+ * Per-direction outcomes:
+ * - **`target === 'a'`**: target live -> adopt it (source's own state is
+ *   irrelevant, by the direction's own design, above). Otherwise source
+ *   live -> revert to it. Otherwise -> `error`.
+ * - **`target === 'b'`**: target live *and* source already drained -> the
+ *   swap's own traffic-moving step already ran before the crash; adopt
+ *   the target. Target live *and* source still live -> the dangerous
+ *   window itself: re-verifies the target directly (mirroring
+ *   `attemptColourSwap`'s own second, independent check immediately
+ *   before its one traffic-moving step) and, if it still holds, completes
+ *   the interrupted drain of the source right here before adopting the
+ *   target -- never adopts with both colours left live. If that
+ *   re-verification fails, falls through to the source-liveness check
+ *   below exactly as if the target had never been confirmed at all.
+ *   Otherwise (target not live) -> source live -> revert to it.
+ *   Otherwise -> `error`.
  */
 export async function recoverSwapInFlight(
   dir: string,
   slot: SlotName,
   state: SlotState,
-  drainFlags: Pick<DrainFlagStore, 'isSet'>,
+  drainFlags: Pick<DrainFlagStore, 'isSet' | 'set'>,
   ghostReadiness: GhostReadinessChecker,
   appPortBase: number,
+  readyPollTimeoutMs: number,
   log: (line: string) => void
 ): Promise<void> {
   const source = state.colour;
@@ -182,8 +200,8 @@ export async function recoverSwapInFlight(
   if (source === undefined || target === undefined) {
     // Should be unreachable -- `attemptColourSwap` never writes `swapping`
     // without both -- but a state file is host-writable data, not a type
-    // the runtime can trust; fails exactly like case 3 rather than reading
-    // `undefined` into a port computation.
+    // the runtime can trust; fails exactly like the "neither live" outcome
+    // rather than reading `undefined` into a port computation.
     log(
       `slot "${slot}" was left "swapping" with no recorded source/target colour -- marking "error"`
     );
@@ -191,13 +209,14 @@ export async function recoverSwapInFlight(
     return;
   }
 
+  function portOf(colour: Colour): number {
+    return slotPort(appPortBase, slot, colour);
+  }
   async function isLive(colour: Colour): Promise<boolean> {
     if (await drainFlags.isSet(slot, colour)) return false;
-    return ghostReadiness.isReady(slotPort(appPortBase, slot, colour));
+    return waitUntilReady(ghostReadiness, portOf(colour), readyPollTimeoutMs);
   }
-
-  const targetLive = await isLive(target);
-  if (targetLive) {
+  async function adoptTarget(): Promise<void> {
     log(
       `slot "${slot}" recovered a swap that reached colour "${target}" before the process died -- adopting it`
     );
@@ -207,11 +226,8 @@ export async function recoverSwapInFlight(
       descriptorHash: state.swapDescriptorHash,
       lastHashId: state.swapHashId ?? state.lastHashId,
     });
-    return;
   }
-
-  const sourceLive = await isLive(source);
-  if (sourceLive) {
+  async function revertToSource(): Promise<void> {
     log(
       `slot "${slot}" recovered a swap that never safely reached colour "${target}" -- colour "${source}" is still what's actually live`
     );
@@ -221,13 +237,55 @@ export async function recoverSwapInFlight(
       descriptorHash: state.descriptorHash,
       lastHashId: state.lastHashId,
     });
+  }
+  async function failClosed(): Promise<void> {
+    log(
+      `slot "${slot}" recovered from a swap with NEITHER colour "${source}" nor "${target}" confirmed live -- marking "error" rather than guessing`
+    );
+    await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+  }
+
+  const targetLive = await isLive(target);
+  if (targetLive) {
+    if (target === 'a') {
+      // This direction never drains the source at all -- a live source
+      // alongside a live target is the intended end state, not a
+      // question this outcome needs to ask.
+      await adoptTarget();
+      return;
+    }
+    // target === 'b': clearing its flag alone moved nothing. Whether the
+    // swap's own traffic-moving step (draining the source) already ran
+    // is the question that actually decides this outcome.
+    const sourceStillLive = await isLive(source);
+    if (!sourceStillLive) {
+      // The source is already drained -- the crash landed after the
+      // swap's traffic-moving step, not before it.
+      await adoptTarget();
+      return;
+    }
+    // Both live: the dangerous window itself. One more direct check
+    // immediately before the one side effect this branch performs,
+    // mirroring `attemptColourSwap`'s own drain-refusal guard.
+    if (await ghostReadiness.isReady(portOf(target))) {
+      log(
+        `slot "${slot}" recovered a swap that reached colour "${target}" but crashed before draining colour "${source}" -- completing the drain now`
+      );
+      await drainFlags.set(slot, source);
+      await adoptTarget();
+      return;
+    }
+    // The target regressed in the narrow window between the two checks --
+    // fall through exactly as if it had never been confirmed live at all.
+  }
+
+  const sourceLive = await isLive(source);
+  if (sourceLive) {
+    await revertToSource();
     return;
   }
 
-  log(
-    `slot "${slot}" recovered from a swap with NEITHER colour "${source}" nor "${target}" confirmed live -- marking "error" rather than guessing`
-  );
-  await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+  await failClosed();
 }
 
 /**
@@ -267,9 +325,10 @@ export async function recoverCrashedSlots(
   leaseStoreConfig: Pick<LeaseStoreConfig, 'slotsPath' | 'leaseDir'>,
   log: (line: string) => void,
   swapRecovery: {
-    readonly drainFlags: Pick<DrainFlagStore, 'isSet'>;
+    readonly drainFlags: Pick<DrainFlagStore, 'isSet' | 'set'>;
     readonly ghostReadiness: GhostReadinessChecker;
     readonly appPortBase: number;
+    readonly readyPollTimeoutMs: number;
   }
 ): Promise<void> {
   for (const literal of slotLiterals) {
@@ -283,6 +342,7 @@ export async function recoverCrashedSlots(
         swapRecovery.drainFlags,
         swapRecovery.ghostReadiness,
         swapRecovery.appPortBase,
+        swapRecovery.readyPollTimeoutMs,
         log
       );
       continue;

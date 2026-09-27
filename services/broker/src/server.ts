@@ -133,6 +133,11 @@ export async function main(): Promise<Server> {
       drainFlags: createDrainFlagStore(config.drainFlagDir),
       ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
       appPortBase: config.appPortBase,
+      // The swap's own bring-up budget, not a shorter one: recovery polls
+      // exactly the same way `attemptColourSwap` itself does, for the same
+      // reason (`ghostReadiness.ts`'s own doc comment on Ghost's post-boot
+      // maintenance window).
+      readyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
     }
   );
 
