@@ -66,26 +66,46 @@ function removeNetwork(name) {
 // docker-entrypoint.sh, shipped by the base image) -- it reaches every
 // bind-mounted directory under content, including the resolvePath mount the
 // hold-branch tests use to deliver a verdict, and takes it from the test
-// runner's own uid to the container's "node" uid. That directory's mode
-// (0700, `fs.mkdtempSync`'s default) then denies the test runner read/exec,
-// so a later `fs.rmSync` on it fails closed with EACCES on scandir rather
-// than silently succeeding -- a real permission boundary, not a flake, and
-// one this test must clear itself rather than relax the image's own chown.
-// A throwaway container run as root (the image's own default user, since
-// neither Dockerfile sets one) can chown the mount back to the test
-// runner's uid/gid before the host process ever touches it again.
+// runner's own uid to the container's "node" uid. `fs.mkdtempSync`'s default
+// mode (0700, owner-only) then denies the test runner read/write/exec on
+// that directory from the moment the container boots -- not just at
+// teardown's `fs.rmSync`, but for every `fs.writeFileSync` the test itself
+// makes mid-run to deliver a verdict, since both need the same access this
+// chown just took away. A real permission boundary, not a flake, and one
+// this test must clear itself rather than relax the image's own chown --
+// see `resolveHostDir`'s own `fs.chmodSync(..., 0o777)` call, made right
+// after `mkdtempSync` and before the container that will chown it ever
+// starts, which is what actually keeps both the mid-test write and the
+// final teardown working regardless of who ends up owning the directory.
+//
+// `reclaimHostOwnership` is kept as a second, independent line of defence
+// for teardown specifically -- a throwaway container run as root (the
+// image's own default user, since neither Dockerfile sets one) chowns the
+// mount back to the test runner's uid/gid before `fs.rmSync` runs. Every
+// caller wraps it in try/catch: a cleanup step must never replace a real
+// assertion failure already in flight from the try block with its own
+// error, so a failure here is logged and swallowed rather than thrown.
 function reclaimHostOwnership(hostDir) {
-  docker(
-    'run',
-    '--rm',
-    '-v',
-    `${hostDir}:/reclaim`,
-    IMAGE,
-    'chown',
-    '-R',
-    `${process.getuid()}:${process.getgid()}`,
-    '/reclaim'
-  );
+  try {
+    docker(
+      'run',
+      '--rm',
+      '-v',
+      `${hostDir}:/reclaim`,
+      IMAGE,
+      'chown',
+      '-R',
+      `${process.getuid()}:${process.getgid()}`,
+      '/reclaim'
+    );
+  } catch (err) {
+    // Best-effort: `fs.chmodSync(..., 0o777)` at setup is what makes
+    // teardown work even if this step fails outright (container already
+    // gone, docker itself unavailable). Logged, never rethrown, so it can
+    // never mask a real assertion failure already in flight in the
+    // caller's `finally` block.
+    console.error(`reclaimHostOwnership(${hostDir}) failed (non-fatal):`, err.message);
+  }
 }
 
 async function freePort() {
@@ -543,6 +563,11 @@ describe('the hold branch, against a real Ghost', () => {
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const heldDigest = sha256Hex(cleanBytes);
       const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-resolve-'));
+      // World-writable before the container that will chown it to "node"
+      // ever starts -- see reclaimHostOwnership's own comment. Without this,
+      // the mid-test fs.writeFileSync delivering the verdict below fails
+      // EACCES the same way teardown used to.
+      fs.chmodSync(resolveHostDir, 0o777);
 
       const ghost = await GhostContainer.start(
         {
@@ -626,6 +651,8 @@ describe('the hold branch, against a real Ghost', () => {
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const heldDigest = sha256Hex(cleanBytes);
       const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-restart-'));
+      // See the first hold-branch test's identical call for why.
+      fs.chmodSync(resolveHostDir, 0o777);
 
       const ghost = await GhostContainer.start(
         {
@@ -698,6 +725,8 @@ describe('the hold branch, against a real Ghost', () => {
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const heldDigest = sha256Hex(cleanBytes);
       const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-resolve-'));
+      // See the first hold-branch test's identical call for why.
+      fs.chmodSync(resolveHostDir, 0o777);
 
       // Network, then both containers, all inside one try/finally -- same
       // shape as the refusal test above, for the same reason: a failure
