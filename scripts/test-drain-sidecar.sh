@@ -7,6 +7,12 @@
 # 200. It also proves the two ways the sidecar must fail closed: flag clear
 # but Ghost not yet ready, and a flag directory it cannot read.
 #
+# It also proves `/metrics` (per-tenant health and version) against this
+# same real Ghost: the reported version matches what Ghost's own site
+# endpoint says directly, a colour told the right intended version reports
+# a real match, a colour told the wrong one reports a real mismatch, and a
+# genuinely drained colour exposes neither version gauge at all.
+#
 # Both images under test are handed to this script rather than derived from
 # it, so the proof always runs against what the platform actually builds:
 # the platform image is `docker build .` from this repo's own root
@@ -44,11 +50,15 @@ GHOST_IMAGE="${2:?usage: test-drain-sidecar.sh <sidecar-image-tag> <platform-ima
 GHOST_PORT=4210
 SIDECAR_PORT=4211
 UNREADABLE_PORT=4212
+MATCH_PORT=4213
+MISMATCH_PORT=4214
 RUN_ID="$$"
 GHOST_NAME="drain-sidecar-test-ghost-$RUN_ID"
 SIDECAR_NAME="drain-sidecar-test-sidecar-$RUN_ID"
 UNREADABLE_NAME="drain-sidecar-test-unreadable-$RUN_ID"
 UNREADABLE_VOLUME="drain-sidecar-test-unreadable-$RUN_ID"
+MATCH_NAME="drain-sidecar-test-match-$RUN_ID"
+MISMATCH_NAME="drain-sidecar-test-mismatch-$RUN_ID"
 FLAG_DIR="$(mktemp -d)"
 FLAG_FILE="$FLAG_DIR/drain"
 # 0755 grants the sidecar's uid (1000) the read+traverse (r-x) access
@@ -61,6 +71,8 @@ chmod 0755 "$FLAG_DIR"
 FAILURES=0
 
 cleanup() {
+    docker rm -f "$MISMATCH_NAME" >/dev/null 2>&1 || true
+    docker rm -f "$MATCH_NAME" >/dev/null 2>&1 || true
     docker rm -f "$UNREADABLE_NAME" >/dev/null 2>&1 || true
     docker rm -f "$SIDECAR_NAME" >/dev/null 2>&1 || true
     docker rm -f "$GHOST_NAME" >/dev/null 2>&1 || true
@@ -79,6 +91,8 @@ docker run -d \
     -p "$GHOST_PORT:2368" \
     -p "$SIDECAR_PORT:8080" \
     -p "$UNREADABLE_PORT:8081" \
+    -p "$MATCH_PORT:8082" \
+    -p "$MISMATCH_PORT:8083" \
     -e url="https://localhost:$GHOST_PORT" \
     -e database__client="sqlite3" \
     -e database__connection__filename="/var/lib/ghost/content/data/ghost-drain-test.db" \
@@ -233,6 +247,101 @@ assert_status "sidecar answers 200 with the flag clear and Ghost healthy" \
     "http://localhost:$SIDECAR_PORT/healthz" 200
 echo
 
+echo "--- per-tenant health and version: reading Ghost's own reported version directly, for cross-check ---"
+# The instance is the only authority for its own version (LLD-4,
+# load-bearing) -- read directly from Ghost's unauthenticated site endpoint,
+# independently of the sidecar under test, so the assertion below compares
+# against ground truth rather than against another reading the same code
+# produced.
+site_body="$(mktemp)"
+http_probe "http://localhost:$GHOST_PORT/ghost/api/admin/site/" "$site_body" >/dev/null
+GHOST_VERSION="$(grep -o '"version":"[^"]*"' "$site_body" | head -1 | cut -d'"' -f4)"
+rm -f "$site_body"
+if [ -z "$GHOST_VERSION" ]; then
+    echo "FAIL: could not read Ghost's own version from its site endpoint directly"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "PASS: Ghost reports version $GHOST_VERSION directly"
+fi
+echo
+
+echo "--- state: flag clear -- /metrics reports that same version, undrained ---"
+metrics_body="$(mktemp)"
+http_probe "http://localhost:$SIDECAR_PORT/metrics" "$metrics_body" >/dev/null
+if grep -q "drain_sidecar_ghost_version_info{version=\"$GHOST_VERSION\"} 1" "$metrics_body"; then
+    echo "PASS: sidecar's /metrics reports Ghost's real version ($GHOST_VERSION) while undrained"
+else
+    echo "FAIL: sidecar's /metrics did not report Ghost's real version ($GHOST_VERSION) while undrained"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+fi
+rm -f "$metrics_body"
+echo
+
+echo "--- a colour whose intended version matches what Ghost actually reports ---"
+docker run -d \
+    --name "$MATCH_NAME" \
+    --network "container:$GHOST_NAME" \
+    -v "$FLAG_DIR:/var/run/branchleft:ro" \
+    -e DRAIN_FLAG_PATH="/var/run/branchleft/no-such-flag" \
+    -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
+    -e GHOST_INTENDED_VERSION="$GHOST_VERSION" \
+    -e PORT="8082" \
+    "$SIDECAR_IMAGE" >/dev/null
+
+metrics_body="$(mktemp)"
+deadline=$(($(date +%s) + 10))
+matched=false
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    http_probe "http://localhost:$MATCH_PORT/metrics" "$metrics_body" >/dev/null
+    if grep -q 'drain_sidecar_version_match 1' "$metrics_body"; then
+        matched=true
+        break
+    fi
+    sleep 0.2
+done
+if [ "$matched" = "true" ]; then
+    echo "PASS: /metrics reports a positive match when the intended version is what Ghost actually reports"
+else
+    echo "FAIL: /metrics never reported a positive match against Ghost's real, matching version"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+fi
+rm -f "$metrics_body"
+echo
+
+echo "--- a colour whose intended version does not match what Ghost actually reports ---"
+docker run -d \
+    --name "$MISMATCH_NAME" \
+    --network "container:$GHOST_NAME" \
+    -v "$FLAG_DIR:/var/run/branchleft:ro" \
+    -e DRAIN_FLAG_PATH="/var/run/branchleft/no-such-flag" \
+    -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
+    -e GHOST_INTENDED_VERSION="0.0.0-not-real" \
+    -e PORT="8083" \
+    "$SIDECAR_IMAGE" >/dev/null
+
+metrics_body="$(mktemp)"
+deadline=$(($(date +%s) + 10))
+mismatched=false
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    http_probe "http://localhost:$MISMATCH_PORT/metrics" "$metrics_body" >/dev/null
+    if grep -q 'drain_sidecar_version_match 0' "$metrics_body"; then
+        mismatched=true
+        break
+    fi
+    sleep 0.2
+done
+if [ "$mismatched" = "true" ]; then
+    echo "PASS: /metrics reports a real mismatch when the intended version genuinely disagrees -- the reverted-tenant case"
+else
+    echo "FAIL: /metrics never reported the mismatch against a deliberately wrong intended version"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+fi
+rm -f "$metrics_body"
+echo
+
 echo "--- state: flag set ---"
 touch "$FLAG_FILE"
 # The flag is a file the broker writes; a filesystem-backed bind mount can
@@ -260,6 +369,32 @@ fi
 rm -f "$body_file"
 assert_status "Ghost itself still answers 200 while the sidecar is draining -- the two are independent signals" \
     "http://localhost:$GHOST_PORT/" 200
+echo
+
+echo "--- state: flag set -- /metrics omits both version gauges (the load-bearing gate, on the real drained colour) ---"
+metrics_body="$(mktemp)"
+deadline=$(($(date +%s) + 10))
+gated=false
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    http_probe "http://localhost:$SIDECAR_PORT/metrics" "$metrics_body" >/dev/null
+    if grep -q 'drain_sidecar_drained 1' "$metrics_body"; then
+        gated=true
+        break
+    fi
+    sleep 0.2
+done
+if [ "$gated" != "true" ]; then
+    echo "FAIL: /metrics never reported drain_sidecar_drained 1 within 10s of the flag being set"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+elif grep -q 'drain_sidecar_ghost_version_info' "$metrics_body" || grep -q 'drain_sidecar_version_match' "$metrics_body"; then
+    echo "FAIL: /metrics exposed a version gauge for a drained colour -- exactly the leak this gate exists to prevent"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "PASS: /metrics reports the drain flag but neither version gauge while genuinely drained"
+fi
+rm -f "$metrics_body"
 echo
 
 echo "--- state: flag cleared again ---"
