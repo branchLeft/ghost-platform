@@ -110,3 +110,4 @@ export {
   mediaPublicBaseUrl,
   validateMediaBucket,
 } from './media.js';
+export { intendedGhostVersion } from './version.js';

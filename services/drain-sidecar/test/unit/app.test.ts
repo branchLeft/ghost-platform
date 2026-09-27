@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import type { DrainFlag } from '../../src/drainFlag.js';
 import type { GhostProbe } from '../../src/ghostProbe.js';
+import type { GhostVersionProbe } from '../../src/versionProbe.js';
 
 interface Listening {
   baseUrl: string;
@@ -31,6 +32,17 @@ function fakeGhost(healthy: boolean): GhostProbe {
   return { isHealthy: async () => healthy };
 }
 
+// None of the /healthz tests below care about version reporting; a probe
+// that gets called at all when it shouldn't be is itself something a later
+// test (in versionMetrics.test.ts) asserts against, not this file's job.
+function unusedVersion(): GhostVersionProbe {
+  return {
+    getVersion: async () => {
+      throw new Error('/healthz must never ask for a version');
+    },
+  };
+}
+
 describe('createApp — GET /healthz', () => {
   let close: (() => Promise<void>) | undefined;
 
@@ -47,7 +59,7 @@ describe('createApp — GET /healthz', () => {
         return true;
       },
     };
-    const listening = await listen(createApp(fakeFlag(true), ghost));
+    const listening = await listen(createApp(fakeFlag(true), ghost, unusedVersion(), null));
     close = listening.close;
 
     const res = await fetch(`${listening.baseUrl}/healthz`);
@@ -56,7 +68,9 @@ describe('createApp — GET /healthz', () => {
   });
 
   it('answers 200 when the flag is clear and Ghost is healthy', async () => {
-    const listening = await listen(createApp(fakeFlag(false), fakeGhost(true)));
+    const listening = await listen(
+      createApp(fakeFlag(false), fakeGhost(true), unusedVersion(), null)
+    );
     close = listening.close;
 
     const res = await fetch(`${listening.baseUrl}/healthz`);
@@ -64,7 +78,9 @@ describe('createApp — GET /healthz', () => {
   });
 
   it('answers 503 when the flag is clear but Ghost is unhealthy -- the flag alone is not enough to pass', async () => {
-    const listening = await listen(createApp(fakeFlag(false), fakeGhost(false)));
+    const listening = await listen(
+      createApp(fakeFlag(false), fakeGhost(false), unusedVersion(), null)
+    );
     close = listening.close;
 
     const res = await fetch(`${listening.baseUrl}/healthz`);
@@ -72,7 +88,9 @@ describe('createApp — GET /healthz', () => {
   });
 
   it('answers 503 when the flag is set even though Ghost is unhealthy too -- same verdict, not a coincidence of the other check', async () => {
-    const listening = await listen(createApp(fakeFlag(true), fakeGhost(false)));
+    const listening = await listen(
+      createApp(fakeFlag(true), fakeGhost(false), unusedVersion(), null)
+    );
     close = listening.close;
 
     const res = await fetch(`${listening.baseUrl}/healthz`);
@@ -80,7 +98,9 @@ describe('createApp — GET /healthz', () => {
   });
 
   it('disables the X-Powered-By header', async () => {
-    const listening = await listen(createApp(fakeFlag(false), fakeGhost(true)));
+    const listening = await listen(
+      createApp(fakeFlag(false), fakeGhost(true), unusedVersion(), null)
+    );
     close = listening.close;
 
     const res = await fetch(`${listening.baseUrl}/healthz`);
