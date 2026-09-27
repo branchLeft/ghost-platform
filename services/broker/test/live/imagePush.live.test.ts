@@ -304,11 +304,16 @@ describe.skipIf(!canRun)('LIVE — push delivery to an egress-denied host', () =
       '-sSf',
       'https://ghcr.io/v2/',
     ]);
-    // A real registry endpoint, reachable over any normal network -- refused
-    // here because the network itself (`--internal`) carries no default
-    // route out, the same absence a production host's default-deny egress
-    // rule leaves it with.
-    expect(res.status).not.toBe(0);
+    // curl 6/7/28 are "never reached the server at all" (DNS, connect,
+    // timeout); curl 22 is "-f caught an HTTP error status" -- which means
+    // the network *did* carry the request there and back. Both are
+    // non-zero, so asserting merely `!== 0` cannot tell a genuinely
+    // egress-denied network apart from one that reached ghcr.io and got a
+    // real 401 -- confirmed live while writing this test: dropping
+    // `--internal` from an otherwise identical network turned this curl's
+    // exit code from 28 into 22, not into 0. Only the connectivity-failure
+    // codes prove no route existed.
+    expect([6, 7, 28]).toContain(res.status);
   });
 
   it('the host holds no registry credential', () => {
