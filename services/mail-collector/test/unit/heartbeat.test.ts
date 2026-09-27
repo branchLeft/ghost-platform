@@ -234,5 +234,26 @@ describe('createDeadMansSwitch', () => {
       switch_.onCycleComplete('tenant-a');
       await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
     });
+
+    it('a target newly added to the expected set must itself report before pinging resumes', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+      let expected = ['tenant-a'];
+      const switch_ = createDeadMansSwitch({
+        url: 'https://heartbeat.example/ping',
+        log: silentLogger(),
+        fetchImpl,
+        getExpectedTargetIds: () => expected,
+      });
+      switch_.onCycleComplete('tenant-a');
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+      expected = ['tenant-a', 'tenant-b']; // descriptor gains a second host
+      switch_.onCycleComplete('tenant-a'); // tenant-a alone is no longer enough
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fetchImpl).toHaveBeenCalledTimes(1); // no second ping yet
+
+      switch_.onCycleComplete('tenant-b'); // the new host reports for the first time
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    });
   });
 });
