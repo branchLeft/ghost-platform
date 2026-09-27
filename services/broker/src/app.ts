@@ -23,7 +23,7 @@ import type { RealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { type SlotLock } from './slotLock.js';
 import { slotAllocation, slotPort } from './slotPorts.js';
-import { HostConflictError, hostHeldByAnotherSlot } from './slotsFile.js';
+import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slotsFile.js';
 import {
   assertHashRotated,
   readSlotState,
@@ -383,8 +383,27 @@ async function attemptColourSwap(
   if (heldBy !== null) {
     return send(res, 409, { error: `host "${host}" is already held by slot "${heldBy}"` });
   }
+  // Both colours share one database, so a swap carries the running
+  // tenancy's data into whatever it deploys. A descriptor for a different
+  // host is a different tenancy: that is a recycle, which only `/reset`
+  // (which wipes the data) may start.
+  const runningHost = await hostOfSlotEntry(deps.leaseStoreConfig.slotsPath, slot);
+  if (runningHost !== host) {
+    return send(res, 409, {
+      error: `slot "${slot}" is running a different tenancy (host "${runningHost ?? 'none'}") -- /reset it first`,
+    });
+  }
 
-  // Recorded before any side effect below, mirroring the fresh-deploy
+  // Drained before the marker below is written, never after. Recovery reads
+  // "target's flag is clear" as "target was rebuilt by this swap", and that
+  // only holds if the flag cannot be clear at any instant the marker is on
+  // disk before this swap's own `clear(target)`. The target is routinely
+  // left live and undrained by the previous swap in the other direction,
+  // still running the version before last; draining it here is safe
+  // because `liveColour` is serving and is preferred or about to stay so.
+  await deps.drainFlags.set(slot, target);
+
+  // Recorded before any other side effect below, mirroring the fresh-deploy
   // path's own `preparing` write: a crash partway through this function is
   // otherwise invisible to `recoverCrashedSlots` (the persisted phase would
   // stay `running`/`liveColour` for the swap's whole duration, exactly the
@@ -407,6 +426,9 @@ async function attemptColourSwap(
   await writeSlotState(deps.stateDir, slot, {
     phase: 'swapping' satisfies Phase,
     colour: liveColour,
+    // The source's own hash, so a recovery that reverts to it restores
+    // idempotent replay rather than recording no hash at all.
+    descriptorHash: state.descriptorHash,
     swapTarget: target,
     swapDescriptorHash: hash,
     swapHashId: newHashId,
@@ -414,12 +436,6 @@ async function attemptColourSwap(
   });
 
   try {
-    // A new colour always boots drained (LLD-2 §01b), regardless of what
-    // `target`'s flag last held: this slot's own alternation means the
-    // colour a swap is about to overwrite was last *this* slot's other
-    // live colour's undrained twin, so its flag is not guaranteed clear
-    // going in.
-    await deps.drainFlags.set(slot, target);
     const artefacts = await deps.renderer.render(descriptor);
     await writeArtefacts(deps.slotDirBase, slot, artefacts);
     await deps.wrapper.start(slot, target);
@@ -439,7 +455,12 @@ async function attemptColourSwap(
         `colour "${target}" of slot "${slot}" never answered 200 within ${deps.ghostReadyPollTimeoutMs}ms`
       );
     }
-    await writeLeaseAndHash(deps.leaseStoreConfig, host, slot, argon2idHash);
+    // Same tenancy, so the lease survives: rotating it here would log out
+    // every reader holding a gate cookie. It still rotates if the hash
+    // changed, since the lease is tied to the hash it was issued against.
+    await writeLeaseAndHash(deps.leaseStoreConfig, host, slot, argon2idHash, {
+      keepTiedLease: true,
+    });
     await deps.drainFlags.clear(slot, target);
   } catch (err) {
     // `target`'s flag is left exactly as `set`/`clear` above last reached

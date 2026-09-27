@@ -186,7 +186,12 @@ function createControllableEmailBatchChecker(): ControllableEmailBatchChecker {
   };
 }
 
-export async function startTestBroker(): Promise<TestBroker> {
+export interface TestBrokerOptions {
+  /** Lets a test interpose on the real dependencies, e.g. to observe on-disk state at each await. */
+  readonly wrapDeps?: (deps: BrokerDeps) => BrokerDeps;
+}
+
+export async function startTestBroker(options: TestBrokerOptions = {}): Promise<TestBroker> {
   const root = await makeTempDir('broker-app-');
   const stateDir = join(root, 'state');
   const leaseDir = join(root, 'lease');
@@ -253,7 +258,7 @@ export async function startTestBroker(): Promise<TestBroker> {
     },
   };
 
-  const handler = createBrokerHandler(deps);
+  const handler = createBrokerHandler(options.wrapDeps ? options.wrapDeps(deps) : deps);
   const server: Server = createServer((req, res) => void handler(req, res));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;

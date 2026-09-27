@@ -265,6 +265,101 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
         expect.any(String)
       );
     });
+
+    // services/demo-gate's verify() admits a cookie only while the slots
+    // file still maps the request's host to the cookie's slot and the
+    // slot's lease record still names the lease the cookie was issued
+    // against. This is that predicate, read from the files the gate reads.
+    async function gateAdmits(b: TestBroker, host: string, cookieLease: string): Promise<boolean> {
+      let slots: { slots: { host: string; slot: string }[] };
+      let recordText: string;
+      try {
+        slots = JSON.parse(await readFile(b.slotsPath, 'utf8'));
+        recordText = await readFile(`${b.leaseDir}/0.json`, 'utf8');
+      } catch {
+        return false;
+      }
+      const entry = slots.slots.find((e) => e.host === host);
+      if (entry?.slot !== '0') return false;
+      return parseSlotLeaseRecord(recordText, '0' as SlotName).lease === cookieLease;
+    }
+
+    it("a gated reader's cookie still admits after swaps in both directions -- a same-tenancy swap never rotates the lease", async () => {
+      broker = await startTestBroker();
+      const host = 'k7m-vale-bright.demo-domain.example.test';
+      await broker.signedFetch('POST', '/reconcile', {
+        slot: '0',
+        descriptor: demoDescriptor({ ownerEmail: 'v1@example.com' as EmailAddress }),
+      });
+      const cookieLease = parseSlotLeaseRecord(
+        await readFile(`${broker.leaseDir}/0.json`, 'utf8'),
+        '0' as SlotName
+      ).lease;
+      expect(await gateAdmits(broker, host, cookieLease)).toBe(true);
+
+      for (const [n, colour] of [
+        [2, 'b'],
+        [3, 'a'],
+      ] as const) {
+        broker.setNowMs(broker.nowMs() + 60_000);
+        const res = await broker.signedFetch('POST', '/reconcile', {
+          slot: '0',
+          descriptor: demoDescriptor({ ownerEmail: `v${n}@example.com` as EmailAddress }),
+        });
+        expect(await res.json()).toEqual({ slot: '0', phase: 'running', colour });
+        expect(await gateAdmits(broker, host, cookieLease)).toBe(true);
+      }
+    });
+
+    it('a swap that changes the passphrase hash rotates the lease, tied to the new hash', async () => {
+      broker = await startTestBroker();
+      const host = 'k7m-vale-bright.demo-domain.example.test';
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: demoDescriptor() });
+      const before = parseSlotLeaseRecord(
+        await readFile(`${broker.leaseDir}/0.json`, 'utf8'),
+        '0' as SlotName
+      );
+
+      broker.setNowMs(broker.nowMs() + 60_000);
+      const newHash = '$argon2id$v=19$m=65536,t=3,p=4$c2FsdDI$b3RoZXI';
+      const res = await broker.signedFetch('POST', '/reconcile', {
+        slot: '0',
+        descriptor: demoDescriptor({ gate: { kind: 'passphrase', argon2idHash: newHash } }),
+      });
+      expect(res.status).toBe(200);
+
+      const after = parseSlotLeaseRecord(
+        await readFile(`${broker.leaseDir}/0.json`, 'utf8'),
+        '0' as SlotName
+      );
+      expect(after.lease).not.toBe(before.lease);
+      expect(after.hashId).toBe(hashIdOf(newHash));
+      expect(await gateAdmits(broker, host, before.lease)).toBe(false);
+    });
+
+    it("refuses with 409 a descriptor for a different host on a running slot -- a swap would carry the running tenancy's database into it", async () => {
+      broker = await startTestBroker();
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: demoDescriptor() });
+      const stateBefore = await readFile(`${broker.stateDir}/0.json`, 'utf8');
+
+      const other = demoDescriptor({
+        siteUrl: 'https://p2q-other-host.demo-domain.example.test' as never,
+        hostname: { kind: 'ours', sub: 'p2q-other-host', gated: true },
+        gate: {
+          kind: 'passphrase',
+          argon2idHash: '$argon2id$v=19$m=65536,t=3,p=4$c2FsdDM$dmlzaXRvcjI',
+        },
+      });
+      const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: other });
+      expect(res.status).toBe(409);
+
+      expect(broker.renderer.calls).toHaveLength(1);
+      expect(await readFile(`${broker.stateDir}/0.json`, 'utf8')).toBe(stateBefore);
+      // 'b' was never drained for a swap that was never allowed to start.
+      await expect(readFile(`${broker.drainFlagDir}/0-b.drain`, 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    });
   });
 
   describe('stopping the old colour', () => {
