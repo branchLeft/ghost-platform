@@ -18,9 +18,15 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import type { Port, Slug } from '../src/brand.js';
 import type { TenantDescriptor } from '../src/descriptor.js';
+import type { renderEdgeSiteBlock as RenderEdgeSiteBlockFn } from '../src/edge.js';
+import { renderEdgeSiteBlock } from '../src/edge.js';
 import { adaptersVolumeName, contentVolumeName } from '../src/naming.js';
 import { render } from '../src/render.js';
-import type { assertAttributablePromotionDiff as AssertAttributablePromotionDiffFn } from '../src/transform.js';
+import { uploadLimits } from '../src/runtime.js';
+import type {
+  assertAttributablePromotionDiff as AssertAttributablePromotionDiffFn,
+  transform as TransformFn,
+} from '../src/transform.js';
 import {
   assertAttributablePromotionDiff,
   transform,
@@ -308,7 +314,7 @@ describe('transform() itself', () => {
   });
 });
 
-describe('CONTROL CASE — sabotage: the comparator itself can be made to miss a renamed tenancy', () => {
+describe('CONTROL CASE — sabotage: real regressions the falsifying test must catch', () => {
   it('a comparator mutated to also allow "slug" accepts a renamed slug; the real one rejects it, naming "slug"', async () => {
     const demo = validate(demoDescriptor(), TEST_ZONES);
     const tenant = transform(demo, TEST_ZONES, PROMOTION_TARGETS_BY_TIER.professional);
@@ -337,5 +343,64 @@ describe('CONTROL CASE — sabotage: the comparator itself can be made to miss a
 
     // GREEN: the real, unmutated module still rejects it, naming the field.
     expect(() => assertAttributablePromotionDiff(demo, renamedTenancy)).toThrow(/slug/);
+  });
+
+  it('a transform() mutated to hardcode media.resize/srcsets ships the wrong tier; the real one respects the target', async () => {
+    const demo = validate(demoDescriptor(), TEST_ZONES);
+
+    // RED: mutate transform.ts's real media block back to a hardcoded
+    // `true`/`true` -- the professional tier's own media settings, shipped
+    // to every promotion regardless of the target tier, entry included.
+    const sabotaged = await importSabotaged<{ transform: typeof TransformFn }>(
+      'transform.ts',
+      (source) => {
+        const target = 'resize: targets.mediaResize,\n      srcsets: targets.mediaSrcsets,';
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in transform.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, 'resize: true,\n      srcsets: true,');
+      }
+    );
+    const sabotagedTenant = sabotaged.transform(demo, TEST_ZONES, PROMOTION_TARGETS_BY_TIER.entry);
+    if (sabotagedTenant.media.kind !== 's3') throw new Error('expected s3 media');
+    // The entry tier's own target says `resize: false` -- the sabotaged
+    // module ships `true` anyway, exactly like the original defect.
+    expect(sabotagedTenant.media.resize).toBe(true);
+    expect(sabotagedTenant.media.resize).not.toBe(PROMOTION_TARGETS_BY_TIER.entry.mediaResize);
+
+    // GREEN: the real, unmutated module ships the entry tier's own value.
+    const realTenant = transform(demo, TEST_ZONES, PROMOTION_TARGETS_BY_TIER.entry);
+    if (realTenant.media.kind !== 's3') throw new Error('expected s3 media');
+    expect(realTenant.media.resize).toBe(PROMOTION_TARGETS_BY_TIER.entry.mediaResize);
+    expect(realTenant.media.resize).toBe(false);
+  });
+
+  it('an edge.ts mutated to never admit a hostname hides the demo-to-tenant certificate transition; the real module flips it', async () => {
+    const demo = validate(demoDescriptor(), TEST_ZONES);
+    const tenant = transform(demo, TEST_ZONES, PROMOTION_TARGETS_BY_TIER.professional);
+
+    // RED: mutate edge.ts's real `renderEdgeSiteBlock` so `admittedHostname`
+    // is always `null` -- a promoted tenant that never becomes eligible for
+    // an on-demand certificate, with nothing in the falsifying test
+    // noticing unless this artefact is itself compared.
+    const sabotaged = await importSabotaged<{
+      renderEdgeSiteBlock: typeof RenderEdgeSiteBlockFn;
+    }>('edge.ts', (source) => {
+      const target = 'admittedHostname: servedHostnameOf(descriptor, zones),';
+      if (!source.includes(target)) {
+        throw new Error(
+          'sabotage target string not found in edge.ts -- update the mutation to match the current source'
+        );
+      }
+      return source.replace(target, 'admittedHostname: null,');
+    });
+    const sabotagedEdge = sabotaged.renderEdgeSiteBlock(tenant, TEST_ZONES, uploadLimits());
+    expect(sabotagedEdge.admittedHostname).toBeNull(); // wrong -- a promoted tenant, stuck null
+
+    // GREEN: the real, unmutated module flips it on promotion.
+    const realEdge = renderEdgeSiteBlock(tenant, TEST_ZONES, uploadLimits());
+    expect(realEdge.admittedHostname).not.toBeNull();
   });
 });
