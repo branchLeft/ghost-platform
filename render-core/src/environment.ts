@@ -33,14 +33,17 @@ import type { Slug } from './brand.js';
 import type {
   DatabaseSpec,
   LimitsSpec,
+  MailSpec,
   MediaSpec,
   SafetySpec,
   TenantDescriptor,
   TransportSpec,
 } from './descriptor.js';
+import { renderSendingAddress, sendingDomainOf } from './mail.js';
 import { mediaBucketName, mediaPublicBaseUrl, validateMediaBucket } from './media.js';
 import { databaseAndUserName, validateDatabaseIdentity } from './naming.js';
 import type { UploadLimits } from './runtime.js';
+import type { ZoneConfig } from './validate.js';
 
 /** Names of the secrets a rendered `mysql`/`s3` Compose file expects in the
  * process environment, i.e. the keys of `/etc/branchleft/<slug>.env`. A
@@ -50,6 +53,7 @@ export const SECRET_ENV_KEYS = {
   s3AccessKeyId: 'GHOST_S3_ACCESS_KEY_ID',
   s3SecretAccessKey: 'GHOST_S3_SECRET_ACCESS_KEY',
   mailPassword: 'GHOST_MAIL_PASSWORD',
+  bulkEmailApiKey: 'GHOST_BULK_EMAIL_API_KEY',
 } as const;
 
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = 10485760; // 10 MiB
@@ -265,17 +269,12 @@ function mediaEnvironment(
 }
 
 /**
- * `transport` env wiring is deliberately narrow today. `smtp` renders the
- * three non-secret fields a caller supplies; the sending address is not one
- * of them — member mail is addressed through a Ghost *setting*
- * (`members_support_address`), not the `mail__from` env var. `queue` (the
- * platform's own local mail spool) renders no Ghost env var at all.
- * **Known gap, not this module's to close:** tenant-zero parity against
- * `infra/tenant/environment.ts` is short by `mail__from` and the three
- * `bulkEmail__mailgun__*` keys — `TransportSpec` carries no field for any
- * of them; the descriptor's sending identity needs one first. See
- * `test/parity.test.ts`, which asserts this gap explicitly (an exact,
- * named list of the missing keys) rather than silently passing.
+ * `transport` env wiring stays deliberately narrow: `smtp` renders the
+ * three non-secret fields a caller supplies for the transactional path;
+ * `queue` (the platform's own local mail spool, addressed some other way)
+ * renders no Ghost env var at all. Member mail is addressed through a
+ * Ghost *setting* (`members_support_address`, `settings.ts`), not the
+ * `mail__from` env var below — this function carries neither, on purpose.
  */
 function transportEnvironment(transport: TransportSpec): Record<string, string | number | boolean> {
   if (transport.kind === 'queue') {
@@ -288,6 +287,36 @@ function transportEnvironment(transport: TransportSpec): Record<string, string |
     mail__options__secure: false,
     mail__options__auth__user: transport.user,
   };
+}
+
+/**
+ * The sending-identity keys `transport` cannot carry (closes the gap
+ * `test/parity.test.ts` used to name): `mail__from` — the env var that
+ * looks like the address Ghost sends member mail from and is not, kept
+ * identical to `settings.ts`'s `members_support_address` by construction
+ * (both come from `mail.ts#renderSendingAddress`, never computed twice —
+ * see that module's own doc comment for the trap this closes) — and,
+ * whenever mail is enabled, the three keys that point Ghost's hardcoded
+ * Mailgun bulk provider at the host's own spool instead of Mailgun itself
+ * (LLD-6 §03: "one mail spool per host, serving both SMTP and the
+ * Mailgun-shaped API"). Rendered from `mail.enabled` and the sending
+ * identity alone — never from `transport.kind` — so a demo (whose
+ * transactional path may be `queue`, carrying no host at all) still gets
+ * a bulk path pointed at the spool; the two paths share a spool, not a
+ * `TransportSpec` variant.
+ */
+function bulkMailEnvironment(
+  mail: MailSpec,
+  zones: Pick<ZoneConfig, 'demoMailDomain' | 'mailSpoolBaseUrl'>
+): Record<string, string | number | boolean> {
+  const env: Record<string, string | number | boolean> = {
+    mail__from: renderSendingAddress(mail.identity, zones),
+  };
+  if (mail.enabled) {
+    env.bulkEmail__mailgun__baseUrl = zones.mailSpoolBaseUrl;
+    env.bulkEmail__mailgun__domain = sendingDomainOf(mail.identity, zones);
+  }
+  return env;
 }
 
 /**
@@ -318,16 +347,18 @@ function hostLimitsEnvironment(limits: LimitsSpec): Record<string, string | numb
 export function tenantEnvironment(
   descriptor: Pick<
     TenantDescriptor,
-    'slug' | 'siteUrl' | 'database' | 'media' | 'transport' | 'safety' | 'limits'
+    'slug' | 'siteUrl' | 'database' | 'media' | 'transport' | 'mail' | 'safety' | 'limits'
   >,
   limits: UploadLimits,
-  secretsFilePath: string
+  secretsFilePath: string,
+  zones: Pick<ZoneConfig, 'demoMailDomain' | 'mailSpoolBaseUrl'>
 ): Record<string, string | number | boolean> {
   const env: Record<string, string | number | boolean> = {
     url: descriptor.siteUrl,
     ...databaseEnvironment(descriptor.slug, descriptor.database),
     ...mediaEnvironment(descriptor.slug, descriptor.media, descriptor.safety),
     ...transportEnvironment(descriptor.transport),
+    ...bulkMailEnvironment(descriptor.mail, zones),
     ...hostLimitsEnvironment(descriptor.limits),
 
     security__allowWebhookInternalIPs: false,
@@ -360,6 +391,9 @@ export function tenantEnvironment(
   }
   if (descriptor.transport.kind === 'smtp') {
     escaped.mail__options__auth__pass = required('mailPassword', secretsFilePath);
+  }
+  if (descriptor.mail.enabled) {
+    escaped.bulkEmail__mailgun__apiKey = required('bulkEmailApiKey', secretsFilePath);
   }
 
   return escaped;

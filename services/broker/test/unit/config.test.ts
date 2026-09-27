@@ -12,6 +12,8 @@ function validEnv(overrides: Partial<BrokerEnv> = {}): BrokerEnv {
     BROKER_DEMO_ZONE: 'demo-domain.example.test',
     BROKER_PLATFORM_ZONE: 'platform-domain.example.test',
     BROKER_OWNED_DOMAINS: 'demo-domain.example.test,platform-domain.example.test',
+    BROKER_DEMO_MAIL_DOMAIN: 'demo-mail.example.test',
+    BROKER_MAIL_SPOOL_BASE_URL: 'http://mail-spool.internal.example.test:8080',
     ...overrides,
   };
 }
@@ -37,6 +39,8 @@ describe('loadConfig', () => {
       demoZone: 'demo-domain.example.test',
       platformZone: 'platform-domain.example.test',
       ownedDomains: ['demo-domain.example.test', 'platform-domain.example.test'],
+      demoMailDomain: 'demo-mail.example.test',
+      mailSpoolBaseUrl: 'http://mail-spool.internal.example.test:8080',
     });
     expect(config.slotLiterals).toEqual(['0', '1', '2', '3', '4', '5', '6']);
     expect(config.drainPollTimeoutMs).toBe(30_000);
@@ -60,6 +64,8 @@ describe('loadConfig', () => {
     'BROKER_DEMO_ZONE',
     'BROKER_PLATFORM_ZONE',
     'BROKER_OWNED_DOMAINS',
+    'BROKER_DEMO_MAIL_DOMAIN',
+    'BROKER_MAIL_SPOOL_BASE_URL',
   ])('refuses to start with %s unset', (name) => {
     const env = validEnv({ [name]: undefined });
     expect(() => loadConfig(env, readKey32)).toThrow(

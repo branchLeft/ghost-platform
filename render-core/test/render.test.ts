@@ -207,7 +207,13 @@ describe('render() — sabotage: the invariants a real defect could silently dro
 
 describe('renderSettings() — codeInjection continuously reconciled', () => {
   it('emits empty codeinjection_head/foot for blocked (never omits the key)', () => {
-    const settings = renderSettings({ codeInjection: { kind: 'blocked' } });
+    const settings = renderSettings(
+      {
+        codeInjection: { kind: 'blocked' },
+        mail: { identity: { kind: 'demo', localPart: 'demo-1' } },
+      },
+      TEST_ZONES
+    );
     expect(settings.codeinjection_head).toBe('');
     expect(settings.codeinjection_foot).toBe('');
     expect(Object.keys(settings)).toContain('codeinjection_head');
@@ -215,9 +221,33 @@ describe('renderSettings() — codeInjection continuously reconciled', () => {
 
   it('emits the managed head/foot verbatim', () => {
     const descriptor = validate(professionalTenantDescriptor(), TEST_ZONES);
-    const settings = renderSettings(descriptor);
+    const settings = renderSettings(descriptor, TEST_ZONES);
     expect(settings.codeinjection_head).toContain('analytics-consent');
     expect(settings.codeinjection_foot).toContain('analytics.js');
+  });
+
+  it("sets members_support_address to the slot's own sending address", () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+    const settings = renderSettings(descriptor, TEST_ZONES);
+    expect(settings.members_support_address).toBe('hello@blog.entry-co.example');
+  });
+});
+
+describe('renderSettings() / tenantEnvironment() — the magic-link trap (mail__from must equal members_support_address)', () => {
+  it.each([
+    ['demo', demoDescriptor],
+    ['entry tenant', entryTenantDescriptor],
+    ['professional tenant', professionalTenantDescriptor],
+  ] as const)('%s: the two never disagree', (_label, fixture) => {
+    const descriptor = validate(fixture(), TEST_ZONES);
+    const artefacts = render(descriptor, TEST_ZONES);
+    const settings = JSON.parse(
+      artefacts.find((a) => a.path === 'ghost-settings.json')!.content
+    ) as { members_support_address: string };
+    const compose = artefacts.find((a) => a.path === 'compose.yml')!.content;
+    const fromLine = compose.match(/mail__from: '([^']+)'/);
+    expect(fromLine).not.toBeNull();
+    expect(settings.members_support_address).toBe(fromLine![1]);
   });
 });
 
