@@ -94,6 +94,9 @@ function requiredSecretKeys(descriptor: TenantDescriptor): string[] {
   if (descriptor.transport.kind === 'smtp') {
     keys.push(SECRET_ENV_KEYS.mailPassword);
   }
+  if (descriptor.mail.enabled) {
+    keys.push(SECRET_ENV_KEYS.bulkEmailApiKey);
+  }
   return keys;
 }
 
@@ -264,7 +267,7 @@ export function render(descriptor: TenantDescriptor, zones: ZoneConfig): readonl
   const dataMount = demoDataMount(descriptor);
 
   const limits = uploadLimits();
-  const environment = tenantEnvironment(descriptor, limits, secretsEnvPath(descriptor.slug));
+  const environment = tenantEnvironment(descriptor, limits, secretsEnvPath(descriptor.slug), zones);
   const compose = renderComposeStack({
     kind: descriptor.kind,
     slug: descriptor.slug,
@@ -277,7 +280,7 @@ export function render(descriptor: TenantDescriptor, zones: ZoneConfig): readonl
     dataMount,
   });
   const edge = renderEdgeSiteBlock(descriptor, zones, limits);
-  const settings = renderSettings(descriptor);
+  const settings = renderSettings(descriptor, zones);
   const identity = renderIdentity(descriptor);
 
   return [

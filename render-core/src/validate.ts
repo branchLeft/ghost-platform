@@ -101,6 +101,7 @@ const TENANT_KIND_VALUES = ['demo', 'tenant'] as const;
 const DATABASE_KIND_VALUES = ['sqlite', 'mysql'] as const;
 const MEDIA_KIND_VALUES = ['local', 's3'] as const;
 const TRANSPORT_KIND_VALUES = ['queue', 'smtp'] as const;
+const SENDING_IDENTITY_KIND_VALUES = ['demo', 'tenant'] as const;
 const HOSTNAME_KIND_VALUES = ['ours', 'theirs'] as const;
 const GATE_KIND_VALUES = ['none', 'passphrase'] as const;
 const BACKUP_KIND_VALUES = ['none', 'bucket-native'] as const;
@@ -179,6 +180,7 @@ const DESCRIPTOR_KEYS = [
   'database',
   'media',
   'transport',
+  'mail',
   'hostname',
   'gate',
   'backup',
@@ -195,6 +197,9 @@ const MEDIA_LOCAL_KEYS = ['kind', 'path', 'resize', 'srcsets'] as const;
 const MEDIA_S3_KEYS = ['kind', 'endpoint', 'region', 'bucket', 'resize', 'srcsets'] as const;
 const TRANSPORT_QUEUE_KEYS = ['kind', 'path'] as const;
 const TRANSPORT_SMTP_KEYS = ['kind', 'host', 'port', 'user'] as const;
+const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity'] as const;
+const SENDING_IDENTITY_DEMO_KEYS = ['kind', 'localPart'] as const;
+const SENDING_IDENTITY_TENANT_KEYS = ['kind', 'domain', 'dkimSelector'] as const;
 const HOSTNAME_OURS_KEYS = ['kind', 'sub', 'gated'] as const;
 const HOSTNAME_THEIRS_KEYS = ['kind', 'fqdn', 'verifiedAt'] as const;
 const GATE_NONE_KEYS = ['kind'] as const;
@@ -238,6 +243,17 @@ function assertNonNegativeIntegerOrNull(value: number | null, field: string): vo
     throw new FieldValidationError(
       field,
       `${field} must be a finite non-negative integer or null, got ${value}.`
+    );
+  }
+}
+
+/** A ceiling has no "no cap" spelling — unlike `limits`, `null` is not a
+ * value either mail ceiling field can carry, so this has no `OrNull` arm. */
+function assertNonNegativeInteger(value: number, field: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new FieldValidationError(
+      field,
+      `${field} must be a finite non-negative integer, got ${value}.`
     );
   }
 }
@@ -325,6 +341,21 @@ function assertShape(descriptor: TenantDescriptor): void {
     assertString(descriptor.transport.user, 'transport.user');
   }
 
+  assertObject(descriptor.mail, 'mail');
+  assertNoUnknownKeys(descriptor.mail, MAIL_KEYS, 'mail');
+  assertBoolean(descriptor.mail.enabled, 'mail.enabled');
+  assertNumber(descriptor.mail.ceiling, 'mail.ceiling');
+  assertNumber(descriptor.mail.estateCeiling, 'mail.estateCeiling');
+  assertObject(descriptor.mail.identity, 'mail.identity');
+  if (descriptor.mail.identity.kind === 'demo') {
+    assertNoUnknownKeys(descriptor.mail.identity, SENDING_IDENTITY_DEMO_KEYS, 'mail.identity');
+    assertString(descriptor.mail.identity.localPart, 'mail.identity.localPart');
+  } else {
+    assertNoUnknownKeys(descriptor.mail.identity, SENDING_IDENTITY_TENANT_KEYS, 'mail.identity');
+    assertString(descriptor.mail.identity.domain, 'mail.identity.domain');
+    assertString(descriptor.mail.identity.dkimSelector, 'mail.identity.dkimSelector');
+  }
+
   if (descriptor.hostname.kind === 'ours') {
     assertNoUnknownKeys(descriptor.hostname, HOSTNAME_OURS_KEYS, 'hostname');
     assertString(descriptor.hostname.sub, 'hostname.sub');
@@ -394,6 +425,8 @@ function checkRanges(descriptor: TenantDescriptor): void {
   assertFinitePositiveInteger(descriptor.caps.cpuShares, 'caps.cpuShares');
   assertFinitePositiveInteger(descriptor.caps.pidsLimit, 'caps.pidsLimit');
   assertFinitePositiveInteger(descriptor.caps.nofile, 'caps.nofile');
+  assertNonNegativeInteger(descriptor.mail.ceiling, 'mail.ceiling');
+  assertNonNegativeInteger(descriptor.mail.estateCeiling, 'mail.estateCeiling');
 }
 
 /** Below 1024, a rendered port would collide with a privileged service on a
@@ -501,6 +534,75 @@ function validateTransport(transport: TenantDescriptor['transport']): void {
   validatePort(transport.port, 'transport.port');
 }
 
+// Bounded, single-quantifier groups either side of the boundary character —
+// the same shape validateEmailAddress's own comment explains, kept here
+// because a local part is interpolated into a rendered email address and
+// deserves the identical ReDoS defence rather than a "this one's short
+// enough" exception.
+const LOCAL_PART_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
+
+/**
+ * `mail.ceiling`/`mail.estateCeiling`'s own cross-field rule (LLD-6 §05:
+ * "per slot… per estate: a hard cap all demo slots share… one abuser
+ * cannot spend everyone's"), plus each `identity` arm's own format check.
+ * The tier-vs-`identity.kind` agreement — the actual "refuses a demo
+ * carrying a selector or a domain of its own" rule — is `checkTierVariants`
+ * below, alongside every other kind-fixed-shape rule; this function only
+ * checks what is well-formed for whichever arm the descriptor already has.
+ */
+function validateMailIdentity(mail: TenantDescriptor['mail'], zones: ZoneConfig): void {
+  if (mail.ceiling > mail.estateCeiling) {
+    throw new FieldValidationError(
+      'mail.ceiling',
+      `mail.ceiling (${mail.ceiling}) must not exceed mail.estateCeiling (${mail.estateCeiling}) ` +
+        `— one abuser must never be able to spend the whole estate's cap.`
+    );
+  }
+
+  if (mail.identity.kind === 'demo') {
+    assertNonEmptyString(mail.identity.localPart, 'mail.identity.localPart');
+    if (!LOCAL_PART_PATTERN.test(mail.identity.localPart)) {
+      throw new FieldValidationError(
+        'mail.identity.localPart',
+        `mail.identity.localPart "${mail.identity.localPart}" must be a well-formed email local ` +
+          `part: letters, digits, "." "_" "-", starting and ending with a letter or digit.`
+      );
+    }
+    return;
+  }
+
+  assertNonEmptyString(mail.identity.domain, 'mail.identity.domain');
+  if (!isWellFormedFqdn(mail.identity.domain)) {
+    throw new FieldValidationError(
+      'mail.identity.domain',
+      `mail.identity.domain "${mail.identity.domain}" must be a well-formed, non-empty domain name.`
+    );
+  }
+  if (looksLikeIpLiteral(mail.identity.domain)) {
+    throw new FieldValidationError(
+      'mail.identity.domain',
+      `mail.identity.domain "${mail.identity.domain}" must be a domain name, not an IP address ` +
+        `literal.`
+    );
+  }
+  if (!isOutsideOwnedDomains(mail.identity.domain, zones.ownedDomains)) {
+    throw new FieldValidationError(
+      'mail.identity.domain',
+      `mail.identity.domain "${mail.identity.domain}" must be outside every registrable domain ` +
+        `the platform owns (${zones.ownedDomains.join(', ')}) — a tenant signs its own domain, ` +
+        `never the platform's.`
+    );
+  }
+  assertNonEmptyString(mail.identity.dkimSelector, 'mail.identity.dkimSelector');
+  if (!HOSTNAME_LABEL_PATTERN.test(mail.identity.dkimSelector)) {
+    throw new FieldValidationError(
+      'mail.identity.dkimSelector',
+      `mail.identity.dkimSelector "${mail.identity.dkimSelector}" must be a valid DNS label — it ` +
+        `names the DKIM selector's own DNS record.`
+    );
+  }
+}
+
 function validateGate(gate: TenantDescriptor['gate']): void {
   if (gate.kind === 'passphrase' && gate.argon2idHash.trim() === '') {
     throw new FieldValidationError(
@@ -528,6 +630,21 @@ export interface ZoneConfig {
    * name, not merely under a different-looking label of it.
    */
   readonly ownedDomains: readonly string[];
+  /**
+   * The one domain every demo's sending address shares (HLD §07, LLD-6 §05:
+   * "a local part per demo, not a subdomain per demo" — every demo slot
+   * signs under this domain, distinguished only by its own local part).
+   */
+  readonly demoMailDomain: string;
+  /**
+   * Where every host's Ghost reaches its own mail spool's Mailgun-shaped
+   * bulk API (LLD-6 §03: "one mail spool per host, serving both SMTP and
+   * the Mailgun-shaped API"). A caller supplies the real address; this
+   * package has no opinion on the network path between a Ghost container
+   * and its spool, and never will — that path is the mail spool
+   * component's own contract, not a tenant descriptor's.
+   */
+  readonly mailSpoolBaseUrl: string;
 }
 
 function normalizeDomain(value: string): string {
@@ -797,6 +914,12 @@ function checkTierVariants(descriptor: TenantDescriptor): void {
         `kind "tenant" requires media.kind "s3", got "${descriptor.media.kind}".`
       );
     }
+    if (descriptor.mail.identity.kind !== 'tenant') {
+      throw new TierMismatchError(
+        `kind "tenant" requires mail.identity.kind "tenant", got ` +
+          `"${descriptor.mail.identity.kind}".`
+      );
+    }
     // No separate backup check here: this function already forces a
     // tenant's media to "s3", so INV-3 (media "s3" implies backup
     // "bucket-native", checked earlier in validate()) already rejects a
@@ -829,6 +952,12 @@ function checkTierVariants(descriptor: TenantDescriptor): void {
     throw new TierMismatchError(
       `kind "demo" requires hostname.kind "ours", got "${descriptor.hostname.kind}". A demo ` +
         `never reaches the platform under a custom domain.`
+    );
+  }
+  if (descriptor.mail.identity.kind !== 'demo') {
+    throw new TierMismatchError(
+      `kind "demo" requires mail.identity.kind "demo", got "${descriptor.mail.identity.kind}". ` +
+        `Demo slots get no DKIM key, selector or domain of their own.`
     );
   }
   if (descriptor.expiresAt === null) {
@@ -872,6 +1001,8 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   assertDiscriminant(descriptor.database, 'database', DATABASE_KIND_VALUES);
   assertDiscriminant(descriptor.media, 'media', MEDIA_KIND_VALUES);
   assertDiscriminant(descriptor.transport, 'transport', TRANSPORT_KIND_VALUES);
+  assertObject(descriptor.mail, 'mail');
+  assertDiscriminant(descriptor.mail.identity, 'mail.identity', SENDING_IDENTITY_KIND_VALUES);
   assertDiscriminant(descriptor.hostname, 'hostname', HOSTNAME_KIND_VALUES);
   assertDiscriminant(descriptor.gate, 'gate', GATE_KIND_VALUES);
   assertDiscriminant(descriptor.backup, 'backup', BACKUP_KIND_VALUES);
@@ -901,6 +1032,7 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   validateMedia(descriptor.slug, descriptor.media);
   validateBackup(descriptor.backup);
   validateTransport(descriptor.transport);
+  validateMailIdentity(descriptor.mail, zones);
   validateHostname(descriptor.hostname, zones);
   validateGate(descriptor.gate);
   validateCodeInjection(descriptor.codeInjection);

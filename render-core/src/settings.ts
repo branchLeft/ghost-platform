@@ -24,9 +24,18 @@
  * (`environment.ts#hostLimitsEnvironment`) instead; putting them in this
  * artefact (LLD-1 §04's own diagram box) cannot take effect against
  * Ghost's real source and was corrected on review.
+ *
+ * **`members_support_address` is the one Ghost actually reads before it
+ * sends a member a magic link — `mail__from` (`environment.ts`) is not.**
+ * A sender restriction upstream rejects the two disagreeing as an opaque
+ * HTTP 400, with the real cause visible only in container output, so both
+ * are computed from the same call to `mail.ts#renderSendingAddress` rather
+ * than from two independent readings of the descriptor's sending identity.
  */
 
-import type { CodeInjectionSpec } from './descriptor.js';
+import type { CodeInjectionSpec, MailSpec } from './descriptor.js';
+import { renderSendingAddress } from './mail.js';
+import type { ZoneConfig } from './validate.js';
 
 export interface CodeInjectionSettings {
   readonly codeinjection_head: string;
@@ -44,6 +53,7 @@ export const CODE_INJECTION_EXPLAINER = 'ALL_CAPS_PLACEHOLDER: code injection ex
 
 export interface GhostSettings extends CodeInjectionSettings {
   readonly codeInjectionExplainer: string;
+  readonly members_support_address: string;
 }
 
 function codeInjectionSettings(codeInjection: CodeInjectionSpec): CodeInjectionSettings {
@@ -53,11 +63,16 @@ function codeInjectionSettings(codeInjection: CodeInjectionSpec): CodeInjectionS
   return { codeinjection_head: '', codeinjection_foot: '' };
 }
 
-export function renderSettings(descriptor: {
-  readonly codeInjection: CodeInjectionSpec;
-}): GhostSettings {
+export function renderSettings(
+  descriptor: {
+    readonly codeInjection: CodeInjectionSpec;
+    readonly mail: Pick<MailSpec, 'identity'>;
+  },
+  zones: Pick<ZoneConfig, 'demoMailDomain'>
+): GhostSettings {
   return {
     ...codeInjectionSettings(descriptor.codeInjection),
     codeInjectionExplainer: CODE_INJECTION_EXPLAINER,
+    members_support_address: renderSendingAddress(descriptor.mail.identity, zones),
   };
 }
