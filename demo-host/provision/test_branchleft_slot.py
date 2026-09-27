@@ -513,11 +513,22 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
         # happens here. `signal.alarm` guards the test itself: a regression
         # fails this test loudly and fast rather than hanging the whole
         # suite (or a real host's root process) waiting on nothing.
+        #
+        # `_AlarmFired` is deliberately not an `OSError` subclass -- Python's
+        # builtin `TimeoutError` *is* one, and `load_image`'s own
+        # `except OSError` would otherwise catch a signal-interrupted
+        # `open()` call and re-wrap it as `RefusedImage`, making a genuine
+        # hang (caught only by this alarm) look identical to a clean,
+        # immediate refusal. That is exactly the false green this test
+        # exists to not produce.
+        class _AlarmFired(Exception):
+            pass
+
         fifo_path = self._path("image.tar")
         os.mkfifo(fifo_path)
 
         def _timeout_handler(signum, frame):
-            raise TimeoutError("load_image blocked opening a FIFO with no writer")
+            raise _AlarmFired("load_image blocked opening a FIFO with no writer")
 
         previous_handler = signal.signal(signal.SIGALRM, _timeout_handler)
         signal.alarm(5)
