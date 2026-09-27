@@ -37,11 +37,24 @@ and an in-process `VerdictClient` test double. It does **not** build:
   (`storage:files`).** PDQ is an image hash; the design names video as
   undesigned (issue's own open question, deferred to Rob via
   workspace#1151/#1200). The decorator class wraps any of the three storage
-  features identically, but no `Check` in this story applies to non-image
-  bytes, so configuring it for `storage:media`/`storage:files` today is inert
-  -- every byte is allowed through unchanged, exactly as if the decorator
-  were not configured for that feature at all. Nothing here chooses a
-  scanning behaviour for video or files.
+  features identically, and `PdqKnownMaterialCheck` is attached unconditionally
+  regardless of which feature the instance services -- it is not
+  image-specific, it just hashes whatever bytes it is given. So configuring
+  `storage:media`/`storage:files` with this adapter today is **not**
+  structurally inert: a digest in `refuse` would be refused on video or an
+  arbitrary file exactly as on an image. It is harmless only because no
+  committed config wires media/files to this adapter and `refuse` defaults
+  to empty -- inert by absence of configuration, not by construction.
+  Nothing here chooses a *scanning* behaviour for video or files (no check
+  computes a video-appropriate hash, no policy is tuned for that content
+  type); the byte-hashing plumbing simply doesn't distinguish them.
+
+**Theme uploads bypass storage adapters entirely.** Ghost's theme
+upload/activation path writes to local disk directly and never resolves a
+`storage:*` adapter, so a theme zip -- which can carry arbitrary image bytes
+-- has no path through this decorator, regardless of configuration. Outside
+this story's scope; named here so a reader doesn't take this decorator for
+a complete answer to "what bytes can reach a reader."
 
 ## Configuration
 
