@@ -91,6 +91,8 @@ docker run -d \
     -p "$GHOST_PORT:2368" \
     -p "$SIDECAR_PORT:8080" \
     -p "$UNREADABLE_PORT:8081" \
+    -p "$MATCH_PORT:8082" \
+    -p "$MISMATCH_PORT:8083" \
     -e url="https://localhost:$GHOST_PORT" \
     -e database__client="sqlite3" \
     -e database__connection__filename="/var/lib/ghost/content/data/ghost-drain-test.db" \
@@ -211,7 +213,6 @@ docker run -d \
     -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
     -e GHOST_INTENDED_VERSION="$GHOST_VERSION" \
     -e PORT="8082" \
-    -p "$MATCH_PORT:8082" \
     "$SIDECAR_IMAGE" >/dev/null
 
 metrics_body="$(mktemp)"
@@ -244,7 +245,6 @@ docker run -d \
     -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
     -e GHOST_INTENDED_VERSION="0.0.0-not-real" \
     -e PORT="8083" \
-    -p "$MISMATCH_PORT:8083" \
     "$SIDECAR_IMAGE" >/dev/null
 
 metrics_body="$(mktemp)"

@@ -34,7 +34,7 @@ function fakeGhost(healthy: boolean): GhostProbe {
 
 // None of the /healthz tests below care about version reporting; a probe
 // that gets called at all when it shouldn't be is itself something a later
-// test (in versionMetrics.test.ts) asserts against, not this file's job.
+// test (in appMetrics.test.ts) asserts against, not this file's job.
 function unusedVersion(): GhostVersionProbe {
   return {
     getVersion: async () => {
