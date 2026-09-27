@@ -80,7 +80,8 @@ assert_boots() {
 # The four cases this control's own acceptance criteria name: a bare
 # S3Storage, a bare local adapter, the decorator wrapping S3Storage with a
 # required field missing, and (below, in "must boot") a complete wrapped
-# configuration.
+# configuration. All four are exercised on `images`; the per-feature cases
+# further down prove the same checks are not `images`-only.
 
 assert_blocked "no storage__images__adapter set, no escape hatch"
 
@@ -100,12 +101,91 @@ assert_blocked "the decorator wrapping S3Storage with required fields missing" \
     -e storage__images__wraps=S3Storage \
     -e storage__images__wrappedConfig__bucket=some-bucket
 
-# --- Must be allowed to boot --------------------------------------------
+# --- Per-feature independence -------------------------------------------
+#
+# Everything above only exercises `images`. These prove `media` and `files`
+# are checked independently, not waved through because `images` happens to
+# be correct — and that the local-development escape hatch waives durability
+# only, never the decorator requirement, on any of the three.
 
-assert_boots "escape hatch set, no storage config (local dev)" 4220 \
+assert_blocked "images and files correct, media has no storage__media__adapter at all" \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=S3Storage \
+    -e storage__images__wrappedConfig__bucket=some-bucket \
+    -e storage__images__wrappedConfig__staticFileURLPrefix=content/images \
+    -e storage__images__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__images__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__images__wrappedConfig__multipartChunkSizeBytes=5242880 \
+    -e storage__files__adapter=ScanningStorageAdapter \
+    -e storage__files__wraps=S3Storage \
+    -e storage__files__wrappedConfig__bucket=some-bucket \
+    -e storage__files__wrappedConfig__staticFileURLPrefix=content/files \
+    -e storage__files__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__files__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__files__wrappedConfig__multipartChunkSizeBytes=5242880
+
+assert_blocked "images and media correct, files is bare S3Storage (not the decorator)" \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=S3Storage \
+    -e storage__images__wrappedConfig__bucket=some-bucket \
+    -e storage__images__wrappedConfig__staticFileURLPrefix=content/images \
+    -e storage__images__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__images__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__images__wrappedConfig__multipartChunkSizeBytes=5242880 \
+    -e storage__media__adapter=ScanningStorageAdapter \
+    -e storage__media__wraps=S3Storage \
+    -e storage__media__wrappedConfig__bucket=some-bucket \
+    -e storage__media__wrappedConfig__staticFileURLPrefix=content/media \
+    -e storage__media__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__media__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__media__wrappedConfig__multipartChunkSizeBytes=5242880 \
+    -e storage__files__adapter=S3Storage \
+    -e storage__files__wrappedConfig__bucket=some-bucket
+
+assert_blocked "escape hatch set, but no storage config at all -- the decorator is never waived" \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true
 
-assert_boots "the decorator wrapping a complete S3Storage config, no escape hatch (production shape)" 4221 \
+assert_blocked "escape hatch set, images and files wrap a local adapter via the decorator, media has no decorator at all" \
+    -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=LocalImagesStorage \
+    -e storage__files__adapter=ScanningStorageAdapter \
+    -e storage__files__wraps=LocalFilesStorage
+
+assert_blocked "no escape hatch, images and files complete, media's decorator is missing a required S3 field" \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=S3Storage \
+    -e storage__images__wrappedConfig__bucket=some-bucket \
+    -e storage__images__wrappedConfig__staticFileURLPrefix=content/images \
+    -e storage__images__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__images__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__images__wrappedConfig__multipartChunkSizeBytes=5242880 \
+    -e storage__media__adapter=ScanningStorageAdapter \
+    -e storage__media__wraps=S3Storage \
+    -e storage__media__wrappedConfig__bucket=some-bucket \
+    -e storage__files__adapter=ScanningStorageAdapter \
+    -e storage__files__wraps=S3Storage \
+    -e storage__files__wrappedConfig__bucket=some-bucket \
+    -e storage__files__wrappedConfig__staticFileURLPrefix=content/files \
+    -e storage__files__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__files__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__files__wrappedConfig__multipartChunkSizeBytes=5242880
+
+# --- Must be allowed to boot --------------------------------------------
+
+assert_boots "escape hatch set, the decorator wrapping a local adapter on all three features (real local-dev shape)" 4220 \
+    -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=LocalImagesStorage \
+    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__media__adapter=ScanningStorageAdapter \
+    -e storage__media__wraps=LocalMediaStorage \
+    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__files__adapter=ScanningStorageAdapter \
+    -e storage__files__wraps=LocalFilesStorage \
+    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine
+
+assert_boots "the decorator wrapping a complete S3Storage config on all three features, no escape hatch (production shape)" 4221 \
     -e storage__images__adapter=ScanningStorageAdapter \
     -e storage__images__wraps=S3Storage \
     -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
@@ -118,7 +198,33 @@ assert_boots "the decorator wrapping a complete S3Storage config, no escape hatc
     -e storage__images__wrappedConfig__region=auto \
     -e storage__images__wrappedConfig__forcePathStyle=true \
     -e storage__images__wrappedConfig__accessKeyId=FAKEKEY \
-    -e storage__images__wrappedConfig__secretAccessKey=FAKESECRET
+    -e storage__images__wrappedConfig__secretAccessKey=FAKESECRET \
+    -e storage__media__adapter=ScanningStorageAdapter \
+    -e storage__media__wraps=S3Storage \
+    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__media__wrappedConfig__bucket=fake-bucket \
+    -e storage__media__wrappedConfig__staticFileURLPrefix=content/media \
+    -e storage__media__wrappedConfig__cdnUrl=https://storage.googleapis.com/fake-bucket \
+    -e storage__media__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__media__wrappedConfig__multipartChunkSizeBytes=5242880 \
+    -e storage__media__wrappedConfig__endpoint=https://storage.googleapis.com \
+    -e storage__media__wrappedConfig__region=auto \
+    -e storage__media__wrappedConfig__forcePathStyle=true \
+    -e storage__media__wrappedConfig__accessKeyId=FAKEKEY \
+    -e storage__media__wrappedConfig__secretAccessKey=FAKESECRET \
+    -e storage__files__adapter=ScanningStorageAdapter \
+    -e storage__files__wraps=S3Storage \
+    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__files__wrappedConfig__bucket=fake-bucket \
+    -e storage__files__wrappedConfig__staticFileURLPrefix=content/files \
+    -e storage__files__wrappedConfig__cdnUrl=https://storage.googleapis.com/fake-bucket \
+    -e storage__files__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__files__wrappedConfig__multipartChunkSizeBytes=5242880 \
+    -e storage__files__wrappedConfig__endpoint=https://storage.googleapis.com \
+    -e storage__files__wrappedConfig__region=auto \
+    -e storage__files__wrappedConfig__forcePathStyle=true \
+    -e storage__files__wrappedConfig__accessKeyId=FAKEKEY \
+    -e storage__files__wrappedConfig__secretAccessKey=FAKESECRET
 
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES check(s) failed."
