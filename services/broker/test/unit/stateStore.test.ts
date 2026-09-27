@@ -442,4 +442,122 @@ describe('stateStore', () => {
       });
     });
   });
+
+  // --- A crash between `attemptStopOldColour` calling
+  // `wrapper.stop` and its own final `writeSlotState`. Unlike "swapping",
+  // there is no health signal to poll -- `state.colour` already names the
+  // survivor by construction, so the other colour is unambiguous, and
+  // repeating an idempotent `stop` is always safe. ---
+  describe('recoverCrashedSlots on a "stopping" slot (crash mid-stop)', () => {
+    function fakeStopRecovery(): {
+      wrapper: { stop: (slot: SlotName, colour: 'a' | 'b') => Promise<void> };
+      readonly stopCalls: { slot: SlotName; colour: 'a' | 'b' }[];
+    } {
+      const stopCalls: { slot: SlotName; colour: 'a' | 'b' }[] = [];
+      return {
+        wrapper: {
+          stop: async (slot, colour) => {
+            stopCalls.push({ slot, colour });
+          },
+        },
+        stopCalls,
+      };
+    }
+
+    it('retries the stop against the other colour (never the survivor) and completes the transition', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'stopping',
+        colour: 'b',
+        descriptorHash: 'hash-b',
+        lastHashId: 'hash-id-b' as never,
+        trafficBaseline: 3,
+      });
+      const stopRecovery = fakeStopRecovery();
+
+      await recoverCrashedSlots(
+        dir,
+        [slot],
+        leaseStoreConfig,
+        () => undefined,
+        NEVER_SWAP_RECOVERY,
+        stopRecovery
+      );
+
+      // 'b' is the survivor -- only 'a' is ever named to the wrapper.
+      expect(stopRecovery.stopCalls).toEqual([{ slot, colour: 'a' }]);
+      expect(await readSlotState(dir, slot)).toEqual({
+        phase: 'running',
+        colour: 'b',
+        descriptorHash: 'hash-b',
+        lastHashId: 'hash-id-b',
+        trafficBaseline: 3,
+        oldColourStopped: true,
+      });
+    });
+
+    it('is safe to run twice -- systemctl stop on an already-stopped unit is a no-op, and recovery never guesses that away', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'stopping',
+        colour: 'a',
+        descriptorHash: 'hash-a',
+        lastHashId: 'hash-id-a' as never,
+        trafficBaseline: 1,
+      });
+      const stopRecovery = fakeStopRecovery();
+      await recoverCrashedSlots(
+        dir,
+        [slot],
+        leaseStoreConfig,
+        () => undefined,
+        NEVER_SWAP_RECOVERY,
+        stopRecovery
+      );
+      expect(stopRecovery.stopCalls).toEqual([{ slot, colour: 'b' }]);
+    });
+
+    it('marks "error" rather than guessing, if left "stopping" with no colour recorded at all', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'stopping',
+        lastHashId: 'x' as never,
+      } as never);
+      const stopRecovery = fakeStopRecovery();
+
+      await recoverCrashedSlots(
+        dir,
+        [slot],
+        leaseStoreConfig,
+        () => undefined,
+        NEVER_SWAP_RECOVERY,
+        stopRecovery
+      );
+
+      expect(stopRecovery.stopCalls).toEqual([]);
+      expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'x' });
+    });
+
+    it('marks "error" rather than guessing, if no stop-recovery wrapper is configured at all -- never silently trusts the stale "running" state was reached safely', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'stopping',
+        colour: 'a',
+        lastHashId: 'x' as never,
+        trafficBaseline: 1,
+      });
+
+      // No sixth argument at all -- the exact shape every caller from
+      // before this story still uses.
+      await recoverCrashedSlots(
+        dir,
+        [slot],
+        leaseStoreConfig,
+        () => undefined,
+        NEVER_SWAP_RECOVERY
+      );
+
+      expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'x' });
+    });
+  });
 });

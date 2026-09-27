@@ -213,6 +213,30 @@ describe('verify (the forward_auth target)', () => {
     expect((await verifyAs(HOST, cookieFor(SLOT, LEASE_1))).status).toBe(200);
   });
 
+  it('increments the traffic counter for the admitted slot, and only on a 200', async () => {
+    const counts: SlotName[] = [];
+    h = await start({
+      trafficCounter: {
+        async increment(slot) {
+          counts.push(slot);
+        },
+      },
+    });
+    // A refused request first -- must never increment.
+    expect((await verifyAs(HOST, undefined)).status).toBe(401);
+    expect(counts).toEqual([]);
+    expect((await verifyAs(HOST, cookieFor(SLOT, LEASE_1))).status).toBe(200);
+    expect(counts).toEqual([SLOT]);
+  });
+
+  it('never throws when no traffic counter is configured -- the default, unwired case', async () => {
+    // `start()` in `beforeEach` already omits `trafficCounter`; this is
+    // the sabotage's own control case, asserted directly rather than
+    // inferred from the admit test above passing for an unrelated reason.
+    expect(h.deps.trafficCounter).toBeUndefined();
+    expect((await verifyAs(HOST, cookieFor(SLOT, LEASE_1))).status).toBe(200);
+  });
+
   it('answers HEAD the same way as GET', async () => {
     const reply = await send('HEAD', VERIFY_PATH, { host: HOST, cookie: cookieFor(SLOT, LEASE_1) });
     expect(reply.status).toBe(200);

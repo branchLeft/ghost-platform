@@ -7,6 +7,7 @@ import { DerivationGateFullError, type DerivationGate } from './derivationGate.j
 import { LOGIN_PATH, passphrasePage, safeReturnPath } from './page.js';
 import type { CurrentLease, GatedHost } from './slots.js';
 import type { SourceResolver } from './source.js';
+import type { TrafficCounterStore } from './trafficCounter.js';
 
 export const VERIFY_PATH = '/__gate/verify';
 
@@ -45,6 +46,14 @@ export interface GateDeps {
   readonly decoyHash: Argon2idHash;
   readonly nowMs: () => number;
   readonly log: (line: string) => void;
+  /**
+   * Optional: absent in any deployment that has not set
+   * `GATE_TRAFFIC_COUNTER_DIR`. `services/broker`'s pre-stop check reads
+   * this counter and fails closed (refuses to stop the old colour) when it
+   * finds nothing, so an operator who has not wired this up gets a broker
+   * that never permits a stop -- never one that silently skips the check.
+   */
+  readonly trafficCounter?: TrafficCounterStore;
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -141,6 +150,14 @@ async function verify(deps: GateDeps, req: IncomingMessage, res: ServerResponse)
   if (current === null || !claims.some((claim) => claim.lease === current.lease)) return deny();
 
   send(res, 200);
+  // After the response, never before it (F10's own ordering reason,
+  // applied here): a crash between these two lines undercounts a real
+  // admitted request rather than counting one Caddy never actually
+  // proxied, and undercounting is the safe direction for a check that
+  // exists to refuse a stop until it sees the count move.
+  if (deps.trafficCounter) {
+    await deps.trafficCounter.increment(gated.slot);
+  }
 }
 
 async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {

@@ -7,12 +7,20 @@ import { createInMemoryNonceStore } from './nonceStore.js';
 import { loadConfig, type BrokerConfig, type BrokerEnv } from './config.js';
 import { createDrainFlagStore } from './drainFlag.js';
 import type { DrainSource } from './drainSource.js';
+import { createFailClosedEmailBatchChecker, type EmailBatchChecker } from './emailBatchChecker.js';
 import { createHttpGhostReadinessChecker } from './ghostReadiness.js';
 import { createHttpHealthChecker } from './healthCheck.js';
+import { createFileRealTrafficChecker, createZeroRealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { createSlotLock } from './slotLock.js';
 import { recoverCrashedSlots } from './stateStore.js';
 import { createSlotWrapper } from './wrapper.js';
+
+function isEmailBatchChecker(candidate: unknown): candidate is EmailBatchChecker {
+  return (
+    typeof (candidate as Partial<EmailBatchChecker> | undefined)?.hasSubmittingBatch === 'function'
+  );
+}
 
 function isRenderer(candidate: unknown): candidate is Renderer {
   return typeof (candidate as Partial<Renderer> | undefined)?.render === 'function';
@@ -100,6 +108,14 @@ export function buildDeps(
     drainFlags: createDrainFlagStore(config.drainFlagDir),
     healthChecker: createHttpHealthChecker('127.0.0.1', config.healthCheckTimeoutMs),
     ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
+    // Both default to the fail-closed side of the stop-old-colour
+    // pre-stop gate: absent configuration must never read as "safe to
+    // stop" (see each factory's own doc comment for why each is a
+    // separate open question rather than a guess this entrypoint makes).
+    realTraffic: config.trafficCounterDir
+      ? createFileRealTrafficChecker(config.trafficCounterDir)
+      : createZeroRealTrafficChecker(),
+    emailBatchChecker: createFailClosedEmailBatchChecker(),
     ghostReadyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
     healthPortBase: config.healthPortBase,
     appPortBase: config.appPortBase,
@@ -118,12 +134,16 @@ export async function main(): Promise<Server> {
   await mkdir(config.stateDir, { recursive: true });
   await mkdir(config.drainFlagDir, { recursive: true });
   await mkdir(config.leaseDir, { recursive: true });
+  if (config.trafficCounterDir) {
+    await mkdir(config.trafficCounterDir, { recursive: true });
+  }
 
   // Before anything below can accept a request: a slot a previous process
-  // left `preparing`/`resetting`/`swapping` had its lock holder die with it
-  // (the lock is in-memory and this is a fresh process), so it cannot be
-  // trusted as still in flight. See `recoverCrashedSlots`'s and
-  // `recoverSwapInFlight`'s own doc comments for what each phase needs.
+  // left `preparing`/`resetting`/`swapping`/`stopping` had its lock holder
+  // die with it (the lock is in-memory and this is a fresh process), so it
+  // cannot be trusted as still in flight. See `recoverCrashedSlots`'s,
+  // `recoverSwapInFlight`'s and `recoverStoppingSlot`'s own doc comments
+  // for what each phase needs.
   await recoverCrashedSlots(
     config.stateDir,
     config.slotLiterals,
@@ -138,6 +158,13 @@ export async function main(): Promise<Server> {
       // reason (`ghostReadiness.ts`'s own doc comment on Ghost's post-boot
       // maintenance window).
       readyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
+    },
+    {
+      wrapper: createSlotWrapper({
+        command: config.wrapperCommand,
+        prefix: config.wrapperPrefix,
+        timeoutMs: config.wrapperTimeoutMs,
+      }),
     }
   );
 
@@ -145,7 +172,21 @@ export async function main(): Promise<Server> {
   const adminApi = await loadPlugin('BROKER_ADMIN_API_MODULE', process.env, isAdminApiClient);
   const drainSource = await loadPlugin('BROKER_DRAIN_SOURCE_MODULE', process.env, isDrainSource);
 
-  const deps = buildDeps(config, renderer, adminApi, drainSource);
+  let deps = buildDeps(config, renderer, adminApi, drainSource);
+
+  // Optional fourth seam, deliberately not required at start-up the way
+  // the three above are (`emailBatchChecker.ts`'s own doc comment): a
+  // deploy that has not decided how the broker reaches Ghost's
+  // `email_batches` table yet still starts, with `/stop` refusing every
+  // request rather than the whole service failing to boot.
+  if (process.env.BROKER_EMAIL_BATCH_CHECKER_MODULE) {
+    const emailBatchChecker = await loadPlugin(
+      'BROKER_EMAIL_BATCH_CHECKER_MODULE',
+      process.env,
+      isEmailBatchChecker
+    );
+    deps = { ...deps, emailBatchChecker };
+  }
 
   const handler = createBrokerHandler(deps);
   const server = createServer((req, res) => void handler(req, res));

@@ -12,12 +12,14 @@ import { type AuthDeps, verifyRequest } from './auth.js';
 import { descriptorHash } from './descriptorHash.js';
 import { EMPTY_DRAIN_PAYLOAD, type DrainSource } from './drainSource.js';
 import type { DrainFlagStore } from './drainFlag.js';
+import type { EmailBatchChecker } from './emailBatchChecker.js';
 import type { GhostReadinessChecker } from './ghostReadiness.js';
 import { waitUntilReady } from './ghostReadiness.js';
 import type { HealthChecker } from './healthCheck.js';
 import { hostOf } from './hostOf.js';
 import { clearLeaseAndHash, writeLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
 import { otherColour, validateSlotLiteral, type Colour } from './literals.js';
+import type { RealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { type SlotLock } from './slotLock.js';
 import { slotAllocation, slotPort } from './slotPorts.js';
@@ -48,6 +50,10 @@ export interface BrokerDeps {
   readonly drainFlags: DrainFlagStore;
   readonly healthChecker: HealthChecker;
   readonly ghostReadiness: GhostReadinessChecker;
+  /** The first stop-old-colour pre-stop check: the falsification clause's "served real traffic". */
+  readonly realTraffic: RealTrafficChecker;
+  /** The second stop-old-colour pre-stop check: LLD-4 §U5's "no send in flight". */
+  readonly emailBatchChecker: EmailBatchChecker;
   /** How long a swap waits for a freshly started colour to answer 200 before giving up on it. */
   readonly ghostReadyPollTimeoutMs: number;
   readonly healthPortBase: number;
@@ -488,13 +494,165 @@ async function attemptColourSwap(
     await deps.drainFlags.set(slot, liveColour);
   }
 
+  // The stop-old-colour baseline: taken here, once, at the instant the swap's
+  // own traffic-moving step is done -- not read again later by
+  // `attemptStopOldColour`'s own check, which must see it *advance* from
+  // this fixed point rather than the checker's current value at every
+  // call. Read after the state write would risk a real request landing in
+  // the gap and being silently absorbed into "the starting point" instead
+  // of "evidence of progress"; reading it first, here, costs nothing and
+  // cannot manufacture false evidence the other direction.
+  const trafficBaseline = await deps.realTraffic.readCount(slot);
   await writeSlotState(deps.stateDir, slot, {
     phase: 'running' satisfies Phase,
     colour: target,
     descriptorHash: hash,
     lastHashId: newHashId,
+    trafficBaseline,
   });
   send(res, 200, { slot, phase: 'running', colour: target });
+}
+
+/**
+ * Stops the colour a completed swap left running, drained,
+ * for the whole bake window (LLD-4 §U7). Called only once the caller has
+ * confirmed `state.phase === 'running'`, `state.colour` is set and
+ * `state.trafficBaseline` is set -- the last of those is what distinguishes
+ * "this tenancy arrived by a swap, so there is an old colour to stop" from
+ * a fresh deploy's own `running`, which has none. Holds the same per-slot
+ * lock `handleStop`'s caller already claimed.
+ *
+ * Two independent pre-stop checks, both refusing rather than guessing, in
+ * the order that costs least first:
+ *
+ * 1. The falsification clause (LLD-4 §04): the new colour must have
+ *    *served real traffic*, not merely reported healthy. `deps.realTraffic`
+ *    is the one signal in the estate that actually observes an admitted
+ *    reader request (`services/demo-gate`'s counter); refused until a
+ *    fresh reading exceeds the baseline `attemptColourSwap` recorded.
+ * 2. LLD-4 §U5, load-bearing: no email or batch may be `submitting` --
+ *    stopping mid-send is what turns Ghost's own anti-duplicate rule into
+ *    a reader getting a partial newsletter.
+ *
+ * A third check, immediately before the one irreversible side effect,
+ * mirrors `attemptColourSwap`'s own second, independent readiness check:
+ * the survivor must still be undrained and healthy right now, because "no
+ * step may ever leave a tenant with no colour serving" binds here exactly
+ * as hard as it does mid-swap, and neither pre-stop check above says
+ * anything about the survivor's own current health.
+ */
+async function attemptStopOldColour(
+  deps: BrokerDeps,
+  res: ServerResponse,
+  slot: SlotName,
+  state: SlotState
+): Promise<void> {
+  if (state.colour === undefined || state.trafficBaseline === undefined) {
+    return send(res, 409, {
+      error: `slot "${slot}" has no old colour to stop -- its current tenancy was not reached by a colour swap`,
+    });
+  }
+  if (state.oldColourStopped === true) {
+    // Idempotent replay (the same discipline `handleReconcile` gives a
+    // repeated identical descriptor): neither check below needs to run
+    // again for a step that already happened.
+    return send(res, 200, { slot, phase: 'running', colour: state.colour });
+  }
+
+  const liveColour = state.colour;
+  const oldColour = otherColour(liveColour);
+
+  const currentTraffic = await deps.realTraffic.readCount(slot);
+  if (currentTraffic <= state.trafficBaseline) {
+    return send(res, 503, {
+      slot,
+      phase: 'running',
+      colour: liveColour,
+      error: `colour "${liveColour}" has served no real traffic since its swap completed -- refusing to stop colour "${oldColour}"`,
+    });
+  }
+
+  if (await deps.emailBatchChecker.hasSubmittingBatch(slot)) {
+    return send(res, 503, {
+      slot,
+      phase: 'running',
+      colour: liveColour,
+      error: `slot "${slot}" has an email or batch still "submitting" -- refusing to stop colour "${oldColour}" mid-send`,
+    });
+  }
+
+  const liveColourPort = slotPort(deps.appPortBase, slot, liveColour);
+  const stillLive =
+    !(await deps.drainFlags.isSet(slot, liveColour)) &&
+    (await deps.ghostReadiness.isReady(liveColourPort));
+  if (!stillLive) {
+    return send(res, 503, {
+      slot,
+      phase: 'running',
+      colour: liveColour,
+      error: `colour "${liveColour}" is not confirmed live right now -- refusing to stop colour "${oldColour}", which would leave slot "${slot}" with no colour serving`,
+    });
+  }
+
+  // The in-flight marker, written before the one side effect that follows
+  // -- `recoverStoppingSlot` (`stateStore.ts`) is what makes a crash here
+  // recoverable rather than an unrecorded stop nobody can tell happened.
+  await writeSlotState(deps.stateDir, slot, {
+    phase: 'stopping' satisfies Phase,
+    colour: liveColour,
+    descriptorHash: state.descriptorHash,
+    lastHashId: state.lastHashId,
+    trafficBaseline: state.trafficBaseline,
+  });
+  await deps.wrapper.stop(slot, oldColour);
+  await writeSlotState(deps.stateDir, slot, {
+    phase: 'running' satisfies Phase,
+    colour: liveColour,
+    descriptorHash: state.descriptorHash,
+    lastHashId: state.lastHashId,
+    trafficBaseline: state.trafficBaseline,
+    oldColourStopped: true,
+  });
+  send(res, 200, { slot, phase: 'running', colour: liveColour });
+}
+
+async function handleStop(
+  deps: BrokerDeps,
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  const rawBody = await authenticate(deps, req, res, '/stop');
+  if (rawBody === null) return;
+
+  let payload: { slot?: unknown };
+  try {
+    payload = parseJson(rawBody) as typeof payload;
+  } catch {
+    return send(res, 400, { error: 'body is not valid JSON' });
+  }
+  let slot: SlotName;
+  try {
+    slot = validateSlotLiteral(payload.slot, deps.slotLiterals);
+  } catch (err) {
+    return send(res, 422, { error: (err as Error).message });
+  }
+
+  // Same lock as `/reconcile` and `/reset` (F1): a stop racing either must
+  // not act on a slot either of them still believes it owns.
+  if (!deps.slotLock.claim(slot)) {
+    return send(res, 409, { error: `slot "${slot}" is locked by a concurrent request` });
+  }
+  try {
+    const state = await readSlotState(deps.stateDir, slot);
+    if (state.phase !== 'running') {
+      return send(res, 409, {
+        error: `slot "${slot}" is not in a running state (phase "${state.phase}")`,
+      });
+    }
+    await attemptStopOldColour(deps, res, slot, state);
+  } finally {
+    deps.slotLock.release(slot);
+  }
 }
 
 async function handleReset(
@@ -618,6 +776,7 @@ export function createBrokerHandler(deps: BrokerDeps): Handler {
       if (path === '/reconcile' && req.method === 'POST')
         return await handleReconcile(deps, req, res);
       if (path === '/reset' && req.method === 'POST') return await handleReset(deps, req, res);
+      if (path === '/stop' && req.method === 'POST') return await handleStop(deps, req, res);
       if (path === '/drain' && req.method === 'GET') return await handleDrain(deps, req, res);
       const statusMatch = /^\/status\/([^/]+)$/.exec(path);
       if (statusMatch && req.method === 'GET') {

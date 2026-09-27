@@ -18,6 +18,16 @@ export interface GateConfig {
   readonly ceilingBroadMaxSources: number;
   readonly argon2MaxConcurrent: number;
   readonly argon2MaxQueued: number;
+  /**
+   * Absent by default: a deployment that never sets
+   * `GATE_TRAFFIC_COUNTER_DIR` simply does not count real traffic, and
+   * `services/broker`'s own pre-stop check reads that absence as "hasn't
+   * served" and fails closed -- see `trafficCounter.ts`'s own doc comment.
+   * Not `requireEnv`'d like the slots file or the signing key: unlike
+   * those, an unset value here degrades one downstream check safely
+   * rather than admitting a request it should have refused.
+   */
+  readonly trafficCounterDir?: string;
 }
 
 export type GateEnv = Record<string, string | undefined>;
@@ -102,5 +112,6 @@ export function loadConfig(
     // derivations than that.
     argon2MaxConcurrent: positiveInteger(env, 'GATE_ARGON2_MAX_CONCURRENT', 3, 64),
     argon2MaxQueued: positiveInteger(env, 'GATE_ARGON2_MAX_QUEUED', 64, 10_000),
+    trafficCounterDir: env.GATE_TRAFFIC_COUNTER_DIR || undefined,
   };
 }
