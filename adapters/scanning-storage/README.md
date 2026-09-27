@@ -2,9 +2,11 @@
 
 Wraps whatever storage adapter Ghost is configured with -- local disk or S3 --
 and refuses a known-bad upload before it ever reaches the wrapped adapter.
-Design: `ghost-platform-docs/19-try-it-now-design/07-safety-toolbox.html`
-(LLD-7), including its dated amendments (D34, D43, D55), and
-`90-cross-document-review.html` (G2, P2).
+Design: `ghost-platform-docs/19-try-it-now-design/07-safety-toolbox.html`,
+including its later amendments on the verdict-channel timeout/hold ruling
+and on which storage backend the professional tier runs, and the
+cross-document review that found the coverage gap an earlier,
+inheritance-based draft of this component left.
 
 `src/ScanningStorageAdapter.js` is copied by the root `Dockerfile` into
 Ghost's internal storage adapters directory,
@@ -20,12 +22,13 @@ This story builds the decorator, its `save()`/`saveRaw()` interception, the
 `Check`/`Verdict`/`Policy` seams the rest of the safety toolbox plugs into,
 and an in-process `VerdictClient` test double. It does **not** build:
 
-- **The real verdict channel.** The safety service that Arachnid-checks a
-  hash lives in a separate repo, built by a separate story (owner ruling:
-  workspace#1266). `ScanningStorageAdapter.js` constructs a `FakeVerdictClient`
-  from its own config until that story lands; nothing here guesses that
-  channel's wire format or transport.
-- **The hold branch (D34).** When a verdict channel times out or is
+- **The real verdict channel.** The safety service that checks a hash
+  against a known-material database lives in a separate repo, built by a
+  separate story, per the platform owner's own ruling that it should be
+  extensible to other organisations later. `ScanningStorageAdapter.js`
+  constructs a `FakeVerdictClient` from its own config until that story
+  lands; nothing here guesses that channel's wire format or transport.
+- **The hold branch.** When a verdict channel times out or is
   unreachable, the high-level design's own ruling is to accept the upload and
   hold the bytes unserved until a verdict arrives, never to refuse. The
   in-process fake verdict client is always reachable and always synchronous,
@@ -35,8 +38,9 @@ and an in-process `VerdictClient` test double. It does **not** build:
   loudly rather than guessing a behaviour if it ever sees one.
 - **A behaviour for video (`storage:media`) or arbitrary files
   (`storage:files`).** PDQ is an image hash; the design names video as
-  undesigned (issue's own open question, deferred to Rob via
-  workspace#1151/#1200). The decorator class wraps any of the three storage
+  undesigned. Which behaviour to build for either content type is an open
+  product decision for the platform owner, not made here. The decorator
+  class wraps any of the three storage
   features identically, and `PdqKnownMaterialCheck` is attached unconditionally
   regardless of which feature the instance services -- it is not
   image-specific, it just hashes whatever bytes it is given. So configuring
@@ -111,7 +115,7 @@ derivatives; `S3Storage.ts`/`LocalStorageBase.ts` implement `save`,
 3. **A decorator that subclassed one concrete adapter instead of composing
    with it would leave every other adapter type unwrapped, silently, with
    every test for the adapter it did subclass green.** The professional
-   tier runs `S3Storage` (D55); a subclass of the local adapter is not in
+   tier runs `S3Storage`; a subclass of the local adapter is not in
    its path at all.
 4. **`ScanningStorageAdapter.js` never requires `ghost-storage-base` or
    `@tryghost/errors` unconditionally at the top of the testable module.**

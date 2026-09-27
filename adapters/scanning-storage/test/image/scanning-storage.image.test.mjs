@@ -45,6 +45,21 @@ function dockerOk(...args) {
   return spawnSync('docker', args, { encoding: 'utf8' });
 }
 
+// A user-defined network gives containers on it Docker's own embedded DNS,
+// so one can address another by --name. The default bridge network (used
+// when no network is named) has no such DNS -- that's the whole reason
+// host.docker.internal existed here before: it only resolves under Docker
+// Desktop, not on a Linux CI runner, which is portable in neither direction
+// a container needs to reach another container. A named network is
+// portable in both.
+function createNetwork(name) {
+  docker('network', 'create', name);
+}
+
+function removeNetwork(name) {
+  dockerOk('network', 'rm', name);
+}
+
 async function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -63,7 +78,7 @@ function sha256Hex(buffer) {
 }
 
 class GhostContainer {
-  static async start(env = {}) {
+  static async start(env = {}, { network = 'bridge' } = {}) {
     const port = await freePort();
     const name = `scan-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const fullEnv = {
@@ -82,7 +97,7 @@ class GhostContainer {
       '--name',
       name,
       '--network',
-      'bridge',
+      network,
       '-p',
       `127.0.0.1:${port}:2368`,
       ...envArgs,
@@ -199,10 +214,24 @@ class GhostContainer {
 // validate request signatures, so the AWS SDK client S3Storage builds
 // still signs every request; the double just never checks that signature.
 class S3MockDouble {
-  static async start() {
+  // Published to the host (for this script's own HTTP checks) *and* joined
+  // to `network` (so a container on that same network, i.e. the Ghost
+  // container under test, can reach it by name) at once -- Docker allows
+  // both on the same container.
+  static async start(network) {
     const port = await freePort();
     const name = `scan-s3mock-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    docker('run', '-d', '--name', name, '-p', `127.0.0.1:${port}:9090`, 'adobe/s3mock:latest');
+    docker(
+      'run',
+      '-d',
+      '--name',
+      name,
+      '--network',
+      network,
+      '-p',
+      `127.0.0.1:${port}:9090`,
+      'adobe/s3mock:latest'
+    );
     const double = new S3MockDouble(name, port);
     await double.waitForReady();
     await double.createBucket();
@@ -373,30 +402,45 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
     'refuses a match on the object-storage tier too, and nothing refused reaches the bucket',
     { timeout: 150_000 },
     async () => {
-      const double = await S3MockDouble.start();
+      const network = `scan-net-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
       const badBytes = fs.readFileSync(path.join(FIXTURES, 'bad.png'));
       const badDigest = sha256Hex(badBytes);
 
-      const ghost = await GhostContainer.start({
-        storage__images__adapter: 'ScanningStorageAdapter',
-        storage__images__wraps: 'S3Storage',
-        storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
-        storage__images__refuse: JSON.stringify({
-          [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
-        }),
-        storage__images__wrappedConfig__bucket: double.bucket,
-        storage__images__wrappedConfig__staticFileURLPrefix: 'content/images',
-        storage__images__wrappedConfig__cdnUrl: `http://host.docker.internal:${double.port}/${double.bucket}`,
-        storage__images__wrappedConfig__endpoint: `http://host.docker.internal:${double.port}`,
-        storage__images__wrappedConfig__region: 'us-east-1',
-        storage__images__wrappedConfig__forcePathStyle: 'true',
-        storage__images__wrappedConfig__accessKeyId: 'scanning-storage-test',
-        storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
-        storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
-        storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
-      });
-
+      // Network, then both containers, all inside one try/finally: a
+      // failure partway through setup (e.g. the mock never becomes ready)
+      // must not leak whatever was already created.
+      let double;
+      let ghost;
+      createNetwork(network);
       try {
+        double = await S3MockDouble.start(network);
+        // Addressed by container name over the shared network, not
+        // host.docker.internal: that hostname only resolves under Docker
+        // Desktop, and this same test runs on a Linux CI runner too, where
+        // a container can reach another container only via a shared
+        // user-defined network's own DNS.
+        ghost = await GhostContainer.start(
+          {
+            storage__images__adapter: 'ScanningStorageAdapter',
+            storage__images__wraps: 'S3Storage',
+            storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+            storage__images__refuse: JSON.stringify({
+              [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
+            }),
+            storage__images__wrappedConfig__bucket: double.bucket,
+            storage__images__wrappedConfig__staticFileURLPrefix: 'content/images',
+            storage__images__wrappedConfig__cdnUrl: `http://${double.name}:9090/${double.bucket}`,
+            storage__images__wrappedConfig__endpoint: `http://${double.name}:9090`,
+            storage__images__wrappedConfig__region: 'us-east-1',
+            storage__images__wrappedConfig__forcePathStyle: 'true',
+            storage__images__wrappedConfig__accessKeyId: 'scanning-storage-test',
+            storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
+            storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
+            storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
+          },
+          { network }
+        );
+
         assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
         await ghost.setupOwner();
         const cookie = await ghost.login();
@@ -418,8 +462,11 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
           `quarantine must hold the refused digest: ${quarantined}`
         );
       } finally {
-        ghost.stop();
-        double.stop();
+        if (ghost) ghost.stop();
+        if (double) double.stop();
+        // Docker refuses to remove a network while a container is still
+        // attached to it, so this only runs after both are gone.
+        removeNetwork(network);
       }
     }
   );
