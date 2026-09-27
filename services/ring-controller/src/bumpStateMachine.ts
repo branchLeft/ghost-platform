@@ -33,8 +33,9 @@ export interface StepResult {
  * on-demand dump and the drain-flag revert rather than reimplementing any
  * of them. Wiring these to the real broker `/reconcile` call, the backup
  * worker's `run_tenant_dump`, and the drain flag is integration work for
- * whatever runs this state machine; this module owns only the sequencing
- * and the abort behaviour above it.
+ * whatever runs this state machine; this module owns only the sequencing,
+ * the abort behaviour above it, and (via `persist`) the durability of
+ * which step it is in.
  */
 export interface BumpDependencies {
   /**
@@ -48,7 +49,9 @@ export interface BumpDependencies {
    * the step Ghost holds `migrations_lock` for (LLD-4 U2). The caller
    * awaits this to completion, success or failure, regardless of any
    * abort request: interrupting it is the unrecoverable half-applied
-   * state the whole design exists to avoid.
+   * state the whole design exists to avoid. A crash while this is in
+   * flight is recovered through `recoverFromApplying`, never by calling
+   * this a second time.
    */
   apply(): Promise<StepResult>;
   /** Confirm the new colour is genuinely serving before traffic depends on it alone. */
@@ -64,22 +67,52 @@ export interface BumpDependencies {
   stopColour(which: 'new' | 'old'): Promise<void>;
   /** The one page signal for a tenant automation could neither verify nor undo. Called at most once per bump, ever. */
   page(reason: string): Promise<void>;
+  /**
+   * Durably record the state being entered, before the side effect for
+   * that state runs. Optional so the pure-logic tests above can keep
+   * testing this class with no filesystem in the loop; a real caller
+   * wires this to a `TenantStateStore` so a crash mid-step is recoverable
+   * instead of silent.
+   */
+  persist?(state: BumpState): Promise<void>;
+}
+
+/** Constructor-only: rehydrates an instance recovered from a persisted record, rather than starting fresh at `pending`. */
+export interface RecoveredBumpState {
+  state: BumpState;
+  pageSent?: boolean;
 }
 
 /**
  * Drives one tenant's bump from `pending` to a terminal state, and holds
  * the abort flag that can land at any point along the way. Two tenants
- * sharing one `ApplyLock` can never both be inside `applying` at once.
+ * sharing one `ApplyLock` can never both be inside `applying` at once --
+ * and that lock is only sufficient because exactly one process ever holds
+ * it (see `processLock.ts`); this class itself assumes nothing about
+ * process topology.
  */
 export class BumpStateMachine {
   private state: BumpState = 'pending';
   private abortRequested = false;
   private pageSent = false;
+  /**
+   * Set synchronously, with no `await` between the read and the write, so
+   * that whichever of `closeBakeWindow()`/`abortAfterDone()` is called
+   * first -- even in the very same tick as the other -- is the only one
+   * that ever proceeds past `done`.
+   */
+  private doneTransitionClaimed = false;
 
   constructor(
     private readonly deps: BumpDependencies,
-    private readonly lock: ApplyLock
-  ) {}
+    private readonly lock: ApplyLock,
+    recovered?: RecoveredBumpState
+  ) {
+    if (recovered) {
+      this.state = recovered.state;
+      this.pageSent = recovered.pageSent ?? false;
+    }
+  }
 
   getState(): BumpState {
     return this.state;
@@ -108,23 +141,23 @@ export class BumpStateMachine {
     }
 
     if (this.abortRequested) {
-      this.state = 'cancelled';
+      await this.transition('cancelled');
       return this.state;
     }
 
-    this.state = 'backing-up';
+    await this.transition('backing-up');
     const backupResult = await this.deps.backup();
 
     if (this.abortRequested) {
       // "let the backup finish, then cancel" -- the backup itself is
       // never undone; a spare backup costs nothing.
-      this.state = 'cancelled';
+      await this.transition('cancelled');
       return this.state;
     }
     if (!backupResult.ok) {
       // Nothing has touched the tenant yet, so a failed backup is a
       // clean stop, not the unsafe state `failed-unsafe` names.
-      this.state = 'backup-failed';
+      await this.transition('backup-failed');
       return this.state;
     }
 
@@ -133,32 +166,86 @@ export class BumpStateMachine {
     // from one landing in 'backing-up' -- the check above already covers
     // it; a second one here would be dead code, never independently
     // reachable.
-    this.state = 'backed-up';
+    await this.transition('backed-up');
 
-    this.state = 'applying';
+    await this.transition('applying');
     // Never interrupted: awaited to completion, abort or not, whether it
-    // resolves ok or not. Serialised fleet-wide by the shared lock, so at
-    // most one tenant is ever in this state.
+    // resolves ok or not. Serialised within this process by the shared
+    // lock, so at most one tenant is ever in this state -- fleet-wide only
+    // because exactly one such process runs (the process lock's job).
     const applyResult = await this.lock.run(() => this.deps.apply());
 
     if (!applyResult.ok || this.abortRequested) {
       // "applying -> WAIT... then treat as verifying": jump straight to
-      // verifying's own abort rule (revert) without running a health
-      // check whose answer a pending abort, or the failed apply itself,
-      // has already overridden.
-      this.state = 'verifying';
+      // verifying's own abort rule (revert) without ever calling
+      // `verify()` -- a pending abort, or the failed apply itself, has
+      // already overridden whatever a health check would say.
+      await this.transition('verifying');
       return this.revertOrFailUnsafe(applyResult.reason);
     }
 
-    this.state = 'verifying';
-    const verifyResult = await this.deps.verify();
+    return this.verifyAndFinish();
+  }
 
-    if (verifyResult.ok && !this.abortRequested) {
-      this.state = 'done';
-      return this.state;
+  /**
+   * A tenant recovered from a persisted `applying` record after a crash.
+   * `apply()` is never called again -- the table's own rule for landing
+   * in `applying` ("WAIT... then treat as verifying") is followed
+   * literally, whatever the crash actually left mid-flight.
+   */
+  async recoverFromApplying(): Promise<BumpState> {
+    if (this.state !== 'applying') {
+      throw new Error(`recoverFromApplying called from state '${this.state}', expected 'applying'`);
     }
+    return this.verifyAndFinish();
+  }
 
-    return this.revertOrFailUnsafe(verifyResult.reason);
+  /**
+   * A tenant recovered from a persisted `verifying` or `reverting`
+   * record. Neither state has a completed outcome to trust -- the
+   * process died before finding out -- so the table's rule for landing
+   * in `verifying` applies: revert. `revertTraffic()` is a flag flip,
+   * safe to run again even if the crashed run had already flipped it.
+   */
+  async recoverFromRevertInFlight(): Promise<BumpState> {
+    if (this.state !== 'verifying' && this.state !== 'reverting') {
+      throw new Error(
+        `recoverFromRevertInFlight called from state '${this.state}', expected 'verifying' or 'reverting'`
+      );
+    }
+    return this.revertOrFailUnsafe();
+  }
+
+  /**
+   * A tenant recovered from a persisted `reverted` record: the revert
+   * itself succeeded, but the crash may have landed before the new
+   * colour's teardown ran. Retrying `stopColour('new')` is safe -- tearing
+   * down an already-stopped colour is a no-op for whatever runs it.
+   */
+  async recoverFromReverted(): Promise<BumpState> {
+    if (this.state !== 'reverted') {
+      throw new Error(`recoverFromReverted called from state '${this.state}', expected 'reverted'`);
+    }
+    await this.deps.stopColour('new');
+    return this.state;
+  }
+
+  /**
+   * A tenant recovered from a persisted `pending`, `backing-up` or
+   * `backed-up` record: none of these has an uninterruptible side effect
+   * in flight, so the abort table's own rule for landing here -- cancel
+   * cleanly -- is the recovery action too. `backup()` is never resumed or
+   * retried on this path; a spare backup from before the crash, if one
+   * exists, costs nothing left uncollected.
+   */
+  async recoverAsCancelled(): Promise<BumpState> {
+    if (this.state !== 'pending' && this.state !== 'backing-up' && this.state !== 'backed-up') {
+      throw new Error(
+        `recoverAsCancelled called from state '${this.state}', expected 'pending', 'backing-up' or 'backed-up'`
+      );
+    }
+    await this.transition('cancelled');
+    return this.state;
   }
 
   /**
@@ -168,9 +255,7 @@ export class BumpStateMachine {
    * post-`done` health regression during the bake window.
    */
   async abortAfterDone(): Promise<BumpState> {
-    if (this.state !== 'done') {
-      throw new Error(`abortAfterDone called from state '${this.state}', not 'done'`);
-    }
+    this.claimDoneTransition('abortAfterDone');
     this.abortRequested = true;
     return this.revertOrFailUnsafe();
   }
@@ -182,12 +267,52 @@ export class BumpStateMachine {
    * an automatic migration down and never a restore.
    */
   async closeBakeWindow(): Promise<BumpState> {
-    if (this.state !== 'done') {
-      throw new Error(`closeBakeWindow called from state '${this.state}', not 'done'`);
-    }
+    this.claimDoneTransition('closeBakeWindow');
     await this.deps.stopColour('old');
-    this.state = 'closed';
+    await this.transition('closed');
     return this.state;
+  }
+
+  /**
+   * The single gate both `done`-only calls pass through. Read-then-write
+   * with no `await` in between: two calls landing in the same tick (a
+   * bake-window timer firing the same turn as the watcher's health
+   * regression) still only let one of them claim it, because JavaScript
+   * never interleaves this synchronous body with anything else.
+   */
+  private claimDoneTransition(caller: string): void {
+    if (this.state !== 'done' || this.doneTransitionClaimed) {
+      throw new Error(`${caller} called from state '${this.state}', not 'done'`);
+    }
+    this.doneTransitionClaimed = true;
+  }
+
+  /**
+   * The shared tail of a completed, successful `apply()` (real or
+   * recovered): check health, then land on `done` or hand off to the
+   * revert path. Never entered on an apply failure or a pending abort --
+   * `run()` and `recoverFromApplying` both route those straight past
+   * `verify()` to the revert path instead. Verify itself throwing -- not
+   * answering ok or not-ok, just failing to run -- is the "can't be
+   * verified" case: it goes straight to `failed-unsafe` rather than being
+   * treated as either a pass or an ordinary failure.
+   */
+  private async verifyAndFinish(): Promise<BumpState> {
+    await this.transition('verifying');
+
+    let verifyResult: StepResult;
+    try {
+      verifyResult = await this.deps.verify();
+    } catch (err) {
+      return this.failUnsafe(err instanceof Error ? err.message : 'verify() threw');
+    }
+
+    if (verifyResult.ok && !this.abortRequested) {
+      await this.transition('done');
+      return this.state;
+    }
+
+    return this.revertOrFailUnsafe(verifyResult.reason);
   }
 
   /**
@@ -197,11 +322,11 @@ export class BumpStateMachine {
    * itself cannot succeed is the "unrevertable" case that pages.
    */
   private async revertOrFailUnsafe(reason?: string): Promise<BumpState> {
-    this.state = 'reverting';
+    await this.transition('reverting');
     const revertResult = await this.deps.revertTraffic();
 
     if (revertResult.ok) {
-      this.state = 'reverted';
+      await this.transition('reverted');
       await this.deps.stopColour('new');
       return this.state;
     }
@@ -216,11 +341,23 @@ export class BumpStateMachine {
    * two (LLD-4 §05).
    */
   private async failUnsafe(reason: string): Promise<BumpState> {
-    this.state = 'failed-unsafe';
+    await this.transition('failed-unsafe');
     if (!this.pageSent) {
       this.pageSent = true;
       await this.deps.page(reason);
     }
     return this.state;
+  }
+
+  /**
+   * Every state change goes through here: set the field (synchronously,
+   * before any `await`, so `getState()` reflects it immediately), then
+   * durably record it, before whatever side effect belongs to that state
+   * actually runs. `persist` is optional, so this is a no-op for the
+   * pure-logic tests that supply no store.
+   */
+  private async transition(state: BumpState): Promise<void> {
+    this.state = state;
+    await this.deps.persist?.(state);
   }
 }

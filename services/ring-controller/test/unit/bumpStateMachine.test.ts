@@ -324,3 +324,168 @@ describe('BumpStateMachine -- at most one tenant is ever in applying (LLD-4 §04
     expect(maxConcurrent).toBe(2);
   });
 });
+
+describe('BumpStateMachine -- verify() that cannot even run', () => {
+  it('an unverifiable outcome pages once as failed-unsafe, rather than being read as pass or ordinary fail', async () => {
+    const deps = fakeDeps({
+      verify: vi.fn(async () => {
+        throw new Error('health endpoint unreachable');
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock());
+
+    const finalState = await m.run();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.revertTraffic).not.toHaveBeenCalled();
+    expect(deps.page).toHaveBeenCalledTimes(1);
+    expect(deps.page).toHaveBeenCalledWith('health endpoint unreachable');
+  });
+
+  it('a verify() that throws something other than an Error still pages, with a literal fallback reason', async () => {
+    const deps = fakeDeps({
+      verify: vi.fn(async () => {
+        throw 'boom';
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock());
+
+    await m.run();
+
+    expect(deps.page).toHaveBeenCalledWith('verify() threw');
+  });
+});
+
+describe('BumpStateMachine -- the revert-failure fallback reason', () => {
+  it('falls back to the literal string when neither the revert result nor the caller names a reason', async () => {
+    const deps = fakeDeps({ revertTraffic: vi.fn(async () => ({ ok: false })) });
+    const m = new BumpStateMachine(deps, createApplyLock());
+    await m.run();
+
+    // abortAfterDone calls the revert path with no carried reason of its
+    // own, and this revertTraffic() gives none either -- the one call
+    // shape that reaches the literal fallback string.
+    await m.abortAfterDone();
+
+    expect(deps.page).toHaveBeenCalledWith('revert failed');
+  });
+});
+
+describe('BumpStateMachine -- persist is called before the side effect for each state (LLD-4 §04/§05 durability)', () => {
+  it('persists every transition in order, before backup/apply/verify each run', async () => {
+    const timeline: string[] = [];
+    const deps = fakeDeps({
+      backup: vi.fn(async () => {
+        timeline.push('call:backup');
+        return { ok: true };
+      }),
+      apply: vi.fn(async () => {
+        timeline.push('call:apply');
+        return { ok: true };
+      }),
+      verify: vi.fn(async () => {
+        timeline.push('call:verify');
+        return { ok: true };
+      }),
+      persist: vi.fn(async (state) => {
+        timeline.push(`persist:${state}`);
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock());
+
+    await m.run();
+
+    // One shared timeline: each side effect's call comes strictly after
+    // its own state was durably recorded, never before -- a `persist`
+    // fired-and-forgotten rather than awaited could let `call:*` jump
+    // ahead of its matching `persist:*` entry.
+    expect(timeline).toEqual([
+      'persist:backing-up',
+      'call:backup',
+      'persist:backed-up',
+      'persist:applying',
+      'call:apply',
+      'persist:verifying',
+      'call:verify',
+      'persist:done',
+    ]);
+  });
+
+  it('sabotage: a persist that never resolves stalls the transition, proving run() actually awaits it', async () => {
+    const deps = fakeDeps({ persist: vi.fn(() => new Promise<void>(() => {})) });
+    const m = new BumpStateMachine(deps, createApplyLock());
+
+    const runPromise = m.run();
+    await tick();
+
+    // If `run()` merely fired `persist` without awaiting it, `backup()`
+    // would already have been reached; it hasn't, because the very first
+    // transition ('backing-up') is still stuck awaiting the store.
+    expect(deps.backup).not.toHaveBeenCalled();
+    expect(m.getState()).toBe('backing-up');
+
+    void runPromise; // left deliberately unsettled -- this is the point.
+  });
+});
+
+describe('BumpStateMachine -- recovery methods reject a mismatched starting state', () => {
+  it('recoverFromApplying refuses a machine not recovered into applying', async () => {
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    await expect(m.recoverFromApplying()).rejects.toThrow(/expected 'applying'/);
+  });
+
+  it('recoverFromRevertInFlight refuses a machine not recovered into verifying or reverting', async () => {
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    await expect(m.recoverFromRevertInFlight()).rejects.toThrow(
+      /expected 'verifying' or 'reverting'/
+    );
+  });
+
+  it('recoverFromReverted refuses a machine not recovered into reverted', async () => {
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    await expect(m.recoverFromReverted()).rejects.toThrow(/expected 'reverted'/);
+  });
+
+  it('recoverAsCancelled refuses a machine recovered into applying', async () => {
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock(), { state: 'applying' });
+    await expect(m.recoverAsCancelled()).rejects.toThrow(
+      /expected 'pending', 'backing-up' or 'backed-up'/
+    );
+  });
+});
+
+describe('BumpStateMachine -- done can be claimed by only one of closeBakeWindow/abortAfterDone (r1 finding #2)', () => {
+  it('the loser of a same-tick race is refused, never silently overwriting the winner', async () => {
+    const deps = fakeDeps();
+    const m = new BumpStateMachine(deps, createApplyLock());
+    await m.run();
+    expect(m.getState()).toBe('done');
+
+    // Neither call is awaited before the other starts -- the exact shape
+    // of the race the review named: a bake-window timer and the watcher's
+    // health regression landing in the same tick.
+    const closePromise = m.closeBakeWindow();
+    const abortPromise = m.abortAfterDone();
+
+    await expect(abortPromise).rejects.toThrow(/not 'done'/);
+    expect(await closePromise).toBe('closed');
+    expect(deps.stopColour).toHaveBeenCalledTimes(1);
+    expect(deps.stopColour).toHaveBeenCalledWith('old');
+    // The loser never got as far as touching revertTraffic.
+    expect(deps.revertTraffic).not.toHaveBeenCalled();
+  });
+
+  it('the race resolves the other way just as cleanly when abortAfterDone is called first', async () => {
+    const deps = fakeDeps();
+    const m = new BumpStateMachine(deps, createApplyLock());
+    await m.run();
+
+    const abortPromise = m.abortAfterDone();
+    const closePromise = m.closeBakeWindow();
+
+    await expect(closePromise).rejects.toThrow(/not 'done'/);
+    expect(await abortPromise).toBe('reverted');
+    expect(deps.revertTraffic).toHaveBeenCalledTimes(1);
+    expect(deps.stopColour).toHaveBeenCalledWith('new');
+  });
+});
