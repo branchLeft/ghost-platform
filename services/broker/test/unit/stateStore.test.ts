@@ -363,6 +363,32 @@ describe('stateStore', () => {
       });
     });
 
+    it('reverting to the source re-drains a cleared target that was only slow to answer -- otherwise it takes the traffic the moment it comes up', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'swapping',
+        colour: 'b',
+        descriptorHash: 'old-hash',
+        swapTarget: 'a',
+        swapDescriptorHash: 'new-hash',
+        swapHashId: 'new-hash-id' as never,
+        lastHashId: 'old-hash-id' as never,
+      });
+      // Crash after clear('a'); Ghost-a is still restarting when recovery
+      // polls it, so only 'b' answers.
+      const swapRecovery = fakeSwapRecovery({ drainedColours: [], healthyColours: ['b'] });
+
+      await recoverCrashedSlots(dir, [slot], leaseStoreConfig, () => undefined, swapRecovery);
+
+      expect(await readSlotState(dir, slot)).toEqual({
+        phase: 'running',
+        colour: 'b',
+        descriptorHash: 'old-hash',
+        lastHashId: 'old-hash-id',
+      });
+      expect(swapRecovery.drainSetCalls).toEqual(['a']);
+    });
+
     it('crash with NEITHER colour confirmed live: fails closed to "error" rather than guessing', async () => {
       const slot = '0' as SlotName;
       await writeSlotState(dir, slot, {

@@ -168,6 +168,14 @@ const LOCK_HELD_PHASES: readonly Phase[] = ['preparing', 'resetting'];
  * crash there must never be read as success while `'a'` is still what
  * every real reader is actually being served from.
  *
+ * **"Target live" means "target rebuilt" only because of an ordering
+ * `attemptColourSwap` guarantees:** it drains the target *before* writing
+ * this marker, and nothing clears that flag again until the target has
+ * been rebuilt and verified. The target is routinely left live and
+ * undrained by the previous swap in the other direction, still running the
+ * version before last; without that ordering, a crash just after the
+ * marker would present that stale colour here as the rebuilt one.
+ *
  * Per-direction outcomes:
  * - **`target === 'a'`**: target live -> adopt it (source's own state is
  *   irrelevant, by the direction's own design, above). Otherwise source
@@ -209,6 +217,9 @@ export async function recoverSwapInFlight(
     return;
   }
 
+  // Hoisted function declarations below do not see the guard's narrowing.
+  const targetColour: Colour = target;
+
   function portOf(colour: Colour): number {
     return slotPort(appPortBase, slot, colour);
   }
@@ -231,6 +242,11 @@ export async function recoverSwapInFlight(
     log(
       `slot "${slot}" recovered a swap that never safely reached colour "${target}" -- colour "${source}" is still what's actually live`
     );
+    // The target may have been cleared and merely slow to answer. Left
+    // clear, it would take the traffic as soon as it came up if it is the
+    // first-listed colour, while this state records the source. Safe:
+    // the source was just confirmed live.
+    await drainFlags.set(slot, targetColour);
     await writeSlotState(dir, slot, {
       phase: 'running',
       colour: source,
