@@ -8,6 +8,7 @@ import { createDeliveryClient } from '../../src/deliveryClient.js';
 import { createDrainClient } from '../../src/drainClient.js';
 import { DescriptorTargetStore } from '../../src/descriptorTargets.js';
 import { createHealthState } from '../../src/health.js';
+import { createDeadMansSwitch } from '../../src/heartbeat.js';
 import { createLogger } from '../../src/log.js';
 import { createThrottle } from '../../src/throttle.js';
 import { FakeShimServer } from '../helpers/fakeShimServer.js';
@@ -105,6 +106,20 @@ describe('end-to-end wiring: a real DescriptorTargetStore feeding the real colle
     const throttle = createThrottle({ messagesPerHour: 360_000 });
     const dedupe = createSubmittedTracker(60_000);
     const health = createHealthState();
+    // Real construction path server.ts uses: the switch is built the same
+    // way, and handed to the runtime the same way, so a break in THAT
+    // wiring (not just in heartbeat.ts's own logic) has somewhere to show
+    // up too.
+    let pingCount = 0;
+    const heartbeat = createDeadMansSwitch({
+      url: 'https://heartbeat.example/ping',
+      log,
+      shouldPing: () => health.isHealthy(5),
+      fetchImpl: (async () => {
+        pingCount += 1;
+        return { ok: true, status: 200 } as Response;
+      }) as typeof fetch,
+    });
     const runtime = createCollectorRuntime({
       store,
       drainClient,
@@ -112,6 +127,7 @@ describe('end-to-end wiring: a real DescriptorTargetStore feeding the real colle
       throttle,
       dedupe,
       health,
+      heartbeat,
       log,
       descriptorRefreshMs: 50,
       drainRetryBackoffMs: 50,
@@ -127,6 +143,7 @@ describe('end-to-end wiring: a real DescriptorTargetStore feeding the real colle
     await new Promise((r) => setTimeout(r, 300)); // give the undescribed host every chance anyway
     expect(sink.messages).toHaveLength(1);
     expect(shimUndescribed.drainRequests).toHaveLength(0);
+    expect(pingCount).toBeGreaterThan(0); // the real loop pinged the real switch, through server.ts's own construction shape
 
     await runtime.stop();
     deliveryClient.close();

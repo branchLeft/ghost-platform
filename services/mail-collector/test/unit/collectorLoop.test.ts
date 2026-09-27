@@ -7,6 +7,7 @@ import { createSubmittedTracker } from '../../src/dedupe.js';
 import { createDrainClient, type DrainAck, type DrainClient } from '../../src/drainClient.js';
 import { createDeliveryClient } from '../../src/deliveryClient.js';
 import { createHealthState } from '../../src/health.js';
+import { createDeadMansSwitch, type DeadMansSwitch } from '../../src/heartbeat.js';
 import { createThrottle, type Throttle } from '../../src/throttle.js';
 import { createLogger } from '../../src/log.js';
 import { FakeShimServer, type QueuedMessage } from '../helpers/fakeShimServer.js';
@@ -58,7 +59,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
   function buildRuntime(
     targets: DrainTarget[],
-    overrides: { drainClient?: DrainClient; throttle?: Throttle } = {}
+    overrides: { drainClient?: DrainClient; throttle?: Throttle; heartbeat?: DeadMansSwitch } = {}
   ) {
     const store = createFakeTargetStore(targets);
     const drainClient =
@@ -84,6 +85,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       throttle,
       dedupe,
       health,
+      heartbeat: overrides.heartbeat,
       log,
       descriptorRefreshMs: 50,
       drainRetryBackoffMs: 50,
@@ -448,6 +450,146 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       expect(health.isHealthy(3)).toBe(false); // this is what a wired heartbeat's shouldPing() would read
 
       await runtime.stop();
+      deliveryClient.close();
+    });
+  });
+
+  describe("the dead man's switch pings once per completed poll cycle, through the real loop", () => {
+    it('an idle host -- reachable, described, nothing queued -- still pings on every empty cycle', async () => {
+      const pings = vi.fn();
+      const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+        heartbeat,
+      });
+      runtime.start();
+      // emptyPollBackoffMs is 20ms in buildRuntime -- several idle cycles
+      // comfortably complete inside this window with nothing ever enqueued.
+      await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(3));
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('a cycle that actually drains and delivers something still pings, same as an empty one', async () => {
+      shimA.enqueue(message('m1'));
+      const pings = vi.fn();
+      const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+        heartbeat,
+      });
+      runtime.start();
+      await sink.waitForCount(1, 1000);
+      await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(1));
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('a drain failure against one host still completes its cycle and pings -- the loop is not stuck, just one host is', async () => {
+      const failingDrainClient: DrainClient = {
+        drain: () => Promise.reject(new Error('simulated: host unreachable')),
+        ack: () => Promise.resolve({ acked: [], alreadyHandled: [], unknown: [] }),
+      };
+      const pings = vi.fn();
+      const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+        drainClient: failingDrainClient,
+        heartbeat,
+      });
+      runtime.start();
+      await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(2));
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('with no heartbeat supplied, the loop runs exactly as before -- the dependency is optional, not required', async () => {
+      shimA.enqueue(message('m1'));
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+      runtime.start();
+      const received = await sink.waitForCount(1, 1000);
+      expect(received[0]!.envelopeTo).toEqual(['reader-m1@example.com']);
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('SABOTAGE -- gating the ping on "something was drained" starves the idle case: RED, then the real wiring: GREEN', async () => {
+      // This reproduces the issue's own named sabotage: a heartbeat wired
+      // to fire only when a cycle actually drained a message, rather than
+      // on every completed cycle. Against a genuinely idle host this is
+      // indistinguishable from a wedged loop -- the switch would go
+      // Late then Down for a worker that is doing exactly what it should.
+      const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+      const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+      const deliveryClient = createDeliveryClient({
+        host: '127.0.0.1',
+        port: sink.port,
+        secure: false,
+        user: 'collector',
+        pass: 'sink-secret',
+      });
+      const throttle = createThrottle({ messagesPerHour: 360_000 });
+      const dedupe = createSubmittedTracker(60_000);
+      const health = createHealthState();
+      const log = createLogger(() => {});
+
+      const pings = vi.fn();
+      // The sabotaged wiring: nothing enqueued on shimA at any point in
+      // this test, so a correct implementation calling onCycleComplete()
+      // on every empty cycle pings repeatedly; the sabotage below only
+      // calls it from inside a branch this test never reaches.
+      const sabotagedHeartbeat: DeadMansSwitch = {
+        onCycleComplete: () => {
+          // Naive bug: this only runs when SOMETHING was drained. This
+          // test's loop only ever sees empty drains, so this line never
+          // fires at all -- the RED half of the sabotage.
+          if (false as boolean) {
+            pings();
+          }
+        },
+      };
+
+      const redRuntime = createCollectorRuntime({
+        store,
+        drainClient,
+        deliveryClient,
+        throttle,
+        dedupe,
+        health,
+        heartbeat: sabotagedHeartbeat,
+        log,
+        descriptorRefreshMs: 50,
+        drainRetryBackoffMs: 50,
+        emptyPollBackoffMs: 20,
+      });
+      redRuntime.start();
+      await new Promise((r) => setTimeout(r, 150)); // several empty cycles complete
+      expect(pings).not.toHaveBeenCalled(); // RED: the idle worker never pinged
+      await redRuntime.stop();
+
+      // The real wiring, same idle scenario: onCycleComplete() fires on
+      // every completed cycle regardless of what it drained.
+      const realHeartbeat = createDeadMansSwitch({
+        url: 'https://heartbeat.example/ping',
+        log,
+        fetchImpl: (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch,
+      });
+      const greenRuntime = createCollectorRuntime({
+        store,
+        drainClient,
+        deliveryClient,
+        throttle,
+        dedupe,
+        health,
+        heartbeat: realHeartbeat,
+        log,
+        descriptorRefreshMs: 50,
+        drainRetryBackoffMs: 50,
+        emptyPollBackoffMs: 20,
+      });
+      greenRuntime.start();
+      await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(3)); // GREEN
+      await greenRuntime.stop();
       deliveryClient.close();
     });
   });

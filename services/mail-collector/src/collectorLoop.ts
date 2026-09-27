@@ -1,5 +1,6 @@
 import type { SubmittedTracker } from './dedupe.js';
 import type { DrainClient } from './drainClient.js';
+import type { DeadMansSwitch } from './heartbeat.js';
 import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
 import type { HealthState } from './health.js';
@@ -13,6 +14,12 @@ export interface CollectorLoopDeps {
   throttle: Throttle;
   dedupe: SubmittedTracker;
   health: HealthState;
+  /**
+   * Optional so every existing test double that builds deps by hand does
+   * not also have to grow a heartbeat -- omitted, the loop simply never
+   * calls it. `server.ts` always supplies one against a running worker.
+   */
+  heartbeat?: DeadMansSwitch;
   log: Logger;
   descriptorRefreshMs: number;
   drainRetryBackoffMs: number;
@@ -107,10 +114,18 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           target: initialTarget.id,
           error: (error as Error).message,
         });
+        // The loop itself is not stuck -- this iteration ran to completion,
+        // it just found one host unreachable. A drain failure against one
+        // host among several is never routed into health.ts (see its own
+        // header comment) and it is not routed into silence here either:
+        // only a genuinely wedged loop -- one that never reaches this line
+        // at all -- should stop the switch.
+        deps.heartbeat?.onCycleComplete();
         await sleep(deps.drainRetryBackoffMs);
         continue;
       }
       if (messages.length === 0) {
+        deps.heartbeat?.onCycleComplete();
         await sleep(deps.emptyPollBackoffMs);
         continue;
       }
@@ -163,6 +178,14 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           // lapses) is recognised and only re-acked, never resubmitted.
         }
       }
+
+      // A cycle that drained and (attempted to) submit something still
+      // completed -- ping regardless of whether every delivery in it
+      // succeeded. A submission failure is health.ts's signal, carried
+      // into shouldPing() inside the switch itself; duplicating that
+      // decision here would just be a second, divergent place to get it
+      // wrong.
+      deps.heartbeat?.onCycleComplete();
     }
   }
 
