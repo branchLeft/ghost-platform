@@ -1,0 +1,47 @@
+name: NODE_ENV gate
+
+# Proves the NODE_ENV gate LLD-3's gate-set table owes to this component's
+# own spike: a container started away from NODE_ENV=production serves
+# normally and errors nothing, so the only check that can ever catch it
+# execs into the running process and reads its actual environment -- never
+# the file, image or compose value that configured it.
+#
+# Build-only: no registry credential, and the platform image needs no
+# GitHub Packages token (unlike the drain-sidecar image).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - docker-entrypoint.branchleft.sh
+      - scripts/test-node-env-gate.sh
+      - .github/workflows/node-env-gate-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - docker-entrypoint.branchleft.sh
+      - scripts/test-node-env-gate.sh
+      - .github/workflows/node-env-gate-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  node-env-gate:
+    name: real-container NODE_ENV gate proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build platform image
+        run: docker build --tag ghost-platform:ci .
+
+      - name: NODE_ENV gate, both ways
+        run: ./scripts/test-node-env-gate.sh ghost-platform:ci
