@@ -179,7 +179,7 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     expect(deps.verify).not.toHaveBeenCalled();
     expect(deps.revertTraffic).not.toHaveBeenCalled();
     expect(deps.stopColour).not.toHaveBeenCalled();
-    expect(deps.page).toHaveBeenCalledWith('migrations_lock still held');
+    expect(deps.page).toHaveBeenCalledWith('migrations_lock still held', expect.any(String));
     expect(recovered!.finalState).toBe('failed-unsafe');
   });
 
@@ -240,7 +240,7 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(deps.page).toHaveBeenCalledTimes(1);
-    expect(deps.page).toHaveBeenCalledWith('unreachable');
+    expect(deps.page).toHaveBeenCalledWith('unreachable', expect.any(String));
     expect(recovered!.finalState).toBe('failed-unsafe');
     expect((await store.load('tenant-a'))?.pageSent).toBe(true);
   });
@@ -262,6 +262,30 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     expect(recovered.map((r) => r.tenantId).sort()).toEqual(['t1', 't2']);
     expect(depsByTenant.get('t1')!.apply).not.toHaveBeenCalled();
     expect(depsByTenant.get('t2')!.backup).not.toHaveBeenCalled();
+  });
+
+  it('one tenant throwing during recovery never stops the sweep -- a later failed-unsafe/pageSent:false tenant is still paged', async () => {
+    const store = memoryStore([
+      record('applying', { tenantId: 'throws' }),
+      record('failed-unsafe', { tenantId: 'unpaged', reason: 'edge unreachable' }),
+    ]);
+    const unpagedDeps = fakeDeps();
+    const build = (tenantId: string): BumpDependencies => {
+      if (tenantId === 'throws') {
+        // Simulates a completely unexpected failure building this
+        // tenant's own dependencies -- not something recoverFromApplying
+        // itself could have contained, since it happens before any
+        // BumpStateMachine method is even called.
+        throw new Error('could not build deps for this tenant');
+      }
+      return unpagedDeps;
+    };
+
+    const recovered = await recoverPersistedTenants(store, createApplyLock(), build);
+
+    expect(recovered.map((r) => r.tenantId)).toEqual(['unpaged']);
+    expect(unpagedDeps.page).toHaveBeenCalledTimes(1);
+    expect(unpagedDeps.page).toHaveBeenCalledWith('edge unreachable', expect.any(String));
   });
 });
 
@@ -339,7 +363,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
     expect(restartedDeps.verify).not.toHaveBeenCalled();
     expect(restartedDeps.revertTraffic).not.toHaveBeenCalled();
     expect(restartedDeps.stopColour).not.toHaveBeenCalled();
-    expect(restartedDeps.page).toHaveBeenCalledWith('unknown after crash');
+    expect(restartedDeps.page).toHaveBeenCalledWith('unknown after crash', expect.any(String));
 
     releaseApply({ ok: true });
     await abandonedRun;
@@ -408,7 +432,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
 
     expect(recovered[0]!.finalState).toBe('failed-unsafe');
     expect(restartedDeps.page).toHaveBeenCalledTimes(1);
-    expect(restartedDeps.page).toHaveBeenCalledWith('edge unreachable');
+    expect(restartedDeps.page).toHaveBeenCalledWith('edge unreachable', expect.any(String));
     expect((await store.load('tenant-c'))?.pageSent).toBe(true);
 
     releasePage();

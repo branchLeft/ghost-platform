@@ -1,172 +1,143 @@
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { ProcessLockHeldError, acquireProcessLock } from '../../src/processLock.js';
 
 const dirs: string[] = [];
 
-async function tempDir(): Promise<string> {
+async function tempSocketPath(): Promise<string> {
   const dir = await makeTempDir('ring-controller-processlock-');
   dirs.push(dir);
-  return dir;
+  // A real filesystem-backed Unix domain socket path -- portable to
+  // macOS, where the Linux abstract namespace this module uses in
+  // production does not exist. The atomic-bind and EADDRINUSE-while-alive
+  // guarantees this module relies on are identical either way. The
+  // *crash*-release guarantee is NOT: a filesystem socket a killed
+  // process never unlinked stays on disk and blocks a later bind with
+  // the same EADDRINUSE, on every OS, which is exactly why production
+  // never uses a filesystem path -- see the dedicated test below, which
+  // proves that gap on purpose rather than leaving it implicit.
+  return join(dir, 'ring-controller.sock');
 }
 
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-/** A pid that cannot belong to any live process on any platform this runs on. */
-const DEAD_PID = 999_999_999;
+const holderFixture = fileURLToPath(new URL('./fixtures/holdSocketPath.mjs', import.meta.url));
 
-async function readHolderPid(path: string): Promise<number> {
-  const content = await readFile(path, 'utf8');
-  return (JSON.parse(content) as { pid: number }).pid;
+/** A genuinely separate process holds `path` until killed; resolves once it reports itself bound. */
+function spawnHolder(path: string): Promise<import('node:child_process').ChildProcess> {
+  return new Promise((resolve, reject) => {
+    const holder = spawn('node', [holderFixture, path], { stdio: ['ignore', 'pipe', 'inherit'] });
+    holder.once('error', reject);
+    holder.stdout!.once('data', (chunk: Buffer) => {
+      if (chunk.toString().includes('holding')) resolve(holder);
+    });
+  });
 }
 
 describe('acquireProcessLock', () => {
-  it('writes this process pid into the lock file, never observably empty', async () => {
-    const path = join(await tempDir(), 'ring-controller.lock');
+  it('a fresh path binds cleanly', async () => {
+    const path = await tempSocketPath();
 
-    const lock = await acquireProcessLock(path);
+    const lock = await acquireProcessLock({ path });
 
-    expect(await readHolderPid(path)).toBe(process.pid);
     await lock.release();
   });
 
-  it('a second acquire, simulating a genuinely different but live process, refuses to start', async () => {
-    const path = join(await tempDir(), 'ring-controller.lock');
-    const first = await acquireProcessLock(path);
+  it('a second acquire against the same path, while the first is live, refuses to start -- no polling, no wait', async () => {
+    const path = await tempSocketPath();
+    const first = await acquireProcessLock({ path });
 
-    // `selfPid` alone is enough here: the recorded holder is this test's
-    // own real, genuinely alive pid, and the second call just claims a
-    // different identity for itself -- the real `kill(pid, 0)` liveness
-    // check against the real holder pid does the rest.
-    const err = await acquireProcessLock(path, { selfPid: 424242 }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ProcessLockHeldError);
-    expect((err as Error).message).toContain(String(process.pid));
+    await expect(acquireProcessLock({ path })).rejects.toThrow(ProcessLockHeldError);
 
     await first.release();
   });
 
-  it('release frees the path for a later acquire', async () => {
-    const path = join(await tempDir(), 'ring-controller.lock');
-    const first = await acquireProcessLock(path);
+  it('release frees the path for a later acquire, in the same process', async () => {
+    const path = await tempSocketPath();
+    const first = await acquireProcessLock({ path });
     await first.release();
 
-    const second = await acquireProcessLock(path);
+    const second = await acquireProcessLock({ path });
 
-    expect(await readHolderPid(path)).toBe(process.pid);
     await second.release();
   });
 
-  it("release only removes the lock file if it is still this call's own -- never someone else's", async () => {
-    const path = join(await tempDir(), 'ring-controller.lock');
-    const lock = await acquireProcessLock(path);
+  it("a second acquire refuses even against a genuinely separate, real process (not just this test's own pid)", async () => {
+    const path = await tempSocketPath();
+    const holder = await spawnHolder(path);
 
-    // Simulate the file having been legitimately replaced by a new
-    // holder since this call's own acquire (the defensive case: nothing
-    // in this design should let that happen today, but `release()` must
-    // not assume it never will).
-    await writeFile(
-      path,
-      JSON.stringify({ pid: DEAD_PID, instanceId: 'someone-elses-lock' }),
-      'utf8'
-    );
+    await expect(acquireProcessLock({ path })).rejects.toThrow(ProcessLockHeldError);
 
-    await lock.release();
+    const exited = new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+    holder.kill('SIGKILL');
+    await exited;
+  }, 10000);
 
-    expect(await readHolderPid(path)).toBe(DEAD_PID);
+  it('the error names the path', async () => {
+    const path = await tempSocketPath();
+    const first = await acquireProcessLock({ path });
+
+    await expect(acquireProcessLock({ path })).rejects.toThrow(path);
+
+    await first.release();
   });
 
-  it('reclaims a lock file left by a pid that no longer exists', async () => {
-    const path = join(await tempDir(), 'ring-controller.lock');
-    await writeFile(path, JSON.stringify({ pid: DEAD_PID, instanceId: 'dead' }), 'utf8');
-
-    const lock = await acquireProcessLock(path);
-
-    expect(await readHolderPid(path)).toBe(process.pid);
-    await lock.release();
-  });
-
-  it('reclaims a lock file naming this very process\'s own pid -- the routine "container restart reuses pid 1" case', async () => {
-    const path = join(await tempDir(), 'ring-controller.lock');
-    // A predecessor that happened to get this same pid, and never
-    // cleaned up -- not a second live holder, since nothing else can
-    // concurrently be this exact process.
-    await writeFile(path, JSON.stringify({ pid: process.pid, instanceId: 'predecessor' }), 'utf8');
-
-    const lock = await acquireProcessLock(path);
-
-    const content = await readFile(path, 'utf8');
-    expect(JSON.parse(content)).toMatchObject({ pid: process.pid });
-    expect(JSON.parse(content).instanceId).not.toBe('predecessor');
-    await lock.release();
-  });
-
-  it('two genuinely distinct, concurrently live identities racing for a fresh lock: exactly one wins, the other is refused outright (never deletes the winner)', async () => {
-    const path = join(await tempDir(), 'ring-controller.lock');
-    const isAlive = (pid: number) => pid === 111 || pid === 222;
-
-    const results = await Promise.allSettled([
-      acquireProcessLock(path, { selfPid: 111, isAlive }),
-      acquireProcessLock(path, { selfPid: 222, isAlive }),
-    ]);
-
-    const fulfilled = results.filter((r) => r.status === 'fulfilled');
-    const rejected = results.filter((r) => r.status === 'rejected');
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ProcessLockHeldError);
-
-    const winnerPid = await readHolderPid(path);
-    expect([111, 222]).toContain(winnerPid);
-
-    await (fulfilled[0] as PromiseFulfilledResult<{ release(): Promise<void> }>).value.release();
-  });
-
-  it('a stale lock naming a dead pid, raced by three distinct live identities, is reclaimed by exactly one -- no double-claim, no lingering arbitration file', async () => {
-    const path = join(await tempDir(), 'ring-controller.lock');
-    await writeFile(path, JSON.stringify({ pid: DEAD_PID, instanceId: 'dead' }), 'utf8');
-    const isAlive = (pid: number) => pid === 111 || pid === 222 || pid === 333;
-
-    const results = await Promise.allSettled([
-      acquireProcessLock(path, { selfPid: 111, isAlive }),
-      acquireProcessLock(path, { selfPid: 222, isAlive }),
-      acquireProcessLock(path, { selfPid: 333, isAlive }),
-    ]);
-
-    const fulfilled = results.filter(
-      (r): r is PromiseFulfilledResult<{ release(): Promise<void> }> => r.status === 'fulfilled'
-    );
-    const rejected = results.filter((r) => r.status === 'rejected');
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(2);
-    for (const r of rejected) {
-      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(ProcessLockHeldError);
-    }
-
-    const winnerPid = await readHolderPid(path);
-    expect([111, 222, 333]).toContain(winnerPid);
-    await expect(readFile(`${path}.reclaim`, 'utf8')).rejects.toThrow();
-
-    await fulfilled[0]!.value.release();
-  });
-
-  it('rethrows a real filesystem error rather than reading it as "already held"', async () => {
-    // The parent directory does not exist, so writing the temp file
-    // fails with ENOENT, not EEXIST -- a different failure than "someone
-    // else holds this lock", and one this must not swallow into a false
-    // ProcessLockHeldError.
-    const path = join(await tempDir(), 'missing-parent', 'ring-controller.lock');
+  it('a bind failure that is not EADDRINUSE (no such directory) is rethrown, never read as "already held"', async () => {
+    const dir = await makeTempDir('ring-controller-processlock-missing-');
+    dirs.push(dir);
+    const path = join(dir, 'missing-subdir', 'ring-controller.sock');
 
     let caught: unknown;
-    await acquireProcessLock(path).catch((err: unknown) => {
+    await acquireProcessLock({ path }).catch((err: unknown) => {
       caught = err;
     });
 
     expect(caught).toBeDefined();
     expect(caught).not.toBeInstanceOf(ProcessLockHeldError);
-    expect((caught as { code?: unknown } | undefined)?.code).toBe('ENOENT');
+    expect((caught as { code?: unknown } | undefined)?.code).not.toBe('EADDRINUSE');
   });
+
+  it("documents the seam's one real gap: a filesystem socket left by a killed process stays on disk and blocks a later bind -- this is exactly why production binds the abstract namespace, never a path", async () => {
+    const path = await tempSocketPath();
+    const holder = await spawnHolder(path);
+
+    const exited = new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+    holder.kill('SIGKILL');
+    await exited;
+
+    // Unlike the abstract namespace, the kernel does not reclaim a
+    // filesystem path on its own -- the dead process's socket file is
+    // still there, and libuv's own bind refuses to reuse an existing
+    // path at all, whether or not anything is still listening on it.
+    await expect(acquireProcessLock({ path })).rejects.toThrow(ProcessLockHeldError);
+  }, 10000);
+
+  it.skipIf(process.platform !== 'linux')(
+    'on Linux, the abstract namespace releases the instant a real holder is killed -- no marker, no reclaim, no stale state, unlike the filesystem seam above',
+    async () => {
+      const path = `\0ring-controller-test-${randomUUID()}`;
+      const holder = await spawnHolder(path);
+
+      await expect(acquireProcessLock({ path })).rejects.toThrow(ProcessLockHeldError);
+
+      const exited = new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+      holder.kill('SIGKILL');
+      await exited;
+
+      // No sleep-and-retry: the very next attempt must succeed, because
+      // the kernel released the binding synchronously with the holder's
+      // death, not on some later cleanup pass -- and there is no file to
+      // have left behind either way.
+      const lock = await acquireProcessLock({ path });
+      await lock.release();
+    },
+    10000
+  );
 });

@@ -57,9 +57,24 @@ CI job. Two reasons, both structural rather than stylistic:
 
 `src/applyLock.ts`'s in-process mutex is therefore sufficient for "at
 most one tenant ever in `applying`" only because exactly one process ever
-runs it. `src/processLock.ts` enforces that structurally: a second
-`ring-controller` process started against the same lock file refuses to
-run rather than silently sharing the fleet with the first.
+runs it. `src/processLock.ts` enforces that structurally, on a kernel
+primitive rather than a lock file: it binds a Unix domain socket in
+Linux's abstract namespace (no filesystem entry, identified by a leading
+NUL byte). The bind is one atomic kernel call, so there is no window
+where a second process could observe the name as unclaimed; a second
+`ring-controller` gets `EADDRINUSE` and refuses to run; and the kernel
+itself frees the name the instant the holder exits, for any reason
+including a crash, so there is nothing stale left to detect or reclaim.
+
+**This targets Linux hosts.** The abstract namespace does not exist on
+macOS or other BSDs; `acquireProcessLock`'s `path` option exists so tests
+can bind a portable, filesystem-backed Unix socket instead (same
+primitive, same guarantees, just visible on disk) and run everywhere,
+while production always uses the default abstract path. A second,
+coarser layer lives outside this code: deploy as a plain
+`ring-controller.service` systemd unit (never a templated
+`ring-controller@.service`), so systemd itself only ever manages one
+instance -- see the PR body's runbook for the unit file.
 
 ## Crash recovery
 
@@ -73,17 +88,34 @@ already drives at runtime:
 - `pending` / `backing-up` / `backed-up` -- cancel cleanly; nothing
   uninterruptible was in flight.
 - `applying` -- **never re-entered.** `apply()` is not called a second
-  time, whatever the crash actually left mid-flight; recovery jumps
-  straight to the verify step a completed apply would have reached, and
-  treats an outcome that cannot even be verified as `failed-unsafe`
-  rather than as a pass.
+  time, whatever the crash actually left mid-flight. Recovery first waits
+  for `awaitApplySettled()` to confirm, with positive evidence (not
+  merely a free `migrations_lock`, which is also true before a migration
+  has even started), that *this* apply's migration has actually ended --
+  bounded by a timeout, with a throw or a timeout both read as "cannot
+  tell". Only once settled does it run the same verify-then-decide tail a
+  live, successful `apply()` reaches; an outcome that cannot be confirmed
+  settled goes straight to `failed-unsafe`, never to `verify()`,
+  `revertTraffic()` or `stopColour()`, any of which could act on a colour
+  still mid-migration.
 - `verifying` / `reverting` -- revert; the process died before finding
   out whether the new colour was healthy, so the same rule as a live
   abort landing here applies.
 - `reverted` -- retry the new colour's teardown; a flag change and a
   teardown are both safe to repeat.
-- `done`, `closed`, `backup-failed`, `cancelled`, `failed-unsafe` --
-  already resting states; no action.
+- `closing` -- retry the old colour's teardown and record `closed`; the
+  bake window had already elapsed clean and `done` had already been
+  claimed, so nothing about that decision is re-made.
+- `done` -- rehydrated with no action: the bake window is still open and
+  the state on disk is already correct, but with no machine reconstructed
+  for it, a later `closeBakeWindow()` or `abortAfterDone()` would have
+  nothing to act on.
+- `closed`, `backup-failed`, `cancelled` -- already resting states; no
+  action.
+- `failed-unsafe` -- resting only once `pageSent: true`. A record still
+  showing `pageSent: false` means the crash landed between recording the
+  state and the page actually going out: recovery pages now (see "at
+  least once" below), never treating an unpaged failure as settled.
 
 ## The state names are incidental; the behaviour is not
 
@@ -97,16 +129,26 @@ Four things are load-bearing, all proven by test
    cancel; `applying` waits; `verifying`/`done` revert). There is no
    fleet-wide undo.
 3. At most one tenant is ever in `applying`. `src/applyLock.ts` enforces
-   this structurally within the one process that ever runs it, and
+   this structurally within the one process that ever runs it -- proven by
+   a sabotage pair: the same `apply()` body, run through the lock, never
+   overlaps; run directly with nothing serialising it, it does.
    `src/processLock.ts` enforces that there is only ever one such
-   process -- proven by two independent sabotage pairs: the same
-   `apply()` body, run through the lock, never overlaps; run directly with
-   nothing serialising it, it does; and a second process against the same
-   lock file is refused outright.
-4. `failed-unsafe` pages exactly once, ever, per bump, and `run()` refuses
-   to be called a second time on the same instance -- there is no
-   automatic retry path to disable, because there is no path back into
-   `run()` at all once a bump has reached any terminal state.
+   process, on a kernel primitive (a bound Unix domain socket) rather
+   than a lock file and a reclaim protocol: a second process's bind fails
+   with `EADDRINUSE`, proven by a real, separate process being killed and
+   the binding proven to release the same tick. `recoverFromApplying`
+   holds the same lock for its whole settle-and-verify tail, so the
+   invariant holds structurally during recovery too, not by convention.
+4. `failed-unsafe` pages **at least once**, ever, per bump -- not exactly
+   once. A crash between `page()` returning and persisting `pageSent:
+   true` pages again on the next restart, rather than risking the one
+   page a tenant automation could neither verify nor undo being silently
+   lost; the rare duplicate carries a stable per-bump `dedupeKey` so
+   whatever real paging system this wires to collapses it. `run()`
+   refuses to be called a second time on the same instance -- there is no
+   automatic retry of the *bump itself* to disable, because there is no
+   path back into `run()` at all once a bump has reached any terminal
+   state.
 
 `closeBakeWindow()` and `abortAfterDone()` are the only two calls that
 ever act on a tenant sitting in `done`, and a single synchronous claim

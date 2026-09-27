@@ -244,7 +244,7 @@ describe('BumpStateMachine -- failed-unsafe pages once and never retries (LLD-4 
 
     expect(finalState).toBe('failed-unsafe');
     expect(deps.page).toHaveBeenCalledTimes(1);
-    expect(deps.page).toHaveBeenCalledWith('edge unreachable');
+    expect(deps.page).toHaveBeenCalledWith('edge unreachable', expect.any(String));
   });
 
   it('run() cannot be called again once failed-unsafe is reached', async () => {
@@ -275,7 +275,7 @@ describe('BumpStateMachine -- failed-unsafe pages once and never retries (LLD-4 
     await failUnsafe('second');
 
     expect(deps.page).toHaveBeenCalledTimes(1);
-    expect(deps.page).toHaveBeenCalledWith('first');
+    expect(deps.page).toHaveBeenCalledWith('first', expect.any(String));
   });
 });
 
@@ -340,7 +340,7 @@ describe('BumpStateMachine -- verify() that cannot even run', () => {
     expect(finalState).toBe('failed-unsafe');
     expect(deps.revertTraffic).not.toHaveBeenCalled();
     expect(deps.page).toHaveBeenCalledTimes(1);
-    expect(deps.page).toHaveBeenCalledWith('health endpoint unreachable');
+    expect(deps.page).toHaveBeenCalledWith('health endpoint unreachable', expect.any(String));
   });
 
   it('a verify() that throws something other than an Error still pages, with a literal fallback reason', async () => {
@@ -353,7 +353,7 @@ describe('BumpStateMachine -- verify() that cannot even run', () => {
 
     await m.run();
 
-    expect(deps.page).toHaveBeenCalledWith('verify() threw');
+    expect(deps.page).toHaveBeenCalledWith('verify() threw', expect.any(String));
   });
 });
 
@@ -368,7 +368,7 @@ describe('BumpStateMachine -- the revert-failure fallback reason', () => {
     // shape that reaches the literal fallback string.
     await m.abortAfterDone();
 
-    expect(deps.page).toHaveBeenCalledWith('revert failed');
+    expect(deps.page).toHaveBeenCalledWith('revert failed', expect.any(String));
   });
 });
 
@@ -458,7 +458,9 @@ describe('BumpStateMachine -- recovery methods reject a mismatched starting stat
   });
 
   it('recoverAsCancelled refuses a machine recovered into applying', async () => {
-    const m = new BumpStateMachine(fakeDeps(), createApplyLock(), { state: 'applying' });
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock(), {
+      recovered: { state: 'applying' },
+    });
     await expect(m.recoverAsCancelled()).rejects.toThrow(
       /expected 'pending', 'backing-up' or 'backed-up'/
     );
@@ -468,7 +470,7 @@ describe('BumpStateMachine -- recovery methods reject a mismatched starting stat
 describe('BumpStateMachine -- recoverFromApplying waits for the migration to settle before touching the colour', () => {
   it('a confirmed-settled migration is verified and can land on done, never re-calling apply()', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock(), { state: 'applying' });
+    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'applying' } });
 
     const finalState = await m.recoverFromApplying();
 
@@ -482,7 +484,7 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
     const deps = fakeDeps({
       awaitApplySettled: vi.fn(async () => ({ ok: false, reason: 'migrations_lock still held' })),
     });
-    const m = new BumpStateMachine(deps, createApplyLock(), { state: 'applying' });
+    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'applying' } });
 
     const finalState = await m.recoverFromApplying();
 
@@ -490,24 +492,108 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
     expect(deps.verify).not.toHaveBeenCalled();
     expect(deps.revertTraffic).not.toHaveBeenCalled();
     expect(deps.stopColour).not.toHaveBeenCalled();
-    expect(deps.page).toHaveBeenCalledWith('migrations_lock still held');
+    expect(deps.page).toHaveBeenCalledWith('migrations_lock still held', expect.any(String));
   });
 
   it('a settled-but-unhealthy migration reverts normally, once settling is confirmed', async () => {
     const deps = fakeDeps({ verify: vi.fn(async () => ({ ok: false, reason: 'unhealthy' })) });
-    const m = new BumpStateMachine(deps, createApplyLock(), { state: 'applying' });
+    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'applying' } });
 
     const finalState = await m.recoverFromApplying();
 
     expect(finalState).toBe('reverted');
     expect(deps.revertTraffic).toHaveBeenCalledTimes(1);
   });
+
+  it('a probe that throws is treated as unsettled, not as a pass, and never touches the colour', async () => {
+    const deps = fakeDeps({
+      awaitApplySettled: vi.fn(async () => {
+        throw new Error('migrations_lock database unreachable');
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'applying' } });
+
+    const finalState = await m.recoverFromApplying();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.verify).not.toHaveBeenCalled();
+    expect(deps.revertTraffic).not.toHaveBeenCalled();
+    expect(deps.stopColour).not.toHaveBeenCalled();
+    expect(deps.page).toHaveBeenCalledWith(
+      'migrations_lock database unreachable',
+      expect.any(String)
+    );
+  });
+
+  it('a probe that never resolves times out rather than hanging recovery forever, and never touches the colour', async () => {
+    const deps = fakeDeps({ awaitApplySettled: vi.fn(() => new Promise<StepResult>(() => {})) });
+    const m = new BumpStateMachine(deps, createApplyLock(), {
+      recovered: { state: 'applying' },
+      applySettleTimeoutMs: 20,
+    });
+
+    const finalState = await m.recoverFromApplying();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.verify).not.toHaveBeenCalled();
+    expect(deps.revertTraffic).not.toHaveBeenCalled();
+    expect(deps.stopColour).not.toHaveBeenCalled();
+    expect(deps.page).toHaveBeenCalledWith(
+      expect.stringContaining('timed out'),
+      expect.any(String)
+    );
+  });
+
+  it('holds the ApplyLock for the whole settle-and-verify tail, serialising against a live apply() on another tenant', async () => {
+    const lock = createApplyLock();
+    const order: string[] = [];
+
+    let releaseSettle!: (v: StepResult) => void;
+    const settleGate = new Promise<StepResult>((resolve) => {
+      releaseSettle = resolve;
+    });
+    const recovering = new BumpStateMachine(
+      fakeDeps({
+        awaitApplySettled: vi.fn(() => {
+          order.push('recovering:settle-start');
+          return settleGate;
+        }),
+        verify: vi.fn(async () => {
+          order.push('recovering:verify');
+          return { ok: true };
+        }),
+      }),
+      lock,
+      { recovered: { state: 'applying' } }
+    );
+    const liveDeps = fakeDeps({
+      apply: vi.fn(async () => {
+        order.push('live:apply');
+        return { ok: true };
+      }),
+    });
+    const live = new BumpStateMachine(liveDeps, lock);
+
+    const recoverPromise = recovering.recoverFromApplying();
+    await tick();
+    // `live` queues behind `recovering` on the same lock -- its apply()
+    // must not run until the recovery tail releases the lock.
+    const livePromise = live.run();
+    await tick();
+    expect(liveDeps.apply).not.toHaveBeenCalled();
+
+    releaseSettle({ ok: true });
+    await recoverPromise;
+    await livePromise;
+
+    expect(order).toEqual(['recovering:settle-start', 'recovering:verify', 'live:apply']);
+  });
 });
 
 describe('BumpStateMachine -- recoverFromClosing retries the teardown a crash may have interrupted', () => {
   it('retries stopColour(old) and lands on closed', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock(), { state: 'closing' });
+    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'closing' } });
 
     const finalState = await m.recoverFromClosing();
 
@@ -546,23 +632,21 @@ describe('BumpStateMachine -- recoverUnpagedFailure pages exactly once, across a
       }),
     });
     const m = new BumpStateMachine(deps, createApplyLock(), {
-      state: 'failed-unsafe',
-      pageSent: false,
+      recovered: { state: 'failed-unsafe', pageSent: false },
     });
 
     const finalState = await m.recoverUnpagedFailure('unpaged after crash');
 
     expect(finalState).toBe('failed-unsafe');
     expect(deps.page).toHaveBeenCalledTimes(1);
-    expect(deps.page).toHaveBeenCalledWith('unpaged after crash');
+    expect(deps.page).toHaveBeenCalledWith('unpaged after crash', expect.any(String));
     expect(persisted).toEqual([{ state: 'failed-unsafe', pageSent: true }]);
   });
 
   it('never pages again when recovered with pageSent already true', async () => {
     const deps = fakeDeps();
     const m = new BumpStateMachine(deps, createApplyLock(), {
-      state: 'failed-unsafe',
-      pageSent: true,
+      recovered: { state: 'failed-unsafe', pageSent: true },
     });
 
     await m.recoverUnpagedFailure('should never be sent');

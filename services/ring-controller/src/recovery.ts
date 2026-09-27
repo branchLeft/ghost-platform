@@ -49,13 +49,25 @@ export async function recoverPersistedTenants(
       continue;
     }
 
-    const machine = new BumpStateMachine(buildDeps(record.tenantId), lock, {
-      state: record.state,
-      pageSent: record.pageSent,
-    });
-
-    const finalState = await runRecoveryAction(machine, record);
-    recovered.push({ tenantId: record.tenantId, machine, finalState });
+    // One tenant's recovery must never take the rest of this sweep down
+    // with it -- especially a `failed-unsafe`/`pageSent: false` tenant
+    // still waiting on its one page, which could otherwise be lost to
+    // an entirely unrelated tenant's throw earlier in the same loop.
+    // `recoverFromApplying` already contains its own probe's throw or
+    // hang (`probeApplySettled`); this is the outer, defensive layer for
+    // anything else that still manages to reject.
+    try {
+      const machine = new BumpStateMachine(buildDeps(record.tenantId), lock, {
+        bumpId: record.tenantId,
+        recovered: { state: record.state, pageSent: record.pageSent },
+      });
+      const finalState = await runRecoveryAction(machine, record);
+      recovered.push({ tenantId: record.tenantId, machine, finalState });
+    } catch {
+      // Skip this tenant and carry on to the next record -- never let
+      // one unrecoverable tenant stop the sweep from reaching the rest.
+      continue;
+    }
   }
 
   return recovered;

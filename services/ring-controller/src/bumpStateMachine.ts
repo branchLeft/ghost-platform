@@ -1,11 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import type { ApplyLock } from './applyLock.js';
 
 /**
  * The state names themselves are incidental -- what is load-bearing is
  * the behaviour described in `BumpStateMachine`'s own comments: a tenant
  * in `applying` is never interrupted, an abort acts on one tenant with no
- * fleet-wide undo, and `failed-unsafe` pages exactly once and never
- * retries itself.
+ * fleet-wide undo, and `failed-unsafe` pages at least once, is never
+ * silently lost, and never triggers an automatic retry of the bump
+ * itself.
  */
 export type BumpState =
   | 'pending'
@@ -64,15 +66,31 @@ export interface BumpDependencies {
   apply(): Promise<StepResult>;
   /**
    * Only used by recovery: probes whether a migration a crash
-   * interrupted mid-`apply()` has since settled -- LLD-4 U2's own
-   * `migrations_lock` releasing, or an equivalent signal -- waiting up to
-   * whatever bound the caller builds in. `ok: true` means the migration
-   * is over, one way or another, so `verify()` can safely judge the
-   * result. `ok: false` (a timeout, or the signal itself unreachable)
-   * means "cannot tell whether it is still running", which must never be
-   * read as either a pass or an ordinary failure: reverting traffic or
-   * stopping a colour while the migration might still be live is exactly
-   * the unrecoverable state this whole design exists to avoid.
+   * interrupted mid-`apply()` has since settled. `ok: true` requires
+   * POSITIVE evidence that *this* apply's migration has ended -- for
+   * example, the container or process `apply()` started has exited, or
+   * a recorded lock-acquired/released pair post-dates the persisted
+   * `applying` record's own timestamp, joined with Ghost's recorded
+   * schema state (its migrations table, or equivalent) actually
+   * matching the target version.
+   *
+   * A free `migrations_lock` alone is NOT such evidence: knex-migrator
+   * reports it free both after a migration and before one has taken it,
+   * so a controller that crashes and restarts while `apply()` is still
+   * booting the container -- before Ghost has even reached the migrate
+   * step -- would see a free lock immediately and read it as "settled",
+   * when the migration has not started. "Cannot tell" always includes
+   * "may not have started yet", not only "may still be running".
+   *
+   * `ok: false` covers every case short of that positive evidence: a
+   * timeout, the signal itself unreachable, or a genuinely unsettled
+   * migration. The caller bounds this call itself (`recoverFromApplying`
+   * races it against `applySettleTimeoutMs` and never trusts it to
+   * settle or to stay resolved) -- but a throw or a hang here is always
+   * read as `ok: false`, never as a pass: reverting traffic or stopping
+   * a colour while the migration might still be live, or might not yet
+   * have started, is exactly the unrecoverable state this whole design
+   * exists to avoid.
    */
   awaitApplySettled(): Promise<StepResult>;
   /** Confirm the new colour is genuinely serving before traffic depends on it alone. */
@@ -91,8 +109,18 @@ export interface BumpDependencies {
    * repeated call must be a safe no-op, never an error.
    */
   stopColour(which: 'new' | 'old'): Promise<void>;
-  /** The one page signal for a tenant automation could neither verify nor undo. Called at most once per bump, ever -- including across a restart. */
-  page(reason: string): Promise<void>;
+  /**
+   * The one page signal for a tenant automation could neither verify nor
+   * undo. At-least-once, not exactly-once: `pageSent` is only persisted
+   * once this call has returned, so a crash between the call and that
+   * write pages again on restart (`recoverUnpagedFailure`) rather than
+   * risking the only page a broken tenant will ever get being silently
+   * lost. `dedupeKey` is stable across that restart -- pass it through
+   * to whatever real paging system this wires to (PagerDuty, ntfy, or
+   * similar all support a dedupe/idempotency key), so the rare duplicate
+   * collapses to one alert there rather than paging a human twice.
+   */
+  page(reason: string, dedupeKey: string): Promise<void>;
   /**
    * Durably record the step being entered (and, for `failed-unsafe`,
    * whether its one page has actually gone out), before the side effect
@@ -109,6 +137,32 @@ export interface RecoveredBumpState {
   state: BumpState;
   pageSent?: boolean;
 }
+
+export interface BumpStateMachineOptions {
+  /**
+   * A stable identity for this bump, constant across a crash and
+   * restart -- passed to `page()` as the dedupe key, so the rare
+   * duplicate page a crash between paging and persisting `pageSent` can
+   * cause collapses to one alert at the pager, rather than paging a
+   * human twice for the same fault. Recovery always supplies the
+   * persisted tenant id here; a live caller constructing a fresh bump
+   * should pass its own tenant id too. Defaults to a random id, which is
+   * only safe because a fresh bump has nothing yet to duplicate against.
+   */
+  bumpId?: string;
+  /**
+   * Bounds `recoverFromApplying`'s settlement probe. A generous default
+   * (ten minutes) -- long enough for a real migration to finish, short
+   * enough that an unreachable or wedged signal cannot hang startup
+   * forever. A throw and a timeout are treated identically: "cannot
+   * tell", never a pass.
+   */
+  applySettleTimeoutMs?: number;
+  /** Rehydrates an instance recovered from a persisted record, rather than starting fresh at `pending`. */
+  recovered?: RecoveredBumpState;
+}
+
+const DEFAULT_APPLY_SETTLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Drives one tenant's bump from `pending` to a terminal state, and holds
@@ -129,15 +183,19 @@ export class BumpStateMachine {
    * that ever proceeds past `done`.
    */
   private doneTransitionClaimed = false;
+  private readonly bumpId: string;
+  private readonly applySettleTimeoutMs: number;
 
   constructor(
     private readonly deps: BumpDependencies,
     private readonly lock: ApplyLock,
-    recovered?: RecoveredBumpState
+    options: BumpStateMachineOptions = {}
   ) {
-    if (recovered) {
-      this.state = recovered.state;
-      this.pageSent = recovered.pageSent ?? false;
+    this.bumpId = options.bumpId ?? randomUUID();
+    this.applySettleTimeoutMs = options.applySettleTimeoutMs ?? DEFAULT_APPLY_SETTLE_TIMEOUT_MS;
+    if (options.recovered) {
+      this.state = options.recovered.state;
+      this.pageSent = options.recovered.pageSent ?? false;
     }
   }
 
@@ -231,18 +289,26 @@ export class BumpStateMachine {
    * anything else: an outcome that cannot be confirmed goes straight to
    * `failed-unsafe`, never to `verify()`, `revertTraffic()` or
    * `stopColour()`, any of which could act on a colour still mid-migration.
+   *
+   * Held under the same `ApplyLock` as a live `apply()`: "at most one
+   * tenant ever in `applying`" should not depend on whatever runs this
+   * remembering to keep new bumps out until every recovered one has
+   * finished settling -- holding the lock here makes that true
+   * structurally, the same way `run()`'s own `apply()` call does.
    */
   async recoverFromApplying(): Promise<BumpState> {
     if (this.state !== 'applying') {
       throw new Error(`recoverFromApplying called from state '${this.state}', expected 'applying'`);
     }
-    const settled = await this.deps.awaitApplySettled();
-    if (!settled.ok) {
-      return this.failUnsafe(
-        settled.reason ?? 'could not confirm the migration settled after a crash'
-      );
-    }
-    return this.verifyAndFinish();
+    return this.lock.run(async () => {
+      const settled = await this.probeApplySettled();
+      if (!settled.ok) {
+        return this.failUnsafe(
+          settled.reason ?? 'could not confirm the migration settled after a crash'
+        );
+      }
+      return this.verifyAndFinish();
+    });
   }
 
   /**
@@ -296,8 +362,10 @@ export class BumpStateMachine {
    * was never confirmed sent. The crash landed between recording the
    * state and calling `page()` -- the reason `failed-unsafe` alone is
    * never treated as settled by recovery, only `failed-unsafe` with
-   * `pageSent: true` is. Pages now, exactly once, and persists that fact
-   * so a second restart can never page again.
+   * `pageSent: true` is. Pages now -- this recovery path IS the
+   * at-least-once retry `page()`'s own contract describes -- and persists
+   * `pageSent: true` so a later restart, once it has actually gone out,
+   * does not.
    */
   async recoverUnpagedFailure(reason: string): Promise<BumpState> {
     if (this.state !== 'failed-unsafe') {
@@ -306,7 +374,7 @@ export class BumpStateMachine {
       );
     }
     if (!this.pageSent) {
-      await this.deps.page(reason);
+      await this.deps.page(reason, this.bumpId);
       this.pageSent = true;
       await this.persistSnapshot(reason);
     }
@@ -423,22 +491,49 @@ export class BumpStateMachine {
   }
 
   /**
-   * Pages exactly once, ever, for this bump -- never on a second call,
-   * however it is reached, and never twice across a restart either.
-   * `failed-unsafe` is persisted with `pageSent: false` *before* `page()`
-   * runs, so a crash in between recovers as unpaged (`recoverUnpagedFailure`
-   * pages then), never as silently settled; `pageSent` only flips to
-   * `true`, and gets persisted, once the page call has actually returned.
+   * Pages at least once, ever, for this bump: never on a second call from
+   * a single live instance (the `pageSent` guard below), but not relied
+   * on to be exactly once across a restart either. `failed-unsafe` is
+   * persisted with `pageSent: false` *before* `page()` runs, so a crash
+   * between the call and the write that would have recorded `pageSent:
+   * true` recovers as unpaged (`recoverUnpagedFailure` pages again then)
+   * rather than as silently settled. That is the deliberate trade: a
+   * duplicate page for the same tenant collapses at the pager via
+   * `page()`'s own `dedupeKey`; a page for a tenant this automation could
+   * neither verify nor undo, lost to a crash, does not.
    */
   private async failUnsafe(reason: string): Promise<BumpState> {
     this.state = 'failed-unsafe';
     await this.persistSnapshot(reason);
     if (!this.pageSent) {
-      await this.deps.page(reason);
+      await this.deps.page(reason, this.bumpId);
       this.pageSent = true;
       await this.persistSnapshot(reason);
     }
     return this.state;
+  }
+
+  /**
+   * Never trusts `awaitApplySettled()` to bound or contain itself: a
+   * throw (the migration signal itself unreachable, a case the
+   * dependency's own contract names) or a hang past
+   * `applySettleTimeoutMs` both collapse to the same `ok: false` result
+   * `recoverFromApplying` already treats as unsettled. Without this, a
+   * throwing or hanging probe would reject out of `recoverFromApplying`
+   * entirely, aborting the whole startup recovery sweep for every other
+   * tenant still waiting behind this one -- including one sitting in
+   * `failed-unsafe` with `pageSent: false`, whose one page would then
+   * never go out.
+   */
+  private async probeApplySettled(): Promise<StepResult> {
+    try {
+      return await withTimeout(this.deps.awaitApplySettled(), this.applySettleTimeoutMs);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : 'awaitApplySettled() failed',
+      };
+    }
   }
 
   /**
@@ -456,4 +551,28 @@ export class BumpStateMachine {
   private async persistSnapshot(reason?: string): Promise<void> {
     await this.deps.persist?.({ state: this.state, pageSent: this.pageSent, reason });
   }
+}
+
+/**
+ * Races `promise` against a bound, rejecting on the timer rather than
+ * ever leaving the caller waiting on a dependency that neither resolves
+ * nor rejects. The timer is always cleared, on either outcome, so a fast
+ * `promise` never leaves a dangling timer behind.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }
