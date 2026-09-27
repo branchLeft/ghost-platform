@@ -175,7 +175,7 @@ image with a different environment.
 ### Required — object storage, wrapped by the scanning decorator
 
 Configured per storage feature (`images`, `media`, `files` — Ghost's own
-three storage adapters, LLD-7 S1). The table below names `images`; the same
+three separate storage adapters). The table below names `images`; the same
 three keys apply identically under `storage__media__*` and
 `storage__files__*` — see `adapters/scanning-storage/README.md` for the full
 config surface (`quarantinePath`, `refuse`) and why the decorator, not the
@@ -217,8 +217,8 @@ appears to succeed, and the file is gone the next time the Cloud Run
 instance recycles — no error, no log line, no alert. Naming a durable
 adapter directly (`storage__images__adapter=S3Storage`, with no decorator)
 fails the same way in a second, quieter direction: the container boots, the
-upload survives, and it is never scanned (LLD-7 S1b) — with every other
-check here passing. Both failure modes present as success, which is why
+upload survives, and it is never scanned — with every other check here
+passing. Both failure modes present as success, which is why
 they are enforced in the image rather than documented here.
 
 `docker-entrypoint.branchleft.sh` checks the `images` feature only (Ghost's

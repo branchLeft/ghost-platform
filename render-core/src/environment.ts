@@ -55,9 +55,9 @@ export const SECRET_ENV_KEYS = {
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = 10485760; // 10 MiB
 const MULTIPART_CHUNK_SIZE_BYTES = 5242880; // S3Storage's own floor
 
-/** Ghost's own three storage features (LLD-7 S1: "there are three adapters,
- * not one"). The decorator is configured identically, and independently,
- * for each — see `mediaEnvironment` below. */
+/** Ghost's own three separate storage adapters — one each for images, media
+ * and files, not a single shared one. The decorator is configured
+ * identically, and independently, for each — see `mediaEnvironment` below. */
 const STORAGE_FEATURES = ['images', 'media', 'files'] as const;
 type StorageFeature = (typeof STORAGE_FEATURES)[number];
 
@@ -184,10 +184,10 @@ function isScanningRequired(safety: SafetySpec): boolean {
  *
  * Every storage feature (`images`, `media`, `files`) is rendered
  * identically — the decorator wrapping the local adapter for a
- * demo, or `S3Storage` for a tenant — because LLD-7 S1b is load-bearing on
- * exactly this point: a mechanism that scanned only one feature, or only one
- * kind, would leave the others silently unprotected with every test for the
- * one it did cover green. The three features never diverge on which adapter
+ * demo, or `S3Storage` for a tenant — because a mechanism that scanned only
+ * one feature, or only one kind, would leave the others silently
+ * unprotected with every test for the one it did cover green. The three
+ * features never diverge on which adapter
  * they wrap; only `STATIC_FILE_URL_PREFIX` differs between them, because
  * `S3Storage` does not infer its own URL segment from the feature it was
  * constructed for.

@@ -35,10 +35,11 @@ export server__host="${SERVER_HOST:-0.0.0.0}"
 # makes it the platform's single most dangerous failure mode, so it's
 # refused at boot here rather than merely documented in the README.
 #
-# Durability is no longer the only property this guard protects. adapters/scanning-storage/README.md's decorator is the only
-# path a byte can reach a served location through and still be scanned
-# (LLD-7 S1b) — so a bare `S3Storage` boots durably but unscanned, silently,
-# with every other check here passing. The guard therefore refuses any
+# Durability is no longer the only property this guard protects.
+# adapters/scanning-storage/README.md's decorator is the only path a byte
+# can reach a served location through and still be scanned, so a bare
+# `S3Storage` boots durably but unscanned, silently, with every other check
+# here passing. The guard therefore refuses any
 # configuration whose `images` feature is not the decorator itself, and
 # checks the *wrapped* adapter's own required fields (`storage__images__wraps`
 # / `storage__images__wrappedConfig__*`) rather than trusting a bare adapter
@@ -85,7 +86,7 @@ case "$*" in
                 *)
                     echo "FATAL: storage__images__adapter=${storage__images__adapter} is not the" >&2
                     echo "scanning decorator. A bare adapter -- durable or not -- is unscanned" >&2
-                    echo "silently (LLD-7 S1b). Set storage__images__adapter=ScanningStorageAdapter" >&2
+                    echo "silently. Set storage__images__adapter=ScanningStorageAdapter" >&2
                     echo "plus storage__images__wraps and the storage__images__wrappedConfig__*" >&2
                     echo "variables documented in adapters/scanning-storage/README.md for any" >&2
                     echo "real deploy." >&2

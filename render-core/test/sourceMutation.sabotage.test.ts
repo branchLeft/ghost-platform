@@ -65,7 +65,7 @@ describe('DECORATOR-PER-FEATURE — source-mutation sabotage', () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
 
     // RED: mutate environment.ts's actual STORAGE_FEATURES list so `files`
-    // is dropped -- exactly the failure mode LLD-7 S1b warns about: a
+    // is dropped -- exactly the failure mode this control exists to catch: a
     // mechanism that renders the decorator for some storage features and
     // not others, silently, with every test for the ones it does cover
     // green.
