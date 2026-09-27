@@ -13,7 +13,7 @@ import type { Colour } from './literals.js';
  * without a real sudo call. `createSudoEmailBatchChecker`, below, is the
  * real implementation: the owner's ruling on this seam's own open design
  * question was a new read-only verb in the sudoers-enumerated wrapper
- * (`demo-host/provision/branchleft_slot_wrapper.py`'s `email-batches`),
+ * (`demo-host/provision/branchleft_slot.py`'s `email-batches`),
  * never a second privileged path of the broker's own.
  */
 export interface EmailBatchChecker {
@@ -45,7 +45,7 @@ export interface SudoEmailBatchCheckerConfig {
 
 /**
  * A bare non-negative integer and nothing else -- the exact contract
- * `branchleft_slot_wrapper.py`'s `main()` promises on success (`print(count)`,
+ * `branchleft_slot.py`'s `main()` promises on success (`print(count)`,
  * nothing else to stdout). Anything else -- extra text, a negative number,
  * a decimal -- is treated as untrustworthy output, never parsed loosely
  * with a regex that might accept a prefix of something malformed.
@@ -56,7 +56,7 @@ const BARE_COUNT_PATTERN = /^[0-9]+\n?$/;
  * The colour every invocation this checker makes carries. `render_slot_
  * sudoers.py` enumerates the read-only verb as `<slot> <colour>
  * email-batches` -- the same three-argument shape as `start`/`stop` -- but
- * the query itself is colour-blind (`branchleft_slot_wrapper.py`'s
+ * the query itself is colour-blind (`branchleft_slot.py`'s
  * `_data_directory`'s own doc comment: the colour pair shares one SQLite
  * file). Which literal is passed here is therefore arbitrary but fixed,
  * never derived from which colour is actually live, and never changes the

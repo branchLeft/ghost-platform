@@ -33,6 +33,14 @@ no gradation, which is the exact erosion enumeration exists to avoid), never
 accepts a path as an argument, never writes `/etc/branchleft/<slot>-<colour>.env`
 (the broker writes that, unprivileged, before ever asking for a start), and
 never reads or touches anything outside the one slot its argv names.
+
+One verb, `email-batches`, is read-only rather than privileged: it takes no
+lock and never calls `systemctl`, only a single fixed `COUNT` query
+(`count_submitting_email_batches`) against the named slot's own SQLite
+file, printing the bare count to stdout. Enumerated the same way as
+`start`/`stop` (see `READ_VERBS`) because sudoers' own boundary has no
+notion of "read-only" -- only "on the list" -- so it gets the identical
+argv-shape scrutiny `parse_invocation` already gives every other verb.
 """
 
 from __future__ import annotations
@@ -40,9 +48,11 @@ from __future__ import annotations
 import fcntl
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, Sequence, Union
 
 # Mirrors `render_slot_sudoers.SLOT_NAMES` -- duplicated rather than
@@ -58,6 +68,18 @@ COLOURS: tuple[str, ...] = ("a", "b")
 VERBS: tuple[str, ...] = ("start", "stop")
 RESET = "reset"
 
+# A read-only verb: `services/broker/src/app.ts`'s `attemptStopOldColour`
+# needs to know whether an email or batch is still "submitting" before it
+# will ever stop a colour (LLD-4 §U5), without a second privileged read
+# path of the broker's own. Enumerated with the same `<slot> <colour>
+# <verb>` shape as `start`/`stop` even though the query itself is
+# colour-blind (`_data_directory`'s own doc comment: the colour pair
+# shares one SQLite file) -- colour is accepted only so this verb's own
+# argument shape matches every other enumerated invocation's. Kept
+# separate from `VERBS`, never merged into it, so `main` can tell a
+# privileged verb from a read-only one without inspecting strings.
+READ_VERBS: tuple[str, ...] = ("email-batches",)
+
 # Where a slot's own management state lives, and the systemd unit name
 # shape LLD-2 §02 names directly ("systemctl start|stop the corresponding
 # unit"). The *contents* of that unit -- what it runs to bring one colour of
@@ -68,6 +90,91 @@ SLOT_DIR = "/opt/branchleft/demo-{slot}"
 ETC_DIR = "/etc/branchleft"
 LOCK_DIR = "/run/branchleft"
 UNIT_TEMPLATE = "branchleft-compose@demo-{slot}-{colour}"
+
+# Docker's own default local-volume-driver layout -- read directly off the
+# filesystem, never through the Docker socket or CLI (this module "never
+# touches the Docker socket", per its own module docstring: holding it is
+# root with no gradation). Assumes the demo host's Docker daemon uses its
+# built-in "local" driver with no custom `data-root`; a host build that
+# changes either would need to update this constant to match.
+DOCKER_VOLUME_ROOT = Path("/var/lib/docker/volumes")
+
+# Mirrors `services/broker/src/config.ts`'s own `BROKER_UID_BASE` default.
+# Duplicated rather than imported -- this file is installed alone at
+# `/usr/local/sbin/branchleft-slot` and must run with nothing else from
+# this repo present on the host (the same reason `SLOT_NAMES` above is
+# duplicated, not imported, from `render_slot_sudoers.py`) -- and covered
+# by this module's own test asserting the two stay equal.
+UID_BASE = 30001
+
+
+class EmailBatchCheckError(RuntimeError):
+    """Raised for anything that stops the `email-batches` count from being
+    trustworthy. `main` turns every one of these into a refusal -- never a
+    guessed count."""
+
+
+def _data_directory(slot: str) -> Path:
+    """The one, slot-derived path to the colour pair's shared SQLite data
+    volume -- never a caller-supplied path. Mirrors `render-core`'s
+    `demoDataMount` (`render-core/src/render.ts`): the volume is named
+    `ghost-demo-<uid>-data`, and `uid` is `UID_BASE + int(slot)` -- the one
+    field `services/broker/src/app.ts`'s `handleReconcile` enforces must
+    equal the slot's own allocation before any render happens, so it is
+    safe to re-derive here from the slot literal alone.
+
+    Colour-blind on purpose: `render-core/src/compose.ts`'s
+    `composeDocument` mounts this same volume into *both* `ghost-a` and
+    `ghost-b` -- one shared SQLite file per slot, not one per colour -- so
+    a colour argument changes nothing about which file this opens.
+    """
+    uid = UID_BASE + int(slot)
+    return DOCKER_VOLUME_ROOT / f"ghost-demo-{uid}-data" / "_data"
+
+
+# The one query this module ever runs for `email-batches`, a literal
+# string -- `slot` selects which SQLite file to open, never anything
+# interpolated into the SQL text itself.
+_SUBMITTING_COUNT_QUERY = "SELECT COUNT(*) FROM email_batches WHERE status = 'submitting'"
+
+
+def count_submitting_email_batches(slot: str) -> int:
+    """Opens that slot's one SQLite file read-only and runs the one fixed
+    count query against it. Raises `EmailBatchCheckError` for anything
+    that would otherwise require guessing -- no data directory, no exactly
+    one `*.db` file there, or the query itself failing -- rather than
+    return a number that might not mean what it claims to.
+    """
+    data_dir = _data_directory(slot)
+    if not data_dir.is_dir():
+        raise EmailBatchCheckError(f'slot "{slot}"\'s data directory does not exist: {data_dir}')
+
+    candidates = sorted(data_dir.glob("*.db"))
+    if len(candidates) != 1:
+        raise EmailBatchCheckError(
+            f'slot "{slot}"\'s data directory has {len(candidates)} "*.db" files '
+            f"(expected exactly one): {data_dir}"
+        )
+    db_path = candidates[0]
+
+    try:
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=5)
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        raise EmailBatchCheckError(f"failed to open {db_path} read-only: {exc}") from exc
+
+    try:
+        row = connection.execute(_SUBMITTING_COUNT_QUERY).fetchone()
+    except sqlite3.Error as exc:
+        raise EmailBatchCheckError(
+            f"the submitting-count query failed against {db_path}: {exc}"
+        ) from exc
+    finally:
+        connection.close()
+
+    if row is None or len(row) != 1 or not isinstance(row[0], int) or row[0] < 0:
+        raise EmailBatchCheckError(f"the submitting-count query returned an unexpected row: {row!r}")
+    return row[0]
 
 
 class InvalidInvocation(ValueError):
@@ -118,11 +225,12 @@ def parse_invocation(argv: Sequence[str]) -> Invocation:
         )
     if len(argv) == 3:
         slot, colour, verb = argv
-        if slot in SLOT_NAMES and colour in COLOURS and verb in VERBS:
+        if slot in SLOT_NAMES and colour in COLOURS and verb in (*VERBS, *READ_VERBS):
             return ColourInvocation(slot=slot, colour=colour, verb=verb)
+        allowed_verbs = (*VERBS, *READ_VERBS)
         raise InvalidInvocation(
             f"refused: {list(argv)!r} is not an enumerated colour invocation "
-            f"(<enumerated slot> {{{'|'.join(COLOURS)}}} {{{'|'.join(VERBS)}}})"
+            f"(<enumerated slot> {{{'|'.join(COLOURS)}}} {{{'|'.join(allowed_verbs)}}})"
         )
     raise InvalidInvocation(
         f"refused: expected exactly 2 or 3 arguments, got {len(argv)}: {list(argv)!r} -- "
@@ -220,6 +328,20 @@ def main(argv: list[str] | None = None) -> int:
     except InvalidInvocation as exc:
         print(f"branchleft-slot: {exc}", file=sys.stderr)
         return 1
+
+    # Read-only verbs never reach `perform`/`RealSlotOps` at all -- there is
+    # no privileged side effect to take the per-slot flock around, and
+    # `SlotOps.systemctl` has no meaning for a verb that is not `start` or
+    # `stop`.
+    if isinstance(invocation, ColourInvocation) and invocation.verb in READ_VERBS:
+        try:
+            count = count_submitting_email_batches(invocation.slot)
+        except EmailBatchCheckError as exc:
+            print(f"branchleft-slot: {exc}", file=sys.stderr)
+            return 1
+        print(count)
+        return 0
+
     try:
         perform(invocation, RealSlotOps())
     except Exception as exc:  # noqa: BLE001 -- this is the process boundary; report and exit non-zero

@@ -12,10 +12,14 @@ hermetic form of the same claim.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import io
 import os
+import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import branchleft_slot as bs
@@ -31,6 +35,15 @@ class ParseInvocationExactnessTests(unittest.TestCase):
         for slot in bs.SLOT_NAMES:
             for colour in bs.COLOURS:
                 for verb in bs.VERBS:
+                    self.assertEqual(
+                        bs.parse_invocation([slot, colour, verb]),
+                        bs.ColourInvocation(slot=slot, colour=colour, verb=verb),
+                    )
+
+    def test_accepts_every_enumerated_read_only_invocation(self):
+        for slot in bs.SLOT_NAMES:
+            for colour in bs.COLOURS:
+                for verb in bs.READ_VERBS:
                     self.assertEqual(
                         bs.parse_invocation([slot, colour, verb]),
                         bs.ColourInvocation(slot=slot, colour=colour, verb=verb),
@@ -107,6 +120,9 @@ class SlotNamesDriftGuardTests(unittest.TestCase):
     def test_colours_and_start_stop_verbs_match_the_sudoers_generator(self):
         self.assertEqual(bs.COLOURS, rss.COLOURS)
         self.assertEqual(bs.VERBS, rss.START_STOP_VERBS)
+
+    def test_read_verbs_match_the_sudoers_generator(self):
+        self.assertEqual(bs.READ_VERBS, rss.READ_VERBS)
 
 
 class FakeSlotOps:
@@ -264,6 +280,143 @@ class MainDispatchTests(unittest.TestCase):
                 exit_code = bs.main()
         perform.assert_not_called()
         self.assertEqual(exit_code, 1)
+
+    def test_a_read_only_invocation_never_reaches_perform_or_takes_the_slot_lock(self):
+        # The property this test exists for: a read verb has no privileged
+        # side effect, so it must never call perform/RealSlotOps.systemctl
+        # at all -- proven against the real dispatch in main, not merely
+        # against count_submitting_email_batches in isolation.
+        with mock.patch("branchleft_slot.perform") as perform, mock.patch(
+            "branchleft_slot.count_submitting_email_batches", return_value=0
+        ):
+            exit_code = bs.main(["0", "a", "email-batches"])
+        perform.assert_not_called()
+        self.assertEqual(exit_code, 0)
+
+
+def _write_sqlite_db(path, submitting_count: int, other_count: int = 0) -> None:
+    connection = sqlite3.connect(str(path))
+    try:
+        connection.execute("CREATE TABLE email_batches (id INTEGER PRIMARY KEY, status TEXT)")
+        for _ in range(submitting_count):
+            connection.execute("INSERT INTO email_batches (status) VALUES ('submitting')")
+        for _ in range(other_count):
+            connection.execute("INSERT INTO email_batches (status) VALUES ('submitted')")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+class DataDirectoryTests(unittest.TestCase):
+    def test_derived_from_slot_alone_via_the_uid_formula(self):
+        # Mirrors services/broker/src/config.ts's BROKER_UID_BASE default
+        # and slotPorts.ts's slotUid: uid = UID_BASE + int(slot).
+        path = bs._data_directory("3")
+        self.assertEqual(path, bs.DOCKER_VOLUME_ROOT / "ghost-demo-30004-data" / "_data")
+
+    def test_colour_blind(self):
+        # The verb takes a colour for shape symmetry only -- the query
+        # this file runs never depends on it, because the colour pair
+        # shares one SQLite file. Asserted by construction: _data_directory
+        # itself takes no colour parameter at all.
+        self.assertNotIn("colour", bs._data_directory.__code__.co_varnames)
+
+    def test_uid_base_matches_the_broker_configs_own_default(self):
+        # services/broker/src/config.ts: `uidBase: positiveInteger(env,
+        # 'BROKER_UID_BASE', 30001, 65000)`. Not read from that file (this
+        # module has no runtime dependency on the broker's TypeScript) --
+        # this test is the tripwire that catches the two drifting apart.
+        self.assertEqual(bs.UID_BASE, 30001)
+
+
+class CountSubmittingEmailBatchesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._root = os.path.join(self._tmp.name, "volumes")
+        os.makedirs(self._root)
+        patcher = mock.patch.object(bs, "DOCKER_VOLUME_ROOT", Path(self._root))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _data_dir_for(self, slot: str):
+        data_dir = bs._data_directory(slot)
+        data_dir.mkdir(parents=True)
+        return data_dir
+
+    def test_counts_only_submitting_rows(self):
+        data_dir = self._data_dir_for("0")
+        _write_sqlite_db(data_dir / "ghost.db", submitting_count=3, other_count=5)
+        self.assertEqual(bs.count_submitting_email_batches("0"), 3)
+
+    def test_zero_when_nothing_is_submitting(self):
+        data_dir = self._data_dir_for("1")
+        _write_sqlite_db(data_dir / "ghost.db", submitting_count=0, other_count=5)
+        self.assertEqual(bs.count_submitting_email_batches("1"), 0)
+
+    def test_refuses_when_the_data_directory_does_not_exist(self):
+        with self.assertRaises(bs.EmailBatchCheckError):
+            bs.count_submitting_email_batches("2")
+
+    def test_refuses_when_no_db_file_is_present(self):
+        self._data_dir_for("3")
+        with self.assertRaises(bs.EmailBatchCheckError):
+            bs.count_submitting_email_batches("3")
+
+    def test_refuses_when_more_than_one_db_file_is_present(self):
+        data_dir = self._data_dir_for("4")
+        _write_sqlite_db(data_dir / "ghost.db", submitting_count=1)
+        _write_sqlite_db(data_dir / "stray.db", submitting_count=1)
+        with self.assertRaises(bs.EmailBatchCheckError):
+            bs.count_submitting_email_batches("4")
+
+    def test_refuses_when_the_table_is_missing(self):
+        data_dir = self._data_dir_for("5")
+        connection = sqlite3.connect(str(data_dir / "ghost.db"))
+        connection.close()
+        with self.assertRaises(bs.EmailBatchCheckError):
+            bs.count_submitting_email_batches("5")
+
+    def test_never_writes_to_the_database(self):
+        data_dir = self._data_dir_for("6")
+        db_path = data_dir / "ghost.db"
+        _write_sqlite_db(db_path, submitting_count=0)
+
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                connection.execute("INSERT INTO email_batches (status) VALUES ('submitting')")
+        finally:
+            connection.close()
+
+
+class MainEmailBatchesDispatchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.object(bs, "DOCKER_VOLUME_ROOT", Path(self._tmp.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_prints_the_bare_count_on_success(self):
+        data_dir = bs._data_directory("0")
+        data_dir.mkdir(parents=True)
+        _write_sqlite_db(data_dir / "ghost.db", submitting_count=2)
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            exit_code = bs.main(["0", "a", "email-batches"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(out.getvalue(), "2\n")
+
+    def test_fails_closed_on_a_missing_data_directory_printing_nothing_to_stdout(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            exit_code = bs.main(["1", "a", "email-batches"])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(out.getvalue(), "")
+        self.assertNotEqual(err.getvalue(), "")
 
 
 class RealSlotOpsWiringTests(unittest.TestCase):
