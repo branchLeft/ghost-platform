@@ -30,6 +30,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -246,6 +247,15 @@ class MainCopyWiringTests(unittest.TestCase):
         self._base_env = {
             "DB_DUMP_MYSQL_PWD": "dummy-mysql-password",
             "AGE_RECIPIENT_PUBLIC_KEY": recipient,
+            # Without this, a successful run falls through to
+            # bw.DEFAULT_BACKUP_AGE_METRICS_DIR -- a real, absolute,
+            # hardcoded production path. Harmless on a dev machine or CI
+            # runner only because that path happens to be unwritable there;
+            # run as the account the real worker deploys as (where it IS
+            # writable) and this class would write fabricated blog/shop
+            # timestamps into the exact file node_exporter scrapes for the
+            # real signal.
+            "BACKUP_WORKER_METRICS_DIR": os.path.join(self.tmp.name, "metrics"),
         }
 
     def _main(self, env: dict[str, str]) -> int:
@@ -326,6 +336,10 @@ class WiringSabotageForTheCopySelectionTests(unittest.TestCase):
         self._env = {
             "DB_DUMP_MYSQL_PWD": "dummy-mysql-password",
             "AGE_RECIPIENT_PUBLIC_KEY": recipient,
+            # See MainCopyWiringTests.setUp's identical line: without this
+            # a successful run here falls through to the real production
+            # metrics directory default.
+            "BACKUP_WORKER_METRICS_DIR": os.path.join(self.tmp.name, "metrics"),
             **_DUMMY_PRIMARY_ENV,
         }
 
@@ -584,6 +598,137 @@ class BackupAgeMetricWiredThroughMainTests(unittest.TestCase):
         self.assertEqual(second_round["blog"], first_round["blog"])
         self.assertGreater(second_round["shop"], first_round["shop"])
         self.assertEqual(second_round["shop"], 300.0)
+
+
+class BackupAgeMetricConcurrencyTests(unittest.TestCase):
+    """The read-merge-write inside `record_backup_age_metric` must be safe
+    when two tenants' runs finish close together. Two lines of proof: real
+    concurrent threads recording DIFFERENT tenants with no forced ordering
+    (below), and a deterministic test seam (`_after_read`, `_use_lock`)
+    that forces the exact interleave a real race might only reproduce
+    occasionally -- used here because a lost-update race is inherently
+    timing-dependent, and a test that only sometimes catches a regression
+    is not the proof this needs."""
+
+    def _read(self, metrics_dir: str) -> dict[str, float]:
+        path = pathlib.Path(metrics_dir) / bw.BACKUP_AGE_METRIC_FILENAME
+        if not path.exists():
+            return {}
+        return bw._parse_previous_backup_age_metrics(path.read_text())
+
+    def test_several_threads_recording_different_tenants_all_survive(self) -> None:
+        """Real concurrency, no forced ordering: N threads, N distinct
+        tenants, a barrier to start them as close together as the
+        scheduler allows. Every tenant's timestamp must survive -- the
+        lock's whole job is that no ordering of real, concurrent callers
+        can lose one."""
+        tenants = [f"tenant-{i}" for i in range(8)]
+        with tempfile.TemporaryDirectory() as tmp:
+            barrier = threading.Barrier(len(tenants))
+
+            def worker(tenant: str, now: float) -> None:
+                barrier.wait()
+                bw.record_backup_age_metric(tenant=tenant, metrics_dir=tmp, now=now)
+
+            threads = [
+                threading.Thread(target=worker, args=(tenant, float(100 + i)))
+                for i, tenant in enumerate(tenants)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+                self.assertFalse(thread.is_alive())
+
+            metrics = self._read(tmp)
+        self.assertEqual(metrics, {tenant: float(100 + i) for i, tenant in enumerate(tenants)})
+
+    def test_a_forced_interleave_survives_when_locked(self) -> None:
+        """The GREEN control: the lock's own default (`_use_lock=True`),
+        with a second writer started -- via the `_after_read` test seam --
+        WHILE the first writer is inside its own critical section, between
+        its read and its write. With the lock held, the second writer's
+        own `flock()` call blocks until the first releases, so no ordering
+        of "who read first" can occur -- both tenants' values must survive
+        regardless."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_backup_age_metric(tenant="blog", metrics_dir=tmp, now=1.0)
+            bw.record_backup_age_metric(tenant="shop", metrics_dir=tmp, now=1.0)
+
+            second_writer = threading.Thread(
+                target=lambda: bw.record_backup_age_metric(tenant="shop", metrics_dir=tmp, now=200.0)
+            )
+
+            def start_the_second_writer_mid_critical_section() -> None:
+                second_writer.start()
+                # Whatever this resolves to, the first writer's own write
+                # happens next -- either before or after the second
+                # writer's flock() succeeds, but never overlapping it.
+                time.sleep(0.2)
+
+            bw.record_backup_age_metric(
+                tenant="blog",
+                metrics_dir=tmp,
+                now=100.0,
+                _after_read=start_the_second_writer_mid_critical_section,
+            )
+            second_writer.join(timeout=5)
+            self.assertFalse(second_writer.is_alive())
+            metrics = self._read(tmp)
+        self.assertEqual(metrics, {"blog": 100.0, "shop": 200.0})
+
+    def test_disabling_the_lock_via_the_test_seam_loses_the_concurrent_update(self) -> None:
+        """The RED demonstration, via the seam rather than a live edit to
+        the shipped file (a genuine race is not reliably forceable on
+        demand, and a flaky red is not a proof): the identical interleave
+        above, with `_use_lock=False` on BOTH writers -- exactly the shape
+        `record_backup_age_metric` had before this lock existed. The
+        second writer's fresh, real 200.0 for `shop` is silently reverted
+        to the first writer's stale in-memory read of 1.0, because the
+        first writer's own merge and write run AFTER the second writer's,
+        using data it read before the second writer ever wrote."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_backup_age_metric(tenant="blog", metrics_dir=tmp, now=1.0)
+            bw.record_backup_age_metric(tenant="shop", metrics_dir=tmp, now=1.0)
+
+            second_writer = threading.Thread(
+                target=lambda: bw.record_backup_age_metric(
+                    tenant="shop", metrics_dir=tmp, now=200.0, _use_lock=False
+                )
+            )
+
+            def start_the_second_writer_mid_critical_section() -> None:
+                second_writer.start()
+                second_writer.join(timeout=5)
+
+            bw.record_backup_age_metric(
+                tenant="blog",
+                metrics_dir=tmp,
+                now=100.0,
+                _use_lock=False,
+                _after_read=start_the_second_writer_mid_critical_section,
+            )
+            metrics = self._read(tmp)
+
+        # blog's own update DOES land -- this race silently reverts the
+        # OTHER tenant's fresh success, which is the more dangerous shape:
+        # a healthy tenant made to look stale, not merely an update absent.
+        self.assertEqual(metrics["blog"], 100.0)
+        self.assertEqual(metrics["shop"], 1.0)  # lost: the real write was 200.0
+        self.assertNotEqual(metrics["shop"], 200.0)
+
+
+def tearDownModule() -> None:
+    """If any test in this module ever falls through to the real
+    production metrics directory instead of a temp one, this turns that
+    into a loud test failure rather than a silent write into the exact
+    file the live monitored signal reads."""
+    default_path = pathlib.Path(bw.DEFAULT_BACKUP_AGE_METRICS_DIR)
+    if default_path.exists():
+        raise AssertionError(
+            f"{default_path} was created during this test run -- some test wrote to the "
+            "real production backup-age metrics directory instead of a temp one"
+        )
 
 
 if __name__ == "__main__":

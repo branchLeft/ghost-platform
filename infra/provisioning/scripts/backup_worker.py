@@ -37,12 +37,15 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
+import fcntl
 import importlib.util
 import os
 import pathlib
 import re
 import sys
+import tempfile
 import time
+from collections.abc import Callable
 
 import shared_objectstorage
 from dial_in_transport import DialInTransport, LocalProcessTransport, UnwiredCollectorChannelTransport
@@ -393,22 +396,49 @@ def render_backup_age_prometheus_text(timestamps: dict[str, float]) -> str:
     return "\n".join(lines) + "\n"
 
 
+BACKUP_AGE_METRIC_LOCK_FILENAME = BACKUP_AGE_METRIC_FILENAME + ".lock"
+
+
 def write_textfile_atomically(path: pathlib.Path, content: str) -> None:
     """Matches hetzner/monitoring's own snds collector: node_exporter's
     `--collector.textfile.directory` polls this directory and can scrape a
     non-atomic write mid-write, as a truncated or malformed file. Writing to
     a sibling temp file and `os.replace`-ing it into place is atomic on the
-    same filesystem."""
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(content)
-    # Not a secret -- explicit 0644 rather than trusting umask, since
-    # node_exporter reads this as its own container-side user, not as
-    # whoever wrote the file.
-    tmp_path.chmod(0o644)
-    os.replace(tmp_path, path)
+    same filesystem.
+
+    The temp name is unique per call (`tempfile.mkstemp`, not a fixed
+    `<name>.tmp`) -- a fixed name is safe only for a single writer at a
+    time, and this file is written by `record_backup_age_metric` under a
+    lock that already serialises writers, but a lock one caller forgot to
+    take (or a future second caller of this same helper) must not then be
+    able to have two `.tmp` files collide and rename whichever one lost the
+    race into place. A unique name removes that failure mode regardless of
+    what does or does not protect the call above this one."""
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(content)
+        # Not a secret -- explicit 0644 rather than trusting umask, since
+        # node_exporter reads this as its own container-side user, not as
+        # whoever wrote the file.
+        os.chmod(tmp_name, 0o644)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
-def record_backup_age_metric(*, tenant: str, metrics_dir: str, now: float) -> None:
+def record_backup_age_metric(
+    *,
+    tenant: str,
+    metrics_dir: str,
+    now: float,
+    _use_lock: bool = True,
+    _after_read: Callable[[], None] | None = None,
+) -> None:
     """Records `tenant`'s last-good-backup timestamp, merged with every
     OTHER tenant this module has previously recorded into the same file.
     Called from `main()` only after a floor-verified, `ok=True` result --
@@ -416,23 +446,54 @@ def record_backup_age_metric(*, tenant: str, metrics_dir: str, now: float) -> No
     advancing rather than being overwritten with a fresh, misleadingly
     healthy-looking timestamp.
 
-    Best-effort and never raises: a metrics-directory write failure must
-    never turn an already-successful, already-stored dump into a failed
-    run -- the backup itself is good whether or not this exporter can
-    report it, and a metric that stops advancing because this call itself
-    keeps failing is caught by the same growing-age alert as a worker that
-    has stopped running at all."""
-    try:
-        output_dir = pathlib.Path(metrics_dir)
-        output_path = output_dir / BACKUP_AGE_METRIC_FILENAME
-        output_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+    The read, the merge and the write are one critical section, held under
+    an exclusive `fcntl.flock` on a sibling lock file for the whole
+    duration. Without it, two tenants completing a floor-verified dump
+    close together can both read the same prior file, and whichever writes
+    second silently reverts the other's fresh, real success back to its
+    stale value -- turning a HEALTHY tenant's gauge stale, which is the
+    opposite failure from the one this signal exists to catch (see
+    `BackupAgeMetricConcurrencyTests` for a deterministic, forced
+    reproduction of exactly that loss).
+
+    `_use_lock` and `_after_read` exist only for that test's forced
+    interleave -- `main()` never passes either, so every real caller always
+    takes the lock and never pauses mid-critical-section.
+
+    Best-effort and never raises: a metrics-directory or lock-file write
+    failure must never turn an already-successful, already-stored dump
+    into a failed run -- the backup itself is good whether or not this
+    exporter can report it, and a metric that stops advancing because this
+    call itself keeps failing is caught by the same growing-age alert as a
+    worker that has stopped running at all."""
+
+    def _read_merge_write(output_path: pathlib.Path) -> None:
         try:
             existing = output_path.read_text()
         except FileNotFoundError:
             existing = ""
         timestamps = _parse_previous_backup_age_metrics(existing)
+        if _after_read is not None:
+            _after_read()
         timestamps[tenant] = now
         write_textfile_atomically(output_path, render_backup_age_prometheus_text(timestamps))
+
+    try:
+        output_dir = pathlib.Path(metrics_dir)
+        output_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+        output_path = output_dir / BACKUP_AGE_METRIC_FILENAME
+
+        if not _use_lock:
+            _read_merge_write(output_path)
+            return
+
+        lock_path = output_dir / BACKUP_AGE_METRIC_LOCK_FILENAME
+        with open(lock_path, "a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                _read_merge_write(output_path)
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
     except OSError as exc:
         print(
             f"backup_worker: {tenant}: could not write the backup-age metric to "
