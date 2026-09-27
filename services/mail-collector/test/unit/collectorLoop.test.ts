@@ -483,7 +483,13 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       deliveryClient.close();
     });
 
-    it('a drain failure against one host still completes its cycle and pings -- the loop is not stuck, just one host is', async () => {
+    it('a drain failure against one host never reports a completed cycle for it -- the failing iteration is not counted', async () => {
+      // Owner ruling on branchLeft/workspace#1265 (PR #275, option b):
+      // per-host gating. A host that cannot complete a cycle must not
+      // report success, so collectorLoop.ts's drain-failure branch calls
+      // heartbeat.onCycleComplete() for NEITHER this host nor the switch
+      // as a whole -- the loop keeps retrying (it is not stuck), it just
+      // never counts as a success while the failure persists.
       const failingDrainClient: DrainClient = {
         drain: () => Promise.reject(new Error('simulated: host unreachable')),
         ack: () => Promise.resolve({ acked: [], alreadyHandled: [], unknown: [] }),
@@ -495,7 +501,8 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
         heartbeat,
       });
       runtime.start();
-      await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(2));
+      await new Promise((r) => setTimeout(r, 200)); // several failed-drain retries elapse
+      expect(pings).not.toHaveBeenCalled();
       await runtime.stop();
       deliveryClient.close();
     });
@@ -569,6 +576,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       const realHeartbeat = createDeadMansSwitch({
         url: 'https://heartbeat.example/ping',
         log,
+        getExpectedTargetIds: () => store.targets.map((t) => t.id),
         fetchImpl: (async () => {
           pings();
           return { ok: true, status: 200 } as Response;
@@ -593,4 +601,167 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       deliveryClient.close();
     });
   });
+
+  describe(
+    'PER-HOST GATING -- owner ruling on branchLeft/workspace#1265 (PR #275, option b): ' +
+      'the switch pings only once EVERY described host has completed a cycle since the last ping',
+    () => {
+      function buildTwoHostRuntime(drainClient: DrainClient, fetchImpl: typeof fetch) {
+        const store = createFakeTargetStore([
+          { id: 'tenant-a', baseUrl: baseUrlA },
+          { id: 'tenant-b', baseUrl: baseUrlB },
+        ]);
+        const deliveryClient = createDeliveryClient({
+          host: '127.0.0.1',
+          port: sink.port,
+          secure: false,
+          user: 'collector',
+          pass: 'sink-secret',
+        });
+        const throttle = createThrottle({ messagesPerHour: 360_000 });
+        const dedupe = createSubmittedTracker(60_000);
+        const health = createHealthState();
+        const log = createLogger(() => {});
+        const heartbeat = createDeadMansSwitch({
+          url: 'https://heartbeat.example/ping',
+          log,
+          fetchImpl,
+          getExpectedTargetIds: () => store.targets.map((t) => t.id),
+        });
+        const runtime = createCollectorRuntime({
+          store,
+          drainClient,
+          deliveryClient,
+          throttle,
+          dedupe,
+          health,
+          heartbeat,
+          log,
+          descriptorRefreshMs: 50,
+          drainRetryBackoffMs: 30,
+          emptyPollBackoffMs: 20,
+        });
+        return { runtime, deliveryClient };
+      }
+
+      it('ALL HOSTS EMPTY: two idle described hosts still ping -- zero mail across the estate is not a failure', async () => {
+        const realDrainClient = createDrainClient({
+          drainToken: DRAIN_TOKEN,
+          drainTimeoutMs: 5000,
+        });
+        const pings = vi.fn();
+        const fetchImpl = (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch;
+        const { runtime, deliveryClient } = buildTwoHostRuntime(realDrainClient, fetchImpl);
+        runtime.start();
+        await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(1));
+        await runtime.stop();
+        deliveryClient.close();
+      });
+
+      it('ONE HOST PERMANENTLY FAILING: tenant-a keeps completing cycles, tenant-b never drains successfully -- no ping ever', async () => {
+        const realDrainClient = createDrainClient({
+          drainToken: DRAIN_TOKEN,
+          drainTimeoutMs: 5000,
+        });
+        const perTargetDrainClient: DrainClient = {
+          drain: (target, signal) => {
+            if (target.id === 'tenant-b') {
+              return Promise.reject(new Error('simulated: tenant-b permanently unreachable'));
+            }
+            return realDrainClient.drain(target, signal);
+          },
+          ack: (target, acks, signal) => realDrainClient.ack(target, acks, signal),
+        };
+        const pings = vi.fn();
+        const fetchImpl = (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch;
+        const { runtime, deliveryClient } = buildTwoHostRuntime(perTargetDrainClient, fetchImpl);
+        runtime.start();
+        // Give tenant-a several successful empty cycles and tenant-b
+        // several failed retries -- if the SABOTAGE (any target completing
+        // pings, rather than every target) were still in place, tenant-a
+        // alone would already have pinged repeatedly by now.
+        await new Promise((r) => setTimeout(r, 250));
+        expect(pings).not.toHaveBeenCalled();
+        await runtime.stop();
+        deliveryClient.close();
+      });
+
+      it("ONE HOST WEDGED: tenant-b's drain never resolves at all -- no ping while it is stuck", async () => {
+        const realDrainClient = createDrainClient({
+          drainToken: DRAIN_TOKEN,
+          drainTimeoutMs: 5000,
+        });
+        // A genuinely wedged host's own drain() call never settles -- and,
+        // by construction, nothing can ever cancel it either (production
+        // collectorLoop.ts passes no AbortSignal into drain()). unwedge()
+        // exists only so this test can let the pending await resolve
+        // AFTER the assertion, so runtime.stop() -- which waits for every
+        // target loop to notice `stopped` and exit -- does not hang the
+        // test suite forever the way a real wedge legitimately would.
+        let unwedge: (() => void) | undefined;
+        const wedgedDrain = new Promise<never[]>((resolve) => {
+          unwedge = () => resolve([]);
+        });
+        const perTargetDrainClient: DrainClient = {
+          drain: (target, signal) => {
+            if (target.id === 'tenant-b') {
+              return wedgedDrain;
+            }
+            return realDrainClient.drain(target, signal);
+          },
+          ack: (target, acks, signal) => realDrainClient.ack(target, acks, signal),
+        };
+        const pings = vi.fn();
+        const fetchImpl = (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch;
+        const { runtime, deliveryClient } = buildTwoHostRuntime(perTargetDrainClient, fetchImpl);
+        runtime.start();
+        await new Promise((r) => setTimeout(r, 250)); // tenant-a completes several cycles; tenant-b's loop is stuck on its first
+        expect(pings).not.toHaveBeenCalled();
+        unwedge?.();
+        await new Promise((r) => setTimeout(r, 50)); // let tenant-b's now-unstuck iteration reach its next stop-check
+        await runtime.stop();
+        deliveryClient.close();
+      });
+
+      it('RECOVERY: once the failing host starts completing cycles again, pinging resumes', async () => {
+        const realDrainClient = createDrainClient({
+          drainToken: DRAIN_TOKEN,
+          drainTimeoutMs: 5000,
+        });
+        let tenantBFailing = true;
+        const perTargetDrainClient: DrainClient = {
+          drain: (target, signal) => {
+            if (target.id === 'tenant-b' && tenantBFailing) {
+              return Promise.reject(new Error('simulated: tenant-b unreachable for now'));
+            }
+            return realDrainClient.drain(target, signal);
+          },
+          ack: (target, acks, signal) => realDrainClient.ack(target, acks, signal),
+        };
+        const pings = vi.fn();
+        const fetchImpl = (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch;
+        const { runtime, deliveryClient } = buildTwoHostRuntime(perTargetDrainClient, fetchImpl);
+        runtime.start();
+        await new Promise((r) => setTimeout(r, 200));
+        expect(pings).not.toHaveBeenCalled(); // silenced while tenant-b fails
+
+        tenantBFailing = false; // tenant-b recovers
+        await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(1));
+        await runtime.stop();
+        deliveryClient.close();
+      });
+    }
+  );
 });

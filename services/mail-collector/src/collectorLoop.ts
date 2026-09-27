@@ -114,18 +114,19 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           target: initialTarget.id,
           error: (error as Error).message,
         });
-        // The loop itself is not stuck -- this iteration ran to completion,
-        // it just found one host unreachable. A drain failure against one
-        // host among several is never routed into health.ts (see its own
-        // header comment) and it is not routed into silence here either:
-        // only a genuinely wedged loop -- one that never reaches this line
-        // at all -- should stop the switch.
-        deps.heartbeat?.onCycleComplete();
+        // A drain failure against this host is never routed into
+        // health.ts (see its own header comment) -- one host's routine
+        // outage is not "the collector is stuck". But it IS routed into
+        // silence for the switch: owner ruling on branchLeft/workspace#1265
+        // (PR #275, option b) is per-host gating, so a host that cannot
+        // complete a cycle must withhold ITS report and silence the whole
+        // switch, exactly as a wedged loop would. No `onCycleComplete()`
+        // call here, deliberately.
         await sleep(deps.drainRetryBackoffMs);
         continue;
       }
       if (messages.length === 0) {
-        deps.heartbeat?.onCycleComplete();
+        deps.heartbeat?.onCycleComplete(initialTarget.id);
         await sleep(deps.emptyPollBackoffMs);
         continue;
       }
@@ -180,12 +181,12 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       }
 
       // A cycle that drained and (attempted to) submit something still
-      // completed -- ping regardless of whether every delivery in it
+      // completed -- report it regardless of whether every delivery in it
       // succeeded. A submission failure is health.ts's signal, carried
       // into shouldPing() inside the switch itself; duplicating that
       // decision here would just be a second, divergent place to get it
       // wrong.
-      deps.heartbeat?.onCycleComplete();
+      deps.heartbeat?.onCycleComplete(initialTarget.id);
     }
   }
 

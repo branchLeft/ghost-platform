@@ -38,16 +38,20 @@ const dedupe = createSubmittedTracker(config.dedupeTtlMs);
 
 const health = createHealthState();
 
-// Ping only after this worker's own loop reports a completed cycle -- never
-// on a timer of this module's own, which would keep firing while the loop
-// is wedged. `shouldPing` gates the ping on the SAME health signal a
-// submission failure feeds (see health.ts and heartbeat.ts's own header
-// comments): a loop that keeps completing cycles but cannot submit
-// anything must go silent too, not just one that stops looping outright.
+// Ping only once every host the descriptor currently names has reported a
+// completed cycle -- never on a timer of this module's own, which would
+// keep firing while one host's loop is wedged. `getExpectedTargetIds`
+// reads the store's own live target list, never a snapshot, so a
+// descriptor change takes effect on the very next reconcile. `shouldPing`
+// gates the ping on the SAME health signal a submission failure feeds (see
+// health.ts and heartbeat.ts's own header comments): a loop that keeps
+// completing cycles but cannot submit anything must go silent too, not
+// just one that stops looping outright.
 const heartbeat = createDeadMansSwitch({
   url: config.heartbeatUrl,
   log,
   shouldPing: () => health.isHealthy(config.heartbeatFailureThreshold),
+  getExpectedTargetIds: () => store.targets.map((t) => t.id),
 });
 
 const runtime = createCollectorRuntime({

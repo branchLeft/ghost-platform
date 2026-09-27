@@ -115,6 +115,7 @@ describe('end-to-end wiring: a real DescriptorTargetStore feeding the real colle
       url: 'https://heartbeat.example/ping',
       log,
       shouldPing: () => health.isHealthy(5),
+      getExpectedTargetIds: () => store.targets.map((t) => t.id),
       fetchImpl: (async () => {
         pingCount += 1;
         return { ok: true, status: 200 } as Response;
