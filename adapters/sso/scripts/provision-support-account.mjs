@@ -12,11 +12,16 @@
 //   node provision-support-account.mjs --container <name> --email <address>
 //
 // Idempotent: a second run against the same container is a no-op when the
-// row is already complete -- it never re-suspends an account a tenant has
-// since granted, and never mints a second unusable password for the same
-// email. A row missing its Administrator link (a partial write) is
-// repaired, never silently skipped -- see `administratorRoleLinkFor` in the
-// inner script below. The account this script creates is ALWAYS suspended
+// row is already complete AND still suspended -- it never re-suspends an
+// account a tenant has since granted, and never mints a second unusable
+// password for the same email. A row missing its Administrator link (a
+// partial write) is repaired, never silently skipped -- see
+// `administratorRoleLinkFor` in the inner script below. An already-complete
+// row that is NOT suspended is refused loudly (`ActiveExistingRowError`),
+// never reported as a successful no-op -- D12 requires the account
+// suspended at rest, and the one moment there is no tenant grant to
+// protect is also the moment nothing here should mistake a live grant for
+// that resting state. The account this script CREATES is ALWAYS suspended
 // (Ghost's own "inactive" status); nothing here accepts a flag to create
 // one active, which is the one thing this component's own sabotage exists
 // to catch if it is ever added back in.
@@ -25,7 +30,15 @@
 // transaction (`inTransaction` below), for both database backends, so a
 // `docker exec` killed mid-write leaves either both rows or neither --
 // never the partial state the repair path above exists to recover from on
-// a row written before this fix, or by anything else.
+// a row written before this fix, or by anything else. The repair path's
+// own read-then-decide is inside that same transaction too (MySQL locks
+// the row with `for update`), closing the window between the check and the
+// grant.
+//
+// The MySQL connection carries the same `database__connection__ssl__*`
+// keys `render-core` renders for Ghost itself -- db1 refuses a plaintext
+// TCP connection outright (`require_secure_transport=ON`), so a script
+// that ignored them could never reach a paying tenant's real database.
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -55,6 +68,26 @@ export class PartialRowMismatchError extends Error {
   constructor(message) {
     super(message);
     this.name = 'PartialRowMismatchError';
+  }
+}
+
+/** See `PARTIAL_ROW_MISMATCH_MARKER`'s own comment -- the same
+ * can't-cross-`docker-exec`-boundary reason applies here. */
+const ACTIVE_EXISTING_ROW_MARKER = 'ACTIVE_EXISTING_ROW: ';
+
+/**
+ * D12 (this component's load-bearing mark, see `provision-support-
+ * account.image.test.mjs`'s SABOTAGE case): the support account is
+ * suspended at rest. A pre-existing row for this email that already
+ * carries Administrator and is NOT suspended did not reach that state
+ * through this script -- reporting it as a successful provisioning would
+ * let a caller mistake an already-live grant for the suspended resting
+ * state D12 requires. Refused rather than reported; nothing is written.
+ */
+export class ActiveExistingRowError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ActiveExistingRowError';
   }
 }
 
@@ -125,6 +158,43 @@ const isSqlite = process.env.database__client === 'sqlite3';
 function req(name) {
   return require(require.resolve(name, { paths: ['/var/lib/ghost/current'] }));
 }
+// db1 sets require_secure_transport=ON (db/stack/conf.d/branchleft.cnf), so
+// a plaintext connect() to a paying tenant's real database is refused
+// outright. render-core renders the same \`database__connection__ssl__*\`
+// keys Ghost's own config reads (today just
+// \`database__connection__ssl__rejectUnauthorized\`) -- this reads whichever
+// of those keys the container actually has, rather than hard-coding the one
+// key render-core happens to render today, so a future key added on either
+// side does not need this script updated in step.
+//
+// Ghost's own env parser JSON.parses each value where it can
+// (render-core/src/validate.ts's own assertNotJsonScalar comment): the env
+// string "false" arrives as the boolean \`false\`, not the string "false".
+// mysql2 negotiates TLS only when \`config.ssl\` is set AT ALL
+// (mysql2/promise's client_handshake.js: \`if (connection.config.ssl)\`), so
+// passing the raw string through would make even \`ssl: {rejectUnauthorized:
+// "false"}\` (a truthy object) request no certificate validation while
+// still enabling TLS -- which happens to be harmless here, but mirroring
+// the real coercion means this never quietly drifts from what Ghost itself
+// does with the same key.
+function envJsonScalar(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+function sslOptionFromEnv() {
+  const prefix = 'database__connection__ssl__';
+  const ssl = {};
+  let any = false;
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith(prefix)) continue;
+    any = true;
+    ssl[key.slice(prefix.length)] = envJsonScalar(value);
+  }
+  return any ? { ssl } : {};
+}
 async function connect() {
   if (isSqlite) {
     const Database = req('better-sqlite3');
@@ -154,6 +224,7 @@ async function connect() {
     database: process.env.database__connection__database,
     user: process.env.database__connection__user,
     password: process.env.database__connection__password,
+    ...sslOptionFromEnv(),
   });
   return {
     get: async (sql, params) => {
@@ -193,14 +264,40 @@ async function main() {
   const db = await connect();
   try {
     const email = process.env.PROVISION_SUPPORT_EMAIL;
-    const existing = await db.get('select id, status from users where email = ?', [email]);
-    if (existing) {
+    // The read that decides repair-or-refuse and the write that grants
+    // Administrator now share one transaction, closing the window a
+    // concurrent actor who already holds admin on the tenant could
+    // otherwise land in between them (cycle-3 review finding 2). MySQL
+    // locks the row for the rest of the transaction with \`for update\`;
+    // SQLite has no such clause, but this script is only ever invoked one
+    // \`docker exec\` at a time against a given container, so BEGIN's own
+    // write-serialisation is enough there.
+    const existingOutcome = await inTransaction(db, async () => {
+      const existing = await db.get(
+        isSqlite
+          ? 'select id, status from users where email = ?'
+          : 'select id, status from users where email = ? for update',
+        [email]
+      );
+      if (!existing) {
+        return null;
+      }
       const adminLink = await administratorRoleLinkFor(db, existing.id);
       if (adminLink) {
-        console.log(
-          JSON.stringify({ created: false, repaired: false, id: existing.id, status: existing.status })
-        );
-        return;
+        // D12: reporting an existing, ACTIVE Administrator row as a
+        // successful provisioning would mean the one moment there is no
+        // tenant grant to protect is also the moment nothing here noticed
+        // the support identity was already live -- see
+        // \`ActiveExistingRowError\`'s own doc comment.
+        if (existing.status !== '${SUSPENDED_STATUS}') {
+          throw new Error(
+            '${ACTIVE_EXISTING_ROW_MARKER}' + JSON.stringify({
+              id: existing.id,
+              status: existing.status,
+            }) + ' an existing Administrator row for this email is not suspended -- refusing to report provisioning as successful'
+          );
+        }
+        return { created: false, repaired: false, id: existing.id, status: existing.status };
       }
       // Repairable only when the row is EXACTLY the shape this script's own
       // interrupted create leaves: still suspended, and no role link of any
@@ -220,16 +317,15 @@ async function main() {
         );
       }
       const role = await db.get("select id from roles where name = 'Administrator'", []);
-      await inTransaction(db, () =>
-        db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
-          process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
-          role.id,
-          existing.id,
-        ])
-      );
-      console.log(
-        JSON.stringify({ created: false, repaired: true, id: existing.id, status: existing.status })
-      );
+      await db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
+        process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
+        role.id,
+        existing.id,
+      ]);
+      return { created: false, repaired: true, id: existing.id, status: existing.status };
+    });
+    if (existingOutcome) {
+      console.log(JSON.stringify(existingOutcome));
       return;
     }
     const id = process.env.PROVISION_SUPPORT_ID;
@@ -266,11 +362,13 @@ main().catch((error) => {
 /**
  * Creates the suspended support account inside `container`'s own Ghost
  * database, atomically; repairs a pre-existing row missing its
- * Administrator link; or reports a pre-existing, already-complete row
- * untouched. Always inserts as `inactive` -- see this module's own doc
- * comment for why there is no way to ask for anything else. Returns
- * `{created, repaired, id, status}`: `created` and `repaired` are never
- * both true.
+ * Administrator link; or reports a pre-existing, already-complete SUSPENDED
+ * row untouched. Always inserts as `inactive` -- see this module's own doc
+ * comment for why there is no way to ask for anything else. A pre-existing,
+ * already-complete row that is NOT suspended throws `ActiveExistingRowError`
+ * rather than being reported as success -- see that class's own doc
+ * comment. Returns `{created, repaired, id, status}`: `created` and
+ * `repaired` are never both true.
  */
 export function provisionSupportAccount({ container, email }, execFile = execFileSync) {
   const env = [
@@ -293,10 +391,16 @@ export function provisionSupportAccount({ container, email }, execFile = execFil
     output = execFile('docker', args, { encoding: 'utf8' });
   } catch (error) {
     const stderr = typeof error.stderr === 'string' ? error.stderr : '';
-    const markerIndex = stderr.indexOf(PARTIAL_ROW_MISMATCH_MARKER);
-    if (markerIndex !== -1) {
+    const partialIndex = stderr.indexOf(PARTIAL_ROW_MISMATCH_MARKER);
+    if (partialIndex !== -1) {
       throw new PartialRowMismatchError(
-        stderr.slice(markerIndex + PARTIAL_ROW_MISMATCH_MARKER.length).split('\n')[0].trim()
+        stderr.slice(partialIndex + PARTIAL_ROW_MISMATCH_MARKER.length).split('\n')[0].trim()
+      );
+    }
+    const activeIndex = stderr.indexOf(ACTIVE_EXISTING_ROW_MARKER);
+    if (activeIndex !== -1) {
+      throw new ActiveExistingRowError(
+        stderr.slice(activeIndex + ACTIVE_EXISTING_ROW_MARKER.length).split('\n')[0].trim()
       );
     }
     throw error;

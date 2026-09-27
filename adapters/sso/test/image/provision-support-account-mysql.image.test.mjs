@@ -112,15 +112,32 @@ async function waitForGhostHome(base) {
 }
 
 function sqlOnGhost(statement, ...params) {
+  // Mirrors provision-support-account.mjs's own sslOptionFromEnv() exactly
+  // -- this helper reaches the same real, require_secure_transport=ON
+  // MySQL server the script does, from inside the same Ghost container, so
+  // a plaintext connection here would fail for the identical reason.
   const script = `
     (async () => {
       const mysql = require(require.resolve('mysql2/promise', { paths: ['/var/lib/ghost/current'] }));
+      const sslPrefix = 'database__connection__ssl__';
+      const ssl = {};
+      let anySsl = false;
+      for (const [key, value] of Object.entries(process.env)) {
+        if (!key.startsWith(sslPrefix)) continue;
+        anySsl = true;
+        try {
+          ssl[key.slice(sslPrefix.length)] = JSON.parse(value);
+        } catch {
+          ssl[key.slice(sslPrefix.length)] = value;
+        }
+      }
       const conn = await mysql.createConnection({
         host: process.env.database__connection__host,
         port: Number(process.env.database__connection__port),
         database: process.env.database__connection__database,
         user: process.env.database__connection__user,
         password: process.env.database__connection__password,
+        ...(anySsl ? { ssl } : {}),
       });
       const [statement, ...params] = JSON.parse(process.argv[1]);
       const [rows] = await conn.execute(statement, params);
@@ -157,7 +174,14 @@ before(async () => {
     `MYSQL_USER=${DB_USER}`,
     '-e',
     `MYSQL_PASSWORD=${DB_PASSWORD}`,
-    MYSQL_IMAGE
+    MYSQL_IMAGE,
+    // db1 runs with this set (db/stack/conf.d/branchleft.cnf) -- every TCP
+    // connection must be TLS. The official image auto-generates a
+    // self-signed cert pair on first start when none is supplied, so TLS
+    // is available without any extra setup here; this only turns on the
+    // *requirement*, matching production rather than the plaintext default
+    // cycle-2's fixture ran against.
+    '--require-secure-transport=ON'
   );
   const mysqlReady = await waitForMysqlReady();
   assert.equal(mysqlReady, true, 'MySQL failed to become ready');
@@ -171,6 +195,11 @@ before(async () => {
     database__connection__database: DB_NAME,
     database__connection__user: DB_USER,
     database__connection__password: DB_PASSWORD,
+    // The one ssl key render-core renders for every real MySQL tenant
+    // (render-core/src/environment.ts's databaseEnvironment) -- with
+    // --require-secure-transport=ON above, a fixture missing this key
+    // reproduces exactly the failure a paying tenant would hit.
+    database__connection__ssl__rejectUnauthorized: 'false',
     privacy__useUpdateCheck: 'false',
     mail__transport: 'stub',
     // This test never uploads or reads media -- it exists to prove the

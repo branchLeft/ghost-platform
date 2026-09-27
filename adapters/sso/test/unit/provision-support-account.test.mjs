@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ActiveExistingRowError,
   ghostObjectId,
   parseArgs,
   PartialRowMismatchError,
@@ -136,6 +137,24 @@ describe('provisionSupportAccount', () => {
       caught = error;
     }
     expect(caught).toBeInstanceOf(PartialRowMismatchError);
+    expect(caught.message).toContain('"status":"active"');
+    expect(caught.message).not.toContain('at main');
+  });
+
+  it('re-throws a marked active-existing-row failure as ActiveExistingRowError, with the row detail as the message', () => {
+    const execError = new Error('Command failed');
+    execError.stderr =
+      'Error: ACTIVE_EXISTING_ROW: {"id":"x","status":"active"} an existing Administrator row for this email is not suspended -- refusing to report provisioning as successful\n    at main (/inner-script.js:1:1)\n';
+    const execFile = vi.fn(() => {
+      throw execError;
+    });
+    let caught;
+    try {
+      provisionSupportAccount({ container: 'c1', email: 'x@example.com' }, execFile);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ActiveExistingRowError);
     expect(caught.message).toContain('"status":"active"');
     expect(caught.message).not.toContain('at main');
   });

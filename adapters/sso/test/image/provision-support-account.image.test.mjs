@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { claimsFor, generateKeyPair, mint } from '../helpers/token.mjs';
 import {
+  ActiveExistingRowError,
   provisionSupportAccount,
   SUSPENDED_STATUS,
 } from '../../scripts/provision-support-account.mjs';
@@ -25,6 +26,7 @@ if (!IMAGE) {
 const TENANT = 'tenant-zero';
 const SUPPORT = 'support-provisioned@platform.example';
 const PARTIAL_SUPPORT = 'support-partial@platform.example';
+const ACTIVE_SUPPORT = 'support-active-complete@platform.example';
 const BOOT_TIMEOUT_MS = 90_000;
 const key = generateKeyPair();
 
@@ -168,6 +170,47 @@ describe('provision-support-account.mjs, against the real image', () => {
     assert.equal(result.id, before_.id);
     const [after_] = ghost.sql('select id, password from users where email = ?', SUPPORT);
     assert.equal(after_.password, before_.password);
+  });
+
+  it('refuses -- rather than reporting success -- an existing, complete row that is ACTIVE, not suspended (cycle-3 finding 3, D12)', () => {
+    // A row this script never wrote (no interrupted-create shape, no
+    // ROLE_LINK_ID of this script's own minting) that is already active
+    // WITH its Administrator link -- the one shape "already complete" used
+    // to report as untouched success. D12 requires the account suspended
+    // at rest; the moment there is no tenant grant left to protect is also
+    // the moment nothing here should mistake a live grant for that state.
+    const id = 'd'.repeat(24);
+    ghost.sql(
+      `insert into users (id, name, slug, password, email, status, visibility,
+        comment_notifications, free_member_signup_notification,
+        paid_subscription_started_notification, paid_subscription_canceled_notification,
+        mention_notifications, recommendation_notifications, milestone_notifications,
+        donation_notifications, gift_subscription_notifications, created_at)
+       values (?, 'Support', 'support-active-complete', ?, ?, 'active', 'public', 1, 1, 1, 1, 1, 1, 1, 1, 1, ?)`,
+      id,
+      '$2a$10$unusable',
+      ACTIVE_SUPPORT,
+      new Date().toISOString().replace('T', ' ').slice(0, 19)
+    );
+    const [role] = ghost.sql("select id from roles where name = 'Administrator'");
+    ghost.sql('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', 'e'.repeat(24), role.id, id);
+
+    assert.throws(
+      () => provisionSupportAccount({ container: ghost.name, email: ACTIVE_SUPPORT }),
+      ActiveExistingRowError,
+      'RED: an existing active Administrator row must not be reported as success'
+    );
+
+    // Nothing changed: still active, still exactly one Administrator link.
+    const [row] = ghost.sql('select status from users where id = ?', id);
+    assert.equal(row.status, 'active', 'GREEN: status must be untouched');
+    const links = ghost.sql(
+      `select r.name from roles r
+         join roles_users ru on ru.role_id = r.id
+        where ru.user_id = ?`,
+      id
+    );
+    assert.equal(links.length, 1, 'GREEN: no second role link was granted');
   });
 
   it('repairs a partial row -- a user that exists with no Administrator link -- rather than skipping it', () => {
