@@ -2,11 +2,16 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createFileDrainFlag } from './drainFlag.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
+import { createHttpGhostVersionProbe } from './versionProbe.js';
 
 const config = loadConfig();
 const drainFlag = createFileDrainFlag(config.drainFlagPath);
 const ghost = createHttpGhostProbe(config.ghostHealthUrl, config.ghostProbeTimeoutMs);
-const app = createApp(drainFlag, ghost);
+const ghostVersion = createHttpGhostVersionProbe(
+  config.ghostAdminSiteUrl,
+  config.ghostProbeTimeoutMs
+);
+const app = createApp(drainFlag, ghost, ghostVersion, config.intendedGhostVersion);
 
 const server = app.listen(config.port, () => {
   console.log(
