@@ -13,6 +13,7 @@ import { EMPTY_DRAIN_PAYLOAD, type DrainSource } from './drainSource.js';
 import type { DrainFlagStore } from './drainFlag.js';
 import type { HealthChecker } from './healthCheck.js';
 import { hostOf } from './hostOf.js';
+import { handleImagePush, type ImagePushDeps } from './imagePush.js';
 import { clearLeaseAndHash, writeLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
 import { validateSlotLiteral, type Colour } from './literals.js';
 import type { Renderer } from './render.js';
@@ -42,6 +43,7 @@ export interface BrokerDeps {
   readonly drainSource: DrainSource;
   readonly leaseStoreConfig: LeaseStoreConfig;
   readonly drainFlags: DrainFlagStore;
+  readonly imagePush: ImagePushDeps;
   readonly healthChecker: HealthChecker;
   readonly healthPortBase: number;
   readonly appPortBase: number;
@@ -419,6 +421,8 @@ export function createBrokerHandler(deps: BrokerDeps): Handler {
         return await handleReconcile(deps, req, res);
       if (path === '/reset' && req.method === 'POST') return await handleReset(deps, req, res);
       if (path === '/drain' && req.method === 'GET') return await handleDrain(deps, req, res);
+      if (path === '/image' && req.method === 'POST')
+        return await handleImagePush(deps.auth, deps.imagePush, req, res);
       const statusMatch = /^\/status\/([^/]+)$/.exec(path);
       if (statusMatch && req.method === 'GET') {
         let slotParam: string;

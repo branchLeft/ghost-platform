@@ -14,6 +14,10 @@ export interface BrokerConfig {
   readonly drainFlagDir: string;
   /** Root of the per-slot, root-owned directories `/reconcile` writes rendered artefacts into. */
   readonly slotDirBase: string;
+  /** Where `/image` spools a pushed tar while its digest is checked -- distinct from every slot's own directory. */
+  readonly imageTmpDir: string;
+  /** `/image` refuses a declared `x-image-size` above this before reading a single byte. */
+  readonly imageMaxBytes: number;
   /** Ed25519 public key the caller's (portal/reaper/harness) requests are verified against. */
   readonly verifyKey: Buffer;
   /** How old a request's timestamp may be before it is refused as stale. */
@@ -129,6 +133,13 @@ export function loadConfig(
     stateDir: requireEnv(env, 'BROKER_STATE_DIR'),
     drainFlagDir: requireEnv(env, 'BROKER_DRAIN_FLAG_DIR'),
     slotDirBase: requireEnv(env, 'BROKER_SLOT_DIR_BASE'),
+    imageTmpDir: requireEnv(env, 'BROKER_IMAGE_TMP_DIR'),
+    imageMaxBytes: positiveInteger(
+      env,
+      'BROKER_IMAGE_MAX_BYTES',
+      4 * 1024 * 1024 * 1024,
+      16 * 1024 * 1024 * 1024
+    ),
     verifyKey,
     replayWindowSeconds: positiveInteger(env, 'BROKER_REPLAY_WINDOW_SECONDS', 60, 3600),
     wrapperCommand: env.BROKER_WRAPPER_COMMAND || '/usr/local/sbin/branchleft-slot',

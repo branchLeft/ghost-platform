@@ -9,6 +9,7 @@ import { generateTestKeyPair, signHeaders } from '../helpers/signer.js';
 import {
   writeValidAdminApiPlugin,
   writeValidDrainSourcePlugin,
+  writeValidImageLoaderPlugin,
   writeValidRendererPlugin,
 } from '../helpers/pluginFixtures.js';
 import { findFreePort, spawnBroker, type SpawnedBroker } from '../helpers/spawnBroker.js';
@@ -87,10 +88,12 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const drainFlagDir = join(root, 'drain');
     const slotDirBase = join(root, 'slots');
     const slotsPath = join(root, 'slots.json');
+    const imageTmpDir = join(root, 'image-tmp');
     await mkdir(stateDir, { recursive: true });
     await mkdir(leaseDir, { recursive: true });
     await mkdir(drainFlagDir, { recursive: true });
     await mkdir(slotDirBase, { recursive: true });
+    await mkdir(imageTmpDir, { recursive: true });
     return {
       keyPair,
       slotDirBase,
@@ -103,6 +106,7 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
         BROKER_STATE_DIR: stateDir,
         BROKER_DRAIN_FLAG_DIR: drainFlagDir,
         BROKER_SLOT_DIR_BASE: slotDirBase,
+        BROKER_IMAGE_TMP_DIR: imageTmpDir,
         BROKER_DEMO_ZONE: TEST_ZONES.demoZone,
         BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
         BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),
@@ -131,11 +135,13 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const { env, keyPair, slotDirBase } = await baseEnv();
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
     broker = spawnBroker({
       ...env,
       BROKER_RENDERER_MODULE: REAL_PLUGIN_DIST,
       BROKER_ADMIN_API_MODULE: adminApi,
       BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      BROKER_IMAGE_LOADER_MODULE: imageLoader,
     });
     const { port } = await broker.waitListening(8000);
     // Past item 2's same-second floor (see server.test.ts's own comment).
@@ -178,11 +184,13 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const genericRenderer = await writeValidRendererPlugin(root);
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
     broker = spawnBroker({
       ...env,
       BROKER_RENDERER_MODULE: genericRenderer,
       BROKER_ADMIN_API_MODULE: adminApi,
       BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      BROKER_IMAGE_LOADER_MODULE: imageLoader,
     });
     const { port } = await broker.waitListening(8000);
     await new Promise((resolve) => setTimeout(resolve, 1100));

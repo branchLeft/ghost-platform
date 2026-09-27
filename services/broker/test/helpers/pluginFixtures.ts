@@ -23,6 +23,16 @@ export async function writeValidDrainSourcePlugin(dir: string): Promise<string> 
   return path;
 }
 
+/** A real, valid `ImageLoader` plugin module -- never calls `docker`, records what it was asked to load. */
+export async function writeValidImageLoaderPlugin(dir: string): Promise<string> {
+  const path = join(dir, 'imageLoader.mjs');
+  await writeFile(
+    path,
+    "export default { async load(tarPath) { return { imageId: 'sha256:' + '0'.repeat(64) }; } };\n"
+  );
+  return path;
+}
+
 /** Loads cleanly but its default export has none of the required seam functions. */
 export async function writeShapelessPlugin(dir: string, name: string): Promise<string> {
   const path = join(dir, `${name}.mjs`);

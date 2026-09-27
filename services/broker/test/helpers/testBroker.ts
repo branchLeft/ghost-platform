@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import type { TenantDescriptor, ZoneConfig } from '@branchleft/ghost-platform-render-core';
 import { createBrokerHandler, type BrokerDeps } from '../../src/app.js';
 import type { AdminApiClient } from '../../src/adminApi.js';
+import { imagePushManifest } from '../../src/imagePush.js';
 import { createInMemoryNonceStore } from '../../src/nonceStore.js';
 import { createDrainFlagStore } from '../../src/drainFlag.js';
 import type { DrainPayload, DrainSource } from '../../src/drainSource.js';
@@ -35,6 +36,13 @@ export interface ControllableDrainSource extends DrainSource {
   rejectNextWith: (err: Error) => void;
 }
 
+export interface RecordingImageLoader {
+  readonly calls: string[];
+  fail: boolean;
+  imageIdToReturn: string;
+  load(tarPath: string): Promise<{ imageId: string }>;
+}
+
 export interface TestBroker {
   readonly baseUrl: string;
   readonly keyPair: TestKeyPair;
@@ -42,6 +50,8 @@ export interface TestBroker {
   readonly renderer: RecordingRenderer;
   readonly adminApi: RecordingAdminApi;
   readonly drainSource: ControllableDrainSource;
+  readonly imageLoader: RecordingImageLoader;
+  readonly imageTmpDir: string;
   readonly wrapperLogPath: string;
   readonly stateDir: string;
   readonly leaseDir: string;
@@ -50,6 +60,11 @@ export interface TestBroker {
   readonly processStartSeconds: number;
   setNowMs(value: number): void;
   signedFetch(method: string, path: string, body?: unknown): Promise<Response>;
+  /** The three signed headers a real control plane would send for `POST /image` with this exact (digest, size) pair. */
+  signImagePushHeaders(
+    digest: string,
+    size: string
+  ): { 'X-Broker-Timestamp': string; 'X-Broker-Nonce': string; 'X-Broker-Signature': string };
   close(): Promise<void>;
 }
 
@@ -73,6 +88,19 @@ function createRecordingAdminApi(): RecordingAdminApi {
     async configure(baseUrl, descriptor) {
       this.calls.push({ baseUrl, descriptor });
       if (this.fail) throw new Error('admin API sabotage failure');
+    },
+  };
+}
+
+function createRecordingImageLoader(): RecordingImageLoader {
+  return {
+    calls: [],
+    fail: false,
+    imageIdToReturn: `sha256:${'0'.repeat(64)}`,
+    async load(tarPath) {
+      this.calls.push(tarPath);
+      if (this.fail) throw new Error('image loader sabotage failure');
+      return { imageId: this.imageIdToReturn };
     },
   };
 }
@@ -108,8 +136,15 @@ export async function startTestBroker(): Promise<TestBroker> {
   const drainFlagDir = join(root, 'drain-flags');
   const slotDirBase = join(root, 'slots');
   const slotsPath = join(root, 'slots.json');
+  const imageTmpDir = join(root, 'image-tmp');
   const wrapperLogPath = join(root, 'wrapper.log');
-  await Promise.all([mkdir(stateDir), mkdir(leaseDir), mkdir(drainFlagDir), mkdir(slotDirBase)]);
+  await Promise.all([
+    mkdir(stateDir),
+    mkdir(leaseDir),
+    mkdir(drainFlagDir),
+    mkdir(slotDirBase),
+    mkdir(imageTmpDir),
+  ]);
   process.env.FAKE_WRAPPER_LOG = wrapperLogPath;
 
   const keyPair = generateTestKeyPair();
@@ -126,6 +161,7 @@ export async function startTestBroker(): Promise<TestBroker> {
   const renderer = createRecordingRenderer();
   const adminApi = createRecordingAdminApi();
   const drainSource = createControllableDrainSource();
+  const imageLoader = createRecordingImageLoader();
 
   const deps: BrokerDeps = {
     auth: {
@@ -147,6 +183,15 @@ export async function startTestBroker(): Promise<TestBroker> {
     drainSource,
     leaseStoreConfig: { slotsPath, leaseDir, nowMs: () => nowMs },
     drainFlags: createDrainFlagStore(drainFlagDir),
+    imagePush: {
+      loader: imageLoader,
+      tmpDir: imageTmpDir,
+      maxBytes: 64 * 1024 * 1024,
+      nowMs: () => nowMs,
+      log: () => {
+        /* silenced in tests */
+      },
+    },
     healthChecker: createHttpHealthChecker('127.0.0.1', 500),
     healthPortBase: 9100,
     appPortBase: 9300,
@@ -174,6 +219,8 @@ export async function startTestBroker(): Promise<TestBroker> {
     renderer,
     adminApi,
     drainSource,
+    imageLoader,
+    imageTmpDir,
     wrapperLogPath,
     stateDir,
     leaseDir,
@@ -191,6 +238,10 @@ export async function startTestBroker(): Promise<TestBroker> {
         headers: { 'Content-Type': 'application/json', ...headers },
         body: body === undefined ? undefined : rawBody,
       });
+    },
+    signImagePushHeaders(digest, size) {
+      const manifest = imagePushManifest(digest, size);
+      return signHeaders(keyPair, 'POST', '/image', manifest, Math.floor(nowMs / 1000));
     },
     async close() {
       delete process.env.FAKE_WRAPPER_LOG;

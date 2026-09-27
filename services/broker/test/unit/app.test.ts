@@ -510,4 +510,21 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     const res = await fetch(`${broker.baseUrl}/nonexistent`);
     expect(res.status).toBe(404);
   });
+
+  // --- push delivery: `/image` reaches the real router, not merely its own
+  // handler under direct test (imagePush.test.ts already proves the
+  // handler's own logic against this same real HTTP path; this proves the
+  // *dispatch table* -- app.ts's createBrokerHandler -- actually routes to
+  // it, the same real entry point every other route above is proven
+  // through). ---
+  it('/image is wired into the real router: an unauthenticated push is refused by the broker itself, not a 404', async () => {
+    broker = await startTestBroker();
+    const res = await fetch(`${broker.baseUrl}/image`, {
+      method: 'POST',
+      headers: { 'X-Image-Digest': `sha256:${'a'.repeat(64)}`, 'X-Image-Size': '3' },
+      body: Buffer.from('abc'),
+    });
+    expect(res.status).toBe(401);
+    expect(broker.imageLoader.calls).toHaveLength(0);
+  });
 });

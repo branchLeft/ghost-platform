@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+// A stand-in for the real `docker` CLI, named exactly `docker` so PATH
+// resolution finds it -- `dockerImageLoader.test.ts` puts this
+// directory ahead of the real `docker` on PATH rather than exercising a
+// real daemon from a unit test. It only ever answers `load`; nothing
+// here pulls, logs in, or reads a credential of any kind.
+const args = process.argv.slice(2);
+
+if (process.env.FAKE_DOCKER_FAIL === '1') {
+  process.stderr.write('fake docker: forced failure\n');
+  process.exit(1);
+}
+
+if (args[0] === 'load') {
+  const output =
+    process.env.FAKE_DOCKER_LOAD_OUTPUT ?? `Loaded image ID: sha256:${'0'.repeat(64)}\n`;
+  process.stdout.write(output);
+  process.exit(0);
+}
+
+process.stderr.write(`fake docker: unrecognised invocation: ${args.join(' ')}\n`);
+process.exit(1);
