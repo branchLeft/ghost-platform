@@ -95,6 +95,14 @@ schema with no data still boots its own migrations and answers `200`, so
 an empty restore has to fail the content check for as long as it is asked,
 not merely until Ghost finishes booting.
 
+**`restore_only` also refuses before importing anything if the recovery
+target already holds a non-system database.** A per-tenant dump's own
+`CREATE DATABASE IF NOT EXISTS`/`USE` statements restore INTO whatever
+database of that name already exists, not beside it — so a target that
+already has one is corrupted by import, never merely at risk of it. The
+check is an emptiness check, not a name match against the tenant being
+restored, and there is no flag to bypass it.
+
 Two modes exist because a real orchestrator has to start the colour's own
 Ghost process in between importing the dump and checking it:
 
@@ -112,11 +120,13 @@ has a Ghost process running against it. `RESTORE_MYSQL_PWD` carries the
 recovery target's password; nothing here accepts, reads or forwards any
 other credential.
 
-`test_restore_drained.py` covers the ordering guarantee and the exact
-control above with every external effect faked. `test-restore-drained-proof.sh`
-proves the same chain against real containers — two real MySQL 8.0
-servers, this directory's own recovery image (by digest), the platform
-image, and `services/drain-sidecar` built from source — including the
-control run for real: an empty dump restored onto a fresh target, a real
-Ghost answering `200` against it, and the real sidecar staying drained
-throughout.
+`test_restore_drained.py` covers the ordering guarantee and both controls
+above with every external effect faked. `test-restore-drained-proof.sh`
+proves the same chain against real containers — real MySQL 8.0 servers,
+this directory's own recovery image (by digest), the platform image, and
+`services/drain-sidecar` built from source — including both controls run
+for real: an empty dump restored onto a fresh target (a real Ghost
+answering `200` against it, and the real sidecar staying drained
+throughout), and a target already holding a live database with known
+rows (refused before import, its row count and `CHECKSUM TABLE` value
+proven unchanged afterwards).
