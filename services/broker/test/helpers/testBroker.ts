@@ -40,6 +40,9 @@ export interface RecordingImageLoader {
   readonly calls: string[];
   fail: boolean;
   imageIdToReturn: string;
+  /** When set, the next `load` call doesn't resolve until `release()` is called -- lets a test hold one push in flight while it fires a second. */
+  pauseNextLoad: boolean;
+  release(): void;
   load(tarPath: string): Promise<{ imageId: string }>;
 }
 
@@ -93,12 +96,24 @@ function createRecordingAdminApi(): RecordingAdminApi {
 }
 
 function createRecordingImageLoader(): RecordingImageLoader {
+  let release: (() => void) | undefined;
   return {
     calls: [],
     fail: false,
     imageIdToReturn: `sha256:${'0'.repeat(64)}`,
+    pauseNextLoad: false,
+    release() {
+      release?.();
+      release = undefined;
+    },
     async load(tarPath) {
       this.calls.push(tarPath);
+      if (this.pauseNextLoad) {
+        this.pauseNextLoad = false;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
       if (this.fail) throw new Error('image loader sabotage failure');
       return { imageId: this.imageIdToReturn };
     },

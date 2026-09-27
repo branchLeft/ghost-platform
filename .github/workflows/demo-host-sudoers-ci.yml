@@ -62,6 +62,16 @@ jobs:
             fi
             echo "refused, as required"
 
+            echo "--- sudo -l: the fixed load invocation must be allowed ---"
+            sudo -l -U broker /usr/local/sbin/branchleft-slot load /var/lib/branchleft-broker/image-tmp/image.tar
+
+            echo "--- sudo -l: load against any other path must be refused -- no wildcard grants it ---"
+            if sudo -l -U broker /usr/local/sbin/branchleft-slot load /etc/passwd; then
+              echo "::error::load was allowed against a path outside the fixed image-staging directory"
+              exit 1
+            fi
+            echo "refused, as required"
+
             id nobody >/dev/null 2>&1 || useradd -r nobody
             echo "--- sudo -l: a caller outside the broker account must be refused ---"
             if sudo -l -U nobody /usr/local/sbin/branchleft-slot 0 reset; then

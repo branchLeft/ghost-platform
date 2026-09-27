@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -14,9 +14,21 @@ import { type AuthDeps, verifyRequest } from './auth.js';
  * rather than the host ever pulling from a registry. This module is the
  * one place that receives a pushed image and decides whether to trust it;
  * `plugins/dockerImageLoader.ts` is the one place that then loads it, and
- * is the only file in this service that shells out to `docker` at all --
- * an audit for "does anything here ever `pull`" has exactly one file to
+ * is the only file in this service that ever invokes the privileged
+ * sudoers wrapper for `load` -- an audit for "does anything here ever
+ * `pull`, or hold the Docker socket directly" has exactly one file to
  * read, and it is not this one.
+ *
+ * Every push is staged at the same fixed path, `join(deps.tmpDir,
+ * IMAGE_STAGING_FILENAME)` -- never a per-request random name. LLD-2 §02's
+ * `load` verb is sudoers-enumerated the same wildcard-free way
+ * `start`/`stop`/`reset` are (`demo-host/provision/render_slot_sudoers.py`),
+ * which is only possible against a literal, unchanging argument; a
+ * `mkdtemp`-named path would need a wildcard to authorise, which is the
+ * exact argument-injection shape this design refuses everywhere else. One
+ * fixed path means at most one push is ever in flight at a time, which
+ * `pushInFlight` below enforces rather than leaving two concurrent
+ * uploads to corrupt each other's bytes on the same file.
  */
 export interface ImageLoader {
   /** Loads a tar previously verified against its declared digest. Never called on an unverified stream. */
@@ -36,6 +48,24 @@ export interface ImagePushDeps {
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const SIZE_PATTERN = /^[0-9]{1,20}$/;
 const IMAGE_PUSH_PATH = '/image';
+
+/**
+ * The literal filename `demo-host/provision/render_slot_sudoers.py`'s
+ * `load` rule also carries -- kept as a separate literal on each side
+ * deliberately (the same choice `config.ts`'s `slotLiterals` doc comment
+ * makes against that generator's `SLOT_NAMES`): that file enumerates what
+ * sudoers grants, this one enumerates what this handler ever writes to,
+ * and nothing here reads that Python file at runtime.
+ */
+export const IMAGE_STAGING_FILENAME = 'image.tar';
+
+/**
+ * Keyed by `tmpDir` rather than a single module-level flag, so the many
+ * independent broker instances a test process starts in sequence
+ * (`startTestBroker()`, one fresh `tmpDir` per test) never see a stale
+ * "in flight" left by an earlier, unrelated test.
+ */
+const pushInFlight = new Set<string>();
 
 /**
  * The exact bytes a push's signature covers -- the declared digest and
@@ -153,56 +183,70 @@ export async function handleImagePush(
     return;
   }
 
-  const dir = await mkdtemp(join(deps.tmpDir, 'image-push-'));
-  const tarPath = join(dir, 'image.tar');
-  const hash = createHash('sha256');
-  let received = 0;
-  const limiter = hashingLimiter(declaredBytes, hash);
-  limiter.on('data', (chunk: Buffer) => {
-    received += chunk.length;
-  });
+  // The fixed staging path is a shared resource across the whole host, not
+  // per-request the way a `mkdtemp` name would be -- refuse a second push
+  // outright rather than let two concurrent uploads race onto the same
+  // file.
+  if (pushInFlight.has(deps.tmpDir)) {
+    req.resume();
+    sendJson(res, 409, { error: 'another image push is already in progress on this host' });
+    return;
+  }
+  pushInFlight.add(deps.tmpDir);
 
   try {
-    await pipeline(req, limiter, createWriteStream(tarPath));
-  } catch (err) {
-    await rm(dir, { recursive: true, force: true });
-    deps.log(`image push stream failed: ${(err as Error).message}`);
-    sendJson(res, 413, { error: (err as Error).message });
-    return;
-  }
-
-  if (received !== declaredBytes) {
-    await rm(dir, { recursive: true, force: true });
-    sendJson(res, 400, {
-      error: `received ${received} bytes but x-image-size declared ${declaredBytes}`,
+    const tarPath = join(deps.tmpDir, IMAGE_STAGING_FILENAME);
+    const hash = createHash('sha256');
+    let received = 0;
+    const limiter = hashingLimiter(declaredBytes, hash);
+    limiter.on('data', (chunk: Buffer) => {
+      received += chunk.length;
     });
-    return;
-  }
 
-  const computedDigest = `sha256:${hash.digest('hex')}`;
-  if (computedDigest !== digest) {
-    await rm(dir, { recursive: true, force: true });
-    deps.log(`image push refused: declared ${digest}, received ${computedDigest}`);
-    sendJson(res, 409, {
-      error: 'received bytes do not match the declared digest',
-      declared: digest,
-      received: computedDigest,
-    });
-    return;
-  }
+    try {
+      await pipeline(req, limiter, createWriteStream(tarPath));
+    } catch (err) {
+      await rm(tarPath, { force: true });
+      deps.log(`image push stream failed: ${(err as Error).message}`);
+      sendJson(res, 413, { error: (err as Error).message });
+      return;
+    }
 
-  try {
-    const { imageId } = await deps.loader.load(tarPath);
-    // Cleaned up before responding, not in a `finally` after -- the client
-    // can see this response the instant `sendJson` calls `res.end()`, and
-    // that race is not one this test (or a caller polling the temp dir
-    // right after) should ever have to account for.
-    await rm(dir, { recursive: true, force: true });
-    const durationMs = deps.nowMs() - startedMs;
-    sendJson(res, 200, { digest, imageId, bytes: received, durationMs });
-  } catch (err) {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-    deps.log(`image load failed: ${(err as Error).message}`);
-    sendJson(res, 502, { error: 'image failed to load' });
+    if (received !== declaredBytes) {
+      await rm(tarPath, { force: true });
+      sendJson(res, 400, {
+        error: `received ${received} bytes but x-image-size declared ${declaredBytes}`,
+      });
+      return;
+    }
+
+    const computedDigest = `sha256:${hash.digest('hex')}`;
+    if (computedDigest !== digest) {
+      await rm(tarPath, { force: true });
+      deps.log(`image push refused: declared ${digest}, received ${computedDigest}`);
+      sendJson(res, 409, {
+        error: 'received bytes do not match the declared digest',
+        declared: digest,
+        received: computedDigest,
+      });
+      return;
+    }
+
+    try {
+      const { imageId } = await deps.loader.load(tarPath);
+      // Cleaned up before responding, not in a `finally` after -- the client
+      // can see this response the instant `sendJson` calls `res.end()`, and
+      // that race is not one this test (or a caller polling the temp dir
+      // right after) should ever have to account for.
+      await rm(tarPath, { force: true });
+      const durationMs = deps.nowMs() - startedMs;
+      sendJson(res, 200, { digest, imageId, bytes: received, durationMs });
+    } catch (err) {
+      await rm(tarPath, { force: true }).catch(() => undefined);
+      deps.log(`image load failed: ${(err as Error).message}`);
+      sendJson(res, 502, { error: 'image failed to load' });
+    }
+  } finally {
+    pushInFlight.delete(deps.tmpDir);
   }
 }

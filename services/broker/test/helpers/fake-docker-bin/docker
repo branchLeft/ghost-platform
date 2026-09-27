@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 // A stand-in for the real `docker` CLI, named exactly `docker` so PATH
-// resolution finds it -- `dockerImageLoader.test.ts` puts this
-// directory ahead of the real `docker` on PATH rather than exercising a
-// real daemon from a unit test. It only ever answers `load`; nothing
-// here pulls, logs in, or reads a credential of any kind.
+// resolution finds it -- `dockerImageLoader.test.ts` puts this directory
+// ahead of the real `docker` on PATH, not to exercise it (the loader no
+// longer calls `docker` directly at all, only the sudoers wrapper), but to
+// prove the negative: if anything on this PATH ever ran `docker`, this is
+// what would answer, and `FAKE_DOCKER_CALL_LOG` is where that fact would
+// show up. Nothing here pulls, logs in, or reads a credential of any kind.
+import { appendFileSync } from 'node:fs';
+
 const args = process.argv.slice(2);
+
+const callLog = process.env.FAKE_DOCKER_CALL_LOG;
+if (callLog) {
+  appendFileSync(callLog, JSON.stringify(args) + '\n');
+}
 
 if (process.env.FAKE_DOCKER_FAIL === '1') {
   process.stderr.write('fake docker: forced failure\n');

@@ -6,6 +6,18 @@ export interface SlotWrapper {
   start(slot: SlotName, colour: Colour): Promise<void>;
   stop(slot: SlotName, colour: Colour): Promise<void>;
   reset(slot: SlotName): Promise<void>;
+  /**
+   * The enumerated `load <path>` verb (`render_slot_sudoers.py`'s
+   * `IMAGE_LOAD_INVOCATION`) -- unlike `start`/`stop`/`reset`, the path
+   * argument is not sudoers-enumerable (it names a file, not one of a
+   * finite set of literals), so the sudoers grant fixes it to the single
+   * literal path the image-staging directory's own fixed filename
+   * produces; the caller (`plugins/dockerImageLoader.ts`) is the one that
+   * must never pass anything else. Resolves to the wrapped `docker load`'s
+   * own stdout, unlike the other three verbs, which discard it -- nothing
+   * else this wrapper runs has output a caller needs back.
+   */
+  load(tarPath: string): Promise<string>;
 }
 
 export class WrapperError extends Error {
@@ -46,7 +58,7 @@ export interface WrapperConfig {
  * argument ends and the next begins.
  */
 export function createSlotWrapper(config: WrapperConfig): SlotWrapper {
-  function run(args: readonly string[]): Promise<void> {
+  function run(args: readonly string[]): Promise<string> {
     const argv = [...config.prefix, config.command, ...args];
     const [file, ...rest] = argv;
     if (!file) return Promise.reject(new Error('wrapper command is empty'));
@@ -56,14 +68,18 @@ export function createSlotWrapper(config: WrapperConfig): SlotWrapper {
           reject(new WrapperError(`slot wrapper failed: ${err.message}`, stdout, stderr));
           return;
         }
-        resolve();
+        resolve(stdout);
       });
     });
   }
 
   return {
-    start: (slot, colour) => run([slot, colour, 'start' satisfies Verb]),
-    stop: (slot, colour) => run([slot, colour, 'stop' satisfies Verb]),
-    reset: (slot) => run([slot, 'reset']),
+    start: (slot, colour) => run([slot, colour, 'start' satisfies Verb]).then(() => undefined),
+    stop: (slot, colour) => run([slot, colour, 'stop' satisfies Verb]).then(() => undefined),
+    reset: (slot) => run([slot, 'reset']).then(() => undefined),
+    // 'load' and the path are pushed as their own argv elements, same as
+    // every other verb here -- never joined into one, for the identical
+    // reason the module doc comment above gives for slot/colour/verb.
+    load: (tarPath) => run(['load', tarPath]),
   };
 }

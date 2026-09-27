@@ -15,4 +15,13 @@ if (process.env.FAKE_WRAPPER_FAIL === '1') {
   process.stderr.write('fake wrapper: forced failure\n');
   process.exit(1);
 }
+// The `load` verb is the one invocation whose stdout a caller reads
+// (`wrapper.ts`'s `load()`, unlike `start`/`stop`/`reset`) -- this stands
+// in for the real wrapper's own `docker load` output so
+// `dockerImageLoader.test.ts` can prove its parsing without a daemon.
+if (args[0] === 'load') {
+  process.stdout.write(
+    process.env.FAKE_WRAPPER_LOAD_OUTPUT ?? `Loaded image ID: sha256:${'0'.repeat(64)}\n`
+  );
+}
 process.exit(0);

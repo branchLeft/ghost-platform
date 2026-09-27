@@ -187,6 +187,44 @@ describe('POST /image (push delivery, no registry access)', () => {
     expect(broker.imageLoader.calls).toHaveLength(0);
   });
 
+  it('refuses a second push while one is still loading -- one fixed path, never two racing writers', async () => {
+    broker = await startTestBroker();
+    broker.imageLoader.pauseNextLoad = true;
+    const firstBytes = Buffer.from('the first push, held open inside the loader');
+    const firstDigest = digestOf(firstBytes);
+    const firstSize = String(firstBytes.length);
+    const firstHeaders = broker.signImagePushHeaders(firstDigest, firstSize);
+
+    const firstPromise = fetch(`${broker.baseUrl}/image`, {
+      method: 'POST',
+      headers: { ...firstHeaders, 'X-Image-Digest': firstDigest, 'X-Image-Size': firstSize },
+      body: firstBytes,
+    });
+
+    // pushInFlight is set synchronously, well before the loader (and its
+    // pause) is ever reached -- this margin is generous, not load-bearing.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const secondBytes = Buffer.from('a second push, sent while the first is still in flight');
+    const secondDigest = digestOf(secondBytes);
+    const secondSize = String(secondBytes.length);
+    const secondHeaders = broker.signImagePushHeaders(secondDigest, secondSize);
+    const secondRes = await fetch(`${broker.baseUrl}/image`, {
+      method: 'POST',
+      headers: { ...secondHeaders, 'X-Image-Digest': secondDigest, 'X-Image-Size': secondSize },
+      body: secondBytes,
+    });
+    expect(secondRes.status).toBe(409);
+    // Only the first push ever reached the loader -- the second was
+    // refused before touching disk, let alone the loader.
+    expect(broker.imageLoader.calls).toHaveLength(1);
+
+    broker.imageLoader.release();
+    const firstRes = await firstPromise;
+    expect(firstRes.status).toBe(200);
+    expect(broker.imageLoader.calls).toHaveLength(1);
+  });
+
   it('propagates a loader failure as a 502 without leaving its temp file behind', async () => {
     broker = await startTestBroker();
     broker.imageLoader.fail = true;

@@ -3,8 +3,10 @@
 // compiled `handleImagePush` (this service's own control) to a real
 // `docker`-backed `ImageLoader` plugin -- not a reimplementation, not a
 // fixture standing in for the logic under test. It never imports
-// `node:child_process` itself; only `dockerImageLoader.js` does, and that
-// file is `dockerImageLoader.test.ts`'s own structural-scan target.
+// `node:child_process` itself; only `wrapper.js` does (`dockerImageLoader.js`
+// reaches it transitively, never `docker` directly), and
+// `dockerImageLoader.js` is `dockerImageLoader.test.ts`'s own
+// structural-scan target.
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { handleImagePush } from '/app/dist/imagePush.js';

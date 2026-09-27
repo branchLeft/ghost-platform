@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import type { ZoneConfig } from '@branchleft/ghost-platform-render-core';
+import type { WrapperConfig } from './wrapper.js';
 
 export interface BrokerConfig {
   readonly port: number;
@@ -106,6 +107,25 @@ export function zonesFromEnv(env: BrokerEnv): ZoneConfig {
 }
 
 /**
+ * The one place `BROKER_WRAPPER_COMMAND`/`BROKER_WRAPPER_PREFIX`/
+ * `BROKER_WRAPPER_TIMEOUT_MS` are read -- `loadConfig` calls it for
+ * `BrokerConfig.wrapperCommand`/`wrapperPrefix`/`wrapperTimeoutMs`, and
+ * `plugins/dockerImageLoader.ts` calls it too (the same reason
+ * `zonesFromEnv` above is exported rather than re-read: a plugin loaded by
+ * `loadPlugin` never receives a `BrokerConfig` directly, so the choice is
+ * one shared parser or two copies that can drift).
+ */
+export function wrapperConfigFromEnv(env: BrokerEnv): WrapperConfig {
+  const wrapperPrefixRaw = env.BROKER_WRAPPER_PREFIX;
+  return {
+    command: env.BROKER_WRAPPER_COMMAND || '/usr/local/sbin/branchleft-slot',
+    prefix:
+      wrapperPrefixRaw === undefined ? ['sudo', '-n'] : wrapperPrefixRaw.split(' ').filter(Boolean),
+    timeoutMs: positiveInteger(env, 'BROKER_WRAPPER_TIMEOUT_MS', 30_000, 300_000),
+  };
+}
+
+/**
  * Every input that decides who may cause a side effect has no default: the
  * verify key, the slots path and the lease/state/drain-flag directories. An
  * unset value refuses to start rather than guessing -- the same posture
@@ -124,7 +144,7 @@ export function loadConfig(
       'BROKER_VERIFY_KEY_FILE must hold exactly 32 raw bytes (an Ed25519 public key)'
     );
   }
-  const wrapperPrefixRaw = env.BROKER_WRAPPER_PREFIX;
+  const wrapper = wrapperConfigFromEnv(env);
   return {
     port: positiveInteger(env, 'PORT', 8090, 65535),
     host: env.LISTEN_HOST || '127.0.0.1',
@@ -142,10 +162,9 @@ export function loadConfig(
     ),
     verifyKey,
     replayWindowSeconds: positiveInteger(env, 'BROKER_REPLAY_WINDOW_SECONDS', 60, 3600),
-    wrapperCommand: env.BROKER_WRAPPER_COMMAND || '/usr/local/sbin/branchleft-slot',
-    wrapperPrefix:
-      wrapperPrefixRaw === undefined ? ['sudo', '-n'] : wrapperPrefixRaw.split(' ').filter(Boolean),
-    wrapperTimeoutMs: positiveInteger(env, 'BROKER_WRAPPER_TIMEOUT_MS', 30_000, 300_000),
+    wrapperCommand: wrapper.command,
+    wrapperPrefix: wrapper.prefix,
+    wrapperTimeoutMs: wrapper.timeoutMs,
     zones: zonesFromEnv(env),
     slotLiterals: (env.BROKER_SLOT_LITERALS ?? '0,1,2,3,4,5,6')
       .split(',')
