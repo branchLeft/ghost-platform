@@ -569,6 +569,29 @@ class ReadSubmittingCountAsUidForkTests(unittest.TestCase):
         with self.assertRaises(bs.EmailBatchCheckError):
             bs._read_submitting_count_as_uid("0", os.getuid() + 1)
 
+    def test_a_real_setuid_to_an_unreachable_target_is_refused_before_any_read(self):
+        # setgroups/setgid mocked away for the same platform reason as the
+        # self-drop success test (both fail unconditionally here, masking
+        # whatever setuid itself would do) -- setuid is left real. A
+        # target uid this process cannot reach must fail via a real
+        # PermissionError raised *by setuid itself*, distinguishable from
+        # the "silently no-op'd" test above (which mocks setuid away on
+        # purpose): removing the real `os.setuid(uid)` call would let the
+        # child fall through to the mocked, always-succeeding
+        # `_read_submitting_count` and report success at its own
+        # (unchanged) uid -- caught only by the parent's separate uid
+        # mismatch message, not this one, so the two assertions together
+        # are what make the setuid call's own presence load-bearing.
+        target_uid = os.getuid() + 54321
+        with mock.patch(
+            "branchleft_slot.os.setgroups", side_effect=lambda groups: None
+        ), mock.patch(
+            "branchleft_slot.os.setgid", side_effect=lambda gid: None
+        ), mock.patch("branchleft_slot._read_submitting_count", return_value=1):
+            with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+                bs._read_submitting_count_as_uid("0", target_uid)
+        self.assertIn("Operation not permitted", str(ctx.exception))
+
     def test_a_wedged_child_is_killed_after_the_timeout_rather_than_awaited(self):
         # setgroups/setgid mocked away for the same platform reason as
         # the self-drop success test above -- this test means to prove
