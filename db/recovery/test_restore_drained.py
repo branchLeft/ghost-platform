@@ -130,6 +130,72 @@ class RestoreDumpTests(unittest.TestCase):
         self.assertEqual(captured["stdin"].name, self.dump_path)
 
 
+class AssertTargetHasNoLiveDatabaseTests(unittest.TestCase):
+    """Rob's own ruling on this issue, made mechanical: a per-tenant dump's
+    own CREATE DATABASE IF NOT EXISTS/USE restores INTO whatever already has
+    that name, so a target that already holds a live database must be
+    refused before anything is imported -- a name match against the tenant
+    being restored is never the bar; any non-system database is."""
+
+    def _run_listing(self, databases: list[str]):
+        stdout = "".join(f"{name}\n" for name in databases)
+
+        def _run(*_args, **_kwargs):
+            return mock.Mock(returncode=0, stdout=stdout, stderr="")
+
+        return _run
+
+    def test_passes_when_only_system_databases_present(self) -> None:
+        rd.assert_target_has_no_live_database(
+            host="scratch", port=3306, user="root", password="x",
+            run=self._run_listing(["information_schema", "mysql", "performance_schema", "sys"]),
+        )  # no exception is the assertion
+
+    def test_passes_on_a_genuinely_empty_listing(self) -> None:
+        rd.assert_target_has_no_live_database(
+            host="scratch", port=3306, user="root", password="x", run=self._run_listing([]),
+        )
+
+    def test_refuses_when_the_tenant_database_is_already_there(self) -> None:
+        with self.assertRaises(rd.LiveDatabaseCollisionError) as ctx:
+            rd.assert_target_has_no_live_database(
+                host="scratch", port=3306, user="root", password="x",
+                run=self._run_listing(["information_schema", "mysql", "ghost_t1"]),
+            )
+        message = str(ctx.exception)
+        self.assertIn("ghost_t1", message)
+        self.assertIn("not empty", message)
+
+    def test_refuses_on_any_non_system_database_not_only_a_name_match(self) -> None:
+        """The bar is emptiness, not a match against the tenant being
+        restored -- a target holding some OTHER live database is refused
+        too, exactly as a target holding this tenant's own would be."""
+        with self.assertRaises(rd.LiveDatabaseCollisionError) as ctx:
+            rd.assert_target_has_no_live_database(
+                host="scratch", port=3306, user="root", password="x",
+                run=self._run_listing(["mysql", "some_unrelated_database"]),
+            )
+        self.assertIn("some_unrelated_database", str(ctx.exception))
+
+    def test_lists_every_live_database_found_not_only_the_first(self) -> None:
+        with self.assertRaises(rd.LiveDatabaseCollisionError) as ctx:
+            rd.assert_target_has_no_live_database(
+                host="scratch", port=3306, user="root", password="x",
+                run=self._run_listing(["ghost_t1", "ghost_t2", "mysql"]),
+            )
+        message = str(ctx.exception)
+        self.assertIn("ghost_t1", message)
+        self.assertIn("ghost_t2", message)
+
+    def test_listing_failure_raises_readiness_error_not_a_false_pass(self) -> None:
+        with self.assertRaises(rd.ReadinessError) as ctx:
+            rd.assert_target_has_no_live_database(
+                host="scratch", port=3306, user="root", password="x",
+                run=fake_run(1, stderr="ERROR 2003: Can't connect"),
+            )
+        self.assertIn("Can't connect", str(ctx.exception))
+
+
 class VerifyTenantContentTests(unittest.TestCase):
     """The exact control design 09 R4 names: 200 alone is never success."""
 
@@ -219,6 +285,35 @@ class RestoreOnlyAndVerifyAndUndrainTests(unittest.TestCase):
             run=fake_run(0), sleep=lambda s: None, now=lambda: 0.0,
         )
         self.assertTrue(os.path.exists(self.flag_path), "restore_only must never clear the flag itself")
+
+    def test_restore_only_refuses_a_live_target_before_ever_importing(self) -> None:
+        """Rob's own ruling on this issue, exercised through the real entry
+        point: readiness succeeds, the target already has `ghost_t1`, and
+        the import must never be attempted. The fake `run` below would
+        happily let an import through (returncode 0) if `restore_only`
+        reached it -- so this fails as a clean, readable assertion (an
+        unraised exception, or an extra logged call) if the refusal is ever
+        skipped, rather than as a crash from some unrelated missing file."""
+        calls: list[str] = []
+
+        def run(args, **_kwargs):
+            if "SELECT 1;" in args:
+                calls.append("readiness")
+            elif "SHOW DATABASES;" in args:
+                calls.append("listing")
+            else:
+                calls.append("import")
+            if "SHOW DATABASES;" in args:
+                return mock.Mock(returncode=0, stdout="information_schema\nghost_t1\n", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with self.assertRaises(rd.LiveDatabaseCollisionError) as ctx:
+            rd.restore_only(
+                dump_path=self.dump_path, host="scratch", port=3306,
+                user="root", password="x", run=run, sleep=lambda s: None, now=lambda: 0.0,
+            )
+        self.assertIn("ghost_t1", str(ctx.exception))
+        self.assertEqual(calls, ["readiness", "listing"], "the import must never be attempted once refused")
 
     def test_verify_and_undrain_clears_the_flag_on_success(self) -> None:
         rd.verify_and_undrain(
@@ -325,6 +420,31 @@ class MainCliModeTests(unittest.TestCase):
         full_mock.assert_called_once()
         restore_only_mock.assert_not_called()
         verify_mock.assert_not_called()
+
+    def test_an_unexpected_exception_gets_a_clean_message_not_a_traceback(self) -> None:
+        """A missing binary, a permissions error -- anything main()'s own
+        RestoreError catch doesn't name -- must still exit 1 with a plain
+        stderr line, for an operator reading a terminal mid-incident."""
+        with mock.patch("restore_drained.restore_only", side_effect=RuntimeError("no such file or directory")), \
+             mock.patch("sys.stderr") as stderr_mock:
+            code = rd.main(["--mode", "restore-only", "--dump", self.dump_path, "--host", "scratch"])
+        self.assertEqual(code, 1)
+        printed = "".join(call.args[0] for call in stderr_mock.write.call_args_list if call.args)
+        self.assertIn("unexpected error", printed)
+        self.assertIn("no such file or directory", printed)
+
+    def test_an_unexpected_exception_still_leaves_the_flag_set(self) -> None:
+        with mock.patch("restore_drained.verify_and_undrain", side_effect=RuntimeError("boom")):
+            code = rd.main(
+                [
+                    "--mode", "verify-and-undrain",
+                    "--base-url", "http://colour/",
+                    "--expect", "Tenant B original post",
+                    "--flag-path", self.flag_path,
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertTrue(os.path.exists(self.flag_path), "an unexpected exception must not clear the flag")
 
 
 class RunDrainedRestoreOrderingTests(unittest.TestCase):

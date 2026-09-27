@@ -17,16 +17,17 @@ because "the colour came up" was never the assertion.
 **Where this restores to, and where it must never restore to.** The dump
 this reads is exactly what `dump_tenant.py` writes: one tenant's
 `--databases` dump, carrying its own `CREATE DATABASE IF NOT EXISTS` and
-`USE`. That is safe only against a target that holds no live copy of this
-tenant's database already -- a separate recovery/scratch MySQL server, per
-`db/RUNBOOK-db.md`'s own restore-drill note on this exact review finding.
-`host`/`port` here are never `db1` (or whatever host currently serves this
-tenant); they name the drained colour's own database target. Nothing in
-this module checks that for the caller -- it is a wiring precondition the
-runbook and the orchestrator that brings the colour up drained must both
-hold, the same way `dump_tenant.py` holds "never run this against a host
-carrying an object-storage credential" as its own precondition rather than
-a check on its caller.
+`USE`. Imported onto a target that already holds a database of that name,
+those two statements restore INTO it rather than beside it -- the same
+collision `db/RUNBOOK-db.md`'s own restore-drill note describes for the
+estate-wide dump. `host`/`port` here are never `db1` (or whatever host
+currently serves this tenant); they name the drained colour's own,
+otherwise-empty database target -- and `restore_only` now checks that
+itself before importing anything: it refuses, without touching the
+target, if it already holds any non-system database at all. A recovery
+target is expected to be a fresh host with nothing on it yet, not merely
+a different one, so "empty" is the whole bar rather than a name match
+against the tenant being restored.
 
 **Why this never touches the flag itself, except to clear it.** LLD-2's
 broker owns the drain flag (`services/broker/src/drainFlag.ts`) and is what
@@ -55,6 +56,11 @@ DEFAULT_MYSQL_READY_TIMEOUT_S = 60.0
 DEFAULT_CONTENT_TIMEOUT_S = 90.0
 POLL_INTERVAL_S = 1.0
 
+# What every MySQL 8.0 server carries before anything is provisioned on it --
+# the bar a recovery target must clear, not a name to match against the
+# tenant being restored.
+SYSTEM_DATABASES = frozenset({"information_schema", "mysql", "performance_schema", "sys"})
+
 # Same shape as dump_tenant.py's own child-process allowlist: PATH so the
 # mysql binary resolves by name, MYSQL_PWD added per call as a value rather
 # than carried here as a name.
@@ -71,6 +77,14 @@ class ReadinessError(RestoreError):
 
 class DumpImportError(RestoreError):
     """`mysql` exited non-zero while importing the dump."""
+
+
+class LiveDatabaseCollisionError(RestoreError):
+    """The recovery target already holds at least one non-system database.
+    Raised before anything is imported: the dump's own `CREATE DATABASE IF
+    NOT EXISTS`/`USE` statements would restore INTO whatever is already
+    there rather than beside it, so a target that fails this check must
+    never reach `restore_dump` at all."""
 
 
 class ContentVerificationError(RestoreError):
@@ -121,6 +135,43 @@ def wait_for_mysql_ready(
             break
         sleep(poll_s)
     raise ReadinessError(f"mysql at {host}:{port} did not answer SELECT 1 within {timeout_s}s: {last_error}")
+
+
+def assert_target_has_no_live_database(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    run=subprocess.run,
+) -> None:
+    """The refusal a per-tenant dump's own `CREATE DATABASE IF NOT EXISTS`/
+    `USE` statements make necessary: they restore INTO whatever database of
+    that name already exists on `host`:`port`, so a target that already
+    holds one is corrupted by import, not merely at risk of it. Lists every
+    database the target already has and refuses on the first one that
+    isn't a stock MySQL system database -- never a name match against the
+    tenant being restored, because the whole point is that a recovery
+    target must be an empty host, not merely a different one. Touches
+    nothing: `SHOW DATABASES` is read-only, and this raises before
+    `restore_dump` is ever called."""
+    result = run(
+        ["mysql", "--host", host, "--port", str(port), "--user", user, "-N", "-B", "-e", "SHOW DATABASES;"],
+        env=_child_env(password),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ReadinessError(f"mysql at {host}:{port} could not list its databases: {result.stderr.strip()}")
+    present = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    live = sorted(present - SYSTEM_DATABASES)
+    if live:
+        raise LiveDatabaseCollisionError(
+            f"{host}:{port} already holds {', '.join(live)} -- refusing to import onto a recovery target "
+            "that is not empty. Restoring here would write into whatever already has that name, not "
+            "beside it; point this at a fresh host with nothing provisioned on it yet."
+        )
 
 
 def restore_dump(
@@ -230,11 +281,19 @@ def restore_only(
     own Ghost process in between restoring the dump and verifying it --
     Ghost has to exist against a populated (or, in the control case,
     deliberately empty) database before anything can be asked of it over
-    HTTP. Touches the flag not at all."""
+    HTTP. Touches the flag not at all.
+
+    Refuses -- via `assert_target_has_no_live_database`, unconditionally,
+    with no flag to bypass it -- before importing anything, if the target
+    already holds a non-system database. That call sits between readiness
+    and the import on purpose: it needs a live connection to list what is
+    already there, and it must run before `restore_dump` gets anywhere
+    near the target, not merely before this function returns."""
     wait_for_mysql_ready(
         host=host, port=port, user=user, password=password,
         timeout_s=mysql_ready_timeout_s, run=run, sleep=sleep, now=now,
     )
+    assert_target_has_no_live_database(host=host, port=port, user=user, password=password, run=run)
     restore_dump(dump_path=dump_path, host=host, port=port, user=user, password=password, run=run)
 
 
@@ -393,6 +452,14 @@ def main(argv: list[str]) -> int:
             print(f"restore_drained: restored, verified and undrained {args.flag_path}")
     except RestoreError as exc:
         print(f"restore_drained: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 -- an operator's terminal, mid-incident, gets a clean line, not a traceback
+        # Every real call path above raises RestoreError (or its own
+        # subclass) before `clear_drain_flag` is ever reached, so an
+        # exception this broad still leaves the flag exactly where a
+        # RestoreError would have -- this widens what gets a clean message,
+        # never what is allowed to undrain.
+        print(f"restore_drained: unexpected error: {exc}", file=sys.stderr)
         return 1
 
     return 0
