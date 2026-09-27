@@ -82,9 +82,15 @@ TENANT_UID_MAX = 30999
 # Nothing imports the rule across those files, so this copy can drift loose
 # -- accepting a trailing hyphen, say -- without any other test going red;
 # `scripts/assert-slug-pattern-consistency.py` is what compares them.
+#
+# `blog` is deliberately absent, as it is on the TypeScript side: it is the
+# live tenant-zero's own slug (this file's own docstring re-runs against it
+# as ordinary maintenance), not a non-tenant name, so reserving it would
+# refuse the one tenant that legitimately holds it rather than protect
+# against a collision.
 SLUG_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
 MAX_SLUG_LENGTH = 26
-RESERVED_STACK_NAMES = ("website", "edge", "db", "monitoring")
+RESERVED_STACK_NAMES = ("website", "edge", "db", "monitoring", "nextcloud1")
 
 # The UID register: one file per tenant, in a root-owned 0700 directory on the
 # host. Deliberately NOT inside the tenant's content volume, which an earlier

@@ -7,6 +7,12 @@
 # 200. It also proves the two ways the sidecar must fail closed: flag clear
 # but Ghost not yet ready, and a flag directory it cannot read.
 #
+# It also proves `/metrics` (per-tenant health and version) against this
+# same real Ghost: the reported version matches what Ghost's own site
+# endpoint says directly, a colour told the right intended version reports
+# a real match, a colour told the wrong one reports a real mismatch, and a
+# genuinely drained colour exposes neither version gauge at all.
+#
 # Both images under test are handed to this script rather than derived from
 # it, so the proof always runs against what the platform actually builds:
 # the platform image is `docker build .` from this repo's own root
@@ -44,11 +50,15 @@ GHOST_IMAGE="${2:?usage: test-drain-sidecar.sh <sidecar-image-tag> <platform-ima
 GHOST_PORT=4210
 SIDECAR_PORT=4211
 UNREADABLE_PORT=4212
+MATCH_PORT=4213
+MISMATCH_PORT=4214
 RUN_ID="$$"
 GHOST_NAME="drain-sidecar-test-ghost-$RUN_ID"
 SIDECAR_NAME="drain-sidecar-test-sidecar-$RUN_ID"
 UNREADABLE_NAME="drain-sidecar-test-unreadable-$RUN_ID"
 UNREADABLE_VOLUME="drain-sidecar-test-unreadable-$RUN_ID"
+MATCH_NAME="drain-sidecar-test-match-$RUN_ID"
+MISMATCH_NAME="drain-sidecar-test-mismatch-$RUN_ID"
 FLAG_DIR="$(mktemp -d)"
 FLAG_FILE="$FLAG_DIR/drain"
 # 0755 grants the sidecar's uid (1000) the read+traverse (r-x) access
@@ -61,6 +71,8 @@ chmod 0755 "$FLAG_DIR"
 FAILURES=0
 
 cleanup() {
+    docker rm -f "$MISMATCH_NAME" >/dev/null 2>&1 || true
+    docker rm -f "$MATCH_NAME" >/dev/null 2>&1 || true
     docker rm -f "$UNREADABLE_NAME" >/dev/null 2>&1 || true
     docker rm -f "$SIDECAR_NAME" >/dev/null 2>&1 || true
     docker rm -f "$GHOST_NAME" >/dev/null 2>&1 || true
@@ -79,6 +91,8 @@ docker run -d \
     -p "$GHOST_PORT:2368" \
     -p "$SIDECAR_PORT:8080" \
     -p "$UNREADABLE_PORT:8081" \
+    -p "$MATCH_PORT:8082" \
+    -p "$MISMATCH_PORT:8083" \
     -e url="https://localhost:$GHOST_PORT" \
     -e database__client="sqlite3" \
     -e database__connection__filename="/var/lib/ghost/content/data/ghost-drain-test.db" \
@@ -86,11 +100,27 @@ docker run -d \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE="true" \
     "$GHOST_IMAGE" >/dev/null
 
-echo "--- starting sidecar immediately (sharing Ghost's network namespace), flag directory mounted read-only ---"
+# Freezes every process in Ghost's container (cgroup freezer) before it can
+# finish booting -- issued straight after `docker run -d` returns, well
+# inside the several-second boot Ghost measures elsewhere. This is what
+# makes "Ghost not ready" deterministic rather than a race the sidecar
+# might or might not win: a local run that boots Ghost quickly used to make
+# the window the next block probes vanish before the first curl ever fired.
+# Pausing removes the variable entirely -- Ghost cannot become ready while
+# frozen, however fast the machine is.
+docker pause "$GHOST_NAME" >/dev/null
+
+echo "--- starting sidecar (sharing Ghost's network namespace), flag directory mounted read-only via --mount type=bind ---"
+# `--mount type=bind` (never `-v`, i.e. never the short form) is the load-
+# bearing part of this line: `docker run -v` on a missing host path creates
+# an empty, readable directory, silently, and the sidecar would then read
+# "flag clear" from a directory nobody ever provisioned. `--mount type=bind`
+# refuses to start against a missing source instead -- proven directly,
+# below, in "a missing host path is refused rather than silently created".
 docker run -d \
     --name "$SIDECAR_NAME" \
     --network "container:$GHOST_NAME" \
-    -v "$FLAG_DIR:/var/run/branchleft:ro" \
+    --mount "type=bind,source=$FLAG_DIR,target=/var/run/branchleft,readonly" \
     -e DRAIN_FLAG_PATH="/var/run/branchleft/drain" \
     -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
     -e PORT="8080" \
@@ -110,15 +140,59 @@ http_status() {
     http_probe "$1" /dev/null
 }
 
-echo "--- state: flag clear, Ghost not ready -> 503 ---"
+echo "--- state: flag clear, Ghost deterministically not ready (paused) -> 503, every sample ---"
+# The sidecar's own HTTP server needs a brief moment after `docker run -d`
+# returns before it accepts a connection at all -- a sample taken before
+# that moment gets curl's 000 (connection failed), which is a race in this
+# proof's own setup, not the state under test. Wait for the first real
+# response before asserting anything against it; a sidecar that never
+# starts listening still fails this check loudly, on a bounded timeout,
+# rather than the loop below silently having nothing to sample.
+body_file="$(mktemp)"
+deadline=$(($(date +%s) + 10))
+sidecar_listening=false
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    status="$(http_probe "http://localhost:$SIDECAR_PORT/healthz" "$body_file")"
+    if [ "$status" != "000" ]; then
+        sidecar_listening=true
+        break
+    fi
+    sleep 0.1
+done
+
+if [ "$sidecar_listening" != "true" ]; then
+    echo "FAIL: sidecar never accepted a connection within 10s of starting"
+    FAILURES=$((FAILURES + 1))
+else
+    # Three fresh samples once listening is established, all of which must
+    # be 503 "ghost_unhealthy" -- Ghost is still paused throughout, so a 000
+    # here (the connection dropping again) or any other status is a real
+    # failure, not the startup race the wait above already absorbed. The
+    # loop breaks on the first bad sample; `paused_samples_ok` is what the
+    # PASS message below is conditioned on, so a break-on-failure can never
+    # print PASS immediately after printing FAIL.
+    paused_samples_ok=true
+    for _ in 1 2 3; do
+        status="$(http_probe "http://localhost:$SIDECAR_PORT/healthz" "$body_file")"
+        if [ "$status" != "503" ] || ! grep -q '"ghost_unhealthy"' "$body_file"; then
+            echo "FAIL: expected 503 \"ghost_unhealthy\" while Ghost is paused, got $status: $(cat "$body_file" 2>/dev/null)"
+            FAILURES=$((FAILURES + 1))
+            paused_samples_ok=false
+            break
+        fi
+    done
+    if [ "$paused_samples_ok" = "true" ]; then
+        echo "PASS: sidecar answered 503 \"ghost_unhealthy\" on every sample while Ghost was paused"
+    fi
+fi
+rm -f "$body_file"
+
+docker unpause "$GHOST_NAME" >/dev/null
+
 deadline=$(($(date +%s) + 60))
-saw_503_while_ghost_not_ready=false
 ghost_ready=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
     status="$(http_status "http://localhost:$SIDECAR_PORT/healthz")"
-    if [ "$status" = "503" ]; then
-        saw_503_while_ghost_not_ready=true
-    fi
     if [ "$status" = "200" ]; then
         ghost_ready=true
         break
@@ -126,20 +200,34 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     sleep 0.1
 done
 if [ "$ghost_ready" != "true" ]; then
-    echo "FAIL: sidecar never answered 200 within 60s of Ghost starting (Ghost never became ready, last: $status)"
+    echo "FAIL: sidecar never answered 200 within 60s of Ghost being unpaused (last: $status)"
     echo "--- Ghost logs ---"
     docker logs "$GHOST_NAME" 2>&1 | tail -40
     echo "--- sidecar logs ---"
     docker logs "$SIDECAR_NAME" 2>&1 | tail -40
     exit 1
 fi
-if [ "$saw_503_while_ghost_not_ready" = "true" ]; then
-    echo "PASS: sidecar answered 503 while the flag was clear and Ghost was not yet ready"
-else
-    echo "FAIL: never observed a 503 from the sidecar before Ghost became ready"
-    FAILURES=$((FAILURES + 1))
-fi
 echo "Ghost and sidecar both ready."
+echo
+
+echo "--- state: --mount type=bind against a missing host path is refused rather than silently created ---"
+MISSING_FLAG_DIR="$(mktemp -d)/does-not-exist"
+missing_path_output="$(mktemp)"
+if docker run --rm \
+    --network "container:$GHOST_NAME" \
+    --mount "type=bind,source=$MISSING_FLAG_DIR,target=/var/run/branchleft,readonly" \
+    -e DRAIN_FLAG_PATH="/var/run/branchleft/drain" \
+    -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
+    -e PORT="8082" \
+    "$SIDECAR_IMAGE" true >"$missing_path_output" 2>&1; then
+    echo "FAIL: docker accepted --mount type=bind against a missing host path -- exactly the silent-empty-directory bug this mount form exists to avoid"
+    cat "$missing_path_output"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "PASS: docker refused to start against a missing host path"
+fi
+rm -f "$missing_path_output"
+rmdir "$(dirname "$MISSING_FLAG_DIR")" 2>/dev/null || true
 echo
 
 echo "--- state: flag cleared, Ghost healthy (baseline) ---"
@@ -157,6 +245,101 @@ assert_status() {
 }
 assert_status "sidecar answers 200 with the flag clear and Ghost healthy" \
     "http://localhost:$SIDECAR_PORT/healthz" 200
+echo
+
+echo "--- per-tenant health and version: reading Ghost's own reported version directly, for cross-check ---"
+# The instance is the only authority for its own version (LLD-4,
+# load-bearing) -- read directly from Ghost's unauthenticated site endpoint,
+# independently of the sidecar under test, so the assertion below compares
+# against ground truth rather than against another reading the same code
+# produced.
+site_body="$(mktemp)"
+http_probe "http://localhost:$GHOST_PORT/ghost/api/admin/site/" "$site_body" >/dev/null
+GHOST_VERSION="$(grep -o '"version":"[^"]*"' "$site_body" | head -1 | cut -d'"' -f4)"
+rm -f "$site_body"
+if [ -z "$GHOST_VERSION" ]; then
+    echo "FAIL: could not read Ghost's own version from its site endpoint directly"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "PASS: Ghost reports version $GHOST_VERSION directly"
+fi
+echo
+
+echo "--- state: flag clear -- /metrics reports that same version, undrained ---"
+metrics_body="$(mktemp)"
+http_probe "http://localhost:$SIDECAR_PORT/metrics" "$metrics_body" >/dev/null
+if grep -q "drain_sidecar_ghost_version_info{version=\"$GHOST_VERSION\"} 1" "$metrics_body"; then
+    echo "PASS: sidecar's /metrics reports Ghost's real version ($GHOST_VERSION) while undrained"
+else
+    echo "FAIL: sidecar's /metrics did not report Ghost's real version ($GHOST_VERSION) while undrained"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+fi
+rm -f "$metrics_body"
+echo
+
+echo "--- a colour whose intended version matches what Ghost actually reports ---"
+docker run -d \
+    --name "$MATCH_NAME" \
+    --network "container:$GHOST_NAME" \
+    -v "$FLAG_DIR:/var/run/branchleft:ro" \
+    -e DRAIN_FLAG_PATH="/var/run/branchleft/no-such-flag" \
+    -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
+    -e GHOST_INTENDED_VERSION="$GHOST_VERSION" \
+    -e PORT="8082" \
+    "$SIDECAR_IMAGE" >/dev/null
+
+metrics_body="$(mktemp)"
+deadline=$(($(date +%s) + 10))
+matched=false
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    http_probe "http://localhost:$MATCH_PORT/metrics" "$metrics_body" >/dev/null
+    if grep -q 'drain_sidecar_version_match 1' "$metrics_body"; then
+        matched=true
+        break
+    fi
+    sleep 0.2
+done
+if [ "$matched" = "true" ]; then
+    echo "PASS: /metrics reports a positive match when the intended version is what Ghost actually reports"
+else
+    echo "FAIL: /metrics never reported a positive match against Ghost's real, matching version"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+fi
+rm -f "$metrics_body"
+echo
+
+echo "--- a colour whose intended version does not match what Ghost actually reports ---"
+docker run -d \
+    --name "$MISMATCH_NAME" \
+    --network "container:$GHOST_NAME" \
+    -v "$FLAG_DIR:/var/run/branchleft:ro" \
+    -e DRAIN_FLAG_PATH="/var/run/branchleft/no-such-flag" \
+    -e GHOST_HEALTH_URL="http://127.0.0.1:2368/" \
+    -e GHOST_INTENDED_VERSION="0.0.0-not-real" \
+    -e PORT="8083" \
+    "$SIDECAR_IMAGE" >/dev/null
+
+metrics_body="$(mktemp)"
+deadline=$(($(date +%s) + 10))
+mismatched=false
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    http_probe "http://localhost:$MISMATCH_PORT/metrics" "$metrics_body" >/dev/null
+    if grep -q 'drain_sidecar_version_match 0' "$metrics_body"; then
+        mismatched=true
+        break
+    fi
+    sleep 0.2
+done
+if [ "$mismatched" = "true" ]; then
+    echo "PASS: /metrics reports a real mismatch when the intended version genuinely disagrees -- the reverted-tenant case"
+else
+    echo "FAIL: /metrics never reported the mismatch against a deliberately wrong intended version"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+fi
+rm -f "$metrics_body"
 echo
 
 echo "--- state: flag set ---"
@@ -186,6 +369,32 @@ fi
 rm -f "$body_file"
 assert_status "Ghost itself still answers 200 while the sidecar is draining -- the two are independent signals" \
     "http://localhost:$GHOST_PORT/" 200
+echo
+
+echo "--- state: flag set -- /metrics omits both version gauges (the load-bearing gate, on the real drained colour) ---"
+metrics_body="$(mktemp)"
+deadline=$(($(date +%s) + 10))
+gated=false
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    http_probe "http://localhost:$SIDECAR_PORT/metrics" "$metrics_body" >/dev/null
+    if grep -q 'drain_sidecar_drained 1' "$metrics_body"; then
+        gated=true
+        break
+    fi
+    sleep 0.2
+done
+if [ "$gated" != "true" ]; then
+    echo "FAIL: /metrics never reported drain_sidecar_drained 1 within 10s of the flag being set"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+elif grep -q 'drain_sidecar_ghost_version_info' "$metrics_body" || grep -q 'drain_sidecar_version_match' "$metrics_body"; then
+    echo "FAIL: /metrics exposed a version gauge for a drained colour -- exactly the leak this gate exists to prevent"
+    echo "  body: $(cat "$metrics_body")"
+    FAILURES=$((FAILURES + 1))
+else
+    echo "PASS: /metrics reports the drain flag but neither version gauge while genuinely drained"
+fi
+rm -f "$metrics_body"
 echo
 
 echo "--- state: flag cleared again ---"

@@ -78,7 +78,12 @@ CHARSET_LENGTH_PROBES: list[tuple[str, bool]] = [
 # Every stack name an app host already runs under. Checked against the copies
 # that implement a reserved-name refusal (everything except naming.py; see
 # the module docstring).
-RESERVED_PROBES = ["website", "edge", "db", "monitoring"]
+#
+# `blog` is not probed, on any copy, including `infra/tenant/naming.ts`
+# itself: it is the live tenant-zero's own slug, not a non-tenant name, and
+# every copy's own comment records that exclusion as deliberate rather than
+# as a gap this probe set failed to find.
+RESERVED_PROBES = ["website", "edge", "db", "monitoring", "nextcloud1"]
 
 NAMING_TS = REPO / "infra" / "tenant" / "naming.ts"
 

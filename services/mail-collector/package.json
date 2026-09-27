@@ -1,0 +1,36 @@
+{
+  "name": "ghost-platform-mail-collector",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "description": "The drain worker: holds a drain connection into every host the tenant/demo descriptor names, delivers each message over authenticated SMTP submission, and acks it back -- see ghost-platform-docs/19-try-it-now-design/06-mail-delivery.html.",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "nodemailer": "^9.1.1"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/express": "^5.0.6",
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^26.0.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/smtp-server": "^3.5.13",
+    "@vitest/coverage-v8": "4.1.11",
+    "mailparser": "^3.7.1",
+    "smtp-server": "^3.13.5",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "nodemailer": "^9.1.1"
+  }
+}

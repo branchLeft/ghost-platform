@@ -151,6 +151,24 @@ describe('render() — sabotage: the invariants a real defect could silently dro
     expect(edge.admittedHostname).toBeNull();
   });
 
+  it("CSP-THREADED — render()'s optional themeCsp argument reaches edge.json, not just renderEdgeSiteBlock() called directly", () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+    const hash =
+      'sha256-F3sUOTY6nsxjO/E0Yh1sWe8bHnfXA+ynZs4mVCavecs=' as import('../src/edge.js').ScriptHash;
+    const withHashes = render(descriptor, TEST_ZONES, { kind: 'computed', hashes: [hash] });
+    const edgeJson = withHashes.find((a) => a.path === 'edge.json')!.content;
+    expect(edgeJson).toContain(`'${hash}'`);
+    expect(edgeJson).toContain('"contentSecurityPolicyMode": "enforcing"');
+
+    // GREEN (the fail-soft default): the same descriptor with no third
+    // argument stays report-only, exactly like every caller in this repo
+    // today (broker, demo-gate) that does not pass one yet.
+    const withoutHashes = render(descriptor, TEST_ZONES);
+    const defaultEdgeJson = withoutHashes.find((a) => a.path === 'edge.json')!.content;
+    expect(defaultEdgeJson).not.toContain('sha256-');
+    expect(defaultEdgeJson).toContain('"contentSecurityPolicyMode": "report-only"');
+  });
+
   it('PORT/UID-FROM-DESCRIPTOR — sabotage: rendering with a hand-edited uid/port produces a compose.yml carrying exactly that value, never a computed or default one', () => {
     const base = validate(entryTenantDescriptor(), TEST_ZONES);
     const reallocated: TenantDescriptor = {

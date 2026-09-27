@@ -50,8 +50,30 @@ export const MAX_TENANT_SLUG_LENGTH = 32 - TENANT_DB_PREFIX.length;
  * secrets file and its Compose project — and nothing in Docker, systemd or
  * Pulumi would object. The refusal has to be here because this component is
  * the only thing that sees the slug before anything is written.
+ *
+ * This is a floor, not the full register: it is checked for drift against a
+ * snapshot of the shared-infra stack register in `naming.test.ts`, which
+ * documents how to refresh it when that register changes.
+ *
+ * `blog` is deliberately absent despite being a live stack on an app host.
+ * Unlike every name below, `blog` is not "something that is not a tenant" —
+ * it is `GhostTenant`'s own tenant-zero slug (`ghost-tenant-blog`'s
+ * `index.ts` constructs `new GhostTenant('blog', ...)`, and this
+ * constructor's `validateTenantSlug` call runs on every one of its Pulumi
+ * previews and applies). Adding it here would not stop a second tenant from
+ * requesting the same slug — this component has no view of other tenant
+ * repos to check that against — it would instead make tenant-zero's own
+ * stack throw at construction time on its next deploy. That is a different
+ * problem (slug uniqueness across tenants, which is open-ended and not
+ * visible from here) wearing the same shape as this one.
  */
-export const RESERVED_STACK_NAMES: readonly string[] = ['website', 'edge', 'db', 'monitoring'];
+export const RESERVED_STACK_NAMES: readonly string[] = [
+  'website',
+  'edge',
+  'db',
+  'monitoring',
+  'nextcloud1',
+];
 
 export function validateTenantSlug(slug: string): void {
   if (!TENANT_SLUG_PATTERN.test(slug)) {

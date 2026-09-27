@@ -3,8 +3,12 @@ name: Demo host sudoers CI
 # Proves the properties the unit-test suite under demo-host/provision/
 # cannot: that the rendered file is valid sudoers syntax under a real
 # `visudo -c`; that a real `sudo -l` accepts an enumerated invocation and
-# refuses the same invocation with one extra argument appended; and that a
-# caller who is not the broker account is refused outright.
+# refuses the same invocation with one extra argument appended; that a
+# caller who is not the broker account is refused outright; that the
+# installed sudoers file is actually owned root:root, not merely mode 0440;
+# and that the real wrapper script -- not a stand-in -- refuses a slot+verb
+# pair sudo itself lets through as a single shell-quoted argument, while
+# accepting the same invocation correctly split into its real arguments.
 #
 # Runs inside a throwaway Debian container rather than the runner's own sudo
 # configuration, because the check installs a rule file under
@@ -22,7 +26,7 @@ permissions:
 
 jobs:
   visudo-and-sudo-l:
-    name: visudo and sudo -l against the rendered file
+    name: visudo, sudo -l and the real wrapper against the installed boundary
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -33,24 +37,55 @@ jobs:
           persist-credentials: false
 
       # The repo is mounted read-only: this job only needs to read the
-      # generator, never to write into the checkout.
-      - name: Render, visudo-check and sudo -l the generated file
+      # generator and the real wrapper, never to write into the checkout.
+      - name: Render, install, visudo-check, sudo -l and run the real wrapper
         run: |
           docker run --rm -v "$PWD":/repo:ro -w /repo debian:bookworm-slim bash -c '
             set -e
             apt-get update -qq
             apt-get install -y -qq sudo python3 >/dev/null
 
-            python3 demo-host/provision/render_slot_sudoers.py --out /tmp/generated-slot-sudoers
+            echo "--- install --install: render, visudo-check and chown root:root ---"
+            python3 demo-host/provision/render_slot_sudoers.py --install /etc/sudoers.d/branchleft-slot
 
-            echo "--- visudo -c -f /tmp/generated-slot-sudoers ---"
-            visudo -c -f /tmp/generated-slot-sudoers
+            echo "--- the installed file is owned root:root ---"
+            owner="$(stat -c "%U:%G" /etc/sudoers.d/branchleft-slot)"
+            if [ "$owner" != "root:root" ]; then
+              echo "::error::installed sudoers file is owned $owner, not root:root -- sudo ignores it either way"
+              exit 1
+            fi
+            echo "owner is $owner, as required"
 
-            useradd -m broker
+            echo "--- visudo -c against the whole active configuration ---"
+            visudo -c
+
+            useradd -m -s /bin/sh broker
+
+            # The real wrapper, copied as-is -- never a stand-in -- so every
+            # check below exercises the exact argv-validation and dispatch
+            # code the real host would run.
             install -d /usr/local/sbin
-            printf "#!/bin/sh\ntrue\n" > /usr/local/sbin/branchleft-slot
-            chmod 0755 /usr/local/sbin/branchleft-slot
-            install -o root -g root -m 0440 /tmp/generated-slot-sudoers /etc/sudoers.d/branchleft-slot
+            install -o root -g root -m 0755 demo-host/provision/branchleft_slot.py /usr/local/sbin/branchleft-slot
+
+            # A fake systemctl on PATH ahead of anything real: this
+            # container has no systemd, and the point of the checks below is
+            # the wrapper'"'"'s own argv boundary and dispatch, not whether a
+            # unit actually starts. Every invocation is appended to a log a
+            # broker cannot write to directly, so "no side effect happened"
+            # is checked by reading it, never by trusting the wrapper'"'"'s own
+            # exit code alone. Installed at both locations a sudo package
+            # commonly puts in secure_path, since sudo resets PATH before the
+            # wrapper ever makes its own subprocess call, and this job does
+            # not assert which of the two the installed sudo package picked.
+            touch /var/log/fake-systemctl.log
+            chmod 0644 /var/log/fake-systemctl.log
+            cat > /usr/bin/systemctl <<"SYSTEMCTL_EOF"
+          #!/bin/sh
+          echo "$@" >> /var/log/fake-systemctl.log
+          exit 0
+          SYSTEMCTL_EOF
+            chmod 0755 /usr/bin/systemctl
+            cp /usr/bin/systemctl /usr/local/bin/systemctl
 
             echo "--- sudo -l: the enumerated invocation must be allowed ---"
             sudo -l -U broker /usr/local/sbin/branchleft-slot 0 reset
@@ -69,4 +104,52 @@ jobs:
               exit 1
             fi
             echo "refused, as required"
+
+            echo "--- real sudo + real wrapper: a slot+verb pair as ONE shell-quoted argument ---"
+            echo "--- sudo permits the invocation (matches the sudoers rules space-joined text); the wrapper must still refuse it ---"
+            : > /var/log/fake-systemctl.log
+            set +e
+            su broker -c "sudo -n /usr/local/sbin/branchleft-slot \"0 reset\""
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              echo "::error::the real wrapper accepted a one-argument \"0 reset\" -- the argv boundary regressed"
+              exit 1
+            fi
+            if [ -s /var/log/fake-systemctl.log ]; then
+              echo "::error::systemctl was invoked despite the refused invocation -- side effect on a refused argv:"
+              cat /var/log/fake-systemctl.log
+              exit 1
+            fi
+            echo "refused by the wrapper (exit $status), no systemctl call made, as required"
+
+            echo "--- real sudo + real wrapper: the same invocation correctly split into two real arguments ---"
+            : > /var/log/fake-systemctl.log
+            su broker -c "sudo -n /usr/local/sbin/branchleft-slot 0 a start"
+            if ! grep -qx "start branchleft-compose@demo-0-a" /var/log/fake-systemctl.log; then
+              echo "::error::expected systemctl to be called with '\''start branchleft-compose@demo-0-a'\'', got:"
+              cat /var/log/fake-systemctl.log
+              exit 1
+            fi
+            echo "accepted, and systemctl called correctly, as required"
+
+            echo "--- real sudo + real wrapper: reset stops both colours and wipes slot state ---"
+            : > /var/log/fake-systemctl.log
+            mkdir -p /opt/branchleft/demo-0
+            touch /opt/branchleft/demo-0/leftover
+            su broker -c "sudo -n /usr/local/sbin/branchleft-slot 0 reset"
+            if [ "$(cat /var/log/fake-systemctl.log)" != "$(printf "stop branchleft-compose@demo-0-a\nstop branchleft-compose@demo-0-b")" ]; then
+              echo "::error::reset did not stop exactly both colours in order, got:"
+              cat /var/log/fake-systemctl.log
+              exit 1
+            fi
+            if [ -e /opt/branchleft/demo-0/leftover ]; then
+              echo "::error::reset left a previous run'\''s file behind"
+              exit 1
+            fi
+            if [ ! -d /opt/branchleft/demo-0 ]; then
+              echo "::error::reset removed the slot directory instead of emptying and recreating it"
+              exit 1
+            fi
+            echo "both colours stopped, slot state wiped and the directory recreated, as required"
           '
