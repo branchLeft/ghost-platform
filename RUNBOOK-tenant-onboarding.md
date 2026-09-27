@@ -936,10 +936,15 @@ rm -rf /opt/branchleft/<slug>
 docker volume rm ghost-<slug>-content ghost-<slug>-adapters
 rm -f /etc/branchleft/tenant-uids/<slug>
 
-# Verify: nothing tagged with this project's label is left anywhere --
-# no container, no volume, no network. All three must print nothing.
+# Verify: nothing is left anywhere -- no container, no volume, no network.
+# All three must print nothing. The two content volumes are `external: true`
+# (infra/tenant/compose.ts) so that a host-side provisioning step, not
+# Compose, owns their creation -- Compose never labels a resource it did not
+# create, so a label filter here would always print nothing regardless of
+# whether the volumes are actually gone. Check them by the exact names the
+# removal line above uses instead.
 docker ps -aq --filter label=com.docker.compose.project=<slug>
-docker volume ls -q --filter label=com.docker.compose.project=<slug>
+docker volume ls -q --filter "name=^ghost-<slug>-content$" --filter "name=^ghost-<slug>-adapters$"
 docker network ls -q --filter label=com.docker.compose.project=<slug>
 
 # 8. The database and its user, on db1 as root. `<sql-slug>` is the slug with

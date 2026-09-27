@@ -211,6 +211,19 @@ const LABEL_FILTERED_STOP_RE =
 const COMPOSE_DOWN_RE = /docker compose\b.*\bdown\b/;
 const RM_TENANT_DIR_RE = /rm\s+-rf\s+\/opt\/branchleft\/<slug>/;
 const VOLUME_RM_RE = /docker volume rm\b/;
+// The tenant's two content volumes are declared `external: true`
+// (infra/tenant/compose.ts), so Compose never labels them -- a label filter
+// against them always prints nothing, whether they are gone or still there.
+// This is the regression a second review round found in the verification
+// this PR added: it must be rejected outright, same treatment as the
+// `docker compose ... down` regression above.
+const VOLUME_LABEL_FILTER_RE =
+  /docker\s+volume\s+ls\b[^\n]*--filter\s+label=com\.docker\.compose\.project=<slug>/;
+// The correct form: `docker volume ls` filtered by the volumes' own exact
+// names -- the same two names the removal line (`docker volume rm ...`)
+// above already uses -- rather than by a label they never carry.
+const VOLUME_NAME_CHECK_RE =
+  /docker\s+volume\s+ls\b(?=[^\n]*name=\^ghost-<slug>-content\$)(?=[^\n]*name=\^ghost-<slug>-adapters\$)/;
 
 /**
  * The `## Teardown` section's text, from its heading up to (but not
@@ -266,6 +279,17 @@ function teardownOrderViolations(sectionText) {
         '(the containers holding the volumes must be stopped first)'
     );
   }
+  if (lines.some((l) => VOLUME_LABEL_FILTER_RE.test(l))) {
+    violations.push(
+      "a post-removal volume check must not filter by label -- the tenant's " +
+        'volumes are `external: true` and Compose never labels them, so the ' +
+        'check would print "all clear" whether or not they were actually removed; ' +
+        "filter by the volumes' exact name instead"
+    );
+  }
+  if (!lines.some((l) => VOLUME_NAME_CHECK_RE.test(l))) {
+    violations.push('no name-filtered check for both tenant volumes in the Teardown section');
+  }
   return violations;
 }
 
@@ -318,6 +342,40 @@ test('self-test: the teardown-order check flags a missing stop step', () => {
   assert.ok(violations.length > 0, 'expected the missing-stop-step sample to be flagged');
 });
 
+test('self-test: the teardown-order check rejects a label-filtered volume check', () => {
+  // The regression a second review round found: the tenant's volumes are
+  // `external: true`, so Compose never labels them -- a label filter here
+  // always prints "all clear", whether or not the volumes are actually gone.
+  const sample = [
+    '```bash',
+    'docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    'docker volume ls -q --filter label=com.docker.compose.project=<slug>',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(
+    violations.some((v) => v.includes('must not filter by label')),
+    'expected the label-filtered volume check to be flagged'
+  );
+});
+
+test('self-test: the teardown-order check flags a missing name-filtered volume check', () => {
+  const sample = [
+    '```bash',
+    'docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(
+    violations.some((v) => v.includes('no name-filtered check')),
+    'expected the missing volume-name check to be flagged'
+  );
+});
+
 test('self-test: the teardown-order check ignores a banned command only mentioned in a comment', () => {
   // The runbook's own step-2 comment names the banned form to explain why
   // it's banned -- that explanatory line must not itself be read as the
@@ -328,6 +386,7 @@ test('self-test: the teardown-order check ignores a banned command only mentione
     'docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop',
     'rm -rf /opt/branchleft/<slug>',
     'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    'docker volume ls -q --filter "name=^ghost-<slug>-content$" --filter "name=^ghost-<slug>-adapters$"',
     '```',
   ].join('\n');
   assert.deepEqual(teardownOrderViolations(sample), []);
@@ -345,6 +404,7 @@ test('self-test: the teardown-order check passes the correct order, even split a
     '```bash',
     'rm -rf /opt/branchleft/<slug>',
     'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    'docker volume ls -q --filter "name=^ghost-<slug>-content$" --filter "name=^ghost-<slug>-adapters$"',
     '```',
   ].join('\n');
   assert.deepEqual(teardownOrderViolations(sample), []);
