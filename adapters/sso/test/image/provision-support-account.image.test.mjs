@@ -193,7 +193,12 @@ describe('provision-support-account.mjs, against the real image', () => {
       new Date().toISOString().replace('T', ' ').slice(0, 19)
     );
     const [role] = ghost.sql("select id from roles where name = 'Administrator'");
-    ghost.sql('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', 'e'.repeat(24), role.id, id);
+    ghost.sql(
+      'insert into roles_users (id, role_id, user_id) values (?, ?, ?)',
+      'e'.repeat(24),
+      role.id,
+      id
+    );
 
     assert.throws(
       () => provisionSupportAccount({ container: ghost.name, email: ACTIVE_SUPPORT }),

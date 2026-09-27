@@ -277,7 +277,7 @@ describe('provision-support-account.mjs, against a real MySQL 8 backend', () => 
     assert.equal(after_.password, before_.password);
   });
 
-  it('inactive-without-role: repairs a row that is exactly this script\'s own interrupted write', () => {
+  it("inactive-without-role: repairs a row that is exactly this script's own interrupted write", () => {
     const email = 'support-mysql-partial@platform.example';
     const id = 'b'.repeat(24);
     sqlOnGhost(

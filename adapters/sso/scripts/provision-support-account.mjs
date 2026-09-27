@@ -394,13 +394,19 @@ export function provisionSupportAccount({ container, email }, execFile = execFil
     const partialIndex = stderr.indexOf(PARTIAL_ROW_MISMATCH_MARKER);
     if (partialIndex !== -1) {
       throw new PartialRowMismatchError(
-        stderr.slice(partialIndex + PARTIAL_ROW_MISMATCH_MARKER.length).split('\n')[0].trim()
+        stderr
+          .slice(partialIndex + PARTIAL_ROW_MISMATCH_MARKER.length)
+          .split('\n')[0]
+          .trim()
       );
     }
     const activeIndex = stderr.indexOf(ACTIVE_EXISTING_ROW_MARKER);
     if (activeIndex !== -1) {
       throw new ActiveExistingRowError(
-        stderr.slice(activeIndex + ACTIVE_EXISTING_ROW_MARKER.length).split('\n')[0].trim()
+        stderr
+          .slice(activeIndex + ACTIVE_EXISTING_ROW_MARKER.length)
+          .split('\n')[0]
+          .trim()
       );
     }
     throw error;
