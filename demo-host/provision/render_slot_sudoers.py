@@ -2,11 +2,13 @@
 """Render the demo host's sudoers boundary from the slot table.
 
 Usage:
-    render_slot_sudoers.py [--out FILE]
+    render_slot_sudoers.py [--out FILE | --install FILE]
 
 Prints the generated sudoers file to stdout, or writes it safely to `--out`
 (syntax-checked with `visudo -c -f` and written atomically -- see
-`write_generated_file`).
+`write_generated_file`), or writes and installs it with `--install`
+(the same safe write, then `chown root:root` -- see `install_generated_file`;
+requires root, and is the form host build runs).
 
 The demo host's broker runs as an unprivileged user and needs root for
 exactly one thing: starting, stopping or resetting a slot's systemd units.
@@ -136,9 +138,9 @@ def write_generated_file(path: str, content: str) -> None:
     directory, syntax-checked with `visudo -c -f` before anything can read
     it, then renamed into place atomically.
 
-    This writes a file; it does not install one. Setting ownership and
-    making the path an active sudoers.d entry are a host-build concern this
-    generator does not perform.
+    This writes and mode-checks a file; it does not set its owner or make
+    the path an active sudoers.d entry -- that is `install_generated_file`,
+    below, which host build actually runs.
 
     `visudo -c -f` checks syntax only -- it does not check the file's mode.
     A file at 0644 parses exactly as one at 0440 does; it is
@@ -177,21 +179,47 @@ def write_generated_file(path: str, content: str) -> None:
         raise
 
 
+def install_generated_file(path: str, content: str) -> None:
+    """`write_generated_file`, then set the owner sudo actually requires.
+
+    sudo refuses a sudoers.d entry not owned by root, regardless of mode --
+    `write_generated_file`'s 0440 alone is not enough, and a file left
+    owned by whichever account ran this generator is silently ignored by
+    sudo rather than erroring. This is the host-build install step, so it
+    is only ever called as root; it raises whatever `os.chown` raises
+    (`PermissionError` when it is not) rather than masking it, because a
+    caller that cannot set root:root has not installed a working boundary.
+    """
+    write_generated_file(path, content)
+    os.chown(path, 0, 0)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
         "--out",
         help=(
             "path to write the generated file to, syntax-checked and written "
             "atomically; defaults to printing to stdout with no check"
         ),
     )
+    output.add_argument(
+        "--install",
+        help=(
+            "like --out, but also chowns the result to root:root -- the shape "
+            "sudo actually requires of a sudoers.d file, and the host-build form "
+            "of this command. Requires root."
+        ),
+    )
     args = parser.parse_args(argv)
     content = render()
-    if args.out is None:
-        sys.stdout.write(content)
-    else:
+    if args.install is not None:
+        install_generated_file(args.install, content)
+    elif args.out is not None:
         write_generated_file(args.out, content)
+    else:
+        sys.stdout.write(content)
     return 0
 
 

@@ -151,6 +151,24 @@ describe('render() — sabotage: the invariants a real defect could silently dro
     expect(edge.admittedHostname).toBeNull();
   });
 
+  it("CSP-THREADED — render()'s optional themeCsp argument reaches edge.json, not just renderEdgeSiteBlock() called directly", () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+    const hash =
+      'sha256-F3sUOTY6nsxjO/E0Yh1sWe8bHnfXA+ynZs4mVCavecs=' as import('../src/edge.js').ScriptHash;
+    const withHashes = render(descriptor, TEST_ZONES, { kind: 'computed', hashes: [hash] });
+    const edgeJson = withHashes.find((a) => a.path === 'edge.json')!.content;
+    expect(edgeJson).toContain(`'${hash}'`);
+    expect(edgeJson).toContain('"contentSecurityPolicyMode": "enforcing"');
+
+    // GREEN (the fail-soft default): the same descriptor with no third
+    // argument stays report-only, exactly like every caller in this repo
+    // today (broker, demo-gate) that does not pass one yet.
+    const withoutHashes = render(descriptor, TEST_ZONES);
+    const defaultEdgeJson = withoutHashes.find((a) => a.path === 'edge.json')!.content;
+    expect(defaultEdgeJson).not.toContain('sha256-');
+    expect(defaultEdgeJson).toContain('"contentSecurityPolicyMode": "report-only"');
+  });
+
   it('PORT/UID-FROM-DESCRIPTOR — sabotage: rendering with a hand-edited uid/port produces a compose.yml carrying exactly that value, never a computed or default one', () => {
     const base = validate(entryTenantDescriptor(), TEST_ZONES);
     const reallocated: TenantDescriptor = {
@@ -189,7 +207,13 @@ describe('render() — sabotage: the invariants a real defect could silently dro
 
 describe('renderSettings() — codeInjection continuously reconciled', () => {
   it('emits empty codeinjection_head/foot for blocked (never omits the key)', () => {
-    const settings = renderSettings({ codeInjection: { kind: 'blocked' } });
+    const settings = renderSettings(
+      {
+        codeInjection: { kind: 'blocked' },
+        mail: { identity: { kind: 'demo', localPart: 'demo-1' } },
+      },
+      TEST_ZONES
+    );
     expect(settings.codeinjection_head).toBe('');
     expect(settings.codeinjection_foot).toBe('');
     expect(Object.keys(settings)).toContain('codeinjection_head');
@@ -197,9 +221,33 @@ describe('renderSettings() — codeInjection continuously reconciled', () => {
 
   it('emits the managed head/foot verbatim', () => {
     const descriptor = validate(professionalTenantDescriptor(), TEST_ZONES);
-    const settings = renderSettings(descriptor);
+    const settings = renderSettings(descriptor, TEST_ZONES);
     expect(settings.codeinjection_head).toContain('analytics-consent');
     expect(settings.codeinjection_foot).toContain('analytics.js');
+  });
+
+  it("sets members_support_address to the slot's own sending address", () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+    const settings = renderSettings(descriptor, TEST_ZONES);
+    expect(settings.members_support_address).toBe('hello@blog.entry-co.example');
+  });
+});
+
+describe('renderSettings() / tenantEnvironment() — the magic-link trap (mail__from must equal members_support_address)', () => {
+  it.each([
+    ['demo', demoDescriptor],
+    ['entry tenant', entryTenantDescriptor],
+    ['professional tenant', professionalTenantDescriptor],
+  ] as const)('%s: the two never disagree', (_label, fixture) => {
+    const descriptor = validate(fixture(), TEST_ZONES);
+    const artefacts = render(descriptor, TEST_ZONES);
+    const settings = JSON.parse(
+      artefacts.find((a) => a.path === 'ghost-settings.json')!.content
+    ) as { members_support_address: string };
+    const compose = artefacts.find((a) => a.path === 'compose.yml')!.content;
+    const fromLine = compose.match(/mail__from: '([^']+)'/);
+    expect(fromLine).not.toBeNull();
+    expect(settings.members_support_address).toBe(fromLine![1]);
   });
 });
 
