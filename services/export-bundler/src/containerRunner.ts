@@ -46,8 +46,19 @@ export interface ContainerRunner {
   stop(): Promise<void>;
 }
 
+/**
+ * Every container in a run that carries tenant data on stdout or stderr --
+ * the dump, the scratch database, the status probe, the SQLite backup, the
+ * export colour, the relay -- runs with no log driver. Docker's default
+ * json-file driver would otherwise write that output, uncapped, to
+ * /var/lib/docker on the shared host. Attached stdout (what `docker run`
+ * without `-d` prints) still reaches the caller: the log driver only decides
+ * what Docker keeps.
+ */
+export const NO_CONTAINER_LOGS: readonly string[] = ['--log-driver', 'none'];
+
 export function tenantContainerArgs(config: TenantContainerConfig): string[] {
-  const args = ['--env-file', config.envFile];
+  const args = [...NO_CONTAINER_LOGS, '--env-file', config.envFile];
   if (config.user !== null) args.push('--user', config.user);
   for (const mount of config.volumes) {
     const ro = mount.readOnly ? ',readonly' : '';
@@ -58,23 +69,62 @@ export function tenantContainerArgs(config: TenantContainerConfig): string[] {
 
 /**
  * LLD-8 §08b: "The tenant's image is started on the tenant's data with no
- * route pointed at it." Binding the published port to `127.0.0.1` rather
- * than `0.0.0.0` is what makes "no route" true at the container boundary
- * itself, not merely at the edge's configuration -- the same reasoning
- * render-core/test/live-demo-boot.test.ts already proves for a demo colour
- * ("publishes only on 127.0.0.1 -- never on the descriptor's own private
- * appHostIp"), generalised here to an export colour, which LLD-4 §U7 calls
- * out as "additional... and transient": one export, one throwaway
- * container, never a ring member and never one of the tenant's own two
- * long-lived colours.
+ * route pointed at it." On the run's own network (always, in production)
+ * the colour publishes nothing: that network is `--internal`, so it has no
+ * route out of the host and Docker publishes no port for it. The relay below
+ * is its one way in, bound to `127.0.0.1`. Without a network the colour
+ * publishes on `127.0.0.1` itself -- never `0.0.0.0` -- as
+ * render-core/test/live-demo-boot.test.ts proves for a demo colour.
  */
 export function buildDockerRunArgs(spec: TenantColourSpec): readonly string[] {
   const args: string[] = ['run', '-d', '--name', spec.containerName];
-  if (spec.network !== null) args.push('--network', spec.network);
-  args.push('-p', `127.0.0.1:${spec.loopbackPort}:2368`);
+  if (spec.network !== null) {
+    args.push('--network', spec.network);
+  } else {
+    args.push('-p', `127.0.0.1:${spec.loopbackPort}:2368`);
+  }
   args.push(...tenantContainerArgs(spec));
   args.push(spec.image);
   return args;
+}
+
+export function relayNames(containerName: string): { relay: string; edge: string } {
+  return { relay: `${containerName}-relay`, edge: `${containerName}-edge` };
+}
+
+/**
+ * Forwards one loopback port to the colour on the internal network, and does
+ * nothing else: no environment, no volume, no tenant data at rest.
+ */
+export const RELAY_SCRIPT =
+  "const net=require('net');const target=process.argv[1];" +
+  'net.createServer((c)=>{const u=net.connect(2368,target);c.pipe(u);u.pipe(c);' +
+  "c.on('error',()=>u.destroy());u.on('error',()=>c.destroy());}).listen(2368,'0.0.0.0');";
+
+export function buildRelayRunArgs(spec: TenantColourTemplate): readonly string[] {
+  const { relay, edge } = relayNames(spec.containerName);
+  return [
+    'run',
+    '-d',
+    '--name',
+    relay,
+    '--network',
+    edge,
+    '-p',
+    `127.0.0.1:${spec.loopbackPort}:2368`,
+    ...NO_CONTAINER_LOGS,
+    '--read-only',
+    '--cap-drop',
+    'ALL',
+    '--user',
+    'node',
+    '--entrypoint',
+    'node',
+    spec.image,
+    '-e',
+    RELAY_SCRIPT,
+    spec.containerName,
+  ];
 }
 
 export function buildDockerStopArgs(containerName: string): readonly string[] {
@@ -131,23 +181,56 @@ export function createDockerContainerRunner(
   dockerCommand = 'docker',
   registry: CleanupRegistry = processCleanup
 ): ContainerRunner {
+  const { relay, edge } = relayNames(template.containerName);
+  let relayed = false;
   let unregister: (() => void) | undefined;
+
+  const removeRelaySync = () => {
+    for (const argv of [buildDockerStopArgs(relay), ['network', 'rm', edge]]) {
+      try {
+        dockerRemoveSync(argv, dockerCommand);
+      } catch {
+        // Already gone, or never created.
+      }
+    }
+  };
+  const removeAllSync = () => {
+    try {
+      dockerRemoveSync(buildDockerStopArgs(template.containerName), dockerCommand);
+    } catch {
+      // Already gone, or never created.
+    }
+    if (relayed) removeRelaySync();
+  };
+
   return {
     async start(env, attach) {
-      // Registered before `docker run`, so a signal mid-start still removes it.
-      unregister = registry.register(`export colour ${template.containerName}`, () =>
-        dockerRemoveSync(buildDockerStopArgs(template.containerName), dockerCommand)
-      );
       const spec = {
         ...template,
         network: attach?.network ?? template.network,
         volumes: [...template.volumes, ...(attach?.volumes ?? [])],
       };
-      await withEnvFile(
-        env,
-        (envFile) => runDocker(dockerCommand, buildDockerRunArgs({ ...spec, envFile })),
-        registry
-      );
+      relayed = spec.network !== null;
+      // Registered before `docker run`, so a signal mid-start still removes it.
+      unregister = registry.register(`export colour ${template.containerName}`, removeAllSync);
+      try {
+        await withEnvFile(
+          env,
+          (envFile) => runDocker(dockerCommand, buildDockerRunArgs({ ...spec, envFile })),
+          registry
+        );
+        if (spec.network !== null) {
+          await runDocker(dockerCommand, ['network', 'create', edge]);
+          await runDocker(dockerCommand, buildRelayRunArgs(spec));
+          await runDocker(dockerCommand, ['network', 'connect', spec.network, relay]);
+        }
+      } catch (err) {
+        // `docker run -d` can create the container and then fail to start
+        // it; the created container still holds the colour's environment.
+        removeAllSync();
+        unregister();
+        throw err;
+      }
       return { baseUrl: `http://127.0.0.1:${template.loopbackPort}` };
     },
     async readEnv() {
@@ -156,6 +239,7 @@ export function createDockerContainerRunner(
       );
     },
     async stop() {
+      if (relayed) removeRelaySync();
       await runDocker(dockerCommand, buildDockerStopArgs(template.containerName));
       unregister?.();
     },

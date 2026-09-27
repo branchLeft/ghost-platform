@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createHttpGhostProbe, waitUntilHealthy } from '../../src/ghostProbe.js';
+import { createHttpGhostProbe, HEALTH_PATH, waitUntilHealthy } from '../../src/ghostProbe.js';
 
 function listen(status: number): Promise<{ baseUrl: string; close: () => Promise<void> }> {
   return new Promise((resolve, reject) => {
@@ -78,5 +78,25 @@ describe('waitUntilHealthy', () => {
     const result = await waitUntilHealthy(probe, 'http://x', 100, 20);
     expect(result).toBe(false);
     expect(Date.now() - started).toBeGreaterThanOrEqual(90);
+  });
+});
+
+describe('the health route', () => {
+  it("asks the admin API's site route, never the home page, which renders remote images", async () => {
+    const paths: string[] = [];
+    const server = createServer((req, res) => {
+      paths.push(req.url ?? '');
+      res.writeHead(req.url === HEALTH_PATH ? 200 : 500);
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const { port } = server.address() as AddressInfo;
+    try {
+      expect(HEALTH_PATH).toBe('/ghost/api/admin/site/');
+      expect(await createHttpGhostProbe(2000).isHealthy(`http://127.0.0.1:${port}`)).toBe(true);
+      expect(paths).toEqual(['/ghost/api/admin/site/']);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 });

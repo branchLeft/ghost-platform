@@ -7,6 +7,8 @@ import {
   assertColourOnScratch,
   buildDumpArgs,
   buildImportArgs,
+  buildRunNetworkArgs,
+  mysqlErrorSummary,
   buildScratchMysqlRunArgs,
   buildSqliteBackupArgs,
   createFloorWatcher,
@@ -167,10 +169,26 @@ describe('MySQL argv', () => {
       'acme-export-42-db',
       '--network',
       'acme-export-42-net',
+      '--log-driver',
+      'none',
       '--env-file',
       '/tmp/e/tenant.env',
       SCRATCH_MYSQL_IMAGE,
     ]);
+  });
+
+  it('makes the run network --internal: nothing on it has a route out of the host', () => {
+    expect(buildRunNetworkArgs('acme-export-42')).toEqual([
+      'network',
+      'create',
+      '--internal',
+      'acme-export-42-net',
+    ]);
+  });
+
+  it('names the dump container, so cleanup can remove it by name mid-dump', () => {
+    const args = buildDumpArgs(mysqlSpec, 'f');
+    expect(args.slice(0, 4)).toEqual(['run', '--rm', '--name', 'acme-export-42-dump']);
   });
 
   it("dumps one schema, consistently, with dump_tenant.py's flags, and no password in argv", () => {
@@ -234,7 +252,7 @@ async function writeFakeDocker(
     '#!/bin/sh',
     `echo "$*" >> '${argvLog}'`,
     'case "$1 $2" in',
-    `  "exec -i") cat > '${importLog}'; exit ${opts.importExit ?? 0} ;;`,
+    `  "exec -i") cat > '${importLog}'; ${opts.importExit ? 'echo "ERROR 1064 (42000) at line 3: syntax near \'reader@member.example\'" >&2; ' : ''}exit ${opts.importExit ?? 0} ;;`,
     'esac',
     'last=""; for a in "$@"; do last="$a"; done',
     'case "$1" in',
@@ -277,9 +295,12 @@ describe('createMysqlScratch', () => {
     expect(copy).toEqual(scratchCopy);
     expect(registry.labels).toEqual(['scratch database acme-export-42-db']);
     const argv = await readFile(fake.argvLog, 'utf8');
-    expect(argv).toContain('network create acme-export-42-net');
+    expect(argv).toContain('network create --internal acme-export-42-net');
     expect(argv).toMatch(
-      /run -d --name acme-export-42-db --network acme-export-42-net --env-file \S+ mysql:8\.0@/
+      /run --rm --name acme-export-42-dump --log-driver none --env-file \S+ mysql:8\.0@\S+ mysqldump /
+    );
+    expect(argv).toMatch(
+      /run -d --name acme-export-42-db --network acme-export-42-net --log-driver none --env-file \S+ mysql:8\.0@/
     );
     expect(argv).not.toContain('scratch-pw');
     expect(argv).not.toContain('synthetic-live-password');
@@ -288,8 +309,27 @@ describe('createMysqlScratch', () => {
     await scratch.destroy();
     expect(registry.labels).toEqual([]);
     const after = await readFile(fake.argvLog, 'utf8');
+    expect(after).toContain('rm -f acme-export-42-dump');
     expect(after).toContain('rm -fv acme-export-42-db');
     expect(after).toContain('network rm acme-export-42-net');
+  });
+
+  it("a signal's cleanup removes a dump still running, before the scratch server and network", async () => {
+    const fake = await writeFakeDocker(dir, {});
+    const registry = new CleanupRegistry();
+    const scratch = createMysqlScratch(mysqlSpec, {
+      dockerCommand: fake.path,
+      registry,
+      pollMs: 1,
+    });
+    await scratch.prepare();
+    await writeFile(fake.argvLog, '');
+    expect(registry.runAll()).toEqual([]);
+    expect((await readFile(fake.argvLog, 'utf8')).trim().split('\n')).toEqual([
+      'rm -f acme-export-42-dump',
+      'rm -fv acme-export-42-db',
+      'network rm acme-export-42-net',
+    ]);
   });
 
   it('refuses a scratch target that already holds a database, before importing anything', async () => {
@@ -316,7 +356,11 @@ describe('createMysqlScratch', () => {
 
   it.each([
     ['the dump fails', { dumpExit: 2 }, /mysqldump exited 2/],
-    ['the import fails', { importExit: 1 }, /the import exited 1/],
+    [
+      'the import fails',
+      { importExit: 1 },
+      /the import exited 1: MySQL error 1064 \(42000\) at line 3\)$/,
+    ],
     [
       'the dump carries no floor rows',
       { dumpLines: 'CREATE TABLE x (a int);' },
@@ -406,11 +450,14 @@ describe('SQLite scratch', () => {
         database__connection__filename: `${SCRATCH_SQLITE_DIR}/ghost.db`,
       },
       colourVolumes: [{ volume: 'demo-export-7-data', mountPath: SCRATCH_SQLITE_DIR }],
-      network: null,
+      network: 'demo-export-7-net',
     });
     await scratch.destroy();
     expect(registry.labels).toEqual([]);
-    expect(await readFile(f.log, 'utf8')).toContain('volume rm -f demo-export-7-data');
+    const log = await readFile(f.log, 'utf8');
+    expect(log).toContain('network create --internal demo-export-7-net');
+    expect(log).toContain('volume rm -f demo-export-7-data');
+    expect(log).toContain('network rm demo-export-7-net');
   });
 
   it('refuses when the backup does not report completion', async () => {
@@ -420,5 +467,27 @@ describe('SQLite scratch', () => {
       registry: new CleanupRegistry(),
     });
     await expect(scratch.prepare()).rejects.toThrow(ScratchCopyError);
+  });
+});
+
+describe('mysqlErrorSummary', () => {
+  it('keeps the error code, state and line, and drops the quoted row data', () => {
+    const stderr =
+      "ERROR 1064 (42000) at line 57: You have an error in your SQL syntax near 'reader@member.example','Reader'";
+    const summary = mysqlErrorSummary(stderr);
+    expect(summary).toBe('MySQL error 1064 (42000) at line 57');
+    expect(summary).not.toContain('reader@member.example');
+  });
+
+  it('keeps an error with no line', () => {
+    expect(mysqlErrorSummary('ERROR 2003 (HY000): cannot connect')).toBe(
+      'MySQL error 2003 (HY000)'
+    );
+  });
+
+  it('says so when there is no MySQL error code at all, and repeats nothing', () => {
+    expect(mysqlErrorSummary('some output with reader@member.example')).toBe(
+      'no MySQL error code in its output'
+    );
   });
 });

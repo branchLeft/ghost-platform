@@ -112,10 +112,16 @@ it. So the export colour never runs against the tenant's live database.
 
 - **MySQL tier.**
   - A fresh MySQL 8.0 container, the server image `db/RUNBOOK-db.md` pins
-    for db1, on a network created for the run. It has no published port,
-    and its root password reaches it through an env file.
+    for db1, on the run's own network. It has no published port, and its
+    root password reaches it through an env file.
   - `mysqldump --single-transaction` of the tenant's one schema is streamed
-    straight into it. No dump file exists anywhere.
+    straight into it: from the dump container's stdout, through this
+    process, into `mysql` in the scratch container. The dump container runs
+    with `--log-driver none`, because Docker's default json-file driver
+    would otherwise write the whole stream, uncapped, to /var/lib/docker.
+    No dump file exists anywhere. The dump container is named
+    `<run>-dump` and registered for cleanup, so a signal mid-dump removes
+    it and ends its read of db1.
   - The flags are `db/provision/dump_tenant.py`'s, with two changes. The
     dump runs over TCP as the tenant's own account, because db1's `backup`
     account is socket-only. `--source-data=2` is dropped and
@@ -140,11 +146,26 @@ After it is healthy and before any export call, the environment Docker
 reports for the running colour must too. Otherwise the run refuses with
 `LiveDatabaseTargetError`.
 
+**The run network is `--internal`.** The colour and the scratch database
+share a network created for the run, with no route off the host. Docker
+publishes no port for a container on an internal network, so the colour
+publishes nothing. Its one way in is a relay: a container of the tenant's
+own image running one fixed script that forwards `127.0.0.1:<port>` to the
+colour. The relay is read-only, has all capabilities dropped, and carries no
+environment and no volume. The dump container is the only one with a route
+to the tenant's database server, and it reads.
+
+**No Docker logs of tenant data.** Every container in a run that can carry
+tenant data on stdout or stderr runs with `--log-driver none`: the dump,
+the scratch database, the status probe, the SQLite backup, the colour and
+the relay. `test/unit/logDriver.test.ts` asserts it for each.
+
 **Cleanup.** Every resource the run creates registers a synchronous
-remover with `cleanup.ts`: the colour, the scratch container and its data,
-the network, the volume and the env files. The normal path removes them in
-`finally`, colour first. On SIGINT or SIGTERM the removers run before the
-process exits.
+remover with `cleanup.ts`: the colour, the relay and its network, the dump
+container, the scratch container and its data, the run network, the volume
+and the env files. The normal path removes them in `finally`, colour first.
+A colour that is created but fails to start is removed at once. On SIGINT
+or SIGTERM the removers run before the process exits.
 
 ## The export colour sends nothing and schedules nothing: the second layer
 

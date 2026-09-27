@@ -25,6 +25,12 @@
 #   - defence in depth on the copy: no reachable mail transport, the scheduler
 #     disabled (a post due during the export is still scheduled on the copy);
 #   - no tenant secret in any process's argv while the colour runs;
+#   - no Docker log of tenant data: the mysqldump container (caught while it
+#     streams), the scratch database, the colour and its relay all run with
+#     LogConfig.Type=none and no log file;
+#   - the run network is --internal: neither the colour nor the scratch
+#     database can open a connection off the host, and the colour publishes
+#     nothing -- a relay on 127.0.0.1 is its one way in;
 #   - the archive is age ciphertext that decrypts to real content; the
 #     manifest names the recipient; the audit record names the grant, the
 #     support identity, the fingerprint and the archive's SHA-256;
@@ -443,12 +449,34 @@ wait_for_prompt() {
 }
 
 echo "--- running the real export inside the grant ---"
+# The dump container lives only while the dump streams (it is --rm), so a
+# watcher catches it while it exists and records what Docker says about its
+# logging: the dump's stdout is the whole database.
+(
+    deadline=$(($(date +%s) + 300))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        dump="$(docker ps -a --format '{{.Names}}' | grep "^${TENANT}-export-.*-dump\$" | head -1 || true)"
+        if [ -n "$dump" ]; then
+            docker inspect --format '{{.Name}} LogConfig.Type={{.HostConfig.LogConfig.Type}} LogPath="{{.LogPath}}"' "$dump" \
+                > "$WORK_DIR/dump-log-config.txt" 2>/dev/null && break
+        fi
+        sleep 0.1
+    done
+) &
+DUMP_WATCH_PID=$!
 mkfifo "$FIFO"
 run_bundler --grant-lane consented --grant-reference "$GRANT_REFERENCE" \
     <"$FIFO" >"$WORK_DIR/export.out" 2>"$WORK_DIR/export.err" &
 CLI_PID=$!
 exec 3>"$FIFO"
 if wait_for_prompt "$WORK_DIR/export.err"; then
+    kill "$DUMP_WATCH_PID" >/dev/null 2>&1 || true
+    echo "dump container, while it ran: $(cat "$WORK_DIR/dump-log-config.txt" 2>/dev/null || echo '(never seen)')"
+    if grep -q -- '-dump LogConfig.Type=none LogPath=""$' "$WORK_DIR/dump-log-config.txt" 2>/dev/null; then
+        echo "PASS: the mysqldump container ran with LogConfig.Type=none and no json log file -- the dump stream was never written to /var/lib/docker"
+    else
+        fail "the dump container's logging was not none, or it was never seen"
+    fi
     echo "PASS: the bundler asked for the token only once the colour was up"
     colour="$(docker ps --format '{{.Names}}' | grep "^${TENANT}-export-[0-9]*\$" | head -1)"
     scratch="$(scratch_container)"
@@ -476,10 +504,42 @@ if wait_for_prompt "$WORK_DIR/export.err"; then
     else
         echo "PASS: no process's argv carries the live database's password"
     fi
-    if docker port "$colour" | grep -q '127.0.0.1:' && ! docker port "$colour" | grep -q '0.0.0.0'; then
-        echo "PASS: the export colour publishes on 127.0.0.1 only"
+    relay="${colour}-relay"
+    if [ -z "$(docker port "$colour")" ] && docker port "$relay" | grep -q '127.0.0.1:' && \
+       ! docker port "$relay" | grep -q '0.0.0.0'; then
+        echo "PASS: the export colour publishes nothing; its one way in is the relay, on 127.0.0.1 only"
     else
-        fail "unexpected port binding: $(docker port "$colour")"
+        fail "unexpected port bindings: colour [$(docker port "$colour")] relay [$(docker port "$relay")]"
+    fi
+    all_none=true
+    for c in "$scratch" "$colour" "$relay"; do
+        lc="$(docker inspect --format '{{.HostConfig.LogConfig.Type}} "{{.LogPath}}"' "$c")"
+        echo "  $c logging: $lc"
+        [ "$lc" = 'none ""' ] || all_none=false
+    done
+    if [ "$all_none" = "true" ]; then
+        echo "PASS: the scratch database, the export colour and the relay all run with LogConfig.Type=none and no log file"
+    else
+        fail "a run container keeps a Docker log"
+    fi
+    net="${colour}-net"
+    if [ "$(docker network inspect --format '{{.Internal}}' "$net")" = "true" ]; then
+        echo "PASS: the run network $net is --internal"
+    else
+        fail "the run network is not internal"
+    fi
+    colour_out="$(docker exec "$colour" node -e "
+const s = require('net').connect({ host: '1.1.1.1', port: 443, timeout: 5000 });
+s.on('connect', () => { console.log('connected'); process.exit(0); });
+s.on('timeout', () => { console.log('timeout'); process.exit(0); });
+s.on('error', (e) => { console.log(e.code); process.exit(0); });
+" 2>&1 || true)"
+    db_out="$(docker exec "$scratch" bash -c 'timeout 5 bash -c "exec 3<>/dev/tcp/1.1.1.1/443" && echo connected || echo refused-or-unreachable' 2>&1 || true)"
+    echo "  outbound from the colour: $colour_out; from the scratch database: $db_out"
+    if [ "$colour_out" != "connected" ] && ! echo "$db_out" | grep -q '^connected$'; then
+        echo "PASS: neither the export colour nor the scratch database has an outbound route"
+    else
+        fail "something on the run network reached the internet"
     fi
 
     # Defence in depth, read through Ghost's own config inside the colour.

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { dockerRemoveSync, processCleanup, type CleanupRegistry } from './cleanup.js';
-import { runDocker, type VolumeMount } from './containerRunner.js';
+import { NO_CONTAINER_LOGS, runDocker, type VolumeMount } from './containerRunner.js';
 import { withEnvFile } from './envFile.js';
 
 /**
@@ -175,8 +175,20 @@ export interface MysqlScratchSpec {
 const MYSQL_AS_ROOT =
   'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --protocol=TCP --host=127.0.0.1 --user=root';
 
-export function mysqlScratchNames(runId: string): { container: string; network: string } {
-  return { container: `${runId}-db`, network: `${runId}-net` };
+export function mysqlScratchNames(runId: string): {
+  container: string;
+  network: string;
+  dump: string;
+} {
+  return { container: `${runId}-db`, network: `${runId}-net`, dump: `${runId}-dump` };
+}
+
+/**
+ * The run's own network. `--internal`: nothing on it -- the scratch
+ * database, the export colour -- has any route out of the host.
+ */
+export function buildRunNetworkArgs(runId: string): readonly string[] {
+  return ['network', 'create', '--internal', mysqlScratchNames(runId).network];
 }
 
 export function buildScratchMysqlRunArgs(runId: string, envFile: string): readonly string[] {
@@ -188,6 +200,7 @@ export function buildScratchMysqlRunArgs(runId: string, envFile: string): readon
     container,
     '--network',
     network,
+    ...NO_CONTAINER_LOGS,
     '--env-file',
     envFile,
     SCRATCH_MYSQL_IMAGE,
@@ -202,11 +215,19 @@ export function buildScratchMysqlRunArgs(runId: string, envFile: string): readon
  * position, which only point-in-time recovery reads and which needs
  * RELOAD and REPLICATION CLIENT) is dropped, and `--no-tablespaces` (which
  * otherwise needs PROCESS) is added.
+ *
+ * `--log-driver none`: the whole database streams out of this container's
+ * stdout, and Docker's default json-file driver would write every byte of
+ * it to /var/lib/docker as it passed. Named, so cleanup can remove it by
+ * name if the run is stopped mid-dump.
  */
 export function buildDumpArgs(spec: MysqlScratchSpec, envFile: string): readonly string[] {
   return [
     'run',
     '--rm',
+    '--name',
+    mysqlScratchNames(spec.runId).dump,
+    ...NO_CONTAINER_LOGS,
     '--env-file',
     envFile,
     SCRATCH_MYSQL_IMAGE,
@@ -260,6 +281,16 @@ export function createFloorWatcher(): { observe(chunk: Buffer): void; missing():
       return FLOOR_TABLES.filter((t) => !seen.has(t));
     },
   };
+}
+
+/**
+ * The error code and line of a failed import, without the rest of the
+ * message: MySQL's "near '...'" text can quote a fragment of row data.
+ */
+export function mysqlErrorSummary(stderr: string): string {
+  const match = /ERROR (\d+) \(([0-9A-Z]{5})\)(?: at line (\d+))?/.exec(stderr);
+  if (!match) return 'no MySQL error code in its output';
+  return `MySQL error ${match[1]} (${match[2]})${match[3] ? ` at line ${match[3]}` : ''}`;
 }
 
 interface PipeResult {
@@ -327,9 +358,12 @@ export function createMysqlScratch(
   const readyTimeoutMs = options.readyTimeoutMs ?? 120_000;
   const pollMs = options.pollMs ?? 1000;
   const password = options.scratchPassword ?? randomBytes(24).toString('hex');
-  const { container, network } = mysqlScratchNames(spec.runId);
+  const { container, network, dump } = mysqlScratchNames(spec.runId);
   const removeSync = () => {
     for (const argv of [
+      // A dump still running holds a transaction on the live server and
+      // streams the database; it goes first.
+      ['rm', '-f', dump],
       ['rm', '-fv', container],
       ['network', 'rm', network],
     ]) {
@@ -349,7 +383,7 @@ export function createMysqlScratch(
   return {
     async prepare() {
       unregister = registry.register(`scratch database ${container}`, removeSync);
-      await runDocker(docker, ['network', 'create', network]);
+      await runDocker(docker, buildRunNetworkArgs(spec.runId));
       await withEnvFile(
         { MYSQL_ROOT_PASSWORD: password },
         (envFile) => runDocker(docker, buildScratchMysqlRunArgs(spec.runId, envFile)),
@@ -402,7 +436,7 @@ export function createMysqlScratch(
       }
       if (result.importCode !== 0) {
         throw new ScratchCopyError(
-          `the import exited ${String(result.importCode)}: ${result.importStderr}`
+          `the import exited ${String(result.importCode)}: ${mysqlErrorSummary(result.importStderr)}`
         );
       }
       const missing = floor.missing();
@@ -474,7 +508,17 @@ export function sqliteScratchFilename(): string {
 }
 
 export function buildSqliteBackupArgs(spec: SqliteScratchSpec): readonly string[] {
-  const args = ['run', '--rm', '--user', '0:0', '--entrypoint', 'node', '--network', 'none'];
+  const args = [
+    'run',
+    '--rm',
+    '--user',
+    '0:0',
+    '--entrypoint',
+    'node',
+    '--network',
+    'none',
+    ...NO_CONTAINER_LOGS,
+  ];
   for (const mount of spec.tenantVolumes) {
     args.push('--mount', `type=volume,src=${mount.volume},dst=${mount.mountPath},readonly`);
   }
@@ -494,17 +538,26 @@ export function createSqliteScratch(
   const docker = options.dockerCommand ?? 'docker';
   const registry = options.registry ?? processCleanup;
   const volume = sqliteScratchVolume(spec.runId);
+  const { network } = mysqlScratchNames(spec.runId);
   const removeSync = () => {
-    try {
-      dockerRemoveSync(['volume', 'rm', '-f', volume], docker);
-    } catch {
-      // Already gone, or never created.
+    for (const argv of [
+      ['volume', 'rm', '-f', volume],
+      ['network', 'rm', network],
+    ]) {
+      try {
+        dockerRemoveSync(argv, docker);
+      } catch {
+        // Already gone, or never created.
+      }
     }
   };
   let unregister: (() => void) | undefined;
   return {
     async prepare() {
       unregister = registry.register(`scratch volume ${volume}`, removeSync);
+      // The same internal network the MySQL tier uses: the colour gets no
+      // route out of the host on either tier.
+      await runDocker(docker, buildRunNetworkArgs(spec.runId));
       await runDocker(docker, ['volume', 'create', volume]);
       const out = await runDocker(docker, buildSqliteBackupArgs(spec));
       if (!out.includes(SQLITE_MARKER)) {
@@ -518,7 +571,7 @@ export function createSqliteScratch(
           database__connection__filename: filename,
         },
         colourVolumes: [{ volume, mountPath: SCRATCH_SQLITE_DIR }],
-        network: null,
+        network,
       };
     },
     async destroy() {

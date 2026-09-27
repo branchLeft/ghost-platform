@@ -7,6 +7,8 @@ import {
   buildDockerRunArgs,
   buildDockerStopArgs,
   buildDockerInspectEnvArgs,
+  buildRelayRunArgs,
+  RELAY_SCRIPT,
   createDockerContainerRunner,
   parseInspectedEnv,
   type TenantColourTemplate,
@@ -205,19 +207,107 @@ describe('createDockerContainerRunner', () => {
     expect(registry.labels).toEqual(['export colour tenant-1-export-123']);
   });
 
-  it("start(env, attach) joins the copy's network and mounts its volumes too", async () => {
+  it("start(env, attach) puts the colour on the copy's internal network, unpublished, and reaches it through a loopback relay", async () => {
     const fake = await writeEnvCapturingDocker();
-    const runner = createDockerContainerRunner(template, fake.path, new CleanupRegistry());
+    const registry = new CleanupRegistry();
+    const runner = createDockerContainerRunner(template, fake.path, registry);
     await runner.start(env, {
       network: 'tenant-1-export-123-net',
       volumes: [{ volume: 'tenant-1-export-123-data', mountPath: '/var/lib/ghost/export-scratch' }],
     });
-    const logged: string[] = JSON.parse((await readFile(fake.argvLog, 'utf8')).trim());
-    expect(logged[logged.indexOf('--network') + 1]).toBe('tenant-1-export-123-net');
-    expect(logged).toContain('type=volume,src=ghost-tenant-1-content,dst=/var/lib/ghost/content');
-    expect(logged).toContain(
+    const calls: string[][] = (await readFile(fake.argvLog, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    const colour = calls[0]!;
+    expect(colour[colour.indexOf('--network') + 1]).toBe('tenant-1-export-123-net');
+    expect(colour).not.toContain('-p');
+    expect(colour).toContain('type=volume,src=ghost-tenant-1-content,dst=/var/lib/ghost/content');
+    expect(colour).toContain(
       'type=volume,src=tenant-1-export-123-data,dst=/var/lib/ghost/export-scratch'
     );
+    expect(calls.slice(1)).toEqual([
+      ['network', 'create', 'tenant-1-export-123-edge'],
+      [...buildRelayRunArgs({ ...template, network: 'tenant-1-export-123-net' })],
+      ['network', 'connect', 'tenant-1-export-123-net', 'tenant-1-export-123-relay'],
+    ]);
+    expect(registry.labels).toEqual(['export colour tenant-1-export-123']);
+
+    await runner.stop();
+    const after: string[][] = (await readFile(fake.argvLog, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(after.slice(4)).toEqual([
+      ['rm', '-f', 'tenant-1-export-123-relay'],
+      ['network', 'rm', 'tenant-1-export-123-edge'],
+      ['rm', '-f', 'tenant-1-export-123'],
+    ]);
+    expect(registry.labels).toEqual([]);
+  });
+
+  it('the relay publishes on loopback only, carries no env or volume, and forwards to the colour by name', () => {
+    const args = buildRelayRunArgs({ ...template, network: 'n' });
+    expect(args[args.indexOf('-p') + 1]).toBe('127.0.0.1:4400:2368');
+    expect(args[args.indexOf('--network') + 1]).toBe('tenant-1-export-123-edge');
+    expect(args).not.toContain('--env-file');
+    expect(args).not.toContain('--mount');
+    expect(args).toContain('--read-only');
+    expect(args.slice(-3)).toEqual(['-e', RELAY_SCRIPT, 'tenant-1-export-123']);
+    expect(RELAY_SCRIPT).toContain('net.connect(2368,target)');
+  });
+
+  it('removes a colour that was created but failed to start, and takes it off the registry', async () => {
+    const argvLogPath = join(dir, 'argv.log');
+    const fakeDocker = await writeFakeDocker(dir, { argvLogPath });
+    // Log every call, then fail only `docker run`, as a port clash would.
+    const script = await readFile(fakeDocker, 'utf8');
+    await writeFile(
+      fakeDocker,
+      script.replace(
+        'exit 0',
+        'if [ "$1" = "run" ]; then echo "port is already allocated" >&2; exit 125; fi\nexit 0'
+      )
+    );
+    const registry = new CleanupRegistry();
+    const runner = createDockerContainerRunner(template, fakeDocker, registry);
+    await expect(runner.start(env)).rejects.toThrow(/port is already allocated/);
+    const calls = (await readFile(argvLogPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(calls[calls.length - 1]).toEqual(['rm', '-f', 'tenant-1-export-123']);
+    expect(registry.labels).toEqual([]);
+  });
+
+  it('removes the colour and the relay when the relay fails to start', async () => {
+    const argvLogPath = join(dir, 'argv.log');
+    const fakeDocker = await writeFakeDocker(dir, { argvLogPath });
+    const script = await readFile(fakeDocker, 'utf8');
+    await writeFile(
+      fakeDocker,
+      script.replace(
+        'exit 0',
+        'case "$*" in *-relay*--network*|*--name\\ tenant-1-export-123-relay*) exit 125 ;; esac\nexit 0'
+      )
+    );
+    const registry = new CleanupRegistry();
+    await expect(
+      createDockerContainerRunner(template, fakeDocker, registry).start(env, {
+        network: 'tenant-1-export-123-net',
+        volumes: [],
+      })
+    ).rejects.toThrow(/docker run failed/);
+    const calls = (await readFile(argvLogPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(calls.slice(-3)).toEqual([
+      ['rm', '-f', 'tenant-1-export-123'],
+      ['rm', '-f', 'tenant-1-export-123-relay'],
+      ['network', 'rm', 'tenant-1-export-123-edge'],
+    ]);
+    expect(registry.labels).toEqual([]);
   });
 
   it('stop() execs exactly buildDockerStopArgs and takes the colour off the cleanup registry', async () => {

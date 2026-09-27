@@ -10,13 +10,22 @@ export interface GhostProbe {
 // imported from it for the same not-published reason drainFlag.ts gives.
 const FORWARDED_PROTO_HEADERS = { 'X-Forwarded-Proto': 'https' };
 
+/**
+ * The admin API's public site route, not the home page: the export colour
+ * has no outbound route, and rendering the home page makes Ghost probe the
+ * size of every remote image it references, each waiting out a connection
+ * that can never complete. This route renders no remote content, and the
+ * admin API is all the export uses.
+ */
+export const HEALTH_PATH = '/ghost/api/admin/site/';
+
 export function createHttpGhostProbe(timeoutMs: number): GhostProbe {
   return {
     async isHealthy(baseUrl) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(baseUrl, {
+        const response = await fetch(new URL(HEALTH_PATH, baseUrl), {
           signal: controller.signal,
           headers: FORWARDED_PROTO_HEADERS,
           redirect: 'manual',
