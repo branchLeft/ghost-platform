@@ -62,12 +62,14 @@ describe('SUSPENDED_STATUS', () => {
 
 describe('provisionSupportAccount', () => {
   it('shells out to "docker exec" against the named container, passing the email through the env rather than the argv text', () => {
-    const execFile = vi.fn(() => JSON.stringify({ created: true, id: 'abc', status: 'inactive' }));
+    const execFile = vi.fn(() =>
+      JSON.stringify({ created: true, repaired: false, id: 'abc', status: 'inactive' })
+    );
     const result = provisionSupportAccount(
       { container: 'my-container', email: 'support@example.com' },
       execFile
     );
-    expect(result).toEqual({ created: true, id: 'abc', status: 'inactive' });
+    expect(result).toEqual({ created: true, repaired: false, id: 'abc', status: 'inactive' });
     expect(execFile).toHaveBeenCalledTimes(1);
     const [command, args] = execFile.mock.calls[0];
     expect(command).toBe('docker');
@@ -84,16 +86,36 @@ describe('provisionSupportAccount', () => {
     expect(args.join(' ')).not.toContain('support@example.com\n');
   });
 
-  it('reports an existing row untouched rather than re-suspending or re-minting a password', () => {
+  it('reports an existing, complete row untouched rather than re-suspending or re-minting a password', () => {
     const execFile = vi.fn(() =>
-      JSON.stringify({ created: false, id: 'existing-id', status: 'active' })
+      JSON.stringify({ created: false, repaired: false, id: 'existing-id', status: 'active' })
     );
     const result = provisionSupportAccount({ container: 'c1', email: 'x@example.com' }, execFile);
-    expect(result).toEqual({ created: false, id: 'existing-id', status: 'active' });
+    expect(result).toEqual({
+      created: false,
+      repaired: false,
+      id: 'existing-id',
+      status: 'active',
+    });
+  });
+
+  it('passes through a repaired-row report from the inner script unchanged', () => {
+    const execFile = vi.fn(() =>
+      JSON.stringify({ created: false, repaired: true, id: 'existing-id', status: 'inactive' })
+    );
+    const result = provisionSupportAccount({ container: 'c1', email: 'x@example.com' }, execFile);
+    expect(result).toEqual({
+      created: false,
+      repaired: true,
+      id: 'existing-id',
+      status: 'inactive',
+    });
   });
 
   it('never passes a --status-like flag that could create the account active -- there is no argument for it', () => {
-    const execFile = vi.fn(() => JSON.stringify({ created: true, id: 'abc', status: 'inactive' }));
+    const execFile = vi.fn(() =>
+      JSON.stringify({ created: true, repaired: false, id: 'abc', status: 'inactive' })
+    );
     provisionSupportAccount({ container: 'c1', email: 'x@example.com' }, execFile);
     const [, args] = execFile.mock.calls[0];
     expect(args.join(' ')).not.toMatch(/PROVISION_SUPPORT_STATUS/);

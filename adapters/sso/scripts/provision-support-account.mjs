@@ -11,12 +11,21 @@
 // Usage:
 //   node provision-support-account.mjs --container <name> --email <address>
 //
-// Idempotent: a second run against the same container is a no-op -- it
-// never re-suspends an account a tenant has since granted, and never mints
-// a second unusable password for the same email. The account this script
-// creates is ALWAYS suspended (Ghost's own "inactive" status); nothing here
-// accepts a flag to create one active, which is the one thing this
-// component's own sabotage exists to catch if it is ever added back in.
+// Idempotent: a second run against the same container is a no-op when the
+// row is already complete -- it never re-suspends an account a tenant has
+// since granted, and never mints a second unusable password for the same
+// email. A row missing its Administrator link (a partial write) is
+// repaired, never silently skipped -- see `administratorRoleLinkFor` in the
+// inner script below. The account this script creates is ALWAYS suspended
+// (Ghost's own "inactive" status); nothing here accepts a flag to create
+// one active, which is the one thing this component's own sabotage exists
+// to catch if it is ever added back in.
+//
+// The user row and its Administrator link are written inside one
+// transaction (`inTransaction` below), for both database backends, so a
+// `docker exec` killed mid-write leaves either both rows or neither --
+// never the partial state the repair path above exists to recover from on
+// a row written before this fix, or by anything else.
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -117,33 +126,78 @@ function connect() {
     run: (sql, params) => conn.execute(sql, params),
   };
 }
+async function administratorRoleLinkFor(db, userId) {
+  return db.get(
+    \`select r.id from roles r
+       join roles_users ru on ru.role_id = r.id
+      where ru.user_id = ? and r.name = 'Administrator'\`,
+    [userId]
+  );
+}
+async function inTransaction(db, body) {
+  await db.run('begin', []);
+  try {
+    const result = await body();
+    await db.run('commit', []);
+    return result;
+  } catch (error) {
+    await db.run('rollback', []);
+    throw error;
+  }
+}
 async function main() {
   const db = connect();
   const email = process.env.PROVISION_SUPPORT_EMAIL;
   const existing = await db.get('select id, status from users where email = ?', [email]);
   if (existing) {
-    console.log(JSON.stringify({ created: false, id: existing.id, status: existing.status }));
+    const link = await administratorRoleLinkFor(db, existing.id);
+    if (link) {
+      console.log(
+        JSON.stringify({ created: false, repaired: false, id: existing.id, status: existing.status })
+      );
+      return;
+    }
+    // A partial row: the user exists but the Administrator link never
+    // landed -- the two inserts used to be two separate statements with no
+    // transaction between them (fixed below for a fresh create), and a row
+    // written before that fix, or by anything else, can still be in this
+    // state. Repaired, never skipped: status is left exactly as found,
+    // because a status change since creation is a tenant's own grant, never
+    // something this script infers or corrects.
+    const role = await db.get("select id from roles where name = 'Administrator'", []);
+    await inTransaction(db, () =>
+      db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
+        process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
+        role.id,
+        existing.id,
+      ])
+    );
+    console.log(
+      JSON.stringify({ created: false, repaired: true, id: existing.id, status: existing.status })
+    );
     return;
   }
   const id = process.env.PROVISION_SUPPORT_ID;
   const passwordHash = process.env.PROVISION_SUPPORT_PASSWORD_HASH;
   const now = process.env.PROVISION_SUPPORT_NOW;
-  await db.run(
-    \`insert into users (id, name, slug, password, email, status, visibility,
-      comment_notifications, free_member_signup_notification,
-      paid_subscription_started_notification, paid_subscription_canceled_notification,
-      mention_notifications, recommendation_notifications, milestone_notifications,
-      donation_notifications, gift_subscription_notifications, created_at)
-     values (?, ?, ?, ?, ?, ?, 'public', 1, 1, 1, 1, 1, 1, 1, 1, 1, ?)\`,
-    [id, '${STAFF_NAME}', '${STAFF_SLUG}', passwordHash, email, 'inactive', now]
-  );
   const role = await db.get("select id from roles where name = 'Administrator'", []);
-  await db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
-    process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
-    role.id,
-    id,
-  ]);
-  console.log(JSON.stringify({ created: true, id, status: 'inactive' }));
+  await inTransaction(db, async () => {
+    await db.run(
+      \`insert into users (id, name, slug, password, email, status, visibility,
+        comment_notifications, free_member_signup_notification,
+        paid_subscription_started_notification, paid_subscription_canceled_notification,
+        mention_notifications, recommendation_notifications, milestone_notifications,
+        donation_notifications, gift_subscription_notifications, created_at)
+       values (?, ?, ?, ?, ?, ?, 'public', 1, 1, 1, 1, 1, 1, 1, 1, 1, ?)\`,
+      [id, '${STAFF_NAME}', '${STAFF_SLUG}', passwordHash, email, 'inactive', now]
+    );
+    await db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
+      process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
+      role.id,
+      id,
+    ]);
+  });
+  console.log(JSON.stringify({ created: true, repaired: false, id, status: 'inactive' }));
 }
 main().catch((error) => {
   console.error(error.stack || String(error));
@@ -153,9 +207,12 @@ main().catch((error) => {
 
 /**
  * Creates the suspended support account inside `container`'s own Ghost
- * database, or reports the existing row untouched if one already exists
- * for `email`. Always inserts as `inactive` -- see this module's own doc
- * comment for why there is no way to ask for anything else.
+ * database, atomically; repairs a pre-existing row missing its
+ * Administrator link; or reports a pre-existing, already-complete row
+ * untouched. Always inserts as `inactive` -- see this module's own doc
+ * comment for why there is no way to ask for anything else. Returns
+ * `{created, repaired, id, status}`: `created` and `repaired` are never
+ * both true.
  */
 export function provisionSupportAccount({ container, email }, execFile = execFileSync) {
   const env = [

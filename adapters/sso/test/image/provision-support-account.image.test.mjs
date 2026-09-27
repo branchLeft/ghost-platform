@@ -24,6 +24,7 @@ if (!IMAGE) {
 
 const TENANT = 'tenant-zero';
 const SUPPORT = 'support-provisioned@platform.example';
+const PARTIAL_SUPPORT = 'support-partial@platform.example';
 const BOOT_TIMEOUT_MS = 90_000;
 const key = generateKeyPair();
 
@@ -163,9 +164,58 @@ describe('provision-support-account.mjs, against the real image', () => {
     const [before_] = ghost.sql('select id, password from users where email = ?', SUPPORT);
     const result = provisionSupportAccount({ container: ghost.name, email: SUPPORT });
     assert.equal(result.created, false);
+    assert.equal(result.repaired, false, 'a complete row must not be reported as repaired');
     assert.equal(result.id, before_.id);
     const [after_] = ghost.sql('select id, password from users where email = ?', SUPPORT);
     assert.equal(after_.password, before_.password);
+  });
+
+  it('repairs a partial row -- a user that exists with no Administrator link -- rather than skipping it', () => {
+    // Simulates exactly what finding 2 of the first review round named: a
+    // `docker exec` killed between the two inserts the pre-fix script made
+    // as separate statements. Inserted directly, bypassing the script, so
+    // this test does not depend on the script's own atomicity to produce
+    // the partial state it exercises.
+    const id = 'a'.repeat(24);
+    ghost.sql(
+      `insert into users (id, name, slug, password, email, status, visibility,
+        comment_notifications, free_member_signup_notification,
+        paid_subscription_started_notification, paid_subscription_canceled_notification,
+        mention_notifications, recommendation_notifications, milestone_notifications,
+        donation_notifications, gift_subscription_notifications, created_at)
+       values (?, 'Support', 'support-partial', ?, ?, 'inactive', 'public', 1, 1, 1, 1, 1, 1, 1, 1, 1, ?)`,
+      id,
+      '$2a$10$unusable',
+      PARTIAL_SUPPORT,
+      new Date().toISOString().replace('T', ' ').slice(0, 19)
+    );
+    const [noLinkYet] = ghost.sql(
+      `select r.name from roles r
+         join roles_users ru on ru.role_id = r.id
+        where ru.user_id = ?`,
+      id
+    );
+    assert.equal(noLinkYet, undefined, 'the partial row must start with no Administrator link');
+
+    const result = provisionSupportAccount({ container: ghost.name, email: PARTIAL_SUPPORT });
+    assert.equal(result.created, false, 'the user row already existed');
+    assert.equal(result.repaired, true, 'the missing link must be reported as repaired');
+    assert.equal(result.id, id);
+    assert.equal(result.status, 'inactive', 'repair must never touch status');
+
+    const [role] = ghost.sql(
+      `select r.name from roles r
+         join roles_users ru on ru.role_id = r.id
+        where ru.user_id = ?`,
+      id
+    );
+    assert.equal(role.name, 'Administrator', 'the link must now exist');
+
+    // Idempotent on the repaired row too: a third run neither re-inserts
+    // the link (which would violate a unique constraint) nor reports it as
+    // repaired again.
+    const again = provisionSupportAccount({ container: ghost.name, email: PARTIAL_SUPPORT });
+    assert.equal(again.repaired, false);
   });
 
   it('the provisioned account is inert on the break-glass login path -- suspended at rest, through the real entry point', async () => {
