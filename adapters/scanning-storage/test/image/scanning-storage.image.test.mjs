@@ -61,6 +61,33 @@ function removeNetwork(name) {
   dockerOk('network', 'rm', name);
 }
 
+// The base Ghost image's own upstream entrypoint runs `find $GHOST_CONTENT
+// ! -user node -exec chown node {} +` as root on every boot (see
+// docker-entrypoint.sh, shipped by the base image) -- it reaches every
+// bind-mounted directory under content, including the resolvePath mount the
+// hold-branch tests use to deliver a verdict, and takes it from the test
+// runner's own uid to the container's "node" uid. That directory's mode
+// (0700, `fs.mkdtempSync`'s default) then denies the test runner read/exec,
+// so a later `fs.rmSync` on it fails closed with EACCES on scandir rather
+// than silently succeeding -- a real permission boundary, not a flake, and
+// one this test must clear itself rather than relax the image's own chown.
+// A throwaway container run as root (the image's own default user, since
+// neither Dockerfile sets one) can chown the mount back to the test
+// runner's uid/gid before the host process ever touches it again.
+function reclaimHostOwnership(hostDir) {
+  docker(
+    'run',
+    '--rm',
+    '-v',
+    `${hostDir}:/reclaim`,
+    IMAGE,
+    'chown',
+    '-R',
+    `${process.getuid()}:${process.getgid()}`,
+    '/reclaim'
+  );
+}
+
 async function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -580,6 +607,7 @@ describe('the hold branch, against a real Ghost', () => {
         );
       } finally {
         ghost.stop();
+        reclaimHostOwnership(resolveHostDir);
         fs.rmSync(resolveHostDir, { recursive: true, force: true });
       }
     }
@@ -656,6 +684,7 @@ describe('the hold branch, against a real Ghost', () => {
         );
       } finally {
         ghost.stop();
+        reclaimHostOwnership(resolveHostDir);
         fs.rmSync(resolveHostDir, { recursive: true, force: true });
       }
     }
@@ -744,6 +773,7 @@ describe('the hold branch, against a real Ghost', () => {
         if (ghost) ghost.stop();
         if (double) double.stop();
         removeNetwork(network);
+        reclaimHostOwnership(resolveHostDir);
         fs.rmSync(resolveHostDir, { recursive: true, force: true });
       }
     }
