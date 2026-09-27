@@ -643,6 +643,39 @@ describe('validate() — mail sending identity', () => {
     expect((caught as FieldValidationError).field).toBe('mail.identity.domain');
   });
 
+  it('rejects a tenant mail.identity.domain equal to zones.demoMailDomain — the exact domain every demo shares', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: TEST_ZONES.demoMailDomain, dkimSelector: 'bl' },
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.identity.domain');
+  });
+
+  it('rejects a tenant mail.identity.domain that is a subdomain of zones.demoMailDomain', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: {
+          kind: 'tenant',
+          domain: `sub.${TEST_ZONES.demoMailDomain}`,
+          dkimSelector: 'bl',
+        },
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
   it('rejects a malformed tenant mail.identity.dkimSelector', () => {
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),

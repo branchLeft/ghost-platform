@@ -593,6 +593,20 @@ function validateMailIdentity(mail: TenantDescriptor['mail'], zones: ZoneConfig)
         `never the platform's.`
     );
   }
+  // `demoMailDomain` is itself a registrable domain the platform owns, but it
+  // is deliberately kept out of `ownedDomains` (the two describe different
+  // things — see that field's own doc comment) so this needs its own check:
+  // without it, a tenant could sign under the exact domain every demo
+  // shares, colliding with a demo slot on local part alone and undermining
+  // the whole point of a separate demo sending domain (LLD-6 §05).
+  if (isEqualToOrSubdomainOf(mail.identity.domain, zones.demoMailDomain)) {
+    throw new FieldValidationError(
+      'mail.identity.domain',
+      `mail.identity.domain "${mail.identity.domain}" must not be, or be a subdomain of, ` +
+        `zones.demoMailDomain "${zones.demoMailDomain}" — a tenant signs its own domain, never ` +
+        `the one every demo shares.`
+    );
+  }
   assertNonEmptyString(mail.identity.dkimSelector, 'mail.identity.dkimSelector');
   if (!HOSTNAME_LABEL_PATTERN.test(mail.identity.dkimSelector)) {
     throw new FieldValidationError(
@@ -634,6 +648,11 @@ export interface ZoneConfig {
    * The one domain every demo's sending address shares (HLD §07, LLD-6 §05:
    * "a local part per demo, not a subdomain per demo" — every demo slot
    * signs under this domain, distinguished only by its own local part).
+   * Kept as its own field rather than folded into `ownedDomains` above
+   * because the two are checked for opposite reasons here — a `theirs`
+   * hostname must be outside every owned domain, but a tenant's *sending*
+   * domain must additionally be outside this one specific owned domain,
+   * checked by name (`validateMailIdentity`'s own tenant branch).
    */
   readonly demoMailDomain: string;
   /**
