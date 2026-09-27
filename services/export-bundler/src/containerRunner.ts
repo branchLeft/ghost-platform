@@ -48,13 +48,13 @@ export function buildDockerStopArgs(containerName: string): readonly string[] {
   return ['rm', '-f', containerName];
 }
 
-function run(argv: readonly string[]): Promise<void> {
+function run(dockerCommand: string, argv: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     // Explicit, minimal env: PATH only, never the ambient environment this
     // shell carries (which holds live production credentials this process
     // has no business handing to `docker`).
     execFile(
-      'docker',
+      dockerCommand,
       [...argv],
       { env: { PATH: process.env.PATH ?? '' } },
       (err, _stdout, stderr) => {
@@ -68,14 +68,24 @@ function run(argv: readonly string[]): Promise<void> {
   });
 }
 
-export function createDockerContainerRunner(spec: TenantColourSpec): ContainerRunner {
+/**
+ * `dockerCommand` defaults to the real binary; test/unit/containerRunner.test.ts
+ * points it at a fixture script instead (mirroring
+ * services/broker/test/helpers/fakeWrapper.mjs's own reasoning), so the
+ * success and failure paths through `execFile` are proven without a real
+ * Docker daemon -- a dependency no unit-test CI job here carries.
+ */
+export function createDockerContainerRunner(
+  spec: TenantColourSpec,
+  dockerCommand = 'docker'
+): ContainerRunner {
   return {
     async start() {
-      await run(buildDockerRunArgs(spec));
+      await run(dockerCommand, buildDockerRunArgs(spec));
       return { baseUrl: `http://127.0.0.1:${spec.loopbackPort}` };
     },
     async stop() {
-      await run(buildDockerStopArgs(spec.containerName));
+      await run(dockerCommand, buildDockerStopArgs(spec.containerName));
     },
   };
 }

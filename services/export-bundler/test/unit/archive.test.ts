@@ -74,6 +74,33 @@ describe('writeTarArchive', () => {
     expect(dirInfo.mode & 0o777).toBe(0o700);
   });
 
+  it("rejects, carrying tar's own stderr, when the archive step fails -- never swallowed", async () => {
+    // A destination that is itself a directory is a `tar -cf` failure
+    // (cannot write an archive over a directory) without needing any
+    // Docker or filesystem trickery to provoke.
+    const destAsDirectory = join(dir, 'not-actually-a-file');
+    await mkdir(destAsDirectory);
+    await expect(writeTarArchive(destAsDirectory, [{ name: 'a.txt', data: 'x' }])).rejects.toThrow(
+      /tar failed/
+    );
+  });
+
+  it("falls back to an empty PATH, rather than throwing on read, when this process's own PATH is unset", async () => {
+    const savedPath = process.env.PATH;
+    delete process.env.PATH;
+    try {
+      // No PATH means `tar` cannot be found -- this exercises the `?? ''`
+      // fallback itself (a real string, not `undefined`, reaches
+      // execFile's env), and the resulting ENOENT surfaces as the same
+      // "tar failed" rejection every other tar failure does.
+      await expect(
+        writeTarArchive(join(dir, 'out.tar'), [{ name: 'a.txt', data: 'x' }])
+      ).rejects.toThrow(/tar failed/);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+
   it('tightens a destination directory that already existed with looser permissions -- mkdir alone does not fix an existing dir', async () => {
     const { mkdir: rawMkdir, chmod } = await import('node:fs/promises');
     const preexisting = join(dir, 'preexisting');

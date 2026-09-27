@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -39,17 +39,33 @@ describe('createFileDrainFlag + createDrainFlagStore, wired together', () => {
     expect(flag.isSet()).toBe(true);
   });
 
-  it('an unreadable flag directory fails closed (reads as set)', async () => {
+  it('an unreadable flag directory fails closed (reads as set) -- the flag file itself is present, EACCES on lstat', async () => {
     const unreadableDir = join(dir, 'unreadable');
     const store = createDrainFlagStore(unreadableDir);
     await store.set('colour-3');
-    const { chmod } = await import('node:fs/promises');
     await chmod(unreadableDir, 0o000);
     try {
       const flag = createFileDrainFlag(flagPathFor(unreadableDir, 'colour-3'));
       expect(flag.isSet()).toBe(true);
     } finally {
       await chmod(unreadableDir, 0o700);
+    }
+  });
+
+  it("an execute-only directory (no read bit) with an absent flag still fails closed, via directoryIsReadable's own catch", async () => {
+    // x-without-r: a name lookup that misses still ENOENTs (traversal only
+    // needs x), which is exactly the branch the EACCES case above cannot
+    // reach -- lstat there fails before directoryIsReadable is ever
+    // called. Here isEnoent(err) is true, so directoryIsReadable(dir) runs
+    // and its own accessSync(R_OK|X_OK) throws for want of R_OK.
+    const executeOnlyDir = join(dir, 'execute-only');
+    await mkdir(executeOnlyDir, { mode: 0o700 });
+    await chmod(executeOnlyDir, 0o100);
+    try {
+      const flag = createFileDrainFlag(flagPathFor(executeOnlyDir, 'colour-4'));
+      expect(flag.isSet()).toBe(true);
+    } finally {
+      await chmod(executeOnlyDir, 0o700);
     }
   });
 });

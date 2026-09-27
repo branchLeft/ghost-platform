@@ -21,7 +21,12 @@ interface Listening {
  * refusal, which falls through to the ordinary login page rather than
  * erroring); every other route requires that cookie.
  */
-function listen(opts: { refuseBreakGlass?: boolean; denyExport?: boolean }): Promise<Listening> {
+function listen(opts: {
+  refuseBreakGlass?: boolean;
+  denyExport?: boolean;
+  refuseWithEmptyBody?: boolean;
+  omitContentType?: boolean;
+}): Promise<Listening> {
   const requests: Listening['requests'] = [];
   const validCookie = 'ghost-admin-api-session=s%3Afaketoken';
   return new Promise((resolve, reject) => {
@@ -32,7 +37,7 @@ function listen(opts: { refuseBreakGlass?: boolean; denyExport?: boolean }): Pro
       if (req.url?.startsWith('/ghost/?bl_break_glass=')) {
         if (opts.refuseBreakGlass) {
           res.writeHead(200);
-          res.end('login page');
+          res.end(opts.refuseWithEmptyBody ? '' : 'login page');
           return;
         }
         res.writeHead(302, {
@@ -59,10 +64,15 @@ function listen(opts: { refuseBreakGlass?: boolean; denyExport?: boolean }): Pro
       }
 
       if (req.url === '/ghost/api/admin/db/') {
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'content-disposition': 'Attachment; filename="tenant.ghost.2026-01-01.json"',
-        });
+        res.writeHead(
+          200,
+          opts.omitContentType
+            ? { 'content-disposition': 'Attachment; filename="tenant.ghost.2026-01-01.json"' }
+            : {
+                'content-type': 'application/json',
+                'content-disposition': 'Attachment; filename="tenant.ghost.2026-01-01.json"',
+              }
+        );
         res.end('{"db":[]}');
         return;
       }
@@ -152,6 +162,15 @@ describe('createHttpGhostExportClient', () => {
     expect(minter.mintCalls).toBe(1);
   });
 
+  it('falls back to application/octet-stream when the export response carries no content-type header', async () => {
+    const listening = await listen({ omitContentType: true });
+    close = listening.close;
+    const file = await createHttpGhostExportClient(fakeMinter(), 5000).fetchContentAndSettings(
+      listening.baseUrl
+    );
+    expect(file.contentType).toBe('application/octet-stream');
+  });
+
   it('raises BreakGlassSessionError when the token is refused (no session cookie comes back)', async () => {
     const listening = await listen({ refuseBreakGlass: true });
     close = listening.close;
@@ -159,6 +178,20 @@ describe('createHttpGhostExportClient', () => {
     await expect(
       createHttpGhostExportClient(fakeMinter(), 5000).fetchContentAndSettings(listening.baseUrl)
     ).rejects.toThrow(BreakGlassSessionError);
+  });
+
+  it('raises BreakGlassSessionError with its own placeholder text when the refusal body is empty', async () => {
+    const listening = await listen({ refuseBreakGlass: true, refuseWithEmptyBody: true });
+    close = listening.close;
+    try {
+      await createHttpGhostExportClient(fakeMinter(), 5000).fetchContentAndSettings(
+        listening.baseUrl
+      );
+      throw new Error('expected fetchContentAndSettings to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(BreakGlassSessionError);
+      expect((err as Error).message).toContain('token likely refused');
+    }
   });
 
   it('raises GhostExportError on a non-200 from the export route itself, distinct from a session failure', async () => {

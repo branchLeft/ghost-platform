@@ -44,6 +44,20 @@ describe('createHttpGhostProbe', () => {
   it('is not healthy when nothing is listening', async () => {
     expect(await createHttpGhostProbe(500).isHealthy('http://127.0.0.1:1')).toBe(false);
   });
+
+  it('is not healthy when the request genuinely times out -- the abort timer actually fires, not just the catch branch', async () => {
+    const server = createServer(() => {
+      /* never responds -- holds the connection open past the timeout */
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as AddressInfo;
+    try {
+      const healthy = await createHttpGhostProbe(50).isHealthy(`http://127.0.0.1:${address.port}`);
+      expect(healthy).toBe(false);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 });
 
 describe('waitUntilHealthy', () => {
