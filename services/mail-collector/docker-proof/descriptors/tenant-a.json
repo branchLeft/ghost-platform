@@ -1,0 +1,6 @@
+{
+  "kind": "tenant",
+  "slug": "tenant-a",
+  "appHostIp": "shim-a",
+  "expiresAt": null
+}

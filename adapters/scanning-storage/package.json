@@ -1,0 +1,18 @@
+{
+  "name": "ghost-platform-scanning-storage-adapter",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "description": "The scanning storage decorator shipped in the Ghost image at core/server/adapters/storage/ (see ghost-platform-docs/19-try-it-now-design/07-safety-toolbox.html).",
+  "type": "commonjs",
+  "scripts": {
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "test:image": "node --test test/image/*.image.test.mjs"
+  },
+  "devDependencies": {
+    "@tryghost/errors": "3.3.5",
+    "@vitest/coverage-v8": "^4.1.11",
+    "vitest": "^4.1.11"
+  }
+}

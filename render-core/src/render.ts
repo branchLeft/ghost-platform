@@ -60,7 +60,7 @@ import {
 } from './brand.js';
 import { renderComposeStack, type DemoDataMount } from './compose.js';
 import type { TenantDescriptor } from './descriptor.js';
-import { renderEdgeSiteBlock } from './edge.js';
+import { renderEdgeSiteBlock, THEME_CSP_UNAVAILABLE, type ThemeCsp } from './edge.js';
 import { tenantEnvironment, SECRET_ENV_KEYS } from './environment.js';
 import { renderIdentity } from './identity.js';
 import { imageEnvPath, secretsEnvPath, stackName, validateSlugAvailability } from './naming.js';
@@ -93,6 +93,9 @@ function requiredSecretKeys(descriptor: TenantDescriptor): string[] {
   }
   if (descriptor.transport.kind === 'smtp') {
     keys.push(SECRET_ENV_KEYS.mailPassword);
+  }
+  if (descriptor.mail.enabled) {
+    keys.push(SECRET_ENV_KEYS.bulkEmailApiKey);
   }
   return keys;
 }
@@ -258,13 +261,25 @@ function assertAllocationShape(descriptor: TenantDescriptor): void {
  * `renderEdgeSiteBlock`/`renderSettings`/`renderIdentity` stay separately
  * exported for a caller (a test, a future reconciler) that wants one
  * artefact's typed value rather than re-parsing it back out of `content`.
+ *
+ * `themeCsp` (the strict content policy) defaults to
+ * `THEME_CSP_UNAVAILABLE` — the fail-soft posture — so every existing
+ * caller of `render(descriptor, zones)` keeps compiling and keeps rendering
+ * the report-only policy exactly as before. No caller in this repo passes a
+ * computed set yet: the harness that derives one at theme-admission time
+ * (LLD-3) does not exist here — wiring a real value through is that
+ * story's job, not this one's.
  */
-export function render(descriptor: TenantDescriptor, zones: ZoneConfig): readonly Artefact[] {
+export function render(
+  descriptor: TenantDescriptor,
+  zones: ZoneConfig,
+  themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE
+): readonly Artefact[] {
   assertAllocationShape(descriptor);
   const dataMount = demoDataMount(descriptor);
 
   const limits = uploadLimits();
-  const environment = tenantEnvironment(descriptor, limits, secretsEnvPath(descriptor.slug));
+  const environment = tenantEnvironment(descriptor, limits, secretsEnvPath(descriptor.slug), zones);
   const compose = renderComposeStack({
     kind: descriptor.kind,
     slug: descriptor.slug,
@@ -276,8 +291,8 @@ export function render(descriptor: TenantDescriptor, zones: ZoneConfig): readonl
     caps: descriptor.caps,
     dataMount,
   });
-  const edge = renderEdgeSiteBlock(descriptor, zones, limits);
-  const settings = renderSettings(descriptor);
+  const edge = renderEdgeSiteBlock(descriptor, zones, limits, themeCsp);
+  const settings = renderSettings(descriptor, zones);
   const identity = renderIdentity(descriptor);
 
   return [
@@ -292,6 +307,7 @@ export function render(descriptor: TenantDescriptor, zones: ZoneConfig): readonl
 }
 
 export { imageEnvPath, renderEdgeSiteBlock, renderSettings, renderIdentity };
-export type { EdgeGate, EdgeSiteBlock } from './edge.js';
+export { validateScriptHash, THEME_CSP_UNAVAILABLE } from './edge.js';
+export type { EdgeGate, EdgeSiteBlock, ScriptHash, ThemeCsp } from './edge.js';
 export type { GhostSettings, CodeInjectionSettings } from './settings.js';
 export type { TenantIdentity } from './identity.js';

@@ -59,6 +59,48 @@ describe('validateTenantSlug', () => {
   it.each(RESERVED_STACK_NAMES)('refuses the reserved stack name %s', (slug) => {
     expect(() => validateTenantSlug(slug)).toThrow(/reserved/);
   });
+
+  // The guard must not simply refuse everything: a slug nothing on a host
+  // already holds has to pass. `demo-1` is the exact control case the
+  // originating report ran this guard against.
+  it('still accepts a slug nothing on a host holds', () => {
+    expect(() => validateTenantSlug('demo-1')).not.toThrow();
+  });
+});
+
+describe('RESERVED_STACK_NAMES against the shared-infra stack register', () => {
+  // A snapshot of branchLeft/shared-infra's `hetzner/provision/` stack
+  // register, taken 2026-09-27: `CONTRACT_COVERS` (`EXPECTED_SERVICES`'s
+  // keys: stacks whose Compose file that repository commits) union
+  // `CONTRACT_DOES_NOT_REACH` (stacks a Compose file elsewhere starts, each
+  // naming its owning repository) in
+  // `hetzner/provision/test_compose_unit_contract.py`, confirmed against
+  // `hetzner/provision/sites.ts`.
+  //
+  // `blog` is EXCLUDED here even though shared-infra's register names it —
+  // see the long comment on `RESERVED_STACK_NAMES` above for why it cannot
+  // be added to that constant. This snapshot is therefore "the register
+  // minus that one documented exception", not the register verbatim.
+  //
+  // To refresh: re-read `CONTRACT_COVERS`/`CONTRACT_DOES_NOT_REACH` from
+  // shared-infra's `main` (`git -C <shared-infra clone> show
+  // origin/main:hetzner/provision/test_compose_unit_contract.py`), diff
+  // against the array below, and update both this snapshot and
+  // `RESERVED_STACK_NAMES` together — a diff between them, not a silent
+  // edit to one side, is what should ever change this test's outcome.
+  const SHARED_INFRA_REGISTER_SNAPSHOT_MINUS_BLOG = [
+    'edge',
+    'monitoring',
+    'nextcloud1',
+    'website',
+    'db',
+  ];
+
+  it('has not drifted from the committed shared-infra register snapshot', () => {
+    expect(new Set(RESERVED_STACK_NAMES)).toEqual(
+      new Set(SHARED_INFRA_REGISTER_SNAPSHOT_MINUS_BLOG)
+    );
+  });
 });
 
 describe('derived names', () => {

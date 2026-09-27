@@ -1,0 +1,30 @@
+# The live-proof origin for branchLeft/workspace#1238: the same
+# self-hosted-widgets origin widgets/origin/ builds (so Portal loads from
+# our own origin, not a third-party CDN -- see widgets/README.md), plus a
+# header this story adds on top: the CSP header run-proof.sh sets per pass,
+# named and valued by CSP_HEADER_NAME/CSP_HEADER_VALUE so a real headless
+# browser sees exactly the policy render-core actually rendered for that
+# pass (row A: a harmless marker header, never Content-Security-Policy;
+# rows B/D: the real header, computed by render-header.mjs from render-
+# core's own built output).
+#
+# Deliberately NOT the estate's production edge -- see widgets/README.md's
+# own note; this exists so LLD-5's C1 claim can be proven against a real
+# container and a real headless Chromium rather than asserted from config.
+{
+	auto_https off
+	admin off
+}
+
+:8080 {
+	handle_path /bl-assets/* {
+		root * /srv/bl-assets
+		file_server
+		header Cache-Control "public, max-age=31536000, immutable"
+	}
+
+	handle {
+		header {$CSP_HEADER_NAME} "{$CSP_HEADER_VALUE}"
+		reverse_proxy {$GHOST_UPSTREAM:ghost:2368}
+	}
+}
