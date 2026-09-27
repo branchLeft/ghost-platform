@@ -219,7 +219,7 @@ services:
     image: \${IMAGE}
     user: "1000:1000"
     environment:
-      url: http://localhost:2368
+      url: http://127.0.0.1:2368
       database__client: sqlite3
       database__connection__filename: /var/lib/ghost/content/data/ghost.db
       database__connection__password: \${GHOST_DB_PASSWORD:?set in the secrets env}
@@ -399,6 +399,9 @@ echo "--- a post scheduled for about a minute after the export colour boots ---"
 # past the due time, so the colour is up across it. The stack's url is the
 # colour's own in-container address, so Ghost's default scheduler, if it
 # ran, would reach the colour itself when the post fell due and publish it.
+# It is an IP literal: Ghost's request library refuses `localhost` as an
+# invalid URL, which would silently stop the scheduler's ping and make this
+# check pass for the wrong reason.
 SCHEDULED_POST="$(db schedule-post 90)"
 SCHEDULED_AT=$(($(date +%s) + 90))
 if [ "$(db post-status "$SCHEDULED_POST")" = "scheduled" ]; then
