@@ -35,9 +35,9 @@ never writes `/etc/branchleft/<slot>-<colour>.env` (the broker writes that,
 unprivileged, before ever asking for a start), and never reads or touches
 anything outside the one slot its argv names.
 
-**The one exception: `load`.** Owner ruling on workspace#1280 (`#282=a`)
-adds a fourth verb so the broker can hand a control-plane-pushed image to
-the local Docker daemon without ever holding the socket itself. It is a
+**The one exception: `load`.** A fourth verb so the broker can hand a
+control-plane-pushed image to the local Docker daemon without ever holding
+the socket itself. It is a
 narrow exception, not a hole in the boundary above, for three reasons taken
 together: the argument is not a caller-chosen path but one single literal
 string (`IMAGE_LOAD_PATH`, matching `render_slot_sudoers.IMAGE_LOAD_INVOCATION`
