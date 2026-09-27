@@ -45,7 +45,7 @@ describe('FakeVerdictClient', () => {
     expect(verdict.classification).not.toBe('unavailable');
   });
 
-  describe('D34: simulating a channel with no answer yet', () => {
+  describe('the hold branch: simulating a channel with no answer yet', () => {
     it('returns unavailable for a digest named in `unavailable`', async () => {
       const client = new FakeVerdictClient({ unavailable: ['held-digest'] });
       const verdict = await client.getVerdict('held-digest');

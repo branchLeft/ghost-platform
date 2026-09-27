@@ -2,9 +2,11 @@
 
 Wraps whatever storage adapter Ghost is configured with -- local disk or S3 --
 and refuses a known-bad upload before it ever reaches the wrapped adapter.
-Design: `ghost-platform-docs/19-try-it-now-design/07-safety-toolbox.html`
-(LLD-7), including its dated amendments (D34, D43, D55), and
-`90-cross-document-review.html` (G2, P2).
+Design: `ghost-platform-docs/19-try-it-now-design/07-safety-toolbox.html`,
+including its later amendments on the verdict-channel timeout/hold ruling
+and on which storage backend the professional tier runs, and the
+cross-document review that found the coverage gap an earlier,
+inheritance-based draft of this component left.
 
 `src/ScanningStorageAdapter.js` is copied by the root `Dockerfile` into
 Ghost's internal storage adapters directory,
@@ -18,24 +20,27 @@ to. It is inert until a tenant's config selects it for a storage feature.
 
 This story builds the decorator, its `save()`/`saveRaw()` interception, the
 `Check`/`Verdict`/`Policy` seams the rest of the safety toolbox plugs into,
-an in-process `VerdictClient` test double, and the hold/promote mechanism
-(D34) that accepts an upload with no verdict and serves nothing until
-one arrives. It does **not** build:
+an in-process `VerdictClient` test double, and the hold/promote mechanism,
+ruled on by the platform owner, that accepts an upload with no verdict and
+serves nothing until one arrives. It does **not** build:
 
-- **The real verdict channel.** The safety service that Arachnid-checks a
-  hash lives in a separate repo, built by a separate story (owner ruling:
-  workspace#1266). `ScanningStorageAdapter.js` constructs a `FakeVerdictClient`
-  from its own config until that story lands; nothing here guesses that
-  channel's wire format or transport. Because there is no real channel, "a
-  later verdict arrives" can only mean one thing this decorator can observe:
-  the same in-process `VerdictClient` answering differently on a later call
-  (`src/hold.js` polls for that). `Policy.decide` can still return `'flag'`,
-  for the advisory/text route, and the adapter fails loudly rather than
-  guessing a behaviour if it ever sees one.
+- **The real verdict channel.** The safety service that checks a hash
+  against a known-material database lives in a separate repo, built by a
+  separate story, per the platform owner's own ruling that it should be
+  extensible to other organisations later. `ScanningStorageAdapter.js`
+  constructs a `FakeVerdictClient` from its own config until that story
+  lands; nothing here guesses that channel's wire format or transport.
+  Because there is no real channel, "a later verdict arrives" can only
+  mean one thing this decorator can observe: the same in-process
+  `VerdictClient` answering differently on a later call (`src/hold.js`
+  polls for that). `Policy.decide` can still return `'flag'`, for the
+  advisory/text route, and the adapter fails loudly rather than guessing
+  a behaviour if it ever sees one.
 - **A behaviour for video (`storage:media`) or arbitrary files
   (`storage:files`).** PDQ is an image hash; the design names video as
-  undesigned (issue's own open question, deferred to Rob via
-  workspace#1151/#1200). The decorator class wraps any of the three storage
+  undesigned. Which behaviour to build for either content type is an open
+  product decision for the platform owner, not made here. The decorator
+  class wraps any of the three storage
   features identically, and `PdqKnownMaterialCheck` is attached unconditionally
   regardless of which feature the instance services -- it is not
   image-specific, it just hashes whatever bytes it is given. So configuring
@@ -67,7 +72,7 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__wrappedConfig__*` | Passed straight through to the wrapped adapter's own constructor (e.g. `storage__images__wrappedConfig__bucket` for `S3Storage`). `LocalImagesStorage`/`LocalMediaStorage`/`LocalFilesStorage` ignore it; they always self-configure from Ghost's own `getContentPath`. |
 | `storage__images__quarantinePath` | Where a refused upload's bytes are written, named by digest. Always local disk, regardless of which adapter is wrapped -- quarantine is never the served location. |
 | `storage__images__refuse` | A JSON object of `digest -> {classification, matchType}`, seeding the in-process fake verdict client. Empty or unset refuses nothing. |
-| `storage__images__unavailable` | A JSON array of digests the fake verdict client answers `'unavailable'` for, until told otherwise -- proves D34's hold branch, with no real channel to simulate an outage or a timeout through. Empty or unset holds nothing. |
+| `storage__images__unavailable` | A JSON array of digests the fake verdict client answers `'unavailable'` for, until told otherwise -- proves the hold branch, with no real channel to simulate an outage or a timeout through. Empty or unset holds nothing. |
 | `storage__images__resolvePath` | A directory the fake verdict client polls for `<digest>.json` files, letting an image-test driver in a separate process "deliver" a verdict for a held digest by writing one. Never used outside the image-test harness. |
 | `storage__images__holdRetryMs` | How often a held digest is first re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 | `storage__images__holdMaxRetryMs` | The ceiling that interval backs off to on repeated non-answers -- a bound on the polling *rate* during a prolonged outage, never on how long a hold lives. Defaults to 60 seconds. |
@@ -93,7 +98,7 @@ ships `blocking: true`; its hash primitive is injected (`src/pdq.js`'s
 and proving near-duplicate matching is the verdict channel's job, not this
 decorator's).
 
-### The hold branch (D34)
+### The hold branch
 
 A `'hold'` decision never throws: the upload is accepted and returns a URL,
 and `src/hold.js` polls the same checks against the held digest until a
@@ -104,8 +109,8 @@ left waiting to hear about it. A digest that never resolves stays held
 forever; nothing here ever decides to serve on a stale or absent verdict.
 
 **Both backends now write nothing to the wrapped adapter until promotion --
-LLD-7's own words, "Local backend: Held outside the served tree," rather
-than local-only advice.** An earlier version of this decorator wrote the
+the design's own words for the local backend, "held outside the served
+tree," rather than local-only advice.** An earlier version of this decorator wrote the
 real bytes through the local wrapped adapter immediately and relied on
 `exists()`/`read()`/`serve()` to withhold them from memory alone; review
 cycle 1 found that a process restart while a digest was held -- this repo's
@@ -159,7 +164,7 @@ derivatives; `S3Storage.ts`/`LocalStorageBase.ts` implement `save`,
 3. **A decorator that subclassed one concrete adapter instead of composing
    with it would leave every other adapter type unwrapped, silently, with
    every test for the adapter it did subclass green.** The professional
-   tier runs `S3Storage` (D55); a subclass of the local adapter is not in
+   tier runs `S3Storage`; a subclass of the local adapter is not in
    its path at all.
 4. **`ScanningStorageAdapter.js` never requires `ghost-storage-base` or
    `@tryghost/errors` unconditionally at the top of the testable module.**
@@ -190,7 +195,7 @@ and untouched-original copies Ghost otherwise saves separately with
 different bytes -- a real property of Ghost's own upload path, not of this
 decorator, and orthogonal to what these tests prove.
 
-The same file also proves the hold branch (D34) on both tiers, with the
+The same file also proves the hold branch on both tiers, with the
 verdict client configured to never answer (`storage__images__unavailable`):
 an upload still returns 201 and a URL; that URL, an on-demand size request
 for it, and -- on the object-storage tier -- a direct read of the bucket key

@@ -309,18 +309,19 @@ describe('checks the adapter is told not to implement', () => {
   });
 });
 
-// D34: accept on no verdict, serve nothing until a clean one, on both
-// storage backends. The verdict client is made to never answer
+// The hold branch: accept on no verdict, serve nothing until a clean one,
+// on both storage backends. The verdict client is made to never answer
 // (FakeVerdictClient's `unavailable`) rather than hang, because checks.js's
 // own timeout already proves that race -- duplicating it here would only
 // make every test in this suite slower.
-// D34, review cycle 1: both backends now defer the real write until
-// promotion -- LLD-7's "Local backend: Held outside the served tree" is no
-// longer local-only advice this decorator diverged from. The two backends
-// differ only in URL shape (a bucket config builds a CDN URL; anything
-// else builds a site-relative one), so the behavioural cases below are
-// shared, parametrised over which `wrappedConfig` builds which adapter.
-describe('the hold branch (D34)', () => {
+//
+// Review cycle 1: both backends now defer the real write until promotion --
+// the design's own words for the local backend, "held outside the served
+// tree," are no longer local-only advice this decorator diverged from. The
+// two backends differ only in URL shape (a bucket config builds a CDN URL;
+// anything else builds a site-relative one), so the behavioural cases below
+// are shared, parametrised over which `wrappedConfig` builds which adapter.
+describe('the hold branch', () => {
   function localAdapter(overrides) {
     return buildAdapter({ wrappedConfig: { storagePath: 'wrapped' }, ...overrides });
   }
@@ -355,7 +356,7 @@ describe('the hold branch (D34)', () => {
       // Nothing has been written to the wrapped adapter's own virtual
       // filesystem at all, so any read on it is a miss -- not because
       // this decorator masked a real file, but because there is no real
-      // file yet (LLD-7: "held outside the served tree").
+      // file yet (the design's own words: "held outside the served tree").
       await expect(adapter.read({ path: 'anything' })).rejects.toThrow();
 
       // Held bytes live in quarantine under their digest, exactly as a

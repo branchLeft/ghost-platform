@@ -9,8 +9,8 @@ const { quarantineBytes } = require('./quarantine');
 // Incidental, like the verdict budget in checks.js: how often a held digest
 // is re-asked, not whether it is re-asked at all.
 const DEFAULT_RETRY_INTERVAL_MS = 2000;
-// A ceiling on the INTERVAL, never on how long a hold lives -- D34 means
-// held forever if the verdict never resolves. This bounds the polling rate
+// A ceiling on the INTERVAL, never on how long a hold lives -- the design
+// means held forever if the verdict never resolves. This bounds the polling rate
 // during a prolonged outage without ever giving up on an item.
 const DEFAULT_MAX_RETRY_INTERVAL_MS = 60_000;
 // Sidecar suffix recording which target paths are waiting on a digest, so a
@@ -38,7 +38,7 @@ function sidecarPath(quarantinePath, digest) {
   return path.join(quarantinePath, `${digest}${HOLDS_SUFFIX}`);
 }
 
-// Tracks bytes accepted with no verdict yet (D34's asynchronous branch).
+// Tracks bytes accepted with no verdict yet (the hold branch's asynchronous route).
 // There is no real verdict channel yet (it is a separate story in a
 // separate repo), so "a later verdict arrives" can only mean one thing
 // this decorator can observe: the same in-process VerdictClient answering

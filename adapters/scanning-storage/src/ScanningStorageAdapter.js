@@ -47,7 +47,7 @@ function parseJsonConfig(value, fallback) {
 // The verdict channel is a separate story in a separate repo and does not
 // exist yet, so the only implementation available today is the in-process
 // fake, seeded from this adapter's own config. `unavailable` and
-// `resolvePath` exist only to prove D34's hold branch against a real Ghost
+// `resolvePath` exist only to prove the hold branch against a real Ghost
 // container with no real channel to stand in for -- see verdict-client.js's
 // own comment for what they do.
 module.exports = class ScanningStorageAdapter extends Adapter {

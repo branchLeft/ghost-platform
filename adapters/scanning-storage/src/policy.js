@@ -4,7 +4,7 @@
 // belongs to an advisory route this policy does not run and has no
 // implementation anywhere in this decorator (src/hold.js handles 'hold';
 // see its own module comment for why an in-process fake can still exercise
-// D34's asynchronous branch with no real verdict channel).
+// the hold branch's asynchronous route with no real verdict channel).
 const HOLD_OR_FLAG_NOT_IMPLEMENTED =
   "ScanningStorageAdapter: policy decision '%s' has no implementation in this decorator.";
 

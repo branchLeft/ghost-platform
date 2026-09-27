@@ -20,7 +20,7 @@ class VerdictClient {
 // material | test | no-known-match, plus 'unavailable' from the Check
 // interface itself when no verdict could be reached.
 //
-// This fake is still in-process, but it can now simulate the channel D34's
+// This fake is still in-process, but it can now simulate the channel the
 // hold branch depends on: a digest named in `unavailable` answers
 // 'unavailable' -- not by hanging (checks.js's own timeout already proves
 // that race; duplicating it here would only make every test slower) --

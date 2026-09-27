@@ -46,6 +46,21 @@ function dockerOk(...args) {
   return spawnSync('docker', args, { encoding: 'utf8' });
 }
 
+// A user-defined network gives containers on it Docker's own embedded DNS,
+// so one can address another by --name. The default bridge network (used
+// when no network is named) has no such DNS -- that's the whole reason
+// host.docker.internal existed here before: it only resolves under Docker
+// Desktop, not on a Linux CI runner, which is portable in neither direction
+// a container needs to reach another container. A named network is
+// portable in both.
+function createNetwork(name) {
+  docker('network', 'create', name);
+}
+
+function removeNetwork(name) {
+  dockerOk('network', 'rm', name);
+}
+
 async function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -69,7 +84,10 @@ class GhostContainer {
   // -- "deliver" a verdict for a held digest by writing a file the fake
   // verdict client polls for (verdict-client.js's own comment explains why
   // this is a test seam, never a guess at the real channel's wire format).
-  static async start(env = {}, { volumes = [] } = {}) {
+  // `network`: joins a shared, user-defined Docker network instead of the
+  // default bridge -- see createNetwork's own comment for why that is what
+  // makes the S3 tier's own container-to-container addressing portable.
+  static async start(env = {}, { volumes = [], network = 'bridge' } = {}) {
     const port = await freePort();
     const name = `scan-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const fullEnv = {
@@ -92,7 +110,7 @@ class GhostContainer {
       '--name',
       name,
       '--network',
-      'bridge',
+      network,
       '-p',
       `127.0.0.1:${port}:2368`,
       ...envArgs,
@@ -222,10 +240,24 @@ class GhostContainer {
 // validate request signatures, so the AWS SDK client S3Storage builds
 // still signs every request; the double just never checks that signature.
 class S3MockDouble {
-  static async start() {
+  // Published to the host (for this script's own HTTP checks) *and* joined
+  // to `network` (so a container on that same network, i.e. the Ghost
+  // container under test, can reach it by name) at once -- Docker allows
+  // both on the same container.
+  static async start(network) {
     const port = await freePort();
     const name = `scan-s3mock-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    docker('run', '-d', '--name', name, '-p', `127.0.0.1:${port}:9090`, 'adobe/s3mock:latest');
+    docker(
+      'run',
+      '-d',
+      '--name',
+      name,
+      '--network',
+      network,
+      '-p',
+      `127.0.0.1:${port}:9090`,
+      'adobe/s3mock:latest'
+    );
     const double = new S3MockDouble(name, port);
     await double.waitForReady();
     await double.createBucket();
@@ -396,30 +428,45 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
     'refuses a match on the object-storage tier too, and nothing refused reaches the bucket',
     { timeout: 150_000 },
     async () => {
-      const double = await S3MockDouble.start();
+      const network = `scan-net-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
       const badBytes = fs.readFileSync(path.join(FIXTURES, 'bad.png'));
       const badDigest = sha256Hex(badBytes);
 
-      const ghost = await GhostContainer.start({
-        storage__images__adapter: 'ScanningStorageAdapter',
-        storage__images__wraps: 'S3Storage',
-        storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
-        storage__images__refuse: JSON.stringify({
-          [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
-        }),
-        storage__images__wrappedConfig__bucket: double.bucket,
-        storage__images__wrappedConfig__staticFileURLPrefix: 'content/images',
-        storage__images__wrappedConfig__cdnUrl: `http://host.docker.internal:${double.port}/${double.bucket}`,
-        storage__images__wrappedConfig__endpoint: `http://host.docker.internal:${double.port}`,
-        storage__images__wrappedConfig__region: 'us-east-1',
-        storage__images__wrappedConfig__forcePathStyle: 'true',
-        storage__images__wrappedConfig__accessKeyId: 'scanning-storage-test',
-        storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
-        storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
-        storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
-      });
-
+      // Network, then both containers, all inside one try/finally: a
+      // failure partway through setup (e.g. the mock never becomes ready)
+      // must not leak whatever was already created.
+      let double;
+      let ghost;
+      createNetwork(network);
       try {
+        double = await S3MockDouble.start(network);
+        // Addressed by container name over the shared network, not
+        // host.docker.internal: that hostname only resolves under Docker
+        // Desktop, and this same test runs on a Linux CI runner too, where
+        // a container can reach another container only via a shared
+        // user-defined network's own DNS.
+        ghost = await GhostContainer.start(
+          {
+            storage__images__adapter: 'ScanningStorageAdapter',
+            storage__images__wraps: 'S3Storage',
+            storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+            storage__images__refuse: JSON.stringify({
+              [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
+            }),
+            storage__images__wrappedConfig__bucket: double.bucket,
+            storage__images__wrappedConfig__staticFileURLPrefix: 'content/images',
+            storage__images__wrappedConfig__cdnUrl: `http://${double.name}:9090/${double.bucket}`,
+            storage__images__wrappedConfig__endpoint: `http://${double.name}:9090`,
+            storage__images__wrappedConfig__region: 'us-east-1',
+            storage__images__wrappedConfig__forcePathStyle: 'true',
+            storage__images__wrappedConfig__accessKeyId: 'scanning-storage-test',
+            storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
+            storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
+            storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
+          },
+          { network }
+        );
+
         assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
         await ghost.setupOwner();
         const cookie = await ghost.login();
@@ -441,15 +488,18 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
           `quarantine must hold the refused digest: ${quarantined}`
         );
       } finally {
-        ghost.stop();
-        double.stop();
+        if (ghost) ghost.stop();
+        if (double) double.stop();
+        // Docker refuses to remove a network while a container is still
+        // attached to it, so this only runs after both are gone.
+        removeNetwork(network);
       }
     }
   );
 });
 
-// D34: accept on no verdict, serve nothing until a clean one, on both
-// storage backends. The verdict client is configured to never answer
+// The hold branch: accept on no verdict, serve nothing until a clean one,
+// on both storage backends. The verdict client is configured to never answer
 // (storage__images__unavailable) rather than made to hang --
 // the synchronous timeout race is already proven by the refusal tests
 // above and by checks.js's own unit tests; duplicating it here would only
@@ -458,7 +508,7 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
 // a file the fake verdict client polls for (storage__images__resolvePath;
 // see verdict-client.js's own comment for why this is a test seam, never a
 // guess at the real channel's wire format).
-describe('the hold branch (D34), against a real Ghost', () => {
+describe('the hold branch, against a real Ghost', () => {
   it(
     'local backend: accepts the held upload, withholds the original and a size variant until a clean verdict, and never serves an object that never clears',
     { timeout: 150_000 },
@@ -615,34 +665,48 @@ describe('the hold branch (D34), against a real Ghost', () => {
     'object-storage backend: never writes to the bucket while held -- not yet written at all, not merely unlinked -- and promotion is a write',
     { timeout: 150_000 },
     async () => {
-      const double = await S3MockDouble.start();
+      const network = `scan-net-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const heldDigest = sha256Hex(cleanBytes);
       const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-resolve-'));
 
-      const ghost = await GhostContainer.start(
-        {
-          storage__images__adapter: 'ScanningStorageAdapter',
-          storage__images__wraps: 'S3Storage',
-          storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
-          storage__images__unavailable: JSON.stringify([heldDigest]),
-          storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
-          storage__images__holdRetryMs: '1000',
-          storage__images__wrappedConfig__bucket: double.bucket,
-          storage__images__wrappedConfig__staticFileURLPrefix: 'content/images',
-          storage__images__wrappedConfig__cdnUrl: `http://host.docker.internal:${double.port}/${double.bucket}`,
-          storage__images__wrappedConfig__endpoint: `http://host.docker.internal:${double.port}`,
-          storage__images__wrappedConfig__region: 'us-east-1',
-          storage__images__wrappedConfig__forcePathStyle: 'true',
-          storage__images__wrappedConfig__accessKeyId: 'scanning-storage-test',
-          storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
-          storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
-          storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
-        },
-        { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
-      );
-
+      // Network, then both containers, all inside one try/finally -- same
+      // shape as the refusal test above, for the same reason: a failure
+      // partway through setup must not leak a container or the network.
+      let double;
+      let ghost;
+      createNetwork(network);
       try {
+        double = await S3MockDouble.start(network);
+        ghost = await GhostContainer.start(
+          {
+            storage__images__adapter: 'ScanningStorageAdapter',
+            storage__images__wraps: 'S3Storage',
+            storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+            storage__images__unavailable: JSON.stringify([heldDigest]),
+            storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
+            storage__images__holdRetryMs: '1000',
+            storage__images__wrappedConfig__bucket: double.bucket,
+            storage__images__wrappedConfig__staticFileURLPrefix: 'content/images',
+            // Addressed by container name over the shared network, not
+            // host.docker.internal -- see createNetwork's own comment.
+            storage__images__wrappedConfig__cdnUrl: `http://${double.name}:9090/${double.bucket}`,
+            storage__images__wrappedConfig__endpoint: `http://${double.name}:9090`,
+            storage__images__wrappedConfig__region: 'us-east-1',
+            storage__images__wrappedConfig__forcePathStyle: 'true',
+            storage__images__wrappedConfig__accessKeyId: 'scanning-storage-test',
+            storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
+            storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
+            storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
+          },
+          {
+            network,
+            volumes: [
+              { host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' },
+            ],
+          }
+        );
+
         assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
         await ghost.setupOwner();
         const cookie = await ghost.login();
@@ -677,8 +741,9 @@ describe('the hold branch (D34), against a real Ghost', () => {
           'promotion is a write: the bucket now holds the object'
         );
       } finally {
-        ghost.stop();
-        double.stop();
+        if (ghost) ghost.stop();
+        if (double) double.stop();
+        removeNetwork(network);
         fs.rmSync(resolveHostDir, { recursive: true, force: true });
       }
     }

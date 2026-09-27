@@ -44,7 +44,7 @@ function unavailableCheck() {
 }
 
 // A check that answers 'unavailable' until told otherwise, standing in for
-// "a later verdict arrives" with no real channel to model it (D34).
+// "a later verdict arrives" with no real channel to model it.
 function flippingCheck() {
   let verdict = { classification: 'unavailable', evidence: 'digest', source: 'test' };
   return {

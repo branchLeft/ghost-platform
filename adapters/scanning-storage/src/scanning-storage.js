@@ -78,7 +78,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         maxRetryIntervalMs: config.holdMaxRetryMs,
         logger: config.holdLogger,
       });
-      // Restart-safety (LLD-7 load-bearing): the quarantine directory is
+      // Restart-safety (load-bearing per the design): the quarantine directory is
       // the source of truth for every hold that outlived the previous
       // process -- a deploy (this repo's own CD queues one on every merge
       // to main), a crash, an OOM kill, a health-check restart. Resumed
@@ -110,8 +110,8 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // digest is never written to the wrapped adapter in the first place
     // (see #registerHold), so exists()/read()/serve() answering truthfully
     // IS the withholding -- there is no in-memory mask to keep in sync
-    // with reality, and nothing for a process restart to lose. LLD-7:
-    // "Local backend: Held outside the served tree."
+    // with reality, and nothing for a process restart to lose. The design's
+    // own words for the local backend: "held outside the served tree."
     exists(...args) {
       return this.wrapped.exists(...args);
     }
@@ -145,7 +145,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       }
 
       if (decision === 'hold') {
-        // D34: accept the upload and hold the bytes until a verdict
+        // Accept the upload and hold the bytes until a verdict
         // arrives. `verdict.evidence` is the digest checks.js already
         // computed -- reusing it rather than re-hashing.
         return onHold(verdict.evidence);
@@ -163,7 +163,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // it -- identical on both backends now. On object storage that is the
     // only way "unserved" can mean anything (the CDN reads the bucket
     // directly, bypassing this adapter entirely); on local disk it is also
-    // what LLD-7 specifies, and it has a second benefit the old
+    // what the design specifies, and it has a second benefit the old
     // write-then-mask shape didn't: nothing here depends on in-memory
     // state a restart could lose.
     async #registerHold(digest, buffer, targetPath) {
