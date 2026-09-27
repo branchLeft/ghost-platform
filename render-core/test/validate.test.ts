@@ -2031,6 +2031,24 @@ describe('validate() — breakGlass', () => {
     }
   );
 
+  it.each(['2024', 'true', 'false', 'null'])(
+    'refuses breakGlass.publicKey %j -- caught by the JSON-scalar guard specifically, not incidentally by the identity or email checks (which tenant/supportIdentity would also fail on their own)',
+    (value) => {
+      const descriptor: TenantDescriptor = {
+        ...tenantDescriptor(),
+        breakGlass: { ...breakGlassEnabled(tenantDescriptor().slug), publicKey: value },
+      };
+      let caught: unknown;
+      try {
+        validate(descriptor, TEST_ZONES);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(FieldValidationError);
+      expect((caught as FieldValidationError).field).toBe('breakGlass.publicKey');
+    }
+  );
+
   it('refuses breakGlass.supportIdentity that is not a well-formed email address', () => {
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),
