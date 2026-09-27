@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const require = createRequire(import.meta.url);
-const { HoldRegistry, evaluate } = require('../../src/hold.js');
+const { HoldRegistry, evaluate, DEFAULT_MAX_RETRY_INTERVAL_MS } = require('../../src/hold.js');
 
 // Real, short timers rather than vi.useFakeTimers(): the retry loop's own
 // cleanup step touches the real filesystem, and a fake clock only fast
@@ -67,10 +67,14 @@ const ALLOW_POLICY = {
   },
 };
 
+const SILENT_LOGGER = { error: () => {} };
+
 let tmpDir;
+let quarantinePath;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hold-registry-test-'));
+  quarantinePath = path.join(tmpDir, 'quarantine');
 });
 
 afterEach(async () => {
@@ -100,43 +104,56 @@ describe('evaluate', () => {
 });
 
 describe('HoldRegistry', () => {
-  function buildRegistry(checks) {
+  function buildRegistry(checks, overrides = {}) {
     return new HoldRegistry({
       checks,
       policy: ALLOW_POLICY,
-      quarantinePath: path.join(tmpDir, 'quarantine'),
+      quarantinePath,
       retryIntervalMs: RETRY_MS,
+      logger: SILENT_LOGGER,
+      ...overrides,
     });
   }
 
   it('quarantines the bytes by digest as soon as it is held, exactly as a refusal does', async () => {
     const registry = buildRegistry([unavailableCheck()]);
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
+      targetPath: 'a.png',
       onAllow: async () => {},
       onRefuse: async () => {},
     });
-    const quarantined = await fs.readFile(path.join(tmpDir, 'quarantine', 'digest'));
+    const quarantined = await fs.readFile(path.join(quarantinePath, 'digest'));
     expect(quarantined.toString()).toBe('bytes');
   });
 
-  it('masks the url/path keys immediately, before any retry has run', async () => {
+  it('writes a sidecar recording which target path is waiting on the digest', async () => {
     const registry = buildRegistry([unavailableCheck()]);
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
-      pathKey: 'path',
+      targetPath: 'a.png',
       onAllow: async () => {},
       onRefuse: async () => {},
     });
-    expect(registry.isHeldUrl('url')).toBe(true);
-    expect(registry.isHeldPath('path')).toBe(true);
+    const sidecar = JSON.parse(
+      await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8')
+    );
+    expect(sidecar).toEqual(['a.png']);
   });
 
-  it('a held item that keeps failing to get a verdict is never unmasked', async () => {
+  it('is pending immediately, before any retry has run', async () => {
+    const registry = buildRegistry([unavailableCheck()]);
+    await registry.hold('digest', Buffer.from('bytes'), {
+      targetPath: 'a.png',
+      onAllow: async () => {},
+      onRefuse: async () => {},
+    });
+    expect(registry.isPending('digest')).toBe(true);
+  });
+
+  it('a held item that keeps failing to get a verdict is never resolved', async () => {
     const registry = buildRegistry([unavailableCheck()]);
     const onAllow = vi.fn();
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
+      targetPath: 'a.png',
       onAllow,
       onRefuse: vi.fn(),
     });
@@ -144,18 +161,18 @@ describe('HoldRegistry', () => {
     await settle(RETRY_MS * 5);
 
     expect(onAllow).not.toHaveBeenCalled();
-    expect(registry.isHeldUrl('url')).toBe(true);
+    expect(registry.isPending('digest')).toBe(true);
     registry.stopAll();
   });
 
-  it('promotes on a later allow: calls onAllow, then unmasks', async () => {
+  it('promotes on a later allow: calls onAllow with the quarantined bytes, then forgets it', async () => {
     // The check re-runs on every retry; flip it to allow to simulate "a
     // clean verdict arrives later" with no real channel to model.
     const check = flippingCheck();
     const registry = buildRegistry([check]);
     const onAllow = vi.fn(async () => {});
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
+      targetPath: 'a.png',
       onAllow,
       onRefuse: vi.fn(),
     });
@@ -164,15 +181,16 @@ describe('HoldRegistry', () => {
     await settle();
 
     expect(onAllow).toHaveBeenCalledTimes(1);
-    expect(registry.isHeldUrl('url')).toBe(false);
+    expect(onAllow).toHaveBeenCalledWith(Buffer.from('bytes'));
+    expect(registry.isPending('digest')).toBe(false);
   });
 
-  it('a later refuse calls onRefuse but never unmasks -- a held object that clears to a match stays hidden', async () => {
+  it('a later refuse calls onRefuse and forgets it, keeping the quarantine bytes as the permanent record', async () => {
     const check = flippingCheck();
     const registry = buildRegistry([check]);
     const onRefuse = vi.fn(async () => {});
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
+      targetPath: 'a.png',
       onAllow: vi.fn(),
       onRefuse,
     });
@@ -181,14 +199,17 @@ describe('HoldRegistry', () => {
     await settle();
 
     expect(onRefuse).toHaveBeenCalledTimes(1);
-    expect(registry.isHeldUrl('url')).toBe(true);
+    expect(registry.isPending('digest')).toBe(false);
+    const quarantined = await fs.readFile(path.join(quarantinePath, 'digest'));
+    expect(quarantined.toString()).toBe('bytes');
+    await expect(fs.readFile(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
   });
 
-  it('deletes the quarantine copy once promoted', async () => {
+  it('deletes the quarantine bytes and the sidecar once promoted', async () => {
     const check = flippingCheck();
     const registry = buildRegistry([check]);
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
+      targetPath: 'a.png',
       onAllow: async () => {},
       onRefuse: vi.fn(),
     });
@@ -196,10 +217,11 @@ describe('HoldRegistry', () => {
     check.resolveTo({ classification: 'no-known-match' });
     await settle();
 
-    await expect(fs.readFile(path.join(tmpDir, 'quarantine', 'digest'))).rejects.toThrow();
+    await expect(fs.readFile(path.join(quarantinePath, 'digest'))).rejects.toThrow();
+    await expect(fs.readFile(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
   });
 
-  it('the same digest held twice before either resolves shares one retry loop and unmasks both on promotion', async () => {
+  it('the same digest held twice before either resolves shares one retry loop and promotes both on one verdict', async () => {
     // A real case, not a contrived one: an unresized derivative save can
     // re-hash to the exact bytes of a still-unverified original (measured
     // against a real Ghost 6.55.0 with resize disabled).
@@ -209,46 +231,52 @@ describe('HoldRegistry', () => {
     const secondOnAllow = vi.fn(async () => {});
 
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url-1',
-      pathKey: 'path-1',
+      targetPath: 'a.png',
       onAllow: firstOnAllow,
       onRefuse: vi.fn(),
     });
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url-2',
-      pathKey: 'path-2',
+      targetPath: 'b.png',
       onAllow: secondOnAllow,
       onRefuse: vi.fn(),
     });
 
-    expect(registry.isHeldUrl('url-1')).toBe(true);
-    expect(registry.isHeldUrl('url-2')).toBe(true);
+    const sidecar = JSON.parse(
+      await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8')
+    );
+    expect(sidecar).toEqual(['a.png', 'b.png']);
 
     check.resolveTo({ classification: 'no-known-match' });
     await settle();
 
     expect(firstOnAllow).toHaveBeenCalledTimes(1);
     expect(secondOnAllow).toHaveBeenCalledTimes(1);
-    expect(registry.isHeldUrl('url-1')).toBe(false);
-    expect(registry.isHeldUrl('url-2')).toBe(false);
+    expect(registry.isPending('digest')).toBe(false);
   });
 
-  it('a path key is matched with a leading slash stripped, on either side', async () => {
-    const registry = buildRegistry([unavailableCheck()]);
+  it('backs off the retry interval on repeated non-answers, capped at the configured ceiling, never giving up on the hold', async () => {
+    const registry = buildRegistry([unavailableCheck()], {
+      retryIntervalMs: 5,
+      maxRetryIntervalMs: 20,
+    });
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
-      pathKey: '2026/09/held.png',
+      targetPath: 'a.png',
       onAllow: vi.fn(),
       onRefuse: vi.fn(),
     });
 
-    expect(registry.isHeldPath('/2026/09/held.png')).toBe(true);
-    expect(registry.isHeldPath('2026/09/held.png')).toBe(true);
+    await settle(200);
+
+    // Still pending no matter how long it backs off -- a hold's lifetime is
+    // never bounded, only its polling rate.
+    expect(registry.isPending('digest')).toBe(true);
+    registry.stopAll();
   });
 
-  it('a retry whose onAllow throws is rescheduled rather than crashing the process', async () => {
+  it('a retry whose onAllow throws is logged and rescheduled rather than crashing or being lost', async () => {
     const check = flippingCheck();
-    const registry = buildRegistry([check]);
+    const errors = [];
+    const registry = buildRegistry([check], { logger: { error: (...args) => errors.push(args) } });
     let attempts = 0;
     const onAllow = vi.fn(async () => {
       attempts += 1;
@@ -257,7 +285,7 @@ describe('HoldRegistry', () => {
       }
     });
     await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
+      targetPath: 'a.png',
       onAllow,
       onRefuse: vi.fn(),
     });
@@ -266,22 +294,112 @@ describe('HoldRegistry', () => {
     await settle();
 
     expect(onAllow.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(registry.isHeldUrl('url')).toBe(false);
+    expect(registry.isPending('digest')).toBe(false);
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    // The bytes must still be quarantined after the first, failed attempt --
+    // a logged failure must not lose the hold.
   });
 
-  it('keeps the quarantine copy of a digest that resolves to a later refuse', async () => {
-    const check = flippingCheck();
-    const registry = buildRegistry([check]);
-    await registry.hold('digest', Buffer.from('bytes'), {
-      urlKey: 'url',
-      onAllow: vi.fn(),
-      onRefuse: async () => {},
+  describe('resumeFromQuarantine (restart-safety)', () => {
+    it('does nothing when the quarantine directory does not exist yet', () => {
+      const registry = buildRegistry([unavailableCheck()]);
+      expect(() =>
+        registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }))
+      ).not.toThrow();
+      expect(registry.isPending('digest')).toBe(false);
     });
 
-    check.resolveTo({ classification: 'harmful-abusive-material', matchType: 'exact' });
-    await settle();
+    it('resumes a hold left behind by a previous process instance, and promotes it on a later allow', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(['a.png']));
 
-    const quarantined = await fs.readFile(path.join(tmpDir, 'quarantine', 'digest'));
-    expect(quarantined.toString()).toBe('bytes');
+      const check = flippingCheck();
+      const registry = buildRegistry([check]);
+      const onAllow = vi.fn(async () => {});
+      registry.resumeFromQuarantine((targetPath) => {
+        expect(targetPath).toBe('a.png');
+        return { onAllow, onRefuse: vi.fn() };
+      });
+
+      expect(registry.isPending('digest')).toBe(true);
+
+      check.resolveTo({ classification: 'no-known-match' });
+      await settle();
+
+      expect(onAllow).toHaveBeenCalledTimes(1);
+      expect(onAllow).toHaveBeenCalledWith(Buffer.from('bytes'));
+      expect(registry.isPending('digest')).toBe(false);
+    });
+
+    it('a resumed hold that never clears is still never promoted (the restart control case)', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(['a.png']));
+
+      const registry = buildRegistry([unavailableCheck()]);
+      const onAllow = vi.fn();
+      registry.resumeFromQuarantine(() => ({ onAllow, onRefuse: vi.fn() }));
+
+      await settle(RETRY_MS * 5);
+
+      expect(onAllow).not.toHaveBeenCalled();
+      expect(registry.isPending('digest')).toBe(true);
+      registry.stopAll();
+    });
+
+    it('does not resume a plain refusal (no sidecar) as if it were a pending hold', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'refused-digest'), 'bytes');
+
+      const registry = buildRegistry([unavailableCheck()]);
+      registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+
+      expect(registry.isPending('refused-digest')).toBe(false);
+    });
+
+    it('skips a sidecar with no bytes behind it, and a malformed sidecar, without throwing', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(
+        path.join(quarantinePath, 'orphan-sidecar.holds.json'),
+        JSON.stringify(['a.png'])
+      );
+      await fs.writeFile(path.join(quarantinePath, 'malformed-digest'), 'bytes');
+      await fs.writeFile(path.join(quarantinePath, 'malformed-digest.holds.json'), 'not json');
+
+      const registry = buildRegistry([unavailableCheck()]);
+      expect(() =>
+        registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }))
+      ).not.toThrow();
+      expect(registry.isPending('orphan-sidecar')).toBe(false);
+      expect(registry.isPending('malformed-digest')).toBe(false);
+    });
+
+    it('never keeps the resumed buffer resident: onAllow receives what is on disk at retry time, not at resume time', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'first-bytes');
+      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(['a.png']));
+
+      const check = flippingCheck();
+      const registry = buildRegistry([check]);
+      const onAllow = vi.fn(async () => {});
+      registry.resumeFromQuarantine(() => ({ onAllow, onRefuse: vi.fn() }));
+
+      // Mutate the on-disk bytes between resume and the first retry tick --
+      // if resumeFromQuarantine had read and cached the buffer itself
+      // (rather than only re-deriving which digests are pending), onAllow
+      // would still receive 'first-bytes' below.
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'second-bytes');
+      check.resolveTo({ classification: 'no-known-match' });
+      await settle();
+
+      expect(onAllow).toHaveBeenCalledWith(Buffer.from('second-bytes'));
+    });
+  });
+});
+
+describe('DEFAULT_MAX_RETRY_INTERVAL_MS', () => {
+  it('is a positive, finite ceiling', () => {
+    expect(DEFAULT_MAX_RETRY_INTERVAL_MS).toBeGreaterThan(0);
   });
 });

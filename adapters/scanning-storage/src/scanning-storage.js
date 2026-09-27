@@ -70,19 +70,21 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.checks = Array.isArray(checks) ? checks.filter((check) => check.blocking) : [];
       this.policy = config.policy;
 
-      // The hold mechanism differs by storage backend. A bucket
-      // config (cdnUrl/endpoint/bucket -- the S3Storage shape) means reads
-      // bypass this adapter, so "unserved" can only mean "not yet written
-      // to the bucket at all". Anything else is local disk, where this
-      // adapter itself is on every read path, so a held object can be
-      // written for real and withheld by exists()/read()/serve() instead.
-      this.holdMode = this.wrappedConfig.bucket ? 'object' : 'local';
       this.hold = new HoldRegistry({
         checks: this.checks,
         policy: this.policy,
         quarantinePath: this.quarantinePath,
         retryIntervalMs: config.holdRetryMs,
+        maxRetryIntervalMs: config.holdMaxRetryMs,
+        logger: config.holdLogger,
       });
+      // Restart-safety (LLD-7 load-bearing): the quarantine directory is
+      // the source of truth for every hold that outlived the previous
+      // process -- a deploy (this repo's own CD queues one on every merge
+      // to main), a crash, an OOM kill, a health-check restart. Resumed
+      // synchronously, before this constructor returns, so no request can
+      // be served in the gap.
+      this.hold.resumeFromQuarantine((targetPath) => this.#buildHoldCallbacks(targetPath));
     }
 
     // The wrapped adapter must still implement saveRaw: Ghost's on-demand
@@ -91,7 +93,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     async saveRaw(buffer, targetPath) {
       return this.#scanAndProceed(buffer, {
         proceed: () => this.wrapped.saveRaw(buffer, targetPath),
-        onHold: (digest) => this.#holdSaveRaw(digest, buffer, targetPath),
+        onHold: (digest) => this.#registerHold(digest, buffer, targetPath),
       });
     }
 
@@ -99,36 +101,23 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       const buffer = await fs.readFile(file.path);
       return this.#scanAndProceed(buffer, {
         proceed: () => this.wrapped.save(file, targetDir),
-        onHold: (digest) => this.#holdSave(digest, buffer, file, targetDir),
+        onHold: (digest) =>
+          this.#registerHold(digest, buffer, this.#computeHeldTargetPath(digest, file, targetDir)),
       });
     }
 
-    // Everything this decorator does not intercept is delegated, unchanged,
-    // to the wrapped adapter for everything EXCEPT a currently-held digest:
-    // exists(), read() and serve() must answer as if it were never written,
-    // which is the property that stops handleImageSizes generating a
-    // responsive derivative from bytes that have no verdict.
-    exists(fileNameOrPath, targetDir) {
-      if (targetDir === undefined && this.#isHeld(fileNameOrPath)) {
-        return Promise.resolve(false);
-      }
-      return this.wrapped.exists(fileNameOrPath, targetDir);
+    // Nothing here is intercepted, on either backend: a currently-held
+    // digest is never written to the wrapped adapter in the first place
+    // (see #registerHold), so exists()/read()/serve() answering truthfully
+    // IS the withholding -- there is no in-memory mask to keep in sync
+    // with reality, and nothing for a process restart to lose. LLD-7:
+    // "Local backend: Held outside the served tree."
+    exists(...args) {
+      return this.wrapped.exists(...args);
     }
 
-    async read(options) {
-      const key = options && typeof options === 'object' ? options.path : options;
-      if (this.#isHeld(key)) {
-        // A typed Ghost error, not a plain one, for the same reason
-        // refusal-error.js's does: a plain Error is wrapped as a 500 that
-        // tells whoever is resizing the platform is broken, where a
-        // NotFoundError -- exactly what a genuinely-missing image gets --
-        // is wrapped as a clean 404. Measured against a real Ghost 6.55.0:
-        // a plain Error here produced an uncaught 500 from
-        // handle-image-sizes.js, not the graceful "no derivative" outcome
-        // this decorator means to produce.
-        throw new GhostErrors.NotFoundError({ message: 'Could not find image.' });
-      }
-      return this.wrapped.read(options);
+    read(...args) {
+      return this.wrapped.read(...args);
     }
 
     delete(...args) {
@@ -140,18 +129,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     }
 
     serve(...args) {
-      const middleware = this.wrapped.serve(...args);
-      return (req, res, next) => {
-        const candidate = req.originalUrl || req.url;
-        if (this.#isHeld(candidate)) {
-          return next();
-        }
-        return middleware(req, res, next);
-      };
-    }
-
-    #isHeld(key) {
-      return this.hold.isHeldUrl(key) || this.hold.isHeldPath(key);
+      return this.wrapped.serve(...args);
     }
 
     async #scanAndProceed(buffer, { proceed, onHold }) {
@@ -181,95 +159,40 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       throw new Error(HOLD_OR_FLAG_NOT_IMPLEMENTED.replace('%s', decision));
     }
 
-    // Local backend: writes the real bytes through the real wrapped
-    // adapter immediately -- getting a real, adapter-correct URL for free
-    // -- and relies on exists()/read()/serve() above to withhold it while
-    // held. Promoting is then only ever an unmask; refusing after a hold
-    // deletes the real copy so nothing is left sitting, masked, in the
-    // served tree indefinitely.
-    async #holdSave(digest, buffer, file, targetDir) {
-      if (this.holdMode === 'local') {
-        const url = await this.wrapped.save(file, targetDir);
-        await this.#registerHold(digest, buffer, url, {
-          onAllow: async () => {},
-          onRefuse: async () => this.#deleteReal(url),
-        });
-        return url;
-      }
-      const targetPath = this.#computeObjectTargetPath(digest, file, targetDir);
+    // Never writes to the wrapped adapter until a clean verdict promotes
+    // it -- identical on both backends now. On object storage that is the
+    // only way "unserved" can mean anything (the CDN reads the bucket
+    // directly, bypassing this adapter entirely); on local disk it is also
+    // what LLD-7 specifies, and it has a second benefit the old
+    // write-then-mask shape didn't: nothing here depends on in-memory
+    // state a restart could lose.
+    async #registerHold(digest, buffer, targetPath) {
       const url = this.#urlForTargetPath(targetPath);
-      await this.#registerHold(digest, buffer, url, {
-        pathKey: targetPath,
+      await this.hold.hold(digest, buffer, { targetPath, ...this.#buildHoldCallbacks(targetPath) });
+      return url;
+    }
+
+    // Shared by a fresh hold and a resumed one (HoldRegistry.resumeFromQuarantine)
+    // so promotion behaves identically regardless of which process instance
+    // observes the clean verdict. A refusal after a hold needs no cleanup
+    // here: nothing was ever written to undo.
+    #buildHoldCallbacks(targetPath) {
+      return {
         onAllow: async (heldBuffer) => {
           await this.wrapped.saveRaw(heldBuffer, targetPath);
         },
         onRefuse: async () => {},
-      });
-      return url;
+      };
     }
 
-    async #holdSaveRaw(digest, buffer, targetPath) {
-      if (this.holdMode === 'local') {
-        const url = await this.wrapped.saveRaw(buffer, targetPath);
-        await this.#registerHold(digest, buffer, url, {
-          pathKey: targetPath,
-          onAllow: async () => {},
-          onRefuse: async () => this.#deleteReal(url),
-        });
-        return url;
-      }
-      const url = this.#urlForTargetPath(targetPath);
-      await this.#registerHold(digest, buffer, url, {
-        pathKey: targetPath,
-        onAllow: async (heldBuffer) => {
-          await this.wrapped.saveRaw(heldBuffer, targetPath);
-        },
-        onRefuse: async () => {},
-      });
-      return url;
-    }
-
-    async #registerHold(digest, buffer, url, { pathKey, onAllow, onRefuse }) {
-      const derivedPathKey =
-        pathKey ??
-        (typeof this.wrapped.urlToPath === 'function' ? this.#safeUrlToPath(url) : undefined);
-      await this.hold.hold(digest, buffer, {
-        urlKey: url,
-        pathKey: derivedPathKey,
-        onAllow,
-        onRefuse,
-      });
-    }
-
-    #safeUrlToPath(url) {
-      try {
-        return this.wrapped.urlToPath(url);
-      } catch {
-        return undefined;
-      }
-    }
-
-    // Best-effort only: the permanent mask in exists()/read()/serve() is
-    // what actually keeps a later-refused, previously-held object
-    // unreachable, regardless of whether this cleanup succeeds.
-    async #deleteReal(url) {
-      const realPath = this.#safeUrlToPath(url);
-      if (!realPath) return;
-      try {
-        await this.wrapped.delete(path.basename(realPath), path.dirname(realPath));
-      } catch {
-        // Nothing to do -- see comment above.
-      }
-    }
-
-    // Object-storage hold path only: the wrapped adapter is never asked to
-    // write until promotion, so this decorator must pick the eventual
-    // target itself. Naming it by digest rather than through the wrapped
-    // adapter's own getUniqueFileName avoids a real hazard that would
-    // otherwise exist here: two different held uploads sharing an original
-    // filename would both compute as free (nothing has been written to
-    // wrapped storage for either yet) and collide on promotion.
-    #computeObjectTargetPath(digest, file, targetDir) {
+    // The wrapped adapter is never asked to write until promotion, so this
+    // decorator must pick the eventual target itself. Naming it by digest
+    // rather than through the wrapped adapter's own getUniqueFileName
+    // avoids a real hazard that would otherwise exist here: two different
+    // held uploads sharing an original filename would both compute as free
+    // (nothing has been written to wrapped storage for either yet) and
+    // collide on promotion.
+    #computeHeldTargetPath(digest, file, targetDir) {
       const dir = targetDir || this.#defaultTargetDir();
       const ext = path.extname((file && file.name) || '');
       return path.join(dir, `${digest}${ext}`).split(path.sep).join('/');
@@ -286,21 +209,29 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       return '';
     }
 
-    // Object-storage hold path only: builds the URL a promoted write to
-    // `targetPath` will resolve to, from the same wrappedConfig the real
-    // adapter itself was constructed with -- incidental to how any one
-    // object-storage adapter is configured, not to the design.
+    // Builds the URL a promoted write to `targetPath` will resolve to, from
+    // the same wrappedConfig the real adapter itself was constructed with.
+    // A bucket config (cdnUrl/endpoint/bucket -- the S3Storage shape) means
+    // an absolute, CDN-hosted URL; anything else is a local, site-relative
+    // one. Incidental to how any one object-storage adapter is configured,
+    // not to the design.
     #urlForTargetPath(targetPath) {
       const normalized = targetPath.split(path.sep).join('/');
       const { cdnUrl, endpoint, bucket } = this.wrappedConfig;
-      const base =
-        cdnUrl || (endpoint && bucket ? `${endpoint.replace(/\/$/, '')}/${bucket}` : null);
-      if (!base) {
-        throw new Error(
-          'ScanningStorageAdapter: an object-storage hold needs wrappedConfig.cdnUrl, or .endpoint and .bucket, to build a URL'
-        );
+      if (bucket) {
+        const base = cdnUrl || (endpoint ? `${endpoint.replace(/\/$/, '')}/${bucket}` : null);
+        if (!base) {
+          throw new Error(
+            'ScanningStorageAdapter: an object-storage hold needs wrappedConfig.cdnUrl, or .endpoint and .bucket, to build a URL'
+          );
+        }
+        return `${base.replace(/\/$/, '')}/${normalized}`;
       }
-      return `${base.replace(/\/$/, '')}/${normalized}`;
+      const feature =
+        typeof this.wrapped.storagePath === 'string'
+          ? path.basename(this.wrapped.storagePath)
+          : 'images';
+      return `/content/${feature}/${normalized}`;
     }
   };
 }

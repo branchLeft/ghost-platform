@@ -200,6 +200,18 @@ class GhostContainer {
     return res.status;
   }
 
+  // A real process restart: the same container, same writable layer (so
+  // the same content/quarantine directory), the entrypoint process killed
+  // and started again from scratch -- a deploy of this very image (this
+  // repo's own CD queues one on every merge to main), a crash, an OOM
+  // kill, or a health-check restart all land here from the adapter's own
+  // point of view. `docker restart`, not a fresh `create`, is what makes
+  // that distinction real rather than assumed.
+  async restart() {
+    docker('restart', this.name);
+    this.booted = await this.waitForHome();
+  }
+
   stop() {
     dockerOk('rm', '-f', this.name);
   }
@@ -515,6 +527,82 @@ describe('the hold branch (D34), against a real Ghost', () => {
           await ghost.getStatus(sizePath, { followRedirects: false }),
           200,
           'a responsive-size request must now return the derivative'
+        );
+      } finally {
+        ghost.stop();
+        fs.rmSync(resolveHostDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  // Review cycle 1, Finding 1/2: the quarantine directory, not this
+  // process's memory, is the source of truth for a pending hold. Proven
+  // here against a REAL container restart (`docker restart`, same
+  // writable layer, entrypoint killed and started again) -- a deploy of
+  // this very image, a crash, an OOM kill, or a health-check restart, not
+  // a contrived shape.
+  it(
+    'a held upload survives a real container restart: still withheld immediately after, and promoted on a verdict delivered afterward',
+    { timeout: 180_000 },
+    async () => {
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const heldDigest = sha256Hex(cleanBytes);
+      const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-restart-'));
+
+      const ghost = await GhostContainer.start(
+        {
+          storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__wraps: 'LocalImagesStorage',
+          storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__images__unavailable: JSON.stringify([heldDigest]),
+          storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
+          storage__images__holdRetryMs: '1000',
+        },
+        { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
+      );
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const held = await ghost.uploadImage(cookie, path.join(FIXTURES, 'clean.png'), 'held.png');
+        assert.equal(held.status, 201, JSON.stringify(held.body));
+        const originalPath = new URL(held.body.images[0].url).pathname;
+        assert.equal(await ghost.getStatus(originalPath), 404, 'held before the restart');
+
+        await ghost.restart();
+        assert.equal(ghost.booted, true, `ghost did not re-boot after restart:\n${ghost.logs()}`);
+
+        // (a): still not served immediately after the restart -- the
+        // quarantine bytes never left the served tree's absence, and a
+        // fresh HoldRegistry inside the restarted process's own adapter
+        // instance found the pending hold on disk rather than reading an
+        // empty in-memory map.
+        assert.equal(
+          await ghost.getStatus(originalPath),
+          404,
+          'a held upload must still be withheld immediately after a restart'
+        );
+        const quarantined = ghost.ls('/var/lib/ghost/content/quarantine');
+        assert.ok(
+          quarantined.includes(heldDigest) && quarantined.includes(`${heldDigest}.holds.json`),
+          `the quarantine bytes and sidecar must both survive the restart: ${quarantined}`
+        );
+
+        // (b): a clean verdict delivered AFTER the restart still promotes
+        // it -- the restarted process resumed polling, not just resumed
+        // remembering to withhold.
+        fs.writeFileSync(
+          path.join(resolveHostDir, `${heldDigest}.json`),
+          JSON.stringify({ classification: 'no-known-match' })
+        );
+        await sleep(6000);
+
+        assert.equal(
+          await ghost.getStatus(originalPath),
+          200,
+          'a held upload must promote and serve once a clean verdict arrives after a restart'
         );
       } finally {
         ghost.stop();

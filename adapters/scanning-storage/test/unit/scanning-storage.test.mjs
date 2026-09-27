@@ -40,12 +40,16 @@ afterEach(async () => {
 const RETRY_MS = 20;
 const settle = (ms = RETRY_MS * 4) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const SILENT_LOGGER = { error: () => {} };
+
 function buildAdapter({
   refuse = new Map(),
   unavailable = [],
   quarantinePath,
   wrappedConfig,
   holdRetryMs = RETRY_MS,
+  holdMaxRetryMs,
+  holdLogger = SILENT_LOGGER,
 } = {}) {
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
     loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
@@ -53,15 +57,18 @@ function buildAdapter({
   });
   const verdictClient = new FakeVerdictClient({ refuse, unavailable });
   const checks = [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })];
+  const resolvedQuarantinePath = quarantinePath ?? path.join(tmpDir, 'quarantine');
   const instance = new Adapter({
     wraps: 'FakeAdapter',
     wrappedConfig: wrappedConfig ?? { storagePath: 'wrapped' },
-    quarantinePath: quarantinePath ?? path.join(tmpDir, 'quarantine'),
+    quarantinePath: resolvedQuarantinePath,
     checks,
     policy: new SafetyPolicy(),
     holdRetryMs,
+    holdMaxRetryMs,
+    holdLogger,
   });
-  return { instance, verdictClient };
+  return { instance, verdictClient, quarantinePath: resolvedQuarantinePath };
 }
 
 async function writeTempFile(buffer, name = 'upload.png') {
@@ -147,7 +154,15 @@ describe('ScanningStorageAdapter construction', () => {
 
 describe('delegation of everything not intercepted', () => {
   it('delegates exists, read, delete, urlToPath and serve to the wrapped adapter untouched', async () => {
-    const { instance: adapter } = buildAdapter();
+    // Nothing here is masked or specially handled -- a held digest is
+    // simply never written to the wrapped adapter until promotion, so
+    // there is no separate "intercepted" case to test for these five;
+    // existsResult/readResult force a deterministic answer for this
+    // pure-delegation check, independent of what has or hasn't been
+    // written to the fake's own virtual filesystem.
+    const { instance: adapter } = buildAdapter({
+      wrappedConfig: { storagePath: 'wrapped', existsResult: true, readResult: Buffer.from('x') },
+    });
     await adapter.exists('a.png', 'dir');
     await adapter.read({ path: 'a.png' });
     await adapter.delete('a.png', 'dir');
@@ -299,193 +314,134 @@ describe('checks the adapter is told not to implement', () => {
 // (FakeVerdictClient's `unavailable`) rather than hang, because checks.js's
 // own timeout already proves that race -- duplicating it here would only
 // make every test in this suite slower.
+// D34, review cycle 1: both backends now defer the real write until
+// promotion -- LLD-7's "Local backend: Held outside the served tree" is no
+// longer local-only advice this decorator diverged from. The two backends
+// differ only in URL shape (a bucket config builds a CDN URL; anything
+// else builds a site-relative one), so the behavioural cases below are
+// shared, parametrised over which `wrappedConfig` builds which adapter.
 describe('the hold branch (D34)', () => {
-  describe('local backend', () => {
-    it('accepts the upload with no verdict, and withholds it from exists/read/serve', async () => {
-      const { instance: adapter } = buildAdapter({
+  function localAdapter(overrides) {
+    return buildAdapter({ wrappedConfig: { storagePath: 'wrapped' }, ...overrides });
+  }
+
+  function s3Adapter(overrides) {
+    return buildAdapter({
+      wrappedConfig: {
+        storagePath: 'wrapped',
+        bucket: 'test-bucket',
+        cdnUrl: 'https://cdn.example.test/test-bucket',
+      },
+      ...overrides,
+    });
+  }
+
+  describe.each([
+    ['local', localAdapter],
+    ['object storage', s3Adapter],
+  ])('%s backend', (_name, buildBackendAdapter) => {
+    it('accepts the upload with no verdict, and never writes to the wrapped adapter until promoted', async () => {
+      const { instance: adapter, quarantinePath } = buildBackendAdapter({
         unavailable: [BAD_DIGEST],
-        wrappedConfig: { storagePath: 'wrapped', existsResult: true },
       });
       const file = await writeTempFile(BAD_BYTES, 'held.png');
 
       const url = await adapter.save(file);
-      expect(url).toContain('held.png');
-      // Local mode writes the real bytes through the real wrapped adapter
-      // immediately -- that write is not the safety property, withholding
-      // it is.
-      expect(adapter.wrapped.saved).toHaveLength(1);
 
-      await expect(adapter.exists(url)).resolves.toBe(false);
-      await expect(adapter.read({ path: url })).rejects.toThrow();
-
-      const next = vi.fn();
-      const res = {};
-      const middleware = adapter.serve();
-      await middleware({ originalUrl: url }, res, next);
-      expect(next).toHaveBeenCalledTimes(1);
-      expect(res.served).toBeUndefined(); // masked, never reached the real middleware
-
-      // Held bytes live in quarantine under their digest, exactly as a
-      // refused object does.
-      const quarantined = await fs.readFile(path.join(adapter.quarantinePath, BAD_DIGEST));
-      expect(quarantined.equals(BAD_BYTES)).toBe(true);
-    });
-
-    it('promotes on a later clean verdict: exists/read/serve all resolve to the real object', async () => {
-      const { instance: adapter, verdictClient } = buildAdapter({
-        unavailable: [BAD_DIGEST],
-        wrappedConfig: { storagePath: 'wrapped', existsResult: true, readResult: BAD_BYTES },
-      });
-      const file = await writeTempFile(BAD_BYTES, 'held.png');
-      const url = await adapter.save(file);
-      await expect(adapter.exists(url)).resolves.toBe(false);
-
-      verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
-
-      await expect(adapter.exists(url)).resolves.toBe(true);
-      await expect(adapter.read({ path: url })).resolves.toEqual(BAD_BYTES);
-      const next = vi.fn();
-      const res = {};
-      await adapter.serve()({ originalUrl: url }, res, next);
-      expect(next).not.toHaveBeenCalled();
-      expect(res.served).toBe(true); // unmasked: the real middleware ran
-    });
-
-    it('a held object that never clears is never served (the control case)', async () => {
-      const { instance: adapter } = buildAdapter({
-        unavailable: [BAD_DIGEST],
-        wrappedConfig: { storagePath: 'wrapped', existsResult: true },
-      });
-      const file = await writeTempFile(BAD_BYTES, 'held.png');
-      const url = await adapter.save(file);
-
-      await settle(RETRY_MS * 8);
-
-      await expect(adapter.exists(url)).resolves.toBe(false);
-    });
-
-    it('a later match deletes the real copy and stays withheld forever, exactly as a synchronous match would', async () => {
-      const { instance: adapter, verdictClient } = buildAdapter({
-        unavailable: [BAD_DIGEST],
-        wrappedConfig: { storagePath: 'wrapped', existsResult: true },
-      });
-      const file = await writeTempFile(BAD_BYTES, 'held.png');
-      const url = await adapter.save(file);
-
-      verdictClient.deliverVerdict(BAD_DIGEST, {
-        classification: 'harmful-abusive-material',
-        matchType: 'exact',
-      });
-      await settle();
-
-      expect(adapter.wrapped.deleted).toHaveLength(1);
-      // Withheld regardless of what the wrapped adapter itself would now say.
-      await expect(adapter.exists(url)).resolves.toBe(false);
-    });
-
-    it('the same bytes held via save() and again via saveRaw() (a real case with resize disabled) unmask together on one clean verdict', async () => {
-      const { instance: adapter, verdictClient } = buildAdapter({
-        unavailable: [BAD_DIGEST],
-        wrappedConfig: { storagePath: 'wrapped', existsResult: true },
-      });
-      const file = await writeTempFile(BAD_BYTES, 'held.png');
-
-      const originalUrl = await adapter.save(file);
-      const derivativeUrl = await adapter.saveRaw(BAD_BYTES, '2026/09/held-w600.png');
-
-      await expect(adapter.exists(originalUrl)).resolves.toBe(false);
-      await expect(adapter.exists(derivativeUrl)).resolves.toBe(false);
-
-      verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
-
-      await expect(adapter.exists(originalUrl)).resolves.toBe(true);
-      await expect(adapter.exists(derivativeUrl)).resolves.toBe(true);
-    });
-
-    it('holds a saveRaw derivative the same way as save, using the caller-given target path', async () => {
-      const { instance: adapter, verdictClient } = buildAdapter({
-        unavailable: [BAD_DIGEST],
-        wrappedConfig: { storagePath: 'wrapped', existsResult: true },
-      });
-
-      const url = await adapter.saveRaw(BAD_BYTES, '2026/09/derivative.png');
-      expect(adapter.wrapped.savedRaw).toHaveLength(1); // local: written immediately, masked
-      await expect(adapter.exists(url)).resolves.toBe(false);
-
-      verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
-      await expect(adapter.exists(url)).resolves.toBe(true);
-    });
-
-    it('a deleteReal that cannot resolve a real path is a safe no-op', async () => {
-      const { instance: adapter, verdictClient } = buildAdapter({
-        unavailable: [BAD_DIGEST],
-        wrappedConfig: { storagePath: 'wrapped', existsResult: true },
-      });
-      const file = await writeTempFile(BAD_BYTES, 'held.png');
-      await adapter.save(file);
-      // Sabotage-proof cleanup: even if the wrapped adapter's own
-      // urlToPath throws, a later refuse must not crash the retry loop.
-      adapter.wrapped.urlToPath = () => {
-        throw new Error('urlToPath broke');
-      };
-
-      verdictClient.deliverVerdict(BAD_DIGEST, {
-        classification: 'harmful-abusive-material',
-        matchType: 'exact',
-      });
-      await settle();
-
-      expect(adapter.wrapped.deleted).toHaveLength(0);
-    });
-  });
-
-  describe('object-storage backend', () => {
-    function buildS3Adapter(overrides) {
-      return buildAdapter({
-        wrappedConfig: {
-          storagePath: 'wrapped',
-          bucket: 'test-bucket',
-          cdnUrl: 'https://cdn.example.test/test-bucket',
-        },
-        ...overrides,
-      });
-    }
-
-    it('never writes to the bucket while held -- "not yet written at all", not merely unlinked', async () => {
-      const { instance: adapter } = buildS3Adapter({ unavailable: [BAD_DIGEST] });
-      const file = await writeTempFile(BAD_BYTES, 'held.png');
-
-      const url = await adapter.save(file);
-
-      expect(url).toContain(BAD_DIGEST);
+      expect(url).toContain(BAD_DIGEST); // digest-named: never the caller's own filename
       expect(adapter.wrapped.saved).toHaveLength(0);
       expect(adapter.wrapped.savedRaw).toHaveLength(0);
       await expect(adapter.exists(url)).resolves.toBe(false);
+      // Nothing has been written to the wrapped adapter's own virtual
+      // filesystem at all, so any read on it is a miss -- not because
+      // this decorator masked a real file, but because there is no real
+      // file yet (LLD-7: "held outside the served tree").
+      await expect(adapter.read({ path: 'anything' })).rejects.toThrow();
 
-      const quarantined = await fs.readFile(path.join(adapter.quarantinePath, BAD_DIGEST));
+      // Held bytes live in quarantine under their digest, exactly as a
+      // refused object does, with a sidecar recording it is still pending.
+      const quarantined = await fs.readFile(path.join(quarantinePath, BAD_DIGEST));
       expect(quarantined.equals(BAD_BYTES)).toBe(true);
+      await expect(
+        fs.readFile(path.join(quarantinePath, `${BAD_DIGEST}.holds.json`))
+      ).resolves.toBeTruthy();
     });
 
-    it('promotion is a write: the bucket receives the bytes only once a clean verdict arrives', async () => {
-      const { instance: adapter, verdictClient } = buildS3Adapter({ unavailable: [BAD_DIGEST] });
+    it('promotes on a later clean verdict: the wrapped adapter receives exactly the held bytes', async () => {
+      const { instance: adapter, verdictClient } = buildBackendAdapter({
+        unavailable: [BAD_DIGEST],
+      });
       const file = await writeTempFile(BAD_BYTES, 'held.png');
-      const url = await adapter.save(file);
+      await adapter.save(file);
 
       verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
       await settle();
 
       expect(adapter.wrapped.savedRaw).toHaveLength(1);
       expect(adapter.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
-      await expect(adapter.exists(url)).resolves.toBe(false); // FakeWrappedAdapter.exists is canned, not real
+    });
+
+    it('a held object that never clears is never promoted (the control case)', async () => {
+      const { instance: adapter } = buildBackendAdapter({ unavailable: [BAD_DIGEST] });
+      const file = await writeTempFile(BAD_BYTES, 'held.png');
+      await adapter.save(file);
+
+      await settle(RETRY_MS * 8);
+
+      expect(adapter.wrapped.saved).toHaveLength(0);
+      expect(adapter.wrapped.savedRaw).toHaveLength(0);
+    });
+
+    it('a later match is never promoted, and the quarantine bytes remain as the permanent record', async () => {
+      const {
+        instance: adapter,
+        verdictClient,
+        quarantinePath,
+      } = buildBackendAdapter({
+        unavailable: [BAD_DIGEST],
+      });
+      const file = await writeTempFile(BAD_BYTES, 'held.png');
+      await adapter.save(file);
+
+      verdictClient.deliverVerdict(BAD_DIGEST, {
+        classification: 'harmful-abusive-material',
+        matchType: 'exact',
+      });
+      await settle();
+
+      expect(adapter.wrapped.saved).toHaveLength(0);
+      expect(adapter.wrapped.savedRaw).toHaveLength(0);
+      const quarantined = await fs.readFile(path.join(quarantinePath, BAD_DIGEST));
+      expect(quarantined.equals(BAD_BYTES)).toBe(true);
+      // The sidecar is gone -- indistinguishable from a synchronous refusal now.
+      await expect(
+        fs.readFile(path.join(quarantinePath, `${BAD_DIGEST}.holds.json`))
+      ).rejects.toThrow();
+    });
+
+    it('the same bytes held via save() and again via saveRaw() (a real case with resize disabled) both promote on one clean verdict', async () => {
+      const { instance: adapter, verdictClient } = buildBackendAdapter({
+        unavailable: [BAD_DIGEST],
+      });
+      const file = await writeTempFile(BAD_BYTES, 'held.png');
+
+      await adapter.save(file);
+      await adapter.saveRaw(BAD_BYTES, '2026/09/held-w600.png');
+      expect(adapter.wrapped.saved).toHaveLength(0);
+      expect(adapter.wrapped.savedRaw).toHaveLength(0);
+
+      verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+      await settle();
+
+      // One promotion per place the bytes were ever promised, from one shared retry loop.
+      expect(adapter.wrapped.savedRaw).toHaveLength(2);
+      expect(adapter.wrapped.savedRaw.map((s) => s.targetPath)).toContain('2026/09/held-w600.png');
     });
 
     it('two different held uploads sharing an original filename do not collide on promotion', async () => {
       const otherBytes = Buffer.from('a second known-bad payload, different from the first');
       const otherDigest = digestBytes(otherBytes);
-      const { instance: adapter } = buildS3Adapter({ unavailable: [BAD_DIGEST, otherDigest] });
+      const { instance: adapter } = buildBackendAdapter({ unavailable: [BAD_DIGEST, otherDigest] });
 
       const first = await writeTempFile(BAD_BYTES, 'same-name.png');
       const second = await writeTempFile(otherBytes, 'same-name.png');
@@ -495,9 +451,66 @@ describe('the hold branch (D34)', () => {
 
       expect(firstUrl).not.toEqual(secondUrl);
     });
+  });
 
+  describe('restart-safety (review cycle 1)', () => {
+    it('a fresh adapter instance resumes a pending hold from quarantine alone, synchronously, before it can serve a request', async () => {
+      const { instance: firstAdapter, quarantinePath } = buildAdapter({
+        unavailable: [BAD_DIGEST],
+        wrappedConfig: { storagePath: 'wrapped' },
+      });
+      const file = await writeTempFile(BAD_BYTES, 'held.png');
+      await firstAdapter.save(file);
+      expect(firstAdapter.wrapped.savedRaw).toHaveLength(0);
+
+      // Simulate a process restart: a brand new adapter instance, its own
+      // fresh in-memory HoldRegistry, constructed with nothing but the
+      // same quarantinePath -- no reference to firstAdapter or its
+      // in-memory state at all, matching what actually survives a real
+      // restart. Pending immediately after `new`, with no await and no
+      // separate setup call: resumeFromQuarantine runs inside the
+      // constructor itself. The end-to-end proof against a real,
+      // restarted Ghost container is in test/image/scanning-storage.image.test.mjs.
+      const { instance: secondAdapter, verdictClient: secondVerdictClient } = buildAdapter({
+        quarantinePath,
+        unavailable: [BAD_DIGEST],
+        wrappedConfig: { storagePath: 'wrapped' },
+      });
+      expect(secondAdapter.hold.isPending(BAD_DIGEST)).toBe(true);
+
+      // And it is not just present but genuinely live: a clean verdict
+      // delivered to the SECOND instance's own verdict client promotes it.
+      secondVerdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+      await settle();
+
+      expect(secondAdapter.wrapped.savedRaw).toHaveLength(1);
+      expect(secondAdapter.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
+    });
+
+    it('a resumed hold that never clears is still never promoted', async () => {
+      const { instance: firstAdapter, quarantinePath } = buildAdapter({
+        unavailable: [BAD_DIGEST],
+        wrappedConfig: { storagePath: 'wrapped' },
+      });
+      const file = await writeTempFile(BAD_BYTES, 'held.png');
+      await firstAdapter.save(file);
+
+      const { instance: secondAdapter } = buildAdapter({
+        quarantinePath,
+        unavailable: [BAD_DIGEST],
+        wrappedConfig: { storagePath: 'wrapped' },
+      });
+
+      await settle(RETRY_MS * 8);
+
+      expect(secondAdapter.wrapped.savedRaw).toHaveLength(0);
+      expect(secondAdapter.hold.isPending(BAD_DIGEST)).toBe(true);
+    });
+  });
+
+  describe('URL building', () => {
     it("uses the wrapped adapter's own getTargetDir when one is provided, as a real adapter always does", async () => {
-      const { instance: adapter } = buildS3Adapter({ unavailable: [BAD_DIGEST] });
+      const { instance: adapter } = s3Adapter({ unavailable: [BAD_DIGEST] });
       adapter.wrapped.getTargetDir = () => '2026/09';
       const file = await writeTempFile(BAD_BYTES, 'held.png');
 
@@ -520,7 +533,7 @@ describe('the hold branch (D34)', () => {
       expect(url).toBe(`https://s3.example.test/test-bucket/${BAD_DIGEST}.png`);
     });
 
-    it('fails loudly rather than guessing a URL with no cdnUrl and no endpoint', async () => {
+    it('fails loudly rather than guessing a URL with a bucket set but no cdnUrl and no endpoint', async () => {
       const { instance: adapter } = buildAdapter({
         unavailable: [BAD_DIGEST],
         wrappedConfig: { storagePath: 'wrapped', bucket: 'test-bucket' },
@@ -529,17 +542,11 @@ describe('the hold branch (D34)', () => {
       await expect(adapter.save(file)).rejects.toThrow(/cdnUrl/);
     });
 
-    it('saveRaw is held the same way, using the exact target path the caller already gave', async () => {
-      const { instance: adapter, verdictClient } = buildS3Adapter({ unavailable: [BAD_DIGEST] });
-
-      await adapter.saveRaw(BAD_BYTES, '2026/09/derivative.png');
-      expect(adapter.wrapped.savedRaw).toHaveLength(0); // not written while held
-
-      verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
-
-      expect(adapter.wrapped.savedRaw).toHaveLength(1);
-      expect(adapter.wrapped.savedRaw[0].targetPath).toBe('2026/09/derivative.png');
+    it('local URLs are site-relative, prefixed by the feature the wrapped adapter serves', async () => {
+      const { instance: adapter } = localAdapter({ unavailable: [BAD_DIGEST] });
+      const file = await writeTempFile(BAD_BYTES, 'held.png');
+      const url = await adapter.save(file);
+      expect(url).toBe(`/content/wrapped/${BAD_DIGEST}.png`);
     });
   });
 });
