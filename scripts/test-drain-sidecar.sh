@@ -127,21 +127,50 @@ http_status() {
 }
 
 echo "--- state: flag clear, Ghost deterministically not ready (paused) -> 503, every sample ---"
-# Three samples rather than one: the sidecar's own probe can time out
-# (GHOST_PROBE_TIMEOUT_MS, 2s default) as readily as it can see a refused
-# connection while Ghost is frozen, and both are "not ready" -- sampling
-# more than once is what would catch a flaky pass-on-the-first-try that a
-# single request could hide.
+# The sidecar's own HTTP server needs a brief moment after `docker run -d`
+# returns before it accepts a connection at all -- a sample taken before
+# that moment gets curl's 000 (connection failed), which is a race in this
+# proof's own setup, not the state under test. Wait for the first real
+# response before asserting anything against it; a sidecar that never
+# starts listening still fails this check loudly, on a bounded timeout,
+# rather than the loop below silently having nothing to sample.
 body_file="$(mktemp)"
-for _ in 1 2 3; do
+deadline=$(($(date +%s) + 10))
+sidecar_listening=false
+while [ "$(date +%s)" -lt "$deadline" ]; do
     status="$(http_probe "http://localhost:$SIDECAR_PORT/healthz" "$body_file")"
-    if [ "$status" != "503" ] || ! grep -q '"ghost_unhealthy"' "$body_file"; then
-        echo "FAIL: expected 503 \"ghost_unhealthy\" while Ghost is paused, got $status: $(cat "$body_file" 2>/dev/null)"
-        FAILURES=$((FAILURES + 1))
+    if [ "$status" != "000" ]; then
+        sidecar_listening=true
         break
     fi
+    sleep 0.1
 done
-echo "PASS: sidecar answered 503 \"ghost_unhealthy\" on every sample while Ghost was paused"
+
+if [ "$sidecar_listening" != "true" ]; then
+    echo "FAIL: sidecar never accepted a connection within 10s of starting"
+    FAILURES=$((FAILURES + 1))
+else
+    # Three fresh samples once listening is established, all of which must
+    # be 503 "ghost_unhealthy" -- Ghost is still paused throughout, so a 000
+    # here (the connection dropping again) or any other status is a real
+    # failure, not the startup race the wait above already absorbed. The
+    # loop breaks on the first bad sample; `paused_samples_ok` is what the
+    # PASS message below is conditioned on, so a break-on-failure can never
+    # print PASS immediately after printing FAIL.
+    paused_samples_ok=true
+    for _ in 1 2 3; do
+        status="$(http_probe "http://localhost:$SIDECAR_PORT/healthz" "$body_file")"
+        if [ "$status" != "503" ] || ! grep -q '"ghost_unhealthy"' "$body_file"; then
+            echo "FAIL: expected 503 \"ghost_unhealthy\" while Ghost is paused, got $status: $(cat "$body_file" 2>/dev/null)"
+            FAILURES=$((FAILURES + 1))
+            paused_samples_ok=false
+            break
+        fi
+    done
+    if [ "$paused_samples_ok" = "true" ]; then
+        echo "PASS: sidecar answered 503 \"ghost_unhealthy\" on every sample while Ghost was paused"
+    fi
+fi
 rm -f "$body_file"
 
 docker unpause "$GHOST_NAME" >/dev/null
