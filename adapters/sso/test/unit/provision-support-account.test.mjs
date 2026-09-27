@@ -24,9 +24,9 @@ describe('parseArgs', () => {
   });
 
   it('refuses an unrecognised flag -- never silently ignored', () => {
-    expect(() => parseArgs(['--container', 'c1', '--email', 'x@example.com', '--status', 'active'])).toThrow(
-      /unrecognised argument/
-    );
+    expect(() =>
+      parseArgs(['--container', 'c1', '--email', 'x@example.com', '--status', 'active'])
+    ).toThrow(/unrecognised argument/);
   });
 });
 
@@ -49,7 +49,7 @@ describe('unusablePasswordHash', () => {
 });
 
 describe('ghostObjectId', () => {
-  it('is 24 lowercase hex characters, matching Ghost\'s own id shape', () => {
+  it("is 24 lowercase hex characters, matching Ghost's own id shape", () => {
     expect(ghostObjectId()).toMatch(/^[0-9a-f]{24}$/);
   });
 });
@@ -76,9 +76,11 @@ describe('provisionSupportAccount', () => {
     // The email is data handed through an env pair, not interpolated into
     // the inline script text argv itself.
     const envIndex = args.indexOf('-e');
-    expect(args.slice(envIndex, envIndex + 8).some((a) => a === 'PROVISION_SUPPORT_EMAIL=support@example.com')).toBe(
-      true
-    );
+    expect(
+      args
+        .slice(envIndex, envIndex + 8)
+        .some((a) => a === 'PROVISION_SUPPORT_EMAIL=support@example.com')
+    ).toBe(true);
     expect(args.join(' ')).not.toContain('support@example.com\n');
   });
 

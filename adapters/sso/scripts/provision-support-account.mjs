@@ -165,7 +165,14 @@ export function provisionSupportAccount({ container, email }, execFile = execFil
     `PROVISION_SUPPORT_ROLE_LINK_ID=${ghostObjectId()}`,
     `PROVISION_SUPPORT_NOW=${new Date().toISOString().replace('T', ' ').slice(0, 19)}`,
   ];
-  const args = ['exec', ...env.flatMap((pair) => ['-e', pair]), container, 'node', '-e', INNER_SCRIPT];
+  const args = [
+    'exec',
+    ...env.flatMap((pair) => ['-e', pair]),
+    container,
+    'node',
+    '-e',
+    INNER_SCRIPT,
+  ];
   const output = execFile('docker', args, { encoding: 'utf8' });
   return JSON.parse(output.trim().split('\n').pop());
 }

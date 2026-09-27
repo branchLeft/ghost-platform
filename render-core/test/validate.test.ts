@@ -1683,6 +1683,27 @@ describe('validate() — path and host fields reject empty, relative, traversal 
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
+  it('rejects a transport.host with an embedded space -- the same character check database.host already gets', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      transport: { kind: 'smtp', host: 'mx internal.example', port: 587 as never, user: 'ghost' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a transport.host with a semicolon', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      transport: {
+        kind: 'smtp',
+        host: 'mx.internal;DROP TABLE x',
+        port: 587 as never,
+        user: 'ghost',
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
   it('rejects a relative database.path', () => {
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),

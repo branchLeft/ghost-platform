@@ -12,7 +12,10 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { claimsFor, generateKeyPair, mint } from '../helpers/token.mjs';
-import { provisionSupportAccount, SUSPENDED_STATUS } from '../../scripts/provision-support-account.mjs';
+import {
+  provisionSupportAccount,
+  SUSPENDED_STATUS,
+} from '../../scripts/provision-support-account.mjs';
 
 const IMAGE = process.env.IMAGE;
 if (!IMAGE) {

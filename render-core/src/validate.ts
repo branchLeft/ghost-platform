@@ -602,7 +602,11 @@ function validateTransport(transport: TenantDescriptor['transport']): void {
     assertNonEmptyPath(transport.path, 'transport.path');
     return;
   }
-  assertNonEmptyString(transport.host, 'transport.host');
+  // The same host-character check database.host already gets (assertValidHost,
+  // above) -- transport.host reaches a Compose `environment:` value exactly
+  // the way database.host does, so the same "nothing a shell or a connection
+  // string reads specially" reasoning applies unchanged.
+  assertValidHost(transport.host, 'transport.host');
   validatePort(transport.port, 'transport.port');
 }
 
