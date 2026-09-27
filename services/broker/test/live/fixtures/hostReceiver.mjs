@@ -26,7 +26,12 @@ const auth = {
 
 const push = {
   loader: imageLoader,
-  tmpDir: '/tmp',
+  // The one fixed path the real root-side wrapper's `IMAGE_LOAD_PATH` also
+  // names (`demo-host/provision/branchleft_slot.py`) -- not `/tmp`. The
+  // wrapper opens that exact literal path itself; staging anywhere else
+  // means `load` always refuses with "cannot open", regardless of what the
+  // broker verified.
+  tmpDir: '/var/lib/branchleft-broker/image-tmp',
   maxBytes: 4 * 1024 * 1024 * 1024,
   nowMs: () => Date.now(),
   log: (line) => console.error(line),

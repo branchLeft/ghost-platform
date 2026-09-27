@@ -43,7 +43,14 @@ const SERVICE_ROOT = join(here, '..', '..');
 const DIST_DIR = join(SERVICE_ROOT, 'dist');
 const FIXTURES_DIR = join(here, 'fixtures');
 const HOST_RECEIVER = join(FIXTURES_DIR, 'hostReceiver.mjs');
-const WRAPPER_STUB = join(FIXTURES_DIR, 'branchleft-slot-stub.sh');
+const BRANCHLEFT_SLOT = join(
+  SERVICE_ROOT,
+  '..',
+  '..',
+  'demo-host',
+  'provision',
+  'branchleft_slot.py'
+);
 const HOST_DOCKERFILE = join(FIXTURES_DIR, 'Dockerfile');
 const CONTROL_PLANE_CLI = join(FIXTURES_DIR, 'controlPlanePushCli.mjs');
 
@@ -194,14 +201,13 @@ describe.skipIf(!canRun)('LIVE — push delivery to an egress-denied host', () =
       '-v',
       `${HOST_RECEIVER}:/app/hostReceiver.mjs:ro`,
       '-v',
-      // The real `dockerImageLoader.js` (mounted in via DIST_DIR above)
-      // now goes through the sudoers wrapper, never `docker` directly --
-      // this container has neither `sudo` nor the real
-      // `/usr/local/sbin/branchleft-slot`, so this stand-in receives the
-      // exact same `load <path>` argv `wrapper.ts` sends and is the one
-      // thing in this container allowed to translate it into a real
-      // `docker load`, matching `BROKER_WRAPPER_COMMAND`/`_PREFIX` below.
-      `${WRAPPER_STUB}:/app/branchleft-slot-stub.sh:ro`,
+      // The real, root-side `branchleft_slot.py` -- not a stand-in. This
+      // container has no `sudo`, so it is run through `python3` directly
+      // (`BROKER_WRAPPER_PREFIX` below) rather than via the forced-command
+      // shape a real sudoers grant would use; the wrapper's own argv
+      // validation, `O_NOFOLLOW` open, `fstat` and owner checks all run
+      // unmodified and for real.
+      `${BRANCHLEFT_SLOT}:/app/branchleft_slot.py:ro`,
       // The one deliberate exception to "no egress": a Unix socket bind
       // mount to this machine's own Docker daemon, standing in for the
       // host's own local dockerd (every real demo/tenant host already
@@ -217,20 +223,23 @@ describe.skipIf(!canRun)('LIVE — push delivery to an egress-denied host', () =
       'VERIFY_KEY_FILE=/keys/verify.pub',
       '-e',
       'PORT=8099',
-      // Matches `hostReceiver.mjs`'s own hardcoded `push.tmpDir`
-      // ('/tmp') -- `dockerImageLoader.js` reads this separately (it has
-      // no `BrokerConfig` to receive it through) to check the path it is
-      // given resolves inside it before ever reaching the wrapper.
+      // Matches `hostReceiver.mjs`'s own hardcoded `push.tmpDir` and the
+      // real wrapper's own `IMAGE_LOAD_PATH` -- `dockerImageLoader.js`
+      // reads this separately (it has no `BrokerConfig` to receive it
+      // through) to check the path it is given resolves inside it before
+      // ever reaching the wrapper, and the wrapper itself only ever opens
+      // this one literal path regardless of what it is told.
       '-e',
-      'BROKER_IMAGE_TMP_DIR=/tmp',
+      'BROKER_IMAGE_TMP_DIR=/var/lib/branchleft-broker/image-tmp',
       '-e',
-      'BROKER_WRAPPER_COMMAND=/app/branchleft-slot-stub.sh',
-      // Empty, not unset: this container runs the stand-in directly, the
-      // same "sandbox" case `config.ts`'s own doc comment on
-      // `wrapperPrefix` describes -- unset would default to `sudo -n`,
-      // which is not installed here.
+      'BROKER_WRAPPER_COMMAND=/app/branchleft_slot.py',
+      // Not empty: this container has no `sudo`, so `python3` is the
+      // prefix that actually runs the real wrapper -- the same
+      // "sandbox" mechanism `config.ts`'s own doc comment on
+      // `wrapperPrefix` describes (`sudo` in production, something else
+      // here), never a second copy of the argv-building logic.
       '-e',
-      'BROKER_WRAPPER_PREFIX=',
+      'BROKER_WRAPPER_PREFIX=python3',
       // `wrapperTimeoutMs` is now shared with `start`/`stop`/`reset`,
       // whose 30_000ms default is sized for a systemd unit, not a ~1 GB
       // `docker load` -- the config ceiling (`positiveInteger`'s own

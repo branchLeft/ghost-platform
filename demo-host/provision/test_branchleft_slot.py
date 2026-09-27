@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import fcntl
 import os
+import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import branchleft_slot as bs
@@ -85,6 +87,28 @@ class ParseInvocationExactnessTests(unittest.TestCase):
         with self.assertRaises(bs.InvalidInvocation):
             bs.parse_invocation(["/etc/passwd", "reset"])
 
+    def test_accepts_the_fixed_load_invocation(self):
+        self.assertEqual(bs.parse_invocation([bs.LOAD, bs.IMAGE_LOAD_PATH]), bs.LoadInvocation())
+
+    def test_refuses_load_against_any_other_path(self):
+        # "fixed-argument" (the owner ruling's own word): the sudoers grant
+        # offers exactly one literal path, and this is the second layer that
+        # must refuse anything else even if something upstream of sudo did
+        # not.
+        with self.assertRaises(bs.InvalidInvocation):
+            bs.parse_invocation([bs.LOAD, "/etc/passwd"])
+        with self.assertRaises(bs.InvalidInvocation):
+            bs.parse_invocation([bs.LOAD, bs.IMAGE_LOAD_PATH + ".evil"])
+
+    def test_refuses_load_and_its_path_collapsed_into_one_shell_quoted_argument(self):
+        # Reproduces `sudo branchleft-slot 'load /var/.../image.tar'` -- the
+        # same space-joined-text defect measured for `'0 reset'`, for this
+        # verb. `len(argv) == 1` here, so this falls through to the generic
+        # length check below rather than a `load`-specific branch; proven
+        # explicitly rather than left as an inference from that shared path.
+        with self.assertRaises(bs.InvalidInvocation):
+            bs.parse_invocation([f"{bs.LOAD} {bs.IMAGE_LOAD_PATH}"])
+
     def test_never_calls_split_or_join_before_validating(self):
         # A regression guard on the module's own approach, not only its
         # output: a value that would parse differently under `.split()` than
@@ -108,6 +132,12 @@ class SlotNamesDriftGuardTests(unittest.TestCase):
         self.assertEqual(bs.COLOURS, rss.COLOURS)
         self.assertEqual(bs.VERBS, rss.START_STOP_VERBS)
 
+    def test_broker_user_and_image_load_path_match_the_sudoers_generator(self):
+        self.assertEqual(bs.BROKER_USER, rss.BROKER_USER)
+        self.assertEqual(bs.LOAD, "load")
+        self.assertEqual(bs.IMAGE_LOAD_PATH, rss.IMAGE_LOAD_INVOCATION.split(" ", 1)[1])
+        self.assertEqual(bs.IMAGE_LOAD_PATH, f"{rss.IMAGE_STAGING_DIR}/{rss.IMAGE_STAGING_FILENAME}")
+
 
 class FakeSlotOps:
     def __init__(self) -> None:
@@ -115,6 +145,9 @@ class FakeSlotOps:
 
     def systemctl(self, action: str, unit: str) -> None:
         self.calls.append(("systemctl", action, unit))
+
+    def load_image(self, path: str) -> None:
+        self.calls.append(("load_image", path))
 
     def remove_dir_contents(self, path: str) -> None:
         self.calls.append(("remove_dir_contents", path))
@@ -180,6 +213,24 @@ class PerformDispatchTests(unittest.TestCase):
         bs.perform(bs.ResetInvocation(slot="0"), ops)
         names = [call[0] for call in ops.calls]
         self.assertLess(names.index("remove_dir_contents"), names.index("recreate_empty_dir"))
+
+    def test_load_calls_load_image_with_the_one_fixed_path(self):
+        # No slot lock is taken for this dispatch (LOCK_DIR is patched to a
+        # writable tmp dir only because `setUp` always does; `load` itself
+        # never touches it) -- proven by `test_load_never_takes_a_slot_lock`
+        # below, which does the one thing that could tell the two apart.
+        ops = FakeSlotOps()
+        bs.perform(bs.LoadInvocation(), ops)
+        self.assertEqual(ops.calls, [("load_image", bs.IMAGE_LOAD_PATH)])
+
+    def test_load_never_takes_a_slot_lock(self):
+        # If `perform` mistakenly routed `LoadInvocation` through
+        # `_acquire_slot_lock` (which needs a `.slot` attribute this
+        # dataclass does not have), this would raise `AttributeError`
+        # instead of returning -- proving the early-return path is the one
+        # that actually ran, not merely that no exception happened to occur.
+        ops = FakeSlotOps()
+        bs.perform(bs.LoadInvocation(), ops)  # must not raise AttributeError
 
 
 class SlotLockTests(unittest.TestCase):
@@ -252,6 +303,22 @@ class MainDispatchTests(unittest.TestCase):
         self.assertEqual(invocation, bs.ColourInvocation(slot="3", colour="a", verb="start"))
         self.assertIsInstance(ops, bs.RealSlotOps)
         self.assertEqual(exit_code, 0)
+
+    def test_the_fixed_load_invocation_reaches_perform(self):
+        with mock.patch("branchleft_slot.perform") as perform:
+            exit_code = bs.main([bs.LOAD, bs.IMAGE_LOAD_PATH])
+        perform.assert_called_once()
+        (invocation, ops), _kwargs = perform.call_args
+        self.assertEqual(invocation, bs.LoadInvocation())
+        self.assertIsInstance(ops, bs.RealSlotOps)
+        self.assertEqual(exit_code, 0)
+
+    def test_a_refused_image_from_load_image_exits_non_zero_rather_than_raising(self):
+        with mock.patch(
+            "branchleft_slot.perform", side_effect=bs.RefusedImage("not a regular file")
+        ):
+            exit_code = bs.main([bs.LOAD, bs.IMAGE_LOAD_PATH])
+        self.assertEqual(exit_code, 1)
 
     def test_a_failure_inside_perform_exits_non_zero_rather_than_raising(self):
         with mock.patch("branchleft_slot.perform", side_effect=RuntimeError("systemctl exploded")):
@@ -328,6 +395,114 @@ class RealSlotOpsFilesystemTests(unittest.TestCase):
             target = os.path.join(tmp, "demo-2")
             bs.RealSlotOps().recreate_empty_dir(target)
             self.assertTrue(os.path.isdir(target))
+
+
+class RealSlotOpsLoadImageTests(unittest.TestCase):
+    """`load_image` is the root-side half of the owner ruling's "loads
+    nothing else". None of this needs to run as root to prove the checks
+    exist and run in the right order: `pwd.getpwnam` is patched to name
+    this test process's own uid as "the broker account" instead of
+    `chown`ing real files, which needs root and would only prove some check
+    runs somewhere, not that it runs against the right descriptor before
+    docker is ever reached. `.github/workflows/demo-host-sudoers-ci.yml`
+    re-proves the same shapes against a real broker account and real
+    ownership; these are the fast, hermetic form.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._own_uid = os.getuid()
+        self._patch = mock.patch(
+            "branchleft_slot.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=self._own_uid)
+        )
+        self._patch.start()
+
+    def tearDown(self) -> None:
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def _path(self, name: str) -> str:
+        return os.path.join(self._tmp.name, name)
+
+    def test_feeds_dockers_stdin_the_files_own_bytes_through_the_verified_descriptor(self):
+        # Never mocks `os.open`/`os.fstat` themselves -- only `subprocess.run`
+        # -- so this proves the real open()/fstat() calls ran against a real
+        # file and produced a descriptor that genuinely carries that file's
+        # bytes, not merely that some fd-shaped object reached the call.
+        path = self._path("image.tar")
+        content = b"the exact bytes docker load must read"
+        with open(path, "wb") as handle:
+            handle.write(content)
+
+        captured: dict[str, bytes] = {}
+
+        def fake_run(argv, *, stdin, check):
+            captured["bytes"] = os.read(stdin, len(content) + 1)
+            return SimpleNamespace(returncode=0)
+
+        with mock.patch("branchleft_slot.subprocess.run", side_effect=fake_run) as run:
+            bs.RealSlotOps().load_image(path)
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ["docker", "load"])
+        self.assertTrue(run.call_args.kwargs["check"])
+        self.assertEqual(captured["bytes"], content)
+
+    def test_refuses_a_symlink_at_the_exact_path_without_following_it(self):
+        real_target = self._path("real.tar")
+        with open(real_target, "wb") as handle:
+            handle.write(b"x")
+        link_path = self._path("image.tar")
+        os.symlink(real_target, link_path)
+
+        with mock.patch("branchleft_slot.subprocess.run") as run:
+            with self.assertRaises(bs.RefusedImage):
+                bs.RealSlotOps().load_image(link_path)
+        run.assert_not_called()
+
+    def test_refuses_a_non_regular_file_at_the_exact_path(self):
+        # A directory rather than a FIFO: opening a FIFO with no writer
+        # would block this test forever, where a directory refuses via
+        # `fstat` the same way a FIFO would, without blocking to prove it.
+        dir_path = self._path("image.tar")
+        os.makedirs(dir_path)
+
+        with mock.patch("branchleft_slot.subprocess.run") as run:
+            with self.assertRaises(bs.RefusedImage):
+                bs.RealSlotOps().load_image(dir_path)
+        run.assert_not_called()
+
+    def test_refuses_a_regular_file_not_owned_by_the_broker_account(self):
+        path = self._path("image.tar")
+        with open(path, "wb") as handle:
+            handle.write(b"x")
+        # A uid this file is guaranteed not to be owned by -- the point
+        # under test is the mismatch itself, not which uid it mismatches.
+        wrong_uid = self._own_uid + 1
+        with mock.patch(
+            "branchleft_slot.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=wrong_uid)
+        ):
+            with mock.patch("branchleft_slot.subprocess.run") as run:
+                with self.assertRaises(bs.RefusedImage):
+                    bs.RealSlotOps().load_image(path)
+        run.assert_not_called()
+
+    def test_refuses_a_missing_path(self):
+        path = self._path("never-written.tar")
+        with mock.patch("branchleft_slot.subprocess.run") as run:
+            with self.assertRaises(bs.RefusedImage):
+                bs.RealSlotOps().load_image(path)
+        run.assert_not_called()
+
+    def test_a_failing_docker_load_propagates_rather_than_being_swallowed(self):
+        path = self._path("image.tar")
+        with open(path, "wb") as handle:
+            handle.write(b"x")
+        with mock.patch(
+            "branchleft_slot.subprocess.run",
+            side_effect=subprocess.CalledProcessError(1, ["docker", "load"]),
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                bs.RealSlotOps().load_image(path)
 
 
 if __name__ == "__main__":
