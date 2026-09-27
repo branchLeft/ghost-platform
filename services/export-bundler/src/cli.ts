@@ -3,18 +3,19 @@ import { createFileDrainFlag } from './drainFlag.js';
 import { createDrainFlagStore, flagPathFor } from './drainFlagStore.js';
 import { createDockerContainerRunner } from './containerRunner.js';
 import { createHttpGhostExportClient } from './ghostExportClient.js';
-import { createBreakGlassMinter } from './breakGlassToken.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
 import { createFileAuditLog } from './auditLog.js';
 import { runExport } from './exportRunner.js';
+import { createPromptedTokenSource } from './operatorToken.js';
+import { createDockerStatusProbe } from './supportAccountProbe.js';
+import { parseSupportGrant, type SupportGrant } from './supportGrant.js';
 
 /**
- * The trigger this story owns: "triggering an export starts that tenant's
- * image on a drained colour...". What calls this -- the portal's own
- * backend -- is not built yet (LLD-8 §08b describes the portal, not this
- * component), so this CLI is the seam a caller invokes today and the
- * portal invokes tomorrow, the same relationship adminApi.ts's own comment
- * describes for /reconcile's Admin API call.
+ * The trigger this story owns, run by a person inside a support grant they
+ * have already opened: this CLI never un-suspends or re-suspends the
+ * support account, and it asks for the break-glass token on stdin once the
+ * export colour is up. What calls this later -- the portal's backend --
+ * is not built yet.
  */
 export interface CliOptions {
   readonly tenantId: string;
@@ -23,32 +24,30 @@ export interface CliOptions {
   readonly image: string;
   readonly volume: string;
   readonly mountPath: string;
-  /** Base64url, 32 raw bytes -- see breakGlassToken.ts. */
-  readonly breakGlassPrivateKey: string;
-  /** Must equal the tenant's own `adapters__sso__BreakGlassSSO__tenant`. */
-  readonly breakGlassTenant: string;
-  /** Must equal the tenant's own `adapters__sso__BreakGlassSSO__supportIdentity`. */
-  readonly breakGlassIdentity: string;
+  readonly grant: SupportGrant;
+  /** The tenant's own `age` recipient, the one its backups are encrypted to. */
+  readonly ageRecipient: string;
   readonly destDir: string;
   readonly flagDir: string;
   readonly auditLogPath: string;
   readonly loopbackPort: number;
   /**
-   * Every other env var the tenant's own container needs (storage
-   * config, `url`, database connection) -- this package renders no
-   * compose file and has no opinion on a tenant's storage tier, so it
-   * takes them verbatim rather than guessing at a sqlite/local-disk
-   * default that would be wrong for a real, paying tenant. In
-   * production these come from the same rendered env a tenant's own
-   * colour already boots with; here they arrive as repeated `--env`
-   * flags.
+   * Every env var the tenant's own container boots with (storage config,
+   * `url`, database connection, the break-glass adapter's settings),
+   * forwarded verbatim to both the status probe and the export colour.
    */
   readonly env: Readonly<Record<string, string>>;
 }
 
-function requireFlag(argv: readonly string[], name: string): string {
+export const SUPPORT_IDENTITY_ENV = 'adapters__sso__BreakGlassSSO__supportIdentity';
+
+function flagValue(argv: readonly string[], name: string): string | undefined {
   const idx = argv.indexOf(`--${name}`);
-  const value = idx >= 0 ? argv[idx + 1] : undefined;
+  return idx >= 0 ? argv[idx + 1] : undefined;
+}
+
+function requireFlag(argv: readonly string[], name: string): string {
+  const value = flagValue(argv, name);
   if (!value) throw new Error(`missing required flag --${name}`);
   return value;
 }
@@ -66,45 +65,60 @@ function collectEnvFlags(argv: readonly string[]): Record<string, string> {
 }
 
 export function parseArgs(argv: readonly string[]): CliOptions {
+  // First, so a missing grant is refused before any other flag is read.
+  const grant = parseSupportGrant(
+    flagValue(argv, 'grant-lane'),
+    flagValue(argv, 'grant-reference')
+  );
+  const env = collectEnvFlags(argv);
+  if (!env[SUPPORT_IDENTITY_ENV]) {
+    throw new Error(
+      `--env ${SUPPORT_IDENTITY_ENV}=<address> is required: it names the support account`
+    );
+  }
   return {
+    grant,
     tenantId: requireFlag(argv, 'tenant-id'),
     requestedBy: requireFlag(argv, 'requested-by'),
     deliveredTo: requireFlag(argv, 'delivered-to'),
     image: requireFlag(argv, 'image'),
     volume: requireFlag(argv, 'volume'),
     mountPath: requireFlag(argv, 'mount-path'),
-    breakGlassPrivateKey: requireFlag(argv, 'break-glass-private-key'),
-    breakGlassTenant: requireFlag(argv, 'break-glass-tenant'),
-    breakGlassIdentity: requireFlag(argv, 'break-glass-identity'),
+    ageRecipient: requireFlag(argv, 'age-recipient'),
     destDir: requireFlag(argv, 'dest-dir'),
     flagDir: requireFlag(argv, 'flag-dir'),
     auditLogPath: requireFlag(argv, 'audit-log'),
     loopbackPort: Number(requireFlag(argv, 'loopback-port')),
-    env: collectEnvFlags(argv),
+    env,
   };
 }
 
 async function main(argv: readonly string[]): Promise<void> {
   const opts = parseArgs(argv);
   const colourId = `${opts.tenantId}-export-${process.pid}`;
+  const supportIdentity = opts.env[SUPPORT_IDENTITY_ENV]!;
+  const volumes = [{ volume: opts.volume, mountPath: opts.mountPath }];
 
   const result = await runExport(
     {
       drainFlags: createDrainFlagStore(opts.flagDir),
       readDrainFlag: (id) => createFileDrainFlag(flagPathFor(opts.flagDir, id)),
+      supportAccount: createDockerStatusProbe({ image: opts.image, env: opts.env, volumes }),
       containerRunner: createDockerContainerRunner({
         containerName: colourId,
         image: opts.image,
         loopbackPort: opts.loopbackPort,
         env: opts.env,
-        volumes: [{ volume: opts.volume, mountPath: opts.mountPath }],
+        volumes,
       }),
       probe: createHttpGhostProbe(2000),
       exportClient: createHttpGhostExportClient(
-        createBreakGlassMinter(
-          Buffer.from(opts.breakGlassPrivateKey, 'base64url'),
-          opts.breakGlassTenant,
-          opts.breakGlassIdentity
+        createPromptedTokenSource(
+          process.stdin,
+          process.stderr,
+          `export-bundler: the export colour is up. Mint a break-glass token now for tenant ` +
+            `"${opts.tenantId}", identity ${supportIdentity}, lifetime 600s or less, ` +
+            `and paste it on one line:`
         ),
         10_000
       ),
@@ -119,15 +133,20 @@ async function main(argv: readonly string[]): Promise<void> {
       deliveredTo: opts.deliveredTo,
       colourId,
       destDir: opts.destDir,
+      grant: opts.grant,
+      supportIdentity,
+      ageRecipient: opts.ageRecipient,
     }
   );
 
   console.log(`export-bundler: wrote ${result.archivePath}`);
+  console.log(`export-bundler: manifest ${result.manifestPath}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main(process.argv.slice(2)).catch((err) => {
-    console.error(`export-bundler: ${(err as Error).message}`);
+    const error = err as Error;
+    console.error(`export-bundler: ${error.name}: ${error.message}`);
     process.exitCode = 1;
   });
 }

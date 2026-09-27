@@ -2,7 +2,20 @@ import { chmod, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createFileAuditLog } from '../../src/auditLog.js';
+import { createFileAuditLog, type ExportAuditEntry } from '../../src/auditLog.js';
+
+function entry(tenantId: string, overrides: Partial<ExportAuditEntry> = {}): ExportAuditEntry {
+  return {
+    tenantId,
+    requestedBy: 'a',
+    occurredAt: '2026-01-01T00:00:00.000Z',
+    contents: [],
+    deliveredTo: 'a',
+    grant: { lane: 'consented', reference: 'staff-log entry' },
+    encryptedTo: 'sha256:abc',
+    ...overrides,
+  };
+}
 
 describe('createFileAuditLog', () => {
   let dir: string;
@@ -15,39 +28,26 @@ describe('createFileAuditLog', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('records who asked, when, what the archive contained, and where it was delivered', async () => {
+  it('records who asked, when, what the archive contained, where it went, the grant it ran under and whom it is encrypted to', async () => {
     const path = join(dir, 'audit.jsonl');
     const log = createFileAuditLog(path);
-
-    await log.record({
-      tenantId: 'tenant-1',
+    const recorded = entry('tenant-1', {
       requestedBy: 'rob@branchleft.co.uk',
-      occurredAt: '2026-01-01T00:00:00.000Z',
       contents: ['content_and_settings', 'post_analytics'],
       deliveredTo: 'rob@branchleft.co.uk',
+      grant: { lane: 'incident', reference: 'incident request 42' },
     });
+
+    await log.record(recorded);
 
     const lines = (await readFile(path, 'utf8')).trim().split('\n');
     expect(lines).toHaveLength(1);
-    expect(JSON.parse(lines[0]!)).toEqual({
-      tenantId: 'tenant-1',
-      requestedBy: 'rob@branchleft.co.uk',
-      occurredAt: '2026-01-01T00:00:00.000Z',
-      contents: ['content_and_settings', 'post_analytics'],
-      deliveredTo: 'rob@branchleft.co.uk',
-    });
+    expect(JSON.parse(lines[0]!)).toEqual(recorded);
   });
 
   it('appends rather than overwriting -- one entry per export, the whole history stays', async () => {
     const path = join(dir, 'audit.jsonl');
     const log = createFileAuditLog(path);
-    const entry = (tenantId: string) => ({
-      tenantId,
-      requestedBy: 'a',
-      occurredAt: '2026-01-01T00:00:00.000Z',
-      contents: [],
-      deliveredTo: 'a',
-    });
 
     await log.record(entry('tenant-1'));
     await log.record(entry('tenant-2'));
@@ -61,22 +61,10 @@ describe('createFileAuditLog', () => {
   it('is never world- or group-readable, even if an earlier run left it looser', async () => {
     const path = join(dir, 'audit.jsonl');
     const log = createFileAuditLog(path);
-    await log.record({
-      tenantId: 'tenant-1',
-      requestedBy: 'a',
-      occurredAt: '2026-01-01T00:00:00.000Z',
-      contents: [],
-      deliveredTo: 'a',
-    });
+    await log.record(entry('tenant-1'));
     await chmod(path, 0o644);
 
-    await log.record({
-      tenantId: 'tenant-2',
-      requestedBy: 'a',
-      occurredAt: '2026-01-01T00:00:00.000Z',
-      contents: [],
-      deliveredTo: 'a',
-    });
+    await log.record(entry('tenant-2'));
 
     const info = await stat(path);
     expect(info.mode & 0o777).toBe(0o600);

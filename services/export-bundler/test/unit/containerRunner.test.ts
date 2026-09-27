@@ -145,6 +145,17 @@ describe('createDockerContainerRunner', () => {
     await expect(runner.start()).rejects.toThrow(/forced failure/);
   });
 
+  it("start()'s rejection never repeats an env value from the docker argv", async () => {
+    const fakeDocker = await writeFakeDocker(dir, { fail: true });
+    const runner = createDockerContainerRunner(
+      { ...spec, env: { database__connection__password: 'synthetic-secret-value' } },
+      fakeDocker
+    );
+    const err = await runner.start().catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).not.toContain('synthetic-secret-value');
+  });
+
   it('stop() rejects, carrying stderr, when docker fails -- never swallowed', async () => {
     const fakeDocker = await writeFakeDocker(dir, { fail: true });
     const runner = createDockerContainerRunner(spec, fakeDocker);

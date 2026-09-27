@@ -19,6 +19,10 @@ export interface ExportAuditEntry {
   readonly occurredAt: string;
   readonly contents: readonly string[];
   readonly deliveredTo: string;
+  /** The support grant the export ran under. */
+  readonly grant: { readonly lane: string; readonly reference: string };
+  /** The fingerprint of the one `age` recipient the archive is encrypted to. */
+  readonly encryptedTo: string;
 }
 
 export interface AuditRecorder {

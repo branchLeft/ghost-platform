@@ -1,60 +1,104 @@
-import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile, chmod } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { encryptToFile } from './ageEncryption.js';
 
 export interface ArchiveFile {
   readonly name: string;
   readonly data: Buffer | string;
 }
 
-/**
- * LLD-8 §08b: "hands back one archive with a manifest saying what is in
- * it and what is not" -- one file, not a directory of loose exports.
- * `tar` is invoked with `execFile` and an explicit argv (never a shell
- * string), the same discipline services/broker/src/wrapper.ts already
- * applies to its own subprocess calls. The archive is written 0600 inside
- * a 0700 directory -- never anywhere world-readable, because a bulk
- * export of a tenant's members and content is exactly the kind of file a
- * stray default umask must not leave group- or world-readable.
- */
-export async function writeTarArchive(
-  destPath: string,
-  files: readonly ArchiveFile[]
-): Promise<void> {
-  const destDir = dirname(destPath);
-  await mkdir(destDir, { recursive: true, mode: 0o700 });
-  // `mode` on `mkdir` only applies when the directory is actually
-  // created -- a directory that already existed (with looser
-  // permissions inherited from whatever created it first) is left
-  // untouched by the call above, so the invariant is enforced
-  // unconditionally here too, the same defensive re-chmod auditLog.ts
-  // applies to its own file.
-  await chmod(destDir, 0o700);
-  const stagingDir = await mkdtemp(join(tmpdir(), 'export-bundler-'));
-  try {
-    for (const file of files) {
-      await writeFile(join(stagingDir, file.name), file.data, { mode: 0o600 });
-    }
-    await new Promise<void>((resolve, reject) => {
-      // Explicit, minimal env -- never the ambient environment (see
-      // containerRunner.ts's own comment; the same discipline applies to
-      // every subprocess this package spawns).
-      execFile(
-        'tar',
-        ['-cf', destPath, '-C', stagingDir, ...files.map((f) => f.name)],
-        { env: { PATH: process.env.PATH ?? '' } },
-        (err, _stdout, stderr) => {
-          if (err) {
-            reject(new Error(`tar failed: ${err.message}: ${stderr}`));
-            return;
-          }
-          resolve();
-        }
-      );
-    });
-    await chmod(destPath, 0o600);
-  } finally {
-    await rm(stagingDir, { recursive: true, force: true });
+export class ArchiveEntryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArchiveEntryError';
   }
+}
+
+const BLOCK = 512;
+// ustar's size field is 11 octal digits.
+const MAX_ENTRY_BYTES = 8 ** 11 - 1;
+const SAFE_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+
+function writeOctal(header: Buffer, value: number, offset: number, width: number): void {
+  header.write(value.toString(8).padStart(width - 1, '0') + '\0', offset, width, 'ascii');
+}
+
+function ustarHeader(name: string, size: number, mtimeSeconds: number): Buffer {
+  const header = Buffer.alloc(BLOCK);
+  header.write(name, 0, 100, 'ascii');
+  writeOctal(header, 0o600, 100, 8);
+  writeOctal(header, 0, 108, 8);
+  writeOctal(header, 0, 116, 8);
+  writeOctal(header, size, 124, 12);
+  writeOctal(header, mtimeSeconds, 136, 12);
+  header.write('        ', 148, 8, 'ascii');
+  header.write('0', 156, 1, 'ascii');
+  header.write('ustar\0', 257, 6, 'ascii');
+  header.write('00', 263, 2, 'ascii');
+  let sum = 0;
+  for (const byte of header) sum += byte;
+  header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+  return header;
+}
+
+/**
+ * A plain ustar archive, built in memory so that the only thing that ever
+ * reaches disk is `age`'s ciphertext of it. Entry names are the fixed,
+ * short names this package chooses, never a filename Ghost supplied, so no
+ * long-name extension is needed.
+ */
+export function buildTar(files: readonly ArchiveFile[], mtimeSeconds: number): Buffer {
+  const parts: Buffer[] = [];
+  const seen = new Set<string>();
+  for (const file of files) {
+    if (!SAFE_NAME.test(file.name) || file.name === '.' || file.name === '..') {
+      throw new ArchiveEntryError(`unsafe archive entry name: ${JSON.stringify(file.name)}`);
+    }
+    if (seen.has(file.name)) {
+      throw new ArchiveEntryError(`duplicate archive entry name: ${file.name}`);
+    }
+    seen.add(file.name);
+    const data = typeof file.data === 'string' ? Buffer.from(file.data, 'utf8') : file.data;
+    if (data.length > MAX_ENTRY_BYTES) {
+      throw new ArchiveEntryError(`archive entry ${file.name} exceeds the ustar size limit`);
+    }
+    parts.push(ustarHeader(file.name, data.length, mtimeSeconds), data);
+    const pad = (BLOCK - (data.length % BLOCK)) % BLOCK;
+    if (pad) parts.push(Buffer.alloc(pad));
+  }
+  parts.push(Buffer.alloc(BLOCK * 2));
+  return Buffer.concat(parts);
+}
+
+async function ensurePrivateDir(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  // `mode` applies only when mkdir creates the directory; an existing one
+  // keeps whatever it had unless tightened here.
+  await chmod(dir, 0o700);
+}
+
+/**
+ * LLD-8 §08b's "one archive with a manifest", encrypted to the tenant's
+ * own `age` recipient. The ciphertext is written 0600 inside a 0700
+ * directory.
+ */
+export async function writeEncryptedArchive(
+  destPath: string,
+  files: readonly ArchiveFile[],
+  mtimeSeconds: number,
+  recipient: string,
+  ageCommand?: string
+): Promise<void> {
+  await ensurePrivateDir(dirname(destPath));
+  await encryptToFile(buildTar(files, mtimeSeconds), recipient, destPath, ageCommand);
+}
+
+/**
+ * The manifest beside the archive, readable without the tenant's key: it
+ * says what the archive holds and to whom it is encrypted, and carries no
+ * tenant content.
+ */
+export async function writeManifestSidecar(destPath: string, manifestJson: string): Promise<void> {
+  await ensurePrivateDir(dirname(destPath));
+  await writeFile(destPath, manifestJson, { mode: 0o600, flag: 'wx' });
 }

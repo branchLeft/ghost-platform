@@ -1,4 +1,4 @@
-import type { BreakGlassMinter } from './breakGlassToken.js';
+import type { BreakGlassTokenSource } from './operatorToken.js';
 
 export interface ExportFile {
   readonly filename: string;
@@ -60,21 +60,24 @@ const FORWARDED_PROTO_HEADERS = { 'X-Forwarded-Proto': 'https' };
  * answer 403 `NoPermissionError`, because "Export database" is not among
  * the "Admin Integration" role's permissions -- only Administrator/Owner
  * carries it). So this authenticates the way `adapters/sso/README.md`'s
- * break-glass adapter does: mint a token, spend it on `/ghost/` to open
- * an Administrator session, then carry that session's cookie on both
- * export requests. See breakGlassToken.ts's own comment for why this is
- * the platform's existing mechanism rather than a new one.
+ * break-glass adapter does: spend an operator-minted token on `/ghost/`
+ * to open the support account's Administrator session, then carry that
+ * session's cookie on both export requests. The adapter opens it only
+ * while the account is active, which is only inside a grant.
  */
 async function openBreakGlassSession(
   baseUrl: string,
-  minter: BreakGlassMinter,
+  tokens: BreakGlassTokenSource,
   timeoutMs: number
 ): Promise<string> {
+  // Obtained before the request timer starts: the operator's time to mint
+  // and hand over the token is not part of the HTTP timeout.
+  const token = await tokens.obtain();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const url = new URL('/ghost/', baseUrl);
-    url.searchParams.set('bl_break_glass', minter.mint());
+    url.searchParams.set('bl_break_glass', token);
     const response = await fetch(url, {
       signal: controller.signal,
       headers: FORWARDED_PROTO_HEADERS,
@@ -141,12 +144,12 @@ async function get(
  * one audited action.
  */
 export function createHttpGhostExportClient(
-  minter: BreakGlassMinter,
+  tokens: BreakGlassTokenSource,
   timeoutMs: number
 ): GhostExportClient {
   let sessionPromise: Promise<string> | undefined;
   function session(baseUrl: string): Promise<string> {
-    sessionPromise ??= openBreakGlassSession(baseUrl, minter, timeoutMs);
+    sessionPromise ??= openBreakGlassSession(baseUrl, tokens, timeoutMs);
     return sessionPromise;
   }
 

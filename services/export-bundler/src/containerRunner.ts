@@ -59,7 +59,8 @@ function run(dockerCommand: string, argv: readonly string[]): Promise<void> {
       { env: { PATH: process.env.PATH ?? '' } },
       (err, _stdout, stderr) => {
         if (err) {
-          reject(new Error(`docker ${argv[0]} failed: ${err.message}: ${stderr}`));
+          // Never err.message: it repeats the whole argv, env values included.
+          reject(new Error(`docker ${argv[0]} failed (exit ${String(err.code)}): ${stderr}`));
           return;
         }
         resolve();

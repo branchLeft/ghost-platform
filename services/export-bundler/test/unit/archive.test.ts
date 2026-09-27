@@ -1,115 +1,142 @@
-import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { writeTarArchive } from '../../src/archive.js';
+import {
+  ArchiveEntryError,
+  buildTar,
+  writeEncryptedArchive,
+  writeManifestSidecar,
+} from '../../src/archive.js';
+import {
+  decryptAge,
+  generateAgeIdentity,
+  tarListing,
+  tarMember,
+  type AgeIdentity,
+} from '../helpers/age.js';
 
-function tarList(path: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      'tar',
-      ['-tf', path],
-      { env: { PATH: process.env.PATH ?? '' } },
-      (err, stdout, stderr) => {
-        if (err) return reject(new Error(`${err.message}: ${stderr}`));
-        resolve(stdout);
-      }
+describe('buildTar', () => {
+  it('round-trips every entry byte-for-byte through the system tar, across block boundaries', () => {
+    const binary = Buffer.alloc(1537);
+    for (let i = 0; i < binary.length; i++) binary[i] = i % 256;
+    const tar = buildTar(
+      [
+        { name: 'content_and_settings.json', data: '{"db":[]}' },
+        { name: 'post_analytics.csv', data: 'post_id,visits\n1,2\n' },
+        { name: 'exact-block.bin', data: Buffer.alloc(512, 7) },
+        { name: 'binary.bin', data: binary },
+        { name: 'empty.txt', data: '' },
+      ],
+      1_700_000_000
     );
+    expect(tar.length % 512).toBe(0);
+    expect(tarListing(tar)).toEqual([
+      'content_and_settings.json',
+      'post_analytics.csv',
+      'exact-block.bin',
+      'binary.bin',
+      'empty.txt',
+    ]);
+    expect(tarMember(tar, 'content_and_settings.json').toString('utf8')).toBe('{"db":[]}');
+    expect(tarMember(tar, 'exact-block.bin').equals(Buffer.alloc(512, 7))).toBe(true);
+    expect(tarMember(tar, 'binary.bin').equals(binary)).toBe(true);
+    expect(tarMember(tar, 'empty.txt').length).toBe(0);
   });
-}
 
-function tarExtract(path: string, member: string, destDir: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      'tar',
-      ['-xf', path, '-C', destDir, member],
-      { env: { PATH: process.env.PATH ?? '' } },
-      (err, _stdout, stderr) => {
-        if (err) return reject(new Error(`${err.message}: ${stderr}`));
-        resolve(join(destDir, member));
-      }
-    );
+  it.each([['../escape'], ['a/b'], [''], ['.'], ['..'], ['x'.repeat(101)], ['spa ce']])(
+    'refuses the unsafe entry name %j',
+    (name) => {
+      expect(() => buildTar([{ name, data: 'x' }], 0)).toThrow(ArchiveEntryError);
+    }
+  );
+
+  it('refuses a duplicate entry name rather than shadowing one file with another', () => {
+    expect(() =>
+      buildTar(
+        [
+          { name: 'a.txt', data: 'one' },
+          { name: 'a.txt', data: 'two' },
+        ],
+        0
+      )
+    ).toThrow(ArchiveEntryError);
   });
-}
 
-describe('writeTarArchive', () => {
+  it('refuses an entry larger than the ustar size field can state', () => {
+    const huge = { length: 8 ** 11 } as unknown as Buffer;
+    expect(() => buildTar([{ name: 'huge.bin', data: huge }], 0)).toThrow(/size limit/);
+  });
+});
+
+describe('writeEncryptedArchive', () => {
   let dir: string;
+  let identity: AgeIdentity;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'export-bundler-archive-test-'));
+    identity = generateAgeIdentity(dir);
   });
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('bundles every named file into one archive, byte-for-byte', async () => {
-    const dest = join(dir, 'out.tar');
-    await writeTarArchive(dest, [
-      { name: 'ghost.json', data: '{"db":[]}' },
-      { name: 'ghost.analytics.csv', data: 'post_id,visits\n1,2\n' },
-      { name: 'manifest.json', data: '{"tenantId":"t1"}' },
-    ]);
-
-    const listing = await tarList(dest);
-    expect(listing).toContain('ghost.json');
-    expect(listing).toContain('ghost.analytics.csv');
-    expect(listing).toContain('manifest.json');
-
-    const extractDir = join(dir, 'extracted');
-    await mkdir(extractDir);
-    const extracted = await tarExtract(dest, 'ghost.json', extractDir);
-    const content = await readFile(extracted, 'utf8');
-    expect(content).toBe('{"db":[]}');
-  });
-
-  it('writes the archive 0600 and its directory 0700 -- never world-readable', async () => {
-    const dest = join(dir, 'sub', 'out.tar');
-    await writeTarArchive(dest, [{ name: 'a.txt', data: 'x' }]);
-
-    const fileInfo = await stat(dest);
-    expect(fileInfo.mode & 0o777).toBe(0o600);
-    const dirInfo = await stat(join(dir, 'sub'));
-    expect(dirInfo.mode & 0o777).toBe(0o700);
-  });
-
-  it("rejects, carrying tar's own stderr, when the archive step fails -- never swallowed", async () => {
-    // A destination that is itself a directory is a `tar -cf` failure
-    // (cannot write an archive over a directory) without needing any
-    // Docker or filesystem trickery to provoke.
-    const destAsDirectory = join(dir, 'not-actually-a-file');
-    await mkdir(destAsDirectory);
-    await expect(writeTarArchive(destAsDirectory, [{ name: 'a.txt', data: 'x' }])).rejects.toThrow(
-      /tar failed/
+  it("writes an age ciphertext that decrypts, with the tenant's identity, to the tar of every file", async () => {
+    const dest = join(dir, 'out', 'export.tar.age');
+    await writeEncryptedArchive(
+      dest,
+      [
+        { name: 'content_and_settings.json', data: '{"db":[]}' },
+        { name: 'manifest.json', data: '{"tenantId":"t1"}' },
+      ],
+      0,
+      identity.recipient
     );
+    const onDisk = await readFile(dest);
+    expect(onDisk.subarray(0, 21).toString('ascii')).toBe('age-encryption.org/v1');
+    const tar = decryptAge(dest, identity.identityPath);
+    expect(tarListing(tar)).toEqual(['content_and_settings.json', 'manifest.json']);
+    expect(tarMember(tar, 'content_and_settings.json').toString('utf8')).toBe('{"db":[]}');
   });
 
-  it("falls back to an empty PATH, rather than throwing on read, when this process's own PATH is unset", async () => {
-    const savedPath = process.env.PATH;
-    delete process.env.PATH;
-    try {
-      // No PATH means `tar` cannot be found -- this exercises the `?? ''`
-      // fallback itself (a real string, not `undefined`, reaches
-      // execFile's env), and the resulting ENOENT surfaces as the same
-      // "tar failed" rejection every other tar failure does.
-      await expect(
-        writeTarArchive(join(dir, 'out.tar'), [{ name: 'a.txt', data: 'x' }])
-      ).rejects.toThrow(/tar failed/);
-    } finally {
-      process.env.PATH = savedPath;
-    }
-  });
-
-  it('tightens a destination directory that already existed with looser permissions -- mkdir alone does not fix an existing dir', async () => {
-    const { mkdir: rawMkdir, chmod } = await import('node:fs/promises');
+  it('writes the archive 0600 and its directory 0700, tightening a directory that already existed looser', async () => {
     const preexisting = join(dir, 'preexisting');
-    await rawMkdir(preexisting, { mode: 0o755 });
-    await chmod(preexisting, 0o755); // some filesystems apply umask despite the mode above
+    await mkdir(preexisting, { mode: 0o755 });
+    await chmod(preexisting, 0o755);
+    const dest = join(preexisting, 'export.tar.age');
+    await writeEncryptedArchive(dest, [{ name: 'a.txt', data: 'x' }], 0, identity.recipient);
+    expect((await stat(dest)).mode & 0o777).toBe(0o600);
+    expect((await stat(preexisting)).mode & 0o777).toBe(0o700);
+  });
 
-    await writeTarArchive(join(preexisting, 'out.tar'), [{ name: 'a.txt', data: 'x' }]);
+  it('never overwrites an existing file at the destination', async () => {
+    const dest = join(dir, 'export.tar.age');
+    await writeFile(dest, 'already here');
+    await expect(
+      writeEncryptedArchive(dest, [{ name: 'a.txt', data: 'x' }], 0, identity.recipient)
+    ).rejects.toThrow(/EEXIST/);
+    expect(await readFile(dest, 'utf8')).toBe('already here');
+  });
+});
 
-    const dirInfo = await stat(preexisting);
-    expect(dirInfo.mode & 0o777).toBe(0o700);
+describe('writeManifestSidecar', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'export-bundler-sidecar-test-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('writes the manifest 0600, in a 0700 directory, and never over an existing file', async () => {
+    const dest = join(dir, 'sub', 'export.manifest.json');
+    await writeManifestSidecar(dest, '{"a":1}');
+    expect(await readFile(dest, 'utf8')).toBe('{"a":1}');
+    expect((await stat(dest)).mode & 0o777).toBe(0o600);
+    expect((await stat(join(dir, 'sub'))).mode & 0o777).toBe(0o700);
+    await expect(writeManifestSidecar(dest, '{"b":2}')).rejects.toThrow(/EEXIST/);
   });
 });

@@ -8,9 +8,21 @@ export interface ManifestGap {
   readonly reason: string;
 }
 
+/**
+ * How the archive is encrypted. The recipient is a public key, so naming it
+ * discloses nothing; the fingerprint is what the audit record carries.
+ */
+export interface ManifestEncryption {
+  readonly encrypted: true;
+  readonly format: 'age';
+  readonly recipient: string;
+  readonly recipientFingerprint: string;
+}
+
 export interface ExportManifest {
   readonly tenantId: string;
   readonly generatedAt: string;
+  readonly encryption: ManifestEncryption;
   readonly included: readonly ManifestEntry[];
   readonly excluded: readonly ManifestGap[];
 }
@@ -50,8 +62,9 @@ export const KNOWN_EXPORT_GAPS: readonly ManifestGap[] = [
 export function buildManifest(
   tenantId: string,
   generatedAtIso: string,
+  encryption: ManifestEncryption,
   included: readonly ManifestEntry[],
   excluded: readonly ManifestGap[] = KNOWN_EXPORT_GAPS
 ): ExportManifest {
-  return { tenantId, generatedAt: generatedAtIso, included, excluded };
+  return { tenantId, generatedAt: generatedAtIso, encryption, included, excluded };
 }

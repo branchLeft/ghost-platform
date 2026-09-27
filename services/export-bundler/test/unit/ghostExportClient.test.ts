@@ -6,7 +6,7 @@ import {
   GhostExportError,
   BreakGlassSessionError,
 } from '../../src/ghostExportClient.js';
-import type { BreakGlassMinter } from '../../src/breakGlassToken.js';
+import type { BreakGlassTokenSource } from '../../src/operatorToken.js';
 
 interface Listening {
   baseUrl: string;
@@ -99,13 +99,13 @@ function listen(opts: {
   });
 }
 
-function fakeMinter(): BreakGlassMinter & { mintCalls: number } {
+function fakeTokens(): BreakGlassTokenSource & { obtainCalls: number } {
   let n = 0;
   return {
-    mintCalls: 0,
-    mint() {
+    obtainCalls: 0,
+    async obtain() {
       n += 1;
-      this.mintCalls = n;
+      this.obtainCalls = n;
       return `fake-token-${n}`;
     },
   };
@@ -123,7 +123,7 @@ describe('createHttpGhostExportClient', () => {
     const listening = await listen({});
     close = listening.close;
 
-    const client = createHttpGhostExportClient(fakeMinter(), 5000);
+    const client = createHttpGhostExportClient(fakeTokens(), 5000);
     const file = await client.fetchContentAndSettings(listening.baseUrl);
 
     expect(listening.requests[0]?.url).toContain('/ghost/?bl_break_glass=fake-token-1');
@@ -137,7 +137,7 @@ describe('createHttpGhostExportClient', () => {
     const listening = await listen({});
     close = listening.close;
 
-    const file = await createHttpGhostExportClient(fakeMinter(), 5000).fetchPostAnalytics(
+    const file = await createHttpGhostExportClient(fakeTokens(), 5000).fetchPostAnalytics(
       listening.baseUrl
     );
     expect(file.filename).toBe('tenant.ghost.analytics.2026-01-01.csv');
@@ -147,8 +147,8 @@ describe('createHttpGhostExportClient', () => {
   it('opens exactly one session and reuses it for both exports -- one audited action, not two break-glass spends', async () => {
     const listening = await listen({});
     close = listening.close;
-    const minter = fakeMinter();
-    const client = createHttpGhostExportClient(minter, 5000);
+    const tokens = fakeTokens();
+    const client = createHttpGhostExportClient(tokens, 5000);
 
     await Promise.all([
       client.fetchContentAndSettings(listening.baseUrl),
@@ -159,13 +159,26 @@ describe('createHttpGhostExportClient', () => {
       r.url.startsWith('/ghost/?bl_break_glass=')
     );
     expect(breakGlassRequests).toHaveLength(1);
-    expect(minter.mintCalls).toBe(1);
+    expect(tokens.obtainCalls).toBe(1);
+  });
+
+  it("does not count the operator's time to hand over the token against the HTTP timeout", async () => {
+    const listening = await listen({});
+    close = listening.close;
+    const slowTokens: BreakGlassTokenSource = {
+      obtain: () => new Promise((resolve) => setTimeout(() => resolve('slow-token'), 300)),
+    };
+    const file = await createHttpGhostExportClient(slowTokens, 100).fetchContentAndSettings(
+      listening.baseUrl
+    );
+    expect(file.body.toString('utf8')).toBe('{"db":[]}');
+    expect(listening.requests[0]?.url).toContain('bl_break_glass=slow-token');
   });
 
   it('falls back to application/octet-stream when the export response carries no content-type header', async () => {
     const listening = await listen({ omitContentType: true });
     close = listening.close;
-    const file = await createHttpGhostExportClient(fakeMinter(), 5000).fetchContentAndSettings(
+    const file = await createHttpGhostExportClient(fakeTokens(), 5000).fetchContentAndSettings(
       listening.baseUrl
     );
     expect(file.contentType).toBe('application/octet-stream');
@@ -176,7 +189,7 @@ describe('createHttpGhostExportClient', () => {
     close = listening.close;
 
     await expect(
-      createHttpGhostExportClient(fakeMinter(), 5000).fetchContentAndSettings(listening.baseUrl)
+      createHttpGhostExportClient(fakeTokens(), 5000).fetchContentAndSettings(listening.baseUrl)
     ).rejects.toThrow(BreakGlassSessionError);
   });
 
@@ -184,7 +197,7 @@ describe('createHttpGhostExportClient', () => {
     const listening = await listen({ refuseBreakGlass: true, refuseWithEmptyBody: true });
     close = listening.close;
     try {
-      await createHttpGhostExportClient(fakeMinter(), 5000).fetchContentAndSettings(
+      await createHttpGhostExportClient(fakeTokens(), 5000).fetchContentAndSettings(
         listening.baseUrl
       );
       throw new Error('expected fetchContentAndSettings to throw');
@@ -198,7 +211,7 @@ describe('createHttpGhostExportClient', () => {
     const listening = await listen({ denyExport: true });
     close = listening.close;
     await expect(
-      createHttpGhostExportClient(fakeMinter(), 5000).fetchContentAndSettings(listening.baseUrl)
+      createHttpGhostExportClient(fakeTokens(), 5000).fetchContentAndSettings(listening.baseUrl)
     ).rejects.toThrow(GhostExportError);
   });
 
@@ -206,7 +219,7 @@ describe('createHttpGhostExportClient', () => {
     const listening = await listen({ refuseBreakGlass: true });
     close = listening.close;
     try {
-      await createHttpGhostExportClient(fakeMinter(), 5000).fetchContentAndSettings(
+      await createHttpGhostExportClient(fakeTokens(), 5000).fetchContentAndSettings(
         listening.baseUrl
       );
       throw new Error('expected fetchContentAndSettings to throw');
