@@ -10,8 +10,8 @@
  * draws the identical line for the same reason: "an ack means the drainer
  * took responsibility for the message, not that anyone received it."
  * Relaying mx1's real delivery outcome back through this pipeline is a
- * mechanism LLD-6 §09 leaves undecided -- Rob's call, not built here (see
- * the PR body's "Open for the owner" section).
+ * separately planned mechanism, deliberately out of this service's own
+ * scope: this tracker records submission to mx1, never delivery.
  */
 export interface SubmittedTracker {
   has(id: string): boolean;
