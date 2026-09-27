@@ -1,4 +1,7 @@
 import { createRequire } from 'node:module';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
@@ -36,9 +39,61 @@ describe('FakeVerdictClient', () => {
     expect(verdict.classification).toBe('test');
   });
 
-  it('never returns unavailable: the in-process fake has no timeout or channel outage to model', async () => {
+  it('never returns unavailable for a digest not named in `unavailable`', async () => {
     const client = new FakeVerdictClient();
     const verdict = await client.getVerdict('anything');
     expect(verdict.classification).not.toBe('unavailable');
+  });
+
+  describe('the hold branch: simulating a channel with no answer yet', () => {
+    it('returns unavailable for a digest named in `unavailable`', async () => {
+      const client = new FakeVerdictClient({ unavailable: ['held-digest'] });
+      const verdict = await client.getVerdict('held-digest');
+      expect(verdict.classification).toBe('unavailable');
+      expect(verdict.evidence).toBe('held-digest');
+    });
+
+    it('deliverVerdict makes a later call answer definitively, in-process', async () => {
+      const client = new FakeVerdictClient({ unavailable: ['held-digest'] });
+      expect((await client.getVerdict('held-digest')).classification).toBe('unavailable');
+
+      client.deliverVerdict('held-digest', { classification: 'no-known-match' });
+
+      const resolved = await client.getVerdict('held-digest');
+      expect(resolved.classification).toBe('no-known-match');
+      expect(resolved.evidence).toBe('held-digest');
+    });
+
+    it('a resolvePath file answers a held digest without deliverVerdict, for a driver in a different process', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'verdict-resolve-'));
+      try {
+        const client = new FakeVerdictClient({ unavailable: ['held-digest'], resolvePath: dir });
+        expect((await client.getVerdict('held-digest')).classification).toBe('unavailable');
+
+        await fs.writeFile(
+          path.join(dir, 'held-digest.json'),
+          JSON.stringify({ classification: 'harmful-abusive-material', matchType: 'exact' })
+        );
+
+        const resolved = await client.getVerdict('held-digest');
+        expect(resolved.classification).toBe('harmful-abusive-material');
+        expect(resolved.matchType).toBe('exact');
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('a missing or malformed resolvePath file reads as still unavailable, never throws', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'verdict-resolve-'));
+      try {
+        const client = new FakeVerdictClient({ unavailable: ['held-digest'], resolvePath: dir });
+        expect((await client.getVerdict('held-digest')).classification).toBe('unavailable');
+
+        await fs.writeFile(path.join(dir, 'held-digest.json'), 'not json');
+        expect((await client.getVerdict('held-digest')).classification).toBe('unavailable');
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    });
   });
 });
