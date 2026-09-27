@@ -101,31 +101,31 @@ safe against every code path for the whole bake window — only against the
 paths that suite exercises. Whether the register of what the gate set
 checks needs to grow to cover the bulk-mail path, or whether the design
 should route any release containing a rename/drop against a table on the
-mail-send path the way it already routes irreversible migrations, is Rob's
-call per the issue's open question — this measurement changes the answer to
-"no, not unconditionally," which the issue asked for.
+mail-send path the way it already routes irreversible migrations, is the
+owner's call per the issue's open question — this measurement changes the
+answer to "no, not unconditionally," which the issue asked for.
 
 ## Dated note for LLD-4 (ghost-platform-docs, out of this worktree's scope)
 
 This worktree and PR are confined to `branchLeft/ghost-platform`; the design
 doc lives in the private `ghost-platform-docs` repo, which this session has
-no access to edit. The following is drafted for whoever applies it, to go
-under LLD-4 §08 near U7 (`04-version-and-upgrades.html`):
+no access to edit. The following is text to apply there, under LLD-4 §08
+near U7 (`04-version-and-upgrades.html`) — dated and headed per that repo's
+own convention when it is applied, not here:
 
-> **2026-09-27, measured (branchLeft/workspace#1249):** U7's "the old colour
-> stays drained for the whole bake window ... keeps rollback a flag change"
-> was tested against the real first bump range, 6.55.0 → 6.65.0 (ten
-> minors), on real MySQL 8.0.46 and SQLite containers. The prescribed smoke
-> suite (owner session, publish, render, member sign-in) passes on blue
-> throughout, on both engines — U7 holds for that coverage. It does not hold
-> unconditionally: the range ships a real migration
-> (`6.58/…-rename-email-batches-provider-id.js`) renaming
+> U7's "the old colour stays drained for the whole bake window ... keeps
+> rollback a flag change" was tested against the real first bump range,
+> 6.55.0 → 6.65.0 (ten minors), on real MySQL 8.0.46 and SQLite containers.
+> The prescribed smoke suite (owner session, publish, render, member
+> sign-in) passes on blue throughout, on both engines — U7 holds for that
+> coverage. It does not hold unconditionally: the range ships a real
+> migration (`6.58/…-rename-email-batches-provider-id.js`) renaming
 > `email_batches.provider_id`, a column `batch-sending-service.js:612-614`
 > (U5's own batch-claim mechanism) writes on every successful send. The
 > write was reproduced failing against the real migrated schema
 > (`ERROR 1054: Unknown column 'provider_id'`) and, paired as a control,
 > succeeding against an identical unmigrated database. No smoke-suite check
-> reaches this path. **Open question for Rob, unresolved by this
+> reaches this path. **Open question for the owner, unresolved by this
 > measurement:** does the gate set need a check on the mail-send path, or
 > does a rename/drop touching a mail-send table route like an irreversible
 > migration? Script: `ghost-platform/scripts/measure-1249-schema-drift.sh`.
