@@ -89,10 +89,12 @@ SLOT_NAME_PATTERN = re.compile(r"\A[0-9]+\Z")
 # a wildcard would authorise the same argument-injection shape this file
 # refuses everywhere else, since it matches spaces exactly as freely as any
 # other character. The broker itself never sends anything else; the second
-# layer that refuses a path this rule was not written for is
-# `services/broker/src/plugins/dockerImageLoader.ts`, which resolves
-# (`realpath`) whatever path it is given and checks it before ever
-# reaching this wrapper at all.
+# layer that refuses an invocation this rule was not written for is
+# `branchleft_slot.parse_invocation`, running as root on the other side of
+# this grant -- `services/broker/src/plugins/dockerImageLoader.ts`'s own
+# `realpath` check runs inside the broker, the untrusted principal this
+# boundary exists to constrain, so it is bug defence for that process, not
+# a second layer this file can rely on.
 IMAGE_STAGING_DIR = "/var/lib/branchleft-broker/image-tmp"
 IMAGE_STAGING_FILENAME = "image.tar"
 IMAGE_LOAD_INVOCATION = f"load {IMAGE_STAGING_DIR}/{IMAGE_STAGING_FILENAME}"

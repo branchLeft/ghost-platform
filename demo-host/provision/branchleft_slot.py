@@ -45,13 +45,28 @@ exactly) -- anything else is refused by `parse_invocation` before this
 process does anything at all; the sudoers grant itself only ever offers
 this one process that one literal invocation to begin with; and what this
 process does with it does not trust the path's name a second time --
-`RealSlotOps.load_image` opens that exact path with `O_NOFOLLOW` (a symlink
-at the leaf is refused by the kernel, not followed), `fstat`s the open
+`RealSlotOps.load_image` opens that exact path with `O_NOFOLLOW` and
+`O_NONBLOCK` (a symlink at the leaf is refused by the kernel rather than
+followed; a FIFO returns at once rather than blocking this process, which
+runs as root, until some writer chooses to appear), `fstat`s the open
 descriptor (never a second `stat()` on the path, which would reopen the
-TOCTOU window `O_NOFOLLOW` exists to close) to require a regular file owned
-by the broker account, and only then streams that already-open descriptor
-into `docker load`'s stdin -- so nothing downstream of the open ever
-resolves the path again for docker, or anything else, to race.
+TOCTOU window `O_NOFOLLOW` exists to close) to require a regular file,
+under `IMAGE_LOAD_MAX_BYTES`, owned by the broker account, and only then
+streams that already-open descriptor into `docker load`'s stdin, under
+`IMAGE_LOAD_TIMEOUT_SECONDS`.
+
+**What this actually pins, precisely.** `IMAGE_STAGING_DIR` is provisioned
+broker-owned (host build, and `services/broker/src/server.ts`'s own
+`mkdir`), so nothing here rules out the broker renaming that directory and
+putting a symlink where it was, or simply writing whatever bytes it likes
+at the literal path in the first place -- `O_NOFOLLOW` refuses a symlink at
+the exact leaf, not a swapped parent. The check that actually holds the
+boundary is `st_uid == broker`: a root-owned file is never reachable this
+way no matter what the broker does to the directory, and a broker-owned
+file is exactly the power the broker already had before `load` existed.
+"Loads nothing else" means precisely that -- never a file the broker does
+not itself own -- not that the literal path names one unchanging file on
+disk.
 """
 
 from __future__ import annotations
@@ -89,6 +104,17 @@ LOAD = "load"
 IMAGE_STAGING_DIR = "/var/lib/branchleft-broker/image-tmp"
 IMAGE_STAGING_FILENAME = "image.tar"
 IMAGE_LOAD_PATH = f"{IMAGE_STAGING_DIR}/{IMAGE_STAGING_FILENAME}"
+
+# Root-side bounds `RealSlotOps.load_image` enforces on its own, regardless
+# of whatever the broker's own `BROKER_IMAGE_MAX_BYTES`/wrapper-timeout did
+# or did not catch -- a compromised broker skips its own checks, so this
+# process cannot rely on them either. The byte figure matches that
+# setting's own default in `services/broker/src/config.ts` (duplicated,
+# not imported, for the same reason every other literal here is); the
+# timeout is generous for a real multi-hundred-MB image load, not tuned to
+# any one measured run.
+IMAGE_LOAD_MAX_BYTES = 4 * 1024 * 1024 * 1024
+IMAGE_LOAD_TIMEOUT_SECONDS = 300
 
 # Where a slot's own management state lives, and the systemd unit name
 # shape LLD-2 §02 names directly ("systemctl start|stop the corresponding
@@ -217,23 +243,39 @@ class RealSlotOps:
 
     def load_image(self, path: str) -> None:
         """Opens `path` (always `IMAGE_LOAD_PATH` -- `parse_invocation`
-        accepts no other value) with `O_NOFOLLOW`, so a symlink planted at
-        that exact leaf is refused by the kernel's own open(2) rather than
-        followed; `fstat`s the resulting descriptor -- never a second
+        accepts no other value) with `O_NOFOLLOW` and `O_NONBLOCK`: a
+        symlink planted at that exact leaf is refused by the kernel's own
+        open(2) rather than followed, and a FIFO planted there returns at
+        once instead of blocking this process -- which runs as root --
+        until some writer chooses to appear (a compromised broker can
+        `mkfifo` at this path exactly as easily as it can write a regular
+        file). `fstat`s the resulting descriptor -- never a second
         `os.stat(path)`, which would re-resolve the name and reopen exactly
-        the race `O_NOFOLLOW` closes -- and requires a regular file owned by
-        the broker account. Only the verified, already-open descriptor is
-        ever handed to `docker load`, on its stdin, so docker itself never
-        resolves `path` a second time either.
+        the race `O_NOFOLLOW` closes -- and requires a regular file, no
+        larger than `IMAGE_LOAD_MAX_BYTES`, owned by the broker account.
+        `O_NONBLOCK` is cleared again before `docker load` ever reads the
+        descriptor (a regular file's reads are never actually blocking
+        regardless of the flag, but clearing it leaves nothing for a future
+        reader of this code to wonder about), and the load itself runs
+        under `IMAGE_LOAD_TIMEOUT_SECONDS` -- `subprocess.run` kills the
+        child on expiry rather than leaving a hung `docker load` behind.
+        Only the verified, already-open descriptor is ever handed to
+        `docker load`, on its stdin, so docker itself never resolves `path`
+        a second time either.
         """
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except OSError as exc:
             raise RefusedImage(f"refused: cannot open {path!r}: {exc}") from exc
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode):
                 raise RefusedImage(f"refused: {path!r} is not a regular file")
+            if info.st_size > IMAGE_LOAD_MAX_BYTES:
+                raise RefusedImage(
+                    f"refused: {path!r} is {info.st_size} bytes, over the "
+                    f"{IMAGE_LOAD_MAX_BYTES}-byte limit this wrapper enforces on its own"
+                )
             try:
                 broker_uid = pwd.getpwnam(BROKER_USER).pw_uid
             except KeyError as exc:
@@ -245,7 +287,11 @@ class RealSlotOps:
                     f"refused: {path!r} is owned by uid {info.st_uid}, not the "
                     f"{BROKER_USER!r} account (uid {broker_uid})"
                 )
-            subprocess.run(["docker", "load"], stdin=fd, check=True)
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+            subprocess.run(
+                ["docker", "load"], stdin=fd, check=True, timeout=IMAGE_LOAD_TIMEOUT_SECONDS
+            )
         finally:
             os.close(fd)
 

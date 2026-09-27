@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -436,7 +437,7 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
 
         captured: dict[str, bytes] = {}
 
-        def fake_run(argv, *, stdin, check):
+        def fake_run(argv, *, stdin, check, timeout):
             captured["bytes"] = os.read(stdin, len(content) + 1)
             return SimpleNamespace(returncode=0)
 
@@ -445,6 +446,7 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], ["docker", "load"])
         self.assertTrue(run.call_args.kwargs["check"])
+        self.assertEqual(run.call_args.kwargs["timeout"], bs.IMAGE_LOAD_TIMEOUT_SECONDS)
         self.assertEqual(captured["bytes"], content)
 
     def test_refuses_a_symlink_at_the_exact_path_without_following_it(self):
@@ -502,6 +504,59 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
             side_effect=subprocess.CalledProcessError(1, ["docker", "load"]),
         ):
             with self.assertRaises(subprocess.CalledProcessError):
+                bs.RealSlotOps().load_image(path)
+
+    def test_refuses_a_fifo_at_the_exact_path_without_blocking(self):
+        # A compromised broker can `mkfifo` at the fixed path exactly as
+        # easily as it can write a regular file -- without `O_NONBLOCK`,
+        # root's own `open(2)` blocks until a writer appears, which never
+        # happens here. `signal.alarm` guards the test itself: a regression
+        # fails this test loudly and fast rather than hanging the whole
+        # suite (or a real host's root process) waiting on nothing.
+        fifo_path = self._path("image.tar")
+        os.mkfifo(fifo_path)
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError("load_image blocked opening a FIFO with no writer")
+
+        previous_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(5)
+        try:
+            with mock.patch("branchleft_slot.subprocess.run") as run:
+                with self.assertRaises(bs.RefusedImage):
+                    bs.RealSlotOps().load_image(fifo_path)
+            run.assert_not_called()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+    def test_refuses_a_regular_file_over_the_size_cap(self):
+        path = self._path("image.tar")
+        with open(path, "wb") as handle:
+            handle.write(b"x")
+        with mock.patch.object(bs, "IMAGE_LOAD_MAX_BYTES", 0):
+            with mock.patch("branchleft_slot.subprocess.run") as run:
+                with self.assertRaises(bs.RefusedImage):
+                    bs.RealSlotOps().load_image(path)
+        run.assert_not_called()
+
+    def test_docker_load_runs_under_the_wall_clock_timeout(self):
+        path = self._path("image.tar")
+        with open(path, "wb") as handle:
+            handle.write(b"x")
+        with mock.patch("branchleft_slot.subprocess.run") as run:
+            bs.RealSlotOps().load_image(path)
+        self.assertEqual(run.call_args.kwargs["timeout"], bs.IMAGE_LOAD_TIMEOUT_SECONDS)
+
+    def test_a_docker_load_timeout_propagates_rather_than_leaving_it_hung(self):
+        path = self._path("image.tar")
+        with open(path, "wb") as handle:
+            handle.write(b"x")
+        with mock.patch(
+            "branchleft_slot.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["docker", "load"], bs.IMAGE_LOAD_TIMEOUT_SECONDS),
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired):
                 bs.RealSlotOps().load_image(path)
 
 
