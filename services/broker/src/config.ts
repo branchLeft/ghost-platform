@@ -96,8 +96,9 @@ function positiveInteger(env: BrokerEnv, name: string, fallback: number, max: nu
 }
 
 /**
- * The one place `BROKER_DEMO_ZONE`/`BROKER_PLATFORM_ZONE`/`BROKER_OWNED_DOMAINS`
- * are read. Exported so a plugin loaded by `loadPlugin` (which only ever
+ * The one place `BROKER_DEMO_ZONE`/`BROKER_PLATFORM_ZONE`/`BROKER_OWNED_DOMAINS`/
+ * `BROKER_DEMO_MAIL_DOMAIN`/`BROKER_MAIL_SPOOL_BASE_URL` are read. Exported so
+ * a plugin loaded by `loadPlugin` (which only ever
  * `import()`s a module path and reads its default export -- it has no
  * channel to receive `BrokerConfig.zones` directly) can call the exact
  * same parsing this module uses, rather than keeping its own copy that
@@ -111,6 +112,8 @@ export function zonesFromEnv(env: BrokerEnv): ZoneConfig {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    demoMailDomain: requireEnv(env, 'BROKER_DEMO_MAIL_DOMAIN'),
+    mailSpoolBaseUrl: requireEnv(env, 'BROKER_MAIL_SPOOL_BASE_URL'),
   };
 }
 
