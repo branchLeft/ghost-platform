@@ -118,9 +118,15 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     async read(options) {
       const key = options && typeof options === 'object' ? options.path : options;
       if (this.#isHeld(key)) {
-        const err = new Error('Could not find image.');
-        err.code = 'ENOENT';
-        throw err;
+        // A typed Ghost error, not a plain one, for the same reason
+        // refusal-error.js's does: a plain Error is wrapped as a 500 that
+        // tells whoever is resizing the platform is broken, where a
+        // NotFoundError -- exactly what a genuinely-missing image gets --
+        // is wrapped as a clean 404. Measured against a real Ghost 6.55.0:
+        // a plain Error here produced an uncaught 500 from
+        // handle-image-sizes.js, not the graceful "no derivative" outcome
+        // this decorator means to produce.
+        throw new GhostErrors.NotFoundError({ message: 'Could not find image.' });
       }
       return this.wrapped.read(options);
     }

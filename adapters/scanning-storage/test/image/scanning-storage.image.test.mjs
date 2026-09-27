@@ -477,22 +477,30 @@ describe('the hold branch (D34), against a real Ghost', () => {
         const originalPath = new URL(held.body.images[0].url).pathname;
         const sizePath = originalPath.replace('/content/images/', '/content/images/size/w600/');
 
-        assert.notEqual(
+        assert.equal(
           await ghost.getStatus(originalPath),
-          200,
+          404,
           'a held upload must return 201 and a URL, but that URL must serve nothing yet'
         );
-        assert.notEqual(
+        assert.equal(
           await ghost.getStatus(sizePath, { followRedirects: false }),
-          200,
+          404,
           'a responsive-size request for a held original must not return an image'
+        );
+        // Not just "the response wasn't 200": handleImageSizes must never
+        // even get bytes to resize, so no derivative is written to disk at
+        // all while the original is unverified.
+        assert.deepEqual(
+          ghost.ls('/var/lib/ghost/content/images/size/w600/2026/09'),
+          [],
+          'a held original must never produce a derivative on disk'
         );
 
         // The control case: a held object that never clears is never served.
         await sleep(2500);
-        assert.notEqual(
+        assert.equal(
           await ghost.getStatus(originalPath),
-          200,
+          404,
           'a held object that never gets a verdict must still not be served'
         );
 
