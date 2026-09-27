@@ -63,3 +63,5 @@ Comments state what the code cannot: a constraint, an invariant, a reason a naiv
 ## Publishing
 
 Don't run `npm publish` locally. Releases are triggered by pushing a `v*.*.*` tag and handled entirely by [publish-tenant-package.yml](.github/workflows/publish-tenant-package.yml).
+
+<!-- scratch probe app-separation-2, do not merge -->
