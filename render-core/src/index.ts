@@ -38,10 +38,12 @@ export type {
   GateSpec,
   HostnameSpec,
   LimitsSpec,
+  MailSpec,
   MediaSpec,
   PortTriple,
   ResourceCaps,
   SafetySpec,
+  SendingIdentitySpec,
   TenantDescriptor,
   TenantKind,
   TransportSpec,
@@ -79,12 +81,15 @@ export {
   renderSettings,
   renderIdentity,
 } from './render.js';
-export type { EdgeGate, EdgeSiteBlock } from './edge.js';
+export type { EdgeGate, EdgeSiteBlock, ScriptHash, ThemeCsp } from './edge.js';
+export { validateScriptHash, THEME_CSP_UNAVAILABLE } from './edge.js';
 export type { GhostSettings, CodeInjectionSettings } from './settings.js';
 export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
 export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
+export { renderSendingAddress, sendingDomainOf } from './mail.js';
+export { renderDrainList } from './drain.js';
 export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
 export type { ComposeStackArgs, DemoDataMount } from './compose.js';
 export {
@@ -118,3 +123,4 @@ export {
   assertAttributablePromotionDiff,
   transform,
 } from './transform.js';
+export { intendedGhostVersion } from './version.js';

@@ -1,0 +1,11 @@
+{
+  "name": "csp-proof",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "description": "Headless-browser live proof for the strict content policy (branchLeft/workspace#1238). Not part of the repo's build or published packages -- run by hand (csp/proof/run-proof.sh) against a real Docker pair, never in CI, since it needs a Chromium download and Docker-in-Docker either way.",
+  "type": "module",
+  "devDependencies": {
+    "playwright": "^1.56.0"
+  }
+}
