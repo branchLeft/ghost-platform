@@ -85,6 +85,14 @@ jobs:
       - name: Widget pin verification tests
         run: node --test --experimental-test-coverage widgets/verify-pins.test.mjs
 
+      # The CSP script-hash derivation tool -- the DETERMINISM case proves a
+      # drifted theme script would no longer match a pinned golden hash.
+      # Only node:test and node:crypto, like the widget pin check above; the
+      # live browser proof (csp/proof/) needs Docker and a Chromium
+      # download, so it stays out of CI, like widgets/proof/.
+      - name: CSP script-hash derivation tests
+        run: node --test --experimental-test-coverage csp/derive/derive-script-hashes.test.mjs
+
       # Self-test first: a matcher that has quietly stopped matching passes
       # every file, so prove it still works before trusting a pass. The scan
       # then walks the tree rather than taking a list of changed files --
