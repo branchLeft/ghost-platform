@@ -39,8 +39,13 @@ export class FakeWrappedAdapter extends FakeStorageBase {
     return url.replace('https://example.test/content/images/', '');
   }
 
+  // A real serve() middleware answers the request directly on a hit; it
+  // does not call next(). Marking the response lets a test tell "the real
+  // middleware ran" apart from "masked and passed through to next()".
   serve() {
-    return (req, res, next) => next();
+    return (req, res) => {
+      res.served = true;
+    };
   }
 }
 

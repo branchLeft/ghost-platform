@@ -18,21 +18,20 @@ to. It is inert until a tenant's config selects it for a storage feature.
 
 This story builds the decorator, its `save()`/`saveRaw()` interception, the
 `Check`/`Verdict`/`Policy` seams the rest of the safety toolbox plugs into,
-and an in-process `VerdictClient` test double. It does **not** build:
+an in-process `VerdictClient` test double, and the hold/promote mechanism
+(D34) that accepts an upload with no verdict and serves nothing until
+one arrives. It does **not** build:
 
 - **The real verdict channel.** The safety service that Arachnid-checks a
   hash lives in a separate repo, built by a separate story (owner ruling:
   workspace#1266). `ScanningStorageAdapter.js` constructs a `FakeVerdictClient`
   from its own config until that story lands; nothing here guesses that
-  channel's wire format or transport.
-- **The hold branch (D34).** When a verdict channel times out or is
-  unreachable, the high-level design's own ruling is to accept the upload and
-  hold the bytes unserved until a verdict arrives, never to refuse. The
-  in-process fake verdict client is always reachable and always synchronous,
-  so this branch is never exercised through it, and this decorator has no
-  promote-on-clean-verdict mechanism. `Policy.decide` can still return
-  `'hold'` (or `'flag'`, for the advisory/text route), and the adapter fails
-  loudly rather than guessing a behaviour if it ever sees one.
+  channel's wire format or transport. Because there is no real channel, "a
+  later verdict arrives" can only mean one thing this decorator can observe:
+  the same in-process `VerdictClient` answering differently on a later call
+  (`src/hold.js` polls for that). `Policy.decide` can still return `'flag'`,
+  for the advisory/text route, and the adapter fails loudly rather than
+  guessing a behaviour if it ever sees one.
 - **A behaviour for video (`storage:media`) or arbitrary files
   (`storage:files`).** PDQ is an image hash; the design names video as
   undesigned (issue's own open question, deferred to Rob via
@@ -68,8 +67,11 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__wrappedConfig__*` | Passed straight through to the wrapped adapter's own constructor (e.g. `storage__images__wrappedConfig__bucket` for `S3Storage`). `LocalImagesStorage`/`LocalMediaStorage`/`LocalFilesStorage` ignore it; they always self-configure from Ghost's own `getContentPath`. |
 | `storage__images__quarantinePath` | Where a refused upload's bytes are written, named by digest. Always local disk, regardless of which adapter is wrapped -- quarantine is never the served location. |
 | `storage__images__refuse` | A JSON object of `digest -> {classification, matchType}`, seeding the in-process fake verdict client. Empty or unset refuses nothing. |
+| `storage__images__unavailable` | A JSON array of digests the fake verdict client answers `'unavailable'` for, until told otherwise -- proves D34's hold branch, with no real channel to simulate an outage or a timeout through. Empty or unset holds nothing. |
+| `storage__images__resolvePath` | A directory the fake verdict client polls for `<digest>.json` files, letting an image-test driver in a separate process "deliver" a verdict for a held digest by writing one. Never used outside the image-test harness. |
+| `storage__images__holdRetryMs` | How often a held digest is re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 
-The same four keys apply under `storage__media__*` and `storage__files__*`.
+The same seven keys apply under `storage__media__*` and `storage__files__*`.
 Wrapping `media`/`files` today only makes sense once a `Check` exists for
 that content type; until then it is configuration with no effect.
 
@@ -89,6 +91,33 @@ ships `blocking: true`; its hash primitive is injected (`src/pdq.js`'s
 `digestBytes`, a SHA-256 stand-in -- PDQ itself is incidental to this design
 and proving near-duplicate matching is the verdict channel's job, not this
 decorator's).
+
+### The hold branch (D34)
+
+A `'hold'` decision never throws: the upload is accepted and returns a URL,
+and `src/hold.js` polls the same checks against the held digest until a
+definitive answer arrives -- there being no real channel, that is the only
+way "later" can mean anything here. `'allow'` promotes; `'refuse'` moves it
+to quarantine permanently, exactly as a synchronous match would, with no one
+left waiting to hear about it. A digest that never resolves stays held
+forever; nothing here ever decides to serve on a stale or absent verdict.
+
+The mechanism differs by backend, because unlike a bucket, this adapter is
+still consulted on every read of local disk:
+
+- **Local** (`storage__*__wraps=Local*Storage`): the real bytes are written
+  through the wrapped adapter immediately, and `exists()`/`read()`/`serve()`
+  withhold them from every caller until promoted -- a real, adapter-correct
+  URL for free, at the cost of masking every read while held. Promoting is
+  then only ever lifting the mask; a later refuse deletes the real copy
+  too, so nothing lingers, masked, in the served tree.
+- **Object storage** (`wrappedConfig.bucket` set -- `S3Storage`'s shape): the
+  wrapped adapter is never asked to write until promotion. This decorator
+  computes the eventual target itself, named by digest rather than through
+  the wrapped adapter's own `getUniqueFileName`, because two different held
+  uploads sharing an original filename would otherwise both compute as free
+  and collide on promotion. The URL is built from the same `wrappedConfig`
+  the real adapter was constructed with (`cdnUrl`, or `endpoint` + `bucket`).
 
 ## What Ghost's extension point does, and the traps in it
 
@@ -141,3 +170,13 @@ so each upload hashes exactly one set of bytes, rather than the processed
 and untouched-original copies Ghost otherwise saves separately with
 different bytes -- a real property of Ghost's own upload path, not of this
 decorator, and orthogonal to what these tests prove.
+
+The same file also proves the hold branch (D34) on both tiers, with the
+verdict client configured to never answer (`storage__images__unavailable`):
+an upload still returns 201 and a URL; that URL, an on-demand size request
+for it, and -- on the object-storage tier -- a direct read of the bucket key
+all return nothing; and a held object that never clears is never served (the
+control case). Delivering a clean verdict from the test driver, a separate
+process from the container, uses `storage__images__resolvePath` (see
+`src/verdict-client.js`'s own comment) rather than anything that guesses the
+real channel's wire format.

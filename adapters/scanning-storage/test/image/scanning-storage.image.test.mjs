@@ -22,6 +22,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -63,7 +64,12 @@ function sha256Hex(buffer) {
 }
 
 class GhostContainer {
-  static async start(env = {}) {
+  // `volumes`: [{host, container}] bind mounts. Used only by the hold-branch
+  // tests, to let this test driver -- a separate process from the container
+  // -- "deliver" a verdict for a held digest by writing a file the fake
+  // verdict client polls for (verdict-client.js's own comment explains why
+  // this is a test seam, never a guess at the real channel's wire format).
+  static async start(env = {}, { volumes = [] } = {}) {
     const port = await freePort();
     const name = `scan-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const fullEnv = {
@@ -77,6 +83,10 @@ class GhostContainer {
       ...env,
     };
     const envArgs = Object.entries(fullEnv).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+    const volumeArgs = volumes.flatMap(({ host, container: containerPath }) => [
+      '-v',
+      `${host}:${containerPath}`,
+    ]);
     docker(
       'create',
       '--name',
@@ -86,6 +96,7 @@ class GhostContainer {
       '-p',
       `127.0.0.1:${port}:2368`,
       ...envArgs,
+      ...volumeArgs,
       IMAGE
     );
     const container = new GhostContainer(name, port);
@@ -420,6 +431,159 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
       } finally {
         ghost.stop();
         double.stop();
+      }
+    }
+  );
+});
+
+// D34: accept on no verdict, serve nothing until a clean one, on both
+// storage backends. The verdict client is configured to never answer
+// (storage__images__unavailable) rather than made to hang --
+// the synchronous timeout race is already proven by the refusal tests
+// above and by checks.js's own unit tests; duplicating it here would only
+// slow down every run of this suite. A clean verdict is delivered from
+// this test driver -- a separate process from the container -- by writing
+// a file the fake verdict client polls for (storage__images__resolvePath;
+// see verdict-client.js's own comment for why this is a test seam, never a
+// guess at the real channel's wire format).
+describe('the hold branch (D34), against a real Ghost', () => {
+  it(
+    'local backend: accepts the held upload, withholds the original and a size variant until a clean verdict, and never serves an object that never clears',
+    { timeout: 150_000 },
+    async () => {
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const heldDigest = sha256Hex(cleanBytes);
+      const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-resolve-'));
+
+      const ghost = await GhostContainer.start(
+        {
+          storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__wraps: 'LocalImagesStorage',
+          storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__images__unavailable: JSON.stringify([heldDigest]),
+          storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
+          storage__images__holdRetryMs: '1000',
+        },
+        { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
+      );
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const held = await ghost.uploadImage(cookie, path.join(FIXTURES, 'clean.png'), 'held.png');
+        assert.equal(held.status, 201, JSON.stringify(held.body));
+        const originalPath = new URL(held.body.images[0].url).pathname;
+        const sizePath = originalPath.replace('/content/images/', '/content/images/size/w600/');
+
+        assert.notEqual(
+          await ghost.getStatus(originalPath),
+          200,
+          'a held upload must return 201 and a URL, but that URL must serve nothing yet'
+        );
+        assert.notEqual(
+          await ghost.getStatus(sizePath, { followRedirects: false }),
+          200,
+          'a responsive-size request for a held original must not return an image'
+        );
+
+        // The control case: a held object that never clears is never served.
+        await sleep(2500);
+        assert.notEqual(
+          await ghost.getStatus(originalPath),
+          200,
+          'a held object that never gets a verdict must still not be served'
+        );
+
+        fs.writeFileSync(
+          path.join(resolveHostDir, `${heldDigest}.json`),
+          JSON.stringify({ classification: 'no-known-match' })
+        );
+        await sleep(6000);
+
+        assert.equal(await ghost.getStatus(originalPath), 200, 'a promoted object must now serve');
+        assert.equal(
+          await ghost.getStatus(sizePath, { followRedirects: false }),
+          200,
+          'a responsive-size request must now return the derivative'
+        );
+      } finally {
+        ghost.stop();
+        fs.rmSync(resolveHostDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    'object-storage backend: never writes to the bucket while held -- not yet written at all, not merely unlinked -- and promotion is a write',
+    { timeout: 150_000 },
+    async () => {
+      const double = await S3MockDouble.start();
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const heldDigest = sha256Hex(cleanBytes);
+      const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-resolve-'));
+
+      const ghost = await GhostContainer.start(
+        {
+          storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__wraps: 'S3Storage',
+          storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__images__unavailable: JSON.stringify([heldDigest]),
+          storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
+          storage__images__holdRetryMs: '1000',
+          storage__images__wrappedConfig__bucket: double.bucket,
+          storage__images__wrappedConfig__staticFileURLPrefix: 'content/images',
+          storage__images__wrappedConfig__cdnUrl: `http://host.docker.internal:${double.port}/${double.bucket}`,
+          storage__images__wrappedConfig__endpoint: `http://host.docker.internal:${double.port}`,
+          storage__images__wrappedConfig__region: 'us-east-1',
+          storage__images__wrappedConfig__forcePathStyle: 'true',
+          storage__images__wrappedConfig__accessKeyId: 'scanning-storage-test',
+          storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
+          storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
+          storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
+        },
+        { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
+      );
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const held = await ghost.uploadImage(cookie, path.join(FIXTURES, 'clean.png'), 'held.png');
+        assert.equal(held.status, 201, JSON.stringify(held.body));
+        const key = new URL(held.body.images[0].url).pathname.replace(`/${double.bucket}/`, '');
+
+        assert.equal(
+          await double.objectExists(key),
+          false,
+          'a held object must not be written to the bucket at all'
+        );
+
+        // The control case: a held object that never clears is never served.
+        await sleep(2500);
+        assert.equal(
+          await double.objectExists(key),
+          false,
+          'a held object that never gets a verdict must still not be in the bucket'
+        );
+
+        fs.writeFileSync(
+          path.join(resolveHostDir, `${heldDigest}.json`),
+          JSON.stringify({ classification: 'no-known-match' })
+        );
+        await sleep(2500);
+
+        assert.equal(
+          await double.objectExists(key),
+          true,
+          'promotion is a write: the bucket now holds the object'
+        );
+      } finally {
+        ghost.stop();
+        double.stop();
+        fs.rmSync(resolveHostDir, { recursive: true, force: true });
       }
     }
   );
