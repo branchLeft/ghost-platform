@@ -38,3 +38,37 @@ Wherever `DRAIN_FLAG_PATH` lives:
 Where the flag directory sits, who owns it, and what else can write to it
 are host placement decisions this service has no opinion on and makes no
 claim about; that is the fixed-slots story's territory, not this one's.
+
+## `GET /metrics` — per-tenant health and version
+
+Hand-rolled Prometheus text exposition, scraped rather than held — the
+estate already scrapes Prometheus targets, so this is that same transport
+again, not a new one (see `ghost-platform-docs/19-try-it-now-design/
+08-portal.html` §09, and the cross-document review's P2 on not growing a
+second transport where one is already named).
+
+- `drain_sidecar_drained` — always present: `1` if the drain flag is set,
+  `0` otherwise.
+- `drain_sidecar_ghost_version_info{version="…"}` — Ghost's own reported
+  version (read from its unauthenticated admin site endpoint), present
+  **only when this colour is undrained**.
+- `drain_sidecar_version_match` — `1`/`0`, present only when this colour is
+  undrained *and* both an intended and a reported version are known.
+
+That gating is the whole point: "the reported version is read from the
+undrained colour" (LLD-8 §09, load-bearing) is enforced once, in
+`versionState.ts`, by never producing a `reported` value at all for a
+drained colour — not left to whatever queries these two colours' metrics
+later to get right. A mismatch on the drained colour is not a stuck
+tenant; it is the definition of "the version being retired", and this
+endpoint never reports one.
+
+The intended version comes from `GHOST_INTENDED_VERSION`, an optional
+environment variable this service does not set itself — a caller renders
+it from the tenant descriptor's own `image` field via render-core's
+`intendedGhostVersion()` before starting this process. Unset,
+`/metrics` still reports Ghost's own version; it just cannot say whether
+that matches anything. Ghost's admin site endpoint is
+`GHOST_ADMIN_SITE_URL`, defaulting to `/ghost/api/admin/site/` on
+`GHOST_HEALTH_URL`'s own origin — the same loopback call `GET /healthz`
+already makes to the same Ghost.
