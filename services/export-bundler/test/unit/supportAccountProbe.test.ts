@@ -25,7 +25,7 @@ async function writeFakeDocker(dir: string, lines: readonly string[]): Promise<s
   return path;
 }
 
-const ACTIVE_ADMIN = `echo 'BL_SUPPORT_STATUS {"status":"active","roles":["Administrator"]}'`;
+const ACTIVE_ADMIN = `echo 'BL_SUPPORT_STATUS {"account":{"status":"active","roles":["Administrator"]},"sendsInFlight":0}'`;
 
 describe('buildStatusProbeArgs', () => {
   const args = buildStatusProbeArgs(spec, 'support@tenant.test');
@@ -58,9 +58,12 @@ describe('buildStatusProbeArgs', () => {
 });
 
 describe('STATUS_PROBE_SCRIPT', () => {
-  it('reads only: it selects status and role names and has no call that writes a row', () => {
+  it('reads only: it selects the account and counts in-flight sends, and has no call that writes a row', () => {
     expect(STATUS_PROBE_SCRIPT).toContain(
       ".select('users.status as status', 'roles.name as role')"
+    );
+    expect(STATUS_PROBE_SCRIPT).toContain(
+      "knex('emails').where('status', 'submitting').count('id as n')"
     );
     expect(STATUS_PROBE_SCRIPT).not.toMatch(
       /\.(update|insert|del|delete|truncate|increment|decrement|raw|upsert)\(/
@@ -69,24 +72,39 @@ describe('STATUS_PROBE_SCRIPT', () => {
   });
 });
 
+const line = (payload: string) => `BL_SUPPORT_STATUS ${payload}\n`;
+
 describe('parseStatusProbeOutput', () => {
-  it('reads the account from the marker line, ignoring anything Ghost logged around it', () => {
+  it('reads the account and the in-flight count from the marker line, ignoring anything Ghost logged', () => {
     expect(
-      parseStatusProbeOutput('noise\nBL_SUPPORT_STATUS {"status":"inactive","roles":["Owner"]}\n')
-    ).toEqual({ status: 'inactive', roles: ['Owner'] });
+      parseStatusProbeOutput(
+        'noise\n' + line('{"account":{"status":"inactive","roles":["Owner"]},"sendsInFlight":2}')
+      )
+    ).toEqual({ account: { status: 'inactive', roles: ['Owner'] }, sendsInFlight: 2 });
   });
 
-  it('reads null as an account that does not exist', () => {
-    expect(parseStatusProbeOutput('BL_SUPPORT_STATUS null\n')).toBeNull();
+  it('reads a null account as one that does not exist', () => {
+    expect(parseStatusProbeOutput(line('{"account":null,"sendsInFlight":0}'))).toEqual({
+      account: null,
+      sendsInFlight: 0,
+    });
   });
 
   it.each([
     ['nothing at all', ''],
-    ['a malformed line', 'BL_SUPPORT_STATUS {oops\n'],
-    ['a bare status string', 'BL_SUPPORT_STATUS "active"\n'],
-    ['a non-string status', 'BL_SUPPORT_STATUS {"status":1,"roles":[]}\n'],
-    ['roles that are not a list', 'BL_SUPPORT_STATUS {"status":"active","roles":"Owner"}\n'],
-    ['a non-string role', 'BL_SUPPORT_STATUS {"status":"active","roles":[1]}\n'],
+    ['a malformed line', line('{oops')],
+    ['a bare null', line('null')],
+    ['no account key', line('{"sendsInFlight":0}')],
+    ['no send count', line('{"account":null}')],
+    ['a negative send count', line('{"account":null,"sendsInFlight":-1}')],
+    ['a fractional send count', line('{"account":null,"sendsInFlight":1.5}')],
+    ['a string send count', line('{"account":null,"sendsInFlight":"0"}')],
+    ['a non-string status', line('{"account":{"status":1,"roles":[]},"sendsInFlight":0}')],
+    [
+      'roles that are not a list',
+      line('{"account":{"status":"active","roles":"Owner"},"sendsInFlight":0}'),
+    ],
+    ['a non-string role', line('{"account":{"status":"active","roles":[1]},"sendsInFlight":0}')],
   ])('refuses %s as unreadable', (_label, stdout) => {
     expect(() => parseStatusProbeOutput(stdout)).toThrow(SupportAccountStatusUnreadableError);
   });
@@ -109,8 +127,13 @@ describe('createDockerStatusProbe', () => {
       `for a in "$@"; do printf '%s\\n' "$a" >> '${argvLog}'; done`,
       ACTIVE_ADMIN,
     ]);
-    const account = await createDockerStatusProbe(spec, fake).readAccount('support@tenant.test');
-    expect(account).toEqual({ status: 'active', roles: ['Administrator'] });
+    const preflight = await createDockerStatusProbe(spec, fake).readPreflight(
+      'support@tenant.test'
+    );
+    expect(preflight).toEqual({
+      account: { status: 'active', roles: ['Administrator'] },
+      sendsInFlight: 0,
+    });
     const logged = (await readFile(argvLog, 'utf8')).trimEnd();
     expect(logged).toBe(buildStatusProbeArgs(spec, 'support@tenant.test').join('\n'));
   });
@@ -118,7 +141,7 @@ describe('createDockerStatusProbe', () => {
   it('refuses as unreadable when docker fails, carrying the exit code and stderr, not the argv', async () => {
     const fake = await writeFakeDocker(dir, ['echo "fake docker: forced failure" >&2', 'exit 3']);
     const err = await createDockerStatusProbe(spec, fake)
-      .readAccount('support@tenant.test')
+      .readPreflight('support@tenant.test')
       .catch((e: unknown) => e as Error);
     expect(err).toBeInstanceOf(SupportAccountStatusUnreadableError);
     expect((err as Error).message).toContain('docker exited 3: fake docker: forced failure');
@@ -128,7 +151,7 @@ describe('createDockerStatusProbe', () => {
   it('refuses as unreadable when the probe prints no status', async () => {
     const fake = await writeFakeDocker(dir, ['echo hello']);
     await expect(
-      createDockerStatusProbe(spec, fake).readAccount('support@tenant.test')
+      createDockerStatusProbe(spec, fake).readPreflight('support@tenant.test')
     ).rejects.toThrow(SupportAccountStatusUnreadableError);
   });
 
@@ -140,7 +163,7 @@ describe('createDockerStatusProbe', () => {
     ]);
     process.env.EXPORT_BUNDLER_TEST_ENV_PROBE = 'must-not-leak';
     try {
-      await createDockerStatusProbe(spec, fake).readAccount('support@tenant.test');
+      await createDockerStatusProbe(spec, fake).readPreflight('support@tenant.test');
     } finally {
       delete process.env.EXPORT_BUNDLER_TEST_ENV_PROBE;
     }
@@ -151,7 +174,7 @@ describe('createDockerStatusProbe', () => {
     const saved = process.env.PATH;
     delete process.env.PATH;
     try {
-      await expect(createDockerStatusProbe(spec).readAccount('x')).rejects.toThrow(
+      await expect(createDockerStatusProbe(spec).readPreflight('x')).rejects.toThrow(
         SupportAccountStatusUnreadableError
       );
     } finally {

@@ -14,6 +14,7 @@ import type { AuditRecorder } from './auditLog.js';
 import { assertAgeRecipient, recipientFingerprint } from './ageEncryption.js';
 import {
   assertIsSupportRole,
+  assertNoSendInFlight,
   assertSupportAccountActive,
   parseSupportGrant,
   SupportAccountNotActiveError,
@@ -89,10 +90,13 @@ export async function runExport(
 ): Promise<ExportResult> {
   const grant = parseSupportGrant(request.grant.lane, request.grant.reference);
   assertAgeRecipient(request.ageRecipient);
-  const account = await deps.supportAccount.readAccount(request.supportIdentity);
+  const { account, sendsInFlight } = await deps.supportAccount.readPreflight(
+    request.supportIdentity
+  );
   if (account === null) throw new SupportAccountNotActiveError(request.supportIdentity, null);
   assertIsSupportRole(request.supportIdentity, account.roles);
   assertSupportAccountActive(request.supportIdentity, account.status);
+  assertNoSendInFlight(sendsInFlight);
 
   // A new colour always boots drained (LLD-4 §U3b/§U7): the flag is set
   // before anything starts, then re-read rather than trusted, so this

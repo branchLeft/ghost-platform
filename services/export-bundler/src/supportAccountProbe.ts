@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { tenantContainerArgs, type TenantContainerConfig } from './containerRunner.js';
-import type { SupportAccount, SupportAccountStatusReader } from './supportGrant.js';
+import type { Preflight, SupportAccount, SupportAccountStatusReader } from './supportGrant.js';
 
 export class SupportAccountStatusUnreadableError extends Error {
   constructor(detail: string) {
@@ -21,23 +21,28 @@ const STATUS_MARKER = 'BL_SUPPORT_STATUS ';
  * Runs inside the tenant's own image, through Ghost's own database
  * connection module, so it reads whatever database the tenant's colour
  * would (SQLite or MySQL, with the TLS settings rendered for Ghost) without
- * this package holding a driver or parsing a connection string. One SELECT
- * of the account's status and role names; nothing here writes.
+ * this package holding a driver or parsing a connection string. Two reads:
+ * the account's status and role names, and how many newsletters are
+ * mid-send. Nothing here writes.
  */
 export const STATUS_PROBE_SCRIPT = [
   "process.chdir('/var/lib/ghost');",
   "const knex = require('/var/lib/ghost/current/core/server/data/db/connection');",
-  "knex('users')",
-  "  .leftJoin('roles_users', 'roles_users.user_id', 'users.id')",
-  "  .leftJoin('roles', 'roles.id', 'roles_users.role_id')",
-  "  .where('users.email', process.argv[1])",
-  "  .select('users.status as status', 'roles.name as role')",
-  '  .then((rows) => {',
+  'Promise.all([',
+  "  knex('users')",
+  "    .leftJoin('roles_users', 'roles_users.user_id', 'users.id')",
+  "    .leftJoin('roles', 'roles.id', 'roles_users.role_id')",
+  "    .where('users.email', process.argv[1])",
+  "    .select('users.status as status', 'roles.name as role'),",
+  "  knex('emails').where('status', 'submitting').count('id as n'),",
+  '])',
+  '  .then(([rows, sends]) => {',
   '    const account = rows.length === 0 ? null : {',
   '      status: rows[0].status,',
   '      roles: rows.map((r) => r.role).filter((r) => typeof r === "string"),',
   '    };',
-  `    process.stdout.write('${STATUS_MARKER}' + JSON.stringify(account) + '\\n');`,
+  '    const sendsInFlight = Number(sends[0].n);',
+  `    process.stdout.write('${STATUS_MARKER}' + JSON.stringify({ account, sendsInFlight }) + '\\n');`,
   '  })',
   "  .catch((err) => { process.stderr.write(String(err && err.message) + '\\n'); process.exitCode = 2; })",
   '  .finally(() => knex.destroy());',
@@ -66,7 +71,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function parseStatusProbeOutput(stdout: string): SupportAccount | null {
+function parseAccount(value: unknown): SupportAccount | null {
+  if (value === null) return null;
+  if (
+    !isRecord(value) ||
+    typeof value.status !== 'string' ||
+    !Array.isArray(value.roles) ||
+    !value.roles.every((r) => typeof r === 'string')
+  ) {
+    throw new SupportAccountStatusUnreadableError('the probe printed an unexpected account shape');
+  }
+  return { status: value.status, roles: value.roles as string[] };
+}
+
+export function parseStatusProbeOutput(stdout: string): Preflight {
   const line = stdout
     .split('\n')
     .reverse()
@@ -80,16 +98,16 @@ export function parseStatusProbeOutput(stdout: string): SupportAccount | null {
   } catch {
     throw new SupportAccountStatusUnreadableError('the probe printed a malformed status line');
   }
-  if (parsed === null) return null;
-  if (
-    !isRecord(parsed) ||
-    typeof parsed.status !== 'string' ||
-    !Array.isArray(parsed.roles) ||
-    !parsed.roles.every((r) => typeof r === 'string')
-  ) {
-    throw new SupportAccountStatusUnreadableError('the probe printed an unexpected account shape');
+  if (!isRecord(parsed) || !('account' in parsed)) {
+    throw new SupportAccountStatusUnreadableError('the probe printed an unexpected shape');
   }
-  return { status: parsed.status, roles: parsed.roles as string[] };
+  const sendsInFlight = parsed.sendsInFlight;
+  if (typeof sendsInFlight !== 'number' || !Number.isInteger(sendsInFlight) || sendsInFlight < 0) {
+    throw new SupportAccountStatusUnreadableError(
+      'the probe printed no usable in-flight send count'
+    );
+  }
+  return { account: parseAccount(parsed.account), sendsInFlight };
 }
 
 export function createDockerStatusProbe(
@@ -97,7 +115,7 @@ export function createDockerStatusProbe(
   dockerCommand = 'docker'
 ): SupportAccountStatusReader {
   return {
-    readAccount(identity) {
+    readPreflight(identity) {
       return new Promise((resolve, reject) => {
         execFile(
           dockerCommand,

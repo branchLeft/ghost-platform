@@ -102,6 +102,41 @@ recipientFingerprint }`, where the fingerprint is the SHA-256 of the
 recipient string. The audit record carries the same fingerprint and the
 SHA-256 of the ciphertext file, binding the record to one archive.
 
+## The export colour sends nothing and schedules nothing
+
+The export colour is a second Ghost process on the tenant's live database.
+`colourIsolation.ts` overrides the tenant's environment so that, as far as
+Ghost 6.55's own settings allow, it acts on nothing:
+
+- **Mail:** `mail__transport=stub`, Ghost's own no-op transport, with every
+  `mail__*` key dropped. **Bulk email:** a `bulkEmail__mailgun__*` sink at a
+  refused loopback port. Configured bulk email takes precedence over the
+  Mailgun settings in the database, so those are never used.
+- **Scheduler:** Ghost has no setting that stops it. The platform image ships
+  a no-op adapter, `ghost-adapter/SchedulingDisabled.js` (the Dockerfile
+  copies it into Ghost's internal scheduling adapters directory), and the
+  colour selects it with `adapters__scheduling__active`. It reschedules
+  nothing on boot and runs no job, so no scheduled post, scheduled newsletter
+  or automation step fires from the colour. An image without the adapter
+  fails to boot the colour, so the export fails closed.
+- **Recurring jobs:** `backgroundJobs__emailAnalytics` and
+  `backgroundJobs__clickTrackingLastSeenAtUpdater` are false, and the update
+  check is off.
+- **Stripe:** `WEBHOOK_SECRET` (random per run) keeps Ghost's webhook manager
+  in local mode, so it never touches the tenant's Stripe webhook.
+- **In-flight newsletters:** on every boot, Ghost resumes a newsletter it
+  records as mid-send or marks it failed, and no setting stops it. The
+  pre-flight therefore refuses with `NewsletterSendInFlightError` while any
+  send is in flight.
+
+What Ghost still does on the colour's boot, with no setting to stop it, is
+the same as any colour boot on this platform. The daily member and gift
+clean-up jobs fire at a random time between 00:00 and 06:00, and could land
+inside an export window. There is a one-in-four chance the milestone check
+runs at boot. Expired gifts are processed, and the ActivityPub webhook rows
+and the Stripe billing-portal configuration are reconciled. Any mail these
+paths try to send goes to the stub.
+
 ## The audit record
 
 One JSON line per export, written in a single append and fsynced. If it

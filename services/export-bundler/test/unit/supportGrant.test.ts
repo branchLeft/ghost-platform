@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertIsSupportRole,
+  assertNoSendInFlight,
+  NewsletterSendInFlightError,
   NotTheSupportAccountError,
   assertSupportAccountActive,
   GHOST_ACTIVE_STATES,
@@ -86,5 +88,23 @@ describe('assertIsSupportRole', () => {
     expect(caught).toBeInstanceOf(NotTheSupportAccountError);
     expect((caught as NotTheSupportAccountError).roles).toEqual(roles);
     expect((caught as Error).message).toMatch(/nothing was started/);
+  });
+});
+
+describe('assertNoSendInFlight', () => {
+  it('passes when no newsletter is mid-send', () => {
+    expect(() => assertNoSendInFlight(0)).not.toThrow();
+  });
+
+  it.each([[1], [2], [40]])('refuses %i in-flight send(s) as NewsletterSendInFlightError', (n) => {
+    let caught: unknown;
+    try {
+      assertNoSendInFlight(n);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(NewsletterSendInFlightError);
+    expect((caught as NewsletterSendInFlightError).count).toBe(n);
+    expect((caught as Error).message).toMatch(/Nothing was started/);
   });
 });

@@ -22,6 +22,7 @@ import {
 } from '../../src/ageEncryption.js';
 import {
   NoSupportGrantError,
+  NewsletterSendInFlightError,
   NotTheSupportAccountError,
   SupportAccountNotActiveError,
   type SupportGrant,
@@ -55,6 +56,7 @@ function fakeDeps(overrides: {
   supportStatus?: string | null;
   supportRoles?: readonly string[];
   auditFails?: boolean;
+  sendsInFlight?: number;
   flagIsSet?: boolean;
   containerFails?: boolean;
   probeHealthy?: boolean;
@@ -128,11 +130,15 @@ function fakeDeps(overrides: {
     },
     readDrainFlag: () => flag,
     supportAccount: {
-      async readAccount(identity) {
+      async readPreflight(identity) {
         recording.accountReads.push(identity);
         const status = overrides.supportStatus === undefined ? 'active' : overrides.supportStatus;
-        if (status === null) return null;
-        return { status, roles: overrides.supportRoles ?? ['Administrator'] };
+        const sendsInFlight = overrides.sendsInFlight ?? 0;
+        if (status === null) return { account: null, sendsInFlight };
+        return {
+          account: { status, roles: overrides.supportRoles ?? ['Administrator'] },
+          sendsInFlight,
+        };
       },
     },
     containerRunner,
@@ -329,6 +335,16 @@ describe('runExport', () => {
         runExport(deps, request({ supportIdentity: 'owner@tenant-1.test' }))
       ).rejects.toThrow(NotTheSupportAccountError);
       expect(recording.accountReads).toEqual(['owner@tenant-1.test']);
+      expectNothingStarted(recording);
+      expect(await readdir(destDir)).toEqual([]);
+    }
+  );
+
+  it.each([[1], [3]])(
+    'refuses -- NewsletterSendInFlightError -- while %i newsletter send(s) are in flight, before anything is started',
+    async (count) => {
+      const { deps, recording } = fakeDeps({ sendsInFlight: count });
+      await expect(runExport(deps, request())).rejects.toThrow(NewsletterSendInFlightError);
       expectNothingStarted(recording);
       expect(await readdir(destDir)).toEqual([]);
     }

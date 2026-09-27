@@ -56,6 +56,14 @@ COPY --chown=node:node adapters/sso/ghost-core-overlay/session-from-token.js /va
 # (storage__images__adapter=ScanningStorageAdapter and so on).
 COPY --chown=node:node adapters/scanning-storage/src/ /var/lib/ghost/current/core/server/adapters/storage/
 
+# The export colour's no-op scheduler (services/export-bundler/README.md). Ghost
+# has no setting that stops its scheduler; this adapter is the off switch, and
+# it is inert until a colour's config sets
+# adapters__scheduling__active=SchedulingDisabled -- which only the export
+# bundler's colour does. Internal adapters directory, never content: a tenant
+# can write to content.
+COPY --chown=node:node services/export-bundler/ghost-adapter/SchedulingDisabled.js services/export-bundler/ghost-adapter/scheduling-disabled.js /var/lib/ghost/current/core/server/adapters/scheduling/
+
 COPY docker-entrypoint.branchleft.sh /usr/local/bin/docker-entrypoint.branchleft.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.branchleft.sh
 

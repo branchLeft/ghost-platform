@@ -155,6 +155,24 @@ if (op === 'create-support') {
   db.prepare('insert into roles_users (id, role_id, user_id) values (?, ?, ?)').run(crypto.randomBytes(12).toString('hex'), role.id, id);
 } else if (op === 'set-status') {
   db.prepare('update users set status = ? where email = ?').run(status, email);
+} else if (op === 'schedule-post') {
+  // Copies a seeded published post (with its author link, which Ghost's
+  // publish path loads) into a new post scheduled `email` seconds from now,
+  // stored the way Ghost stores one: status scheduled, published_at in UTC.
+  // The original stays published, so the exports still have content.
+  const src = db.prepare("select id from posts where type = 'post' and status = 'published' order by created_at limit 1").get();
+  const id = crypto.randomBytes(12).toString('hex');
+  const at = new Date(Date.now() + Number(email) * 1000).toISOString().replace('T', ' ').slice(0, 19);
+  db.prepare('create temp table sp as select * from posts where id = ?').run(src.id);
+  db.prepare("update sp set id = ?, uuid = ?, slug = ?, title = 'Scheduled during export', status = 'scheduled', published_at = ?, newsletter_id = null").run(id, crypto.randomUUID(), 'scheduled-during-export-' + id, at);
+  db.prepare('insert into posts select * from sp').run();
+  db.prepare('create temp table spa as select * from posts_authors where post_id = ?').run(src.id);
+  db.prepare("update spa set id = ?, post_id = ?").run(crypto.randomBytes(12).toString('hex'), id);
+  db.prepare('insert into posts_authors select * from spa').run();
+  console.log(id);
+} else if (op === 'post-status') {
+  const row = db.prepare('select status from posts where id = ?').get(email);
+  console.log(row ? row.status : 'none');
 } else if (op === 'status') {
   const row = db.prepare('select status from users where email = ?').get(email);
   console.log(row ? row.status : 'none');
@@ -201,13 +219,21 @@ services:
     image: \${IMAGE}
     user: "1000:1000"
     environment:
-      url: https://localhost:$EXPORT_PORT
+      url: http://localhost:2368
       database__client: sqlite3
       database__connection__filename: /var/lib/ghost/content/data/ghost.db
+      database__connection__password: \${GHOST_DB_PASSWORD:?set in the secrets env}
       privacy__useUpdateCheck: "false"
       logging__transports: '["stdout"]'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: "true"
-      mail__options__auth__pass: \${GHOST_MAIL_PASSWORD:?set in the secrets env}
+      mail__transport: SMTP
+      mail__options__host: mail.proof.invalid
+      mail__options__port: "587"
+      mail__options__auth__user: proof
+      mail__options__auth__pass: proof-mail-password
+      bulkEmail__mailgun__baseUrl: https://spool.proof.invalid/v3
+      bulkEmail__mailgun__apiKey: proof-bulk-key
+      bulkEmail__mailgun__domain: proof.invalid
       adapters__sso__active: BreakGlassSSO
       adapters__sso__BreakGlassSSO__publicKey: $PUBLIC_KEY
       adapters__sso__BreakGlassSSO__tenant: $TENANT
@@ -221,7 +247,7 @@ EOF
 }
 write_stack "$STACK_DIR" "$SUPPORT_EMAIL"
 write_stack "$OWNER_STACK_DIR" "$OWNER_EMAIL"
-printf 'GHOST_MAIL_PASSWORD=%s\n' "$SECRET_SENTINEL" > "$TENANT_ETC/secrets.env"
+printf 'GHOST_DB_PASSWORD=%s\n' "$SECRET_SENTINEL" > "$TENANT_ETC/secrets.env"
 printf 'IMAGE=%s\n' "$GHOST_IMAGE" > "$TENANT_ETC/image.env"
 chmod 600 "$TENANT_ETC/secrets.env"
 printf '{"slug":"%s","backup":{"kind":"bucket-native","encryptionRecipient":"%s"}}\n' "$TENANT" "$AGE_RECIPIENT" > "$DESCRIPTOR"
@@ -367,6 +393,21 @@ db set-status "$SUPPORT_EMAIL" active
 echo "support account status: $(db status "$SUPPORT_EMAIL")"
 echo
 
+echo "--- a post scheduled for about a minute after the export colour boots ---"
+# The colour boots within ~30s of the bundler starting; the post is due ~60s
+# after that. The export is held (the token is not handed over) until well
+# past the due time, so the colour is up across it. The stack's url is the
+# colour's own in-container address, so Ghost's default scheduler, if it
+# ran, would reach the colour itself when the post fell due and publish it.
+SCHEDULED_POST="$(db schedule-post 90)"
+SCHEDULED_AT=$(($(date +%s) + 90))
+if [ "$(db post-status "$SCHEDULED_POST")" = "scheduled" ]; then
+    echo "PASS: post $SCHEDULED_POST is scheduled, due at $(date -r "$SCHEDULED_AT" -u +%H:%M:%S 2>/dev/null || date -d "@$SCHEDULED_AT" -u +%H:%M:%S)Z"
+else
+    fail "could not schedule a post"
+fi
+echo
+
 echo "--- running the real export inside the grant ---"
 mkfifo "$FIFO"
 run_bundler --grant-lane consented --grant-reference "$GRANT_REFERENCE" \
@@ -398,7 +439,7 @@ if [ "$prompted" = "true" ]; then
         echo "PASS: no process's argv carries the tenant secret"
     fi
     colour="$(docker ps --format '{{.Names}}' | grep "^${TENANT}-export-" | head -1)"
-    if [ -n "$colour" ] && docker inspect --format '{{json .Config.Env}}' "$colour" | grep -F -q -e "mail__options__auth__pass=$SECRET_SENTINEL"; then
+    if [ -n "$colour" ] && docker inspect --format '{{json .Config.Env}}' "$colour" | grep -F -q -e "database__connection__password=$SECRET_SENTINEL"; then
         echo "PASS: the secret reached the export colour's environment from the tenant's own secrets file"
     else
         fail "the export colour's environment does not carry the tenant secret"
@@ -410,6 +451,53 @@ if [ "$prompted" = "true" ]; then
     else
         fail "no 0600 env file in a 0700 directory under the run's temp directory"
     fi
+
+    # What Ghost itself resolved inside the running colour, read through
+    # Ghost's own config module, and whether the bulk-email sink answers.
+    started="$(docker inspect --format '{{.State.StartedAt}}' "$colour")"
+    echo "export colour started at $started; post due at $(date -r "$SCHEDULED_AT" -u +%H:%M:%S 2>/dev/null || date -d "@$SCHEDULED_AT" -u +%H:%M:%S)Z"
+    docker exec "$colour" node -e "
+process.chdir('/var/lib/ghost');
+const c = require('/var/lib/ghost/current/core/shared/config');
+const out = {
+  transport: c.get('mail:transport'),
+  mailHost: (c.get('mail:options') || {}).host || null,
+  bulkBaseUrl: c.get('bulkEmail:mailgun:baseUrl'),
+  scheduling: c.get('adapters:scheduling:active'),
+  emailAnalyticsJob: c.get('backgroundJobs:emailAnalytics'),
+  stripeWebhookLocal: Boolean(process.env.WEBHOOK_SECRET),
+};
+const sink = new URL(out.bulkBaseUrl);
+const s = require('net').connect(Number(sink.port), sink.hostname);
+const done = (v) => { out.bulkSink = v; console.log(JSON.stringify(out)); process.exit(0); };
+s.on('connect', () => done('open'));
+s.on('error', (e) => done(e.code));
+" > "$WORK_DIR/colour-config.json" 2>&1 || true
+    echo "export colour's own config: $(cat "$WORK_DIR/colour-config.json")"
+    if grep -q '"transport":"stub"' "$WORK_DIR/colour-config.json" && \
+       grep -q '"mailHost":null' "$WORK_DIR/colour-config.json" && \
+       grep -q '"bulkBaseUrl":"http://127.0.0.1:9/v3"' "$WORK_DIR/colour-config.json" && \
+       grep -q '"bulkSink":"ECONNREFUSED"' "$WORK_DIR/colour-config.json"; then
+        echo "PASS: no mail transport is reachable: Ghost's stub transport, no SMTP host, bulk email at a refused sink"
+    else
+        fail "the export colour can reach a mail transport"
+    fi
+    if docker inspect --format '{{json .Config.Env}}' "$colour" | grep -F -q -e 'mail.proof.invalid' -e 'spool.proof.invalid' -e 'proof-mail-password' -e 'proof-bulk-key'; then
+        fail "the tenant's own mail settings reached the export colour"
+    else
+        echo "PASS: none of the tenant's mail or bulk-email settings reached the export colour"
+    fi
+    if grep -q '"scheduling":"SchedulingDisabled"' "$WORK_DIR/colour-config.json" && \
+       grep -q '"emailAnalyticsJob":false' "$WORK_DIR/colour-config.json" && \
+       grep -q '"stripeWebhookLocal":true' "$WORK_DIR/colour-config.json"; then
+        echo "PASS: scheduler disabled, email-analytics job off, Stripe webhook manager in local mode"
+    else
+        fail "the export colour's scheduler, jobs or Stripe webhook settings are not isolated"
+    fi
+
+    # Hold the export until the post has been due for 45s.
+    while [ "$(date +%s)" -lt $((SCHEDULED_AT + 45)) ]; do sleep 1; done
+    echo "the post has been due for 45s; handing over the token"
     "$NODE_BIN_DIR/node" "$HELPER_DIR/mint.mjs" "$PRIVATE_KEY" "$TENANT" "$SUPPORT_EMAIL" >&3
 else
     fail "the bundler never asked for a token"
@@ -432,6 +520,13 @@ else
 fi
 CLI_PID=""
 echo
+
+post_status="$(db post-status "$SCHEDULED_POST")"
+if [ "$post_status" = "scheduled" ] && [ "$(date +%s)" -gt $((SCHEDULED_AT + 45)) ]; then
+    echo "PASS: the post due during the export is still scheduled after it -- the export colour published nothing"
+else
+    fail "the post due during the export is now \"$post_status\": the export colour's scheduler ran"
+fi
 
 if [ "$(db status "$SUPPORT_EMAIL")" = "active" ]; then
     echo "PASS: the bundler did not re-suspend the support account -- that is the grant lane's step"

@@ -12,6 +12,7 @@ import { createPromptedTokenSource } from './operatorToken.js';
 import { createDockerStatusProbe } from './supportAccountProbe.js';
 import { parseSupportGrant, type SupportGrant } from './supportGrant.js';
 import { withEnvFile } from './envFile.js';
+import { isolateExportColour } from './colourIsolation.js';
 import {
   bindTenant,
   loadComposeConfig,
@@ -125,7 +126,7 @@ async function main(argv: readonly string[]): Promise<void> {
     readOnly: v.readOnly,
   }));
 
-  const result = await withEnvFile(runtime.env, (envFile) => {
+  const result = await withEnvFile(isolateExportColour(runtime.env), (envFile) => {
     const container = { envFile, user: runtime.user, volumes };
     return runExport(
       {
