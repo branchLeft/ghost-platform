@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { hashIdOf } from '@branchleft/ghost-platform-render-core';
 import { buildDeps, loadPlugin } from '../../src/server.js';
 import type { BrokerConfig } from '../../src/config.js';
 import { makeTempDir } from '../../src/atomicFile.js';
@@ -14,7 +15,9 @@ import {
 } from '../helpers/pluginFixtures.js';
 import { findFreePort, spawnBroker, type SpawnedBroker } from '../helpers/spawnBroker.js';
 import { demoDescriptor, TEST_ZONES } from '../helpers/fixtures.js';
+import { descriptorHash } from '../../src/descriptorHash.js';
 import { writeLeaseAndHash } from '../../src/leaseStore.js';
+import { writeSlotState } from '../../src/stateStore.js';
 
 function fakeConfig(overrides: Partial<BrokerConfig> = {}): BrokerConfig {
   return {
@@ -127,6 +130,7 @@ describe('the real dist/server.js entrypoint', () => {
     keyPair: ReturnType<typeof generateTestKeyPair>;
     stateDir: string;
     leaseDir: string;
+    drainFlagDir: string;
     slotsPath: string;
   }> {
     const root = await makeTempDir('broker-spawn-');
@@ -146,6 +150,7 @@ describe('the real dist/server.js entrypoint', () => {
       keyPair,
       stateDir,
       leaseDir,
+      drainFlagDir,
       slotsPath,
       env: {
         PORT: String(await findFreePort()),
@@ -342,6 +347,95 @@ describe('the real dist/server.js entrypoint', () => {
 
       const statusRes = await fetch(`${baseUrl}/status/0`);
       expect(await statusRes.json()).toMatchObject({ slot: '0', phase: 'running' });
+    } finally {
+      await new Promise<void>((resolve) => fakeGhost.close(() => resolve()));
+    }
+  });
+
+  // --- The review's own
+  // concrete scenario, end to end through the real spawned entrypoint --
+  // a process died right after a colour swap safely reached its target
+  // (the target's flag cleared, the source's drained), before its own
+  // final `writeSlotState` ran. Pre-seeds exactly the `swapping` state
+  // and drain-flag files `attemptColourSwap` would have left at that
+  // instant (see app.test.ts's "writes the swapping marker" test for the
+  // deterministic proof that it really does write this, before any side
+  // effect). Recovery must adopt the target, and a retried /reconcile
+  // with the same new descriptor must hit the idempotent branch --
+  // returning immediately, touching no flag and draining nothing a
+  // second time -- rather than believing the stale source is still live.
+  it('recovers a crash right after a swap reached its target, and a retried reconcile never re-drains anything', async () => {
+    const { env, keyPair, stateDir, drainFlagDir } = await baseEnv();
+    const second = demoDescriptor({ ownerEmail: 'second@example.com' as never });
+    const hash = descriptorHash(second);
+    const newHashId = hashIdOf((second.gate as { argon2idHash: string }).argon2idHash);
+
+    // The exact reality a crash right there leaves: colour "a" (the
+    // source) drained, colour "b" (the target) clear -- a real listener
+    // stands in for "b"'s own Ghost, already healthy.
+    const targetGhostPort = 9301;
+    const fakeGhost: Server = createServer((_req, res) => res.writeHead(200).end('ok'));
+    await new Promise<void>((resolve) => fakeGhost.listen(targetGhostPort, '127.0.0.1', resolve));
+    await writeFile(join(drainFlagDir, '0-a.drain'), '');
+    await writeSlotState(
+      stateDir,
+      '0' as never,
+      {
+        phase: 'swapping',
+        colour: 'a',
+        swapTarget: 'b',
+        swapDescriptorHash: hash,
+        swapHashId: newHashId,
+      } as never
+    );
+
+    try {
+      const root = await makeTempDir('broker-plugin-');
+      const renderer = await writeValidRendererPlugin(root);
+      const adminApi = await writeValidAdminApiPlugin(root);
+      const drainSource = await writeValidDrainSourcePlugin(root);
+      broker = spawnBroker({
+        ...env,
+        BROKER_RENDERER_MODULE: renderer,
+        BROKER_ADMIN_API_MODULE: adminApi,
+        BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      });
+      const { port } = await broker.waitListening(8000);
+      const baseUrl = `http://127.0.0.1:${port}`;
+      await new Promise((resolve) => setTimeout(resolve, 1100)); // past the same-second replay floor
+
+      // Recovered before this process ever answered a single request.
+      const statusAfterBoot = await fetch(`${baseUrl}/status/0`);
+      expect(await statusAfterBoot.json()).toMatchObject({ slot: '0', phase: 'running' });
+
+      const body = Buffer.from(JSON.stringify({ slot: '0', descriptor: second }));
+      const headers = signHeaders(
+        keyPair,
+        'POST',
+        '/reconcile',
+        body,
+        Math.floor(Date.now() / 1000)
+      );
+      const retryRes = await fetch(`${baseUrl}/reconcile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body,
+      });
+      // The idempotent branch, not a fresh swap: recovery already gave
+      // this slot the correct descriptorHash, so the retry does nothing
+      // further -- in particular, it never touches colour "a"'s flag
+      // again (which is exactly what a stale "colour: a is still live"
+      // belief would have done, per the review's own scenario).
+      expect(retryRes.status).toBe(200);
+      expect(await retryRes.json()).toEqual({ slot: '0', phase: 'running', colour: 'b' });
+
+      // Untouched by the retry: "a" still drained, "b" still clear --
+      // never both drained at once, which is the outage this fix exists
+      // to prevent.
+      await expect(readFile(join(drainFlagDir, '0-a.drain'))).resolves.toBeDefined();
+      await expect(readFile(join(drainFlagDir, '0-b.drain'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
     } finally {
       await new Promise<void>((resolve) => fakeGhost.close(() => resolve()));
     }

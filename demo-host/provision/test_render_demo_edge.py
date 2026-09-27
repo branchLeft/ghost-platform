@@ -9,12 +9,15 @@ mismatch rather than being reproduced on both sides.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import tempfile
 import unittest
 
 import render_demo_edge as rde
+
+GOLDEN_PORTS_PATH = pathlib.Path(__file__).parent / "slot-ports.golden.json"
 
 
 def _expected_snippet(slot: str) -> str:
@@ -67,6 +70,40 @@ class PortArithmeticTests(unittest.TestCase):
             rde.slot_app_port("0 *", "a")
         with self.assertRaises(rde.InvalidSlotName):
             rde.slot_health_port("")
+
+
+class CrossCheckAgainstSlotPortsTsTests(unittest.TestCase):
+    """`render_demo_edge.py` mirrors `services/broker/src/slotPorts.ts`'s
+    formula deliberately (this module's own docstring says why), and a
+    mirror with no cross-check cannot tell a genuine drift apart from an
+    intentional change on either side -- `slotPorts.test.ts` asserts the
+    TypeScript side against the same `slot-ports.golden.json` this class
+    asserts the Python side against, so either formula drifting from the
+    shared fixture fails that side's own test, and a formula that drifts
+    on BOTH sides in the SAME wrong direction is the only shape this pair
+    cannot catch (accepted: neither side reads the other's source, so
+    nothing could)."""
+
+    def _golden(self) -> dict:
+        with open(GOLDEN_PORTS_PATH, encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_golden_fixture_uses_this_module_own_default_bases(self):
+        # If this ever fails, the fixture and the module's own defaults
+        # have drifted apart, and every other test in this class is
+        # checking the wrong thing without saying so.
+        golden = self._golden()
+        self.assertEqual(golden["appPortBase"], rde.APP_PORT_BASE)
+        self.assertEqual(golden["healthPortBase"], rde.HEALTH_PORT_BASE)
+
+    def test_every_slot_app_and_health_port_matches_the_golden_fixture(self):
+        golden = self._golden()
+        self.assertEqual(len(golden["slots"]), 7)
+        for entry in golden["slots"]:
+            slot = entry["slot"]
+            self.assertEqual(rde.slot_app_port(slot, "a"), entry["a"], f"slot {slot!r} colour a")
+            self.assertEqual(rde.slot_app_port(slot, "b"), entry["b"], f"slot {slot!r} colour b")
+            self.assertEqual(rde.slot_health_port(slot), entry["health"], f"slot {slot!r} health")
 
 
 class SnippetNameTests(unittest.TestCase):

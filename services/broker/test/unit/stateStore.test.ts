@@ -15,6 +15,18 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+// Every `recoverCrashedSlots` test in this file except the dedicated
+// `recoverSwapInFlight`/`"swapping"` ones below is about `preparing`/
+// `resetting`, neither of which ever reaches this argument -- a fixture
+// that answers "drained"/"not ready" for everything, so a test that
+// somehow did reach it would see the failed-closed branch, never a silent
+// "recovered fine".
+const NEVER_SWAP_RECOVERY = {
+  drainFlags: { isSet: async () => true },
+  ghostReadiness: { isReady: async () => false },
+  appPortBase: 9300,
+};
+
 describe('stateStore', () => {
   let dir: string;
   let leaseStoreConfig: Pick<LeaseStoreConfig, 'slotsPath' | 'leaseDir'>;
@@ -77,7 +89,13 @@ describe('stateStore', () => {
       const slot = '2' as SlotName;
       await writeSlotState(dir, slot, { phase: 'preparing', lastHashId: 'abc123' as never });
 
-      await recoverCrashedSlots(dir, ['0', '1', '2', '3'], leaseStoreConfig, () => undefined);
+      await recoverCrashedSlots(
+        dir,
+        ['0', '1', '2', '3'],
+        leaseStoreConfig,
+        () => undefined,
+        NEVER_SWAP_RECOVERY
+      );
 
       expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'abc123' });
     });
@@ -86,7 +104,7 @@ describe('stateStore', () => {
       const slot = '5' as SlotName;
       await writeSlotState(dir, slot, { phase: 'resetting', lastHashId: 'zzz999' as never });
 
-      await recoverCrashedSlots(dir, ['5'], leaseStoreConfig, () => undefined);
+      await recoverCrashedSlots(dir, ['5'], leaseStoreConfig, () => undefined, NEVER_SWAP_RECOVERY);
 
       expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'zzz999' });
     });
@@ -100,7 +118,13 @@ describe('stateStore', () => {
       });
       await writeSlotState(dir, '2' as SlotName, { phase: 'error' });
 
-      await recoverCrashedSlots(dir, ['0', '1', '2'], leaseStoreConfig, () => undefined);
+      await recoverCrashedSlots(
+        dir,
+        ['0', '1', '2'],
+        leaseStoreConfig,
+        () => undefined,
+        NEVER_SWAP_RECOVERY
+      );
 
       expect(await readSlotState(dir, '0' as SlotName)).toEqual({ phase: 'free' });
       expect(await readSlotState(dir, '1' as SlotName)).toEqual({
@@ -112,7 +136,7 @@ describe('stateStore', () => {
     });
 
     it('leaves a slot with no state file at all untouched (still reads "free")', async () => {
-      await recoverCrashedSlots(dir, ['6'], leaseStoreConfig, () => undefined);
+      await recoverCrashedSlots(dir, ['6'], leaseStoreConfig, () => undefined, NEVER_SWAP_RECOVERY);
       expect(await readSlotState(dir, '6' as SlotName)).toEqual({ phase: 'free' });
     });
 
@@ -120,7 +144,13 @@ describe('stateStore', () => {
       await writeSlotState(dir, '3' as SlotName, { phase: 'preparing' });
       const lines: string[] = [];
 
-      await recoverCrashedSlots(dir, ['3'], leaseStoreConfig, (line) => lines.push(line));
+      await recoverCrashedSlots(
+        dir,
+        ['3'],
+        leaseStoreConfig,
+        (line) => lines.push(line),
+        NEVER_SWAP_RECOVERY
+      );
 
       expect(lines).toHaveLength(1);
       expect(lines[0]).toContain('"3"');
@@ -139,7 +169,7 @@ describe('stateStore', () => {
       );
       await writeSlotState(dir, slot, { phase: 'resetting', lastHashId: 'prev123' as never });
 
-      await recoverCrashedSlots(dir, ['4'], leaseStoreConfig, () => undefined);
+      await recoverCrashedSlots(dir, ['4'], leaseStoreConfig, () => undefined, NEVER_SWAP_RECOVERY);
 
       expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'prev123' });
       const slots = JSON.parse(await readFile(leaseStoreConfig.slotsPath, 'utf8'));
@@ -157,7 +187,7 @@ describe('stateStore', () => {
       );
       await writeSlotState(dir, slot, { phase: 'preparing' });
 
-      await recoverCrashedSlots(dir, ['6'], leaseStoreConfig, () => undefined);
+      await recoverCrashedSlots(dir, ['6'], leaseStoreConfig, () => undefined, NEVER_SWAP_RECOVERY);
 
       expect(await readSlotState(dir, slot)).toEqual({ phase: 'error' });
       const slots = JSON.parse(await readFile(leaseStoreConfig.slotsPath, 'utf8'));
@@ -170,9 +200,140 @@ describe('stateStore', () => {
       await writeSlotState(dir, slot, { phase: 'resetting' });
 
       await expect(
-        recoverCrashedSlots(dir, ['1'], leaseStoreConfig, () => undefined)
+        recoverCrashedSlots(dir, ['1'], leaseStoreConfig, () => undefined, NEVER_SWAP_RECOVERY)
       ).resolves.toBeUndefined();
       expect(await readSlotState(dir, slot)).toEqual({ phase: 'error' });
+    });
+  });
+
+  // --- A crash mid-swap must never be invisible
+  // to boot-time recovery. `attemptColourSwap` (app.ts) writes `swapping`
+  // with `colour` (the source) and `swapTarget` before any side effect;
+  // these tests drive `recoverCrashedSlots` against every reality a crash
+  // partway through the swap's own side effects could leave behind,
+  // built from real drain-flag files (never a stale-state guess) plus a
+  // controllable health signal standing in for a real Ghost. ---
+  describe('recoverCrashedSlots on a "swapping" slot (crash mid-swap)', () => {
+    function fakeSwapRecovery(opts: {
+      readonly drainedColours?: readonly ('a' | 'b')[];
+      readonly healthyColours?: readonly ('a' | 'b')[];
+    }): {
+      drainFlags: { isSet: (slot: SlotName, colour: 'a' | 'b') => Promise<boolean> };
+      ghostReadiness: { isReady: (port: number) => Promise<boolean> };
+      appPortBase: number;
+    } {
+      const drained = new Set(opts.drainedColours ?? []);
+      const healthy = new Set(opts.healthyColours ?? []);
+      const appPortBase = 9300;
+      // slotPorts.ts: appPortBase + slot*2 (+1 for 'b') -- slot '0' here.
+      const portOf = (colour: 'a' | 'b') => appPortBase + (colour === 'b' ? 1 : 0);
+      return {
+        drainFlags: { isSet: async (_slot, colour) => drained.has(colour) },
+        ghostReadiness: { isReady: async (port) => healthy.has(portOf('a') === port ? 'a' : 'b') },
+        appPortBase,
+      };
+    }
+
+    it("crash after the target became live (flag clear + healthy): adopts the target, with the swap's own hash", async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'swapping',
+        colour: 'a',
+        swapTarget: 'b',
+        swapDescriptorHash: 'new-hash',
+        swapHashId: 'new-hash-id' as never,
+        lastHashId: 'old-hash-id' as never,
+      });
+      // Reality at the crash instant: 'b' cleared and healthy -- 'a' was
+      // never touched by this direction's own swap, so it is untouched by
+      // this fixture too (still whatever it was, irrelevant to the verdict).
+      const swapRecovery = fakeSwapRecovery({ drainedColours: [], healthyColours: ['b'] });
+
+      await recoverCrashedSlots(dir, [slot], leaseStoreConfig, () => undefined, swapRecovery);
+
+      expect(await readSlotState(dir, slot)).toEqual({
+        phase: 'running',
+        colour: 'b',
+        descriptorHash: 'new-hash',
+        lastHashId: 'new-hash-id',
+      });
+    });
+
+    it("crash after clearing target AND draining the source (the review's own exact scenario): adopts the target, never the stale source", async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'swapping',
+        colour: 'a',
+        swapTarget: 'b',
+        swapDescriptorHash: 'new-hash',
+        swapHashId: 'new-hash-id' as never,
+        lastHashId: 'old-hash-id' as never,
+      });
+      // 'a' (source) drained, 'b' (target) clear and healthy -- the
+      // dangerous state a retried /reconcile would otherwise misread as
+      // "'a' is still live", and drain 'b' too.
+      const swapRecovery = fakeSwapRecovery({ drainedColours: ['a'], healthyColours: ['b'] });
+
+      await recoverCrashedSlots(dir, [slot], leaseStoreConfig, () => undefined, swapRecovery);
+
+      expect(await readSlotState(dir, slot)).toEqual({
+        phase: 'running',
+        colour: 'b',
+        descriptorHash: 'new-hash',
+        lastHashId: 'new-hash-id',
+      });
+    });
+
+    it('crash before the target ever became safely live: reverts to the source, exactly as a synchronous failure already would', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'swapping',
+        colour: 'a',
+        swapTarget: 'b',
+        swapDescriptorHash: 'new-hash',
+        swapHashId: 'new-hash-id' as never,
+        lastHashId: 'old-hash-id' as never,
+      });
+      // Target 'b' still drained (never got past the render/start/verify
+      // steps) -- 'a' is untouched and still genuinely serving.
+      const swapRecovery = fakeSwapRecovery({ drainedColours: ['b'], healthyColours: ['a'] });
+
+      await recoverCrashedSlots(dir, [slot], leaseStoreConfig, () => undefined, swapRecovery);
+
+      expect(await readSlotState(dir, slot)).toEqual({
+        phase: 'running',
+        colour: 'a',
+        lastHashId: 'old-hash-id',
+      });
+    });
+
+    it('crash with NEITHER colour confirmed live: fails closed to "error" rather than guessing', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'swapping',
+        colour: 'a',
+        swapTarget: 'b',
+        swapDescriptorHash: 'new-hash',
+        swapHashId: 'new-hash-id' as never,
+        lastHashId: 'old-hash-id' as never,
+      });
+      // Both drained (or unhealthy) -- an outage the recovery must name,
+      // never paper over by picking one to trust with no evidence.
+      const swapRecovery = fakeSwapRecovery({ drainedColours: ['a', 'b'], healthyColours: [] });
+
+      await recoverCrashedSlots(dir, [slot], leaseStoreConfig, () => undefined, swapRecovery);
+
+      expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'old-hash-id' });
+    });
+
+    it('a "swapping" slot with no recorded swapTarget (should be unreachable) still fails closed', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, { phase: 'swapping', colour: 'a', lastHashId: 'x' as never });
+      const swapRecovery = fakeSwapRecovery({ healthyColours: ['a', 'b'] });
+
+      await recoverCrashedSlots(dir, [slot], leaseStoreConfig, () => undefined, swapRecovery);
+
+      expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'x' });
     });
   });
 });

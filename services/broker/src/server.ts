@@ -120,16 +120,20 @@ export async function main(): Promise<Server> {
   await mkdir(config.leaseDir, { recursive: true });
 
   // Before anything below can accept a request: a slot a previous process
-  // left `preparing` or `resetting` had its lock holder die with it (the
-  // lock is in-memory and this is a fresh process), so it cannot be trusted
-  // as still in flight. See `recoverCrashedSlots`'s own doc comment for why
-  // `error` (fail-closed) rather than a guess at `free` or `running`, and
-  // why a `resetting` slot also has its lease and hash revoked here.
+  // left `preparing`/`resetting`/`swapping` had its lock holder die with it
+  // (the lock is in-memory and this is a fresh process), so it cannot be
+  // trusted as still in flight. See `recoverCrashedSlots`'s and
+  // `recoverSwapInFlight`'s own doc comments for what each phase needs.
   await recoverCrashedSlots(
     config.stateDir,
     config.slotLiterals,
     { slotsPath: config.slotsPath, leaseDir: config.leaseDir },
-    (line) => console.error(line)
+    (line) => console.error(line),
+    {
+      drainFlags: createDrainFlagStore(config.drainFlagDir),
+      ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
+      appPortBase: config.appPortBase,
+    }
   );
 
   const renderer = await loadPlugin('BROKER_RENDERER_MODULE', process.env, isRenderer);

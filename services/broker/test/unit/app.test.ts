@@ -224,6 +224,47 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       const statusRes = await fetch(`${broker.baseUrl}/status/0`);
       expect(await statusRes.json()).toMatchObject({ slot: '0', phase: 'running' });
     });
+
+    // --- A crash mid-swap is
+    // invisible to recoverCrashedSlots unless an in-flight marker is
+    // written before the swap's first side effect -- the same reason
+    // `preparing` exists for a fresh deploy. Deterministic, not
+    // timing-dependent: the renderer is the swap's own first real side
+    // effect after the marker write, so having it peek at the persisted
+    // state the instant it's called observes exactly what a process that
+    // died right there would have left behind, with no race. ---
+    it('writes the "swapping" marker (source + target colour, the new hash) before any side effect', async () => {
+      broker = await startTestBroker();
+      const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first });
+
+      let observedDuringSwap: unknown;
+      const originalRender = broker.renderer.render.bind(broker.renderer);
+      broker.renderer.render = async (descriptor) => {
+        const { readSlotState } = await import('../../src/stateStore.js');
+        observedDuringSwap = await readSlotState(broker!.stateDir, '0' as SlotName);
+        return originalRender(descriptor);
+      };
+
+      const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
+      const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: second });
+      expect(res.status).toBe(200); // the swap itself still completes normally
+
+      // This is the assertion the sabotage below turns red: with the
+      // marker write removed, `observedDuringSwap` would still read
+      // `{ phase: 'running', colour: 'a', ... }` -- indistinguishable from
+      // a slot that was never touched at all, which is the exact gap a
+      // crash right here would leave for a retried /reconcile to walk
+      // into (see the PR body's sabotage record for this test).
+      expect(observedDuringSwap).toMatchObject({
+        phase: 'swapping',
+        colour: 'a',
+        swapTarget: 'b',
+      });
+      expect((observedDuringSwap as { swapDescriptorHash?: string }).swapDescriptorHash).toEqual(
+        expect.any(String)
+      );
+    });
   });
 
   it('a slot mid-transition (not "free", no colour recorded) is still refused with 409', async () => {

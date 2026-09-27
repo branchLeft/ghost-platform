@@ -1,4 +1,4 @@
-import { lstat, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
@@ -51,5 +51,28 @@ describe('createDrainFlagStore', () => {
     await store.clear('1' as SlotName, 'a');
     expect(await exists(join(dir, '1-a.drain'))).toBe(false);
     expect(await exists(join(dir, '1-b.drain'))).toBe(true);
+  });
+
+  describe('isSet -- the recovery-only read', () => {
+    it('is false once cleared, true once set', async () => {
+      const store = createDrainFlagStore(dir);
+      expect(await store.isSet('3' as SlotName, 'a')).toBe(false);
+      await store.set('3' as SlotName, 'a');
+      expect(await store.isSet('3' as SlotName, 'a')).toBe(true);
+      await store.clear('3' as SlotName, 'a');
+      expect(await store.isSet('3' as SlotName, 'a')).toBe(false);
+    });
+
+    it('fails closed (reads as set) when the flag directory is unreadable, mirroring the sidecar', async () => {
+      const restricted = join(dir, 'restricted');
+      await mkdir(restricted);
+      const store = createDrainFlagStore(restricted);
+      await chmod(restricted, 0o000);
+      try {
+        expect(await store.isSet('4' as SlotName, 'a')).toBe(true);
+      } finally {
+        await chmod(restricted, 0o755);
+      }
+    });
   });
 });

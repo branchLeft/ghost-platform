@@ -378,6 +378,35 @@ async function attemptColourSwap(
     return send(res, 409, { error: `host "${host}" is already held by slot "${heldBy}"` });
   }
 
+  // Recorded before any side effect below, mirroring the fresh-deploy
+  // path's own `preparing` write: a crash partway through this function is
+  // otherwise invisible to `recoverCrashedSlots` (the persisted phase would
+  // stay `running`/`liveColour` for the swap's whole duration, exactly the
+  // gap a review of this story's first cycle found -- a retried /reconcile
+  // after such a crash would believe `liveColour` is still live and could
+  // drain the colour that crash actually left serving). `swapTarget` plus
+  // the new descriptor's own hash/hashId are what let
+  // `recoverSwapInFlight` (`stateStore.ts`) tell "a swap into `target` was
+  // in flight" apart from "this slot is quietly running", and adopt the
+  // right colour with the right hash if it finds `target` already safely
+  // live.
+  async function restorePreSwapState(): Promise<void> {
+    await writeSlotState(deps.stateDir, slot, {
+      phase: 'running' satisfies Phase,
+      colour: liveColour,
+      descriptorHash: state.descriptorHash,
+      lastHashId: state.lastHashId,
+    });
+  }
+  await writeSlotState(deps.stateDir, slot, {
+    phase: 'swapping' satisfies Phase,
+    colour: liveColour,
+    swapTarget: target,
+    swapDescriptorHash: hash,
+    swapHashId: newHashId,
+    lastHashId: state.lastHashId,
+  });
+
   try {
     // A new colour always boots drained (LLD-2 §01b), regardless of what
     // `target`'s flag last held: this slot's own alternation means the
@@ -408,10 +437,14 @@ async function attemptColourSwap(
     await deps.drainFlags.clear(slot, target);
   } catch (err) {
     // `target`'s flag is left exactly as `set`/`clear` above last reached
-    // it; the persisted slot state is left completely untouched -- still
-    // `running`, still `liveColour`, still the old hash -- so a caller
-    // that reads `/status` or retries `/reconcile` with the old descriptor
-    // sees the tenancy exactly as it was before this attempt.
+    // it; the persisted slot state is restored to exactly what it was
+    // before this attempt -- still `running`, still `liveColour`, still
+    // the old hash -- so a caller that reads `/status` or retries
+    // `/reconcile` with the old descriptor sees the tenancy exactly as it
+    // was before this attempt. (A real crash instead of this synchronous
+    // catch never reaches this line at all; that is `recoverSwapInFlight`'s
+    // job, above.)
+    await restorePreSwapState();
     deps.log(
       `colour swap failed for slot "${slot}" (target "${target}"): ${(err as Error).message}`
     );
@@ -447,6 +480,7 @@ async function attemptColourSwap(
     const targetPort = slotPort(deps.appPortBase, slot, target);
     const stillReady = await deps.ghostReadiness.isReady(targetPort);
     if (!stillReady) {
+      await restorePreSwapState();
       const err = new OtherColourUnhealthyError(target);
       deps.log(`colour swap for slot "${slot}" refused to drain "${liveColour}": ${err.message}`);
       return send(res, 503, { slot, phase: 'running', colour: liveColour, error: err.message });
