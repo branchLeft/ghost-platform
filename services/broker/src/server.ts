@@ -7,7 +7,7 @@ import { createInMemoryNonceStore } from './nonceStore.js';
 import { loadConfig, type BrokerConfig, type BrokerEnv } from './config.js';
 import { createDrainFlagStore } from './drainFlag.js';
 import type { DrainSource } from './drainSource.js';
-import { createFailClosedEmailBatchChecker, type EmailBatchChecker } from './emailBatchChecker.js';
+import { createSudoEmailBatchChecker, type EmailBatchChecker } from './emailBatchChecker.js';
 import { createHttpGhostReadinessChecker } from './ghostReadiness.js';
 import { createHttpHealthChecker } from './healthCheck.js';
 import { createFileRealTrafficChecker, createZeroRealTrafficChecker } from './realTraffic.js';
@@ -108,14 +108,25 @@ export function buildDeps(
     drainFlags: createDrainFlagStore(config.drainFlagDir),
     healthChecker: createHttpHealthChecker('127.0.0.1', config.healthCheckTimeoutMs),
     ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
-    // Both default to the fail-closed side of the stop-old-colour
+    // `realTraffic` defaults to the fail-closed side of the stop-old-colour
     // pre-stop gate: absent configuration must never read as "safe to
-    // stop" (see each factory's own doc comment for why each is a
-    // separate open question rather than a guess this entrypoint makes).
+    // stop" (see `createZeroRealTrafficChecker`'s own doc comment).
+    // `emailBatchChecker`'s real implementation is itself fail-closed on
+    // every error path (`createSudoEmailBatchChecker`'s own doc comment),
+    // so wiring it unconditionally here, rather than behind a config flag
+    // like `trafficCounterDir`, is safe: an unconfigured or unreachable
+    // wrapper still refuses to stop, exactly like the old placeholder did.
     realTraffic: config.trafficCounterDir
       ? createFileRealTrafficChecker(config.trafficCounterDir)
       : createZeroRealTrafficChecker(),
-    emailBatchChecker: createFailClosedEmailBatchChecker(),
+    emailBatchChecker: createSudoEmailBatchChecker(
+      {
+        command: config.wrapperCommand,
+        prefix: config.wrapperPrefix,
+        timeoutMs: config.wrapperTimeoutMs,
+      },
+      (line) => console.error(line)
+    ),
     ghostReadyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
     healthPortBase: config.healthPortBase,
     appPortBase: config.appPortBase,
