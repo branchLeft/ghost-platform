@@ -1,6 +1,7 @@
 import { rmSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { processCleanup, type CleanupRegistry } from './cleanup.js';
 import { join } from 'node:path';
 
 export class EnvFileError extends Error {
@@ -34,28 +35,25 @@ export function renderEnvFile(env: Readonly<Record<string, string>>): string {
 /**
  * Hands the tenant's environment to `docker` as a file instead of argv, so
  * no secret is visible in `ps`. The file is written 0600 inside a fresh
- * 0700 directory and removed when `fn` settles, and also on SIGINT/SIGTERM.
+ * 0700 directory and removed when `fn` settles; while it exists, it is
+ * registered with `registry`, so a signal removes it too.
  */
 export async function withEnvFile<T>(
   env: Readonly<Record<string, string>>,
-  fn: (envFilePath: string) => Promise<T>
+  fn: (envFilePath: string) => Promise<T>,
+  registry: CleanupRegistry = processCleanup
 ): Promise<T> {
   const content = renderEnvFile(env);
   const dir = await mkdtemp(join(tmpdir(), 'export-bundler-env-'));
-  const removeNow = () => rmSync(dir, { recursive: true, force: true });
-  const onSignal = (signal: 'SIGINT' | 'SIGTERM') => {
-    removeNow();
-    process.exit(signal === 'SIGINT' ? 130 : 143);
-  };
-  process.once('SIGINT', onSignal);
-  process.once('SIGTERM', onSignal);
+  const unregister = registry.register(`env file ${dir}`, () =>
+    rmSync(dir, { recursive: true, force: true })
+  );
   try {
     const path = join(dir, 'tenant.env');
     await writeFile(path, content, { mode: 0o600, flag: 'wx' });
     return await fn(path);
   } finally {
-    process.removeListener('SIGINT', onSignal);
-    process.removeListener('SIGTERM', onSignal);
     await rm(dir, { recursive: true, force: true });
+    unregister();
   }
 }

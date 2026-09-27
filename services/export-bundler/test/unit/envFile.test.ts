@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { EnvFileError, renderEnvFile, withEnvFile } from '../../src/envFile.js';
+import { CleanupRegistry, installSignalCleanup } from '../../src/cleanup.js';
 
 describe('renderEnvFile', () => {
   it('writes one KEY=VALUE per line, verbatim', () => {
@@ -66,12 +67,17 @@ describe('withEnvFile', () => {
     expect(called).toBe(false);
   });
 
-  it('leaves no signal handler behind', async () => {
-    const before = process.listenerCount('SIGINT');
-    await withEnvFile({ a: 'b' }, async () => {
-      expect(process.listenerCount('SIGINT')).toBe(before + 1);
-    });
-    expect(process.listenerCount('SIGINT')).toBe(before);
+  it('is registered for cleanup while it exists, and deregistered once removed', async () => {
+    const registry = new CleanupRegistry();
+    await withEnvFile(
+      { a: 'b' },
+      async () => {
+        expect(registry.labels).toHaveLength(1);
+        expect(registry.labels[0]).toMatch(/^env file /);
+      },
+      registry
+    );
+    expect(registry.labels).toEqual([]);
   });
 });
 
@@ -79,18 +85,24 @@ describe('withEnvFile on a signal', () => {
   it.each([
     ['SIGINT', 130],
     ['SIGTERM', 143],
-  ] as const)('removes the file on %s before exiting %i', async (signal, code) => {
-    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+  ] as const)('the registry removes the file on %s before exiting %i', async (signal, code) => {
+    const registry = new CleanupRegistry();
+    const exit = vi.fn();
+    const uninstall = installSignalCleanup(registry, exit);
     try {
       let seenPath = '';
-      await withEnvFile({ secret: 'x' }, async (path) => {
-        seenPath = path;
-        process.emit(signal, signal);
-        expect(existsSync(dirname(seenPath))).toBe(false);
-      });
+      await withEnvFile(
+        { secret: 'x' },
+        async (path) => {
+          seenPath = path;
+          process.emit(signal, signal);
+          expect(existsSync(dirname(seenPath))).toBe(false);
+        },
+        registry
+      );
       expect(exit).toHaveBeenCalledWith(code);
     } finally {
-      exit.mockRestore();
+      uninstall();
     }
   });
 });

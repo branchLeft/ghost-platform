@@ -1,5 +1,6 @@
-import { execFile } from 'node:child_process';
-import { tenantContainerArgs, type TenantContainerConfig } from './containerRunner.js';
+import { processCleanup, type CleanupRegistry } from './cleanup.js';
+import { runDocker, tenantContainerArgs, type TenantContainerConfig } from './containerRunner.js';
+import { withEnvFile } from './envFile.js';
 import type { Preflight, SupportAccount, SupportAccountStatusReader } from './supportGrant.js';
 
 export class SupportAccountStatusUnreadableError extends Error {
@@ -15,34 +16,33 @@ export interface StatusProbeSpec extends TenantContainerConfig {
   readonly image: string;
 }
 
+/** A probe spec before its env file exists: the probe writes that per call. */
+export type StatusProbeTemplate = Omit<StatusProbeSpec, 'envFile'>;
+
 const STATUS_MARKER = 'BL_SUPPORT_STATUS ';
 
 /**
  * Runs inside the tenant's own image, through Ghost's own database
  * connection module, so it reads whatever database the tenant's colour
  * would (SQLite or MySQL, with the TLS settings rendered for Ghost) without
- * this package holding a driver or parsing a connection string. Two reads:
- * the account's status and role names, and how many newsletters are
- * mid-send. Nothing here writes.
+ * this package holding a driver or parsing a connection string. One SELECT
+ * of the account's status and role names; nothing here writes. This is the
+ * one read the bundler makes of the live database other than the snapshot.
  */
 export const STATUS_PROBE_SCRIPT = [
   "process.chdir('/var/lib/ghost');",
   "const knex = require('/var/lib/ghost/current/core/server/data/db/connection');",
-  'Promise.all([',
-  "  knex('users')",
-  "    .leftJoin('roles_users', 'roles_users.user_id', 'users.id')",
-  "    .leftJoin('roles', 'roles.id', 'roles_users.role_id')",
-  "    .where('users.email', process.argv[1])",
-  "    .select('users.status as status', 'roles.name as role'),",
-  "  knex('emails').where('status', 'submitting').count('id as n'),",
-  '])',
-  '  .then(([rows, sends]) => {',
+  "knex('users')",
+  "  .leftJoin('roles_users', 'roles_users.user_id', 'users.id')",
+  "  .leftJoin('roles', 'roles.id', 'roles_users.role_id')",
+  "  .where('users.email', process.argv[1])",
+  "  .select('users.status as status', 'roles.name as role')",
+  '  .then((rows) => {',
   '    const account = rows.length === 0 ? null : {',
   '      status: rows[0].status,',
   '      roles: rows.map((r) => r.role).filter((r) => typeof r === "string"),',
   '    };',
-  '    const sendsInFlight = Number(sends[0].n);',
-  `    process.stdout.write('${STATUS_MARKER}' + JSON.stringify({ account, sendsInFlight }) + '\\n');`,
+  `    process.stdout.write('${STATUS_MARKER}' + JSON.stringify({ account }) + '\\n');`,
   '  })',
   "  .catch((err) => { process.stderr.write(String(err && err.message) + '\\n'); process.exitCode = 2; })",
   '  .finally(() => knex.destroy());',
@@ -101,45 +101,30 @@ export function parseStatusProbeOutput(stdout: string): Preflight {
   if (!isRecord(parsed) || !('account' in parsed)) {
     throw new SupportAccountStatusUnreadableError('the probe printed an unexpected shape');
   }
-  const sendsInFlight = parsed.sendsInFlight;
-  if (typeof sendsInFlight !== 'number' || !Number.isInteger(sendsInFlight) || sendsInFlight < 0) {
-    throw new SupportAccountStatusUnreadableError(
-      'the probe printed no usable in-flight send count'
-    );
-  }
-  return { account: parseAccount(parsed.account), sendsInFlight };
+  return { account: parseAccount(parsed.account) };
 }
 
 export function createDockerStatusProbe(
-  spec: StatusProbeSpec,
-  dockerCommand = 'docker'
+  template: StatusProbeTemplate,
+  env: Readonly<Record<string, string>>,
+  dockerCommand = 'docker',
+  registry: CleanupRegistry = processCleanup
 ): SupportAccountStatusReader {
   return {
-    readPreflight(identity) {
-      return new Promise((resolve, reject) => {
-        execFile(
-          dockerCommand,
-          [...buildStatusProbeArgs(spec, identity)],
-          // PATH only: the ambient environment carries live credentials.
-          { env: { PATH: process.env.PATH ?? '' } },
-          (err, stdout, stderr) => {
-            if (err) {
-              // Never err.message: it repeats the whole argv.
-              reject(
-                new SupportAccountStatusUnreadableError(
-                  `docker exited ${String(err.code)}: ${stderr.slice(0, 500)}`
-                )
-              );
-              return;
-            }
-            try {
-              resolve(parseStatusProbeOutput(stdout));
-            } catch (parseErr) {
-              reject(parseErr);
-            }
-          }
+    async readPreflight(identity) {
+      let stdout: string;
+      try {
+        stdout = await withEnvFile(
+          env,
+          (envFile) =>
+            runDocker(dockerCommand, buildStatusProbeArgs({ ...template, envFile }, identity)),
+          registry
         );
-      });
+      } catch (err) {
+        // runDocker never repeats the argv: its message is the exit code and stderr.
+        throw new SupportAccountStatusUnreadableError((err as Error).message.slice(0, 600));
+      }
+      return parseStatusProbeOutput(stdout);
     },
   };
 }

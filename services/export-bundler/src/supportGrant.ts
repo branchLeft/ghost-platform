@@ -105,26 +105,9 @@ export interface SupportAccount {
 export interface Preflight {
   /** Null when no account has this address. */
   readonly account: SupportAccount | null;
-  /** Newsletters Ghost records as mid-send (`emails.status = 'submitting'`). */
-  readonly sendsInFlight: number;
 }
 
-/** Reads the pre-flight facts from the tenant's own database. */
+/** Reads the pre-flight facts from the tenant's own database, read-only. */
 export interface SupportAccountStatusReader {
   readPreflight(identity: string): Promise<Preflight>;
-}
-
-export class NewsletterSendInFlightError extends Error {
-  constructor(readonly count: number) {
-    super(
-      `refused: ${count} newsletter send(s) are in flight on this tenant. Ghost resumes or fails ` +
-        `in-flight sends on every boot, with no setting to stop it, so an export colour booted ` +
-        `now would act on them; export once the send has finished. Nothing was started`
-    );
-    this.name = 'NewsletterSendInFlightError';
-  }
-}
-
-export function assertNoSendInFlight(sendsInFlight: number): void {
-  if (sendsInFlight !== 0) throw new NewsletterSendInFlightError(sendsInFlight);
 }

@@ -11,7 +11,13 @@ import {
 } from '../../src/exportRunner.js';
 import { UndrainedColourError } from '../../src/drainGate.js';
 import type { DrainFlag } from '../../src/drainFlag.js';
-import type { ContainerRunner } from '../../src/containerRunner.js';
+import type { ColourAttachments, ContainerRunner } from '../../src/containerRunner.js';
+import {
+  LiveDatabaseTargetError,
+  type DatabaseTarget,
+  type ScratchCopy,
+  type ScratchDatabase,
+} from '../../src/scratchDatabase.js';
 import type { GhostExportClient } from '../../src/ghostExportClient.js';
 import type { GhostProbe } from '../../src/ghostProbe.js';
 import { AuditWriteError, type AuditRecorder, type ExportAuditEntry } from '../../src/auditLog.js';
@@ -22,7 +28,6 @@ import {
 } from '../../src/ageEncryption.js';
 import {
   NoSupportGrantError,
-  NewsletterSendInFlightError,
   NotTheSupportAccountError,
   SupportAccountNotActiveError,
   type SupportGrant,
@@ -42,47 +47,110 @@ import {
 const CONTENT_MARKER = 'PLAINTEXT-MEMBER-EMAIL-marker@tenant.test';
 const ANALYTICS_MARKER = 'PLAINTEXT-ANALYTICS-ROW-marker';
 
+const LIVE_ENV = {
+  url: 'https://tenant-1.example',
+  database__client: 'mysql',
+  database__connection__host: '10.0.0.5',
+  database__connection__port: '3306',
+  database__connection__user: 'ghost_tenant1',
+  database__connection__password: 'synthetic-live-password',
+  database__connection__database: 'ghost_tenant1',
+  mail__transport: 'stub',
+};
+const LIVE_DATABASE: DatabaseTarget = {
+  kind: 'mysql',
+  host: '10.0.0.5',
+  port: 3306,
+  database: 'ghost_tenant1',
+};
+const SCRATCH_COPY: ScratchCopy = {
+  target: { kind: 'mysql', host: 'tenant-1-export-1-db', port: 3306, database: 'ghost_tenant1' },
+  colourDatabaseEnv: {
+    database__client: 'mysql',
+    database__connection__host: 'tenant-1-export-1-db',
+    database__connection__port: '3306',
+    database__connection__user: 'root',
+    database__connection__password: 'scratch-password',
+    database__connection__database: 'ghost_tenant1',
+  },
+  colourVolumes: [],
+  network: 'tenant-1-export-1-net',
+};
+
 interface Recording {
   accountReads: string[];
   drainSetCalls: string[];
   drainClearCalls: string[];
+  scratchPrepared: boolean;
+  scratchDestroyed: boolean;
   containerStarted: boolean;
   containerStopped: boolean;
+  colourEnv: Readonly<Record<string, string>> | undefined;
+  colourAttach: ColourAttachments | undefined;
   exportCalls: string[];
   auditEntries: ExportAuditEntry[];
+  /** The order teardown steps ran in. */
+  teardown: string[];
 }
 
 function fakeDeps(overrides: {
   supportStatus?: string | null;
   supportRoles?: readonly string[];
   auditFails?: boolean;
-  sendsInFlight?: number;
   flagIsSet?: boolean;
   containerFails?: boolean;
   probeHealthy?: boolean;
   exportFails?: boolean;
   ageCommand?: string;
+  scratchFails?: boolean;
+  /** What the scratch copy hands back; the default points at the copy. */
+  copy?: ScratchCopy;
+  /** What Docker reports for the running colour; the default is what it was given. */
+  reportedColourEnv?: Readonly<Record<string, string>>;
 }): { deps: ExportRunnerDeps; recording: Recording } {
   const recording: Recording = {
     accountReads: [],
     drainSetCalls: [],
     drainClearCalls: [],
+    scratchPrepared: false,
+    scratchDestroyed: false,
     containerStarted: false,
     containerStopped: false,
+    colourEnv: undefined,
+    colourAttach: undefined,
     exportCalls: [],
     auditEntries: [],
+    teardown: [],
   };
 
   const flag: DrainFlag = { isSet: () => overrides.flagIsSet ?? true };
 
+  const scratch: ScratchDatabase = {
+    async prepare() {
+      recording.scratchPrepared = true;
+      if (overrides.scratchFails) throw new Error('scratch sabotage failure');
+      return overrides.copy ?? SCRATCH_COPY;
+    },
+    async destroy() {
+      recording.scratchDestroyed = true;
+      recording.teardown.push('scratch');
+    },
+  };
+
   const containerRunner: ContainerRunner = {
-    async start() {
+    async start(env, attach) {
       recording.containerStarted = true;
+      recording.colourEnv = env;
+      recording.colourAttach = attach;
       if (overrides.containerFails) throw new Error('container sabotage failure');
       return { baseUrl: 'http://127.0.0.1:1' };
     },
+    async readEnv() {
+      return overrides.reportedColourEnv ?? recording.colourEnv ?? {};
+    },
     async stop() {
       recording.containerStopped = true;
+      recording.teardown.push('colour');
     },
   };
 
@@ -126,6 +194,7 @@ function fakeDeps(overrides: {
       },
       clear: async (colourId) => {
         recording.drainClearCalls.push(colourId);
+        recording.teardown.push('drain flag');
       },
     },
     readDrainFlag: () => flag,
@@ -133,14 +202,11 @@ function fakeDeps(overrides: {
       async readPreflight(identity) {
         recording.accountReads.push(identity);
         const status = overrides.supportStatus === undefined ? 'active' : overrides.supportStatus;
-        const sendsInFlight = overrides.sendsInFlight ?? 0;
-        if (status === null) return { account: null, sendsInFlight };
-        return {
-          account: { status, roles: overrides.supportRoles ?? ['Administrator'] },
-          sendsInFlight,
-        };
+        if (status === null) return { account: null };
+        return { account: { status, roles: overrides.supportRoles ?? ['Administrator'] } };
       },
     },
+    scratch,
     containerRunner,
     probe,
     exportClient,
@@ -156,6 +222,7 @@ function fakeDeps(overrides: {
 
 function expectNothingStarted(recording: Recording): void {
   expect(recording.drainSetCalls).toEqual([]);
+  expect(recording.scratchPrepared).toBe(false);
   expect(recording.containerStarted).toBe(false);
   expect(recording.exportCalls).toEqual([]);
   expect(recording.auditEntries).toEqual([]);
@@ -195,9 +262,85 @@ describe('runExport', () => {
       grant,
       supportIdentity: 'support@tenant-1.test',
       ageRecipient: identity.recipient,
+      colourBaseEnv: LIVE_ENV,
+      liveDatabase: LIVE_DATABASE,
       ...overrides,
     };
   }
+
+  it("boots the colour against the run's scratch copy, never the live database", async () => {
+    const { deps, recording } = fakeDeps({});
+    await runExport(deps, request());
+    expect(recording.colourEnv).toEqual({
+      url: 'https://tenant-1.example',
+      mail__transport: 'stub',
+      ...SCRATCH_COPY.colourDatabaseEnv,
+    });
+    expect(Object.values(recording.colourEnv ?? {})).not.toContain('synthetic-live-password');
+    expect(Object.values(recording.colourEnv ?? {})).not.toContain('10.0.0.5');
+    expect(recording.colourAttach).toEqual({ network: 'tenant-1-export-1-net', volumes: [] });
+  });
+
+  it('REFUSES -- LiveDatabaseTargetError -- a colour that would be pointed at the live database, before it starts', async () => {
+    const pointedAtLive: ScratchCopy = {
+      ...SCRATCH_COPY,
+      colourDatabaseEnv: {
+        database__client: 'mysql',
+        database__connection__host: '10.0.0.5',
+        database__connection__port: '3306',
+        database__connection__database: 'ghost_tenant1',
+      },
+    };
+    const { deps, recording } = fakeDeps({ copy: pointedAtLive });
+    await expect(runExport(deps, request())).rejects.toThrow(LiveDatabaseTargetError);
+    expect(recording.containerStarted).toBe(false);
+    expect(recording.exportCalls).toEqual([]);
+    expect(recording.scratchDestroyed).toBe(true);
+    expect(recording.drainClearCalls).toEqual(['tenant-1-export-1']);
+  });
+
+  it('REFUSES -- LiveDatabaseTargetError -- when Docker reports the running colour on the live database, before any export call', async () => {
+    const { deps, recording } = fakeDeps({ reportedColourEnv: LIVE_ENV });
+    await expect(runExport(deps, request())).rejects.toThrow(LiveDatabaseTargetError);
+    expect(recording.containerStarted).toBe(true);
+    expect(recording.exportCalls).toEqual([]);
+    expect(recording.teardown).toEqual(['colour', 'scratch', 'drain flag']);
+  });
+
+  it('tears down the colour, then the copy, then the drain flag -- on success', async () => {
+    const { deps, recording } = fakeDeps({});
+    await runExport(deps, request());
+    expect(recording.teardown).toEqual(['colour', 'scratch', 'drain flag']);
+  });
+
+  it.each([
+    [
+      'the copy cannot be made',
+      { scratchFails: true },
+      'scratch sabotage failure',
+      ['scratch', 'drain flag'],
+    ],
+    [
+      'the colour cannot start',
+      { containerFails: true },
+      'container sabotage failure',
+      ['scratch', 'drain flag'],
+    ],
+    [
+      'an export call fails',
+      { exportFails: true },
+      'export sabotage failure',
+      ['colour', 'scratch', 'drain flag'],
+    ],
+  ])(
+    'removes the copy and clears the drain flag when %s',
+    async (_label, opts, message, teardown) => {
+      const { deps, recording } = fakeDeps(opts);
+      await expect(runExport(deps, request())).rejects.toThrow(message);
+      expect(recording.teardown).toEqual(teardown);
+      expect(recording.auditEntries).toEqual([]);
+    }
+  );
 
   it('runs the full lifecycle: checks the grant, drains, starts, exports both files, encrypts, audits, stops', async () => {
     const { deps, recording } = fakeDeps({});
@@ -335,16 +478,6 @@ describe('runExport', () => {
         runExport(deps, request({ supportIdentity: 'owner@tenant-1.test' }))
       ).rejects.toThrow(NotTheSupportAccountError);
       expect(recording.accountReads).toEqual(['owner@tenant-1.test']);
-      expectNothingStarted(recording);
-      expect(await readdir(destDir)).toEqual([]);
-    }
-  );
-
-  it.each([[1], [3]])(
-    'refuses -- NewsletterSendInFlightError -- while %i newsletter send(s) are in flight, before anything is started',
-    async (count) => {
-      const { deps, recording } = fakeDeps({ sendsInFlight: count });
-      await expect(runExport(deps, request())).rejects.toThrow(NewsletterSendInFlightError);
       expectNothingStarted(recording);
       expect(await readdir(destDir)).toEqual([]);
     }

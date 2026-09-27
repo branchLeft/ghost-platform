@@ -1,9 +1,9 @@
 # export-bundler
 
 Calls Ghost's two existing admin exports -- content & settings, and post
-analytics -- against a colour started on a tenant's own data with no route
-pointed at it, and bundles the result into one archive, encrypted to the
-tenant's own `age` recipient, plus a manifest.
+analytics -- against a colour started on a copy of a tenant's database with
+no route pointed at it, and bundles the result into one archive, encrypted
+to the tenant's own `age` recipient, plus a manifest.
 Design: `ghost-platform-docs/19-try-it-now-design/08-portal.html` §08b.
 
 `the portal does not build an exporter, it builds a bundler`: this package
@@ -102,11 +102,56 @@ recipientFingerprint }`, where the fingerprint is the SHA-256 of the
 recipient string. The audit record carries the same fingerprint and the
 SHA-256 of the ciphertext file, binding the record to one archive.
 
-## The export colour sends nothing and schedules nothing
+## The export colour runs against a copy, never the live database
 
-The export colour is a second Ghost process on the tenant's live database.
-`colourIsolation.ts` overrides the tenant's environment so that, as far as
-Ghost 6.55's own settings allow, it acts on nothing:
+Owner ruling, 2026-09-27: "the copy". Ghost acts on its database as it
+boots. It runs the member welcome-email poll, resumes any newsletter it
+finds mid-send, and does clean-up work. None of that has a setting to stop
+it. So the export colour never runs against the tenant's live database.
+`scratchDatabase.ts` gives each run its own copy:
+
+- **MySQL tier.**
+  - A fresh MySQL 8.0 container, the server image `db/RUNBOOK-db.md` pins
+    for db1, on a network created for the run. It has no published port,
+    and its root password reaches it through an env file.
+  - `mysqldump --single-transaction` of the tenant's one schema is streamed
+    straight into it. No dump file exists anywhere.
+  - The flags are `db/provision/dump_tenant.py`'s, with two changes. The
+    dump runs over TCP as the tenant's own account, because db1's `backup`
+    account is socket-only. `--source-data=2` is dropped and
+    `--no-tablespaces` added, since that account holds no global privilege.
+  - Nothing is created on db1; the dump is a read.
+  - The readiness wait (a real `SELECT 1` over TCP) and the
+    refuse-a-non-empty-target check mirror `db/recovery/restore_drained.py`.
+    The floor check (`users` and `settings` rows must appear in the
+    stream) mirrors `dump_tenant.py`. Those modules are Python and this
+    package is Node, so they are mirrored, not imported.
+- **SQLite tier.**
+  - SQLite's online backup API, through the better-sqlite3 in Ghost's own
+    image. The tenant's volumes are mounted read-only, and the source file
+    is opened read-only.
+  - The copy goes into a Docker volume created for the run, not a host
+    directory. The tenant's file lives in a Docker volume the host cannot
+    read directly, and the colour runs as the tenant's own uid.
+
+**The control.** Before the colour starts, the environment it is about to
+be given must point its database at the copy (`assertColourOnScratch`).
+After it is healthy and before any export call, the environment Docker
+reports for the running colour must too. Otherwise the run refuses with
+`LiveDatabaseTargetError`.
+
+**Cleanup.** Every resource the run creates registers a synchronous
+remover with `cleanup.ts`: the colour, the scratch container and its data,
+the network, the volume and the env files. The normal path removes them in
+`finally`, colour first. On SIGINT or SIGTERM the removers run before the
+process exits.
+
+## The export colour sends nothing and schedules nothing: the second layer
+
+With the copy in place, these switches are a second layer, defence in
+depth. Whatever gets past them acts on a copy that is deleted when the run
+ends. `colourIsolation.ts` overrides the tenant's environment so that, as
+far as Ghost 6.55's own settings allow, the colour acts on nothing:
 
 - **Mail:** `mail__transport=stub`, Ghost's own no-op transport, with every
   `mail__*` key dropped. **Bulk email:** a `bulkEmail__mailgun__*` sink at a
@@ -116,26 +161,33 @@ Ghost 6.55's own settings allow, it acts on nothing:
   a no-op adapter, `ghost-adapter/SchedulingDisabled.js` (the Dockerfile
   copies it into Ghost's internal scheduling adapters directory), and the
   colour selects it with `adapters__scheduling__active`. It reschedules
-  nothing on boot and runs no job, so no scheduled post, scheduled newsletter
-  or automation step fires from the colour. An image without the adapter
-  fails to boot the colour, so the export fails closed.
+  nothing on boot and runs no scheduled job, so no scheduled post or
+  scheduled newsletter publishes from the colour. It does not stop Ghost's
+  automations poll: that runs at boot and on in-memory timers outside the
+  adapter, and the welcome-email step it drives is recorded as sent against
+  the stub transport. That is why the copy, not this layer, is the control.
+  An image without the adapter fails to boot the colour, so the export fails
+  closed.
 - **Recurring jobs:** `backgroundJobs__emailAnalytics` and
   `backgroundJobs__clickTrackingLastSeenAtUpdater` are false, and the update
   check is off.
 - **Stripe:** `WEBHOOK_SECRET` (random per run) keeps Ghost's webhook manager
   in local mode, so it never touches the tenant's Stripe webhook.
-- **In-flight newsletters:** on every boot, Ghost resumes a newsletter it
-  records as mid-send or marks it failed, and no setting stops it. The
-  pre-flight therefore refuses with `NewsletterSendInFlightError` while any
-  send is in flight.
+What Ghost still does on the colour's boot, with no setting to stop it, now
+happens to the copy only:
+- the member welcome-email poll;
+- resuming, or failing, any newsletter recorded as mid-send;
+- the daily member and gift clean-up jobs and gift reminders;
+- the milestone check;
+- processing expired gifts;
+- reconciling the ActivityPub webhook rows.
 
-What Ghost still does on the colour's boot, with no setting to stop it, is
-the same as any colour boot on this platform. The daily member and gift
-clean-up jobs fire at a random time between 00:00 and 06:00, and could land
-inside an export window. There is a one-in-four chance the milestone check
-runs at boot. Expired gifts are processed, and the ActivityPub webhook rows
-and the Stripe billing-portal configuration are reconciled. Any mail these
-paths try to send goes to the stub.
+One effect still reaches outside the copy: the Stripe billing-portal
+configuration is registered with Stripe, as on any colour boot. The rows
+those boot paths change on the copy (`emails`, `email_batches`,
+`welcome_email_automation_runs`, `automated_email_recipients`) are outside
+the table allowlist of Ghost's default content export, so the archive does
+not carry them.
 
 ## The audit record
 
@@ -186,14 +238,21 @@ docker build -t ghost-platform:local ../..
 ./../../scripts/test-export-bundler.sh ghost-platform:local   # real Ghost in Docker
 ```
 
-The live script runs the built CLI against a real Ghost holding a real
-owner and a real suspended support Administrator, described by a
-descriptor and a rendered stack directory. It proves: refusal with no
-grant, with the wrong recipient, with the Owner as the rendered support
-identity, and with the account suspended, each starting nothing; no tenant
-secret in any argv while the colour runs; a successful export once the
-account is un-suspended, with the token minted after the colour is up; an
-archive on disk that is ciphertext only and decrypts to real content; the
-manifest's recipient fingerprint; the audit record's grant, identity,
-fingerprint and digest; that the bundler never changes the account's
-status; permissions; and cleanup.
+The live script runs the built CLI on the MySQL tier. It uses a "live"
+MySQL (db1's pinned image, TLS required) seeded by a real Ghost, with a
+real owner and a real suspended support Administrator, described by a
+descriptor and a rendered stack directory. It proves:
+- refusal with no grant, with the wrong recipient, with the Owner as the
+  rendered support identity, and with the account suspended, each creating
+  nothing;
+- the colour on the copy, never holding the live password;
+- with a due welcome email and a newsletter mid-send seeded on the live
+  database, Ghost acting on the copy while the live rows stay
+  byte-identical;
+- the second layer;
+- no secret in any argv;
+- an encrypted archive of real content;
+- the manifest and the audit record;
+- nothing left behind after success or after Ctrl-C.
+
+The SQLite tier is covered by unit tests only.

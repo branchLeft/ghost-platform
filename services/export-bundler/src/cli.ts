@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createFileDrainFlag } from './drainFlag.js';
@@ -11,7 +12,8 @@ import { runExport } from './exportRunner.js';
 import { createPromptedTokenSource } from './operatorToken.js';
 import { createDockerStatusProbe } from './supportAccountProbe.js';
 import { parseSupportGrant, type SupportGrant } from './supportGrant.js';
-import { withEnvFile } from './envFile.js';
+import { installSignalCleanup, processCleanup } from './cleanup.js';
+import { createMysqlScratch, createSqliteScratch, databaseTargetOf } from './scratchDatabase.js';
 import { isolateExportColour } from './colourIsolation.js';
 import {
   bindTenant,
@@ -98,6 +100,9 @@ export function parseArgs(argv: readonly string[]): CliOptions {
 }
 
 async function main(argv: readonly string[]): Promise<void> {
+  // First: a Ctrl-C at any later point removes whatever the run has created
+  // (colour, scratch copy, network, env files) before the process exits.
+  installSignalCleanup();
   const opts = parseArgs(argv);
 
   let descriptorJson: unknown;
@@ -120,53 +125,78 @@ async function main(argv: readonly string[]): Promise<void> {
   const ageRecipient = bindTenant(descriptor, runtime, opts.ageRecipient);
 
   const colourId = `${slug}-export-${process.pid}`;
+  // runExport clears the flag itself on every normal exit; this covers a signal.
+  processCleanup.register(`drain flag ${colourId}`, () =>
+    rmSync(flagPathFor(opts.flagDir, colourId), { force: true })
+  );
   const volumes: VolumeMount[] = runtime.volumes.map((v) => ({
     volume: v.source,
     mountPath: v.target,
     readOnly: v.readOnly,
   }));
-
-  const result = await withEnvFile(isolateExportColour(runtime.env), (envFile) => {
-    const container = { envFile, user: runtime.user, volumes };
-    return runExport(
-      {
-        drainFlags: createDrainFlagStore(opts.flagDir),
-        readDrainFlag: (id) => createFileDrainFlag(flagPathFor(opts.flagDir, id)),
-        supportAccount: createDockerStatusProbe({ ...container, image: runtime.image }),
-        containerRunner: createDockerContainerRunner({
-          ...container,
-          containerName: colourId,
-          image: runtime.image,
-          loopbackPort: opts.loopbackPort,
-        }),
-        probe: createHttpGhostProbe(2000),
-        exportClient: createHttpGhostExportClient(
-          createPromptedTokenSource(
-            process.stdin,
-            process.stderr,
-            `export-bundler: the export colour is up. Mint a break-glass token now for tenant ` +
-              `"${slug}", identity ${runtime.supportIdentity}, lifetime 600s or less, ` +
-              `and paste it on one line:`
+  const liveDatabase = databaseTargetOf(runtime.env);
+  const scratch =
+    liveDatabase.kind === 'mysql'
+      ? createMysqlScratch({
+          runId: colourId,
+          live: liveDatabase,
+          liveUser: runtime.env.database__connection__user ?? '',
+          livePassword: runtime.env.database__connection__password ?? '',
+          liveUsesTls: Object.keys(runtime.env).some((k) =>
+            k.startsWith('database__connection__ssl')
           ),
-          10_000
+        })
+      : createSqliteScratch({
+          runId: colourId,
+          image: runtime.image,
+          tenantVolumes: volumes,
+          live: liveDatabase,
+          owner: runtime.user,
+        });
+
+  const container = { user: runtime.user, volumes };
+  const result = await runExport(
+    {
+      drainFlags: createDrainFlagStore(opts.flagDir),
+      readDrainFlag: (id) => createFileDrainFlag(flagPathFor(opts.flagDir, id)),
+      supportAccount: createDockerStatusProbe({ ...container, image: runtime.image }, runtime.env),
+      scratch,
+      containerRunner: createDockerContainerRunner({
+        ...container,
+        containerName: colourId,
+        image: runtime.image,
+        loopbackPort: opts.loopbackPort,
+        network: null,
+      }),
+      probe: createHttpGhostProbe(2000),
+      exportClient: createHttpGhostExportClient(
+        createPromptedTokenSource(
+          process.stdin,
+          process.stderr,
+          `export-bundler: the export colour is up. Mint a break-glass token now for tenant ` +
+            `"${slug}", identity ${runtime.supportIdentity}, lifetime 600s or less, ` +
+            `and paste it on one line:`
         ),
-        auditLog: createFileAuditLog(opts.auditLogPath),
-        nowIso: () => new Date().toISOString(),
-        healthTimeoutMs: 60_000,
-        healthPollIntervalMs: 500,
-      },
-      {
-        tenantId: slug,
-        requestedBy: opts.requestedBy,
-        deliveredTo: opts.deliveredTo,
-        colourId,
-        destDir: opts.destDir,
-        grant: opts.grant,
-        supportIdentity: runtime.supportIdentity,
-        ageRecipient,
-      }
-    );
-  });
+        10_000
+      ),
+      auditLog: createFileAuditLog(opts.auditLogPath),
+      nowIso: () => new Date().toISOString(),
+      healthTimeoutMs: 60_000,
+      healthPollIntervalMs: 500,
+    },
+    {
+      tenantId: slug,
+      requestedBy: opts.requestedBy,
+      deliveredTo: opts.deliveredTo,
+      colourId,
+      destDir: opts.destDir,
+      grant: opts.grant,
+      supportIdentity: runtime.supportIdentity,
+      ageRecipient,
+      colourBaseEnv: isolateExportColour(runtime.env),
+      liveDatabase,
+    }
+  );
 
   console.log(`export-bundler: wrote ${result.archivePath}`);
   console.log(`export-bundler: sha256 ${result.archiveSha256}`);
