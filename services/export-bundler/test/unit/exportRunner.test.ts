@@ -271,18 +271,20 @@ describe('runExport', () => {
       const { deps } = fakeDeps({});
       const result = await runExport(deps, request());
 
-      // The markers did reach the archive, so their absence below means
-      // "encrypted", not "never exported".
-      const tar = decryptAge(result.archivePath, identity.identityPath);
-      expect(tar.includes(Buffer.from(CONTENT_MARKER))).toBe(true);
-      expect(tar.includes(Buffer.from(ANALYTICS_MARKER))).toBe(true);
-
+      // The on-disk scan comes first, so it is what fails if plaintext
+      // lands anywhere.
       expect(await filesContaining(destDir, CONTENT_MARKER)).toEqual([]);
       expect(await filesContaining(destDir, ANALYTICS_MARKER)).toEqual([]);
       expect(await filesUnder(scratchTmp)).toEqual([]);
       expect((await readFile(result.archivePath)).subarray(0, 21).toString('ascii')).toBe(
         'age-encryption.org/v1'
       );
+
+      // The markers did reach the archive, so their absence above means
+      // "encrypted", not "never exported".
+      const tar = decryptAge(result.archivePath, identity.identityPath);
+      expect(tar.includes(Buffer.from(CONTENT_MARKER))).toBe(true);
+      expect(tar.includes(Buffer.from(ANALYTICS_MARKER))).toBe(true);
     } finally {
       if (savedTmp === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = savedTmp;
