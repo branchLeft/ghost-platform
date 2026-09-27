@@ -40,7 +40,9 @@ import datetime
 import importlib.util
 import os
 import pathlib
+import re
 import sys
+import time
 
 import shared_objectstorage
 from dial_in_transport import DialInTransport, LocalProcessTransport, UnwiredCollectorChannelTransport
@@ -322,6 +324,123 @@ def _copies_from_env(*, tenant: str) -> list[CopyTarget]:
     return copies
 
 
+# 09-backup-and-recovery.html S:signal is explicit that the monitored signal
+# is "the age of the newest successful backup, per tenant, reported by the
+# side that would notice it stopping" -- this worker, on the org/control
+# side, never the tenant host, which under the pull model holds no way to
+# report anything about its own backups at all. hetzner/monitoring already
+# has one collector shaped exactly like this one needs to be
+# (snds-collector: a node_exporter textfile-collector file, written
+# atomically, read back and merged rather than overwritten) -- reused here
+# rather than re-derived. Outside /opt/branchleft/ for the same reason that
+# collector's own output directory is: a directory under /opt/branchleft/
+# is what a stack's own `--delete` rsync deploy can wipe.
+DEFAULT_BACKUP_AGE_METRICS_DIR = "/var/lib/branchleft/backup-worker-exporter"
+BACKUP_AGE_METRIC_FILENAME = "backup_worker.prom"
+
+BACKUP_AGE_METRIC_NAME = "backup_worker_last_success_timestamp_seconds"
+
+# Matches exactly what render_backup_age_prometheus_text below writes for
+# one tenant, so a read of this module's own prior output round-trips.
+# Not a general Prometheus exposition-format parser -- it only ever reads
+# back a file this module wrote (see record_backup_age_metric's merge
+# below), never a foreign one.
+_BACKUP_AGE_METRIC_LINE = re.compile(
+    r'\A' + re.escape(BACKUP_AGE_METRIC_NAME) + r'\{tenant="([^"]*)"\}\s+([0-9]+(?:\.[0-9]+)?)\s*\Z'
+)
+
+
+def _escape_label_value(value: str) -> str:
+    """Prometheus exposition-format escaping for a label value.
+    `naming.validate_tenant_name` already restricts every tenant name this
+    worker is ever called with to `[a-z0-9-]`, so nothing here can contain a
+    quote, a backslash or a newline today -- this exists so a future
+    relaxation of that charset cannot silently write a `.prom` file
+    node_exporter fails to parse, rather than because a real tenant name
+    needs it."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _parse_previous_backup_age_metrics(text: str) -> dict[str, float]:
+    """Reads back whatever this module itself last wrote for every tenant.
+
+    `main()` dumps exactly one tenant per invocation (the module docstring:
+    "one invocation per tenant"), so a write that did not first read the
+    existing file would erase every OTHER tenant's timestamp on each run --
+    which, to the alert reading this file, looks exactly like every other
+    tenant's backups had just stopped."""
+    timestamps: dict[str, float] = {}
+    for line in text.splitlines():
+        match = _BACKUP_AGE_METRIC_LINE.match(line.strip())
+        if match:
+            timestamps[match.group(1)] = float(match.group(2))
+    return timestamps
+
+
+def render_backup_age_prometheus_text(timestamps: dict[str, float]) -> str:
+    """Pure formatting -- the textfile-collector exposition format
+    node_exporter reads, one gauge per tenant. Tenant names are escaped
+    (see `_escape_label_value`) even though today's charset never requires
+    it, matching hetzner/monitoring's own snds collector's reasoning for
+    validating before, rather than trusting, a value that reaches a label."""
+    lines = [
+        f"# HELP {BACKUP_AGE_METRIC_NAME} Unix time this worker last wrote a successful, "
+        "floor-verified dump for this tenant.",
+        f"# TYPE {BACKUP_AGE_METRIC_NAME} gauge",
+    ]
+    for tenant in sorted(timestamps):
+        lines.append(f'{BACKUP_AGE_METRIC_NAME}{{tenant="{_escape_label_value(tenant)}"}} {timestamps[tenant]}')
+    return "\n".join(lines) + "\n"
+
+
+def write_textfile_atomically(path: pathlib.Path, content: str) -> None:
+    """Matches hetzner/monitoring's own snds collector: node_exporter's
+    `--collector.textfile.directory` polls this directory and can scrape a
+    non-atomic write mid-write, as a truncated or malformed file. Writing to
+    a sibling temp file and `os.replace`-ing it into place is atomic on the
+    same filesystem."""
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content)
+    # Not a secret -- explicit 0644 rather than trusting umask, since
+    # node_exporter reads this as its own container-side user, not as
+    # whoever wrote the file.
+    tmp_path.chmod(0o644)
+    os.replace(tmp_path, path)
+
+
+def record_backup_age_metric(*, tenant: str, metrics_dir: str, now: float) -> None:
+    """Records `tenant`'s last-good-backup timestamp, merged with every
+    OTHER tenant this module has previously recorded into the same file.
+    Called from `main()` only after a floor-verified, `ok=True` result --
+    never for a run that failed, so a stopped tenant's gauge simply stops
+    advancing rather than being overwritten with a fresh, misleadingly
+    healthy-looking timestamp.
+
+    Best-effort and never raises: a metrics-directory write failure must
+    never turn an already-successful, already-stored dump into a failed
+    run -- the backup itself is good whether or not this exporter can
+    report it, and a metric that stops advancing because this call itself
+    keeps failing is caught by the same growing-age alert as a worker that
+    has stopped running at all."""
+    try:
+        output_dir = pathlib.Path(metrics_dir)
+        output_path = output_dir / BACKUP_AGE_METRIC_FILENAME
+        output_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+        try:
+            existing = output_path.read_text()
+        except FileNotFoundError:
+            existing = ""
+        timestamps = _parse_previous_backup_age_metrics(existing)
+        timestamps[tenant] = now
+        write_textfile_atomically(output_path, render_backup_age_prometheus_text(timestamps))
+    except OSError as exc:
+        print(
+            f"backup_worker: {tenant}: could not write the backup-age metric to "
+            f"{metrics_dir!r}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tenant", required=True, help="the tenant slug, e.g. 'blog'")
@@ -374,6 +493,15 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"backup_worker: {args.tenant}: floor tables seen {sorted(result.floor_tables_seen)}, "
         f"stored to {list(result.copies_written)}"
+    )
+    # Only reached for a floor-verified result.ok=True, per 09-backup-and-
+    # recovery.html's decision table: the monitored gauge advances on a
+    # successful floor result, never on the strength of the worker having
+    # merely run.
+    record_backup_age_metric(
+        tenant=args.tenant,
+        metrics_dir=os.environ.get("BACKUP_WORKER_METRICS_DIR", DEFAULT_BACKUP_AGE_METRICS_DIR),
+        now=time.time(),
     )
     return 0
 
