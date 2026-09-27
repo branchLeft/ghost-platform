@@ -186,10 +186,10 @@ export async function main(): Promise<Server> {
   let deps = buildDeps(config, renderer, adminApi, drainSource);
 
   // Optional fourth seam, deliberately not required at start-up the way
-  // the three above are (`emailBatchChecker.ts`'s own doc comment): a
-  // deploy that has not decided how the broker reaches Ghost's
-  // `email_batches` table yet still starts, with `/stop` refusing every
-  // request rather than the whole service failing to boot.
+  // the three above are: `buildDeps` already wires `createSudoEmailBatchChecker`
+  // as the real default (`emailBatchChecker.ts`'s own doc comment), and this
+  // override exists only for a deploy that wants something else entirely --
+  // never for "no real implementation exists yet", which is no longer true.
   if (process.env.BROKER_EMAIL_BATCH_CHECKER_MODULE) {
     const emailBatchChecker = await loadPlugin(
       'BROKER_EMAIL_BATCH_CHECKER_MODULE',
