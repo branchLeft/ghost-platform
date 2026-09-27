@@ -29,12 +29,12 @@ import render_slot_sudoers as rss
 # without it silently matches nothing.
 RULE_LINE_PATTERN = re.compile(
     re.escape(f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} ")
-    + r"(?P<invocation>[a-zA-Z0-9 ]+)"
+    + r"(?P<invocation>[a-zA-Z0-9 -]+)"
 )
 
 
 def _expected_rule_lines() -> list[str]:
-    """The 35 rule lines, reconstructed independently of render()'s own
+    """The 49 rule lines, reconstructed independently of render()'s own
     loop -- from the slot table and the fixed line shape only, so a bug in
     render()'s assembly (an appended line, a dropped slot, a duplicate)
     shows up as a mismatch rather than being reproduced on both sides.
@@ -43,7 +43,7 @@ def _expected_rule_lines() -> list[str]:
     for slot in rss.SLOT_NAMES:
         lines.append(f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} {slot} reset")
         for colour in rss.COLOURS:
-            for verb in rss.START_STOP_VERBS:
+            for verb in (*rss.START_STOP_VERBS, *rss.READ_VERBS):
                 lines.append(
                     f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} "
                     f"{slot} {colour} {verb}"
@@ -56,16 +56,29 @@ def _expected_full_text() -> str:
 
 
 class SlotInvocationsTests(unittest.TestCase):
-    def test_five_invocations_per_slot_in_stable_order(self):
+    def test_seven_invocations_per_slot_in_stable_order(self):
         self.assertEqual(
             rss.slot_invocations("3"),
-            ["3 reset", "3 a start", "3 a stop", "3 b start", "3 b stop"],
+            [
+                "3 reset",
+                "3 a start",
+                "3 a stop",
+                "3 a email-batches",
+                "3 b start",
+                "3 b stop",
+                "3 b email-batches",
+            ],
         )
 
     def test_reset_carries_no_colour(self):
         for invocation in rss.slot_invocations("0"):
             if invocation.endswith("reset"):
                 self.assertEqual(invocation, "0 reset")
+
+    def test_read_verb_present_exactly_once_per_colour(self):
+        invocations = rss.slot_invocations("5")
+        self.assertEqual(invocations.count("5 a email-batches"), 1)
+        self.assertEqual(invocations.count("5 b email-batches"), 1)
 
     def test_every_slot_name_is_a_plain_digit_string(self):
         # The wrapper's first argument is matched literally by sudoers, so a
@@ -96,9 +109,9 @@ class SlotNameValidationTests(unittest.TestCase):
 
 
 class AllInvocationsTests(unittest.TestCase):
-    def test_seven_slots_times_five_invocations_is_thirty_five(self):
+    def test_seven_slots_times_seven_invocations_is_forty_nine(self):
         self.assertEqual(len(rss.SLOT_NAMES), 7)
-        self.assertEqual(len(rss.all_invocations()), 35)
+        self.assertEqual(len(rss.all_invocations()), 49)
 
     def test_every_invocation_is_unique(self):
         invocations = rss.all_invocations()
@@ -106,11 +119,11 @@ class AllInvocationsTests(unittest.TestCase):
 
     def test_scales_with_a_smaller_slot_table(self):
         # Proves the enumeration is derived from the table rather than a
-        # hardcoded count of thirty-five: three slots must yield fifteen.
-        self.assertEqual(len(rss.all_invocations(("0", "1", "2"))), 15)
+        # hardcoded count of forty-nine: three slots must yield twenty-one.
+        self.assertEqual(len(rss.all_invocations(("0", "1", "2"))), 21)
 
     def test_scales_with_a_larger_slot_table(self):
-        self.assertEqual(len(rss.all_invocations(tuple(str(n) for n in range(9)))), 45)
+        self.assertEqual(len(rss.all_invocations(tuple(str(n) for n in range(9)))), 63)
 
 
 class RenderPinnedLiteralsTests(unittest.TestCase):
@@ -130,6 +143,10 @@ class RenderPinnedLiteralsTests(unittest.TestCase):
         self.assertIn(
             "broker ALL=(root) NOPASSWD: /usr/local/sbin/branchleft-slot 6 b stop", content
         )
+        self.assertIn(
+            "broker ALL=(root) NOPASSWD: /usr/local/sbin/branchleft-slot 6 b email-batches",
+            content,
+        )
 
 
 class RenderExactnessTests(unittest.TestCase):
@@ -147,9 +164,24 @@ class RenderExactnessTests(unittest.TestCase):
                 f"nor a '# ' comment: {line!r}",
             )
 
-    def test_exactly_thirty_five_rule_lines(self):
+    def test_exactly_forty_nine_rule_lines(self):
         matched = sum(1 for line in rss.render().splitlines() if line in set(_expected_rule_lines()))
-        self.assertEqual(matched, 35)
+        self.assertEqual(matched, 49)
+
+
+class ReadVerbTests(unittest.TestCase):
+    def test_read_verbs_is_disjoint_from_start_stop_verbs(self):
+        self.assertEqual(set(rss.READ_VERBS) & set(rss.START_STOP_VERBS), set())
+
+    def test_read_verb_invocation_takes_only_slot_and_colour(self):
+        for slot in rss.SLOT_NAMES:
+            for colour in rss.COLOURS:
+                for verb in rss.READ_VERBS:
+                    invocation = f"{slot} {colour} {verb}"
+                    self.assertIn(invocation, rss.all_invocations())
+                    # Exactly three space-separated fields -- never a fourth
+                    # (a path, a query, anything else).
+                    self.assertEqual(len(invocation.split(" ")), 3)
 
 
 class RenderTests(unittest.TestCase):
@@ -169,7 +201,7 @@ class RenderTests(unittest.TestCase):
                 continue
             matched += 1
             self.assertNotIn("ALL", match.group("invocation"))
-        self.assertEqual(matched, 35, "the matcher itself matched nothing -- see test docstring")
+        self.assertEqual(matched, 49, "the matcher itself matched nothing -- see test docstring")
 
     def test_render_is_deterministic(self):
         self.assertEqual(rss.render(), rss.render())
