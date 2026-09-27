@@ -24,6 +24,7 @@ function fakeDeps(overrides: Partial<BumpDependencies> = {}): BumpDependencies {
   return {
     backup: vi.fn(async () => ok),
     apply: vi.fn(async () => ok),
+    awaitApplySettled: vi.fn(async () => ok),
     verify: vi.fn(async () => ok),
     revertTraffic: vi.fn(async () => ok),
     stopColour: vi.fn(async () => undefined),
@@ -387,8 +388,8 @@ describe('BumpStateMachine -- persist is called before the side effect for each 
         timeline.push('call:verify');
         return { ok: true };
       }),
-      persist: vi.fn(async (state) => {
-        timeline.push(`persist:${state}`);
+      persist: vi.fn(async (snapshot) => {
+        timeline.push(`persist:${snapshot.state}`);
       }),
     });
     const m = new BumpStateMachine(deps, createApplyLock());
@@ -446,6 +447,16 @@ describe('BumpStateMachine -- recovery methods reject a mismatched starting stat
     await expect(m.recoverFromReverted()).rejects.toThrow(/expected 'reverted'/);
   });
 
+  it('recoverFromClosing refuses a machine not recovered into closing', async () => {
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    await expect(m.recoverFromClosing()).rejects.toThrow(/expected 'closing'/);
+  });
+
+  it('recoverUnpagedFailure refuses a machine not recovered into failed-unsafe', async () => {
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    await expect(m.recoverUnpagedFailure('x')).rejects.toThrow(/expected 'failed-unsafe'/);
+  });
+
   it('recoverAsCancelled refuses a machine recovered into applying', async () => {
     const m = new BumpStateMachine(fakeDeps(), createApplyLock(), { state: 'applying' });
     await expect(m.recoverAsCancelled()).rejects.toThrow(
@@ -454,7 +465,113 @@ describe('BumpStateMachine -- recovery methods reject a mismatched starting stat
   });
 });
 
-describe('BumpStateMachine -- done can be claimed by only one of closeBakeWindow/abortAfterDone (r1 finding #2)', () => {
+describe('BumpStateMachine -- recoverFromApplying waits for the migration to settle before touching the colour', () => {
+  it('a confirmed-settled migration is verified and can land on done, never re-calling apply()', async () => {
+    const deps = fakeDeps();
+    const m = new BumpStateMachine(deps, createApplyLock(), { state: 'applying' });
+
+    const finalState = await m.recoverFromApplying();
+
+    expect(deps.apply).not.toHaveBeenCalled();
+    expect(deps.awaitApplySettled).toHaveBeenCalledTimes(1);
+    expect(deps.verify).toHaveBeenCalledTimes(1);
+    expect(finalState).toBe('done');
+  });
+
+  it('an outcome that cannot be confirmed settled goes straight to failed-unsafe, never touching verify, revertTraffic or stopColour', async () => {
+    const deps = fakeDeps({
+      awaitApplySettled: vi.fn(async () => ({ ok: false, reason: 'migrations_lock still held' })),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), { state: 'applying' });
+
+    const finalState = await m.recoverFromApplying();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.verify).not.toHaveBeenCalled();
+    expect(deps.revertTraffic).not.toHaveBeenCalled();
+    expect(deps.stopColour).not.toHaveBeenCalled();
+    expect(deps.page).toHaveBeenCalledWith('migrations_lock still held');
+  });
+
+  it('a settled-but-unhealthy migration reverts normally, once settling is confirmed', async () => {
+    const deps = fakeDeps({ verify: vi.fn(async () => ({ ok: false, reason: 'unhealthy' })) });
+    const m = new BumpStateMachine(deps, createApplyLock(), { state: 'applying' });
+
+    const finalState = await m.recoverFromApplying();
+
+    expect(finalState).toBe('reverted');
+    expect(deps.revertTraffic).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('BumpStateMachine -- recoverFromClosing retries the teardown a crash may have interrupted', () => {
+  it('retries stopColour(old) and lands on closed', async () => {
+    const deps = fakeDeps();
+    const m = new BumpStateMachine(deps, createApplyLock(), { state: 'closing' });
+
+    const finalState = await m.recoverFromClosing();
+
+    expect(deps.stopColour).toHaveBeenCalledWith('old');
+    expect(finalState).toBe('closed');
+  });
+});
+
+describe('BumpStateMachine -- closeBakeWindow persists closing before the teardown runs', () => {
+  it('persists closing strictly before stopColour(old), and closed strictly after', async () => {
+    const timeline: string[] = [];
+    const deps = fakeDeps({
+      stopColour: vi.fn(async (which) => {
+        timeline.push(`call:stopColour:${which}`);
+      }),
+      persist: vi.fn(async (snapshot) => {
+        timeline.push(`persist:${snapshot.state}`);
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock());
+    await m.run();
+    timeline.length = 0;
+
+    await m.closeBakeWindow();
+
+    expect(timeline).toEqual(['persist:closing', 'call:stopColour:old', 'persist:closed']);
+  });
+});
+
+describe('BumpStateMachine -- recoverUnpagedFailure pages exactly once, across a restart', () => {
+  it('pages when pageSent is false, then persists pageSent: true', async () => {
+    const persisted: Array<{ state: string; pageSent: boolean }> = [];
+    const deps = fakeDeps({
+      persist: vi.fn(async (snapshot) => {
+        persisted.push({ state: snapshot.state, pageSent: snapshot.pageSent });
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), {
+      state: 'failed-unsafe',
+      pageSent: false,
+    });
+
+    const finalState = await m.recoverUnpagedFailure('unpaged after crash');
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.page).toHaveBeenCalledTimes(1);
+    expect(deps.page).toHaveBeenCalledWith('unpaged after crash');
+    expect(persisted).toEqual([{ state: 'failed-unsafe', pageSent: true }]);
+  });
+
+  it('never pages again when recovered with pageSent already true', async () => {
+    const deps = fakeDeps();
+    const m = new BumpStateMachine(deps, createApplyLock(), {
+      state: 'failed-unsafe',
+      pageSent: true,
+    });
+
+    await m.recoverUnpagedFailure('should never be sent');
+
+    expect(deps.page).not.toHaveBeenCalled();
+  });
+});
+
+describe('BumpStateMachine -- done can be claimed by only one of closeBakeWindow/abortAfterDone', () => {
   it('the loser of a same-tick race is refused, never silently overwriting the winner', async () => {
     const deps = fakeDeps();
     const m = new BumpStateMachine(deps, createApplyLock());

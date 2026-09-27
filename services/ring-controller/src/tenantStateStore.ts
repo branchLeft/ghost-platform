@@ -21,6 +21,8 @@ export interface PersistedTenantState {
   state: BumpState;
   pageSent: boolean;
   updatedAt: string;
+  /** Only meaningful for `state: 'failed-unsafe'`: the reason `page()` would be (or was) called with. */
+  reason?: string;
 }
 
 export interface TenantStateStore {

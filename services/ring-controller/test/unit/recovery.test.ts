@@ -35,11 +35,19 @@ function fakeDeps(overrides: Partial<BumpDependencies> = {}): BumpDependencies {
   return {
     backup: vi.fn(async () => ok()),
     apply: vi.fn(async () => ok()),
+    awaitApplySettled: vi.fn(async () => ok()),
     verify: vi.fn(async () => ok()),
     revertTraffic: vi.fn(async () => ok()),
     stopColour: vi.fn(async () => undefined),
     page: vi.fn(async () => undefined),
     ...overrides,
+  };
+}
+
+/** Persists straight into a store, matching the shape a real `persist` wiring would use. */
+function persistTo(store: TenantStateStore, tenantId: string): BumpDependencies['persist'] {
+  return async (snapshot) => {
+    await store.save({ tenantId, ...snapshot, updatedAt: new Date().toISOString() });
   };
 }
 
@@ -95,7 +103,7 @@ async function waitForState(
 }
 
 describe('recoverPersistedTenants -- the recovery table', () => {
-  it.each(['done', 'closed', 'backup-failed', 'cancelled', 'failed-unsafe'] as const)(
+  it.each(['closed', 'backup-failed', 'cancelled'] as const)(
     'skips a tenant already settled in %s -- no side effect called',
     async (state) => {
       const deps = fakeDeps();
@@ -108,6 +116,30 @@ describe('recoverPersistedTenants -- the recovery table', () => {
       expect(deps.revertTraffic).not.toHaveBeenCalled();
     }
   );
+
+  it('skips a failed-unsafe tenant whose page already went out', async () => {
+    const deps = fakeDeps();
+    const store = memoryStore([record('failed-unsafe', { pageSent: true })]);
+
+    const recovered = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+
+    expect(recovered).toEqual([]);
+    expect(deps.page).not.toHaveBeenCalled();
+  });
+
+  it('rehydrates a done tenant with no action, so a later closeBakeWindow/abortAfterDone has something to act on', async () => {
+    const deps = fakeDeps();
+    const store = memoryStore([record('done')]);
+
+    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+
+    expect(recovered!.finalState).toBe('done');
+    expect(deps.stopColour).not.toHaveBeenCalled();
+    expect(recovered!.machine.getState()).toBe('done');
+    // The rehydrated machine is live and usable, not a dead husk.
+    const closed = await recovered!.machine.closeBakeWindow();
+    expect(closed).toBe('closed');
+  });
 
   it.each(['pending', 'backing-up', 'backed-up'] as const)(
     'recovers a tenant persisted in %s as cancelled, never touching backup or apply',
@@ -123,18 +155,35 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     }
   );
 
-  it('recovers a tenant persisted in applying by verifying it, never calling apply again', async () => {
+  it('recovers a tenant persisted in applying by waiting for settlement then verifying, never calling apply again', async () => {
     const deps = fakeDeps();
     const store = memoryStore([record('applying')]);
 
     const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(deps.apply).not.toHaveBeenCalled();
+    expect(deps.awaitApplySettled).toHaveBeenCalledTimes(1);
     expect(deps.verify).toHaveBeenCalledTimes(1);
     expect(recovered!.finalState).toBe('done');
   });
 
-  it('recovers a tenant persisted in applying to reverted when the outcome verifies unhealthy -- still never re-applying', async () => {
+  it('recovers a tenant persisted in applying to failed-unsafe when settlement cannot be confirmed -- never touching verify, revertTraffic or stopColour', async () => {
+    const deps = fakeDeps({
+      awaitApplySettled: vi.fn(async () => ({ ok: false, reason: 'migrations_lock still held' })),
+    });
+    const store = memoryStore([record('applying')]);
+
+    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+
+    expect(deps.apply).not.toHaveBeenCalled();
+    expect(deps.verify).not.toHaveBeenCalled();
+    expect(deps.revertTraffic).not.toHaveBeenCalled();
+    expect(deps.stopColour).not.toHaveBeenCalled();
+    expect(deps.page).toHaveBeenCalledWith('migrations_lock still held');
+    expect(recovered!.finalState).toBe('failed-unsafe');
+  });
+
+  it('recovers a tenant persisted in applying to reverted when the settled outcome verifies unhealthy -- still never re-applying', async () => {
     const deps = fakeDeps({
       verify: vi.fn(async () => ({ ok: false, reason: 'unhealthy after crash' })),
     });
@@ -145,21 +194,6 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     expect(deps.apply).not.toHaveBeenCalled();
     expect(deps.revertTraffic).toHaveBeenCalledTimes(1);
     expect(recovered!.finalState).toBe('reverted');
-  });
-
-  it('recovers a tenant persisted in applying to failed-unsafe when the outcome cannot even be verified', async () => {
-    const deps = fakeDeps({
-      verify: vi.fn(async () => {
-        throw new Error('health endpoint unreachable');
-      }),
-    });
-    const store = memoryStore([record('applying')]);
-
-    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
-
-    expect(deps.apply).not.toHaveBeenCalled();
-    expect(deps.page).toHaveBeenCalledTimes(1);
-    expect(recovered!.finalState).toBe('failed-unsafe');
   });
 
   it.each(['verifying', 'reverting'] as const)(
@@ -185,6 +219,30 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     expect(deps.stopColour).toHaveBeenCalledWith('new');
     expect(deps.revertTraffic).not.toHaveBeenCalled();
     expect(recovered!.finalState).toBe('reverted');
+  });
+
+  it('recovers a tenant persisted in closing by retrying the old-colour teardown and landing on closed', async () => {
+    const deps = fakeDeps();
+    const store = memoryStore([record('closing')]);
+
+    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+
+    expect(deps.stopColour).toHaveBeenCalledWith('old');
+    expect(recovered!.finalState).toBe('closed');
+  });
+
+  it('recovers an unpaged failed-unsafe tenant by paging exactly once and persisting pageSent: true', async () => {
+    const store = memoryStore([
+      record('failed-unsafe', { pageSent: false, reason: 'unreachable' }),
+    ]);
+    const deps = fakeDeps({ persist: persistTo(store, 'tenant-a') });
+
+    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+
+    expect(deps.page).toHaveBeenCalledTimes(1);
+    expect(deps.page).toHaveBeenCalledWith('unreachable');
+    expect(recovered!.finalState).toBe('failed-unsafe');
+    expect((await store.load('tenant-a'))?.pageSent).toBe(true);
   });
 
   it('recovers every non-settled tenant independently, each against its own deps', async () => {
@@ -220,13 +278,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
 
     const crashedDeps = fakeDeps({
       apply: vi.fn(() => applyGate),
-      persist: (state) =>
-        store.save({
-          tenantId: 'tenant-a',
-          state,
-          pageSent: false,
-          updatedAt: new Date().toISOString(),
-        }),
+      persist: persistTo(store, 'tenant-a'),
     });
     const crashedMachine = new BumpStateMachine(crashedDeps, lock);
     const abandonedRun = crashedMachine.run();
@@ -241,18 +293,54 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
     expect(crashedDeps.apply).toHaveBeenCalledTimes(1);
 
     // A fresh process: new deps, new lock object, same tenant id, reading
-    // the same store off disk.
+    // the same store off disk. This restarted process's own `apply()` is
+    // never called; its `awaitApplySettled()` (default: settled ok) is
+    // what recovery calls instead.
     const restartedDeps = fakeDeps();
     const recovered = await recoverPersistedTenants(store, createApplyLock(), () => restartedDeps);
 
     expect(recovered).toHaveLength(1);
     expect(recovered[0]!.tenantId).toBe('tenant-a');
     expect(restartedDeps.apply).not.toHaveBeenCalled();
+    expect(restartedDeps.awaitApplySettled).toHaveBeenCalledTimes(1);
     expect(restartedDeps.verify).toHaveBeenCalledTimes(1);
     expect(recovered[0]!.finalState).toBe('done');
 
     // Close off the abandoned original promise so the test process itself
     // doesn't leak a dangling handler.
+    releaseApply({ ok: true });
+    await abandonedRun;
+  });
+
+  it('a tenant crashed mid-applying, whose migration cannot be confirmed settled on restart, never has stopColour or revertTraffic called', async () => {
+    const dir = await tempDir();
+    const store = createFileTenantStateStore(dir);
+    const lock = createApplyLock();
+
+    let releaseApply!: (v: StepResult) => void;
+    const applyGate = new Promise<StepResult>((resolve) => {
+      releaseApply = resolve;
+    });
+
+    const crashedDeps = fakeDeps({
+      apply: vi.fn(() => applyGate),
+      persist: persistTo(store, 'tenant-a'),
+    });
+    const crashedMachine = new BumpStateMachine(crashedDeps, lock);
+    const abandonedRun = crashedMachine.run();
+    await waitForState(store, 'tenant-a', 'applying');
+
+    const restartedDeps = fakeDeps({
+      awaitApplySettled: vi.fn(async () => ({ ok: false, reason: 'unknown after crash' })),
+    });
+    const recovered = await recoverPersistedTenants(store, createApplyLock(), () => restartedDeps);
+
+    expect(recovered[0]!.finalState).toBe('failed-unsafe');
+    expect(restartedDeps.verify).not.toHaveBeenCalled();
+    expect(restartedDeps.revertTraffic).not.toHaveBeenCalled();
+    expect(restartedDeps.stopColour).not.toHaveBeenCalled();
+    expect(restartedDeps.page).toHaveBeenCalledWith('unknown after crash');
+
     releaseApply({ ok: true });
     await abandonedRun;
   });
@@ -269,13 +357,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
 
     const crashedDeps = fakeDeps({
       backup: vi.fn(() => backupGate),
-      persist: (state) =>
-        store.save({
-          tenantId: 'tenant-b',
-          state,
-          pageSent: false,
-          updatedAt: new Date().toISOString(),
-        }),
+      persist: persistTo(store, 'tenant-b'),
     });
     const crashedMachine = new BumpStateMachine(crashedDeps, lock);
     const abandonedRun = crashedMachine.run();
@@ -290,6 +372,46 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
     expect(restartedDeps.apply).not.toHaveBeenCalled();
 
     releaseBackup({ ok: true });
+    await abandonedRun;
+  });
+
+  it('a tenant that crashes between recording failed-unsafe and paging is paged on restart, exactly once', async () => {
+    const dir = await tempDir();
+    const store = createFileTenantStateStore(dir);
+    const lock = createApplyLock();
+
+    let releasePage!: () => void;
+    const pageGate = new Promise<void>((resolve) => {
+      releasePage = resolve;
+    });
+
+    const crashedDeps = fakeDeps({
+      verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
+      revertTraffic: vi.fn(async () => ({ ok: false, reason: 'edge unreachable' })),
+      page: vi.fn(() => pageGate),
+      persist: persistTo(store, 'tenant-c'),
+    });
+    const crashedMachine = new BumpStateMachine(crashedDeps, lock);
+    const abandonedRun = crashedMachine.run();
+
+    // The state is recorded as failed-unsafe (pageSent: false) strictly
+    // before page() is called -- waitForState catches exactly that gap,
+    // since page() never resolves on this side.
+    await waitForState(store, 'tenant-c', 'failed-unsafe');
+    expect((await store.load('tenant-c'))?.pageSent).toBe(false);
+
+    // The restarted process wires persist to the same durable store, same
+    // as the live path does -- recovery's own pageSent: true write must
+    // reach disk too, not just the in-memory recovered machine.
+    const restartedDeps = fakeDeps({ persist: persistTo(store, 'tenant-c') });
+    const recovered = await recoverPersistedTenants(store, createApplyLock(), () => restartedDeps);
+
+    expect(recovered[0]!.finalState).toBe('failed-unsafe');
+    expect(restartedDeps.page).toHaveBeenCalledTimes(1);
+    expect(restartedDeps.page).toHaveBeenCalledWith('edge unreachable');
+    expect((await store.load('tenant-c'))?.pageSent).toBe(true);
+
+    releasePage();
     await abandonedRun;
   });
 });

@@ -3,6 +3,7 @@ export type {
   BumpState,
   BumpDependencies,
   StepResult,
+  PersistSnapshot,
   RecoveredBumpState,
 } from './bumpStateMachine.js';
 export { createApplyLock } from './applyLock.js';

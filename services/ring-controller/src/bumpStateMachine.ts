@@ -14,6 +14,7 @@ export type BumpState =
   | 'applying'
   | 'verifying'
   | 'done'
+  | 'closing'
   | 'reverting'
   | 'reverted'
   | 'backup-failed'
@@ -23,6 +24,13 @@ export type BumpState =
 
 export interface StepResult {
   ok: boolean;
+  reason?: string;
+}
+
+/** What `persist` durably records: the step, whether the one page has gone out, and (for `failed-unsafe` only) the reason it would page with. */
+export interface PersistSnapshot {
+  state: BumpState;
+  pageSent: boolean;
   reason?: string;
 }
 
@@ -54,6 +62,19 @@ export interface BumpDependencies {
    * this a second time.
    */
   apply(): Promise<StepResult>;
+  /**
+   * Only used by recovery: probes whether a migration a crash
+   * interrupted mid-`apply()` has since settled -- LLD-4 U2's own
+   * `migrations_lock` releasing, or an equivalent signal -- waiting up to
+   * whatever bound the caller builds in. `ok: true` means the migration
+   * is over, one way or another, so `verify()` can safely judge the
+   * result. `ok: false` (a timeout, or the signal itself unreachable)
+   * means "cannot tell whether it is still running", which must never be
+   * read as either a pass or an ordinary failure: reverting traffic or
+   * stopping a colour while the migration might still be live is exactly
+   * the unrecoverable state this whole design exists to avoid.
+   */
+  awaitApplySettled(): Promise<StepResult>;
   /** Confirm the new colour is genuinely serving before traffic depends on it alone. */
   verify(): Promise<StepResult>;
   /**
@@ -63,18 +84,24 @@ export interface BumpDependencies {
    * decision, not a schema one.
    */
   revertTraffic(): Promise<StepResult>;
-  /** Tear down one colour: the failed new one after a revert, or the old one once the bake window closes with nothing wrong. */
+  /**
+   * Tear down one colour: the failed new one after a revert, or the old
+   * one once the bake window closes with nothing wrong. Idempotent --
+   * recovery may call this again for a colour already torn down, so a
+   * repeated call must be a safe no-op, never an error.
+   */
   stopColour(which: 'new' | 'old'): Promise<void>;
-  /** The one page signal for a tenant automation could neither verify nor undo. Called at most once per bump, ever. */
+  /** The one page signal for a tenant automation could neither verify nor undo. Called at most once per bump, ever -- including across a restart. */
   page(reason: string): Promise<void>;
   /**
-   * Durably record the state being entered, before the side effect for
-   * that state runs. Optional so the pure-logic tests above can keep
+   * Durably record the step being entered (and, for `failed-unsafe`,
+   * whether its one page has actually gone out), before the side effect
+   * for that step runs. Optional so the pure-logic tests above can keep
    * testing this class with no filesystem in the loop; a real caller
    * wires this to a `TenantStateStore` so a crash mid-step is recoverable
    * instead of silent.
    */
-  persist?(state: BumpState): Promise<void>;
+  persist?(snapshot: PersistSnapshot): Promise<void>;
 }
 
 /** Constructor-only: rehydrates an instance recovered from a persisted record, rather than starting fresh at `pending`. */
@@ -168,12 +195,20 @@ export class BumpStateMachine {
     // reachable.
     await this.transition('backed-up');
 
-    await this.transition('applying');
+    // 'applying' is persisted only once the lock is actually held and
+    // apply() is about to run -- never while merely queued behind
+    // another tenant's turn. Persisting it earlier would put every
+    // waiting tenant on disk as 'applying', indistinguishable from one
+    // whose migration is genuinely in flight, and would itself violate
+    // "at most one tenant ever in applying".
+    const applyResult = await this.lock.run(async () => {
+      await this.transition('applying');
+      return this.deps.apply();
+    });
     // Never interrupted: awaited to completion, abort or not, whether it
     // resolves ok or not. Serialised within this process by the shared
     // lock, so at most one tenant is ever in this state -- fleet-wide only
     // because exactly one such process runs (the process lock's job).
-    const applyResult = await this.lock.run(() => this.deps.apply());
 
     if (!applyResult.ok || this.abortRequested) {
       // "applying -> WAIT... then treat as verifying": jump straight to
@@ -189,13 +224,23 @@ export class BumpStateMachine {
 
   /**
    * A tenant recovered from a persisted `applying` record after a crash.
-   * `apply()` is never called again -- the table's own rule for landing
-   * in `applying` ("WAIT... then treat as verifying") is followed
-   * literally, whatever the crash actually left mid-flight.
+   * `apply()` runs inside the Ghost container on the app host, not inside
+   * this process, so a controller crash does not stop it -- it is never
+   * called again, but it may still be running for real. This waits for
+   * `awaitApplySettled()` to confirm the migration is over before doing
+   * anything else: an outcome that cannot be confirmed goes straight to
+   * `failed-unsafe`, never to `verify()`, `revertTraffic()` or
+   * `stopColour()`, any of which could act on a colour still mid-migration.
    */
   async recoverFromApplying(): Promise<BumpState> {
     if (this.state !== 'applying') {
       throw new Error(`recoverFromApplying called from state '${this.state}', expected 'applying'`);
+    }
+    const settled = await this.deps.awaitApplySettled();
+    if (!settled.ok) {
+      return this.failUnsafe(
+        settled.reason ?? 'could not confirm the migration settled after a crash'
+      );
     }
     return this.verifyAndFinish();
   }
@@ -227,6 +272,44 @@ export class BumpStateMachine {
       throw new Error(`recoverFromReverted called from state '${this.state}', expected 'reverted'`);
     }
     await this.deps.stopColour('new');
+    return this.state;
+  }
+
+  /**
+   * A tenant recovered from a persisted `closing` record: `closeBakeWindow`
+   * had already claimed `done` and started tearing down the old colour
+   * when the crash landed, so the claim (and the fact that this is not a
+   * fresh `done`) must not be re-decided -- only the teardown is retried
+   * and the terminal state recorded.
+   */
+  async recoverFromClosing(): Promise<BumpState> {
+    if (this.state !== 'closing') {
+      throw new Error(`recoverFromClosing called from state '${this.state}', expected 'closing'`);
+    }
+    await this.deps.stopColour('old');
+    await this.transition('closed');
+    return this.state;
+  }
+
+  /**
+   * A tenant recovered from a persisted `failed-unsafe` record whose page
+   * was never confirmed sent. The crash landed between recording the
+   * state and calling `page()` -- the reason `failed-unsafe` alone is
+   * never treated as settled by recovery, only `failed-unsafe` with
+   * `pageSent: true` is. Pages now, exactly once, and persists that fact
+   * so a second restart can never page again.
+   */
+  async recoverUnpagedFailure(reason: string): Promise<BumpState> {
+    if (this.state !== 'failed-unsafe') {
+      throw new Error(
+        `recoverUnpagedFailure called from state '${this.state}', expected 'failed-unsafe'`
+      );
+    }
+    if (!this.pageSent) {
+      await this.deps.page(reason);
+      this.pageSent = true;
+      await this.persistSnapshot(reason);
+    }
     return this.state;
   }
 
@@ -264,10 +347,14 @@ export class BumpStateMachine {
    * The far end of a clean bump: the bake window elapsed with nothing
    * wrong, so the old colour is stopped. This is the U7 reading this
    * component builds: past this point a fault is `failed-unsafe`, never
-   * an automatic migration down and never a restore.
+   * an automatic migration down and never a restore. `closing` is
+   * persisted before the teardown itself runs, so a crash between the
+   * stop and recording `closed` recovers as a retried (idempotent) stop,
+   * never as a still-open bake window with the old colour already gone.
    */
   async closeBakeWindow(): Promise<BumpState> {
     this.claimDoneTransition('closeBakeWindow');
+    await this.transition('closing');
     await this.deps.stopColour('old');
     await this.transition('closed');
     return this.state;
@@ -288,14 +375,15 @@ export class BumpStateMachine {
   }
 
   /**
-   * The shared tail of a completed, successful `apply()` (real or
-   * recovered): check health, then land on `done` or hand off to the
-   * revert path. Never entered on an apply failure or a pending abort --
-   * `run()` and `recoverFromApplying` both route those straight past
-   * `verify()` to the revert path instead. Verify itself throwing -- not
-   * answering ok or not-ok, just failing to run -- is the "can't be
-   * verified" case: it goes straight to `failed-unsafe` rather than being
-   * treated as either a pass or an ordinary failure.
+   * The shared tail of a completed, settled, successful `apply()` (real
+   * or recovered): check health, then land on `done` or hand off to the
+   * revert path. Never entered on an apply failure, a pending abort, or
+   * an unsettled recovery -- `run()` routes the first two straight past
+   * `verify()` to the revert path, and `recoverFromApplying` routes the
+   * third to `failed-unsafe` instead of calling this at all. Verify
+   * itself throwing -- not answering ok or not-ok, just failing to run --
+   * is the "can't be verified" case: it goes straight to `failed-unsafe`
+   * rather than being treated as either a pass or an ordinary failure.
    */
   private async verifyAndFinish(): Promise<BumpState> {
     await this.transition('verifying');
@@ -336,15 +424,19 @@ export class BumpStateMachine {
 
   /**
    * Pages exactly once, ever, for this bump -- never on a second call,
-   * however it is reached. Automation that has run out of moves fetches
-   * a person once; retrying from here is how one broken tenant becomes
-   * two (LLD-4 §05).
+   * however it is reached, and never twice across a restart either.
+   * `failed-unsafe` is persisted with `pageSent: false` *before* `page()`
+   * runs, so a crash in between recovers as unpaged (`recoverUnpagedFailure`
+   * pages then), never as silently settled; `pageSent` only flips to
+   * `true`, and gets persisted, once the page call has actually returned.
    */
   private async failUnsafe(reason: string): Promise<BumpState> {
-    await this.transition('failed-unsafe');
+    this.state = 'failed-unsafe';
+    await this.persistSnapshot(reason);
     if (!this.pageSent) {
-      this.pageSent = true;
       await this.deps.page(reason);
+      this.pageSent = true;
+      await this.persistSnapshot(reason);
     }
     return this.state;
   }
@@ -358,6 +450,10 @@ export class BumpStateMachine {
    */
   private async transition(state: BumpState): Promise<void> {
     this.state = state;
-    await this.deps.persist?.(state);
+    await this.persistSnapshot();
+  }
+
+  private async persistSnapshot(reason?: string): Promise<void> {
+    await this.deps.persist?.({ state: this.state, pageSent: this.pageSent, reason });
   }
 }

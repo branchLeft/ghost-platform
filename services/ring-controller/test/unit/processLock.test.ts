@@ -19,26 +19,32 @@ afterEach(async () => {
 /** A pid that cannot belong to any live process on any platform this runs on. */
 const DEAD_PID = 999_999_999;
 
+async function readHolderPid(path: string): Promise<number> {
+  const content = await readFile(path, 'utf8');
+  return (JSON.parse(content) as { pid: number }).pid;
+}
+
 describe('acquireProcessLock', () => {
-  it('writes this process pid into the lock file', async () => {
+  it('writes this process pid into the lock file, never observably empty', async () => {
     const path = join(await tempDir(), 'ring-controller.lock');
 
     const lock = await acquireProcessLock(path);
 
-    expect(await readFile(path, 'utf8')).toBe(String(process.pid));
+    expect(await readHolderPid(path)).toBe(process.pid);
     await lock.release();
   });
 
-  it('a second acquire against the same path, while the first is live, refuses to start', async () => {
+  it('a second acquire, simulating a genuinely different but live process, refuses to start', async () => {
     const path = join(await tempDir(), 'ring-controller.lock');
     const first = await acquireProcessLock(path);
 
-    // This process itself is definitely alive, so the liveness check the
-    // second acquire runs against the recorded pid (this process's own)
-    // always finds a live holder -- this is the same-process stand-in for
-    // "a second controller instance", since the check is on the pid, not
-    // on which object made the call.
-    await expect(acquireProcessLock(path)).rejects.toThrow(ProcessLockHeldError);
+    // `selfPid` alone is enough here: the recorded holder is this test's
+    // own real, genuinely alive pid, and the second call just claims a
+    // different identity for itself -- the real `kill(pid, 0)` liveness
+    // check against the real holder pid does the rest.
+    const err = await acquireProcessLock(path, { selfPid: 424242 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProcessLockHeldError);
+    expect((err as Error).message).toContain(String(process.pid));
 
     await first.release();
   });
@@ -50,33 +56,107 @@ describe('acquireProcessLock', () => {
 
     const second = await acquireProcessLock(path);
 
-    expect(await readFile(path, 'utf8')).toBe(String(process.pid));
+    expect(await readHolderPid(path)).toBe(process.pid);
     await second.release();
+  });
+
+  it("release only removes the lock file if it is still this call's own -- never someone else's", async () => {
+    const path = join(await tempDir(), 'ring-controller.lock');
+    const lock = await acquireProcessLock(path);
+
+    // Simulate the file having been legitimately replaced by a new
+    // holder since this call's own acquire (the defensive case: nothing
+    // in this design should let that happen today, but `release()` must
+    // not assume it never will).
+    await writeFile(
+      path,
+      JSON.stringify({ pid: DEAD_PID, instanceId: 'someone-elses-lock' }),
+      'utf8'
+    );
+
+    await lock.release();
+
+    expect(await readHolderPid(path)).toBe(DEAD_PID);
   });
 
   it('reclaims a lock file left by a pid that no longer exists', async () => {
     const path = join(await tempDir(), 'ring-controller.lock');
-    await writeFile(path, String(DEAD_PID), 'utf8');
+    await writeFile(path, JSON.stringify({ pid: DEAD_PID, instanceId: 'dead' }), 'utf8');
 
     const lock = await acquireProcessLock(path);
 
-    expect(await readFile(path, 'utf8')).toBe(String(process.pid));
+    expect(await readHolderPid(path)).toBe(process.pid);
     await lock.release();
   });
 
-  it('refuses with the holder pid named in the error', async () => {
+  it('reclaims a lock file naming this very process\'s own pid -- the routine "container restart reuses pid 1" case', async () => {
     const path = join(await tempDir(), 'ring-controller.lock');
-    const first = await acquireProcessLock(path);
+    // A predecessor that happened to get this same pid, and never
+    // cleaned up -- not a second live holder, since nothing else can
+    // concurrently be this exact process.
+    await writeFile(path, JSON.stringify({ pid: process.pid, instanceId: 'predecessor' }), 'utf8');
 
-    await expect(acquireProcessLock(path)).rejects.toThrow(String(process.pid));
+    const lock = await acquireProcessLock(path);
 
-    await first.release();
+    const content = await readFile(path, 'utf8');
+    expect(JSON.parse(content)).toMatchObject({ pid: process.pid });
+    expect(JSON.parse(content).instanceId).not.toBe('predecessor');
+    await lock.release();
+  });
+
+  it('two genuinely distinct, concurrently live identities racing for a fresh lock: exactly one wins, the other is refused outright (never deletes the winner)', async () => {
+    const path = join(await tempDir(), 'ring-controller.lock');
+    const isAlive = (pid: number) => pid === 111 || pid === 222;
+
+    const results = await Promise.allSettled([
+      acquireProcessLock(path, { selfPid: 111, isAlive }),
+      acquireProcessLock(path, { selfPid: 222, isAlive }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ProcessLockHeldError);
+
+    const winnerPid = await readHolderPid(path);
+    expect([111, 222]).toContain(winnerPid);
+
+    await (fulfilled[0] as PromiseFulfilledResult<{ release(): Promise<void> }>).value.release();
+  });
+
+  it('a stale lock naming a dead pid, raced by three distinct live identities, is reclaimed by exactly one -- no double-claim, no lingering arbitration file', async () => {
+    const path = join(await tempDir(), 'ring-controller.lock');
+    await writeFile(path, JSON.stringify({ pid: DEAD_PID, instanceId: 'dead' }), 'utf8');
+    const isAlive = (pid: number) => pid === 111 || pid === 222 || pid === 333;
+
+    const results = await Promise.allSettled([
+      acquireProcessLock(path, { selfPid: 111, isAlive }),
+      acquireProcessLock(path, { selfPid: 222, isAlive }),
+      acquireProcessLock(path, { selfPid: 333, isAlive }),
+    ]);
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<{ release(): Promise<void> }> => r.status === 'fulfilled'
+    );
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(2);
+    for (const r of rejected) {
+      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(ProcessLockHeldError);
+    }
+
+    const winnerPid = await readHolderPid(path);
+    expect([111, 222, 333]).toContain(winnerPid);
+    await expect(readFile(`${path}.reclaim`, 'utf8')).rejects.toThrow();
+
+    await fulfilled[0]!.value.release();
   });
 
   it('rethrows a real filesystem error rather than reading it as "already held"', async () => {
-    // The parent directory does not exist, so `open(path, 'wx')` fails
-    // with ENOENT, not EEXIST -- a different failure than "someone else
-    // holds this lock", and one this must not swallow into a false
+    // The parent directory does not exist, so writing the temp file
+    // fails with ENOENT, not EEXIST -- a different failure than "someone
+    // else holds this lock", and one this must not swallow into a false
     // ProcessLockHeldError.
     const path = join(await tempDir(), 'missing-parent', 'ring-controller.lock');
 
