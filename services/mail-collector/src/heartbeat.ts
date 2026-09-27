@@ -19,11 +19,10 @@ export interface DeadMansSwitchOptions {
    * drain -- read fresh on every `onCycleComplete()` call, never captured
    * once at construction, because the descriptor this answers from can
    * gain or lose a host mid-run (collectorLoop.ts's own `reconcile()`).
-   * Owner ruling on branchLeft/workspace#1265 (2026-09-27, PR #275,
-   * option b): the switch pings only once EVERY id this returns has
-   * reported a successful cycle since the last ping -- so any one host
-   * that is wedged or permanently failing silences the whole switch, not
-   * just its own share of it.
+   * The switch pings only once EVERY id this returns has reported a
+   * successful cycle since the last ping -- so any one host that is
+   * wedged or permanently failing silences the whole switch, not just
+   * its own share of it.
    */
   getExpectedTargetIds: () => readonly string[];
 }
@@ -57,11 +56,10 @@ export interface DeadMansSwitch {
  * case, load-bearing: *an idle worker with nothing to drain must not
  * page*); any one target whose loop stops progressing -- crashed, wedged,
  * or permanently failing its drain -- simply never reports again, which is
- * enough on its own to withhold every subsequent ping (owner ruling,
- * branchLeft/workspace#1265, PR #275, option b): many sites having zero
- * mail in a cycle is not a failure, but ONE site never completing a cycle
- * is, and it must silence the switch exactly as a fully wedged worker
- * would. The switch itself (via the Healthchecks period/grace configured
+ * enough on its own to withhold every subsequent ping: many sites having
+ * zero mail in a cycle is not a failure, but ONE site never completing a
+ * cycle is, and it must silence the switch exactly as a fully wedged
+ * worker would. The switch itself (via the Healthchecks period/grace configured
  * against it, which this module treats as an external, incidental tuning
  * knob) turns Late then Down on its own schedule once pings stop, no timer
  * or watchdog needed here.

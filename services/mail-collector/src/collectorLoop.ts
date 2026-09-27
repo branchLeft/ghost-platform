@@ -117,11 +117,10 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         // A drain failure against this host is never routed into
         // health.ts (see its own header comment) -- one host's routine
         // outage is not "the collector is stuck". But it IS routed into
-        // silence for the switch: owner ruling on branchLeft/workspace#1265
-        // (PR #275, option b) is per-host gating, so a host that cannot
-        // complete a cycle must withhold ITS report and silence the whole
-        // switch, exactly as a wedged loop would. No `onCycleComplete()`
-        // call here, deliberately.
+        // silence for the switch: gating is per-host, so a host that
+        // cannot complete a cycle must withhold ITS report and silence
+        // the whole switch, exactly as a wedged loop would. No
+        // `onCycleComplete()` call here, deliberately.
         await sleep(deps.drainRetryBackoffMs);
         continue;
       }

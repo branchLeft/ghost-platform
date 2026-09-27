@@ -146,7 +146,7 @@ describe('createDeadMansSwitch', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  describe('per-host gating -- owner ruling on branchLeft/workspace#1265 (PR #275, option b)', () => {
+  describe('per-host gating', () => {
     it('pings only once EVERY expected target has reported since the last ping, not on the first one alone', async () => {
       const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
       const switch_ = createDeadMansSwitch({

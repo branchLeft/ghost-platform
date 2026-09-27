@@ -484,8 +484,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     });
 
     it('a drain failure against one host never reports a completed cycle for it -- the failing iteration is not counted', async () => {
-      // Owner ruling on branchLeft/workspace#1265 (PR #275, option b):
-      // per-host gating. A host that cannot complete a cycle must not
+      // Per-host gating: a host that cannot complete a cycle must not
       // report success, so collectorLoop.ts's drain-failure branch calls
       // heartbeat.onCycleComplete() for NEITHER this host nor the switch
       // as a whole -- the loop keeps retrying (it is not stuck), it just
@@ -603,8 +602,8 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
   });
 
   describe(
-    'PER-HOST GATING -- owner ruling on branchLeft/workspace#1265 (PR #275, option b): ' +
-      'the switch pings only once EVERY described host has completed a cycle since the last ping',
+    'PER-HOST GATING: the switch pings only once EVERY described host has ' +
+      'completed a cycle since the last ping',
     () => {
       function buildTwoHostRuntime(drainClient: DrainClient, fetchImpl: typeof fetch) {
         const store = createFakeTargetStore([
