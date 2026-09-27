@@ -34,6 +34,30 @@ import { randomBytes } from 'node:crypto';
  * and the design's own measured finding on account suspension. */
 export const SUSPENDED_STATUS = 'inactive';
 
+/**
+ * Marks a refusal from inside the inner script's stderr as a named,
+ * distinguishable failure -- a row that is not this script's own
+ * interrupted write -- rather than an ordinary crash. `provisionSupportAccount`
+ * below matches on this exact prefix to re-throw `PartialRowMismatchError`
+ * in this process, since a thrown class instance cannot cross the
+ * `docker exec` subprocess boundary itself.
+ */
+const PARTIAL_ROW_MISMATCH_MARKER = 'PARTIAL_ROW_MISMATCH: ';
+
+/**
+ * The row found for this email is not the shape a genuinely-interrupted
+ * create of this script's own leaves (status `inactive`, no role link at
+ * all) -- so repairing it would grant Administrator to a row this script
+ * never atomically started, including one already made active by some
+ * other path. Refused rather than repaired; nothing is written.
+ */
+export class PartialRowMismatchError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'PartialRowMismatchError';
+  }
+}
+
 const STAFF_NAME = 'Support';
 const STAFF_SLUG = 'support';
 
@@ -101,17 +125,30 @@ const isSqlite = process.env.database__client === 'sqlite3';
 function req(name) {
   return require(require.resolve(name, { paths: ['/var/lib/ghost/current'] }));
 }
-function connect() {
+async function connect() {
   if (isSqlite) {
     const Database = req('better-sqlite3');
     const db = new Database(process.env.database__connection__filename);
     return {
       get: (sql, params) => db.prepare(sql).get(...params),
       run: (sql, params) => db.prepare(sql).run(...params),
+      // BEGIN/COMMIT/ROLLBACK are statement text, not parameterised
+      // queries -- exec(), not prepare().run(), matches that shape.
+      begin: () => db.exec('BEGIN'),
+      commit: () => db.exec('COMMIT'),
+      rollback: () => db.exec('ROLLBACK'),
+      close: () => db.close(),
     };
   }
-  const mysql = req('mysql2');
-  const conn = mysql.createConnection({
+  // mysql2's own prepared-statement path (.execute(), the binary protocol)
+  // does not accept transaction-control statements -- mysql2's own
+  // beginTransaction()/commit()/rollback() route through .query() (the text
+  // protocol) instead, and this uses those same driver-native methods
+  // rather than re-deriving the distinction with raw SQL. mysql2/promise
+  // (not the callback-style base export) is what makes createConnection and
+  // every method below return a promise this script can await.
+  const mysql = req('mysql2/promise');
+  const conn = await mysql.createConnection({
     host: process.env.database__connection__host,
     port: Number(process.env.database__connection__port),
     database: process.env.database__connection__database,
@@ -119,11 +156,15 @@ function connect() {
     password: process.env.database__connection__password,
   });
   return {
-    get: (sql, params) => {
-      const [rows] = conn.execute(sql, params);
+    get: async (sql, params) => {
+      const [rows] = await conn.execute(sql, params);
       return rows[0];
     },
     run: (sql, params) => conn.execute(sql, params),
+    begin: () => conn.beginTransaction(),
+    commit: () => conn.commit(),
+    rollback: () => conn.rollback(),
+    close: () => conn.end(),
   };
 }
 async function administratorRoleLinkFor(db, userId) {
@@ -134,70 +175,87 @@ async function administratorRoleLinkFor(db, userId) {
     [userId]
   );
 }
+async function anyRoleLinkFor(db, userId) {
+  return db.get('select 1 as x from roles_users where user_id = ?', [userId]);
+}
 async function inTransaction(db, body) {
-  await db.run('begin', []);
+  await db.begin();
   try {
     const result = await body();
-    await db.run('commit', []);
+    await db.commit();
     return result;
   } catch (error) {
-    await db.run('rollback', []);
+    await db.rollback();
     throw error;
   }
 }
 async function main() {
-  const db = connect();
-  const email = process.env.PROVISION_SUPPORT_EMAIL;
-  const existing = await db.get('select id, status from users where email = ?', [email]);
-  if (existing) {
-    const link = await administratorRoleLinkFor(db, existing.id);
-    if (link) {
+  const db = await connect();
+  try {
+    const email = process.env.PROVISION_SUPPORT_EMAIL;
+    const existing = await db.get('select id, status from users where email = ?', [email]);
+    if (existing) {
+      const adminLink = await administratorRoleLinkFor(db, existing.id);
+      if (adminLink) {
+        console.log(
+          JSON.stringify({ created: false, repaired: false, id: existing.id, status: existing.status })
+        );
+        return;
+      }
+      // Repairable only when the row is EXACTLY the shape this script's own
+      // interrupted create leaves: still suspended, and no role link of any
+      // kind (never merely "no Administrator link" -- a user with some
+      // other role linked, or an active user with none, reached this state
+      // by a path other than an interrupted run of this script, and
+      // granting Administrator to it here would be an ungoverned permission
+      // grant this script has no business making).
+      const anyLink = await anyRoleLinkFor(db, existing.id);
+      if (existing.status !== '${SUSPENDED_STATUS}' || anyLink) {
+        throw new Error(
+          '${PARTIAL_ROW_MISMATCH_MARKER}' + JSON.stringify({
+            id: existing.id,
+            status: existing.status,
+            hasRoleLink: Boolean(anyLink),
+          }) + ' does not match an interrupted create (needs status "${SUSPENDED_STATUS}" and no role link at all)'
+        );
+      }
+      const role = await db.get("select id from roles where name = 'Administrator'", []);
+      await inTransaction(db, () =>
+        db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
+          process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
+          role.id,
+          existing.id,
+        ])
+      );
       console.log(
-        JSON.stringify({ created: false, repaired: false, id: existing.id, status: existing.status })
+        JSON.stringify({ created: false, repaired: true, id: existing.id, status: existing.status })
       );
       return;
     }
-    // A partial row: the user exists but the Administrator link never
-    // landed -- the two inserts used to be two separate statements with no
-    // transaction between them (fixed below for a fresh create), and a row
-    // written before that fix, or by anything else, can still be in this
-    // state. Repaired, never skipped: status is left exactly as found,
-    // because a status change since creation is a tenant's own grant, never
-    // something this script infers or corrects.
+    const id = process.env.PROVISION_SUPPORT_ID;
+    const passwordHash = process.env.PROVISION_SUPPORT_PASSWORD_HASH;
+    const now = process.env.PROVISION_SUPPORT_NOW;
     const role = await db.get("select id from roles where name = 'Administrator'", []);
-    await inTransaction(db, () =>
-      db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
+    await inTransaction(db, async () => {
+      await db.run(
+        \`insert into users (id, name, slug, password, email, status, visibility,
+          comment_notifications, free_member_signup_notification,
+          paid_subscription_started_notification, paid_subscription_canceled_notification,
+          mention_notifications, recommendation_notifications, milestone_notifications,
+          donation_notifications, gift_subscription_notifications, created_at)
+         values (?, ?, ?, ?, ?, ?, 'public', 1, 1, 1, 1, 1, 1, 1, 1, 1, ?)\`,
+        [id, '${STAFF_NAME}', '${STAFF_SLUG}', passwordHash, email, '${SUSPENDED_STATUS}', now]
+      );
+      await db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
         process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
         role.id,
-        existing.id,
-      ])
-    );
-    console.log(
-      JSON.stringify({ created: false, repaired: true, id: existing.id, status: existing.status })
-    );
-    return;
+        id,
+      ]);
+    });
+    console.log(JSON.stringify({ created: true, repaired: false, id, status: '${SUSPENDED_STATUS}' }));
+  } finally {
+    await db.close();
   }
-  const id = process.env.PROVISION_SUPPORT_ID;
-  const passwordHash = process.env.PROVISION_SUPPORT_PASSWORD_HASH;
-  const now = process.env.PROVISION_SUPPORT_NOW;
-  const role = await db.get("select id from roles where name = 'Administrator'", []);
-  await inTransaction(db, async () => {
-    await db.run(
-      \`insert into users (id, name, slug, password, email, status, visibility,
-        comment_notifications, free_member_signup_notification,
-        paid_subscription_started_notification, paid_subscription_canceled_notification,
-        mention_notifications, recommendation_notifications, milestone_notifications,
-        donation_notifications, gift_subscription_notifications, created_at)
-       values (?, ?, ?, ?, ?, ?, 'public', 1, 1, 1, 1, 1, 1, 1, 1, 1, ?)\`,
-      [id, '${STAFF_NAME}', '${STAFF_SLUG}', passwordHash, email, 'inactive', now]
-    );
-    await db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
-      process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
-      role.id,
-      id,
-    ]);
-  });
-  console.log(JSON.stringify({ created: true, repaired: false, id, status: 'inactive' }));
 }
 main().catch((error) => {
   console.error(error.stack || String(error));
@@ -230,7 +288,19 @@ export function provisionSupportAccount({ container, email }, execFile = execFil
     '-e',
     INNER_SCRIPT,
   ];
-  const output = execFile('docker', args, { encoding: 'utf8' });
+  let output;
+  try {
+    output = execFile('docker', args, { encoding: 'utf8' });
+  } catch (error) {
+    const stderr = typeof error.stderr === 'string' ? error.stderr : '';
+    const markerIndex = stderr.indexOf(PARTIAL_ROW_MISMATCH_MARKER);
+    if (markerIndex !== -1) {
+      throw new PartialRowMismatchError(
+        stderr.slice(markerIndex + PARTIAL_ROW_MISMATCH_MARKER.length).split('\n')[0].trim()
+      );
+    }
+    throw error;
+  }
   return JSON.parse(output.trim().split('\n').pop());
 }
 

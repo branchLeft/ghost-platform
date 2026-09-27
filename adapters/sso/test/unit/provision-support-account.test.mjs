@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ghostObjectId,
   parseArgs,
+  PartialRowMismatchError,
   provisionSupportAccount,
   SUSPENDED_STATUS,
   unusablePasswordHash,
@@ -119,5 +120,34 @@ describe('provisionSupportAccount', () => {
     provisionSupportAccount({ container: 'c1', email: 'x@example.com' }, execFile);
     const [, args] = execFile.mock.calls[0];
     expect(args.join(' ')).not.toMatch(/PROVISION_SUPPORT_STATUS/);
+  });
+
+  it('re-throws a marked partial-row-mismatch failure as PartialRowMismatchError, with the mismatch detail as the message', () => {
+    const execError = new Error('Command failed');
+    execError.stderr =
+      'Error: PARTIAL_ROW_MISMATCH: {"id":"x","status":"active","hasRoleLink":false} does not match an interrupted create (needs status "inactive" and no role link at all)\n    at main (/inner-script.js:1:1)\n';
+    const execFile = vi.fn(() => {
+      throw execError;
+    });
+    let caught;
+    try {
+      provisionSupportAccount({ container: 'c1', email: 'x@example.com' }, execFile);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PartialRowMismatchError);
+    expect(caught.message).toContain('"status":"active"');
+    expect(caught.message).not.toContain('at main');
+  });
+
+  it('re-throws an unrelated exec failure unchanged -- the marker match is exact, not a generic catch-all', () => {
+    const execError = new Error('Command failed');
+    execError.stderr = 'Error: something else entirely broke\n';
+    const execFile = vi.fn(() => {
+      throw execError;
+    });
+    expect(() =>
+      provisionSupportAccount({ container: 'c1', email: 'x@example.com' }, execFile)
+    ).toThrow(execError);
   });
 });
