@@ -33,9 +33,8 @@ describe('intendedGhostVersion()', () => {
     ).toBe('6.55.0');
   });
 
-  it('never treats "null, unknown" as a mismatch signal itself — it is a plain string or null, nothing else', () => {
-    const result = intendedGhostVersion(withImage(`ghost@sha256:${DIGEST}`));
+  it('is exactly null for "unknown", never a boolean -- the return type is string | null, nothing else', () => {
+    const result: string | null = intendedGhostVersion(withImage(`ghost@sha256:${DIGEST}`));
     expect(result).toBeNull();
-    expect(result === false).toBe(false);
   });
 });
