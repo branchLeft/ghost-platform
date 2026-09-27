@@ -174,30 +174,37 @@ def _open_slot_db_no_follow(path: Path, expected_uid: int) -> int:
     owned by `expected_uid` -- and never the file a second lookup might
     resolve to.
 
-    **Why this exists at all, given the caller may already be running as
-    the slot's own uid (`_read_submitting_count_as_uid`, below).** The
-    volume this path lives in is written by the tenant's own Ghost
-    container (`render-core/src/compose.ts` runs it as `user:
-    "<uid>:<uid>"`), so the *name* `email-batches` opens is chosen by
-    code the tenant controls, even once nothing here holds any privilege
-    the tenant does not already have. `db_path.resolve()` followed by a
-    plain `sqlite3.connect(path)` -- this function's own predecessor --
-    would follow a symlink the container planted, at whatever privilege
-    the caller holds: a FIFO hangs the opener until something times it
-    out, a device node can have open-time side effects, and even a
-    same-uid process should never open a path it did not itself pick.
-    `O_NOFOLLOW` refuses the symlink outright; `O_NONBLOCK` means opening
-    a FIFO or several device types returns immediately rather than
-    blocking (a documented no-op for a regular file, so it costs a
-    correct caller nothing); `fstat` on the *already-open* descriptor --
-    never a second `stat()` on the name, which a rename could race --
-    proves what was actually opened is a regular file owned by exactly
-    `expected_uid`.
+    **What this is, and what it is not.** The volume this path lives in
+    is written by the tenant's own Ghost container (`render-core/src/
+    compose.ts` runs it as `user: "<uid>:<uid>"`), so the *name*
+    `email-batches` opens is chosen by code the tenant controls. This
+    check screens the *first* open, and only the first: `O_NOFOLLOW`
+    refuses a symlink outright here; `O_NONBLOCK` means opening a FIFO or
+    several device types returns immediately rather than blocking (a
+    documented no-op for a regular file, so it costs a correct caller
+    nothing); `fstat` on the already-open descriptor -- never a second
+    `stat()` on the name, which a rename could race -- proves what this
+    call actually opened is a regular file owned by exactly `expected_uid`.
 
-    Returns an open fd the caller owns and must close. The caller hands
-    sqlite that fd's own `/dev/fd/<n>` path, never `path` again --
-    nothing between this check and the query can be swapped out from
-    under a file descriptor the way it can a name.
+    **It does not bind sqlite to this exact descriptor.** `_count_
+    submitting_from_fd`, below, hands sqlite this fd's own `/dev/fd/<n>`
+    path rather than `path` again, which looks like it should be
+    equivalent to querying the descriptor directly -- it is not: sqlite's
+    own unix VFS canonicalises that path back to a name (`readlink`s
+    through it) and reopens *that*, so a rename raced in between this
+    check and sqlite's own open can still swap what actually gets read.
+    This function is a first-open pre-screen, never sqlite's binding
+    guarantee. **The privilege drop is what actually matters here**
+    (`_read_submitting_count_as_uid`'s own doc comment): by the time this
+    runs, the caller already has no rights beyond the slot's own uid, so
+    the *worst* a won rename race achieves is a wrong count for the
+    tenant's own already-owned data -- never a read of anything owned by
+    another slot or by root. A FIFO or device swapped in after this check
+    is still caught: sqlite's own open has no `O_NONBLOCK` of its own, so
+    it can block, but `_read_submitting_count_as_uid`'s hard wall-clock
+    timeout kills a wedged child regardless, fail-closed.
+
+    Returns an open fd the caller owns and must close.
     """
     try:
         fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -221,11 +228,18 @@ def _open_slot_db_no_follow(path: Path, expected_uid: int) -> int:
 
 
 def _count_submitting_from_fd(fd: int, path_for_errors: Path) -> int:
-    """Runs `_SUBMITTING_COUNT_QUERY` against exactly the open descriptor
-    `_open_slot_db_no_follow` already validated -- `/dev/fd/<n>` is a
-    magic symlink to that descriptor's own inode, so sqlite opening it can
-    never land on a different file than the one already fstat-checked,
-    however the name on disk changes afterwards.
+    """Runs `_SUBMITTING_COUNT_QUERY` via `fd`'s own `/dev/fd/<n>` path --
+    **not a guarantee that sqlite reads exactly the descriptor
+    `_open_slot_db_no_follow` already validated.** `/dev/fd/<n>` looks
+    like a bound alias for the open file, but sqlite's own unix VFS
+    canonicalises every path it is given, `/dev/fd/<n>` included: it
+    `readlink`s through to the underlying name and reopens *that*, not
+    the file descriptor number. A rename raced in between the fstat
+    check and this call can therefore still change what sqlite actually
+    reads. See `_open_slot_db_no_follow`'s own doc comment for why this
+    is a first-open pre-screen rather than sqlite's own binding
+    guarantee, and why the privilege drop -- not this function -- is
+    what actually keeps the read inside the slot's own rights.
     """
     uri = f"file:/dev/fd/{fd}?mode=ro"
     try:
@@ -249,11 +263,14 @@ def _count_submitting_from_fd(fd: int, path_for_errors: Path) -> int:
 def _read_submitting_count(slot: str, expected_uid: int) -> int:
     """The core, privilege-agnostic check: select the one candidate path by
     name, open it refusing anything but a regular file owned by
-    `expected_uid`, and run the one fixed count query against that exact
-    open descriptor. Safe to call directly when the caller is already
-    running as `expected_uid` -- every test in this module does, since a
-    test process is never root -- or from inside the privilege-dropped
-    child `_read_submitting_count_as_uid` forks, below.
+    `expected_uid` (`_open_slot_db_no_follow`'s own first-open pre-screen),
+    then run the one fixed count query (`_count_submitting_from_fd`,
+    whose own doc comment covers what that pre-screen does and does not
+    bind). Safe to call directly when the caller is already running as
+    `expected_uid` -- every test in this module does, since a test process
+    is never root -- or from inside the privilege-dropped child
+    `_read_submitting_count_as_uid` forks, below, which is what actually
+    keeps a race here confined to the slot's own rights.
     """
     path = _validated_db_path(slot)
     fd = _open_slot_db_no_follow(path, expected_uid)
@@ -267,16 +284,21 @@ def _read_submitting_count_as_uid(slot: str, uid: int) -> int:
     """Runs `_read_submitting_count` in a forked child that has dropped to
     `uid`/`gid` *before* touching anything the tenant's container wrote --
     so root itself never opens a path the tenant chose; only a process
-    with exactly the tenant's own rights does, and `_open_slot_db_no_follow`
-    still applies on top of that. The still-privileged parent never drops
-    anything itself: it enforces `_READ_TIMEOUT_SECONDS` as a hard
-    wall-clock bound, killing the child outright on a timeout rather than
-    trusting `O_NONBLOCK` alone to rule out every way this could wedge, and
-    it never trusts the child's own claim of success without checking the
-    child actually reports having run as `uid` -- a child that could not
-    drop privilege (or one that had that call silently disabled) reports
-    its *real* uid instead, which the parent catches here rather than
-    returning a count read at the wrong privilege.
+    with exactly the tenant's own rights does. **This drop is the binding
+    control**, not `_open_slot_db_no_follow`'s own O_NOFOLLOW/fstat/owner
+    checks (see that function's own doc comment for why sqlite's later
+    reopen-by-name can still race past them): once privilege is dropped,
+    the worst any such race can do is hand the tenant a wrong count for
+    its own already-owned data, never a read of another slot's or root's.
+    The still-privileged parent never drops anything itself: it enforces
+    `_READ_TIMEOUT_SECONDS` as a hard wall-clock bound, killing the child
+    outright on a timeout rather than trusting `O_NONBLOCK` alone to rule
+    out every way this could wedge, and it never trusts the child's own
+    claim of success without checking the child actually reports having
+    run as `uid` -- a child that could not drop privilege (or one that
+    had that call silently disabled) reports its *real* uid instead,
+    which the parent catches here rather than returning a count read at
+    the wrong privilege.
     """
     read_fd, write_fd = os.pipe()
     pid = os.fork()

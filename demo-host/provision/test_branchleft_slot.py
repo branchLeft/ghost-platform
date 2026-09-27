@@ -592,6 +592,35 @@ class ReadSubmittingCountAsUidForkTests(unittest.TestCase):
                 bs._read_submitting_count_as_uid("0", target_uid)
         self.assertIn("Operation not permitted", str(ctx.exception))
 
+    def test_a_setgroups_failure_is_reported_and_never_reaches_the_read(self):
+        # setgroups is the first drop call, in the drop order the module
+        # doc comment names (`_read_submitting_count_as_uid`'s own doc
+        # comment: setgroups, then setgid, then setuid). If it raises --
+        # exactly what a real unprivileged caller sees, per the
+        # no-mocking test below -- the child must report that failure and
+        # never reach the read at all, not fall through to it still
+        # holding whatever privilege it started with.
+        with mock.patch(
+            "branchleft_slot.os.setgroups", side_effect=OSError("simulated setgroups failure")
+        ), mock.patch("branchleft_slot._read_submitting_count", return_value=999):
+            with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+                bs._read_submitting_count_as_uid("0", os.getuid())
+        self.assertIn("simulated setgroups failure", str(ctx.exception))
+        # "999" (the mocked read's return) appearing nowhere in the
+        # message is the proof the read was never reached.
+        self.assertNotIn("999", str(ctx.exception))
+
+    def test_a_setgid_failure_is_reported_and_never_reaches_the_read(self):
+        with mock.patch(
+            "branchleft_slot.os.setgroups", side_effect=lambda groups: None
+        ), mock.patch(
+            "branchleft_slot.os.setgid", side_effect=OSError("simulated setgid failure")
+        ), mock.patch("branchleft_slot._read_submitting_count", return_value=999):
+            with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+                bs._read_submitting_count_as_uid("0", os.getuid())
+        self.assertIn("simulated setgid failure", str(ctx.exception))
+        self.assertNotIn("999", str(ctx.exception))
+
     def test_a_wedged_child_is_killed_after_the_timeout_rather_than_awaited(self):
         # setgroups/setgid mocked away for the same platform reason as
         # the self-drop success test above -- this test means to prove
