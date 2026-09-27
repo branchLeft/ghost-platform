@@ -164,6 +164,8 @@ describe('the real dist/server.js entrypoint', () => {
         BROKER_DEMO_ZONE: TEST_ZONES.demoZone,
         BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
         BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),
+        BROKER_DEMO_MAIL_DOMAIN: TEST_ZONES.demoMailDomain,
+        BROKER_MAIL_SPOOL_BASE_URL: TEST_ZONES.mailSpoolBaseUrl,
         BROKER_WRAPPER_COMMAND: join(process.cwd(), 'test/helpers/fakeWrapper.mjs'),
         BROKER_WRAPPER_PREFIX: process.execPath,
         BROKER_SLOT_LITERALS: '0,1,2,3,4,5,6',

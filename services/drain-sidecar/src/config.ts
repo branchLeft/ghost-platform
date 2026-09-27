@@ -3,6 +3,19 @@ export interface SidecarConfig {
   drainFlagPath: string;
   ghostHealthUrl: string;
   ghostProbeTimeoutMs: number;
+  ghostAdminSiteUrl: string;
+  /**
+   * The Ghost version the descriptor intends, or `null` when nothing has
+   * told this process yet. Deliberately optional and sourced from the
+   * environment rather than computed here: this service has no descriptor
+   * and no opinion on how one reaches it -- render-core's
+   * `intendedGhostVersion()` is what a reconciler calls before setting
+   * this, and where that wiring lands is a slot-placement decision this
+   * service has no more opinion on than it has on `DRAIN_FLAG_PATH`'s own
+   * placement (see README.md). Unset, `/metrics` still reports Ghost's own
+   * version; it just cannot say whether that matches anything.
+   */
+  intendedGhostVersion: string | null;
 }
 
 // Structurally identical to NodeJS.ProcessEnv, spelled out instead of named
@@ -26,11 +39,20 @@ function requireEnv(env: SidecarEnv, name: string): string {
 export function loadConfig(env: SidecarEnv = process.env): SidecarConfig {
   const portRaw = Number(env.PORT);
   const timeoutRaw = Number(env.GHOST_PROBE_TIMEOUT_MS);
+  const ghostHealthUrl = env.GHOST_HEALTH_URL || 'http://127.0.0.1:2368/';
+  const intendedGhostVersion = env.GHOST_INTENDED_VERSION?.trim() || null;
 
   return {
     port: Number.isFinite(portRaw) && portRaw > 0 ? portRaw : 8080,
     drainFlagPath: requireEnv(env, 'DRAIN_FLAG_PATH'),
-    ghostHealthUrl: env.GHOST_HEALTH_URL || 'http://127.0.0.1:2368/',
+    ghostHealthUrl,
     ghostProbeTimeoutMs: Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 2000,
+    // Ghost's unauthenticated site endpoint, same origin as the health
+    // probe's own URL by default -- both are loopback calls to the same
+    // Ghost, per compose.ts's own note that this sidecar shares Ghost's
+    // network namespace rather than reaching it any other way.
+    ghostAdminSiteUrl:
+      env.GHOST_ADMIN_SITE_URL || new URL('/ghost/api/admin/site/', ghostHealthUrl).toString(),
+    intendedGhostVersion,
   };
 }

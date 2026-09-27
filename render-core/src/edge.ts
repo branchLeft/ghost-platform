@@ -15,8 +15,28 @@
  * for a certificate decision by accident: `displayHostname` is always the
  * descriptor's own host (safe to show, redirect to, log); `admittedHostname`
  * is `servedHostnameOf`'s own answer, `null` for every demo.
+ *
+ * **The strict content policy (LLD-5 C1-C4).**
+ * `script-src` is `'self'` plus the theme's own derived inline-script hash
+ * set — never a hand-written list; see `ThemeCsp` below. The hash set is
+ * deliberately **not** a `TenantDescriptor` field: it is operational state
+ * that changes on every theme upload, not part of what a tenant was
+ * promised, and `render-core/src/lease.ts`'s `SlotLeaseRecord` already
+ * draws that same line for the same reason (the cross-document review's P1
+ * makes the general case; the issue's own open question marks this split
+ * incidental). So it arrives here as an explicit parameter, computed
+ * upstream by the derivation tool (`csp/derive/`) — this module never
+ * computes a hash itself, only renders one it was handed. **Load-bearing
+ * (LLD-5's own marks): the hash set is always derived, never hand-set, and
+ * a theme whose set could not be computed gets the report-only policy plus
+ * a flag — an enforcing policy is never guessed.** `style-src
+ * 'unsafe-inline'` stays for every tenant: Portal styles the iframe it
+ * builds for itself inline, and LLD-5 C4 accepts that residual as
+ * materially less dangerous than injected script.
  */
 
+import type { Brand } from './brand.js';
+import { assertString, FieldValidationError } from './brand.js';
 import type { GateSpec, TenantDescriptor } from './descriptor.js';
 import type { ZoneConfig } from './validate.js';
 import { servedHostnameOf } from './validate.js';
@@ -27,6 +47,41 @@ export interface EdgeGate {
   /** Present only for `kind: "passphrase"`. */
   readonly argon2idHash?: string;
 }
+
+/** A CSP hash-source token, e.g. `sha256-<base64 of the SHA-256 digest>`. */
+export type ScriptHash = Brand<string, 'ScriptHash'>;
+
+// "sha256-" plus the base64 encoding of a 32-byte digest: 43 base64
+// characters plus one "=" pad, per RFC 4648 with no line breaks. Anchored
+// and length-bounded rather than a bare `+` quantifier, so a caller cannot
+// smuggle CSP-syntax characters (a quote, a semicolon) through this field
+// into the rendered header.
+const SCRIPT_HASH_PATTERN = /^sha256-[A-Za-z0-9+/]{43}=$/;
+
+export function validateScriptHash(value: string, field = 'scriptHash'): ScriptHash {
+  assertString(value, field);
+  if (!SCRIPT_HASH_PATTERN.test(value)) {
+    throw new FieldValidationError(
+      field,
+      `${field} "${value}" must be a CSP hash-source token: "sha256-" followed by the ` +
+        `base64 (with padding) of a SHA-256 digest, e.g. "sha256-" + 43 base64 characters + "=".`
+    );
+  }
+  return value as ScriptHash;
+}
+
+/**
+ * The derived script-hash set for one theme at one Ghost version, or a
+ * statement that it could not be computed. Never constructed by hand outside
+ * a validator or the derivation tool's own output — see this module's doc
+ * comment for why it is not a descriptor field.
+ */
+export type ThemeCsp =
+  | { readonly kind: 'computed'; readonly hashes: readonly ScriptHash[] }
+  | { readonly kind: 'unavailable' };
+
+/** The fail-soft default (LLD-5's own mark): report-only until a real hash set is supplied. */
+export const THEME_CSP_UNAVAILABLE: ThemeCsp = { kind: 'unavailable' };
 
 export interface EdgeSiteBlock {
   /** The hostname the site is reached on — safe to display, redirect to or
@@ -41,6 +96,12 @@ export interface EdgeSiteBlock {
    * syntax — bounds the upload paths Ghost itself leaves unlimited. */
   readonly requestBodyMaxSize: string;
   readonly contentSecurityPolicy: string;
+  /** `'enforcing'` only when a real, derived hash set was supplied; a
+   * caller renders this policy under the `Content-Security-Policy` header
+   * for `'enforcing'` and `Content-Security-Policy-Report-Only` for
+   * `'report-only'` — and a tenant's health row shows `'report-only'` as
+   * the flag LLD-5's own Done means asks for. */
+  readonly contentSecurityPolicyMode: 'enforcing' | 'report-only';
 }
 
 function edgeGate(gate: GateSpec): EdgeGate {
@@ -54,30 +115,43 @@ function edgeGate(gate: GateSpec): EdgeGate {
  * A conservative baseline CSP: same-origin by default, with the narrow
  * allowances Ghost's own admin panel and default themes need (inline
  * styles for theme CSS custom properties, `data:`/`https:` images for
- * uploaded and remote media). Nothing here is measured against a running
- * Ghost admin session — flagged as a first pass for whichever story wires
- * this into the real edge, not a security-reviewed final policy.
+ * uploaded and remote media). `script-src` carries the theme's own derived
+ * hash set when one was computed (LLD-5 C1-C3); otherwise it stays
+ * `'self'` alone and the policy is rendered report-only rather than
+ * enforcing (LLD-5's fail-soft mark) — never a security-reviewed final
+ * policy beyond what the spike measured for the default theme.
  */
-function contentSecurityPolicy(): string {
-  return [
+function contentSecurityPolicy(themeCsp: ThemeCsp): {
+  readonly value: string;
+  readonly mode: 'enforcing' | 'report-only';
+} {
+  const scriptSrc =
+    themeCsp.kind === 'computed' && themeCsp.hashes.length > 0
+      ? `script-src 'self' ${themeCsp.hashes.map((hash) => `'${hash}'`).join(' ')}`
+      : "script-src 'self'";
+  const value = [
     "default-src 'self'",
     "img-src 'self' data: https:",
     "style-src 'self' 'unsafe-inline'",
-    "script-src 'self'",
+    scriptSrc,
     "frame-ancestors 'self'",
   ].join('; ');
+  return { value, mode: themeCsp.kind === 'computed' ? 'enforcing' : 'report-only' };
 }
 
 export function renderEdgeSiteBlock(
   descriptor: Pick<TenantDescriptor, 'kind' | 'siteUrl' | 'hostname' | 'gate'>,
   zones: Pick<ZoneConfig, 'platformZone' | 'ownedDomains'>,
-  limits: UploadLimits
+  limits: UploadLimits,
+  themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE
 ): EdgeSiteBlock {
+  const csp = contentSecurityPolicy(themeCsp);
   return {
     displayHostname: new URL(descriptor.siteUrl).host,
     admittedHostname: servedHostnameOf(descriptor, zones),
     gate: edgeGate(descriptor.gate),
     requestBodyMaxSize: limits.edgeRequestBodyMaxSize,
-    contentSecurityPolicy: contentSecurityPolicy(),
+    contentSecurityPolicy: csp.value,
+    contentSecurityPolicyMode: csp.mode,
   };
 }
