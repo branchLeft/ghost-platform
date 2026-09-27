@@ -9,8 +9,9 @@
  * closing claim, and the reason a name, a slug-derived path or a volume
  * identity is exactly what `assertAttributablePromotionDiff` below rejects).
  *
- * Two things this function deliberately does not decide, because deciding
- * them here would be inventing operational policy the design does not fix:
+ * Four things this function deliberately does not decide, because deciding
+ * them here would be inventing operational or tier policy the design does
+ * not fix:
  * - Where the tenant's database and media bucket physically live
  *   (`targets.databaseHost`/`databasePort`/`mediaEndpoint`/`mediaRegion`) --
  *   no more this package's job to pick than `appHostIp` is (`render()`'s own
@@ -20,34 +21,50 @@
  *   (`targets.backupEncryptionRecipient`) -- a real per-tenant key
  *   identity assigned once at promotion by whatever process manages that
  *   recipient. A schema-level transform has no key-generation authority.
+ * - The target tier's `limits` (`targets.limits`) -- this repo's own
+ *   `test/fixtures.ts` already encodes a tier-differentiated model here
+ *   (`entryTenantDescriptor()`: capped; `professionalTenantDescriptor()`:
+ *   uncapped), and `environment.ts#hostLimitsEnvironment` renders it
+ *   straight into the Compose environment Ghost reads
+ *   (`config.get('hostSettings:limits')`) -- so a hardcoded value here would
+ *   ship one tier's entitlement to every promotion regardless of what was
+ *   actually bought. There is no tier-neutral default: even "uncapped" is
+ *   the professional tier's own value, not an absence of one.
+ * - `media.resize`/`media.srcsets` (`targets.mediaResize`/`mediaSrcsets`) --
+ *   the same fixtures encode these as tier-differentiated too, and LLD-1
+ *   §03b states plainly that "whether they are on is a tenancy property,
+ *   not an implementation detail."
  *
- * `caps` is carried over unchanged from the demo. LLD-1 §06's own story text
- * is explicit that the falsifying test "needs no choice of tier",
- * and any *different* caps value would itself be a tier choice (entry vs.
- * professional resource sizing) this design has not fixed -- so a
- * kind-agnostic transform makes none, and leaves the field where it can
- * still legitimately differ (it is one of the three per-kind scalars)
- * without asserting a policy this function does not own. `limits` moves to
- * unconstrained (`null`/`null`) for the same reason: LLD-1 §07 finding L4
- * records that per-tier limit sizing is still open work, and "no limit" is
- * the one value that is not itself a tier choice.
+ * `caps` is the one per-kind scalar this function *does* carry over
+ * unchanged from the demo, because it is not tier-differentiated at all:
+ * `descriptor.ts#ResourceCaps` and `runtime.ts`'s own doc comments both
+ * state the container resource ceiling "applies identically to every
+ * kind"/"to all three kinds" -- unlike `limits`, there is no tier split to
+ * preserve here.
  */
 
 import type { AbsoluteUrl, Port } from './brand.js';
 import { FieldValidationError } from './brand.js';
-import type { TenantDescriptor } from './descriptor.js';
+import type { LimitsSpec, TenantDescriptor } from './descriptor.js';
 import { databaseAndUserName } from './naming.js';
 import { mediaBucketName } from './media.js';
 import type { ZoneConfig } from './validate.js';
 
 /** Everything a promotion supplies that this schema cannot derive from the
- * demo descriptor's own fields -- see the module doc comment. */
+ * demo descriptor's own fields -- see the module doc comment. `limits`,
+ * `mediaResize` and `mediaSrcsets` have no default for the same reason
+ * `databaseHost` has none: each is a real tier/operational decision, and
+ * every value including "uncapped" is itself one tier's answer, not a
+ * tier-neutral fallback. */
 export interface PromotionTargets {
   readonly databaseHost: string;
   readonly databasePort: Port;
   readonly mediaEndpoint: string;
   readonly mediaRegion: string;
+  readonly mediaResize: boolean;
+  readonly mediaSrcsets: boolean;
   readonly backupEncryptionRecipient: string;
+  readonly limits: LimitsSpec;
 }
 
 /**
@@ -196,13 +213,13 @@ export function transform(
       endpoint: targets.mediaEndpoint,
       region: targets.mediaRegion,
       bucket: mediaBucketName(slug),
-      resize: true,
-      srcsets: true,
+      resize: targets.mediaResize,
+      srcsets: targets.mediaSrcsets,
     },
     hostname: { kind: 'ours', sub: demo.hostname.sub, gated: false },
     gate: { kind: 'none' },
     backup: { kind: 'bucket-native', encryptionRecipient: targets.backupEncryptionRecipient },
-    limits: { membersCap: null, staffCap: null },
+    limits: targets.limits,
     expiresAt: null,
   };
 }
