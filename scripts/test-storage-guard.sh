@@ -76,33 +76,49 @@ assert_boots() {
 }
 
 # --- Must be blocked ---------------------------------------------------
+#
+# The four cases this control's own acceptance criteria name: a bare
+# S3Storage, a bare local adapter, the decorator wrapping S3Storage with a
+# required field missing, and (below, in "must boot") a complete wrapped
+# configuration.
 
-assert_blocked "no storage__active set, no escape hatch"
+assert_blocked "no storage__images__adapter set, no escape hatch"
 
-assert_blocked "storage__active explicitly set to a local adapter" \
-    -e storage__active=LocalImagesStorage
+assert_blocked "storage__images__adapter set to a bare local adapter (not the decorator)" \
+    -e storage__images__adapter=LocalImagesStorage
 
-assert_blocked "storage__active=S3Storage with required fields missing" \
-    -e storage__active=S3Storage \
-    -e storage__S3Storage__bucket=some-bucket
+assert_blocked "storage__images__adapter set to bare S3Storage (not the decorator)" \
+    -e storage__images__adapter=S3Storage \
+    -e storage__images__wrappedConfig__bucket=some-bucket
+
+assert_blocked "the decorator wrapping a local adapter" \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=LocalImagesStorage
+
+assert_blocked "the decorator wrapping S3Storage with required fields missing" \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=S3Storage \
+    -e storage__images__wrappedConfig__bucket=some-bucket
 
 # --- Must be allowed to boot --------------------------------------------
 
 assert_boots "escape hatch set, no storage config (local dev)" 4220 \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true
 
-assert_boots "fully-configured S3Storage, no escape hatch (production shape)" 4221 \
-    -e storage__active=S3Storage \
-    -e storage__S3Storage__bucket=fake-bucket \
-    -e storage__S3Storage__staticFileURLPrefix=content/images \
-    -e storage__S3Storage__cdnUrl=https://storage.googleapis.com/fake-bucket \
-    -e storage__S3Storage__multipartUploadThresholdBytes=10485760 \
-    -e storage__S3Storage__multipartChunkSizeBytes=5242880 \
-    -e storage__S3Storage__endpoint=https://storage.googleapis.com \
-    -e storage__S3Storage__region=auto \
-    -e storage__S3Storage__forcePathStyle=true \
-    -e storage__S3Storage__accessKeyId=FAKEKEY \
-    -e storage__S3Storage__secretAccessKey=FAKESECRET
+assert_boots "the decorator wrapping a complete S3Storage config, no escape hatch (production shape)" 4221 \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=S3Storage \
+    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__images__wrappedConfig__bucket=fake-bucket \
+    -e storage__images__wrappedConfig__staticFileURLPrefix=content/images \
+    -e storage__images__wrappedConfig__cdnUrl=https://storage.googleapis.com/fake-bucket \
+    -e storage__images__wrappedConfig__multipartUploadThresholdBytes=10485760 \
+    -e storage__images__wrappedConfig__multipartChunkSizeBytes=5242880 \
+    -e storage__images__wrappedConfig__endpoint=https://storage.googleapis.com \
+    -e storage__images__wrappedConfig__region=auto \
+    -e storage__images__wrappedConfig__forcePathStyle=true \
+    -e storage__images__wrappedConfig__accessKeyId=FAKEKEY \
+    -e storage__images__wrappedConfig__secretAccessKey=FAKESECRET
 
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES check(s) failed."

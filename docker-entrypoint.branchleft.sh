@@ -35,6 +35,19 @@ export server__host="${SERVER_HOST:-0.0.0.0}"
 # makes it the platform's single most dangerous failure mode, so it's
 # refused at boot here rather than merely documented in the README.
 #
+# Durability is no longer the only property this guard protects. adapters/scanning-storage/README.md's decorator is the only
+# path a byte can reach a served location through and still be scanned
+# (LLD-7 S1b) — so a bare `S3Storage` boots durably but unscanned, silently,
+# with every other check here passing. The guard therefore refuses any
+# configuration whose `images` feature is not the decorator itself, and
+# checks the *wrapped* adapter's own required fields (`storage__images__wraps`
+# / `storage__images__wrappedConfig__*`) rather than trusting a bare adapter
+# name the way it used to. Checked on the `images` feature only, mirroring
+# what render-core actually needs to boot first-run user creation
+# (`core/server/models/user.js`'s gravatar lookup resolves `storage:images`)
+# — `media`/`files` are rendered by render-core too, but are not this boot
+# guard's job to police individually.
+#
 # Only runs when we're actually about to start Ghost's server process
 # (mirrors the same "$*" pattern check the upstream entrypoint itself uses
 # before doing its root-step-down/content-reseed work) — `docker run
@@ -51,25 +64,31 @@ export server__host="${SERVER_HOST:-0.0.0.0}"
 case "$*" in
     "node current/index.js"|"node "*"current/index.js"*)
         if [ "${BRANCHLEFT_ALLOW_LOCAL_STORAGE:-}" != "true" ]; then
-            case "${storage__active:-}" in
+            case "${storage__images__adapter:-}" in
                 "")
-                    echo "FATAL: storage__active is not set." >&2
-                    echo "Ghost defaults to local-disk storage (LocalImagesStorage /" >&2
-                    echo "LocalMediaStorage / LocalFilesStorage), which is silently lost on" >&2
-                    echo "every Cloud Run instance recycle -- no error, no warning, just gone" >&2
-                    echo "media. Set storage__active=S3Storage plus the storage__S3Storage__*" >&2
-                    echo "variables documented in README.md for any real deploy." >&2
+                    echo "FATAL: storage__images__adapter is not set." >&2
+                    echo "Ghost defaults to local-disk storage (LocalImagesStorage), which is" >&2
+                    echo "silently lost on every Cloud Run instance recycle, and even a durable" >&2
+                    echo "adapter set directly (storage__images__adapter=S3Storage) is silently" >&2
+                    echo "unscanned. Set storage__images__adapter=ScanningStorageAdapter plus" >&2
+                    echo "storage__images__wraps and the storage__images__wrappedConfig__*" >&2
+                    echo "variables documented in adapters/scanning-storage/README.md for any" >&2
+                    echo "real deploy." >&2
                     echo "" >&2
                     echo "Local development / smoke tests only: set" >&2
                     echo "BRANCHLEFT_ALLOW_LOCAL_STORAGE=true to bypass this check." >&2
                     exit 1
                     ;;
-                Local*Storage)
-                    echo "FATAL: storage__active=${storage__active} is a local-disk adapter." >&2
-                    echo "Local disk is not durable on Cloud Run -- uploaded media is lost" >&2
-                    echo "silently on the next instance recycle. Set" >&2
-                    echo "storage__active=S3Storage plus the storage__S3Storage__* variables" >&2
-                    echo "documented in README.md for any real deploy." >&2
+                ScanningStorageAdapter)
+                    : # checked below -- the wrapped adapter, not this name, decides durability.
+                    ;;
+                *)
+                    echo "FATAL: storage__images__adapter=${storage__images__adapter} is not the" >&2
+                    echo "scanning decorator. A bare adapter -- durable or not -- is unscanned" >&2
+                    echo "silently (LLD-7 S1b). Set storage__images__adapter=ScanningStorageAdapter" >&2
+                    echo "plus storage__images__wraps and the storage__images__wrappedConfig__*" >&2
+                    echo "variables documented in adapters/scanning-storage/README.md for any" >&2
+                    echo "real deploy." >&2
                     echo "" >&2
                     echo "Local development / smoke tests only: set" >&2
                     echo "BRANCHLEFT_ALLOW_LOCAL_STORAGE=true to bypass this check." >&2
@@ -77,38 +96,60 @@ case "$*" in
                     ;;
             esac
 
-            # A non-local adapter configured without the config a working
-            # upload actually needs is only marginally better than a local
-            # one -- it just moves the silent failure from "media is lost on
-            # recycle" to "media never uploaded in the first place" (or an
-            # opaque runtime error the first time someone tries). Check the
-            # required S3Storage fields specifically, since that's the
-            # adapter this image is built around; a future non-default
-            # adapter would need its own equivalent check added here.
-            if [ "${storage__active}" = "S3Storage" ]; then
+            case "${storage__images__wraps:-}" in
+                "")
+                    echo "FATAL: storage__images__adapter=ScanningStorageAdapter but" >&2
+                    echo "storage__images__wraps is not set -- the decorator has no adapter to" >&2
+                    echo "delegate to. See adapters/scanning-storage/README.md." >&2
+                    exit 1
+                    ;;
+                Local*Storage)
+                    echo "FATAL: storage__images__wraps=${storage__images__wraps} is a local-disk" >&2
+                    echo "adapter. Local disk is not durable on Cloud Run -- uploaded media is" >&2
+                    echo "lost silently on the next instance recycle, decorator or not. Set" >&2
+                    echo "storage__images__wraps=S3Storage plus the" >&2
+                    echo "storage__images__wrappedConfig__* variables documented in" >&2
+                    echo "adapters/scanning-storage/README.md for any real deploy." >&2
+                    echo "" >&2
+                    echo "Local development / smoke tests only: set" >&2
+                    echo "BRANCHLEFT_ALLOW_LOCAL_STORAGE=true to bypass this check." >&2
+                    exit 1
+                    ;;
+            esac
+
+            # A non-local wrapped adapter configured without the config a
+            # working upload actually needs is only marginally better than a
+            # local one -- it just moves the silent failure from "media is
+            # lost on recycle" to "media never uploaded in the first place"
+            # (or an opaque runtime error the first time someone tries).
+            # Check the required S3Storage fields specifically, since that's
+            # the adapter this image is built around; a future non-default
+            # wrapped adapter would need its own equivalent check added here.
+            if [ "${storage__images__wraps}" = "S3Storage" ]; then
                 missing=""
-                if [ -z "${storage__S3Storage__bucket:-}" ]; then
-                    missing="${missing} storage__S3Storage__bucket"
+                if [ -z "${storage__images__wrappedConfig__bucket:-}" ]; then
+                    missing="${missing} storage__images__wrappedConfig__bucket"
                 fi
-                if [ -z "${storage__S3Storage__staticFileURLPrefix:-}" ]; then
-                    missing="${missing} storage__S3Storage__staticFileURLPrefix"
+                if [ -z "${storage__images__wrappedConfig__staticFileURLPrefix:-}" ]; then
+                    missing="${missing} storage__images__wrappedConfig__staticFileURLPrefix"
                 fi
-                if [ -z "${storage__S3Storage__cdnUrl:-}" ]; then
-                    missing="${missing} storage__S3Storage__cdnUrl"
+                if [ -z "${storage__images__wrappedConfig__cdnUrl:-}" ]; then
+                    missing="${missing} storage__images__wrappedConfig__cdnUrl"
                 fi
-                if [ -z "${storage__S3Storage__multipartUploadThresholdBytes:-}" ]; then
-                    missing="${missing} storage__S3Storage__multipartUploadThresholdBytes"
+                if [ -z "${storage__images__wrappedConfig__multipartUploadThresholdBytes:-}" ]; then
+                    missing="${missing} storage__images__wrappedConfig__multipartUploadThresholdBytes"
                 fi
-                if [ -z "${storage__S3Storage__multipartChunkSizeBytes:-}" ]; then
-                    missing="${missing} storage__S3Storage__multipartChunkSizeBytes"
+                if [ -z "${storage__images__wrappedConfig__multipartChunkSizeBytes:-}" ]; then
+                    missing="${missing} storage__images__wrappedConfig__multipartChunkSizeBytes"
                 fi
 
                 if [ -n "$missing" ]; then
-                    echo "FATAL: storage__active=S3Storage but required config is missing:" >&2
+                    echo "FATAL: storage__images__wraps=S3Storage but required config is missing:" >&2
                     for var_name in $missing; do
                         echo "  - $var_name" >&2
                     done
-                    echo "See README.md's environment variable table for what each one means." >&2
+                    echo "See adapters/scanning-storage/README.md's environment variable table" >&2
+                    echo "for what each one means." >&2
                     exit 1
                 fi
             fi

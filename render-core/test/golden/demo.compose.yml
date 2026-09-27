@@ -44,7 +44,15 @@ services:
       url: 'https://k7m-vale-bright.demo-domain.example.test'
       database__client: 'sqlite3'
       database__connection__filename: '/data/demo-1/ghost.db'
-      storage__active: 'LocalImagesStorage'
+      storage__images__adapter: 'ScanningStorageAdapter'
+      storage__images__wraps: 'LocalImagesStorage'
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__adapter: 'ScanningStorageAdapter'
+      storage__media__wraps: 'LocalMediaStorage'
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__adapter: 'ScanningStorageAdapter'
+      storage__files__wraps: 'LocalFilesStorage'
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: true
       hostSettings__limits__members__max: 50
       hostSettings__limits__staff__max: 1
@@ -104,7 +112,15 @@ services:
       url: 'https://k7m-vale-bright.demo-domain.example.test'
       database__client: 'sqlite3'
       database__connection__filename: '/data/demo-1/ghost.db'
-      storage__active: 'LocalImagesStorage'
+      storage__images__adapter: 'ScanningStorageAdapter'
+      storage__images__wraps: 'LocalImagesStorage'
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__adapter: 'ScanningStorageAdapter'
+      storage__media__wraps: 'LocalMediaStorage'
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__adapter: 'ScanningStorageAdapter'
+      storage__files__wraps: 'LocalFilesStorage'
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: true
       hostSettings__limits__members__max: 50
       hostSettings__limits__staff__max: 1

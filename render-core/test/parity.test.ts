@@ -140,13 +140,63 @@ function renderCoreTenantZeroEnv(): Record<string, string | number | boolean> {
  * descriptor's sending identity needs its own field for each of these
  * before this list can shrink; that is separate work, not implemented
  * around here.
+ *
+ * The eleven `storage__*` keys are a second, opposite-direction gap:
+ * `infra/tenant/environment.ts` still renders bare
+ * `storage__active`/`storage__S3Storage__*` (recorded, frozen, in
+ * `INFRA_TENANT_BLOG_ENV` above), because `blog` (tenant-zero) has not been
+ * migrated onto the scanning decorator — that migration is separate work
+ * from shipping the decorator in render-core. `EXTRA_IN_CORE_KEYS` below
+ * names what render-core renders instead.
  */
 const KNOWN_GAP_KEYS = [
   'mail__from',
   'bulkEmail__mailgun__baseUrl',
   'bulkEmail__mailgun__domain',
   'bulkEmail__mailgun__apiKey',
+  'storage__active',
+  'storage__S3Storage__bucket',
+  'storage__S3Storage__region',
+  'storage__S3Storage__endpoint',
+  'storage__S3Storage__forcePathStyle',
+  'storage__S3Storage__staticFileURLPrefix',
+  'storage__S3Storage__cdnUrl',
+  'storage__S3Storage__multipartUploadThresholdBytes',
+  'storage__S3Storage__multipartChunkSizeBytes',
+  'storage__S3Storage__accessKeyId',
+  'storage__S3Storage__secretAccessKey',
 ].sort();
+
+/**
+ * The keys render-core renders for the scanning decorator that
+ * `infra/tenant/environment.ts` has no equivalent for at all — the
+ * mirror image of `KNOWN_GAP_KEYS`. Generated from the same three-feature,
+ * fixed-suffix shape `environment.ts#mediaEnvironment` renders, rather than
+ * hand-typed, because 39 near-identical hand-typed keys is exactly where a
+ * copy-paste slip would silently pass.
+ */
+const DECORATOR_WRAPPED_CONFIG_SUFFIXES = [
+  'bucket',
+  'region',
+  'endpoint',
+  'forcePathStyle',
+  'staticFileURLPrefix',
+  'cdnUrl',
+  'multipartUploadThresholdBytes',
+  'multipartChunkSizeBytes',
+  'accessKeyId',
+  'secretAccessKey',
+];
+const EXTRA_IN_CORE_KEYS = (['images', 'media', 'files'] as const)
+  .flatMap((feature) => [
+    `storage__${feature}__adapter`,
+    `storage__${feature}__wraps`,
+    `storage__${feature}__quarantinePath`,
+    ...DECORATOR_WRAPPED_CONFIG_SUFFIXES.map(
+      (suffix) => `storage__${feature}__wrappedConfig__${suffix}`
+    ),
+  ])
+  .sort();
 
 // The actual diff loop, factored out so the control case below can run it
 // for real instead of asserting on hand-built objects that never pass
@@ -178,20 +228,23 @@ describe('tenant-zero parity — a real key-by-key diff against infra/tenant, no
     const missingFromCore = infraKeys.filter((k) => !coreKeys.includes(k)).sort();
     const extraInCore = coreKeys.filter((k) => !infraKeys.includes(k));
 
-    // The claim this test makes concrete: exactly the four #1250-owned
-    // keys are missing, no more and no fewer -- a regression that dropped
-    // a fifth key, or one that "fixed" this by dropping a #1250 key from
-    // the expected list, would both fail here.
+    // The claim this test makes concrete: exactly the named gap keys are
+    // missing, no more and no fewer -- a regression that dropped a fifth
+    // key, or one that "fixed" this by dropping a gap key from the expected
+    // list, would both fail here. And render-core's own decorator keys are
+    // exactly the named additions, no more and no fewer -- a regression
+    // that silently stopped rendering the decorator for one feature would
+    // shrink this list without anyone having to notice a missing key by eye.
     expect(missingFromCore).toEqual(KNOWN_GAP_KEYS);
-    expect(extraInCore).toEqual([]);
+    expect(extraInCore.sort()).toEqual(EXTRA_IN_CORE_KEYS);
 
     // Every key both sides claim to render must carry the same value —
     // the actual parity claim, checked, not merely counted.
     const sharedKeys = infraKeys.filter((k) => !KNOWN_GAP_KEYS.includes(k));
     const mismatched = diffSharedKeys(infra, core, sharedKeys);
     expect(mismatched).toEqual([]);
-    // 31 keys matched at review time (35 infra keys minus the 4 gap keys).
-    expect(sharedKeys.length).toBe(31);
+    // 20 keys matched at review time (35 infra keys minus the 15 gap keys).
+    expect(sharedKeys.length).toBe(20);
     expect(infraKeys.length).toBe(35);
   });
 

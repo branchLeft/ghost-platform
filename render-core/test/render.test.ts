@@ -232,8 +232,16 @@ describe('demo/entry-tenant/professional-tenant compose sanity', () => {
     expect(compose).toContain("database__connection__database: 'ghost_entry_co'");
     expect(compose).toContain("database__connection__host: 'db-t1.internal'");
     expect(compose).toContain('database__connection__port: 3306');
-    expect(compose).toContain("storage__active: 'S3Storage'");
-    expect(compose).toContain('storage__S3Storage__forcePathStyle: true');
+    // Every storage feature renders the scanning decorator wrapping
+    // S3Storage, never S3Storage bare.
+    expect(compose).toContain("storage__images__adapter: 'ScanningStorageAdapter'");
+    expect(compose).toContain("storage__images__wraps: 'S3Storage'");
+    expect(compose).toContain("storage__media__adapter: 'ScanningStorageAdapter'");
+    expect(compose).toContain("storage__media__wraps: 'S3Storage'");
+    expect(compose).toContain("storage__files__adapter: 'ScanningStorageAdapter'");
+    expect(compose).toContain("storage__files__wraps: 'S3Storage'");
+    expect(compose).toContain('storage__images__wrappedConfig__forcePathStyle: true');
+    expect(compose).not.toContain("storage__active: 'S3Storage'");
     expect(compose).toContain('privacy__useUpdateCheck: false');
     expect(compose).toContain('security__allowWebhookInternalIPs: false');
   });
