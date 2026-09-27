@@ -157,6 +157,31 @@ export interface SafetySpec {
   readonly exact: boolean;
 }
 
+/**
+ * The break-glass triple LLD-5 §07 hands to this schema: the broker's
+ * Ed25519 public key, the tenant name a token's `aud` must equal, and the
+ * one identity the adapter is allowed to produce a session for. Derived,
+ * like `codeInjection` — nobody hand-sets these three, and `validate()`
+ * refuses a descriptor carrying one or two of them (`enabled` requires all
+ * three; there is no partial variant to construct). `disabled` for every
+ * demo: a demo visitor already holds admin on their own disposable slot, so
+ * there is nothing for a support identity to reach that they cannot already
+ * reach — see `checkTierVariants` in `./validate.ts`.
+ */
+export type BreakGlassSpec =
+  | { readonly kind: 'disabled' }
+  | {
+      readonly kind: 'enabled';
+      /** Ed25519 public key, base64 SPKI DER. Only the public half is ever
+       * on a tenant — see `adapters/sso/README.md`. */
+      readonly publicKey: string;
+      /** Must equal this descriptor's own `slug` — see `validate()`'s
+       * identity check. A mismatch would let one tenant's rendered config
+       * accept a token minted for another tenant's audience. */
+      readonly tenant: string;
+      readonly supportIdentity: EmailAddress;
+    };
+
 export interface TenantDescriptor {
   /**
    * The schema version this descriptor was built against. A reconciler that
@@ -183,5 +208,6 @@ export interface TenantDescriptor {
   readonly limits: LimitsSpec;
   readonly caps: ResourceCaps;
   readonly safety: SafetySpec;
+  readonly breakGlass: BreakGlassSpec;
   readonly expiresAt: Instant | null;
 }
