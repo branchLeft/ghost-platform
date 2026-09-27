@@ -79,6 +79,40 @@ export type TransportSpec =
   | { readonly kind: 'smtp'; readonly host: string; readonly port: Port; readonly user: string };
 
 /**
+ * The descriptor's sending identity (LLD-6 §09's handoff to this schema).
+ * HLD §07's decided mark is "a local part per demo, not a subdomain per
+ * demo": a demo's own arm carries only the local part that makes one slot's
+ * address distinct on the one domain every demo shares (`ZoneConfig`'s own
+ * `demoMailDomain` in `./validate.js` — never a field here, or a demo could
+ * carry a domain of its own by construction, which is exactly what LLD-6
+ * §05's containment argument forbids). A tenant signs its own domain
+ * instead, and needs the DKIM selector that domain's DNS record names
+ * (LLD-6 §06) — `demo` has no field for either, so `validate()`'s
+ * unknown-key check refuses a demo carrying one at all, not merely a demo
+ * whose selector or domain happens to be wrong.
+ */
+export type SendingIdentitySpec =
+  | { readonly kind: 'demo'; readonly localPart: string }
+  | { readonly kind: 'tenant'; readonly domain: string; readonly dkimSelector: string };
+
+/**
+ * Whether mail is enabled at all, and the two ceilings LLD-6 §05 names as
+ * demo mail's whole containment argument: "per slot: enough to try sign-up
+ * and a test send… per estate: a hard cap all demo slots share." Both
+ * ceilings are descriptor fields for every kind, not only a demo — a
+ * paying tenant's own anti-abuse ceiling is the same shape, so no sixth
+ * field exists for it. Neither ceiling is enforced here: counting sent
+ * mail against them is the mail spool's job (LLD-6), not this package's —
+ * `render()` carries the numbers through, it never reads a send count.
+ */
+export interface MailSpec {
+  readonly enabled: boolean;
+  readonly ceiling: number;
+  readonly estateCeiling: number;
+  readonly identity: SendingIdentitySpec;
+}
+
+/**
  * The hostname a tenant is reached on. `Theirs` (a verified custom domain)
  * is a precondition a code-injection grant checks, never a grant on its
  * own. `Ours.gated` must agree with `gate` — see `validate()`.
@@ -201,6 +235,7 @@ export interface TenantDescriptor {
   readonly database: DatabaseSpec;
   readonly media: MediaSpec;
   readonly transport: TransportSpec;
+  readonly mail: MailSpec;
   readonly hostname: HostnameSpec;
   readonly gate: GateSpec;
   readonly backup: BackupSpec;

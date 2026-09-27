@@ -476,6 +476,221 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
     const descriptor: TenantDescriptor = { ...demoDescriptor(), expiresAt: null };
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
   });
+
+  it('rejects a demo carrying a tenant-shaped mail identity — a selector or a domain of its own', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: {
+        ...demoDescriptor().mail,
+        identity: { kind: 'tenant', domain: 'evil.example', dkimSelector: 'bl' },
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TierMismatchError);
+    expect((caught as Error).message).toContain('mail.identity.kind');
+  });
+
+  it('rejects a paying tenant carrying a demo-shaped mail identity', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: { ...tenantDescriptor().mail, identity: { kind: 'demo', localPart: 'acme' } },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
+  });
+});
+
+describe('validate() — mail sending identity', () => {
+  it('rejects a demo carrying an unknown-key mail.identity payload (a domain smuggled onto the demo arm)', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      mail: {
+        ...demoDescriptor().mail,
+        identity: { kind: 'demo', localPart: 'demo-1', domain: 'evil.example' },
+      },
+    } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.identity');
+  });
+
+  it('rejects mail.identity.kind outside the declared set', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, identity: { kind: 'Demo', localPart: 'demo-1' } },
+    } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(UnknownDiscriminantError);
+    expect((caught as UnknownDiscriminantError).field).toBe('mail.identity');
+  });
+
+  it('rejects an unknown key on mail itself', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, extra: 1 },
+    } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail');
+  });
+
+  it('rejects mail.ceiling greater than mail.estateCeiling — one abuser must not spend the estate cap', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, ceiling: 1000, estateCeiling: 500 },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.ceiling');
+  });
+
+  it('accepts mail.ceiling equal to mail.estateCeiling', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, ceiling: 500, estateCeiling: 500 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).not.toThrow();
+  });
+
+  it.each([-1, 1.5, Infinity, NaN])('rejects mail.ceiling %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, ceiling: value, estateCeiling: 500 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it.each([-1, 1.5, Infinity])('rejects mail.estateCeiling %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, ceiling: 1, estateCeiling: value },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it.each(['', ' ', 'demo one', 'demo@one', '-demo', 'demo-'])(
+    'rejects a malformed mail.identity.localPart %j',
+    (value) => {
+      const descriptor: TenantDescriptor = {
+        ...demoDescriptor(),
+        mail: { ...demoDescriptor().mail, identity: { kind: 'demo', localPart: value } },
+      };
+      expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+    }
+  );
+
+  it.each(['demo-1', 'demo.one', 'demo_one', 'a'])(
+    'accepts a well-formed mail.identity.localPart %j',
+    (value) => {
+      const descriptor: TenantDescriptor = {
+        ...demoDescriptor(),
+        mail: { ...demoDescriptor().mail, identity: { kind: 'demo', localPart: value } },
+      };
+      expect(() => validate(descriptor, TEST_ZONES)).not.toThrow();
+    }
+  );
+
+  it('rejects a tenant mail.identity.domain that is an IP literal', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: '203.0.113.5', dkimSelector: 'bl' },
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a tenant mail.identity.domain equal to a platform-owned domain', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: 'platform-domain.example.test', dkimSelector: 'bl' },
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.identity.domain');
+  });
+
+  it('rejects a tenant mail.identity.domain equal to zones.demoMailDomain — the exact domain every demo shares', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: TEST_ZONES.demoMailDomain, dkimSelector: 'bl' },
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.identity.domain');
+  });
+
+  it('rejects a tenant mail.identity.domain that is a subdomain of zones.demoMailDomain', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: {
+          kind: 'tenant',
+          domain: `sub.${TEST_ZONES.demoMailDomain}`,
+          dkimSelector: 'bl',
+        },
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a malformed tenant mail.identity.dkimSelector', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: 'blog.acme.example', dkimSelector: 'not a label' },
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('accepts a well-formed tenant mail.identity', () => {
+    const descriptor: TenantDescriptor = tenantDescriptor();
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
+  });
 });
 
 describe('validate() — a code-injection grant needs non-empty by and reason', () => {
@@ -2079,6 +2294,8 @@ describe('validate() — breakGlass', () => {
       demoZone: TEST_ZONES.demoZone,
       platformZone: TEST_ZONES.platformZone,
       ownedDomains: TEST_ZONES.ownedDomains,
+      demoMailDomain: TEST_ZONES.demoMailDomain,
+      mailSpoolBaseUrl: TEST_ZONES.mailSpoolBaseUrl,
     };
     expect(() => validate(tenantDescriptor(), zonesWithoutTheField)).not.toThrow();
 

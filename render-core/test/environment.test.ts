@@ -8,12 +8,12 @@ import { describe, expect, it } from 'vitest';
 import { tenantEnvironment } from '../src/environment.js';
 import { uploadLimits } from '../src/runtime.js';
 import { secretsEnvPath } from '../src/naming.js';
-import { breakGlassEnabled, tenantDescriptor } from './fixtures.js';
+import { breakGlassEnabled, tenantDescriptor, TEST_ZONES } from './fixtures.js';
 
 const LIMITS = uploadLimits();
 
 function env(descriptor: ReturnType<typeof tenantDescriptor>) {
-  return tenantEnvironment(descriptor, LIMITS, secretsEnvPath(descriptor.slug));
+  return tenantEnvironment(descriptor, LIMITS, secretsEnvPath(descriptor.slug), TEST_ZONES);
 }
 
 describe('tenantEnvironment() — breakGlass', () => {

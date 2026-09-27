@@ -29,12 +29,22 @@ import type {
   Slug,
   TenantUid,
 } from '../src/brand.js';
-import { CURRENT_SCHEMA_VERSION } from '../src/validate.js';
+import { CURRENT_SCHEMA_VERSION, type ZoneConfig } from '../src/validate.js';
 import type { TenantDescriptor } from '../src/descriptor.js';
 import { tenantEnvironment as renderCoreTenantEnvironment } from '../src/environment.js';
 import { uploadLimits } from '../src/runtime.js';
 
 const SECRETS_FILE_PATH = '/etc/branchleft/blog.env';
+
+// Not `TEST_ZONES` from `./fixtures.js`: this fixture is tenant-zero's own
+// real domain, and `demoMailDomain` is never read for a `tenant` identity —
+// only `mailSpoolBaseUrl` matters here, and its value is deliberately not
+// `INFRA_TENANT_BLOG_ENV`'s old `mx1.branchleft.co.uk:8443` — see
+// `KNOWN_DIVERGED_KEYS`'s own comment below for why.
+const ZONES: Pick<ZoneConfig, 'demoMailDomain' | 'mailSpoolBaseUrl'> = {
+  demoMailDomain: 'demo.branchleft.co.uk',
+  mailSpoolBaseUrl: 'http://mail-spool.internal:8080',
+};
 
 // Recorded 2026-09-24 by calling infra/tenant/environment.ts#tenantEnvironment
 // directly, in this same worktree, with the values below — see the module
@@ -111,6 +121,12 @@ function renderCoreTenantZeroDescriptor(): TenantDescriptor {
       port: 587 as Port,
       user: 'blog@branchleft.co.uk',
     },
+    mail: {
+      enabled: true,
+      ceiling: 100000,
+      estateCeiling: 100000,
+      identity: { kind: 'tenant', domain: 'blog.branchleft.co.uk', dkimSelector: 'bl' },
+    },
     hostname: {
       kind: 'theirs',
       fqdn: 'blog.branchleft.co.uk',
@@ -131,23 +147,34 @@ function renderCoreTenantZeroEnv(): Record<string, string | number | boolean> {
   return renderCoreTenantEnvironment(
     renderCoreTenantZeroDescriptor(),
     uploadLimits(),
-    SECRETS_FILE_PATH
+    SECRETS_FILE_PATH,
+    ZONES
   );
 }
 
 /**
- * Every key `TransportSpec` genuinely cannot carry yet — see
- * `environment.ts#transportEnvironment`'s own doc comment. The
- * descriptor's sending identity needs its own field for each of these
- * before this list can shrink; that is separate work, not implemented
- * around here.
+ * The gap `environment.ts#transportEnvironment`'s own doc comment used to
+ * name is closed: render-core now renders all four keys. Two of them,
+ * `bulkEmail__mailgun__domain` and `__apiKey`, match `INFRA_TENANT_BLOG_ENV`
+ * exactly, because both sides derive the domain from the same fact (blog's
+ * own sending domain) and the same secret-reference name.
+ *
+ * The other two are a **deliberate, permanent divergence, not a defect**:
+ * `INFRA_TENANT_BLOG_ENV` is a recorded snapshot of `infra/tenant`'s
+ * *pre-sending-identity* renderer, which still points Ghost straight at mx1
+ * (`mx1.branchleft.co.uk:8443`) — exactly the "Ghost dials into the main
+ * estate" shape LLD-6 §03 (M3) identifies as the violation this component
+ * exists to correct. Render-core points at the host's own mail spool
+ * instead (`ZONES.mailSpoolBaseUrl` above), so `bulkEmail__mailgun__baseUrl`
+ * can never equal the old snapshot without reintroducing the violation.
+ * `mail__from` diverges too, for a smaller reason: the snapshot carries a
+ * human display name ("branchLeft blog <…>"), which is prose for the
+ * owner to write, not a value this package can synthesise — render-core
+ * emits the bare address the sending identity actually names.
+ * `infra/tenant`'s own migration to the spool is separate, un-scoped work;
+ * this test does not assume it has happened.
  */
-const KNOWN_GAP_KEYS = [
-  'mail__from',
-  'bulkEmail__mailgun__baseUrl',
-  'bulkEmail__mailgun__domain',
-  'bulkEmail__mailgun__apiKey',
-].sort();
+const KNOWN_DIVERGED_KEYS = ['mail__from', 'bulkEmail__mailgun__baseUrl'].sort();
 
 // The actual diff loop, factored out so the control case below can run it
 // for real instead of asserting on hand-built objects that never pass
@@ -169,7 +196,7 @@ function diffSharedKeys(
 }
 
 describe('tenant-zero parity — a real key-by-key diff against infra/tenant, not a substring check', () => {
-  it('every key infra/tenant renders for blog is either matched by render-core or in the known #1250 gap list', () => {
+  it('every key name infra/tenant renders for blog is now also rendered by render-core', () => {
     const infra = INFRA_TENANT_BLOG_ENV;
     const core = renderCoreTenantZeroEnv();
 
@@ -179,20 +206,21 @@ describe('tenant-zero parity — a real key-by-key diff against infra/tenant, no
     const missingFromCore = infraKeys.filter((k) => !coreKeys.includes(k)).sort();
     const extraInCore = coreKeys.filter((k) => !infraKeys.includes(k));
 
-    // The claim this test makes concrete: exactly the four #1250-owned
-    // keys are missing, no more and no fewer -- a regression that dropped
-    // a fifth key, or one that "fixed" this by dropping a #1250 key from
-    // the expected list, would both fail here.
-    expect(missingFromCore).toEqual(KNOWN_GAP_KEYS);
+    // The claim this test makes concrete: every key name infra/tenant
+    // renders is now also rendered here, and render-core adds none of its
+    // own — a regression that dropped a key, or added an extra one, fails
+    // here rather than only inside the value diff below.
+    expect(missingFromCore).toEqual([]);
     expect(extraInCore).toEqual([]);
 
-    // Every key both sides claim to render must carry the same value —
-    // the actual parity claim, checked, not merely counted.
-    const sharedKeys = infraKeys.filter((k) => !KNOWN_GAP_KEYS.includes(k));
+    // Every key both sides claim to render must carry the same value,
+    // except the deliberate divergences named above — the actual parity
+    // claim, checked, not merely counted.
+    const sharedKeys = infraKeys.filter((k) => !KNOWN_DIVERGED_KEYS.includes(k));
     const mismatched = diffSharedKeys(infra, core, sharedKeys);
     expect(mismatched).toEqual([]);
-    // 31 keys matched at review time (35 infra keys minus the 4 gap keys).
-    expect(sharedKeys.length).toBe(31);
+    // 33 keys matched at review time (35 infra keys minus the 2 diverged keys).
+    expect(sharedKeys.length).toBe(33);
     expect(infraKeys.length).toBe(35);
   });
 
@@ -204,7 +232,7 @@ describe('tenant-zero parity — a real key-by-key diff against infra/tenant, no
     const core = renderCoreTenantZeroEnv();
     const sharedKeys = Object.keys(infra)
       .sort()
-      .filter((k) => !KNOWN_GAP_KEYS.includes(k));
+      .filter((k) => !KNOWN_DIVERGED_KEYS.includes(k));
 
     const drifted: Record<string, string | number | boolean> = {
       ...infra,
@@ -219,5 +247,18 @@ describe('tenant-zero parity — a real key-by-key diff against infra/tenant, no
         core: infra.database__connection__host,
       },
     ]);
+  });
+
+  it('the two named divergences are real and in the expected direction — the spool, not mx1 directly', () => {
+    const core = renderCoreTenantZeroEnv();
+    // GREEN: render-core points the bulk path at the spool this package
+    // was given, never at the old snapshot's direct-to-mx1 address.
+    expect(core.bulkEmail__mailgun__baseUrl).toBe(ZONES.mailSpoolBaseUrl);
+    expect(core.bulkEmail__mailgun__baseUrl).not.toBe(
+      INFRA_TENANT_BLOG_ENV.bulkEmail__mailgun__baseUrl
+    );
+    // GREEN: mail__from is the bare sending address, not infra's prose display name.
+    expect(core.mail__from).toBe('hello@blog.branchleft.co.uk');
+    expect(core.mail__from).not.toBe(INFRA_TENANT_BLOG_ENV.mail__from);
   });
 });
