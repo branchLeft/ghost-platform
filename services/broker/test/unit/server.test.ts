@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildDeps, loadPlugin } from '../../src/server.js';
@@ -33,6 +34,7 @@ function fakeConfig(overrides: Partial<BrokerConfig> = {}): BrokerConfig {
     slotLiterals: ['0'],
     drainPollTimeoutMs: 1000,
     healthCheckTimeoutMs: 1000,
+    ghostReadyPollTimeoutMs: 1000,
     healthPortBase: 9100,
     appPortBase: 9300,
     uidBase: 30001,
@@ -263,6 +265,86 @@ describe('the real dist/server.js entrypoint', () => {
     const statusRes = await fetch(`${baseUrl}/status/0`);
     expect(statusRes.status).toBe(200);
     expect(await statusRes.json()).toEqual({ slot: '0', phase: 'running', healthy: false });
+  });
+
+  // --- The colour swap, driven through the real spawned
+  // entrypoint -- proving `buildDeps` wires `ghostReadiness` to a real HTTP
+  // client against the real dist/server.js, not merely that app.ts's own
+  // logic is correct against a hand-built BrokerDeps (app.test.ts already
+  // proves that). A fake Ghost stands in for the target colour's real one,
+  // exactly as `fakeWrapper.mjs` stands in for the sudoers wrapper. ---
+  it('swaps a running slot into its other colour end to end, verifying the target directly before moving traffic', async () => {
+    const root = await makeTempDir('broker-plugin-');
+    const { env, keyPair } = await baseEnv();
+    const renderer = await writeValidRendererPlugin(root);
+    const adminApi = await writeValidAdminApiPlugin(root);
+    const drainSource = await writeValidDrainSourcePlugin(root);
+    // Slot "0"'s own derived allocation under this spawn's default bases
+    // (unchanged from `baseEnv()`) is exactly `demoDescriptor()`'s own
+    // default ports -- colour "b" is 9301 (slotPorts.ts: appPortBase=9300
+    // + 0*2 + 1). This fake Ghost binds there directly rather than probing
+    // a free port and overriding `BROKER_APP_PORT_BASE`: an OS-assigned
+    // ephemeral port can exceed `positiveInteger`'s 65000 cap on this
+    // config value, which would fail the spawn instead of proving the swap.
+    const targetGhostPort = 9301;
+    const fakeGhost: Server = createServer((_req, res) => res.writeHead(200).end('ok'));
+    await new Promise<void>((resolve) => fakeGhost.listen(targetGhostPort, '127.0.0.1', resolve));
+    try {
+      broker = spawnBroker({
+        ...env,
+        BROKER_RENDERER_MODULE: renderer,
+        BROKER_ADMIN_API_MODULE: adminApi,
+        BROKER_DRAIN_SOURCE_MODULE: drainSource,
+        BROKER_GHOST_READY_TIMEOUT_MS: '5000',
+      });
+      const { port } = await broker.waitListening(8000);
+      const baseUrl = `http://127.0.0.1:${port}`;
+      await new Promise((resolve) => setTimeout(resolve, 1100)); // past the same-second replay floor
+
+      const first = demoDescriptor({ ownerEmail: 'first@example.com' as never });
+      const firstBody = Buffer.from(JSON.stringify({ slot: '0', descriptor: first }));
+      const firstHeaders = signHeaders(
+        keyPair,
+        'POST',
+        '/reconcile',
+        firstBody,
+        Math.floor(Date.now() / 1000)
+      );
+      const firstRes = await fetch(`${baseUrl}/reconcile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...firstHeaders },
+        body: firstBody,
+      });
+      expect(firstRes.status).toBe(200);
+      expect(await firstRes.json()).toEqual({ slot: '0', phase: 'running', colour: 'a' });
+
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+
+      const second = demoDescriptor({ ownerEmail: 'second@example.com' as never });
+      const secondBody = Buffer.from(JSON.stringify({ slot: '0', descriptor: second }));
+      const secondHeaders = signHeaders(
+        keyPair,
+        'POST',
+        '/reconcile',
+        secondBody,
+        Math.floor(Date.now() / 1000)
+      );
+      const secondRes = await fetch(`${baseUrl}/reconcile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...secondHeaders },
+        body: secondBody,
+      });
+      // The swap: deployed into "b" (the fake Ghost this test stood up),
+      // verified directly (real HTTP, real dist/server.js), then "b"
+      // becomes the recorded live colour.
+      expect(secondRes.status).toBe(200);
+      expect(await secondRes.json()).toEqual({ slot: '0', phase: 'running', colour: 'b' });
+
+      const statusRes = await fetch(`${baseUrl}/status/0`);
+      expect(await statusRes.json()).toMatchObject({ slot: '0', phase: 'running' });
+    } finally {
+      await new Promise<void>((resolve) => fakeGhost.close(() => resolve()));
+    }
   });
 
   // --- Item 4: a slot left "preparing" by a process whose lock holder

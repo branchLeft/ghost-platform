@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   hashIdOf,
   validate,
+  type HashId,
   type SlotName,
   type TenantDescriptor,
   type ZoneConfig,
@@ -11,10 +12,12 @@ import { type AuthDeps, verifyRequest } from './auth.js';
 import { descriptorHash } from './descriptorHash.js';
 import { EMPTY_DRAIN_PAYLOAD, type DrainSource } from './drainSource.js';
 import type { DrainFlagStore } from './drainFlag.js';
+import type { GhostReadinessChecker } from './ghostReadiness.js';
+import { waitUntilReady } from './ghostReadiness.js';
 import type { HealthChecker } from './healthCheck.js';
 import { hostOf } from './hostOf.js';
 import { clearLeaseAndHash, writeLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
-import { validateSlotLiteral, type Colour } from './literals.js';
+import { otherColour, validateSlotLiteral, type Colour } from './literals.js';
 import type { Renderer } from './render.js';
 import { type SlotLock } from './slotLock.js';
 import { slotAllocation, slotPort } from './slotPorts.js';
@@ -25,6 +28,7 @@ import {
   writeSlotState,
   UnrotatedHashError,
   type Phase,
+  type SlotState,
 } from './stateStore.js';
 import type { SlotWrapper } from './wrapper.js';
 import { writeArtefacts } from './writeArtefacts.js';
@@ -43,6 +47,9 @@ export interface BrokerDeps {
   readonly leaseStoreConfig: LeaseStoreConfig;
   readonly drainFlags: DrainFlagStore;
   readonly healthChecker: HealthChecker;
+  readonly ghostReadiness: GhostReadinessChecker;
+  /** How long a swap waits for a freshly started colour to answer 200 before giving up on it. */
+  readonly ghostReadyPollTimeoutMs: number;
   readonly healthPortBase: number;
   readonly appPortBase: number;
   readonly uidBase: number;
@@ -204,6 +211,25 @@ async function handleReconcile(
     if (state.phase === 'running' && state.descriptorHash === hash) {
       return send(res, 200, { slot, phase: state.phase, colour: state.colour });
     }
+    // A new descriptor for a slot that is already `running` a different
+    // one moves the tenancy to the other colour rather than refusing it --
+    // the whole reason a slot reserves a colour pair at all. Every other
+    // non-`free` phase (`preparing`, `resetting`,
+    // `detaching`, `error`) still refuses below: none of them has a
+    // `colour` this reconcile could safely deploy alongside.
+    if (state.phase === 'running' && state.colour !== undefined) {
+      return await attemptColourSwap(
+        deps,
+        res,
+        slot,
+        state,
+        descriptor,
+        host,
+        argon2idHash,
+        hash,
+        newHashId
+      );
+    }
     if (state.phase !== 'free') {
       return send(res, 409, { error: `slot "${slot}" is occupied (phase "${state.phase}")` });
     }
@@ -295,6 +321,146 @@ async function handleReconcile(
   } finally {
     deps.slotLock.release(slot);
   }
+}
+
+/**
+ * Raised only immediately before the one step that would leave a single
+ * colour as the slot's whole upstream: refusing it is the control LLD-4
+ * §U3b names ("draining is refused while the other colour reports 503"),
+ * because a slot with both colours drained has no healthy upstream at all
+ * and every reader gets 502 (see this file's own sabotage test for what
+ * removing this check does to that state).
+ */
+export class OtherColourUnhealthyError extends Error {
+  constructor(readonly colour: Colour) {
+    super(
+      `colour "${colour}" is not answering 200 -- refusing to drain the colour it would leave as this slot's only upstream`
+    );
+    this.name = 'OtherColourUnhealthyError';
+  }
+}
+
+/**
+ * The swap LLD-4 §U3b describes: a slot already `running` one colour gets
+ * a new descriptor deployed into the *other* one, live, with the first
+ * colour still serving throughout. Called only once the caller has
+ * confirmed `state.phase === 'running'` and `state.colour` is set; holds
+ * the same per-slot lock `handleReconcile` already claimed, and both reads
+ * and writes that lock's response itself so its caller can simply `return`
+ * whatever this resolves to.
+ *
+ * **Never calls `deps.wrapper.reset()`.** That is the one thing this
+ * function must not do that a fresh deploy's own retry path does on
+ * failure (see `attempt()`, above): `reset` stops and wipes *both*
+ * colours, and `state.colour` -- the one already running -- is still
+ * genuinely serving readers for the entire duration of a swap attempt.
+ * "Draining is not stopping" (LLD-4 §U3b, load-bearing) protects the old
+ * colour just as much during a failed promotion as during a deliberate
+ * rollback: a swap that cannot complete leaves the slot exactly as it
+ * found it, never as an outage.
+ */
+async function attemptColourSwap(
+  deps: BrokerDeps,
+  res: ServerResponse,
+  slot: SlotName,
+  state: SlotState,
+  descriptor: TenantDescriptor,
+  host: string,
+  argon2idHash: string,
+  hash: string,
+  newHashId: HashId
+): Promise<void> {
+  const liveColour = state.colour as Colour;
+  const target = otherColour(liveColour);
+
+  const heldBy = await hostHeldByAnotherSlot(deps.leaseStoreConfig.slotsPath, host, slot);
+  if (heldBy !== null) {
+    return send(res, 409, { error: `host "${host}" is already held by slot "${heldBy}"` });
+  }
+
+  try {
+    // A new colour always boots drained (LLD-2 §01b), regardless of what
+    // `target`'s flag last held: this slot's own alternation means the
+    // colour a swap is about to overwrite was last *this* slot's other
+    // live colour's undrained twin, so its flag is not guaranteed clear
+    // going in.
+    await deps.drainFlags.set(slot, target);
+    const artefacts = await deps.renderer.render(descriptor);
+    await writeArtefacts(deps.slotDirBase, slot, artefacts);
+    await deps.wrapper.start(slot, target);
+    const targetPort = slotPort(deps.appPortBase, slot, target);
+    await deps.adminApi.configure(`http://127.0.0.1:${targetPort}`, descriptor);
+    // "Migrate, verify by calling it directly" (LLD-4 §U3b) -- Ghost's own
+    // app port is never ambiguous between colours (unlike the slot's one
+    // shared health port), so this needs no router to ask a specific
+    // colour whether it is ready.
+    const ready = await waitUntilReady(
+      deps.ghostReadiness,
+      targetPort,
+      deps.ghostReadyPollTimeoutMs
+    );
+    if (!ready) {
+      throw new Error(
+        `colour "${target}" of slot "${slot}" never answered 200 within ${deps.ghostReadyPollTimeoutMs}ms`
+      );
+    }
+    await writeLeaseAndHash(deps.leaseStoreConfig, host, slot, argon2idHash);
+    await deps.drainFlags.clear(slot, target);
+  } catch (err) {
+    // `target`'s flag is left exactly as `set`/`clear` above last reached
+    // it; the persisted slot state is left completely untouched -- still
+    // `running`, still `liveColour`, still the old hash -- so a caller
+    // that reads `/status` or retries `/reconcile` with the old descriptor
+    // sees the tenancy exactly as it was before this attempt.
+    deps.log(
+      `colour swap failed for slot "${slot}" (target "${target}"): ${(err as Error).message}`
+    );
+    return send(res, 503, {
+      slot,
+      phase: 'running',
+      colour: liveColour,
+      error: (err as Error).message,
+    });
+  }
+
+  // Moving the traffic. The colours alternate, so the order in the edge's
+  // static upstream list can never encode "prefer the newer one" -- what
+  // makes the swap work in both directions is that a new colour always
+  // boots drained (above), combined with Caddy's `lb_policy first`
+  // preferring the first-listed, healthy upstream (LLD-4 §U3b):
+  //
+  // - Deploying into the first-listed colour ('a'): clearing its flag,
+  //   just above, is already the one flag change that moves everything --
+  //   it is healthy and first, so nothing further runs here.
+  // - Deploying into the second-listed colour ('b'): clearing its flag
+  //   moved nothing, because 'a' is still healthy and still preferred.
+  //   Only now, draining 'a', does traffic actually move -- which is
+  //   exactly why the refusal below guards this branch and no other.
+  if (target === 'b') {
+    // The Done-means refusal: never drain `liveColour` unless `target` --
+    // about to become this slot's only upstream -- is demonstrably
+    // serving. This is a second, independent check, not a re-read of the
+    // readiness poll above: it runs immediately before the flag change
+    // that actually moves traffic, so a target that regressed in the
+    // narrow window between the two still refuses here rather than
+    // draining blind.
+    const targetPort = slotPort(deps.appPortBase, slot, target);
+    const stillReady = await deps.ghostReadiness.isReady(targetPort);
+    if (!stillReady) {
+      const err = new OtherColourUnhealthyError(target);
+      deps.log(`colour swap for slot "${slot}" refused to drain "${liveColour}": ${err.message}`);
+      return send(res, 503, { slot, phase: 'running', colour: liveColour, error: err.message });
+    }
+    await deps.drainFlags.set(slot, liveColour);
+  }
+
+  await writeSlotState(deps.stateDir, slot, {
+    phase: 'running' satisfies Phase,
+    colour: target,
+    descriptorHash: hash,
+    lastHashId: newHashId,
+  });
+  send(res, 200, { slot, phase: 'running', colour: target });
 }
 
 async function handleReset(

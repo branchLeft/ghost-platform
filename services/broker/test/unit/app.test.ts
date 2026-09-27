@@ -113,20 +113,133 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(reset.status).toBe(200);
   });
 
-  it('a different descriptor for an already-occupied slot is refused with 409, not applied', async () => {
-    broker = await startTestBroker();
-    const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
-    const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
+  // --- A new descriptor for an already-running slot moves the tenancy to
+  // the other colour instead of refusing it (LLD-4 §U3b). The behaviour
+  // this superseded -- a bare 409 for any change to a running slot -- is
+  // now reserved for the phases that genuinely have no colour to deploy
+  // alongside (`preparing`, `resetting`, `detaching`, `error`); see the
+  // "a slot mid-transition" test below. ---
+  describe('the colour swap', () => {
+    it('deploying into the first-listed colour ("a") clears its flag -- the one flag change that moves everything', async () => {
+      broker = await startTestBroker();
+      const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
+      const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
 
-    await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first });
-    const conflict = await broker.signedFetch('POST', '/reconcile', {
-      slot: '0',
-      descriptor: second,
+      // Colour "a" first (the fresh-deploy path), then "b" (a swap), then
+      // back onto "a" -- the direction this sub-test is about, and proof
+      // the swap really does work in both orders (this story's own Done means).
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first });
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: second });
+
+      const third = demoDescriptor({ ownerEmail: 'third@example.com' as EmailAddress });
+      const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: third });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ slot: '0', phase: 'running', colour: 'a' });
+
+      // Three renders/starts total: "a", then "b", then "a" again -- never
+      // a `wrapper.reset` anywhere in this sequence (F1's own regression
+      // shape: a swap that quietly fell back to the fresh-deploy retry
+      // path would reset and wipe the colour still serving readers).
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      expect(invocations).toEqual([
+        ['0', 'a', 'start'],
+        ['0', 'b', 'start'],
+        ['0', 'a', 'start'],
+      ]);
+      expect(invocations.some((inv: string[]) => inv[1] === 'reset')).toBe(false);
     });
-    expect(conflict.status).toBe(409);
-    // Only the first descriptor's render ran.
-    expect(broker.renderer.calls).toHaveLength(1);
-    expect(broker.renderer.calls[0]?.ownerEmail).toBe('first@example.com');
+
+    it('deploying into the second-listed colour ("b") clears its flag, then drains "a" -- two flag changes, only the second moves traffic', async () => {
+      broker = await startTestBroker();
+      const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first });
+
+      const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
+      const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: second });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ slot: '0', phase: 'running', colour: 'b' });
+
+      // The verify-directly step (LLD-4 §U3b) ran against "b"'s own app
+      // port before traffic moved, and the drain-refusal check ran a
+      // second, independent time immediately before "a" was drained.
+      expect(broker.ghostReadiness.calls.filter((p) => p === 9301)).toHaveLength(2);
+
+      const statusRes = await fetch(`${broker.baseUrl}/status/0`);
+      expect(await statusRes.json()).toMatchObject({ slot: '0', phase: 'running' });
+    });
+
+    it('refuses to drain the live colour while the new colour is not answering 200 -- the Done-means control', async () => {
+      broker = await startTestBroker();
+      const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first });
+
+      // Slot "0" colour "b" is port 9301 (slotPorts.ts: appPortBase 9300 +
+      // 0*2 + 1). Healthy for the *first* call -- the bring-up readiness
+      // poll inside the swap, which must succeed so the flag actually
+      // clears and this scenario reaches the drain step at all -- then
+      // unhealthy from the second call on: the swap's own, independent
+      // re-check immediately before draining "a" (see the swap's own
+      // comment on why that second check exists rather than reusing the
+      // first's result).
+      broker.ghostReadiness.setReadySequence(9301, [true, false]);
+
+      const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
+      const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: second });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ slot: '0', phase: 'running', colour: 'a' });
+
+      // "a" was never drained: the whole point of the refusal. This is
+      // also the sabotage case for the guard itself -- deleting the
+      // `if (!stillReady) { ... return ...}` block in `attemptColourSwap`
+      // makes this exact assertion fail red (the flag file starts
+      // existing); see the PR body for that sabotage run, verbatim.
+      await expect(readFile(`${broker.drainFlagDir}/0-a.drain`, 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    });
+
+    it('a failed swap leaves the slot exactly as it found it -- the old colour is never reset', async () => {
+      broker = await startTestBroker();
+      const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first });
+
+      broker.renderer.fail = true;
+      const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
+      const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: second });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ slot: '0', phase: 'running', colour: 'a' });
+
+      // No `reset` invocation at all -- unlike the fresh-deploy retry path
+      // (see "a reconcile failure resets and retries once" below), a swap
+      // failure must never touch the colour still serving readers.
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      expect(invocations.some((inv: string[]) => inv.includes('reset'))).toBe(false);
+
+      const statusRes = await fetch(`${broker.baseUrl}/status/0`);
+      expect(await statusRes.json()).toMatchObject({ slot: '0', phase: 'running' });
+    });
+  });
+
+  it('a slot mid-transition (not "free", no colour recorded) is still refused with 409', async () => {
+    broker = await startTestBroker();
+    await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: demoDescriptor() });
+    // Simulate exactly what `recoverCrashedSlots` leaves behind: `error`,
+    // no `colour` -- a phase this handler has never had a swap path for.
+    const { writeSlotState } = await import('../../src/stateStore.js');
+    await writeSlotState(broker.stateDir, '0' as SlotName, { phase: 'error' });
+
+    const res = await broker.signedFetch('POST', '/reconcile', {
+      slot: '0',
+      descriptor: demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress }),
+    });
+    expect(res.status).toBe(409);
+    expect(broker.renderer.calls).toHaveLength(1); // only the first, successful deploy
   });
 
   it("reset actually removes the slot's lease record and slots-file entry -- the recycle contract, not just the phase", async () => {

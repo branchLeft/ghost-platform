@@ -7,6 +7,7 @@ import { createInMemoryNonceStore } from './nonceStore.js';
 import { loadConfig, type BrokerConfig, type BrokerEnv } from './config.js';
 import { createDrainFlagStore } from './drainFlag.js';
 import type { DrainSource } from './drainSource.js';
+import { createHttpGhostReadinessChecker } from './ghostReadiness.js';
 import { createHttpHealthChecker } from './healthCheck.js';
 import type { Renderer } from './render.js';
 import { createSlotLock } from './slotLock.js';
@@ -98,6 +99,8 @@ export function buildDeps(
     },
     drainFlags: createDrainFlagStore(config.drainFlagDir),
     healthChecker: createHttpHealthChecker('127.0.0.1', config.healthCheckTimeoutMs),
+    ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
+    ghostReadyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
     healthPortBase: config.healthPortBase,
     appPortBase: config.appPortBase,
     uidBase: config.uidBase,

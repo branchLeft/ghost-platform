@@ -35,6 +35,21 @@ export interface ControllableDrainSource extends DrainSource {
   rejectNextWith: (err: Error) => void;
 }
 
+export interface ControllableGhostReadiness {
+  readonly calls: number[];
+  isReady(port: number): Promise<boolean>;
+  /** Every port reads ready by default; set `false` for a specific port to make it refuse. */
+  setReady(port: number, ready: boolean): void;
+  /**
+   * Answers this port's *next* N calls with `values[0..N-1]` in order, then
+   * keeps answering with `values`'s last entry -- for a test that needs a
+   * colour to pass its bring-up readiness poll (the first call) and then
+   * regress before the swap's second, independent check (the drain
+   * refusal), which `setReady`'s single fixed verdict cannot express.
+   */
+  setReadySequence(port: number, values: readonly boolean[]): void;
+}
+
 export interface TestBroker {
   readonly baseUrl: string;
   readonly keyPair: TestKeyPair;
@@ -42,9 +57,11 @@ export interface TestBroker {
   readonly renderer: RecordingRenderer;
   readonly adminApi: RecordingAdminApi;
   readonly drainSource: ControllableDrainSource;
+  readonly ghostReadiness: ControllableGhostReadiness;
   readonly wrapperLogPath: string;
   readonly stateDir: string;
   readonly leaseDir: string;
+  readonly drainFlagDir: string;
   readonly slotsPath: string;
   readonly nowMs: () => number;
   readonly processStartSeconds: number;
@@ -73,6 +90,32 @@ function createRecordingAdminApi(): RecordingAdminApi {
     async configure(baseUrl, descriptor) {
       this.calls.push({ baseUrl, descriptor });
       if (this.fail) throw new Error('admin API sabotage failure');
+    },
+  };
+}
+
+function createControllableGhostReadiness(): ControllableGhostReadiness {
+  const overrides = new Map<number, boolean>();
+  const sequences = new Map<number, boolean[]>();
+  const sequenceIndex = new Map<number, number>();
+  return {
+    calls: [],
+    async isReady(port) {
+      this.calls.push(port);
+      const sequence = sequences.get(port);
+      if (sequence) {
+        const index = sequenceIndex.get(port) ?? 0;
+        sequenceIndex.set(port, index + 1);
+        return sequence[Math.min(index, sequence.length - 1)] as boolean;
+      }
+      return overrides.get(port) ?? true;
+    },
+    setReady(port, ready) {
+      overrides.set(port, ready);
+    },
+    setReadySequence(port, values) {
+      sequences.set(port, [...values]);
+      sequenceIndex.set(port, 0);
     },
   };
 }
@@ -126,6 +169,7 @@ export async function startTestBroker(): Promise<TestBroker> {
   const renderer = createRecordingRenderer();
   const adminApi = createRecordingAdminApi();
   const drainSource = createControllableDrainSource();
+  const ghostReadiness = createControllableGhostReadiness();
 
   const deps: BrokerDeps = {
     auth: {
@@ -148,6 +192,8 @@ export async function startTestBroker(): Promise<TestBroker> {
     leaseStoreConfig: { slotsPath, leaseDir, nowMs: () => nowMs },
     drainFlags: createDrainFlagStore(drainFlagDir),
     healthChecker: createHttpHealthChecker('127.0.0.1', 500),
+    ghostReadiness,
+    ghostReadyPollTimeoutMs: 300,
     healthPortBase: 9100,
     appPortBase: 9300,
     uidBase: 30001,
@@ -174,9 +220,11 @@ export async function startTestBroker(): Promise<TestBroker> {
     renderer,
     adminApi,
     drainSource,
+    ghostReadiness,
     wrapperLogPath,
     stateDir,
     leaseDir,
+    drainFlagDir,
     slotsPath,
     nowMs: () => nowMs,
     processStartSeconds,
