@@ -72,7 +72,37 @@ export function assertSupportAccountActive(identity: string, status: string | nu
   }
 }
 
-/** Reads the support account's status from the tenant's own database. */
+export class NotTheSupportAccountError extends Error {
+  constructor(
+    readonly identity: string,
+    readonly roles: readonly string[]
+  ) {
+    super(
+      `refused: ${identity} is not the support account -- its roles are [${roles.join(', ')}], ` +
+        `and only an account holding exactly the Administrator role qualifies; nothing was started`
+    );
+    this.name = 'NotTheSupportAccountError';
+  }
+}
+
+/**
+ * The account the export's session will belong to must be the support
+ * Administrator: never the Owner, whose account is never suspended and so
+ * would pass the status check with no grant open, and never any other
+ * staff role.
+ */
+export function assertIsSupportRole(identity: string, roles: readonly string[]): void {
+  if (roles.length !== 1 || roles[0] !== 'Administrator') {
+    throw new NotTheSupportAccountError(identity, roles);
+  }
+}
+
+export interface SupportAccount {
+  readonly status: string;
+  readonly roles: readonly string[];
+}
+
+/** Reads the support account from the tenant's own database; null when absent. */
 export interface SupportAccountStatusReader {
-  readStatus(identity: string): Promise<string | null>;
+  readAccount(identity: string): Promise<SupportAccount | null>;
 }

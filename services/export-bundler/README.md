@@ -28,12 +28,44 @@ status.** It takes the grant as input (`--grant-lane`, `--grant-reference`),
 and before it sets a drain flag or starts anything it:
 
 1. refuses with `NoSupportGrantError` if no grant is given;
-2. reads the support account's status from the tenant's own database, in a
-   one-shot container of the tenant's image through Ghost's own database
-   module, and refuses with `SupportAccountNotActiveError` unless Ghost
-   would treat the account as active.
+2. reads the support account from the tenant's own database, in a one-shot
+   container of the tenant's image through Ghost's own database module (one
+   SELECT of its status and roles), and refuses with
+   `NotTheSupportAccountError` unless it holds exactly the Administrator
+   role -- never the Owner, who is never suspended and so would pass a
+   status check with no grant open -- and with
+   `SupportAccountNotActiveError` unless Ghost would treat it as active.
 
-The grant's lane and reference go into the audit record.
+The grant's lane and reference, and the support identity used, go into the
+audit record.
+
+## Whose data, as whom, to which key: the tenant's own config
+
+None of these is a flag:
+
+- **Environment, image, user and volumes** come from the tenant's rendered
+  stack: `<stack-dir>/compose.yml` (default `/opt/branchleft/<slug>`),
+  resolved by `docker compose config` against the tenant's secrets env
+  (default `/etc/branchleft/<slug>.env`) and image env (default
+  `/etc/branchleft/<slug>.image.env`), with PATH as Compose's only ambient
+  variable. The export colour boots with the tenant's own environment, as
+  the tenant's own user.
+- **The support identity** is `adapters__sso__BreakGlassSSO__supportIdentity`
+  from that rendered environment -- the identity the tenant's break-glass
+  adapter is configured with. When the descriptor carries
+  `breakGlass.supportIdentity`, the two must agree.
+- **The recipient** is the descriptor's `backup.encryptionRecipient`, the
+  tenant's one backup recipient (render-core `BackupSpec`). A descriptor
+  with `backup.kind: none` is refused. The operator also states the
+  recipient (`--age-recipient`); a mismatch is refused with
+  `RecipientMismatchError`.
+
+The descriptor's slug must match the stack's name and the adapter's tenant
+audience.
+
+The environment reaches `docker` as an `--env-file` written 0600 in a fresh
+0700 directory and removed when the run ends, on every path including
+SIGINT and SIGTERM -- never as `-e` values, which `ps` shows.
 
 ### Why a break-glass session, not an Admin API key
 
@@ -58,7 +90,8 @@ Mint with a lifetime of 600 seconds or less.
 The archive is a tar, built in memory, handed to `age -r <recipient>` on
 stdin, and written to disk only as ciphertext -- the same method as the
 tenant's backups (`09-backup-and-recovery.html` §02,
-`infra/provisioning/scripts/pull_encrypt_store.py`). The ciphertext's
+`infra/provisioning/scripts/pull_encrypt_store.py`), to the same per-tenant
+recipient. The ciphertext's
 header is re-read after encryption and refused unless it names exactly one
 recipient. The archive and the manifest beside it are written 0600 in a
 0700 directory.
@@ -66,7 +99,14 @@ recipient. The archive and the manifest beside it are written 0600 in a
 The manifest, inside the archive and as `<name>.manifest.json` beside it,
 states `encryption: { encrypted: true, format: "age", recipient,
 recipientFingerprint }`, where the fingerprint is the SHA-256 of the
-recipient string. The audit record carries the same fingerprint.
+recipient string. The audit record carries the same fingerprint and the
+SHA-256 of the ciphertext file, binding the record to one archive.
+
+## The audit record
+
+One JSON line per export, written in a single append and fsynced. If it
+cannot be written, the archive and its manifest are removed and the run
+fails with `AuditWriteError`: an archive never outlives its audit record.
 
 ## The drained-colour control
 
@@ -78,7 +118,8 @@ the write.
 
 ## Running it
 
-Inside an open grant, on the host that holds the tenant's content volume:
+Inside an open grant, on the tenant's app host, as a user that can read
+the tenant's root-owned secrets env:
 
 ```sh
 npm ci
@@ -86,28 +127,21 @@ npm run build
 node dist/cli.js \
   --grant-lane consented|incident \
   --grant-reference <where the grant's evidence lives> \
-  --tenant-id <tenant> \
+  --descriptor <the tenant's descriptor JSON> \
+  --age-recipient <the recipient you expect; must be the descriptor's> \
   --requested-by <who is asking> \
   --delivered-to <where the archive goes> \
-  --image <ghost image tag> \
-  --volume <the tenant's content volume> \
-  --mount-path /var/lib/ghost/content \
-  --age-recipient <the tenant's age recipient> \
   --dest-dir <where to write the archive> \
   --flag-dir <where this run's own drain flag lives> \
   --audit-log <path to the audit JSONL file> \
   --loopback-port <an unused local port> \
-  --env url=https://... \
-  --env database__client=... \
-  --env adapters__sso__BreakGlassSSO__supportIdentity=<support address> \
-  [--env KEY=VALUE ...]
+  [--stack-dir /opt/branchleft/<slug>] \
+  [--secrets-env /etc/branchleft/<slug>.env] \
+  [--image-env /etc/branchleft/<slug>.image.env]
 ```
 
-Every `--env` flag is forwarded verbatim to the status probe and the
-tenant's own container: the caller supplies the env the tenant's colour
-already boots with (storage config, `url`, database connection, and the
-break-glass adapter's settings). The support identity is read from that
-env.
+The retired flags (`--env`, `--tenant-id`, `--image`, `--volume`,
+`--mount-path`, `--break-glass-identity`) are refused by name.
 
 ## Tests
 
@@ -118,10 +152,13 @@ docker build -t ghost-platform:local ../..
 ```
 
 The live script runs the built CLI against a real Ghost holding a real
-owner and a real suspended support Administrator. It proves: the refusal
-with no grant, and with the account suspended, each starting nothing; a
-successful export once the account is un-suspended, with the token minted
-after the colour is up; an archive on disk that is ciphertext only and
-decrypts to real content; the manifest's recipient fingerprint; the audit
-record's grant and fingerprint; that the bundler never changes the
-account's status; permissions; and cleanup.
+owner and a real suspended support Administrator, described by a
+descriptor and a rendered stack directory. It proves: refusal with no
+grant, with the wrong recipient, with the Owner as the rendered support
+identity, and with the account suspended, each starting nothing; no tenant
+secret in any argv while the colour runs; a successful export once the
+account is un-suspended, with the token minted after the colour is up; an
+archive on disk that is ciphertext only and decrypts to real content; the
+manifest's recipient fingerprint; the audit record's grant, identity,
+fingerprint and digest; that the bundler never changes the account's
+status; permissions; and cleanup.

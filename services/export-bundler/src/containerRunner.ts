@@ -3,20 +3,38 @@ import { execFile } from 'node:child_process';
 export interface VolumeMount {
   readonly volume: string;
   readonly mountPath: string;
+  readonly readOnly?: boolean;
 }
 
-export interface TenantColourSpec {
+/** How a container of the tenant's image is given the tenant's config. */
+export interface TenantContainerConfig {
+  /** A `docker --env-file`: env values never travel in argv, where `ps` shows them. */
+  readonly envFile: string;
+  /** The tenant's own `uid:gid` from its rendered stack; its content volume is private to it. */
+  readonly user: string | null;
+  readonly volumes: readonly VolumeMount[];
+}
+
+export interface TenantColourSpec extends TenantContainerConfig {
   readonly containerName: string;
   readonly image: string;
   /** Bound to loopback only -- see buildDockerRunArgs's own comment on why. */
   readonly loopbackPort: number;
-  readonly env: Readonly<Record<string, string>>;
-  readonly volumes: readonly VolumeMount[];
 }
 
 export interface ContainerRunner {
   start(): Promise<{ baseUrl: string }>;
   stop(): Promise<void>;
+}
+
+export function tenantContainerArgs(config: TenantContainerConfig): string[] {
+  const args = ['--env-file', config.envFile];
+  if (config.user !== null) args.push('--user', config.user);
+  for (const mount of config.volumes) {
+    const ro = mount.readOnly ? ',readonly' : '';
+    args.push('--mount', `type=volume,src=${mount.volume},dst=${mount.mountPath}${ro}`);
+  }
+  return args;
 }
 
 /**
@@ -34,12 +52,7 @@ export interface ContainerRunner {
 export function buildDockerRunArgs(spec: TenantColourSpec): readonly string[] {
   const args: string[] = ['run', '-d', '--name', spec.containerName];
   args.push('-p', `127.0.0.1:${spec.loopbackPort}:2368`);
-  for (const [key, value] of Object.entries(spec.env)) {
-    args.push('-e', `${key}=${value}`);
-  }
-  for (const mount of spec.volumes) {
-    args.push('--mount', `type=volume,src=${mount.volume},dst=${mount.mountPath}`);
-  }
+  args.push(...tenantContainerArgs(spec));
   args.push(spec.image);
   return args;
 }

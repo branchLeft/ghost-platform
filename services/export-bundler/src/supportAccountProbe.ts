@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import type { VolumeMount } from './containerRunner.js';
-import type { SupportAccountStatusReader } from './supportGrant.js';
+import { tenantContainerArgs, type TenantContainerConfig } from './containerRunner.js';
+import type { SupportAccount, SupportAccountStatusReader } from './supportGrant.js';
 
 export class SupportAccountStatusUnreadableError extends Error {
   constructor(detail: string) {
@@ -11,10 +11,8 @@ export class SupportAccountStatusUnreadableError extends Error {
   }
 }
 
-export interface StatusProbeSpec {
+export interface StatusProbeSpec extends TenantContainerConfig {
   readonly image: string;
-  readonly env: Readonly<Record<string, string>>;
-  readonly volumes: readonly VolumeMount[];
 }
 
 const STATUS_MARKER = 'BL_SUPPORT_STATUS ';
@@ -23,14 +21,24 @@ const STATUS_MARKER = 'BL_SUPPORT_STATUS ';
  * Runs inside the tenant's own image, through Ghost's own database
  * connection module, so it reads whatever database the tenant's colour
  * would (SQLite or MySQL, with the TLS settings rendered for Ghost) without
- * this package holding a driver or parsing a connection string. One SELECT;
- * nothing here writes.
+ * this package holding a driver or parsing a connection string. One SELECT
+ * of the account's status and role names; nothing here writes.
  */
 export const STATUS_PROBE_SCRIPT = [
   "process.chdir('/var/lib/ghost');",
   "const knex = require('/var/lib/ghost/current/core/server/data/db/connection');",
-  "knex('users').where({ email: process.argv[1] }).first('status')",
-  `  .then((row) => { process.stdout.write('${STATUS_MARKER}' + JSON.stringify(row ? row.status : null) + '\\n'); })`,
+  "knex('users')",
+  "  .leftJoin('roles_users', 'roles_users.user_id', 'users.id')",
+  "  .leftJoin('roles', 'roles.id', 'roles_users.role_id')",
+  "  .where('users.email', process.argv[1])",
+  "  .select('users.status as status', 'roles.name as role')",
+  '  .then((rows) => {',
+  '    const account = rows.length === 0 ? null : {',
+  '      status: rows[0].status,',
+  '      roles: rows.map((r) => r.role).filter((r) => typeof r === "string"),',
+  '    };',
+  `    process.stdout.write('${STATUS_MARKER}' + JSON.stringify(account) + '\\n');`,
+  '  })',
   "  .catch((err) => { process.stderr.write(String(err && err.message) + '\\n'); process.exitCode = 2; })",
   '  .finally(() => knex.destroy());',
 ].join('\n');
@@ -38,22 +46,27 @@ export const STATUS_PROBE_SCRIPT = [
 /**
  * A one-shot container of the tenant's image that runs the probe and
  * exits: no Ghost process, no published port, no drain flag. It runs as
- * the image's `node` user so that a SQLite file it opens never gains a
- * root-owned sidecar the tenant's Ghost could not later write.
+ * the tenant's own user, with the tenant's own env file and volumes.
  */
 export function buildStatusProbeArgs(spec: StatusProbeSpec, identity: string): readonly string[] {
-  const args: string[] = ['run', '--rm', '--user', 'node', '--entrypoint', 'node'];
-  for (const [key, value] of Object.entries(spec.env)) {
-    args.push('-e', `${key}=${value}`);
-  }
-  for (const mount of spec.volumes) {
-    args.push('--mount', `type=volume,src=${mount.volume},dst=${mount.mountPath}`);
-  }
-  args.push(spec.image, '-e', STATUS_PROBE_SCRIPT, identity);
-  return args;
+  return [
+    'run',
+    '--rm',
+    '--entrypoint',
+    'node',
+    ...tenantContainerArgs(spec),
+    spec.image,
+    '-e',
+    STATUS_PROBE_SCRIPT,
+    identity,
+  ];
 }
 
-export function parseStatusProbeOutput(stdout: string): string | null {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function parseStatusProbeOutput(stdout: string): SupportAccount | null {
   const line = stdout
     .split('\n')
     .reverse()
@@ -67,10 +80,16 @@ export function parseStatusProbeOutput(stdout: string): string | null {
   } catch {
     throw new SupportAccountStatusUnreadableError('the probe printed a malformed status line');
   }
-  if (parsed !== null && typeof parsed !== 'string') {
-    throw new SupportAccountStatusUnreadableError('the probe printed a non-string status');
+  if (parsed === null) return null;
+  if (
+    !isRecord(parsed) ||
+    typeof parsed.status !== 'string' ||
+    !Array.isArray(parsed.roles) ||
+    !parsed.roles.every((r) => typeof r === 'string')
+  ) {
+    throw new SupportAccountStatusUnreadableError('the probe printed an unexpected account shape');
   }
-  return parsed;
+  return { status: parsed.status, roles: parsed.roles as string[] };
 }
 
 export function createDockerStatusProbe(
@@ -78,7 +97,7 @@ export function createDockerStatusProbe(
   dockerCommand = 'docker'
 ): SupportAccountStatusReader {
   return {
-    readStatus(identity) {
+    readAccount(identity) {
       return new Promise((resolve, reject) => {
         execFile(
           dockerCommand,
@@ -87,7 +106,7 @@ export function createDockerStatusProbe(
           { env: { PATH: process.env.PATH ?? '' } },
           (err, stdout, stderr) => {
             if (err) {
-              // Never err.message: it repeats the whole argv, env values included.
+              // Never err.message: it repeats the whole argv.
               reject(
                 new SupportAccountStatusUnreadableError(
                   `docker exited ${String(err.code)}: ${stderr.slice(0, 500)}`

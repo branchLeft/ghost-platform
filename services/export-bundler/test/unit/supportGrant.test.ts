@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertIsSupportRole,
+  NotTheSupportAccountError,
   assertSupportAccountActive,
   GHOST_ACTIVE_STATES,
   NoSupportGrantError,
@@ -57,5 +59,32 @@ describe('assertSupportAccountActive', () => {
 
   it('refuses an account that does not exist', () => {
     expect(() => assertSupportAccountActive('support@x.test', null)).toThrow(/does not exist/);
+  });
+});
+
+describe('assertIsSupportRole', () => {
+  it('passes an account holding exactly the Administrator role', () => {
+    expect(() => assertIsSupportRole('support@x.test', ['Administrator'])).not.toThrow();
+  });
+
+  it.each([
+    [['Owner']],
+    [['Owner', 'Administrator']],
+    [['Administrator', 'Owner']],
+    [['Editor']],
+    [['Author']],
+    [['Contributor']],
+    [['Super Editor']],
+    [[]],
+  ])('refuses the roles %j as NotTheSupportAccountError', (roles) => {
+    let caught: unknown;
+    try {
+      assertIsSupportRole('owner@x.test', roles);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(NotTheSupportAccountError);
+    expect((caught as NotTheSupportAccountError).roles).toEqual(roles);
+    expect((caught as Error).message).toMatch(/nothing was started/);
   });
 });

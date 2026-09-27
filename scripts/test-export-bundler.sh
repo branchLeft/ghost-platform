@@ -5,9 +5,22 @@
 # adapter configured for that support account, and the archive encrypted to
 # a fresh `age` recipient standing in for the tenant's own.
 #
+# The tenant is described the way the platform describes one: a descriptor
+# (slug, backup recipient) and a rendered stack directory (compose.yml,
+# with the break-glass support identity in its environment) beside a
+# secrets env file and an image env file. The bundler takes no identity,
+# recipient or environment from its own flags.
+#
 # What this proves, through the built CLI:
 #   - with no grant given, the bundler refuses (NoSupportGrantError) and
 #     starts nothing;
+#   - an --age-recipient that is not the descriptor's backup recipient is
+#     refused (RecipientMismatchError), starting nothing;
+#   - a stack whose rendered support identity is the Owner is refused
+#     (NotTheSupportAccountError), starting nothing;
+#   - no tenant secret appears in any process's argv while the colour runs;
+#     the secret reaches the container through a 0600 env file that is
+#     gone when the run ends;
 #   - with a grant given but the support account suspended, it refuses
 #     (SupportAccountNotActiveError), starts nothing, and leaves the
 #     account suspended;
@@ -19,7 +32,8 @@
 #     recipient's identity; no file the run leaves holds plaintext content,
 #     and the temp directory it was given stays empty;
 #   - the manifest beside the archive names the recipient fingerprint, and
-#     the audit record names the grant and the fingerprint;
+#     the audit record names the grant, the support identity used, the
+#     fingerprint and the archive's SHA-256;
 #   - the bundler never re-suspends the account itself (it is still active
 #     after the run; the proof re-suspends it, standing in for the lane);
 #   - the archive, the manifest and their directory are never world- or
@@ -49,6 +63,8 @@ OWNER_PASSWORD="Xk9-export-bundler-proof-$RUN_ID"
 SITE_TITLE="Export Bundler Proof $RUN_ID"
 SUPPORT_EMAIL="support@$TENANT.test"
 GRANT_REFERENCE="proof run $RUN_ID: tenant un-suspended the support account"
+# A synthetic secret: it must reach the container, and never any argv.
+SECRET_SENTINEL="export-bundler-proof-secret-$RUN_ID-$(date +%s)"
 
 WORK_DIR="$(mktemp -d)"
 DEST_DIR="$WORK_DIR/dest"
@@ -58,7 +74,11 @@ RUN_TMP="$WORK_DIR/tmp"
 KEY_DIR="$WORK_DIR/key"
 HELPER_DIR="$WORK_DIR/helpers"
 FIFO="$WORK_DIR/token.fifo"
-mkdir -p "$FLAG_DIR" "$AUDIT_DIR" "$RUN_TMP" "$KEY_DIR" "$HELPER_DIR"
+STACK_DIR="$WORK_DIR/stack"
+OWNER_STACK_DIR="$WORK_DIR/stack-owner"
+TENANT_ETC="$WORK_DIR/etc"
+DESCRIPTOR="$WORK_DIR/descriptor.json"
+mkdir -p "$FLAG_DIR" "$AUDIT_DIR" "$RUN_TMP" "$KEY_DIR" "$HELPER_DIR" "$STACK_DIR" "$OWNER_STACK_DIR" "$TENANT_ETC"
 chmod 755 "$HELPER_DIR"
 CLI_PID=""
 FAILURES=0
@@ -165,7 +185,47 @@ fi
 age-keygen -o "$KEY_DIR/identity.txt" 2>/dev/null
 AGE_RECIPIENT="$(age-keygen -y "$KEY_DIR/identity.txt")"
 EXPECTED_FINGERPRINT="sha256:$(sha256_of "$AGE_RECIPIENT")"
+age-keygen -o "$KEY_DIR/other.txt" 2>/dev/null
+OTHER_RECIPIENT="$(age-keygen -y "$KEY_DIR/other.txt")"
 echo "PASS: minted a fresh Ed25519 keypair and age identity"
+echo
+
+# The shape render-core renders (compose.ts / environment.ts), cut down to
+# what a SQLite proof tenant needs. The secret is a `${VAR}` reference that
+# only the secrets env file fills.
+write_stack() {
+    cat > "$1/compose.yml" <<EOF
+name: $TENANT
+services:
+  ghost-a:
+    image: \${IMAGE}
+    user: "1000:1000"
+    environment:
+      url: https://localhost:$EXPORT_PORT
+      database__client: sqlite3
+      database__connection__filename: /var/lib/ghost/content/data/ghost.db
+      privacy__useUpdateCheck: "false"
+      logging__transports: '["stdout"]'
+      BRANCHLEFT_ALLOW_LOCAL_STORAGE: "true"
+      mail__options__auth__pass: \${GHOST_MAIL_PASSWORD:?set in the secrets env}
+      adapters__sso__active: BreakGlassSSO
+      adapters__sso__BreakGlassSSO__publicKey: $PUBLIC_KEY
+      adapters__sso__BreakGlassSSO__tenant: $TENANT
+      adapters__sso__BreakGlassSSO__supportIdentity: $2
+    volumes:
+      - $VOLUME:/var/lib/ghost/content
+volumes:
+  $VOLUME:
+    external: true
+EOF
+}
+write_stack "$STACK_DIR" "$SUPPORT_EMAIL"
+write_stack "$OWNER_STACK_DIR" "$OWNER_EMAIL"
+printf 'GHOST_MAIL_PASSWORD=%s\n' "$SECRET_SENTINEL" > "$TENANT_ETC/secrets.env"
+printf 'IMAGE=%s\n' "$GHOST_IMAGE" > "$TENANT_ETC/image.env"
+chmod 600 "$TENANT_ETC/secrets.env"
+printf '{"slug":"%s","backup":{"kind":"bucket-native","encryptionRecipient":"%s"}}\n' "$TENANT" "$AGE_RECIPIENT" > "$DESCRIPTOR"
+echo "PASS: rendered the tenant's stack directory, env files and descriptor"
 echo
 
 echo "--- seeding the tenant's data volume: a real owner, then a suspended support Administrator ---"
@@ -221,28 +281,21 @@ echo "--- building the export bundler ---"
 echo "PASS: built dist/"
 echo
 
+RUN_STACK="$STACK_DIR"
+RUN_RECIPIENT="$AGE_RECIPIENT"
 run_bundler() {
     (cd "$BUNDLER_DIR" && TMPDIR="$RUN_TMP" PATH="$NODE_BIN_DIR:$PATH" node dist/cli.js \
-        --tenant-id "$TENANT" \
+        --descriptor "$DESCRIPTOR" \
+        --stack-dir "$RUN_STACK" \
+        --secrets-env "$TENANT_ETC/secrets.env" \
+        --image-env "$TENANT_ETC/image.env" \
+        --age-recipient "$RUN_RECIPIENT" \
         --requested-by rob@branchleft.co.uk \
         --delivered-to rob@branchleft.co.uk \
-        --image "$GHOST_IMAGE" \
-        --volume "$VOLUME" \
-        --mount-path /var/lib/ghost/content \
-        --age-recipient "$AGE_RECIPIENT" \
         --dest-dir "$DEST_DIR" \
         --flag-dir "$FLAG_DIR" \
         --audit-log "$AUDIT_DIR/audit.jsonl" \
         --loopback-port "$EXPORT_PORT" \
-        --env "url=https://localhost:$EXPORT_PORT" \
-        --env database__client=sqlite3 \
-        --env database__connection__filename=/var/lib/ghost/content/data/ghost.db \
-        --env privacy__useUpdateCheck=false \
-        --env BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
-        --env adapters__sso__active=BreakGlassSSO \
-        --env "adapters__sso__BreakGlassSSO__publicKey=$PUBLIC_KEY" \
-        --env "adapters__sso__BreakGlassSSO__tenant=$TENANT" \
-        --env "adapters__sso__BreakGlassSSO__supportIdentity=$SUPPORT_EMAIL" \
         "$@")
 }
 
@@ -259,6 +312,37 @@ elif grep -q 'NoSupportGrantError' "$WORK_DIR/no-grant.log" && nothing_started; 
 else
     fail "no-grant run did not refuse as expected:"
     cat "$WORK_DIR/no-grant.log"
+fi
+echo
+
+echo "--- refusal: an --age-recipient that is not the descriptor's backup recipient ---"
+RUN_RECIPIENT="$OTHER_RECIPIENT"
+if run_bundler --grant-lane consented --grant-reference "$GRANT_REFERENCE" </dev/null >"$WORK_DIR/recipient.log" 2>&1; then
+    fail "the bundler exited 0 with another recipient"
+elif grep -q 'RecipientMismatchError' "$WORK_DIR/recipient.log" && nothing_started; then
+    echo "PASS: refused with RecipientMismatchError; no colour, no archive, no drain flag, no audit entry"
+else
+    fail "recipient-mismatch run did not refuse as expected:"
+    cat "$WORK_DIR/recipient.log"
+fi
+RUN_RECIPIENT="$AGE_RECIPIENT"
+echo
+
+echo "--- refusal: the rendered support identity is the Owner (active, never suspended) ---"
+RUN_STACK="$OWNER_STACK_DIR"
+if run_bundler --grant-lane consented --grant-reference "$GRANT_REFERENCE" </dev/null >"$WORK_DIR/owner.log" 2>&1; then
+    fail "the bundler exited 0 with the Owner as the support identity"
+elif grep -q 'NotTheSupportAccountError' "$WORK_DIR/owner.log" && grep -q 'roles are \[Owner\]' "$WORK_DIR/owner.log" && nothing_started; then
+    echo "PASS: refused with NotTheSupportAccountError (roles [Owner]); no colour, no archive, no drain flag, no audit entry"
+else
+    fail "owner-identity run did not refuse as expected:"
+    cat "$WORK_DIR/owner.log"
+fi
+RUN_STACK="$STACK_DIR"
+if [ -z "$(find "$RUN_TMP" -mindepth 1)" ]; then
+    echo "PASS: the refused runs left no env file behind"
+else
+    fail "a refused run left files in its temp directory: $(find "$RUN_TMP" -mindepth 1)"
 fi
 echo
 
@@ -301,6 +385,31 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 done
 if [ "$prompted" = "true" ]; then
     echo "PASS: the bundler asked for the token only once the colour was up"
+    # While the colour runs: the secret is in the container, in no argv, and
+    # its only file is a 0600 env file under the run's temp directory.
+    # Snapshot first: a grep in the same pipeline would carry the sentinel
+    # in its own argv and match itself.
+    ps -axww -o command= > "$WORK_DIR/ps.txt"
+    if [ ! -s "$WORK_DIR/ps.txt" ] || ! grep -q 'dist/cli.js' "$WORK_DIR/ps.txt"; then
+        fail "the process snapshot did not capture the running bundler"
+    elif grep -F -q -e "$SECRET_SENTINEL" "$WORK_DIR/ps.txt"; then
+        fail "the tenant secret is visible in a process's argv"
+    else
+        echo "PASS: no process's argv carries the tenant secret"
+    fi
+    colour="$(docker ps --format '{{.Names}}' | grep "^${TENANT}-export-" | head -1)"
+    if [ -n "$colour" ] && docker inspect --format '{{json .Config.Env}}' "$colour" | grep -F -q -e "mail__options__auth__pass=$SECRET_SENTINEL"; then
+        echo "PASS: the secret reached the export colour's environment from the tenant's own secrets file"
+    else
+        fail "the export colour's environment does not carry the tenant secret"
+    fi
+    env_files="$(find "$RUN_TMP" -type f -name tenant.env -perm 600)"
+    env_dirs="$(find "$RUN_TMP" -mindepth 1 -maxdepth 1 -type d -perm 700)"
+    if [ -n "$env_files" ] && [ -n "$env_dirs" ]; then
+        echo "PASS: the env file is 0600 inside a 0700 directory while the run is live"
+    else
+        fail "no 0600 env file in a 0700 directory under the run's temp directory"
+    fi
     "$NODE_BIN_DIR/node" "$HELPER_DIR/mint.mjs" "$PRIVATE_KEY" "$TENANT" "$SUPPORT_EMAIL" >&3
 else
     fail "the bundler never asked for a token"
@@ -339,6 +448,11 @@ if [ -z "$ARCHIVE" ] || [ -z "$SIDECAR" ]; then
     echo "FAIL: expected an archive and a manifest in $DEST_DIR, found: $(ls "$DEST_DIR" 2>/dev/null)"
     exit 1
 fi
+if command -v sha256sum >/dev/null 2>&1; then
+    ARCHIVE_SHA256="$(sha256sum "$ARCHIVE" | cut -d' ' -f1)"
+else
+    ARCHIVE_SHA256="$(shasum -a 256 "$ARCHIVE" | cut -d' ' -f1)"
+fi
 if [ "$(find "$DEST_DIR" -type f | wc -l | tr -d ' ')" = "2" ]; then
     echo "PASS: wrote exactly one archive and one manifest: $(basename "$ARCHIVE"), $(basename "$SIDECAR")"
 else
@@ -358,7 +472,7 @@ else
     fail "plaintext tenant content found on disk: $plaintext_hits"
 fi
 if [ -z "$(find "$RUN_TMP" -mindepth 1)" ]; then
-    echo "PASS: the run's temp directory is empty"
+    echo "PASS: the run's temp directory is empty -- the env file is gone"
 else
     fail "the run left files in its temp directory: $(find "$RUN_TMP" -mindepth 1)"
 fi
@@ -407,9 +521,11 @@ echo "--- checking the audit record ---"
 if grep -q "\"tenantId\":\"$TENANT\"" "$AUDIT_DIR/audit.jsonl" 2>/dev/null && \
    grep -q '"contents":\["content_and_settings","post_analytics"\]' "$AUDIT_DIR/audit.jsonl" && \
    grep -q "\"grant\":{\"lane\":\"consented\",\"reference\":\"$GRANT_REFERENCE\"}" "$AUDIT_DIR/audit.jsonl" && \
+   grep -q "\"supportIdentity\":\"$SUPPORT_EMAIL\"" "$AUDIT_DIR/audit.jsonl" && \
    grep -q "\"encryptedTo\":\"$EXPECTED_FINGERPRINT\"" "$AUDIT_DIR/audit.jsonl" && \
+   grep -q "\"archiveSha256\":\"$ARCHIVE_SHA256\"" "$AUDIT_DIR/audit.jsonl" && \
    [ "$(wc -l < "$AUDIT_DIR/audit.jsonl" | tr -d ' ')" = "1" ]; then
-    echo "PASS: one audit record: the tenant, the contents, the grant and the recipient fingerprint"
+    echo "PASS: one audit record: the tenant, the contents, the grant, the support identity used, the recipient fingerprint and the archive's SHA-256"
 else
     fail "audit log missing or malformed:"
     cat "$AUDIT_DIR/audit.jsonl" 2>/dev/null || echo "(no audit log at all)"

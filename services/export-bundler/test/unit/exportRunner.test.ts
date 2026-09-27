@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +14,7 @@ import type { DrainFlag } from '../../src/drainFlag.js';
 import type { ContainerRunner } from '../../src/containerRunner.js';
 import type { GhostExportClient } from '../../src/ghostExportClient.js';
 import type { GhostProbe } from '../../src/ghostProbe.js';
-import type { AuditRecorder, ExportAuditEntry } from '../../src/auditLog.js';
+import { AuditWriteError, type AuditRecorder, type ExportAuditEntry } from '../../src/auditLog.js';
 import {
   AgeEncryptionError,
   InvalidAgeRecipientError,
@@ -21,6 +22,7 @@ import {
 } from '../../src/ageEncryption.js';
 import {
   NoSupportGrantError,
+  NotTheSupportAccountError,
   SupportAccountNotActiveError,
   type SupportGrant,
 } from '../../src/supportGrant.js';
@@ -40,7 +42,7 @@ const CONTENT_MARKER = 'PLAINTEXT-MEMBER-EMAIL-marker@tenant.test';
 const ANALYTICS_MARKER = 'PLAINTEXT-ANALYTICS-ROW-marker';
 
 interface Recording {
-  statusReads: string[];
+  accountReads: string[];
   drainSetCalls: string[];
   drainClearCalls: string[];
   containerStarted: boolean;
@@ -51,6 +53,8 @@ interface Recording {
 
 function fakeDeps(overrides: {
   supportStatus?: string | null;
+  supportRoles?: readonly string[];
+  auditFails?: boolean;
   flagIsSet?: boolean;
   containerFails?: boolean;
   probeHealthy?: boolean;
@@ -58,7 +62,7 @@ function fakeDeps(overrides: {
   ageCommand?: string;
 }): { deps: ExportRunnerDeps; recording: Recording } {
   const recording: Recording = {
-    statusReads: [],
+    accountReads: [],
     drainSetCalls: [],
     drainClearCalls: [],
     containerStarted: false,
@@ -108,6 +112,7 @@ function fakeDeps(overrides: {
 
   const auditLog: AuditRecorder = {
     async record(entry) {
+      if (overrides.auditFails) throw new AuditWriteError('ENOSPC');
       recording.auditEntries.push(entry);
     },
   };
@@ -123,9 +128,11 @@ function fakeDeps(overrides: {
     },
     readDrainFlag: () => flag,
     supportAccount: {
-      async readStatus(identity) {
-        recording.statusReads.push(identity);
-        return overrides.supportStatus === undefined ? 'active' : overrides.supportStatus;
+      async readAccount(identity) {
+        recording.accountReads.push(identity);
+        const status = overrides.supportStatus === undefined ? 'active' : overrides.supportStatus;
+        if (status === null) return null;
+        return { status, roles: overrides.supportRoles ?? ['Administrator'] };
       },
     },
     containerRunner,
@@ -190,7 +197,7 @@ describe('runExport', () => {
     const { deps, recording } = fakeDeps({});
     const result = await runExport(deps, request());
 
-    expect(recording.statusReads).toEqual(['support@tenant-1.test']);
+    expect(recording.accountReads).toEqual(['support@tenant-1.test']);
     expect(recording.drainSetCalls).toEqual(['tenant-1-export-1']);
     expect(recording.containerStarted).toBe(true);
     expect(recording.exportCalls.sort()).toEqual(['content_and_settings', 'post_analytics']);
@@ -220,7 +227,9 @@ describe('runExport', () => {
         contents: ['content_and_settings', 'post_analytics'],
         deliveredTo: 'rob@branchleft.co.uk',
         grant: { lane: 'incident', reference: 'incident request 7' },
+        supportIdentity: 'support@tenant-1.test',
         encryptedTo: recipientFingerprint(identity.recipient),
+        archiveSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     ]);
   });
@@ -292,7 +301,7 @@ describe('runExport', () => {
       await expect(runExport(deps, request({ grant: badGrant }))).rejects.toThrow(
         NoSupportGrantError
       );
-      expect(recording.statusReads).toEqual([]);
+      expect(recording.accountReads).toEqual([]);
       expectNothingStarted(recording);
       expect(await readdir(destDir)).toEqual([]);
     }
@@ -303,12 +312,43 @@ describe('runExport', () => {
     async (status) => {
       const { deps, recording } = fakeDeps({ supportStatus: status });
       await expect(runExport(deps, request())).rejects.toThrow(SupportAccountNotActiveError);
-      expect(recording.statusReads).toEqual(['support@tenant-1.test']);
+      expect(recording.accountReads).toEqual(['support@tenant-1.test']);
       expectNothingStarted(recording);
       expect(recording.containerStopped).toBe(false);
       expect(await readdir(destDir)).toEqual([]);
     }
   );
+
+  it.each([[['Owner']], [['Owner', 'Administrator']], [['Editor']], [[]]])(
+    'refuses -- NotTheSupportAccountError -- an active account with roles %j, before anything is started',
+    async (roles) => {
+      const { deps, recording } = fakeDeps({ supportStatus: 'active', supportRoles: roles });
+      await expect(
+        runExport(deps, request({ supportIdentity: 'owner@tenant-1.test' }))
+      ).rejects.toThrow(NotTheSupportAccountError);
+      expect(recording.accountReads).toEqual(['owner@tenant-1.test']);
+      expectNothingStarted(recording);
+      expect(await readdir(destDir)).toEqual([]);
+    }
+  );
+
+  it("the audit record's archiveSha256 is the SHA-256 of the archive file on disk", async () => {
+    const { deps, recording } = fakeDeps({});
+    const result = await runExport(deps, request());
+    const digest = createHash('sha256')
+      .update(await readFile(result.archivePath))
+      .digest('hex');
+    expect(result.archiveSha256).toBe(digest);
+    expect(recording.auditEntries[0]?.archiveSha256).toBe(digest);
+  });
+
+  it('when the audit write fails: the archive and manifest are removed, the error is raised, and the colour is stopped', async () => {
+    const { deps, recording } = fakeDeps({ auditFails: true });
+    await expect(runExport(deps, request())).rejects.toThrow(AuditWriteError);
+    expect(await readdir(destDir)).toEqual([]);
+    expect(recording.containerStopped).toBe(true);
+    expect(recording.drainClearCalls).toEqual(['tenant-1-export-1']);
+  });
 
   it('refuses a malformed age recipient before anything is started', async () => {
     const { deps, recording } = fakeDeps({});

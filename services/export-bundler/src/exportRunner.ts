@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DrainFlag } from './drainFlag.js';
 import type { DrainFlagStore } from './drainFlagStore.js';
@@ -11,8 +13,10 @@ import { writeEncryptedArchive, writeManifestSidecar } from './archive.js';
 import type { AuditRecorder } from './auditLog.js';
 import { assertAgeRecipient, recipientFingerprint } from './ageEncryption.js';
 import {
+  assertIsSupportRole,
   assertSupportAccountActive,
   parseSupportGrant,
+  SupportAccountNotActiveError,
   type SupportAccountStatusReader,
   type SupportGrant,
 } from './supportGrant.js';
@@ -47,14 +51,16 @@ export interface ExportRequest {
   readonly colourId: string;
   readonly destDir: string;
   readonly grant: SupportGrant;
-  /** Must equal the tenant's own `adapters__sso__BreakGlassSSO__supportIdentity`. */
+  /** From the tenant's rendered break-glass config (tenantConfig.ts), never typed by the operator. */
   readonly supportIdentity: string;
+  /** The descriptor's `backup.encryptionRecipient`, bound in tenantConfig.ts. */
   readonly ageRecipient: string;
 }
 
 export interface ExportResult {
   readonly archivePath: string;
   readonly manifestPath: string;
+  readonly archiveSha256: string;
   readonly manifest: ExportManifest;
 }
 
@@ -83,10 +89,10 @@ export async function runExport(
 ): Promise<ExportResult> {
   const grant = parseSupportGrant(request.grant.lane, request.grant.reference);
   assertAgeRecipient(request.ageRecipient);
-  assertSupportAccountActive(
-    request.supportIdentity,
-    await deps.supportAccount.readStatus(request.supportIdentity)
-  );
+  const account = await deps.supportAccount.readAccount(request.supportIdentity);
+  if (account === null) throw new SupportAccountNotActiveError(request.supportIdentity, null);
+  assertIsSupportRole(request.supportIdentity, account.roles);
+  assertSupportAccountActive(request.supportIdentity, account.status);
 
   // A new colour always boots drained (LLD-4 §U3b/§U7): the flag is set
   // before anything starts, then re-read rather than trusted, so this
@@ -147,19 +153,30 @@ export async function runExport(
       request.ageRecipient,
       deps.ageCommand
     );
-    await writeManifestSidecar(manifestPath, manifestJson);
-
-    await deps.auditLog.record({
-      tenantId: request.tenantId,
-      requestedBy: request.requestedBy,
-      occurredAt: generatedAt,
-      contents: manifest.included.map((entry) => entry.name),
-      deliveredTo: request.deliveredTo,
-      grant: { lane: grant.lane, reference: grant.reference },
-      encryptedTo: fingerprint,
-    });
-
-    return { archivePath, manifestPath, manifest };
+    // An archive without its audit record must not outlive the run: any
+    // failure from here on removes both files before it is reported.
+    try {
+      await writeManifestSidecar(manifestPath, manifestJson);
+      const archiveSha256 = createHash('sha256')
+        .update(await readFile(archivePath))
+        .digest('hex');
+      await deps.auditLog.record({
+        tenantId: request.tenantId,
+        requestedBy: request.requestedBy,
+        occurredAt: generatedAt,
+        contents: manifest.included.map((entry) => entry.name),
+        deliveredTo: request.deliveredTo,
+        grant: { lane: grant.lane, reference: grant.reference },
+        supportIdentity: request.supportIdentity,
+        encryptedTo: fingerprint,
+        archiveSha256,
+      });
+      return { archivePath, manifestPath, manifest, archiveSha256 };
+    } catch (err) {
+      await rm(archivePath, { force: true });
+      await rm(manifestPath, { force: true });
+      throw err;
+    }
   } finally {
     await deps.containerRunner.stop();
     await deps.drainFlags.clear(request.colourId);

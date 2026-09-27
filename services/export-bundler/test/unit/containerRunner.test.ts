@@ -56,7 +56,8 @@ describe('buildDockerRunArgs', () => {
     containerName: 'tenant-1-export-123',
     image: 'ghost-platform:ci',
     loopbackPort: 4400,
-    env: { database__client: 'sqlite3' },
+    envFile: '/tmp/export-bundler-env-x/tenant.env',
+    user: '1001:1001',
     volumes: [{ volume: 'ghost-tenant-1-content', mountPath: '/var/lib/ghost/content' }],
   };
 
@@ -70,6 +71,35 @@ describe('buildDockerRunArgs', () => {
     // colour must not have.
     expect(args).not.toContain('4400:2368');
     expect(args.join(' ')).not.toContain('0.0.0.0');
+  });
+
+  it('passes the environment only as an --env-file, never as -e values in argv', () => {
+    const args = buildDockerRunArgs(spec);
+    expect(args).not.toContain('-e');
+    expect(args).not.toContain('--env');
+    expect(args[args.indexOf('--env-file') + 1]).toBe('/tmp/export-bundler-env-x/tenant.env');
+  });
+
+  it("runs as the tenant's own user from its rendered stack", () => {
+    const args = buildDockerRunArgs(spec);
+    expect(args[args.indexOf('--user') + 1]).toBe('1001:1001');
+    expect(buildDockerRunArgs({ ...spec, user: null })).not.toContain('--user');
+  });
+
+  it('keeps a read-only mount read-only', () => {
+    const args = buildDockerRunArgs({
+      ...spec,
+      volumes: [
+        {
+          volume: 'ghost-tenant-1-adapters',
+          mountPath: '/var/lib/ghost/content/adapters',
+          readOnly: true,
+        },
+      ],
+    });
+    expect(args[args.indexOf('--mount') + 1]).toBe(
+      'type=volume,src=ghost-tenant-1-adapters,dst=/var/lib/ghost/content/adapters,readonly'
+    );
   });
 
   it("mounts the tenant's own data volume, never a fresh one", () => {
@@ -103,7 +133,8 @@ describe('createDockerContainerRunner', () => {
     containerName: 'tenant-1-export-123',
     image: 'ghost-platform:ci',
     loopbackPort: 4400,
-    env: { database__client: 'sqlite3' },
+    envFile: '/tmp/export-bundler-env-x/tenant.env',
+    user: '1001:1001',
     volumes: [{ volume: 'ghost-tenant-1-content', mountPath: '/var/lib/ghost/content' }],
   };
   let dir: string;
@@ -145,15 +176,13 @@ describe('createDockerContainerRunner', () => {
     await expect(runner.start()).rejects.toThrow(/forced failure/);
   });
 
-  it("start()'s rejection never repeats an env value from the docker argv", async () => {
+  it("start()'s rejection carries docker's exit code, not the argv", async () => {
     const fakeDocker = await writeFakeDocker(dir, { fail: true });
-    const runner = createDockerContainerRunner(
-      { ...spec, env: { database__connection__password: 'synthetic-secret-value' } },
-      fakeDocker
-    );
-    const err = await runner.start().catch((e: unknown) => e as Error);
-    expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).not.toContain('synthetic-secret-value');
+    const err = await createDockerContainerRunner(spec, fakeDocker)
+      .start()
+      .catch((e: unknown) => e as Error);
+    expect((err as Error).message).toContain('(exit 1)');
+    expect((err as Error).message).not.toContain('--env-file');
   });
 
   it('stop() rejects, carrying stderr, when docker fails -- never swallowed', async () => {
