@@ -26,6 +26,15 @@
 # and restore_drained.py's content check must refuse that, leaving the
 # colour drained.
 #
+# LIVE-COLLISION: a fourth MySQL server that already holds a live
+# `ghost_tenant1` with known rows, seeded before restore_drained.py ever runs.
+# --mode restore-only must refuse before importing anything, and the live
+# database's own row count and CHECKSUM TABLE value must be provably
+# unchanged afterwards -- the owner ruling this section exists to hold:
+# restoring a per-tenant dump (its own CREATE DATABASE IF NOT EXISTS/USE)
+# onto a host that already has that database restores INTO it, not beside
+# it, so a target that already holds one must never be imported into at all.
+#
 # Local-sandbox simplifications, stated rather than left implicit: mysqldump
 # runs over TCP as root here, standing in for dump_tenant.py's own unix
 # socket + dedicated `backup`@`localhost` account (proven separately, and
@@ -64,6 +73,7 @@ NET="restore-drained-proof-net-$RUN"
 SOURCE_DB="restore-drained-proof-source-db-$RUN"
 GREEN_DB="restore-drained-proof-green-db-$RUN"
 CONTROL_DB="restore-drained-proof-control-db-$RUN"
+LIVE_DB="restore-drained-proof-live-db-$RUN"
 SOURCE_GHOST="restore-drained-proof-source-ghost-$RUN"
 GREEN_GHOST="restore-drained-proof-green-ghost-$RUN"
 CONTROL_GHOST="restore-drained-proof-control-ghost-$RUN"
@@ -81,6 +91,7 @@ CONTROL_SIDECAR_PORT=4442
 # container-name DNS lookup no host process gets).
 GREEN_DB_PORT=4451
 CONTROL_DB_PORT=4452
+LIVE_DB_PORT=4453
 
 WORKDIR="$(mktemp -d)"
 GREEN_FLAG_DIR="$(mktemp -d)"
@@ -96,8 +107,10 @@ fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
 
 cleanup() {
     docker rm -f "$SOURCE_GHOST" "$GREEN_GHOST" "$CONTROL_GHOST" "$GREEN_SIDECAR" "$CONTROL_SIDECAR" \
-        "$SOURCE_DB" "$GREEN_DB" "$CONTROL_DB" >/dev/null 2>&1 || true
+        "$SOURCE_DB" "$GREEN_DB" "$CONTROL_DB" "$LIVE_DB" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
+    [ -f "$WORKDIR/restore_drained.py.orig-live-collision" ] && \
+        cp "$WORKDIR/restore_drained.py.orig-live-collision" "$REPO_ROOT/db/recovery/restore_drained.py"
     rm -rf "$WORKDIR" "$GREEN_FLAG_DIR" "$CONTROL_FLAG_DIR"
 }
 trap cleanup EXIT
@@ -141,7 +154,7 @@ wait_for_http_200() {
     exit 1
 }
 
-note "Network + three MySQL 8.0 servers: SOURCE (the live tenant), GREEN and CONTROL (fresh recovery targets)"
+note "Network + four MySQL 8.0 servers: SOURCE (the live tenant), GREEN and CONTROL (fresh recovery targets), LIVE (a recovery target that already has a database on it)"
 docker network create "$NET" >/dev/null
 docker run -d --name "$SOURCE_DB" --network "$NET" \
     -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" -e MYSQL_DATABASE=ghost_tenant1 mysql:8.0 >/dev/null
@@ -149,9 +162,24 @@ docker run -d --name "$GREEN_DB" --network "$NET" -p "${GREEN_DB_PORT}:3306" \
     -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" mysql:8.0 >/dev/null
 docker run -d --name "$CONTROL_DB" --network "$NET" -p "${CONTROL_DB_PORT}:3306" \
     -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" mysql:8.0 >/dev/null
+docker run -d --name "$LIVE_DB" --network "$NET" -p "${LIVE_DB_PORT}:3306" \
+    -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" mysql:8.0 >/dev/null
 wait_for_mysql "$SOURCE_DB"
 wait_for_mysql "$GREEN_DB"
 wait_for_mysql "$CONTROL_DB"
+wait_for_mysql "$LIVE_DB"
+
+note "Seeding LIVE with a database that already exists, and known rows in it -- the exact collision Rob's own ruling on this issue names"
+docker exec "$LIVE_DB" mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
+    "CREATE DATABASE ghost_tenant1; CREATE TABLE ghost_tenant1.settings (id INT PRIMARY KEY, val VARCHAR(64)); INSERT INTO ghost_tenant1.settings VALUES (1,'alpha'),(2,'beta'),(3,'gamma');"
+live_fingerprint() {
+    docker exec "$LIVE_DB" mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e \
+        "SELECT COUNT(*) FROM ghost_tenant1.settings;" 2>/dev/null
+    docker exec "$LIVE_DB" mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e \
+        "CHECKSUM TABLE ghost_tenant1.settings;" 2>/dev/null | awk '{print $2}'
+}
+LIVE_FINGERPRINT_BEFORE="$(live_fingerprint)"
+pass "LIVE seeded: ghost_tenant1.settings carries 3 known rows; fingerprint recorded"
 
 note "A real Ghost against the SOURCE database: a real owner, a real named post"
 docker run -d --name "$SOURCE_GHOST" --network "$NET" -p "${SOURCE_GHOST_PORT}:2368" \
@@ -304,6 +332,74 @@ else
     fail "CONTROL: the sidecar answered something other than 503 after the failed verification"
 fi
 
+note "LIVE-COLLISION: restore-only against a target that already holds a live database -- Rob's own ruling, run for real"
+LIVE_STDERR="$WORKDIR/live-collision.stderr"
+if RESTORE_MYSQL_PWD="$MYSQL_ROOT_PASSWORD" python3 "$REPO_ROOT/db/recovery/restore_drained.py" \
+    --mode restore-only --dump "$WORKDIR/tenant.sql" --host 127.0.0.1 --port "$LIVE_DB_PORT" --user root \
+    2>"$LIVE_STDERR"; then
+    fail "LIVE-COLLISION: restore_drained.py exited 0 against a target that already has ghost_tenant1 -- WRONG, must refuse"
+else
+    pass "LIVE-COLLISION: restore_drained.py exited non-zero against the live target"
+fi
+if grep -q "ghost_tenant1" "$LIVE_STDERR" && grep -q "not empty" "$LIVE_STDERR"; then
+    pass "LIVE-COLLISION: the refusal names the database already there and says the target is not empty"
+else
+    fail "LIVE-COLLISION: the refusal message did not name the collision ($(cat "$LIVE_STDERR"))"
+fi
+LIVE_FINGERPRINT_AFTER_REFUSAL="$(live_fingerprint)"
+if [ "$LIVE_FINGERPRINT_AFTER_REFUSAL" = "$LIVE_FINGERPRINT_BEFORE" ]; then
+    pass "LIVE-COLLISION: ghost_tenant1.settings' row count and CHECKSUM are byte-for-byte unchanged after the refused restore"
+else
+    fail "LIVE-COLLISION: ghost_tenant1.settings changed after a restore that was supposed to refuse ($LIVE_FINGERPRINT_BEFORE -> $LIVE_FINGERPRINT_AFTER_REFUSAL)"
+fi
+
+note "LIVE-COLLISION SABOTAGE: remove the refusal, and the live database must go RED -- overwritten for real"
+cp "$REPO_ROOT/db/recovery/restore_drained.py" "$WORKDIR/restore_drained.py.orig-live-collision"
+sed -i.bak 's/^    assert_target_has_no_live_database(host=host, port=port, user=user, password=password, run=run)$/    pass  # SABOTAGE-LIVE-COLLISION: refusal removed/' \
+    "$REPO_ROOT/db/recovery/restore_drained.py"
+rm -f "$REPO_ROOT/db/recovery/restore_drained.py.bak"
+if diff -q "$WORKDIR/restore_drained.py.orig-live-collision" "$REPO_ROOT/db/recovery/restore_drained.py" >/dev/null; then
+    echo "FAILED: the sed sabotage did not change restore_drained.py -- cannot prove this control" >&2
+    exit 1
+fi
+echo "sabotage applied: the refusal call is now a no-op"
+if RESTORE_MYSQL_PWD="$MYSQL_ROOT_PASSWORD" python3 "$REPO_ROOT/db/recovery/restore_drained.py" \
+    --mode restore-only --dump "$WORKDIR/tenant.sql" --host 127.0.0.1 --port "$LIVE_DB_PORT" --user root; then
+    echo "RED (expected): restore_drained.py exited 0 against the live target with the refusal removed"
+else
+    fail "LIVE-COLLISION SABOTAGE: restore_drained.py still refused with the check removed -- sabotage did not take"
+fi
+LIVE_FINGERPRINT_AFTER_SABOTAGE="$(live_fingerprint)"
+if [ "$LIVE_FINGERPRINT_AFTER_SABOTAGE" != "$LIVE_FINGERPRINT_BEFORE" ]; then
+    pass "LIVE-COLLISION SABOTAGE: RED confirmed -- ghost_tenant1.settings' fingerprint actually changed ($LIVE_FINGERPRINT_BEFORE -> $LIVE_FINGERPRINT_AFTER_SABOTAGE), the live database was genuinely overwritten"
+else
+    fail "LIVE-COLLISION SABOTAGE: fingerprint did not change even with the refusal removed -- sabotage proved nothing"
+fi
+
+note "LIVE-COLLISION SABOTAGE: reverting, and reconfirming GREEN against a freshly reseeded live target"
+cp "$WORKDIR/restore_drained.py.orig-live-collision" "$REPO_ROOT/db/recovery/restore_drained.py"
+if diff -q "$WORKDIR/restore_drained.py.orig-live-collision" "$REPO_ROOT/db/recovery/restore_drained.py" >/dev/null; then
+    echo "sabotage reverted: restore_drained.py matches the pre-sabotage original"
+else
+    echo "FAILED: revert did not restore the original file" >&2
+    exit 1
+fi
+docker exec "$LIVE_DB" mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
+    "DROP DATABASE ghost_tenant1; CREATE DATABASE ghost_tenant1; CREATE TABLE ghost_tenant1.settings (id INT PRIMARY KEY, val VARCHAR(64)); INSERT INTO ghost_tenant1.settings VALUES (1,'alpha'),(2,'beta'),(3,'gamma');"
+LIVE_FINGERPRINT_RESEEDED="$(live_fingerprint)"
+if RESTORE_MYSQL_PWD="$MYSQL_ROOT_PASSWORD" python3 "$REPO_ROOT/db/recovery/restore_drained.py" \
+    --mode restore-only --dump "$WORKDIR/tenant.sql" --host 127.0.0.1 --port "$LIVE_DB_PORT" --user root; then
+    fail "LIVE-COLLISION GREEN: restore_drained.py exited 0 after reverting the sabotage -- should have refused again"
+else
+    pass "LIVE-COLLISION GREEN: with the refusal reverted, restore_drained.py refuses the reseeded live target again"
+fi
+LIVE_FINGERPRINT_FINAL="$(live_fingerprint)"
+if [ "$LIVE_FINGERPRINT_FINAL" = "$LIVE_FINGERPRINT_RESEEDED" ]; then
+    pass "LIVE-COLLISION GREEN: the reseeded live database is unchanged after the (reverted, correct) refusal"
+else
+    fail "LIVE-COLLISION GREEN: the reseeded live database changed even with the refusal reverted"
+fi
+
 if [ "$FAILURES" -gt 0 ]; then
     echo
     echo "$FAILURES check(s) failed."
@@ -311,4 +407,4 @@ if [ "$FAILURES" -gt 0 ]; then
 fi
 
 echo
-echo "All restore-onto-a-drained-colour checks passed, GREEN and CONTROL alike."
+echo "All restore-onto-a-drained-colour checks passed, GREEN, CONTROL and LIVE-COLLISION alike."
