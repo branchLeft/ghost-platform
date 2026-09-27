@@ -182,8 +182,10 @@ class GhostContainer {
     return res.status;
   }
 
-  async getStatus(urlPath) {
-    const res = await fetch(`${this.base}${urlPath}`);
+  async getStatus(urlPath, { followRedirects = true } = {}) {
+    const res = await fetch(`${this.base}${urlPath}`, {
+      redirect: followRedirects ? 'follow' : 'manual',
+    });
     return res.status;
   }
 
@@ -300,15 +302,19 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
         const originalPath = new URL(imageUrl).pathname;
         assert.equal(await ghost.getStatus(originalPath), 200, 'the clean upload must still serve');
 
-        // On-demand responsive derivative: proves saveRaw is wired, since
-        // handle-image-sizes.js feature-detects it and silently no-ops
-        // (still 200, but never calls saveRaw) when it is missing. The
-        // decorator's own saveRaw call is what the removal sabotage targets.
-        const sizePath = originalPath.replace('/content/images/', '/content/images/size/w32/');
+        // On-demand responsive derivative: Ghost's own resize middleware
+        // feature-detects saveRaw with a plain typeof check and, if it is
+        // missing, redirects to the original instead of erroring -- a
+        // redirect that a normal fetch would silently follow, landing on a
+        // 200 either way. Asserting the status without following redirects
+        // is what actually distinguishes "resized and served directly" from
+        // "gave up and redirected to the original", which is what the
+        // saveRaw-removal sabotage targets.
+        const sizePath = originalPath.replace('/content/images/', '/content/images/size/w600/');
         assert.equal(
-          await ghost.getStatus(sizePath),
+          await ghost.getStatus(sizePath, { followRedirects: false }),
           200,
-          'an on-demand size variant must still be served'
+          'an on-demand size variant must be served directly, not redirected to the original'
         );
 
         // Nothing refused reached the served tree; the quarantine copy is
