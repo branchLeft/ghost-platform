@@ -28,6 +28,18 @@ const NEVER_SWAP_RECOVERY = {
   readyPollTimeoutMs: 50,
 };
 
+// The "stopping" recovery tests reuse `swapRecovery`'s `drainFlags`/
+// `ghostReadiness`/`appPortBase` for the survivor-liveness re-check
+// `recoverStoppingSlot` now runs before retrying `wrapper.stop` -- this
+// fixture answers "the survivor is live" (undrained and ready) for every
+// port, isolating each test to the one branch it means to exercise.
+const SURVIVOR_LIVE_SWAP_RECOVERY = {
+  drainFlags: { isSet: async () => false, set: async () => undefined },
+  ghostReadiness: { isReady: async () => true },
+  appPortBase: 9300,
+  readyPollTimeoutMs: 50,
+};
+
 describe('stateStore', () => {
   let dir: string;
   let leaseStoreConfig: Pick<LeaseStoreConfig, 'slotsPath' | 'leaseDir'>;
@@ -480,7 +492,7 @@ describe('stateStore', () => {
         [slot],
         leaseStoreConfig,
         () => undefined,
-        NEVER_SWAP_RECOVERY,
+        SURVIVOR_LIVE_SWAP_RECOVERY,
         stopRecovery
       );
 
@@ -511,10 +523,72 @@ describe('stateStore', () => {
         [slot],
         leaseStoreConfig,
         () => undefined,
-        NEVER_SWAP_RECOVERY,
+        SURVIVOR_LIVE_SWAP_RECOVERY,
         stopRecovery
       );
       expect(stopRecovery.stopCalls).toEqual([{ slot, colour: 'b' }]);
+    });
+
+    it('re-checks the survivor is live before retrying -- not confirmed live -> no stop, marks "error"', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'stopping',
+        colour: 'b',
+        descriptorHash: 'hash-b',
+        lastHashId: 'hash-id-b' as never,
+        trafficBaseline: 3,
+      });
+      const stopRecovery = fakeStopRecovery();
+
+      // Survivor 'b' is not confirmed live now (undrained but not ready) --
+      // this is the exact gap the review round found: retrying the stop
+      // unconditionally here would remove the only colour with any chance
+      // of being live.
+      await recoverCrashedSlots(
+        dir,
+        [slot],
+        leaseStoreConfig,
+        () => undefined,
+        {
+          drainFlags: { isSet: async () => false, set: async () => undefined },
+          ghostReadiness: { isReady: async () => false },
+          appPortBase: 9300,
+          readyPollTimeoutMs: 50,
+        },
+        stopRecovery
+      );
+
+      expect(stopRecovery.stopCalls).toEqual([]);
+      expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'hash-id-b' });
+    });
+
+    it('re-checks the survivor is live before retrying -- drained counts as not live -> no stop, marks "error"', async () => {
+      const slot = '0' as SlotName;
+      await writeSlotState(dir, slot, {
+        phase: 'stopping',
+        colour: 'a',
+        descriptorHash: 'hash-a',
+        lastHashId: 'hash-id-a' as never,
+        trafficBaseline: 1,
+      });
+      const stopRecovery = fakeStopRecovery();
+
+      await recoverCrashedSlots(
+        dir,
+        [slot],
+        leaseStoreConfig,
+        () => undefined,
+        {
+          drainFlags: { isSet: async () => true, set: async () => undefined },
+          ghostReadiness: { isReady: async () => true },
+          appPortBase: 9300,
+          readyPollTimeoutMs: 50,
+        },
+        stopRecovery
+      );
+
+      expect(stopRecovery.stopCalls).toEqual([]);
+      expect(await readSlotState(dir, slot)).toEqual({ phase: 'error', lastHashId: 'hash-id-a' });
     });
 
     it('marks "error" rather than guessing, if left "stopping" with no colour recorded at all', async () => {

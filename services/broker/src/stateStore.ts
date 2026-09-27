@@ -324,20 +324,38 @@ export async function recoverSwapInFlight(
 /**
  * Recovers a slot found `stopping` at boot -- a crash between
  * `attemptStopOldColour` calling `wrapper.stop` and its own final
- * `writeSlotState`. Unlike `recoverSwapInFlight`, there is nothing to poll
- * or re-derive: `state.colour` already names the survivor by construction
- * (a `stopping` write is only ever reached from a `running` state with
- * `colour` set), so the other colour is unambiguous, and stopping it is
- * idempotent -- `systemctl stop` on an already-stopped unit is a no-op
- * (LLD-2 §02). So this simply repeats the one side effect and marks it
- * done, rather than inventing a health check for a step that was never
- * about health.
+ * `writeSlotState`. Unlike `recoverSwapInFlight`, which colour to act on is
+ * never ambiguous: `state.colour` already names the survivor by
+ * construction (a `stopping` write is only ever reached from a `running`
+ * state with `colour` set), so the other colour is unambiguous, and
+ * stopping it is idempotent -- `systemctl stop` on an already-stopped unit
+ * is a no-op (LLD-2 §02).
+ *
+ * **Still re-checks the survivor is live before retrying, exactly like
+ * `attemptStopOldColour`'s own third check, immediately before its call to
+ * `wrapper.stop` (`app.ts`).** A crash can land here for reasons that have
+ * nothing to do with the stop itself -- the survivor can have gone
+ * unhealthy in the gap between the original attempt and this reboot -- and
+ * retrying `wrapper.stop` on the other colour in that world is exactly the
+ * fault "no step may ever leave a tenant with no colour serving" exists to
+ * refuse mid-swap: it would remove the *only* colour with any chance of
+ * being live. Idempotence of the stop call says nothing about whether it is
+ * still *safe* to make; only re-deriving liveness, not the stale persisted
+ * phase, answers that. If the survivor is not confirmed live, this marks
+ * the slot `error` instead of stopping anything -- the same fail-closed
+ * outcome `recoverSwapInFlight` reaches when neither colour is confirmed
+ * live, and precisely the gap the review round on this story found: a
+ * boot-time retry that stopped the other colour unconditionally, with no
+ * liveness re-check at all.
  */
 export async function recoverStoppingSlot(
   dir: string,
   slot: SlotName,
   state: SlotState,
   wrapper: Pick<SlotWrapper, 'stop'>,
+  drainFlags: Pick<DrainFlagStore, 'isSet'>,
+  ghostReadiness: Pick<GhostReadinessChecker, 'isReady'>,
+  appPortBase: number,
   log: (line: string) => void
 ): Promise<void> {
   if (state.colour === undefined) {
@@ -349,14 +367,27 @@ export async function recoverStoppingSlot(
     await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
     return;
   }
-  const target = otherColour(state.colour);
+  const survivor = state.colour;
+  const target = otherColour(survivor);
+
+  const survivorPort = slotPort(appPortBase, slot, survivor);
+  const survivorLive =
+    !(await drainFlags.isSet(slot, survivor)) && (await ghostReadiness.isReady(survivorPort));
+  if (!survivorLive) {
+    log(
+      `slot "${slot}" was left "stopping" colour "${target}" by a process that died before recording it, but survivor colour "${survivor}" is not confirmed live now -- marking "error" rather than stopping colour "${target}" and leaving the slot with no colour serving`
+    );
+    await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+    return;
+  }
+
   log(
     `slot "${slot}" was left "stopping" colour "${target}" by a process that died before recording it -- retrying the stop (idempotent) and completing the transition`
   );
   await wrapper.stop(slot, target);
   await writeSlotState(dir, slot, {
     phase: 'running',
-    colour: state.colour,
+    colour: survivor,
     descriptorHash: state.descriptorHash,
     lastHashId: state.lastHashId,
     trafficBaseline: state.trafficBaseline,
@@ -435,7 +466,16 @@ export async function recoverCrashedSlots(
     }
     if (state.phase === 'stopping') {
       if (stopRecovery) {
-        await recoverStoppingSlot(dir, slot, state, stopRecovery.wrapper, log);
+        await recoverStoppingSlot(
+          dir,
+          slot,
+          state,
+          stopRecovery.wrapper,
+          swapRecovery.drainFlags,
+          swapRecovery.ghostReadiness,
+          swapRecovery.appPortBase,
+          log
+        );
       } else {
         log(
           `slot "${slot}" was left "stopping" with no stop-recovery wrapper configured -- marking "error" rather than guessing the old colour was ever actually stopped`
