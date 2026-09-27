@@ -25,6 +25,7 @@ function record(overrides: Partial<PersistedTenantState> = {}): PersistedTenantS
     state: 'applying',
     pageSent: false,
     updatedAt: '2026-09-27T00:00:00.000Z',
+    bumpId: 'test-bump',
     ...overrides,
   };
 }

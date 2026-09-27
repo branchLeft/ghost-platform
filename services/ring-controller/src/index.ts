@@ -14,4 +14,4 @@ export type { PersistedTenantState, TenantStateStore } from './tenantStateStore.
 export { acquireProcessLock, ProcessLockHeldError, DEFAULT_LOCK_PATH } from './processLock.js';
 export type { ProcessLock, ProcessLockOptions } from './processLock.js';
 export { recoverPersistedTenants } from './recovery.js';
-export type { RecoveredTenant } from './recovery.js';
+export type { RecoveredTenant, RecoveryFailure, RecoverySweepResult } from './recovery.js';

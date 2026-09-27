@@ -135,10 +135,21 @@ Four things are load-bearing, all proven by test
    `src/processLock.ts` enforces that there is only ever one such
    process, on a kernel primitive (a bound Unix domain socket) rather
    than a lock file and a reclaim protocol: a second process's bind fails
-   with `EADDRINUSE`, proven by a real, separate process being killed and
-   the binding proven to release the same tick. `recoverFromApplying`
-   holds the same lock for its whole settle-and-verify tail, so the
-   invariant holds structurally during recovery too, not by convention.
+   with `EADDRINUSE`. Proven against a real, separate process, killed
+   with `SIGKILL`, twice: on this dev machine, against the portable
+   filesystem-backed seam (`test/unit/processLock.test.ts`); and on real
+   Linux, against the actual abstract-namespace path production uses,
+   confirmed via `/proc/net/unix` -- via a standalone harness run in a
+   `node:26` container against the compiled module (the PR body has the
+   command and its output), because the borrowed `node_modules` this
+   session runs `vitest` from is built for macOS and its native
+   dependencies (`esbuild`) cannot load inside a Linux container. The
+   equivalent `it.skipIf(process.platform !== 'linux')` test in the
+   suite itself passes when run directly on a Linux host or container
+   with its own `npm install`; it is not run by `vitest` inside the
+   harness above. `recoverFromApplying` holds the same lock for its
+   whole settle-and-verify tail, so the invariant holds structurally
+   during recovery too, not by convention.
 4. `failed-unsafe` pages **at least once**, ever, per bump -- not exactly
    once. A crash between `page()` returning and persisting `pageSent:
    true` pages again on the next restart, rather than risking the one

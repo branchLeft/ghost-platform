@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type { ApplyLock } from './applyLock.js';
 
 /**
@@ -29,10 +28,11 @@ export interface StepResult {
   reason?: string;
 }
 
-/** What `persist` durably records: the step, whether the one page has gone out, and (for `failed-unsafe` only) the reason it would page with. */
+/** What `persist` durably records: the step, whether the one page has gone out, the bump's own stable id (so recovery can rebuild the identical `page()` dedupe key), and (for `failed-unsafe` only) the reason it would page with. */
 export interface PersistSnapshot {
   state: BumpState;
   pageSent: boolean;
+  bumpId: string;
   reason?: string;
 }
 
@@ -115,10 +115,18 @@ export interface BumpDependencies {
    * once this call has returned, so a crash between the call and that
    * write pages again on restart (`recoverUnpagedFailure`) rather than
    * risking the only page a broken tenant will ever get being silently
-   * lost. `dedupeKey` is stable across that restart -- pass it through
-   * to whatever real paging system this wires to (PagerDuty, ntfy, or
-   * similar all support a dedupe/idempotency key), so the rare duplicate
-   * collapses to one alert there rather than paging a human twice.
+   * lost.
+   *
+   * `dedupeKey` is `${bumpId}:${reason}` -- never random, and identical
+   * on both the live page and any later recovery page for the exact same
+   * bump and the exact same reason, because `bumpId` itself is
+   * constructor-supplied (required, see `BumpStateMachineOptions`) and
+   * persisted so recovery reconstructs the identical value. Pass it
+   * through to whatever real paging system this wires to (PagerDuty,
+   * ntfy, or similar all support a dedupe/idempotency key): the rare
+   * live-then-crash-then-recovery duplicate collapses to one alert
+   * there, while a genuinely different reason for the same bump, or the
+   * same reason for a different bump, still pages as its own alert.
    */
   page(reason: string, dedupeKey: string): Promise<void>;
   /**
@@ -141,15 +149,21 @@ export interface RecoveredBumpState {
 export interface BumpStateMachineOptions {
   /**
    * A stable identity for this bump, constant across a crash and
-   * restart -- passed to `page()` as the dedupe key, so the rare
-   * duplicate page a crash between paging and persisting `pageSent` can
-   * cause collapses to one alert at the pager, rather than paging a
-   * human twice for the same fault. Recovery always supplies the
-   * persisted tenant id here; a live caller constructing a fresh bump
-   * should pass its own tenant id too. Defaults to a random id, which is
-   * only safe because a fresh bump has nothing yet to duplicate against.
+   * restart. Required, and never generated internally: `page()`'s own
+   * dedupe key is `${bumpId}:${reason}`, and the one case that key
+   * exists for -- a live `failUnsafe` page followed by a crash and a
+   * recovery page for the same fault -- only collapses if both sides
+   * used the identical value, which nothing but the caller can
+   * guarantee. Recovery reads the persisted `bumpId` back off the
+   * record it is recovering (falling back to the tenant id only for a
+   * record written before this field existed); a live caller
+   * constructing a fresh bump must supply one too -- something that
+   * identifies this specific bump, not just the tenant, so a second,
+   * later bump for the same tenant does not collapse into an
+   * already-open incident (for example, tenant id plus the target
+   * version).
    */
-  bumpId?: string;
+  bumpId: string;
   /**
    * Bounds `recoverFromApplying`'s settlement probe. A generous default
    * (ten minutes) -- long enough for a real migration to finish, short
@@ -189,9 +203,9 @@ export class BumpStateMachine {
   constructor(
     private readonly deps: BumpDependencies,
     private readonly lock: ApplyLock,
-    options: BumpStateMachineOptions = {}
+    options: BumpStateMachineOptions
   ) {
-    this.bumpId = options.bumpId ?? randomUUID();
+    this.bumpId = options.bumpId;
     this.applySettleTimeoutMs = options.applySettleTimeoutMs ?? DEFAULT_APPLY_SETTLE_TIMEOUT_MS;
     if (options.recovered) {
       this.state = options.recovered.state;
@@ -374,7 +388,7 @@ export class BumpStateMachine {
       );
     }
     if (!this.pageSent) {
-      await this.deps.page(reason, this.bumpId);
+      await this.deps.page(reason, this.dedupeKey(reason));
       this.pageSent = true;
       await this.persistSnapshot(reason);
     }
@@ -506,7 +520,7 @@ export class BumpStateMachine {
     this.state = 'failed-unsafe';
     await this.persistSnapshot(reason);
     if (!this.pageSent) {
-      await this.deps.page(reason, this.bumpId);
+      await this.deps.page(reason, this.dedupeKey(reason));
       this.pageSent = true;
       await this.persistSnapshot(reason);
     }
@@ -549,7 +563,17 @@ export class BumpStateMachine {
   }
 
   private async persistSnapshot(reason?: string): Promise<void> {
-    await this.deps.persist?.({ state: this.state, pageSent: this.pageSent, reason });
+    await this.deps.persist?.({
+      state: this.state,
+      pageSent: this.pageSent,
+      bumpId: this.bumpId,
+      reason,
+    });
+  }
+
+  /** `${bumpId}:${reason}` -- see `page()`'s own doc for why both halves matter. */
+  private dedupeKey(reason: string): string {
+    return `${this.bumpId}:${reason}`;
   }
 }
 

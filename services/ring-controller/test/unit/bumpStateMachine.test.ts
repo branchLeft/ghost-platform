@@ -6,6 +6,9 @@ import {
 } from '../../src/bumpStateMachine.js';
 import { createApplyLock } from '../../src/applyLock.js';
 
+/** `bumpId` is required and never random, so most tests -- unconcerned with dedupeKey specifically -- just supply a fixed one. */
+const BUMP_ID = 'test-bump';
+
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   let resolve!: (v: T) => void;
   const promise = new Promise<T>((res) => {
@@ -36,7 +39,7 @@ function fakeDeps(overrides: Partial<BumpDependencies> = {}): BumpDependencies {
 describe('BumpStateMachine -- the happy path', () => {
   it('runs pending through backing-up, backed-up, applying, verifying to done', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const finalState = await m.run();
 
@@ -51,7 +54,7 @@ describe('BumpStateMachine -- the happy path', () => {
 
   it('closes the bake window by stopping the old colour, only from done', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     await m.run();
 
     const finalState = await m.closeBakeWindow();
@@ -63,14 +66,14 @@ describe('BumpStateMachine -- the happy path', () => {
 
   it('refuses to close the bake window from any other state', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     // Still 'pending' -- run() has not been called.
     await expect(m.closeBakeWindow()).rejects.toThrow(/not 'done'/);
   });
 
   it('refuses run() a second time -- there is no automatic retry path', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     await m.run();
 
     await expect(m.run()).rejects.toThrow();
@@ -80,7 +83,7 @@ describe('BumpStateMachine -- the happy path', () => {
 describe('BumpStateMachine -- the abort table (LLD-4 §05)', () => {
   it('pending: abort cancels before anything is touched', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     m.abort();
     const finalState = await m.run();
@@ -93,7 +96,7 @@ describe('BumpStateMachine -- the abort table (LLD-4 §05)', () => {
   it('backing-up: abort lets the in-flight backup finish, then cancels', async () => {
     const backupGate = deferred<StepResult>();
     const deps = fakeDeps({ backup: vi.fn(() => backupGate.promise) });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const runPromise = m.run();
     await tick();
@@ -114,7 +117,7 @@ describe('BumpStateMachine -- the abort table (LLD-4 §05)', () => {
   it('applying: abort waits for the migration to finish, never calls verify, and reverts', async () => {
     const applyGate = deferred<StepResult>();
     const deps = fakeDeps({ apply: vi.fn(() => applyGate.promise) });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const runPromise = m.run();
     await tick();
@@ -138,7 +141,7 @@ describe('BumpStateMachine -- the abort table (LLD-4 §05)', () => {
   it('applying: abort still waits even when the migration itself is failing', async () => {
     const applyGate = deferred<StepResult>();
     const deps = fakeDeps({ apply: vi.fn(() => applyGate.promise) });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const runPromise = m.run();
     await tick();
@@ -154,7 +157,7 @@ describe('BumpStateMachine -- the abort table (LLD-4 §05)', () => {
   it('verifying: abort while verification is in flight reverts rather than completing', async () => {
     const verifyGate = deferred<StepResult>();
     const deps = fakeDeps({ verify: vi.fn(() => verifyGate.promise) });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const runPromise = m.run();
     await tick();
@@ -172,7 +175,7 @@ describe('BumpStateMachine -- the abort table (LLD-4 §05)', () => {
 
   it('done: abort after the bump completed still reverts, since the old colour is still there', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const finalState = await m.run();
     expect(finalState).toBe('done');
@@ -187,7 +190,7 @@ describe('BumpStateMachine -- the abort table (LLD-4 §05)', () => {
 
   it('abortAfterDone refuses to run from any state but done', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     await expect(m.abortAfterDone()).rejects.toThrow(/not 'done'/);
   });
 });
@@ -197,7 +200,7 @@ describe('BumpStateMachine -- failures with no abort involved', () => {
     const deps = fakeDeps({
       backup: vi.fn(async () => ({ ok: false, reason: 'floor assertion failed' })),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const finalState = await m.run();
 
@@ -210,7 +213,7 @@ describe('BumpStateMachine -- failures with no abort involved', () => {
     const deps = fakeDeps({
       apply: vi.fn(async () => ({ ok: false, reason: 'irreversible migration refused' })),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const finalState = await m.run();
 
@@ -223,7 +226,7 @@ describe('BumpStateMachine -- failures with no abort involved', () => {
     const deps = fakeDeps({
       verify: vi.fn(async () => ({ ok: false, reason: 'never answered 200' })),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const finalState = await m.run();
 
@@ -232,13 +235,13 @@ describe('BumpStateMachine -- failures with no abort involved', () => {
   });
 });
 
-describe('BumpStateMachine -- failed-unsafe pages once and never retries (LLD-4 §05)', () => {
-  it('an unrevertable tenant pages exactly once', async () => {
+describe('BumpStateMachine -- failed-unsafe pages at least once and never retries the bump (LLD-4 §05)', () => {
+  it('an unrevertable tenant pages once, from a single live instance', async () => {
     const deps = fakeDeps({
       verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
       revertTraffic: vi.fn(async () => ({ ok: false, reason: 'edge unreachable' })),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const finalState = await m.run();
 
@@ -252,7 +255,7 @@ describe('BumpStateMachine -- failed-unsafe pages once and never retries (LLD-4 
       verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
       revertTraffic: vi.fn(async () => ({ ok: false, reason: 'edge unreachable' })),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     await m.run();
 
     expect(m.getState()).toBe('failed-unsafe');
@@ -266,7 +269,7 @@ describe('BumpStateMachine -- failed-unsafe pages once and never retries (LLD-4 
     // a guard is load-bearing on its own, rather than an accident of how
     // few call sites there are today.
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     const failUnsafe = (
       m as unknown as { failUnsafe(reason: string): Promise<string> }
     ).failUnsafe.bind(m);
@@ -296,8 +299,8 @@ describe('BumpStateMachine -- at most one tenant is ever in applying (LLD-4 §04
         }),
       });
 
-    const m1 = new BumpStateMachine(makeDeps(), lock);
-    const m2 = new BumpStateMachine(makeDeps(), lock);
+    const m1 = new BumpStateMachine(makeDeps(), lock, { bumpId: BUMP_ID });
+    const m2 = new BumpStateMachine(makeDeps(), lock, { bumpId: BUMP_ID });
 
     const [r1, r2] = await Promise.all([m1.run(), m2.run()]);
 
@@ -333,7 +336,7 @@ describe('BumpStateMachine -- verify() that cannot even run', () => {
         throw new Error('health endpoint unreachable');
       }),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const finalState = await m.run();
 
@@ -349,7 +352,7 @@ describe('BumpStateMachine -- verify() that cannot even run', () => {
         throw 'boom';
       }),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     await m.run();
 
@@ -360,7 +363,7 @@ describe('BumpStateMachine -- verify() that cannot even run', () => {
 describe('BumpStateMachine -- the revert-failure fallback reason', () => {
   it('falls back to the literal string when neither the revert result nor the caller names a reason', async () => {
     const deps = fakeDeps({ revertTraffic: vi.fn(async () => ({ ok: false })) });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     await m.run();
 
     // abortAfterDone calls the revert path with no carried reason of its
@@ -392,7 +395,7 @@ describe('BumpStateMachine -- persist is called before the side effect for each 
         timeline.push(`persist:${snapshot.state}`);
       }),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     await m.run();
 
@@ -414,7 +417,7 @@ describe('BumpStateMachine -- persist is called before the side effect for each 
 
   it('sabotage: a persist that never resolves stalls the transition, proving run() actually awaits it', async () => {
     const deps = fakeDeps({ persist: vi.fn(() => new Promise<void>(() => {})) });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
 
     const runPromise = m.run();
     await tick();
@@ -431,34 +434,35 @@ describe('BumpStateMachine -- persist is called before the side effect for each 
 
 describe('BumpStateMachine -- recovery methods reject a mismatched starting state', () => {
   it('recoverFromApplying refuses a machine not recovered into applying', async () => {
-    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock(), { bumpId: BUMP_ID });
     await expect(m.recoverFromApplying()).rejects.toThrow(/expected 'applying'/);
   });
 
   it('recoverFromRevertInFlight refuses a machine not recovered into verifying or reverting', async () => {
-    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock(), { bumpId: BUMP_ID });
     await expect(m.recoverFromRevertInFlight()).rejects.toThrow(
       /expected 'verifying' or 'reverting'/
     );
   });
 
   it('recoverFromReverted refuses a machine not recovered into reverted', async () => {
-    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock(), { bumpId: BUMP_ID });
     await expect(m.recoverFromReverted()).rejects.toThrow(/expected 'reverted'/);
   });
 
   it('recoverFromClosing refuses a machine not recovered into closing', async () => {
-    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock(), { bumpId: BUMP_ID });
     await expect(m.recoverFromClosing()).rejects.toThrow(/expected 'closing'/);
   });
 
   it('recoverUnpagedFailure refuses a machine not recovered into failed-unsafe', async () => {
-    const m = new BumpStateMachine(fakeDeps(), createApplyLock());
+    const m = new BumpStateMachine(fakeDeps(), createApplyLock(), { bumpId: BUMP_ID });
     await expect(m.recoverUnpagedFailure('x')).rejects.toThrow(/expected 'failed-unsafe'/);
   });
 
   it('recoverAsCancelled refuses a machine recovered into applying', async () => {
     const m = new BumpStateMachine(fakeDeps(), createApplyLock(), {
+      bumpId: BUMP_ID,
       recovered: { state: 'applying' },
     });
     await expect(m.recoverAsCancelled()).rejects.toThrow(
@@ -470,7 +474,10 @@ describe('BumpStateMachine -- recovery methods reject a mismatched starting stat
 describe('BumpStateMachine -- recoverFromApplying waits for the migration to settle before touching the colour', () => {
   it('a confirmed-settled migration is verified and can land on done, never re-calling apply()', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'applying' } });
+    const m = new BumpStateMachine(deps, createApplyLock(), {
+      bumpId: BUMP_ID,
+      recovered: { state: 'applying' },
+    });
 
     const finalState = await m.recoverFromApplying();
 
@@ -484,7 +491,10 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
     const deps = fakeDeps({
       awaitApplySettled: vi.fn(async () => ({ ok: false, reason: 'migrations_lock still held' })),
     });
-    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'applying' } });
+    const m = new BumpStateMachine(deps, createApplyLock(), {
+      bumpId: BUMP_ID,
+      recovered: { state: 'applying' },
+    });
 
     const finalState = await m.recoverFromApplying();
 
@@ -497,7 +507,10 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
 
   it('a settled-but-unhealthy migration reverts normally, once settling is confirmed', async () => {
     const deps = fakeDeps({ verify: vi.fn(async () => ({ ok: false, reason: 'unhealthy' })) });
-    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'applying' } });
+    const m = new BumpStateMachine(deps, createApplyLock(), {
+      bumpId: BUMP_ID,
+      recovered: { state: 'applying' },
+    });
 
     const finalState = await m.recoverFromApplying();
 
@@ -511,7 +524,10 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
         throw new Error('migrations_lock database unreachable');
       }),
     });
-    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'applying' } });
+    const m = new BumpStateMachine(deps, createApplyLock(), {
+      bumpId: BUMP_ID,
+      recovered: { state: 'applying' },
+    });
 
     const finalState = await m.recoverFromApplying();
 
@@ -528,6 +544,7 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
   it('a probe that never resolves times out rather than hanging recovery forever, and never touches the colour', async () => {
     const deps = fakeDeps({ awaitApplySettled: vi.fn(() => new Promise<StepResult>(() => {})) });
     const m = new BumpStateMachine(deps, createApplyLock(), {
+      bumpId: BUMP_ID,
       recovered: { state: 'applying' },
       applySettleTimeoutMs: 20,
     });
@@ -564,7 +581,7 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
         }),
       }),
       lock,
-      { recovered: { state: 'applying' } }
+      { bumpId: BUMP_ID, recovered: { state: 'applying' } }
     );
     const liveDeps = fakeDeps({
       apply: vi.fn(async () => {
@@ -572,7 +589,7 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
         return { ok: true };
       }),
     });
-    const live = new BumpStateMachine(liveDeps, lock);
+    const live = new BumpStateMachine(liveDeps, lock, { bumpId: 'other-tenant-bump' });
 
     const recoverPromise = recovering.recoverFromApplying();
     await tick();
@@ -593,7 +610,10 @@ describe('BumpStateMachine -- recoverFromApplying waits for the migration to set
 describe('BumpStateMachine -- recoverFromClosing retries the teardown a crash may have interrupted', () => {
   it('retries stopColour(old) and lands on closed', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock(), { recovered: { state: 'closing' } });
+    const m = new BumpStateMachine(deps, createApplyLock(), {
+      bumpId: BUMP_ID,
+      recovered: { state: 'closing' },
+    });
 
     const finalState = await m.recoverFromClosing();
 
@@ -613,7 +633,7 @@ describe('BumpStateMachine -- closeBakeWindow persists closing before the teardo
         timeline.push(`persist:${snapshot.state}`);
       }),
     });
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     await m.run();
     timeline.length = 0;
 
@@ -623,7 +643,7 @@ describe('BumpStateMachine -- closeBakeWindow persists closing before the teardo
   });
 });
 
-describe('BumpStateMachine -- recoverUnpagedFailure pages exactly once, across a restart', () => {
+describe('BumpStateMachine -- recoverUnpagedFailure pages an unpaged failure, never a second time once pageSent is true', () => {
   it('pages when pageSent is false, then persists pageSent: true', async () => {
     const persisted: Array<{ state: string; pageSent: boolean }> = [];
     const deps = fakeDeps({
@@ -632,6 +652,7 @@ describe('BumpStateMachine -- recoverUnpagedFailure pages exactly once, across a
       }),
     });
     const m = new BumpStateMachine(deps, createApplyLock(), {
+      bumpId: BUMP_ID,
       recovered: { state: 'failed-unsafe', pageSent: false },
     });
 
@@ -639,13 +660,14 @@ describe('BumpStateMachine -- recoverUnpagedFailure pages exactly once, across a
 
     expect(finalState).toBe('failed-unsafe');
     expect(deps.page).toHaveBeenCalledTimes(1);
-    expect(deps.page).toHaveBeenCalledWith('unpaged after crash', expect.any(String));
+    expect(deps.page).toHaveBeenCalledWith('unpaged after crash', `${BUMP_ID}:unpaged after crash`);
     expect(persisted).toEqual([{ state: 'failed-unsafe', pageSent: true }]);
   });
 
   it('never pages again when recovered with pageSent already true', async () => {
     const deps = fakeDeps();
     const m = new BumpStateMachine(deps, createApplyLock(), {
+      bumpId: BUMP_ID,
       recovered: { state: 'failed-unsafe', pageSent: true },
     });
 
@@ -655,10 +677,31 @@ describe('BumpStateMachine -- recoverUnpagedFailure pages exactly once, across a
   });
 });
 
+describe('BumpStateMachine -- dedupeKey never collides across bumps', () => {
+  it('two different bumps failing for the identical reason still page with different dedupe keys', async () => {
+    const depsA = fakeDeps({
+      verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
+      revertTraffic: vi.fn(async () => ({ ok: false, reason: 'same reason for both' })),
+    });
+    const machineA = new BumpStateMachine(depsA, createApplyLock(), { bumpId: 'bump-a' });
+    await machineA.run();
+
+    const depsB = fakeDeps({
+      verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
+      revertTraffic: vi.fn(async () => ({ ok: false, reason: 'same reason for both' })),
+    });
+    const machineB = new BumpStateMachine(depsB, createApplyLock(), { bumpId: 'bump-b' });
+    await machineB.run();
+
+    expect(depsA.page).toHaveBeenCalledWith('same reason for both', 'bump-a:same reason for both');
+    expect(depsB.page).toHaveBeenCalledWith('same reason for both', 'bump-b:same reason for both');
+  });
+});
+
 describe('BumpStateMachine -- done can be claimed by only one of closeBakeWindow/abortAfterDone', () => {
   it('the loser of a same-tick race is refused, never silently overwriting the winner', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     await m.run();
     expect(m.getState()).toBe('done');
 
@@ -678,7 +721,7 @@ describe('BumpStateMachine -- done can be claimed by only one of closeBakeWindow
 
   it('the race resolves the other way just as cleanly when abortAfterDone is called first', async () => {
     const deps = fakeDeps();
-    const m = new BumpStateMachine(deps, createApplyLock());
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
     await m.run();
 
     const abortPromise = m.abortAfterDone();

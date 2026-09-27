@@ -79,6 +79,7 @@ function record(
     state,
     pageSent: false,
     updatedAt: '2026-09-27T00:00:00.000Z',
+    bumpId: 'test-bump',
     ...overrides,
   };
 }
@@ -109,7 +110,7 @@ describe('recoverPersistedTenants -- the recovery table', () => {
       const deps = fakeDeps();
       const store = memoryStore([record(state)]);
 
-      const recovered = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+      const { recovered } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
       expect(recovered).toEqual([]);
       expect(deps.apply).not.toHaveBeenCalled();
@@ -121,7 +122,7 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     const deps = fakeDeps();
     const store = memoryStore([record('failed-unsafe', { pageSent: true })]);
 
-    const recovered = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+    const { recovered } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(recovered).toEqual([]);
     expect(deps.page).not.toHaveBeenCalled();
@@ -131,7 +132,9 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     const deps = fakeDeps();
     const store = memoryStore([record('done')]);
 
-    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+    const {
+      recovered: [recovered],
+    } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(recovered!.finalState).toBe('done');
     expect(deps.stopColour).not.toHaveBeenCalled();
@@ -147,7 +150,9 @@ describe('recoverPersistedTenants -- the recovery table', () => {
       const deps = fakeDeps();
       const store = memoryStore([record(state)]);
 
-      const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+      const {
+        recovered: [recovered],
+      } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
       expect(recovered!.finalState).toBe('cancelled');
       expect(deps.backup).not.toHaveBeenCalled();
@@ -159,7 +164,9 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     const deps = fakeDeps();
     const store = memoryStore([record('applying')]);
 
-    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+    const {
+      recovered: [recovered],
+    } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(deps.apply).not.toHaveBeenCalled();
     expect(deps.awaitApplySettled).toHaveBeenCalledTimes(1);
@@ -173,7 +180,9 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     });
     const store = memoryStore([record('applying')]);
 
-    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+    const {
+      recovered: [recovered],
+    } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(deps.apply).not.toHaveBeenCalled();
     expect(deps.verify).not.toHaveBeenCalled();
@@ -189,7 +198,9 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     });
     const store = memoryStore([record('applying')]);
 
-    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+    const {
+      recovered: [recovered],
+    } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(deps.apply).not.toHaveBeenCalled();
     expect(deps.revertTraffic).toHaveBeenCalledTimes(1);
@@ -202,7 +213,9 @@ describe('recoverPersistedTenants -- the recovery table', () => {
       const deps = fakeDeps();
       const store = memoryStore([record(state)]);
 
-      const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+      const {
+        recovered: [recovered],
+      } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
       expect(deps.revertTraffic).toHaveBeenCalledTimes(1);
       expect(recovered!.finalState).toBe('reverted');
@@ -213,7 +226,9 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     const deps = fakeDeps();
     const store = memoryStore([record('reverted')]);
 
-    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+    const {
+      recovered: [recovered],
+    } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(deps.stopColour).toHaveBeenCalledTimes(1);
     expect(deps.stopColour).toHaveBeenCalledWith('new');
@@ -225,19 +240,23 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     const deps = fakeDeps();
     const store = memoryStore([record('closing')]);
 
-    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+    const {
+      recovered: [recovered],
+    } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(deps.stopColour).toHaveBeenCalledWith('old');
     expect(recovered!.finalState).toBe('closed');
   });
 
-  it('recovers an unpaged failed-unsafe tenant by paging exactly once and persisting pageSent: true', async () => {
+  it('recovers an unpaged failed-unsafe tenant by paging once and persisting pageSent: true', async () => {
     const store = memoryStore([
       record('failed-unsafe', { pageSent: false, reason: 'unreachable' }),
     ]);
     const deps = fakeDeps({ persist: persistTo(store, 'tenant-a') });
 
-    const [recovered] = await recoverPersistedTenants(store, createApplyLock(), () => deps);
+    const {
+      recovered: [recovered],
+    } = await recoverPersistedTenants(store, createApplyLock(), () => deps);
 
     expect(deps.page).toHaveBeenCalledTimes(1);
     expect(deps.page).toHaveBeenCalledWith('unreachable', expect.any(String));
@@ -257,35 +276,49 @@ describe('recoverPersistedTenants -- the recovery table', () => {
       return deps;
     };
 
-    const recovered = await recoverPersistedTenants(store, createApplyLock(), build);
+    const { recovered } = await recoverPersistedTenants(store, createApplyLock(), build);
 
     expect(recovered.map((r) => r.tenantId).sort()).toEqual(['t1', 't2']);
     expect(depsByTenant.get('t1')!.apply).not.toHaveBeenCalled();
     expect(depsByTenant.get('t2')!.backup).not.toHaveBeenCalled();
   });
 
-  it('one tenant throwing during recovery never stops the sweep -- a later failed-unsafe/pageSent:false tenant is still paged', async () => {
+  it('one tenant throwing during recovery never stops the sweep -- a later failed-unsafe/pageSent:false tenant is still paged, and the failure is reported, not dropped', async () => {
     const store = memoryStore([
       record('applying', { tenantId: 'throws' }),
       record('failed-unsafe', { tenantId: 'unpaged', reason: 'edge unreachable' }),
     ]);
     const unpagedDeps = fakeDeps();
+    const thrown = new Error('could not build deps for this tenant');
     const build = (tenantId: string): BumpDependencies => {
       if (tenantId === 'throws') {
         // Simulates a completely unexpected failure building this
         // tenant's own dependencies -- not something recoverFromApplying
         // itself could have contained, since it happens before any
         // BumpStateMachine method is even called.
-        throw new Error('could not build deps for this tenant');
+        throw thrown;
       }
       return unpagedDeps;
     };
+    const loggedErrors: unknown[] = [];
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      loggedErrors.push(args);
+    });
 
-    const recovered = await recoverPersistedTenants(store, createApplyLock(), build);
+    const { recovered, failed } = await recoverPersistedTenants(store, createApplyLock(), build);
 
     expect(recovered.map((r) => r.tenantId)).toEqual(['unpaged']);
     expect(unpagedDeps.page).toHaveBeenCalledTimes(1);
     expect(unpagedDeps.page).toHaveBeenCalledWith('edge unreachable', expect.any(String));
+    // The failure itself is neither dropped nor merely logged -- it is a
+    // first-class part of the sweep's own result, so a caller can tell
+    // "nothing left to recover" from "recovery itself failed" and act
+    // on it (page an operator, alert on it, whatever fits).
+    expect(failed).toEqual([{ tenantId: 'throws', error: thrown }]);
+    expect(loggedErrors).toHaveLength(1);
+    expect(String(loggedErrors[0])).toContain('throws');
+
+    consoleError.mockRestore();
   });
 });
 
@@ -304,7 +337,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
       apply: vi.fn(() => applyGate),
       persist: persistTo(store, 'tenant-a'),
     });
-    const crashedMachine = new BumpStateMachine(crashedDeps, lock);
+    const crashedMachine = new BumpStateMachine(crashedDeps, lock, { bumpId: 'crash-test-bump' });
     const abandonedRun = crashedMachine.run();
 
     // The process "crashes" here: `applyGate` is never resolved by this
@@ -321,7 +354,11 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
     // never called; its `awaitApplySettled()` (default: settled ok) is
     // what recovery calls instead.
     const restartedDeps = fakeDeps();
-    const recovered = await recoverPersistedTenants(store, createApplyLock(), () => restartedDeps);
+    const { recovered } = await recoverPersistedTenants(
+      store,
+      createApplyLock(),
+      () => restartedDeps
+    );
 
     expect(recovered).toHaveLength(1);
     expect(recovered[0]!.tenantId).toBe('tenant-a');
@@ -350,14 +387,18 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
       apply: vi.fn(() => applyGate),
       persist: persistTo(store, 'tenant-a'),
     });
-    const crashedMachine = new BumpStateMachine(crashedDeps, lock);
+    const crashedMachine = new BumpStateMachine(crashedDeps, lock, { bumpId: 'crash-test-bump' });
     const abandonedRun = crashedMachine.run();
     await waitForState(store, 'tenant-a', 'applying');
 
     const restartedDeps = fakeDeps({
       awaitApplySettled: vi.fn(async () => ({ ok: false, reason: 'unknown after crash' })),
     });
-    const recovered = await recoverPersistedTenants(store, createApplyLock(), () => restartedDeps);
+    const { recovered } = await recoverPersistedTenants(
+      store,
+      createApplyLock(),
+      () => restartedDeps
+    );
 
     expect(recovered[0]!.finalState).toBe('failed-unsafe');
     expect(restartedDeps.verify).not.toHaveBeenCalled();
@@ -383,13 +424,17 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
       backup: vi.fn(() => backupGate),
       persist: persistTo(store, 'tenant-b'),
     });
-    const crashedMachine = new BumpStateMachine(crashedDeps, lock);
+    const crashedMachine = new BumpStateMachine(crashedDeps, lock, { bumpId: 'crash-test-bump' });
     const abandonedRun = crashedMachine.run();
 
     await waitForState(store, 'tenant-b', 'backing-up');
 
     const restartedDeps = fakeDeps();
-    const recovered = await recoverPersistedTenants(store, createApplyLock(), () => restartedDeps);
+    const { recovered } = await recoverPersistedTenants(
+      store,
+      createApplyLock(),
+      () => restartedDeps
+    );
 
     expect(recovered[0]!.finalState).toBe('cancelled');
     expect(restartedDeps.backup).not.toHaveBeenCalled();
@@ -399,7 +444,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
     await abandonedRun;
   });
 
-  it('a tenant that crashes between recording failed-unsafe and paging is paged on restart, exactly once', async () => {
+  it('a tenant that crashes between recording failed-unsafe and paging is still paged on restart', async () => {
     const dir = await tempDir();
     const store = createFileTenantStateStore(dir);
     const lock = createApplyLock();
@@ -415,7 +460,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
       page: vi.fn(() => pageGate),
       persist: persistTo(store, 'tenant-c'),
     });
-    const crashedMachine = new BumpStateMachine(crashedDeps, lock);
+    const crashedMachine = new BumpStateMachine(crashedDeps, lock, { bumpId: 'crash-test-bump' });
     const abandonedRun = crashedMachine.run();
 
     // The state is recorded as failed-unsafe (pageSent: false) strictly
@@ -428,12 +473,72 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
     // as the live path does -- recovery's own pageSent: true write must
     // reach disk too, not just the in-memory recovered machine.
     const restartedDeps = fakeDeps({ persist: persistTo(store, 'tenant-c') });
-    const recovered = await recoverPersistedTenants(store, createApplyLock(), () => restartedDeps);
+    const { recovered } = await recoverPersistedTenants(
+      store,
+      createApplyLock(),
+      () => restartedDeps
+    );
 
     expect(recovered[0]!.finalState).toBe('failed-unsafe');
     expect(restartedDeps.page).toHaveBeenCalledTimes(1);
     expect(restartedDeps.page).toHaveBeenCalledWith('edge unreachable', expect.any(String));
     expect((await store.load('tenant-c'))?.pageSent).toBe(true);
+
+    releasePage();
+    await abandonedRun;
+  });
+
+  it('a live page and its post-crash recovery page carry the identical dedupe key -- never random, never mismatched', async () => {
+    const dir = await tempDir();
+    const store = createFileTenantStateStore(dir);
+    const lock = createApplyLock();
+
+    let releasePage!: () => void;
+    const pageGate = new Promise<void>((resolve) => {
+      releasePage = resolve;
+    });
+    const liveDedupeKeys: string[] = [];
+
+    const crashedDeps = fakeDeps({
+      verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
+      revertTraffic: vi.fn(async () => ({ ok: false, reason: 'edge unreachable' })),
+      page: vi.fn((_reason: string, dedupeKey: string) => {
+        liveDedupeKeys.push(dedupeKey);
+        return pageGate;
+      }),
+      persist: persistTo(store, 'tenant-dedupe'),
+    });
+    const crashedMachine = new BumpStateMachine(crashedDeps, lock, {
+      bumpId: 'tenant-dedupe-bump',
+    });
+    const abandonedRun = crashedMachine.run();
+
+    // The live page is in flight -- pageGate never resolves on this side --
+    // when the process "crashes": pageSent is persisted only after page()
+    // returns, so the on-disk record still says false.
+    await waitForState(store, 'tenant-dedupe', 'failed-unsafe');
+    expect((await store.load('tenant-dedupe'))?.pageSent).toBe(false);
+    // Margin for the microtask that calls page() itself, which runs
+    // immediately after the 'failed-unsafe' persist above resolves.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(liveDedupeKeys).toHaveLength(1);
+
+    const recoveryDedupeKeys: string[] = [];
+    const restartedDeps = fakeDeps({
+      page: vi.fn(async (_reason: string, dedupeKey: string) => {
+        recoveryDedupeKeys.push(dedupeKey);
+      }),
+      persist: persistTo(store, 'tenant-dedupe'),
+    });
+    const { recovered } = await recoverPersistedTenants(
+      store,
+      createApplyLock(),
+      () => restartedDeps
+    );
+
+    expect(recovered[0]!.tenantId).toBe('tenant-dedupe');
+    expect(recoveryDedupeKeys).toEqual(liveDedupeKeys);
+    expect(liveDedupeKeys[0]).toBe('tenant-dedupe-bump:edge unreachable');
 
     releasePage();
     await abandonedRun;

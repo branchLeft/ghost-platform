@@ -8,6 +8,17 @@ export interface RecoveredTenant {
   finalState: BumpState;
 }
 
+/** A tenant this sweep could not recover. Its persisted record is untouched, so the next restart tries again -- but nothing else retries it until then, so this must not be silently dropped. */
+export interface RecoveryFailure {
+  tenantId: string;
+  error: unknown;
+}
+
+export interface RecoverySweepResult {
+  recovered: RecoveredTenant[];
+  failed: RecoveryFailure[];
+}
+
 /**
  * States with no in-flight side effect and nothing still owed to the
  * tenant: no bake window open (that's `done`), no unpaged page owed
@@ -36,9 +47,10 @@ export async function recoverPersistedTenants(
   store: TenantStateStore,
   lock: ApplyLock,
   buildDeps: (tenantId: string) => BumpDependencies
-): Promise<RecoveredTenant[]> {
+): Promise<RecoverySweepResult> {
   const records = await store.list();
   const recovered: RecoveredTenant[] = [];
+  const failed: RecoveryFailure[] = [];
 
   for (const record of records) {
     if (record.state === 'failed-unsafe' && record.pageSent) {
@@ -55,22 +67,32 @@ export async function recoverPersistedTenants(
     // an entirely unrelated tenant's throw earlier in the same loop.
     // `recoverFromApplying` already contains its own probe's throw or
     // hang (`probeApplySettled`); this is the outer, defensive layer for
-    // anything else that still manages to reject.
+    // anything else that still manages to reject. But a failure here
+    // must never be silent either: its own page (if it was owed one) is
+    // now stuck until the next restart, and the caller needs to be able
+    // to tell "nothing left to recover" from "recovery itself failed".
     try {
       const machine = new BumpStateMachine(buildDeps(record.tenantId), lock, {
-        bumpId: record.tenantId,
+        // Read back the exact bumpId the live process persisted, so the
+        // dedupe key a recovery page carries is identical to the one a
+        // live page for the same bump already used -- falling back to
+        // the tenant id only for a record written before this field
+        // existed.
+        bumpId: record.bumpId ?? record.tenantId,
         recovered: { state: record.state, pageSent: record.pageSent },
       });
       const finalState = await runRecoveryAction(machine, record);
       recovered.push({ tenantId: record.tenantId, machine, finalState });
-    } catch {
-      // Skip this tenant and carry on to the next record -- never let
-      // one unrecoverable tenant stop the sweep from reaching the rest.
-      continue;
+    } catch (error) {
+      console.error(
+        `ring-controller: recovery failed for tenant '${record.tenantId}' (persisted state '${record.state}'); its record is untouched, so this is retried on the next restart, not before`,
+        error
+      );
+      failed.push({ tenantId: record.tenantId, error });
     }
   }
 
-  return recovered;
+  return { recovered, failed };
 }
 
 function runRecoveryAction(

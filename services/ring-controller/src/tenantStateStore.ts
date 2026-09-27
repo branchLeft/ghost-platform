@@ -21,6 +21,8 @@ export interface PersistedTenantState {
   state: BumpState;
   pageSent: boolean;
   updatedAt: string;
+  /** The bump's own stable id -- round-tripped so recovery reconstructs the exact `page()` dedupe key a live crash would have used. See `BumpStateMachineOptions.bumpId`. */
+  bumpId: string;
   /** Only meaningful for `state: 'failed-unsafe'`: the reason `page()` would be (or was) called with. */
   reason?: string;
 }

@@ -30,10 +30,22 @@ afterEach(async () => {
 
 const holderFixture = fileURLToPath(new URL('./fixtures/holdSocketPath.mjs', import.meta.url));
 
-/** A genuinely separate process holds `path` until killed; resolves once it reports itself bound. */
+/**
+ * A genuinely separate process holds `path` until killed; resolves once
+ * it reports itself bound. `spawn()` refuses any argv string containing
+ * a NUL byte, on every platform, so an abstract-namespace `path` (which
+ * starts with one) is never passed to argv directly: the name goes
+ * across without its `\0`, and the fixture prepends it itself, the one
+ * place a JS string can hold a NUL freely. `acquireProcessLock({ path })`
+ * below is an ordinary in-process call, not argv, so it always takes the
+ * real `path`, NUL included, exactly as production does.
+ */
 function spawnHolder(path: string): Promise<import('node:child_process').ChildProcess> {
+  const isAbstract = path.startsWith('\0');
+  const name = isAbstract ? path.slice(1) : path;
+  const args = isAbstract ? [holderFixture, name, 'abstract'] : [holderFixture, name];
   return new Promise((resolve, reject) => {
-    const holder = spawn('node', [holderFixture, path], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const holder = spawn('node', args, { stdio: ['ignore', 'pipe', 'inherit'] });
     holder.once('error', reject);
     holder.stdout!.once('data', (chunk: Buffer) => {
       if (chunk.toString().includes('holding')) resolve(holder);
@@ -122,8 +134,18 @@ describe('acquireProcessLock', () => {
   it.skipIf(process.platform !== 'linux')(
     'on Linux, the abstract namespace releases the instant a real holder is killed -- no marker, no reclaim, no stale state, unlike the filesystem seam above',
     async () => {
-      const path = `\0ring-controller-test-${randomUUID()}`;
+      const name = `ring-controller-test-${randomUUID()}`;
+      const path = `\0${name}`;
       const holder = await spawnHolder(path);
+
+      // Confirms the holder is genuinely bound in the abstract namespace
+      // (a `/proc/net/unix` entry printed with a leading `@`), not a
+      // filesystem path that happens to start with a NUL in this
+      // process's own string -- the property the rest of this test
+      // depends on.
+      const { readFile } = await import('node:fs/promises');
+      const unixTable = await readFile('/proc/net/unix', 'utf8');
+      expect(unixTable).toContain(`@${name}`);
 
       await expect(acquireProcessLock({ path })).rejects.toThrow(ProcessLockHeldError);
 
