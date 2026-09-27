@@ -300,7 +300,7 @@ class TestInputRefusals(unittest.TestCase):
         # This script runs before the component and before provision-tenant.yml,
         # and its output creates a real bucket, so it must not be the one place
         # a reserved slug gets through.
-        for slug in ("website", "edge", "db", "monitoring"):
+        for slug in policy_module.RESERVED_SLUGS:
             with self.subTest(slug=slug):
                 with self.assertRaises(policy_module.PolicyInputError):
                     policy_module.media_bucket_name(slug)

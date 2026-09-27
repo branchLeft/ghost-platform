@@ -8,7 +8,7 @@ export interface GhostProbe {
 // probe gets redirected onto a port with no TLS listener, reads as a
 // connection failure, and the slot looks permanently unhealthy even though
 // Ghost answered fine.
-const FORWARDED_PROTO_HEADERS = { 'X-Forwarded-Proto': 'https' };
+export const FORWARDED_PROTO_HEADERS = { 'X-Forwarded-Proto': 'https' };
 
 /**
  * Ghost carries no readiness route of its own, so "healthy" here is nothing

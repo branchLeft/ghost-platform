@@ -47,6 +47,15 @@ RUN cd /var/lib/ghost/current/core/server/services/auth/session \
     || (echo "ERROR: upstream Ghost core file session-from-token.js no longer matches the overlay's pinned hash -- re-derive adapters/sso/ghost-core-overlay/ (see its README) before rebuilding" >&2 && exit 1)
 COPY --chown=node:node adapters/sso/ghost-core-overlay/session-from-token.js /var/lib/ghost/current/core/server/services/auth/session/session-from-token.js
 
+# The scanning storage decorator (adapters/scanning-storage/README.md). It
+# goes into Ghost's own storage adapters directory, alongside the built-in
+# LocalImagesStorage/LocalMediaStorage/LocalFilesStorage/S3Storage it wraps
+# by name at construction time — resolving a sibling module the same way
+# Ghost's own adapter manager resolves any adapter in this directory. It is
+# inert until a tenant's config selects it for a storage feature
+# (storage__images__adapter=ScanningStorageAdapter and so on).
+COPY --chown=node:node adapters/scanning-storage/src/ /var/lib/ghost/current/core/server/adapters/storage/
+
 COPY docker-entrypoint.branchleft.sh /usr/local/bin/docker-entrypoint.branchleft.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.branchleft.sh
 
