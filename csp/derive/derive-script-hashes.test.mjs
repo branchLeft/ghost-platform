@@ -63,6 +63,48 @@ test('inlineScriptTextsIn control case: a page with no scripts at all yields non
   assert.deepEqual(inlineScriptTextsIn('<html><body>no scripts here</body></html>'), []);
 });
 
+// The HTML spec's own "script data end tag name state": content ends at
+// the first `</script` (case-insensitive) followed by a tag-name-
+// terminating character -- ASCII whitespace, `/` or `>` -- not only by
+// `</script>` written exactly that way. A regexp that requires the exact
+// spelling can be walked past by a real closing tag it fails to recognise
+// (CodeQL js/incomplete-hostname-regexp's own class of finding), which
+// would make the derived hash cover the wrong bytes -- silently wrong,
+// never a crash.
+test('inlineScriptTextsIn closes on a real end tag carrying attribute-shaped junk (the CodeQL example)', () => {
+  const html = `<script>${HELPER_SCRIPT}</script\t\n bar>`;
+  assert.deepEqual(inlineScriptTextsIn(html), [HELPER_SCRIPT]);
+});
+
+test('inlineScriptTextsIn closes on an uppercase end tag', () => {
+  const html = `<script>${HELPER_SCRIPT}</SCRIPT>`;
+  assert.deepEqual(inlineScriptTextsIn(html), [HELPER_SCRIPT]);
+});
+
+test('inlineScriptTextsIn closes on an end tag carrying a real attribute', () => {
+  const html = `<script>${HELPER_SCRIPT}</script data-foo="x">`;
+  assert.deepEqual(inlineScriptTextsIn(html), [HELPER_SCRIPT]);
+});
+
+test('inlineScriptTextsIn closes on an end tag with a space, or a newline, before the final ">"', () => {
+  assert.deepEqual(inlineScriptTextsIn(`<script>${HELPER_SCRIPT}</script >`), [HELPER_SCRIPT]);
+  assert.deepEqual(inlineScriptTextsIn(`<script>${HELPER_SCRIPT}</script\n>`), [HELPER_SCRIPT]);
+});
+
+test('inlineScriptTextsIn closes on "</script/>", the tolerated self-closing-shaped end tag', () => {
+  const html = `<script>${HELPER_SCRIPT}</script/>`;
+  assert.deepEqual(inlineScriptTextsIn(html), [HELPER_SCRIPT]);
+});
+
+test('inlineScriptTextsIn does NOT close on "</script" followed by a name character -- that is not an end tag at all', () => {
+  // Per the real HTML tokenizer, "</scriptFoo>" never terminates script
+  // data (the character after "</script" is not whitespace, "/" or ">"),
+  // so it is literal script content, and the element only closes at the
+  // next real end tag.
+  const html = `<script>${HELPER_SCRIPT}</scriptFoo>real closer follows</script>`;
+  assert.deepEqual(inlineScriptTextsIn(html), [`${HELPER_SCRIPT}</scriptFoo>real closer follows`]);
+});
+
 test('deriveScriptHashes dedupes the same inline script repeated across pages and sorts the result', () => {
   const home = pageHtml([HELPER_SCRIPT, JSONLD_SCRIPT]);
   const post = pageHtml([JSONLD_SCRIPT, HELPER_SCRIPT]); // same two, reverse order

@@ -21,7 +21,17 @@
 // fetched in.
 import { createHash } from 'node:crypto';
 
-const SCRIPT_TAG_PATTERN = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+// The closing delimiter follows the HTML spec's own "script data end tag
+// name state": a raw-text element's content ends at the first `</script`
+// (case-insensitive) that is followed by a tag-name-terminating character
+// -- ASCII whitespace, `/` or `>` -- not merely by `</script\s*>` exactly.
+// `</script foo="bar">` is a real, spec-valid closing tag (attributes on an
+// end tag are ignored, but the tag still closes there); `</scriptfoo>` is
+// not a closing tag at all and is literal script content. The lookahead is
+// zero-width so it only *locates* the terminator; `[^>]*>` then consumes
+// whatever attribute-shaped junk sits between it and the tag's own final
+// `>`, the same way a real end tag does.
+const SCRIPT_TAG_PATTERN = /<script\b([^>]*)>([\s\S]*?)<\/script(?=[\t\n\f\r />])[^>]*>/gi;
 const HAS_SRC_ATTRIBUTE = /\bsrc\s*=/i;
 
 /** The exact CSP hash-source token for one inline script's raw text. */
