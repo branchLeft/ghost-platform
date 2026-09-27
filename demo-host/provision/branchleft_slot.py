@@ -47,10 +47,14 @@ from __future__ import annotations
 
 import fcntl
 import os
+import select
 import shutil
+import signal
 import sqlite3
+import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence, Union
@@ -137,13 +141,20 @@ def _data_directory(slot: str) -> Path:
 # interpolated into the SQL text itself.
 _SUBMITTING_COUNT_QUERY = "SELECT COUNT(*) FROM email_batches WHERE status = 'submitting'"
 
+# The wall-clock bound `count_submitting_email_batches` enforces on its own
+# privileged child (see `_read_submitting_count_as_uid`) -- a hard kill from
+# the still-root parent, not a hope that `O_NONBLOCK` alone rules out every
+# way an open() or a query could wedge.
+_READ_TIMEOUT_SECONDS = 5.0
 
-def count_submitting_email_batches(slot: str) -> int:
-    """Opens that slot's one SQLite file read-only and runs the one fixed
-    count query against it. Raises `EmailBatchCheckError` for anything
-    that would otherwise require guessing -- no data directory, no exactly
-    one `*.db` file there, or the query itself failing -- rather than
-    return a number that might not mean what it claims to.
+
+def _validated_db_path(slot: str) -> Path:
+    """Selects the slot's one candidate `*.db` name -- by name only, never
+    resolved and never opened here. A symlink or a FIFO matching the
+    pattern is still exactly one candidate at this point; the security
+    checks happen once it is actually opened (`_open_slot_db_no_follow`),
+    never here, so this function alone cannot be the thing that decides a
+    malicious entry is safe.
     """
     data_dir = _data_directory(slot)
     if not data_dir.is_dir():
@@ -155,19 +166,77 @@ def count_submitting_email_batches(slot: str) -> int:
             f'slot "{slot}"\'s data directory has {len(candidates)} "*.db" files '
             f"(expected exactly one): {data_dir}"
         )
-    db_path = candidates[0]
+    return candidates[0]
 
+
+def _open_slot_db_no_follow(path: Path, expected_uid: int) -> int:
+    """Opens `path` read-only, refusing anything but a plain regular file
+    owned by `expected_uid` -- and never the file a second lookup might
+    resolve to.
+
+    **Why this exists at all, given the caller may already be running as
+    the slot's own uid (`_read_submitting_count_as_uid`, below).** The
+    volume this path lives in is written by the tenant's own Ghost
+    container (`render-core/src/compose.ts` runs it as `user:
+    "<uid>:<uid>"`), so the *name* `email-batches` opens is chosen by
+    code the tenant controls, even once nothing here holds any privilege
+    the tenant does not already have. `db_path.resolve()` followed by a
+    plain `sqlite3.connect(path)` -- this function's own predecessor --
+    would follow a symlink the container planted, at whatever privilege
+    the caller holds: a FIFO hangs the opener until something times it
+    out, a device node can have open-time side effects, and even a
+    same-uid process should never open a path it did not itself pick.
+    `O_NOFOLLOW` refuses the symlink outright; `O_NONBLOCK` means opening
+    a FIFO or several device types returns immediately rather than
+    blocking (a documented no-op for a regular file, so it costs a
+    correct caller nothing); `fstat` on the *already-open* descriptor --
+    never a second `stat()` on the name, which a rename could race --
+    proves what was actually opened is a regular file owned by exactly
+    `expected_uid`.
+
+    Returns an open fd the caller owns and must close. The caller hands
+    sqlite that fd's own `/dev/fd/<n>` path, never `path` again --
+    nothing between this check and the query can be swapped out from
+    under a file descriptor the way it can a name.
+    """
     try:
-        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        raise EmailBatchCheckError(f"failed to open {path}: {exc}") from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise EmailBatchCheckError(
+                f"{path} is not a regular file -- refusing to read it (st_mode={oct(st.st_mode)})"
+            )
+        if st.st_uid != expected_uid:
+            raise EmailBatchCheckError(
+                f"{path} is owned by uid {st.st_uid}, expected the slot's own uid {expected_uid} "
+                "-- refusing to read a file the slot does not own"
+            )
+    except EmailBatchCheckError:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _count_submitting_from_fd(fd: int, path_for_errors: Path) -> int:
+    """Runs `_SUBMITTING_COUNT_QUERY` against exactly the open descriptor
+    `_open_slot_db_no_follow` already validated -- `/dev/fd/<n>` is a
+    magic symlink to that descriptor's own inode, so sqlite opening it can
+    never land on a different file than the one already fstat-checked,
+    however the name on disk changes afterwards.
+    """
+    uri = f"file:/dev/fd/{fd}?mode=ro"
+    try:
         connection = sqlite3.connect(uri, uri=True, timeout=5)
     except (sqlite3.Error, OSError, ValueError) as exc:
-        raise EmailBatchCheckError(f"failed to open {db_path} read-only: {exc}") from exc
-
+        raise EmailBatchCheckError(f"failed to open {path_for_errors} read-only: {exc}") from exc
     try:
         row = connection.execute(_SUBMITTING_COUNT_QUERY).fetchone()
     except sqlite3.Error as exc:
         raise EmailBatchCheckError(
-            f"the submitting-count query failed against {db_path}: {exc}"
+            f"the submitting-count query failed against {path_for_errors}: {exc}"
         ) from exc
     finally:
         connection.close()
@@ -175,6 +244,119 @@ def count_submitting_email_batches(slot: str) -> int:
     if row is None or len(row) != 1 or not isinstance(row[0], int) or row[0] < 0:
         raise EmailBatchCheckError(f"the submitting-count query returned an unexpected row: {row!r}")
     return row[0]
+
+
+def _read_submitting_count(slot: str, expected_uid: int) -> int:
+    """The core, privilege-agnostic check: select the one candidate path by
+    name, open it refusing anything but a regular file owned by
+    `expected_uid`, and run the one fixed count query against that exact
+    open descriptor. Safe to call directly when the caller is already
+    running as `expected_uid` -- every test in this module does, since a
+    test process is never root -- or from inside the privilege-dropped
+    child `_read_submitting_count_as_uid` forks, below.
+    """
+    path = _validated_db_path(slot)
+    fd = _open_slot_db_no_follow(path, expected_uid)
+    try:
+        return _count_submitting_from_fd(fd, path)
+    finally:
+        os.close(fd)
+
+
+def _read_submitting_count_as_uid(slot: str, uid: int) -> int:
+    """Runs `_read_submitting_count` in a forked child that has dropped to
+    `uid`/`gid` *before* touching anything the tenant's container wrote --
+    so root itself never opens a path the tenant chose; only a process
+    with exactly the tenant's own rights does, and `_open_slot_db_no_follow`
+    still applies on top of that. The still-privileged parent never drops
+    anything itself: it enforces `_READ_TIMEOUT_SECONDS` as a hard
+    wall-clock bound, killing the child outright on a timeout rather than
+    trusting `O_NONBLOCK` alone to rule out every way this could wedge, and
+    it never trusts the child's own claim of success without checking the
+    child actually reports having run as `uid` -- a child that could not
+    drop privilege (or one that had that call silently disabled) reports
+    its *real* uid instead, which the parent catches here rather than
+    returning a count read at the wrong privilege.
+    """
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            os.setgroups([])
+            os.setgid(uid)
+            os.setuid(uid)
+            count = _read_submitting_count(slot, uid)
+            os.write(write_fd, f"OK {count} {os.getuid()}".encode())
+        except Exception as exc:  # noqa: BLE001 -- reported to the parent, never raised here
+            os.write(write_fd, f"ERR {exc}".encode())
+        finally:
+            os.close(write_fd)
+        os._exit(0)
+
+    os.close(write_fd)
+    timed_out = False
+    chunks: list[bytes] = []
+    deadline = time.monotonic() + _READ_TIMEOUT_SECONDS
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            ready, _, _ = select.select([read_fd], [], [], remaining)
+            if not ready:
+                continue
+            chunk = os.read(read_fd, 4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(read_fd)
+        if timed_out:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        os.waitpid(pid, 0)
+
+    if timed_out:
+        raise EmailBatchCheckError(
+            f'slot "{slot}"\'s privileged read timed out after {_READ_TIMEOUT_SECONDS}s'
+        )
+
+    result = b"".join(chunks).decode(errors="replace")
+    if result.startswith("OK "):
+        try:
+            count_text, reported_uid_text = result[3:].rsplit(" ", 1)
+            count, reported_uid = int(count_text), int(reported_uid_text)
+        except ValueError as exc:
+            raise EmailBatchCheckError(f"child reported malformed success output: {result!r}") from exc
+        if reported_uid != uid:
+            raise EmailBatchCheckError(
+                f'slot "{slot}"\'s privileged child reported running as uid {reported_uid}, '
+                f"expected {uid} -- refusing to trust a count read at the wrong privilege"
+            )
+        return count
+
+    message = result[4:] if result.startswith("ERR ") else result
+    raise EmailBatchCheckError(f'slot "{slot}"\'s privileged read failed: {message}')
+
+
+def count_submitting_email_batches(slot: str) -> int:
+    """`_read_submitting_count`, run as the slot's own uid/gid
+    (`UID_BASE + int(slot)`) rather than as root whenever this process
+    started as root (production, via sudo) -- see
+    `_read_submitting_count_as_uid`'s own doc comment for the fork, the
+    privilege drop and the uid the parent verifies back. Runs directly,
+    with no fork, when this process is not already root: there is no
+    privilege to drop, and every test in this module exercises this
+    branch, since a test process is never root.
+    """
+    uid = UID_BASE + int(slot)
+    if os.getuid() != 0:
+        return _read_submitting_count(slot, uid)
+    return _read_submitting_count_as_uid(slot, uid)
 
 
 class InvalidInvocation(ValueError):

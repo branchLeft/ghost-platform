@@ -360,9 +360,8 @@ export async function recoverSwapInFlight(
  * phase, answers that. If the survivor is not confirmed live, this marks
  * the slot `error` instead of stopping anything -- the same fail-closed
  * outcome `recoverSwapInFlight` reaches when neither colour is confirmed
- * live, and precisely the gap the review round on this story found: a
- * boot-time retry that stopped the other colour unconditionally, with no
- * liveness re-check at all.
+ * live, rather than a boot-time retry that stops the other colour
+ * unconditionally, with no liveness re-check at all.
  */
 export async function recoverStoppingSlot(
   dir: string,

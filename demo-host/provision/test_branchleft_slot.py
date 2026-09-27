@@ -18,6 +18,7 @@ import io
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -330,6 +331,19 @@ class DataDirectoryTests(unittest.TestCase):
 
 
 class CountSubmittingEmailBatchesTests(unittest.TestCase):
+    """`count_submitting_email_batches` takes no fork here -- a test
+    process is never root (`os.getuid() != 0`), so every call in this
+    class exercises `_read_submitting_count` directly, at whatever uid the
+    test itself runs as. `UID_BASE` is patched to that real uid (always
+    slot "0", so `expected_uid = UID_BASE + 0` lands exactly on it) for
+    every test that expects a real file it creates to be *accepted* --
+    the file is genuinely owned by the test process, so the owner check
+    is exercised for real, not bypassed. Left at its production default
+    (almost certainly not this process's own uid) wherever a test does
+    not patch it, which is exactly what the "wrong owner" test below
+    relies on.
+    """
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -344,41 +358,107 @@ class CountSubmittingEmailBatchesTests(unittest.TestCase):
         data_dir.mkdir(parents=True)
         return data_dir
 
+    def _own_files_as_this_process(self) -> None:
+        patcher = mock.patch.object(bs, "UID_BASE", os.getuid())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_counts_only_submitting_rows(self):
+        self._own_files_as_this_process()
         data_dir = self._data_dir_for("0")
         _write_sqlite_db(data_dir / "ghost.db", submitting_count=3, other_count=5)
         self.assertEqual(bs.count_submitting_email_batches("0"), 3)
 
     def test_zero_when_nothing_is_submitting(self):
-        data_dir = self._data_dir_for("1")
+        self._own_files_as_this_process()
+        data_dir = self._data_dir_for("0")
         _write_sqlite_db(data_dir / "ghost.db", submitting_count=0, other_count=5)
-        self.assertEqual(bs.count_submitting_email_batches("1"), 0)
+        self.assertEqual(bs.count_submitting_email_batches("0"), 0)
 
     def test_refuses_when_the_data_directory_does_not_exist(self):
+        self._own_files_as_this_process()
         with self.assertRaises(bs.EmailBatchCheckError):
-            bs.count_submitting_email_batches("2")
+            bs.count_submitting_email_batches("0")
 
     def test_refuses_when_no_db_file_is_present(self):
-        self._data_dir_for("3")
+        self._own_files_as_this_process()
+        self._data_dir_for("0")
         with self.assertRaises(bs.EmailBatchCheckError):
-            bs.count_submitting_email_batches("3")
+            bs.count_submitting_email_batches("0")
 
     def test_refuses_when_more_than_one_db_file_is_present(self):
-        data_dir = self._data_dir_for("4")
+        self._own_files_as_this_process()
+        data_dir = self._data_dir_for("0")
         _write_sqlite_db(data_dir / "ghost.db", submitting_count=1)
         _write_sqlite_db(data_dir / "stray.db", submitting_count=1)
         with self.assertRaises(bs.EmailBatchCheckError):
-            bs.count_submitting_email_batches("4")
+            bs.count_submitting_email_batches("0")
 
     def test_refuses_when_the_table_is_missing(self):
-        data_dir = self._data_dir_for("5")
+        self._own_files_as_this_process()
+        data_dir = self._data_dir_for("0")
         connection = sqlite3.connect(str(data_dir / "ghost.db"))
         connection.close()
         with self.assertRaises(bs.EmailBatchCheckError):
-            bs.count_submitting_email_batches("5")
+            bs.count_submitting_email_batches("0")
+
+    def test_refuses_a_file_owned_by_someone_else(self):
+        # UID_BASE is deliberately left at its production default here --
+        # a real file this test process creates is owned by its own uid,
+        # essentially never 30001, so this exercises the owner check for
+        # real rather than asserting a tautology.
+        data_dir = self._data_dir_for("0")
+        _write_sqlite_db(data_dir / "ghost.db", submitting_count=1)
+        with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+            bs.count_submitting_email_batches("0")
+        self.assertIn("owned by uid", str(ctx.exception))
+
+    def test_refuses_a_symlink_even_when_it_points_at_a_valid_db(self):
+        self._own_files_as_this_process()
+        data_dir = self._data_dir_for("0")
+        # The target is named without a ".db" suffix so it is not itself a
+        # second glob("*.db") candidate -- this test means to exercise the
+        # not-a-regular-file refusal, not the separate "expected exactly
+        # one" check, which has its own dedicated test above.
+        real_target = data_dir / "real-target"
+        _write_sqlite_db(real_target, submitting_count=1)
+        (data_dir / "ghost.db").symlink_to(real_target)
+        with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+            bs.count_submitting_email_batches("0")
+        # O_NOFOLLOW makes the open() call itself fail (ELOOP) for an
+        # actual symlink -- proof the flag is really in the open() call,
+        # not merely claimed in a comment. This is a different failure
+        # shape from the fstat-based "not a regular file" refusal a FIFO
+        # or a directory hits (open() succeeds for those; the S_ISREG
+        # check afterwards is what refuses them) -- both are covered, each
+        # by its own test.
+        self.assertIn("failed to open", str(ctx.exception))
+
+    def test_refuses_a_fifo_without_blocking(self):
+        # A FIFO opened for read with no writer blocks forever under a
+        # plain os.open(O_RDONLY) -- proof that this refuses without
+        # hanging is proof O_NONBLOCK is actually in the open() flags,
+        # not merely a comment claiming it is.
+        self._own_files_as_this_process()
+        data_dir = self._data_dir_for("0")
+        os.mkfifo(data_dir / "ghost.db")
+        started = time.monotonic()
+        with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+            bs.count_submitting_email_batches("0")
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertIn("not a regular file", str(ctx.exception))
+
+    def test_refuses_a_directory_named_like_a_db_file(self):
+        self._own_files_as_this_process()
+        data_dir = self._data_dir_for("0")
+        (data_dir / "ghost.db").mkdir()
+        with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+            bs.count_submitting_email_batches("0")
+        self.assertIn("not a regular file", str(ctx.exception))
 
     def test_never_writes_to_the_database(self):
-        data_dir = self._data_dir_for("6")
+        self._own_files_as_this_process()
+        data_dir = self._data_dir_for("0")
         db_path = data_dir / "ghost.db"
         _write_sqlite_db(db_path, submitting_count=0)
 
@@ -391,6 +471,121 @@ class CountSubmittingEmailBatchesTests(unittest.TestCase):
             connection.close()
 
 
+class CountSubmittingEmailBatchesRootDispatchTests(unittest.TestCase):
+    """`count_submitting_email_batches` itself never forks in this
+    process (a test is never root) -- this proves the *decision*, not the
+    fork, by making `os.getuid` lie.
+    """
+
+    def test_dispatches_to_the_privileged_fork_path_only_when_root(self):
+        with mock.patch("branchleft_slot.os.getuid", return_value=0), mock.patch(
+            "branchleft_slot._read_submitting_count_as_uid", return_value=7
+        ) as forked, mock.patch("branchleft_slot._read_submitting_count") as direct:
+            result = bs.count_submitting_email_batches("2")
+        forked.assert_called_once_with("2", bs.UID_BASE + 2)
+        direct.assert_not_called()
+        self.assertEqual(result, 7)
+
+    def test_dispatches_directly_with_no_fork_when_not_root(self):
+        with mock.patch(
+            "branchleft_slot._read_submitting_count", return_value=9
+        ) as direct, mock.patch("branchleft_slot._read_submitting_count_as_uid") as forked:
+            result = bs.count_submitting_email_batches("2")
+        direct.assert_called_once_with("2", bs.UID_BASE + 2)
+        forked.assert_not_called()
+        self.assertEqual(result, 9)
+
+
+class ReadSubmittingCountAsUidForkTests(unittest.TestCase):
+    """Real `os.fork()` throughout -- forking itself needs no privilege,
+    only `os.setuid`/`os.setgid` to an arbitrary *different* uid does, so
+    every test here either drops to this process's own current uid/gid
+    (a no-op `setuid`/`setgid` POSIX permits any process to perform on
+    itself) or deliberately leaves the drop ineffective to prove the
+    parent's own verification catches that -- never a mocked fork, which
+    would prove nothing about whether the pipe, the wait or the kill
+    actually work across a real process boundary.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._root = os.path.join(self._tmp.name, "volumes")
+        os.makedirs(self._root)
+        patcher = mock.patch.object(bs, "DOCKER_VOLUME_ROOT", Path(self._root))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_real_self_drop_succeeds_end_to_end_through_the_pipe(self):
+        # setuid(getuid()) is a no-op POSIX permits any unprivileged
+        # process to perform on itself -- the one way to exercise a
+        # *successful* privilege drop's setuid call for real without
+        # being root. setgroups([]) always requires real privilege
+        # (there is no "unless it's already my groups" exception in
+        # POSIX); this platform's setgid also refuses an unprivileged
+        # caller even at its own current gid (stricter than Linux's own
+        # permitted self-target case) -- both are mocked away here, since
+        # neither is testable from an unprivileged process on this
+        # platform either way, so that setuid -- the call this test
+        # actually means to prove -- runs for real. No UID_BASE patch
+        # needed: `_read_submitting_count_as_uid` takes `uid` directly,
+        # and `_data_directory` (used both to create the fixture here and
+        # inside the call under test) derives its own path from the same,
+        # untouched default `UID_BASE` either way.
+        own_uid = os.getuid()
+        data_dir = bs._data_directory("0")
+        data_dir.mkdir(parents=True)
+        _write_sqlite_db(data_dir / "ghost.db", submitting_count=4)
+        with mock.patch(
+            "branchleft_slot.os.setgroups", side_effect=lambda groups: None
+        ), mock.patch("branchleft_slot.os.setgid", side_effect=lambda gid: None):
+            count = bs._read_submitting_count_as_uid("0", own_uid)
+        self.assertEqual(count, 4)
+
+    def test_a_drop_that_setuid_silently_no_ops_is_caught_by_the_parents_own_uid_check(self):
+        # Sabotage of the privilege drop itself: os.setuid/setgid are
+        # patched to no-ops (as if the calls were removed or failed
+        # silently), so the child keeps running as this process's own
+        # real uid while the parent asked for a *different* target uid.
+        # `_read_submitting_count` is mocked to a canned success so this
+        # test isolates the drop-verification property from the file/
+        # owner checks, which have their own dedicated tests above.
+        target_uid = os.getuid() + 12345
+        with mock.patch("branchleft_slot.os.setuid", side_effect=lambda uid: None), mock.patch(
+            "branchleft_slot.os.setgid", side_effect=lambda gid: None
+        ), mock.patch(
+            "branchleft_slot.os.setgroups", side_effect=lambda groups: None
+        ), mock.patch("branchleft_slot._read_submitting_count", return_value=1):
+            with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+                bs._read_submitting_count_as_uid("0", target_uid)
+        self.assertIn("reported running as uid", str(ctx.exception))
+
+    def test_a_target_uid_this_process_cannot_reach_fails_closed_not_hanging(self):
+        # No mocking at all: a real, unprivileged child calling
+        # setgroups/setgid/setuid with no privilege to back any of them
+        # genuinely fails with EPERM, which must reach the parent as a
+        # refusal, not a hang or a crash -- whichever of the three calls
+        # is what actually raises first.
+        with self.assertRaises(bs.EmailBatchCheckError):
+            bs._read_submitting_count_as_uid("0", os.getuid() + 1)
+
+    def test_a_wedged_child_is_killed_after_the_timeout_rather_than_awaited(self):
+        # setgroups/setgid mocked away for the same platform reason as
+        # the self-drop success test above -- this test means to prove
+        # the timeout/kill mechanics, not re-prove the drop itself.
+        with mock.patch.object(bs, "_READ_TIMEOUT_SECONDS", 0.2), mock.patch(
+            "branchleft_slot._read_submitting_count", side_effect=lambda *a, **k: time.sleep(30)
+        ), mock.patch(
+            "branchleft_slot.os.setgroups", side_effect=lambda groups: None
+        ), mock.patch("branchleft_slot.os.setgid", side_effect=lambda gid: None):
+            started = time.monotonic()
+            with self.assertRaises(bs.EmailBatchCheckError) as ctx:
+                bs._read_submitting_count_as_uid("0", os.getuid())
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 5.0)
+        self.assertIn("timed out", str(ctx.exception))
+
+
 class MainEmailBatchesDispatchTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -398,6 +593,13 @@ class MainEmailBatchesDispatchTests(unittest.TestCase):
         patcher = mock.patch.object(bs, "DOCKER_VOLUME_ROOT", Path(self._tmp.name))
         patcher.start()
         self.addCleanup(patcher.stop)
+        # A test process is never root, and `main` still calls
+        # `count_submitting_email_batches`, which owner-checks against
+        # `UID_BASE + slot` -- patched to this process's own uid so the
+        # real file created below is genuinely accepted, not bypassed.
+        uid_patcher = mock.patch.object(bs, "UID_BASE", os.getuid())
+        uid_patcher.start()
+        self.addCleanup(uid_patcher.stop)
 
     def test_prints_the_bare_count_on_success(self):
         data_dir = bs._data_directory("0")

@@ -567,9 +567,8 @@ describe('stateStore', () => {
       const stopRecovery = fakeStopRecovery();
 
       // Survivor 'b' is not confirmed live now (undrained but not ready) --
-      // this is the exact gap the review round found: retrying the stop
-      // unconditionally here would remove the only colour with any chance
-      // of being live.
+      // retrying the stop unconditionally here would remove the only
+      // colour with any chance of being live.
       await recoverCrashedSlots(
         dir,
         [slot],

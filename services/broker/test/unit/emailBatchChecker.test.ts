@@ -35,6 +35,7 @@ describe('createSudoEmailBatchChecker', () => {
   beforeEach(() => {
     delete process.env.FAKE_WRAPPER_FAIL;
     delete process.env.FAKE_WRAPPER_STDOUT;
+    delete process.env.FAKE_WRAPPER_SLEEP_MS;
     loggedLines.length = 0;
     checker = createSudoEmailBatchChecker(
       { command: FAKE_WRAPPER, prefix: [process.execPath], timeoutMs: 5000 },
@@ -45,6 +46,7 @@ describe('createSudoEmailBatchChecker', () => {
   afterEach(() => {
     delete process.env.FAKE_WRAPPER_FAIL;
     delete process.env.FAKE_WRAPPER_STDOUT;
+    delete process.env.FAKE_WRAPPER_SLEEP_MS;
   });
 
   it('reports no submitting batch when the wrapper prints a bare zero', async () => {
@@ -61,6 +63,26 @@ describe('createSudoEmailBatchChecker', () => {
     process.env.FAKE_WRAPPER_FAIL = '1';
     expect(await checker.hasSubmittingBatch('0' as SlotName)).toBe(true);
     expect(loggedLines.some((line) => line.includes('slot "0"'))).toBe(true);
+  });
+
+  it('fails closed when the wrapper is slower than timeoutMs, without waiting for it to finish', async () => {
+    // Short durations deliberately -- this busy-waits a real subprocess
+    // (see fakeWrapper.mjs's own doc comment), and vitest runs test files
+    // in parallel: a multi-second CPU-bound wait here would starve
+    // sibling files' own timing-sensitive tests, not just this one.
+    process.env.FAKE_WRAPPER_SLEEP_MS = '300';
+    const shortTimeoutChecker = createSudoEmailBatchChecker(
+      { command: FAKE_WRAPPER, prefix: [process.execPath], timeoutMs: 30 },
+      (line) => loggedLines.push(line)
+    );
+    const started = Date.now();
+    const result = await shortTimeoutChecker.hasSubmittingBatch('0' as SlotName);
+    const elapsedMs = Date.now() - started;
+    expect(result).toBe(true);
+    // Bounded well under the fake wrapper's own 300ms sleep -- proof
+    // `timeoutMs` actually killed the slow subprocess rather than this
+    // call simply finishing to wait for it.
+    expect(elapsedMs).toBeLessThan(250);
   });
 
   it('fails closed when the wrapper prints something other than a bare count', async () => {
