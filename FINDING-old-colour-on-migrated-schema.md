@@ -128,4 +128,4 @@ own convention when it is applied, not here:
 > reaches this path. **Open question for the owner, unresolved by this
 > measurement:** does the gate set need a check on the mail-send path, or
 > does a rename/drop touching a mail-send table route like an irreversible
-> migration? Script: `ghost-platform/scripts/measure-1249-schema-drift.sh`.
+> migration? Script: `ghost-platform/scripts/measure-old-colour-schema-drift.sh`.
