@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import type { Request } from 'express';
 
 /**
@@ -7,6 +7,13 @@ import type { Request } from 'express';
  * Run egress IP shouldn't let one noisy tenant throttle another's sends.
  * Falls back to IP only for requests that don't even parse to a domain
  * (malformed paths never reach a tenant-specific limit anyway).
+ *
+ * The IP fallback goes through `ipKeyGenerator` rather than the raw
+ * address: an IPv6 client can draw from a whole /64 or larger, so keying
+ * on the bare address would let it open a fresh bucket per address and
+ * walk straight past the ceiling this limiter exists to enforce. The
+ * helper groups IPv6 addresses by network prefix and leaves IPv4
+ * addresses untouched.
  *
  * Limits are generous placeholders for a service with no production
  * traffic yet (doc 13 §4's volume band is low hundreds of recipients);
@@ -18,7 +25,10 @@ export function tenantRateLimiter(limit: number) {
     limit,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req: Request) =>
-      (req.params.domain as string | undefined) ?? req.ip ?? 'unknown',
+    keyGenerator: (req: Request) => {
+      const domain = req.params.domain as string | undefined;
+      if (domain) return domain;
+      return req.ip ? ipKeyGenerator(req.ip) : 'unknown';
+    },
   });
 }

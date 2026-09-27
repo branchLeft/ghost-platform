@@ -79,7 +79,8 @@ export {
   renderSettings,
   renderIdentity,
 } from './render.js';
-export type { EdgeGate, EdgeSiteBlock } from './edge.js';
+export type { EdgeGate, EdgeSiteBlock, ScriptHash, ThemeCsp } from './edge.js';
+export { validateScriptHash, THEME_CSP_UNAVAILABLE } from './edge.js';
 export type { GhostSettings, CodeInjectionSettings } from './settings.js';
 export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
@@ -110,3 +111,4 @@ export {
   mediaPublicBaseUrl,
   validateMediaBucket,
 } from './media.js';
+export { intendedGhostVersion } from './version.js';

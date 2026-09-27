@@ -54,3 +54,14 @@ jobs:
         run: npm run test:image
         env:
           IMAGE: ghost-platform:ci
+
+      # Real Ghost, real adapter manager, real storage adapters (local and,
+      # via a local S3-compatible double, S3Storage): the refusal, the typed
+      # error and the quarantine write are proven against the built image,
+      # not only against a fake base class. Needs no install -- the test
+      # uses Node built-ins only.
+      - name: Scanning storage decorator against the built image
+        working-directory: adapters/scanning-storage
+        run: npm run test:image
+        env:
+          IMAGE: ghost-platform:ci
