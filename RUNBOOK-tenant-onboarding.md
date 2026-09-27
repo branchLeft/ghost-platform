@@ -885,13 +885,25 @@ APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/ho
 ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "/root/platform-provision/provision_deploy_slot.py --revoke <slug>"
 
-# 2. Stop the containers, against the still-present Compose file. The unit
+# 2. Stop the containers. The unit
 #    (hetzner/provision/branchleft-compose@.service, branchLeft/shared-infra)
-#    has no ExecStop -- its own comment names this exact command as the only
-#    thing that tears a stack down -- so this is the step that actually stops
-#    them, and it has to run before anything below removes the file it reads.
-ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
-  "docker compose -p <slug> -f /opt/branchleft/<slug>/compose.yml down"
+#    has no ExecStop, so this is the step that actually stops them, and it
+#    has to run before anything below removes host-side state.
+#
+#    Not `docker compose -p <slug> -f .../compose.yml down`: every tenant's
+#    compose.yml renders the DB password and both S3 keys as a mandatory
+#    `${VAR:?...}` substitution, sourced only via systemd's EnvironmentFile=
+#    at ExecStart. A bare SSH session carries none of those, so an ad-hoc
+#    `docker compose` invocation re-parses and re-interpolates the whole
+#    file itself and fails on the first missing secret before it ever
+#    reaches the Docker daemon -- the same failure RUNBOOK-nextcloud.md
+#    documents for this unit's read path. Plain `docker` with label filters
+#    never re-reads the Compose file at all, so it works regardless.
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" '
+  docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop
+  docker ps -aq --filter label=com.docker.compose.project=<slug> | xargs -r docker rm
+  docker network ls -q --filter label=com.docker.compose.project=<slug> | xargs -r docker network rm
+'
 
 # 3. Verify step 2 actually worked before relying on it. A non-empty result
 #    here means a container from this stack is still up; stop and find out
