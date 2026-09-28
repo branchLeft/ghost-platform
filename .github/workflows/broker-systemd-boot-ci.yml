@@ -1,10 +1,9 @@
 name: Broker systemd boot CI
 
-# The Done-means proof branchLeft/workspace#1545 asks for: a real boot, in a
-# throwaway container running a real systemd, showing branchleft-broker.service
-# starting, answering `/status`, and reaching the wrapper through `sudo -n`.
-# services/broker/systemd/README.md has the full story of what this
-# workflow found by actually booting it.
+# A real boot, in a throwaway container running a real systemd, showing
+# branchleft-broker.service starting, answering `/status`, and reaching the
+# wrapper through `sudo -n`. services/broker/systemd/README.md has the full
+# story of what this workflow found by actually booting it.
 
 on:
   push:

@@ -61,18 +61,18 @@ RUN useradd --system --home-dir /var/lib/branchleft-broker --shell /usr/sbin/nol
 
 # A trivial, real (not faked) systemd template unit standing in for the
 # per-colour Ghost compose unit `branchleft_slot.py` starts/stops --
-# content and delivery owned by branchLeft/workspace#1448 ("the per-colour
-# unit the wrapper starts and stops is undefined"), out of this issue's
-# scope. Without it, `systemctl stop branchleft-compose@demo-0-a.service`
-# exits 5 ("not loaded") and the wrapper reports failure -- not a defect in
-# this deployment form, just the next story's own unit not existing yet.
-# `RemainAfterExit=yes` so `start` leaves it genuinely `active`, provable
-# the same way a real compose unit would be.
+# content and delivery owned by the per-colour unit/uid-claim work, out of
+# this issue's scope. Without it, `systemctl stop
+# branchleft-compose@demo-0-a.service` exits 5 ("not loaded") and the
+# wrapper reports failure -- not a defect in this deployment form, just the
+# next story's own unit not existing yet. `RemainAfterExit=yes` so `start`
+# leaves it genuinely `active`, provable the same way a real compose unit
+# would be.
 # No `systemctl daemon-reload` here: no systemd instance is running during
 # `docker build` at all (PID 1 in a build step is the shell) -- the real
 # PID 1 systemd reads every unit fresh from /etc/systemd/system/ when the
 # container actually boots (`ENTRYPOINT`, below).
-RUN printf '[Unit]\nDescription=stand-in for the per-colour compose unit (branchLeft/workspace#1448)\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\nExecStop=/bin/true\n' > /etc/systemd/system/branchleft-compose@.service
+RUN printf '[Unit]\nDescription=stand-in for the per-colour compose unit\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\nExecStop=/bin/true\n' > /etc/systemd/system/branchleft-compose@.service
 
 # The bundle: built on the host by `npm run bundle` (RUNBOOK-broker-deploy.md
 # step 4) and copied in exactly as the runbook's rsync step would ship it --
