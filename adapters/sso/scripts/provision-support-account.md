@@ -30,52 +30,47 @@ ALWAYS suspended (Ghost's own `inactive` status); nothing here accepts a
 flag to create one active.
 
 The user row and its Administrator link are written inside one transaction
-(`inTransaction` in the inner script), for both database backends, so a
+(a `knex.transaction`), for both database backends, so a
 `docker exec` killed mid-write leaves either both rows or neither — never
 the partial state the repair path exists to recover from on a row written
 before this fix, or by anything else. The repair path's own read-then-decide
-is inside that same transaction too (MySQL locks the row with `for update`),
-closing the window between the check and the grant.
+is inside that same transaction too (on MySQL the row is read `forUpdate()`,
+which locks it; SQLite has no row lock, and this script only ever runs one
+`docker exec` at a time against a given container, so the transaction's own
+write serialisation is enough there), closing the window between the check
+and the grant.
 
-The MySQL connection carries the same `database__connection__ssl__*` keys
-`render-core` renders for Ghost itself — db1 refuses a plaintext TCP
+The connection is Ghost's own, so it carries every `database__connection__*`
+setting Ghost itself uses, TLS included — db1 refuses a plaintext TCP
 connection outright (`require_secure_transport=ON`), so a script that
 ignored them could never reach a paying tenant's real database.
 
 ## Inner script
 
-The inline script run *inside* the tenant's own container, exactly the
-pattern `break-glass.image.test.mjs`'s own `sql()`/`createSupportUser`
-helpers already use to reach Ghost's own installed database driver without
-this repo taking a dependency of its own on either one. It never runs as a
+The inline script run *inside* the tenant's own container. It never runs as a
 `node -e` invocation from this session's own shell — only as an argument
 this script hands to `docker exec` at run time, from inside an
 already-vetted file.
+
+It queries through Ghost's own knex, the query builder Ghost's models use,
+not raw SQL: it requires Ghost's `core/server/data/db/connection.js` from the
+installed release (`/var/lib/ghost/current`), which builds the knex instance
+from Ghost's own config exactly as the running Ghost does. That config is
+loaded from the container's environment (`database__*`, JSON-parsed as Ghost
+parses it) and from `config.production.json` in the working directory, which
+`docker exec` inherits from the image (`/var/lib/ghost`). So the script
+connects with whatever Ghost connects with — the `sqlite3` alias to
+`better-sqlite3`, SQLite's `foreign_keys = ON`, every
+`database__connection__ssl__*` key — and this repo takes no database
+dependency of its own.
 
 `EMAIL`/`ID`/`PASSWORD_HASH`/`NOW` arrive as env vars on the `docker exec`
 call, never interpolated into the script text itself — the same reason
 `render-core`'s own shell-quoting exists: a value is data, never syntax.
 
-### TLS options from the container's environment
-
-db1 sets `require_secure_transport=ON` (`db/stack/conf.d/branchleft.cnf`), so
-a plaintext `connect()` to a paying tenant's real database is refused
-outright. `render-core` renders the same `database__connection__ssl__*` keys
-Ghost's own config reads (today just
-`database__connection__ssl__rejectUnauthorized`). The inner script reads
-whichever of those keys the container actually has, rather than hard-coding
-the one key `render-core` renders today, so a key added on either side does
-not need this script updated in step.
-
-Ghost's own env parser JSON-parses each value where it can
-(`render-core/src/validate.ts`'s `assertNotJsonScalar`): the env string
-`"false"` arrives as the boolean `false`, not the string `"false"`. mysql2
-negotiates TLS only when `config.ssl` is set at all (mysql2/promise's
-`client_handshake.js`: `if (connection.config.ssl)`), so passing the raw
-string through would make even `ssl: {rejectUnauthorized: "false"}` (a truthy
-object) request no certificate validation while still enabling TLS. That
-happens to be harmless here, but mirroring the real coercion means the script
-never quietly drifts from what Ghost itself does with the same key.
+Ghost's own modules may log to stdout while the connection opens. The outer
+script reads only the last line of the inner script's output, which is always
+its JSON result.
 
 ## provisionSupportAccount
 

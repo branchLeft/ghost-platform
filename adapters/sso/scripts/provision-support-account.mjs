@@ -112,124 +112,41 @@ export function parseArgs(argv) {
  * provision-support-account.md#inner-script.
  */
 const INNER_SCRIPT = `
-const isSqlite = process.env.database__client === 'sqlite3';
-function req(name) {
-  return require(require.resolve(name, { paths: ['/var/lib/ghost/current'] }));
+// Ghost's own knex instance, configured from Ghost's own config exactly as the
+// running Ghost is. See provision-support-account.md#inner-script.
+const knex = require('/var/lib/ghost/current/core/server/data/db/connection.js');
+const isSqlite = ['sqlite3', 'better-sqlite3'].includes(knex.client.config.client);
+function administratorRoleLinkFor(trx, userId) {
+  return trx('roles')
+    .join('roles_users', 'roles_users.role_id', 'roles.id')
+    .where('roles_users.user_id', userId)
+    .andWhere('roles.name', 'Administrator')
+    .first('roles.id');
 }
-// db1 refuses plaintext, so TLS options come from whichever ssl keys the
-// container has, JSON-coerced as Ghost does. See provision-support-account.md#tls-options-from-the-containers-environment.
-function envJsonScalar(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
+function anyRoleLinkFor(trx, userId) {
+  return trx('roles_users').where('user_id', userId).first('id');
 }
-function sslOptionFromEnv() {
-  const prefix = 'database__connection__ssl__';
-  const ssl = {};
-  let any = false;
-  for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith(prefix)) continue;
-    any = true;
-    ssl[key.slice(prefix.length)] = envJsonScalar(value);
-  }
-  return any ? { ssl } : {};
-}
-async function connect() {
-  if (isSqlite) {
-    const Database = req('better-sqlite3');
-    const db = new Database(process.env.database__connection__filename);
-    return {
-      get: (sql, params) => db.prepare(sql).get(...params),
-      run: (sql, params) => db.prepare(sql).run(...params),
-      // BEGIN/COMMIT/ROLLBACK are statement text, not parameterised
-      // queries -- exec(), not prepare().run(), matches that shape.
-      begin: () => db.exec('BEGIN'),
-      commit: () => db.exec('COMMIT'),
-      rollback: () => db.exec('ROLLBACK'),
-      close: () => db.close(),
-    };
-  }
-  // mysql2's own prepared-statement path (.execute(), the binary protocol)
-  // does not accept transaction-control statements -- mysql2's own
-  // beginTransaction()/commit()/rollback() route through .query() (the text
-  // protocol) instead, and this uses those same driver-native methods
-  // rather than re-deriving the distinction with raw SQL. mysql2/promise
-  // (not the callback-style base export) is what makes createConnection and
-  // every method below return a promise this script can await.
-  const mysql = req('mysql2/promise');
-  const conn = await mysql.createConnection({
-    host: process.env.database__connection__host,
-    port: Number(process.env.database__connection__port),
-    database: process.env.database__connection__database,
-    user: process.env.database__connection__user,
-    password: process.env.database__connection__password,
-    ...sslOptionFromEnv(),
-  });
-  return {
-    get: async (sql, params) => {
-      const [rows] = await conn.execute(sql, params);
-      return rows[0];
-    },
-    run: (sql, params) => conn.execute(sql, params),
-    begin: () => conn.beginTransaction(),
-    commit: () => conn.commit(),
-    rollback: () => conn.rollback(),
-    close: () => conn.end(),
-  };
-}
-async function administratorRoleLinkFor(db, userId) {
-  return db.get(
-    \`select r.id from roles r
-       join roles_users ru on ru.role_id = r.id
-      where ru.user_id = ? and r.name = 'Administrator'\`,
-    [userId]
-  );
-}
-async function anyRoleLinkFor(db, userId) {
-  return db.get('select 1 as x from roles_users where user_id = ?', [userId]);
-}
-async function inTransaction(db, body) {
-  await db.begin();
-  try {
-    const result = await body();
-    await db.commit();
-    return result;
-  } catch (error) {
-    await db.rollback();
-    throw error;
-  }
+function administratorRole(trx) {
+  return trx('roles').where('name', 'Administrator').first('id');
 }
 async function main() {
-  const db = await connect();
   try {
     const email = process.env.PROVISION_SUPPORT_EMAIL;
-    // The read that decides repair-or-refuse and the write that grants
-    // Administrator now share one transaction, closing the window a
-    // concurrent actor who already holds admin on the tenant could
-    // otherwise land in between them (cycle-3 review finding 2). MySQL
-    // locks the row for the rest of the transaction with \`for update\`;
-    // SQLite has no such clause, but this script is only ever invoked one
-    // \`docker exec\` at a time against a given container, so BEGIN's own
-    // write-serialisation is enough there.
-    const existingOutcome = await inTransaction(db, async () => {
-      const existing = await db.get(
-        isSqlite
-          ? 'select id, status from users where email = ?'
-          : 'select id, status from users where email = ? for update',
-        [email]
-      );
+    // The repair-or-refuse read and the Administrator grant share one
+    // transaction, row-locked on MySQL. See provision-support-account.md#inner-script.
+    const existingOutcome = await knex.transaction(async (trx) => {
+      const existing = await trx('users')
+        .where('email', email)
+        .modify((query) => {
+          if (!isSqlite) query.forUpdate();
+        })
+        .first('id', 'status');
       if (!existing) {
         return null;
       }
-      const adminLink = await administratorRoleLinkFor(db, existing.id);
+      const adminLink = await administratorRoleLinkFor(trx, existing.id);
       if (adminLink) {
-        // D12: reporting an existing, ACTIVE Administrator row as a
-        // successful provisioning would mean the one moment there is no
-        // tenant grant to protect is also the moment nothing here noticed
-        // the support identity was already live -- see
-        // \`ActiveExistingRowError\`'s own doc comment.
+        // An active Administrator row is never reported as a successful provisioning.
         if (existing.status !== '${SUSPENDED_STATUS}') {
           throw new Error(
             '${ACTIVE_EXISTING_ROW_MARKER}' + JSON.stringify({
@@ -240,14 +157,8 @@ async function main() {
         }
         return { created: false, repaired: false, id: existing.id, status: existing.status };
       }
-      // Repairable only when the row is EXACTLY the shape this script's own
-      // interrupted create leaves: still suspended, and no role link of any
-      // kind (never merely "no Administrator link" -- a user with some
-      // other role linked, or an active user with none, reached this state
-      // by a path other than an interrupted run of this script, and
-      // granting Administrator to it here would be an ungoverned permission
-      // grant this script has no business making).
-      const anyLink = await anyRoleLinkFor(db, existing.id);
+      // Repairable only in the exact shape an interrupted create leaves.
+      const anyLink = await anyRoleLinkFor(trx, existing.id);
       if (existing.status !== '${SUSPENDED_STATUS}' || anyLink) {
         throw new Error(
           '${PARTIAL_ROW_MISMATCH_MARKER}' + JSON.stringify({
@@ -257,12 +168,12 @@ async function main() {
           }) + ' does not match an interrupted create (needs status "${SUSPENDED_STATUS}" and no role link at all)'
         );
       }
-      const role = await db.get("select id from roles where name = 'Administrator'", []);
-      await db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
-        process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
-        role.id,
-        existing.id,
-      ]);
+      const role = await administratorRole(trx);
+      await trx('roles_users').insert({
+        id: process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
+        role_id: role.id,
+        user_id: existing.id,
+      });
       return { created: false, repaired: true, id: existing.id, status: existing.status };
     });
     if (existingOutcome) {
@@ -270,28 +181,36 @@ async function main() {
       return;
     }
     const id = process.env.PROVISION_SUPPORT_ID;
-    const passwordHash = process.env.PROVISION_SUPPORT_PASSWORD_HASH;
-    const now = process.env.PROVISION_SUPPORT_NOW;
-    const role = await db.get("select id from roles where name = 'Administrator'", []);
-    await inTransaction(db, async () => {
-      await db.run(
-        \`insert into users (id, name, slug, password, email, status, visibility,
-          comment_notifications, free_member_signup_notification,
-          paid_subscription_started_notification, paid_subscription_canceled_notification,
-          mention_notifications, recommendation_notifications, milestone_notifications,
-          donation_notifications, gift_subscription_notifications, created_at)
-         values (?, ?, ?, ?, ?, ?, 'public', 1, 1, 1, 1, 1, 1, 1, 1, 1, ?)\`,
-        [id, '${STAFF_NAME}', '${STAFF_SLUG}', passwordHash, email, '${SUSPENDED_STATUS}', now]
-      );
-      await db.run('insert into roles_users (id, role_id, user_id) values (?, ?, ?)', [
-        process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
-        role.id,
+    const role = await administratorRole(knex);
+    await knex.transaction(async (trx) => {
+      await trx('users').insert({
         id,
-      ]);
+        name: '${STAFF_NAME}',
+        slug: '${STAFF_SLUG}',
+        password: process.env.PROVISION_SUPPORT_PASSWORD_HASH,
+        email,
+        status: '${SUSPENDED_STATUS}',
+        visibility: 'public',
+        comment_notifications: 1,
+        free_member_signup_notification: 1,
+        paid_subscription_started_notification: 1,
+        paid_subscription_canceled_notification: 1,
+        mention_notifications: 1,
+        recommendation_notifications: 1,
+        milestone_notifications: 1,
+        donation_notifications: 1,
+        gift_subscription_notifications: 1,
+        created_at: process.env.PROVISION_SUPPORT_NOW,
+      });
+      await trx('roles_users').insert({
+        id: process.env.PROVISION_SUPPORT_ROLE_LINK_ID,
+        role_id: role.id,
+        user_id: id,
+      });
     });
     console.log(JSON.stringify({ created: true, repaired: false, id, status: '${SUSPENDED_STATUS}' }));
   } finally {
-    await db.close();
+    await knex.destroy();
   }
 }
 main().catch((error) => {
