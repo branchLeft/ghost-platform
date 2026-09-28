@@ -108,6 +108,12 @@ export async function hostHeldByAnotherSlot(
   return conflict ? conflict.slot : null;
 }
 
+/** The host `slot`'s entry currently gates, or `null` if it has none. */
+export async function hostOfSlotEntry(path: string, slot: SlotName): Promise<string | null> {
+  const entries = await readEntries(path);
+  return entries.find((e) => e.slot === slot)?.host ?? null;
+}
+
 export async function removeSlotEntry(path: string, slot: SlotName): Promise<void> {
   await mutexFor(path).run(async () => {
     const entries = await readEntries(path);

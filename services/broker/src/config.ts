@@ -36,6 +36,8 @@ export interface BrokerConfig {
   /** How long `GET /drain` holds an open request with nothing to hand over. */
   readonly drainPollTimeoutMs: number;
   readonly healthCheckTimeoutMs: number;
+  /** How long a colour swap waits for the freshly started colour to answer 200 before giving up on it. */
+  readonly ghostReadyPollTimeoutMs: number;
   /**
    * `healthPortBase + Number(slot)` is this slot's sidecar health port --
    * incidental (LLD-2 §01's figcaption: "the uid base and the port base are
@@ -145,6 +147,7 @@ export function loadConfig(
       .filter(Boolean),
     drainPollTimeoutMs: positiveInteger(env, 'BROKER_DRAIN_POLL_TIMEOUT_MS', 30_000, 120_000),
     healthCheckTimeoutMs: positiveInteger(env, 'BROKER_HEALTH_TIMEOUT_MS', 2_000, 30_000),
+    ghostReadyPollTimeoutMs: positiveInteger(env, 'BROKER_GHOST_READY_TIMEOUT_MS', 30_000, 300_000),
     healthPortBase: positiveInteger(env, 'BROKER_HEALTH_PORT_BASE', 9100, 65000),
     appPortBase: positiveInteger(env, 'BROKER_APP_PORT_BASE', 9300, 65000),
     uidBase: positiveInteger(env, 'BROKER_UID_BASE', 30001, 65000),
