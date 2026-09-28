@@ -1,11 +1,14 @@
 /**
  * The environment one tenant's Ghost container receives, split by where each
  * value is allowed to live — ported and extended from
- * `infra/tenant/environment.ts`: database and media become unions. SQLite
- * emits `database__client=sqlite3` plus `__connection__filename` and drops
- * host, port, user, password and ssl; local media drops every
- * `storage__S3Storage__*` key and both S3 secrets, and sets `storage__active`
- * from the descriptor's own safety posture rather than leaving it unset.
+ * `infra/tenant/environment.ts`: database and media become unions, and every
+ * storage feature (`images`, `media`, `files`) renders the scanning decorator
+ * rather than infra/tenant's bare `storage__active` / `storage__S3Storage__*`
+ * pair — see `mediaEnvironment` below. SQLite emits
+ * `database__client=sqlite3` plus `__connection__filename` and drops host,
+ * port, user, password and ssl; local media wraps `Local*Storage` instead of
+ * `S3Storage` and drops both S3 secrets, per the descriptor's own safety
+ * posture rather than leaving it unset.
  *
  * Every secret-shaped value below is a `${VAR:?…}` reference into
  * `/etc/branchleft/<slug>.env` (a paying tenant) or nothing at all (a demo,
@@ -56,37 +59,62 @@ export const SECRET_ENV_KEYS = {
 
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = 10485760; // 10 MiB
 const MULTIPART_CHUNK_SIZE_BYTES = 5242880; // S3Storage's own floor
-const STATIC_FILE_URL_PREFIX = 'content/images';
+
+/** Ghost's own three separate storage adapters — one each for images, media
+ * and files, not a single shared one. The decorator is configured
+ * identically, and independently, for each — see `mediaEnvironment` below. */
+const STORAGE_FEATURES = ['images', 'media', 'files'] as const;
+type StorageFeature = (typeof STORAGE_FEATURES)[number];
+
+/** Ghost's own per-feature URL path segment for the adapter it wraps — see
+ * `adapters/scanning-storage/README.md`'s config table. `S3Storage` does
+ * not infer this from the feature it is constructed for, so a wrong or
+ * missing value here would serve every feature's media under `content/images`
+ * silently — this is the one wrapped-config key this module supplies from a
+ * fixed table rather than from the descriptor. */
+const STATIC_FILE_URL_PREFIX: Record<StorageFeature, string> = {
+  images: 'content/images',
+  media: 'content/media',
+  files: 'content/files',
+};
 
 /**
  * The custom storage adapter LLD-7 makes the load-bearing byte choke point
  * for every upload, and LLD-1 §04 says local media "sets storage__active
- * to the adapter named by safety". **Not renderable today — measured, not
- * assumed.** The adapter is not yet shipped in the image, and Ghost
- * `require()`s whatever `storage__active` names during first-boot user
- * creation (`core/server/models/user.js`'s gravatar lookup), not lazily on
- * first upload: rendering this name against `ghost-platform:ci` crashes
- * Ghost with `IncorrectUsageError: Unable to find storage adapter
- * ScanningStorageAdapter` before it ever serves a request. Kept here,
- * unused, as the target value for whichever story ships the adapter;
- * `mediaEnvironment` below renders Ghost's own real built-in adapter
- * instead until then — see its own comment.
+ * to the adapter named by safety" — wired in below.
+ * `adapters/scanning-storage/src/`, copied into the image by the root
+ * `Dockerfile`, is what this name resolves to at boot.
  */
 export const SCANNING_STORAGE_ADAPTER = 'ScanningStorageAdapter';
 
-/** Ghost's own compiled-in local image adapter — real, and what
- * `mediaEnvironment` renders for `local` media today. See
- * `SCANNING_STORAGE_ADAPTER`'s own comment for why that one is not used yet. */
-const BUILTIN_LOCAL_STORAGE_ADAPTER = 'LocalImagesStorage';
+/** Ghost's own compiled-in local adapters, one per storage feature — what the
+ * decorator's `wraps` names for a demo (local media). A paying tenant's
+ * `wraps` is `S3Storage` for every feature instead — see `mediaEnvironment`. */
+const LOCAL_WRAPPED_ADAPTER: Record<StorageFeature, string> = {
+  images: 'LocalImagesStorage',
+  media: 'LocalMediaStorage',
+  files: 'LocalFilesStorage',
+};
+
+/** Where a refused upload's bytes land, keyed by digest — see
+ * `adapters/scanning-storage/README.md`. Always local disk, even when the
+ * wrapped adapter is `S3Storage`: quarantine is never the served location,
+ * so it never needs a bucket. Shared across all three features; a digest
+ * name cannot collide between them. */
+const QUARANTINE_PATH = '/var/lib/ghost/content/quarantine';
 
 /**
  * The image's own fail-closed boot guard (`docker-entrypoint.branchleft.sh`)
- * refuses `storage__active` unset *and* refuses any `Local*Storage` value
- * outright — both read as "silently non-durable media" on the guard's own
- * Cloud Run-era assumption. A demo host's local disk is not Cloud Run's
- * ephemeral instance disk, so that assumption does not hold for a demo, and
- * this is the guard's own documented, deliberate escape hatch: "local
- * development / the SQLite smoke test only". A demo is exactly that case.
+ * refuses `storage__images__adapter` unset, refuses any adapter that is not
+ * the decorator outright, and checks the wrapped adapter's own required
+ * fields through `storage__images__wraps` /
+ * `storage__images__wrappedConfig__*` rather than trusting a bare adapter
+ * name — both read as "silently non-durable, or silently unscanned, media"
+ * on the guard's own Cloud Run-era assumption. A demo host's local disk is
+ * not Cloud Run's ephemeral instance disk, so that assumption does not hold
+ * for a demo, and this is the guard's own documented, deliberate escape
+ * hatch: "local development / the SQLite smoke test only". A demo is
+ * exactly that case.
  */
 const ALLOW_LOCAL_STORAGE_ENV_VAR = 'BRANCHLEFT_ALLOW_LOCAL_STORAGE';
 
@@ -158,54 +186,87 @@ function isScanningRequired(safety: SafetySpec): boolean {
  * isolation control `media.ts` documents. `validateMediaBucket` throws
  * first if a descriptor's `bucket` disagrees, so this function never
  * silently substitutes one value for another.
+ *
+ * Every storage feature (`images`, `media`, `files`) is rendered
+ * identically — the decorator wrapping the local adapter for a
+ * demo, or `S3Storage` for a tenant — because a mechanism that scanned only
+ * one feature, or only one kind, would leave the others silently
+ * unprotected with every test for the one it did cover green. The three
+ * features never diverge on which adapter
+ * they wrap; only `STATIC_FILE_URL_PREFIX` differs between them, because
+ * `S3Storage` does not infer its own URL segment from the feature it was
+ * constructed for.
  */
 function mediaEnvironment(
   slug: Slug,
   media: MediaSpec,
   safety: SafetySpec
 ): Record<string, string | number | boolean> {
+  const scanningRequired = isScanningRequired(safety);
+  const env: Record<string, string | number | boolean> = {};
+
   if (media.kind === 'local') {
-    // `validate()`'s own `checkSafety` already refuses any descriptor
-    // whose `safety.near`/`safety.exact` are not both `true` — so for any
-    // descriptor that reaches this function, `isScanningRequired(safety)`
-    // is always `true` today, and the adapter that ought to run is
-    // `SCANNING_STORAGE_ADAPTER`. It is not rendered — see that constant's
-    // own comment, measured against the real image, for why not — but the
-    // parameter and the read stay, so this function's signature does not
-    // need to change again the day the adapter ships; only its return
-    // value will.
-    //
-    // `storage__active` is explicit, never omitted: the image's boot guard
-    // refuses to start Ghost at all when it is unset. `ALLOW_LOCAL_STORAGE_ENV_VAR`
-    // is required alongside it, or the same guard refuses any `Local*Storage`
-    // value too — see that constant's own comment.
-    //
+    for (const feature of STORAGE_FEATURES) {
+      if (scanningRequired) {
+        // `storage__<feature>__adapter` is explicit, never omitted: the
+        // image's boot guard refuses to start Ghost at all when the images
+        // feature's is unset or is not the decorator.
+        // `ALLOW_LOCAL_STORAGE_ENV_VAR` is required alongside it, or the
+        // same guard refuses a decorator wrapping a `Local*Storage` value
+        // too — see that constant's own comment.
+        env[`storage__${feature}__adapter`] = SCANNING_STORAGE_ADAPTER;
+        env[`storage__${feature}__wraps`] = LOCAL_WRAPPED_ADAPTER[feature];
+        env[`storage__${feature}__quarantinePath`] = QUARANTINE_PATH;
+      } else {
+        // Never reached today — see this function's own doc comment — kept
+        // so a future off-flag descriptor renders a real adapter rather
+        // than a decorator with nothing to run.
+        env[`storage__${feature}__adapter`] = LOCAL_WRAPPED_ADAPTER[feature];
+      }
+    }
+    env[ALLOW_LOCAL_STORAGE_ENV_VAR] = true;
     // Nothing here names an env var for `resize` / `srcsets` — LLD-1 §03b's
     // `media` row and LLD-7 both place responsive-image generation behind
     // the storage adapter itself (`handleImageSizes` reads the original
     // through it), not behind a Ghost core env var, so wiring those two
     // flags belongs to whatever story builds or configures that adapter.
-    void isScanningRequired(safety); // read now, acted on once the adapter ships
-    return {
-      storage__active: BUILTIN_LOCAL_STORAGE_ADAPTER,
-      [ALLOW_LOCAL_STORAGE_ENV_VAR]: true,
-    };
+    return env;
   }
+
   validateMediaBucket(slug, media);
   const bucket = mediaBucketName(slug);
-  return {
-    storage__active: 'S3Storage',
-    storage__S3Storage__bucket: bucket,
-    storage__S3Storage__region: media.region,
-    storage__S3Storage__endpoint: media.endpoint,
-    storage__S3Storage__forcePathStyle: true,
-    // No `tenantPrefix`: Ghost stores keys unprefixed when it is absent,
-    // which is what a bucket holding exactly one tenant's objects wants.
-    storage__S3Storage__staticFileURLPrefix: STATIC_FILE_URL_PREFIX,
-    storage__S3Storage__cdnUrl: mediaPublicBaseUrl(media.endpoint, slug),
-    storage__S3Storage__multipartUploadThresholdBytes: MULTIPART_UPLOAD_THRESHOLD_BYTES,
-    storage__S3Storage__multipartChunkSizeBytes: MULTIPART_CHUNK_SIZE_BYTES,
-  };
+  for (const feature of STORAGE_FEATURES) {
+    if (scanningRequired) {
+      env[`storage__${feature}__adapter`] = SCANNING_STORAGE_ADAPTER;
+      env[`storage__${feature}__wraps`] = 'S3Storage';
+      env[`storage__${feature}__quarantinePath`] = QUARANTINE_PATH;
+      env[`storage__${feature}__wrappedConfig__bucket`] = bucket;
+      env[`storage__${feature}__wrappedConfig__region`] = media.region;
+      env[`storage__${feature}__wrappedConfig__endpoint`] = media.endpoint;
+      env[`storage__${feature}__wrappedConfig__forcePathStyle`] = true;
+      // No `tenantPrefix`: Ghost stores keys unprefixed when it is absent,
+      // which is what a bucket holding exactly one tenant's objects wants.
+      env[`storage__${feature}__wrappedConfig__staticFileURLPrefix`] =
+        STATIC_FILE_URL_PREFIX[feature];
+      env[`storage__${feature}__wrappedConfig__cdnUrl`] = mediaPublicBaseUrl(media.endpoint, slug);
+      env[`storage__${feature}__wrappedConfig__multipartUploadThresholdBytes`] =
+        MULTIPART_UPLOAD_THRESHOLD_BYTES;
+      env[`storage__${feature}__wrappedConfig__multipartChunkSizeBytes`] =
+        MULTIPART_CHUNK_SIZE_BYTES;
+    } else {
+      // Never reached today — see this function's own doc comment.
+      env[`storage__${feature}__adapter`] = 'S3Storage';
+      env[`storage__${feature}__bucket`] = bucket;
+      env[`storage__${feature}__region`] = media.region;
+      env[`storage__${feature}__endpoint`] = media.endpoint;
+      env[`storage__${feature}__forcePathStyle`] = true;
+      env[`storage__${feature}__staticFileURLPrefix`] = STATIC_FILE_URL_PREFIX[feature];
+      env[`storage__${feature}__cdnUrl`] = mediaPublicBaseUrl(media.endpoint, slug);
+      env[`storage__${feature}__multipartUploadThresholdBytes`] = MULTIPART_UPLOAD_THRESHOLD_BYTES;
+      env[`storage__${feature}__multipartChunkSizeBytes`] = MULTIPART_CHUNK_SIZE_BYTES;
+    }
+  }
+  return env;
 }
 
 /**
@@ -352,8 +413,14 @@ export function tenantEnvironment(
     escaped.database__connection__password = required('databasePassword', secretsFilePath);
   }
   if (descriptor.media.kind === 's3') {
-    escaped.storage__S3Storage__accessKeyId = required('s3AccessKeyId', secretsFilePath);
-    escaped.storage__S3Storage__secretAccessKey = required('s3SecretAccessKey', secretsFilePath);
+    const scanningRequired = isScanningRequired(descriptor.safety);
+    for (const feature of STORAGE_FEATURES) {
+      const prefix = scanningRequired
+        ? `storage__${feature}__wrappedConfig__`
+        : `storage__${feature}__`; // never reached today — see mediaEnvironment's own doc comment
+      escaped[`${prefix}accessKeyId`] = required('s3AccessKeyId', secretsFilePath);
+      escaped[`${prefix}secretAccessKey`] = required('s3SecretAccessKey', secretsFilePath);
+    }
   }
   if (descriptor.transport.kind === 'smtp') {
     escaped.mail__options__auth__pass = required('mailPassword', secretsFilePath);

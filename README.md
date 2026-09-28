@@ -175,22 +175,30 @@ image with a different environment.
 | `database__connection__database` | **Required** (MySQL) | Deploy config | Per-tenant logical database name on the shared instance. |
 | `database__connection__filename` | Required (SQLite only) | Deploy config | Local/smoke-test only — a path under the (ephemeral) content dir, e.g. `/var/lib/ghost/content/data/ghost.db`. Never used against production. |
 
-### Required — object storage (GCS via the S3-compatible XML API)
+### Required — object storage, wrapped by the scanning decorator
+
+Configured per storage feature (`images`, `media`, `files` — Ghost's own
+three separate storage adapters). The table below names `images`; the same
+three keys apply identically under `storage__media__*` and
+`storage__files__*` — see `adapters/scanning-storage/README.md` for the full
+config surface (`quarantinePath`, `refuse`) and why the decorator, not the
+adapter it wraps, is what every feature is configured with.
 
 | Variable | Required | Origin | Notes |
 |---|---|---|---|
-| `storage__active` | **Required** in production, **enforced at boot** | Deploy config | `S3Storage`. The entrypoint refuses to start Ghost's server process if this is unset or names a `Local*Storage` adapter — see "Fail-closed storage guard" below. A misconfigured tenant fails to boot instead of silently serving on local disk. |
-| `storage__S3Storage__bucket` | **Required** | Deploy config | This tenant's own bucket, `branchleft-media-<slug>`. One bucket per tenant, fenced by a bucket policy allowlisting this tenant's key — not a prefix in a shared one. |
-| `storage__S3Storage__staticFileURLPrefix` | **Required** | Deploy config | Key prefix under the bucket, e.g. `content/images`. |
-| `storage__S3Storage__cdnUrl` | **Required** | Deploy config | Public base URL files are served from, e.g. a CDN in front of the bucket, or `https://storage.googleapis.com/<bucket>` directly. |
-| `storage__S3Storage__multipartUploadThresholdBytes` | **Required** | Deploy config | Platform-wide constant, not per-tenant. Recommend `10485760` (10 MiB). |
-| `storage__S3Storage__multipartChunkSizeBytes` | **Required** | Deploy config | Platform-wide constant. Must be ≥ 5 MiB (`5242880`) — S3Storage enforces this floor itself (GCS's own multipart minimum). |
-| `storage__S3Storage__endpoint` | **Required** for GCS | Deploy config | `https://storage.googleapis.com`. |
-| `storage__S3Storage__region` | **Required** | Deploy config | On Hetzner this stops being cosmetic: against Ceph RGW the region is part of the SigV4 credential scope, so a wrong value is a signature mismatch surfacing as an opaque 403. It must name the bucket's own location. |
-| `storage__S3Storage__forcePathStyle` | Recommended `true` for GCS | Deploy config | Per GCS's published S3-interoperability guidance. |
-| `storage__S3Storage__tenantPrefix` | Optional, and **not set by this platform** | Deploy config | A key prefix within a shared bucket. Bucket-per-tenant makes it redundant, and setting it would put an extra path segment into every published media URL. Ghost stores keys unprefixed when it is absent. |
-| `storage__S3Storage__accessKeyId` | **Required** in production | **Secret Manager** | Per-tenant GCS HMAC key. |
-| `storage__S3Storage__secretAccessKey` | **Required** in production | **Secret Manager** | Per-tenant GCS HMAC secret. |
+| `storage__images__adapter` | **Required** in production, **enforced at boot** | Deploy config | `ScanningStorageAdapter`. The entrypoint refuses to start Ghost's server process unless this names the decorator — see "Fail-closed storage guard" below. A misconfigured tenant fails to boot instead of silently serving unscanned, or on local disk. |
+| `storage__images__wraps` | **Required** in production, **enforced at boot** | Deploy config | `S3Storage`. The adapter the decorator delegates to, resolved by name from the same directory Ghost's own adapter manager resolves any adapter from. |
+| `storage__images__wrappedConfig__bucket` | **Required** | Deploy config | This tenant's own bucket, `branchleft-media-<slug>`. One bucket per tenant, fenced by a bucket policy allowlisting this tenant's key — not a prefix in a shared one. |
+| `storage__images__wrappedConfig__staticFileURLPrefix` | **Required** | Deploy config | Key prefix under the bucket, e.g. `content/images` (`content/media`, `content/files` for the other two features — `S3Storage` does not infer this from the feature it serves). |
+| `storage__images__wrappedConfig__cdnUrl` | **Required** | Deploy config | Public base URL files are served from, e.g. a CDN in front of the bucket, or `https://storage.googleapis.com/<bucket>` directly. |
+| `storage__images__wrappedConfig__multipartUploadThresholdBytes` | **Required** | Deploy config | Platform-wide constant, not per-tenant. Recommend `10485760` (10 MiB). |
+| `storage__images__wrappedConfig__multipartChunkSizeBytes` | **Required** | Deploy config | Platform-wide constant. Must be ≥ 5 MiB (`5242880`) — S3Storage enforces this floor itself (GCS's own multipart minimum). |
+| `storage__images__wrappedConfig__endpoint` | **Required** for GCS | Deploy config | `https://storage.googleapis.com`. |
+| `storage__images__wrappedConfig__region` | **Required** | Deploy config | On Hetzner this stops being cosmetic: against Ceph RGW the region is part of the SigV4 credential scope, so a wrong value is a signature mismatch surfacing as an opaque 403. It must name the bucket's own location. |
+| `storage__images__wrappedConfig__forcePathStyle` | Recommended `true` for GCS | Deploy config | Per GCS's published S3-interoperability guidance. |
+| `storage__images__wrappedConfig__accessKeyId` | **Required** in production | **Secret Manager** | Per-tenant GCS HMAC key. |
+| `storage__images__wrappedConfig__secretAccessKey` | **Required** in production | **Secret Manager** | Per-tenant GCS HMAC secret. |
+| `storage__images__quarantinePath` | **Required** in production, **enforced by the decorator's own constructor** | Deploy config | Always local disk, e.g. `/var/lib/ghost/content/quarantine` — never the served location, regardless of which adapter is wrapped. |
 
 ### Optional — recommended platform-wide defaults
 
@@ -206,23 +214,32 @@ image with a different environment.
 ## Fail-closed storage guard
 
 Ghost's compiled defaults set `storage.active` to a local-disk adapter. If a
-tenant's deploy config simply omits `storage__active`, nothing fails
-loudly: the container boots, the site serves, an editor's upload appears to
-succeed, and the file is gone the next time the Cloud Run instance recycles
-— no error, no log line, no alert. That failure mode presents as success,
-which is why it is enforced in the image rather than documented here.
+tenant's deploy config simply omits `storage__images__adapter`, nothing
+fails loudly: the container boots, the site serves, an editor's upload
+appears to succeed, and the file is gone the next time the Cloud Run
+instance recycles — no error, no log line, no alert. Naming a durable
+adapter directly (`storage__images__adapter=S3Storage`, with no decorator)
+fails the same way in a second, quieter direction: the container boots, the
+upload survives, and it is never scanned — with every other check here
+passing. Both failure modes present as success, which is why
+they are enforced in the image rather than documented here.
 
-`docker-entrypoint.branchleft.sh` exits 1 before Ghost's server process ever
-starts when:
+`docker-entrypoint.branchleft.sh` checks the `images` feature only (Ghost's
+first-boot user creation resolves `storage:images` specifically) and exits 1
+before Ghost's server process ever starts when:
 
-- `storage__active` is unset, or
-- `storage__active` matches `Local*Storage` (catching every local adapter
-  Ghost ships, and staying correct if another appears), or
-- `storage__active=S3Storage` but any field a working upload needs is
-  missing (`bucket`, `staticFileURLPrefix`, `cdnUrl`,
-  `multipartUploadThresholdBytes`, `multipartChunkSizeBytes`) — a non-local
-  adapter with no bucket just moves the silent failure from "lost on
-  recycle" to "never uploaded".
+- `storage__images__adapter` is unset, or
+- `storage__images__adapter` is anything other than `ScanningStorageAdapter`
+  (catching a bare `S3Storage` and every bare local adapter alike — a bare
+  adapter, durable or not, is unscanned), or
+- `storage__images__wraps` is unset, or matches `Local*Storage` (catching
+  every local adapter Ghost ships, and staying correct if another appears —
+  the decorator does not make local disk durable), or
+- `storage__images__wraps=S3Storage` but any field a working upload needs is
+  missing (`storage__images__wrappedConfig__bucket`/`staticFileURLPrefix`/
+  `cdnUrl`/`multipartUploadThresholdBytes`/`multipartChunkSizeBytes`) — a
+  non-local adapter with no bucket just moves the silent failure from "lost
+  on recycle" to "never uploaded".
 
 The guard catches *missing* config, not *wrong* config: syntactically
 present but invalid values clear it.

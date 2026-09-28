@@ -153,11 +153,36 @@ function renderCoreTenantZeroEnv(): Record<string, string | number | boolean> {
 }
 
 /**
- * The gap `environment.ts#transportEnvironment`'s own doc comment used to
- * name is closed: render-core now renders all four keys. Two of them,
- * `bulkEmail__mailgun__domain` and `__apiKey`, match `INFRA_TENANT_BLOG_ENV`
- * exactly, because both sides derive the domain from the same fact (blog's
- * own sending domain) and the same secret-reference name.
+ * The eleven `storage__*` keys are the one remaining gap: `infra/tenant/environment.ts`
+ * still renders bare `storage__active`/`storage__S3Storage__*` (recorded,
+ * frozen, in `INFRA_TENANT_BLOG_ENV` above), because `blog` (tenant-zero) has
+ * not been migrated onto the scanning decorator — that migration is separate
+ * work from shipping the decorator in render-core. `EXTRA_IN_CORE_KEYS` below
+ * names what render-core renders instead. The mail-transport gap
+ * `environment.ts#transportEnvironment`'s own doc comment used to name is
+ * closed — see `KNOWN_DIVERGED_KEYS`'s own comment for what render-core
+ * renders for those four keys instead of a fifth gap.
+ */
+const KNOWN_GAP_KEYS = [
+  'storage__active',
+  'storage__S3Storage__bucket',
+  'storage__S3Storage__region',
+  'storage__S3Storage__endpoint',
+  'storage__S3Storage__forcePathStyle',
+  'storage__S3Storage__staticFileURLPrefix',
+  'storage__S3Storage__cdnUrl',
+  'storage__S3Storage__multipartUploadThresholdBytes',
+  'storage__S3Storage__multipartChunkSizeBytes',
+  'storage__S3Storage__accessKeyId',
+  'storage__S3Storage__secretAccessKey',
+].sort();
+
+/**
+ * Render-core now renders all four sending-identity keys `transportEnvironment`
+ * cannot carry. Two of them, `bulkEmail__mailgun__domain` and `__apiKey`,
+ * match `INFRA_TENANT_BLOG_ENV` exactly, because both sides derive the
+ * domain from the same fact (blog's own sending domain) and the same
+ * secret-reference name — they are ordinary shared keys, not named here.
  *
  * The other two are a **deliberate, permanent divergence, not a defect**:
  * `INFRA_TENANT_BLOG_ENV` is a recorded snapshot of `infra/tenant`'s
@@ -175,6 +200,37 @@ function renderCoreTenantZeroEnv(): Record<string, string | number | boolean> {
  * this test does not assume it has happened.
  */
 const KNOWN_DIVERGED_KEYS = ['mail__from', 'bulkEmail__mailgun__baseUrl'].sort();
+
+/**
+ * The keys render-core renders for the scanning decorator that
+ * `infra/tenant/environment.ts` has no equivalent for at all — the
+ * mirror image of `KNOWN_GAP_KEYS`. Generated from the same three-feature,
+ * fixed-suffix shape `environment.ts#mediaEnvironment` renders, rather than
+ * hand-typed, because 39 near-identical hand-typed keys is exactly where a
+ * copy-paste slip would silently pass.
+ */
+const DECORATOR_WRAPPED_CONFIG_SUFFIXES = [
+  'bucket',
+  'region',
+  'endpoint',
+  'forcePathStyle',
+  'staticFileURLPrefix',
+  'cdnUrl',
+  'multipartUploadThresholdBytes',
+  'multipartChunkSizeBytes',
+  'accessKeyId',
+  'secretAccessKey',
+];
+const EXTRA_IN_CORE_KEYS = (['images', 'media', 'files'] as const)
+  .flatMap((feature) => [
+    `storage__${feature}__adapter`,
+    `storage__${feature}__wraps`,
+    `storage__${feature}__quarantinePath`,
+    ...DECORATOR_WRAPPED_CONFIG_SUFFIXES.map(
+      (suffix) => `storage__${feature}__wrappedConfig__${suffix}`
+    ),
+  ])
+  .sort();
 
 // The actual diff loop, factored out so the control case below can run it
 // for real instead of asserting on hand-built objects that never pass
@@ -206,21 +262,29 @@ describe('tenant-zero parity — a real key-by-key diff against infra/tenant, no
     const missingFromCore = infraKeys.filter((k) => !coreKeys.includes(k)).sort();
     const extraInCore = coreKeys.filter((k) => !infraKeys.includes(k));
 
-    // The claim this test makes concrete: every key name infra/tenant
-    // renders is now also rendered here, and render-core adds none of its
-    // own — a regression that dropped a key, or added an extra one, fails
-    // here rather than only inside the value diff below.
-    expect(missingFromCore).toEqual([]);
-    expect(extraInCore).toEqual([]);
+    // The claim this test makes concrete: exactly the named gap keys are
+    // missing, no more and no fewer -- a regression that dropped a fifth
+    // key, or one that "fixed" this by dropping a gap key from the expected
+    // list, would both fail here. And render-core's own decorator keys are
+    // exactly the named additions, no more and no fewer -- a regression
+    // that silently stopped rendering the decorator for one feature would
+    // shrink this list without anyone having to notice a missing key by eye.
+    expect(missingFromCore).toEqual(KNOWN_GAP_KEYS);
+    expect(extraInCore.sort()).toEqual(EXTRA_IN_CORE_KEYS);
 
     // Every key both sides claim to render must carry the same value,
     // except the deliberate divergences named above — the actual parity
-    // claim, checked, not merely counted.
-    const sharedKeys = infraKeys.filter((k) => !KNOWN_DIVERGED_KEYS.includes(k));
+    // claim, checked, not merely counted. Gap keys are excluded too: core
+    // never renders them at all, so comparing them would only prove the
+    // gap again, not a value mismatch.
+    const sharedKeys = infraKeys.filter(
+      (k) => !KNOWN_GAP_KEYS.includes(k) && !KNOWN_DIVERGED_KEYS.includes(k)
+    );
     const mismatched = diffSharedKeys(infra, core, sharedKeys);
     expect(mismatched).toEqual([]);
-    // 33 keys matched at review time (35 infra keys minus the 2 diverged keys).
-    expect(sharedKeys.length).toBe(33);
+    // 22 keys matched at review time (35 infra keys minus the 11 gap keys
+    // minus the 2 diverged keys).
+    expect(sharedKeys.length).toBe(22);
     expect(infraKeys.length).toBe(35);
   });
 
@@ -232,7 +296,7 @@ describe('tenant-zero parity — a real key-by-key diff against infra/tenant, no
     const core = renderCoreTenantZeroEnv();
     const sharedKeys = Object.keys(infra)
       .sort()
-      .filter((k) => !KNOWN_DIVERGED_KEYS.includes(k));
+      .filter((k) => !KNOWN_GAP_KEYS.includes(k) && !KNOWN_DIVERGED_KEYS.includes(k));
 
     const drifted: Record<string, string | number | boolean> = {
       ...infra,

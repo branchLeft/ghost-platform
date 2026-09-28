@@ -371,6 +371,16 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
           [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
           [NEVER_MATCHES]: { classification: 'csam', matchType: 'exact' },
         }),
+        // The entrypoint's fail-closed guard now requires the decorator on
+        // every feature, not just the one this test exercises -- media and
+        // files carry no `refuse` list, so they never affect the images
+        // assertions below, only let Ghost boot at all.
+        storage__media__adapter: 'ScanningStorageAdapter',
+        storage__media__wraps: 'LocalMediaStorage',
+        storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+        storage__files__adapter: 'ScanningStorageAdapter',
+        storage__files__wraps: 'LocalFilesStorage',
+        storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
       });
 
       try {
@@ -453,6 +463,13 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
         storage__images__refuse: JSON.stringify({
           [badDigest]: { classification: 'csam', matchType: 'exact' },
         }),
+        // See the previous test's identical addition for why.
+        storage__media__adapter: 'ScanningStorageAdapter',
+        storage__media__wraps: 'LocalMediaStorage',
+        storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+        storage__files__adapter: 'ScanningStorageAdapter',
+        storage__files__wraps: 'LocalFilesStorage',
+        storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
       });
 
       try {
@@ -510,6 +527,36 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
             storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
             storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
             storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
+            // See the local-adapter tests' identical addition for why media
+            // and files need the decorator too -- same bucket and double,
+            // since this test's job is only to prove the images tier, not
+            // to give media/files their own bucket layout.
+            storage__media__adapter: 'ScanningStorageAdapter',
+            storage__media__wraps: 'S3Storage',
+            storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+            storage__media__wrappedConfig__bucket: double.bucket,
+            storage__media__wrappedConfig__staticFileURLPrefix: 'content/media',
+            storage__media__wrappedConfig__cdnUrl: `http://${double.name}:9090/${double.bucket}`,
+            storage__media__wrappedConfig__endpoint: `http://${double.name}:9090`,
+            storage__media__wrappedConfig__region: 'us-east-1',
+            storage__media__wrappedConfig__forcePathStyle: 'true',
+            storage__media__wrappedConfig__accessKeyId: 'scanning-storage-test',
+            storage__media__wrappedConfig__secretAccessKey: 'scanning-storage-test',
+            storage__media__wrappedConfig__multipartUploadThresholdBytes: '5242880',
+            storage__media__wrappedConfig__multipartChunkSizeBytes: '5242880',
+            storage__files__adapter: 'ScanningStorageAdapter',
+            storage__files__wraps: 'S3Storage',
+            storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
+            storage__files__wrappedConfig__bucket: double.bucket,
+            storage__files__wrappedConfig__staticFileURLPrefix: 'content/files',
+            storage__files__wrappedConfig__cdnUrl: `http://${double.name}:9090/${double.bucket}`,
+            storage__files__wrappedConfig__endpoint: `http://${double.name}:9090`,
+            storage__files__wrappedConfig__region: 'us-east-1',
+            storage__files__wrappedConfig__forcePathStyle: 'true',
+            storage__files__wrappedConfig__accessKeyId: 'scanning-storage-test',
+            storage__files__wrappedConfig__secretAccessKey: 'scanning-storage-test',
+            storage__files__wrappedConfig__multipartUploadThresholdBytes: '5242880',
+            storage__files__wrappedConfig__multipartChunkSizeBytes: '5242880',
           },
           { network }
         );
