@@ -608,7 +608,7 @@ describe('HoldRegistry with real digests', () => {
 
       expect(imagesHold.onAllow).not.toHaveBeenCalled();
       expect(imagesHold.onRefuse).toHaveBeenCalledTimes(1);
-      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
       await expect(
         fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`))
       ).rejects.toThrow();
@@ -630,7 +630,7 @@ describe('HoldRegistry with real digests', () => {
       mediaCheck.resolveTo({ classification: 'csam', matchType: 'exact' });
       await vi.waitFor(() => expect(media.isPending(DIGEST)).toBe(false), WAIT);
 
-      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
       expect(isRefused(quarantinePath, DIGEST)).toBe(true);
     });
 
@@ -652,7 +652,7 @@ describe('HoldRegistry with real digests', () => {
       await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
 
       expect(second.onAllow).not.toHaveBeenCalled();
-      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
     });
 
     it('never deletes bytes a refusal record names, even when the last owner out promoted', async () => {
@@ -669,7 +669,7 @@ describe('HoldRegistry with real digests', () => {
       check.resolveTo({ classification: 'no-known-match' });
       await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
 
-      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
     });
 
     it('its own later refusal seals a record before any callback runs', async () => {
@@ -733,7 +733,7 @@ describe('HoldRegistry with real digests', () => {
         await sealing;
 
         expect(isRefused(quarantinePath, DIGEST)).toBe(true);
-        expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+        await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
       } finally {
         rename.mockRestore();
       }
@@ -755,7 +755,7 @@ describe('HoldRegistry with real digests', () => {
       check.resolveTo({ classification: 'no-known-match' });
       await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
 
-      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
       expect(logger.lines.some((l) => l.includes('quarantine cleanup failed'))).toBe(true);
     });
 
@@ -861,7 +861,7 @@ describe('HoldRegistry with real digests', () => {
       ).toHaveLength(1);
       expect((await sidecar()).stuck[IMAGES].reason).toMatch(/4 consecutive retries failed/);
       // Kept: the bytes and the target are still on disk for an operator.
-      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
       expect((await sidecar()).owners[IMAGES]).toEqual(['a.png']);
     });
 
@@ -935,7 +935,7 @@ describe('HoldRegistry with real digests', () => {
       expect(registry.isPending(DIGEST)).toBe(false);
       expect((await sidecar()).owners[IMAGES]).toEqual(['a.png', 'b.png']);
       // The fresh upload did repair the bytes, ready for an operator to retry.
-      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
     });
 
     it('logs, rather than throws, when the stuck state cannot be persisted', async () => {
