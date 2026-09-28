@@ -42,6 +42,10 @@ infra/provisioning/scripts/backup_worker.py
 infra/provisioning/scripts/test_backup_worker.py
 infra/provisioning/scripts/test_pull_encrypt_store.py
 
+# Backup: the nightly loop's own test fixtures fake mysqldump's output,
+# literal INSERT INTO text a real dump never runs through the ORM.
+infra/provisioning/scripts/test_nightly_dump_loop.py
+
 # Restore: the export colour runs against a dump restored into a scratch server.
 services/export-bundler/src/scratchDatabase.ts
 services/export-bundler/test/unit/scratchDatabase.test.ts
