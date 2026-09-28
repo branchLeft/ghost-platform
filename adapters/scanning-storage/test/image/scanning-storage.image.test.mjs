@@ -774,6 +774,25 @@ describe('the hold branch, against a real Ghost', () => {
           200,
           'a held upload must promote and serve once a clean verdict arrives after a restart'
         );
+
+        // (c): promoted by the images decorator only. media and files share
+        // this quarantine directory, and their own verdict clients answer
+        // clean for this digest, so a decorator resuming another feature's
+        // hold would copy it into its own served tree. The images listing is
+        // the control: the same ls must find the promoted file there.
+        const relative = originalPath.replace('/content/images/', '');
+        const heldDir = path.posix.dirname(relative);
+        const heldName = path.posix.basename(relative);
+        assert.ok(
+          ghost.ls(`/var/lib/ghost/content/images/${heldDir}`).includes(heldName),
+          'the promoted file must be in the images tree'
+        );
+        for (const feature of ['media', 'files']) {
+          assert.ok(
+            !ghost.ls(`/var/lib/ghost/content/${feature}/${heldDir}`).includes(heldName),
+            `a held image must never be promoted into the ${feature} tree`
+          );
+        }
       } finally {
         ghost.stop();
         reclaimHostOwnership(resolveHostDir);
