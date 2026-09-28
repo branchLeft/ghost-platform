@@ -1,0 +1,22 @@
+{
+  "name": "ghost-platform-ring-controller",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "description": "The per-tenant bump state machine and its abort flag (LLD-4 §04/§05): deterministic software with no model in its path, driving one tenant's version bump through backup, apply, verify and, on failure or abort, revert -- never interrupting the migration step, and paging at least once when a tenant can be neither verified nor undone.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/node": "^26.0.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
