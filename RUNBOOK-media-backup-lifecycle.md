@@ -4,31 +4,25 @@ Closes two of branchLeft/workspace#1325's three remaining action items:
 applying `db/provision/configure_backup_bucket.py`'s current four-prefix
 lifecycle document to the production backup bucket, and deleting the
 throwaway bucket the split probe was run against. It also closes the
-operational half of branchLeft/workspace#320, left open since 2026-08-28:
-`branchleft-db-backups`'s live fence still uses a `NotAction` statement that
-this engine does not enforce, so the workload key can currently read,
-rewrite or delete that fence and change the bucket's versioning. The third
-action item from #1325 — recording the probe PASS in
-`14-hetzner-migration-programme.md` §16 — is a separate docs PR, not part of
-this runbook.
+operational half of branchLeft/workspace#320: `branchleft-db-backups`'s
+fence currently uses a `NotAction` statement that this engine does not
+enforce, so the workload key can currently read, rewrite or delete that
+fence and change the bucket's versioning. The third action item from
+#1325 — recording the probe PASS in `14-hetzner-migration-programme.md`
+§16 — is a separate docs PR, not part of this runbook.
 
 ---
 
-## Owner ruling — the media-backup credential
+## The media-backup credential
 
-**Rob chose, 2026-09-28, on branchLeft/workspace#1325:** *Same as the
-db-backups key.* The choice was between that and naming a separate
-credential (which would have needed adding to the fence as a second
-`--workload-access-key`); the wording of the options was the agent's, the
-choosing his. Media backups (ghost-platform#249, `media_backup_restore.py`)
-authenticate with the same Object Storage key as db-backups —
-`MEDIA_BACKUP_ACCESS_KEY_ID` / `MEDIA_BACKUP_SECRET_ACCESS_KEY` must be set
-to that same credential's id and secret, not a separate one.
+Media backups (ghost-platform#249, `media_backup_restore.py`) authenticate
+with the same Object Storage key as db-backups. `MEDIA_BACKUP_ACCESS_KEY_ID`
+/ `MEDIA_BACKUP_SECRET_ACCESS_KEY` must be set to that same credential's id
+and secret, not a separate one.
 
-This settles what was an open question through review round 2: the fence
-this runbook applies names exactly one workload key — the id read into
-`$FENCE_WORKLOAD_ACCESS_KEY_ID` in step 2, the db-backups credential — and
-that already covers media backups. **No second key, no second
+The fence this runbook applies names exactly one workload key — the id read
+into `$FENCE_WORKLOAD_ACCESS_KEY_ID` in step 2, the db-backups credential —
+and that already covers media backups. **No second key, no second
 `--workload-access-key`, and no fence change beyond what this runbook
 already does.**
 
@@ -36,40 +30,33 @@ already does.**
 
 ## What is wrong / why now
 
-- **The live fence predates the renderer it came from.** `branchleft-db-backups`
-  was fenced on 2026-08-28 (workspace#286) by the `render-bucket-fence-policy.py`
-  of that day, which built its bucket-configuration deny as a `NotAction`
-  statement. workspace#320 proved on 2026-09-02 that this engine does not
-  enforce `NotAction` at all — it is stored and does nothing. The renderer has
-  since been corrected three times, all merged to `main`: #150 (2026-09-03,
-  explicit `Action` lists), #171 (2026-09-04, `configure_backup_bucket.py`
-  now refuses to emit or accept any `NotAction` statement), and #157
-  (2026-09-10, fixed 12 action names this engine's parser was silently
-  rejecting — the prerequisite workspace#320 named for re-fencing at all).
-  **workspace#320 is still open**, waiting on exactly this operational
+- **The fence currently on `branchleft-db-backups` builds its
+  bucket-configuration deny as a `NotAction` statement, which this engine
+  does not enforce** — it is stored and does nothing, so the workload key
+  can currently read, rewrite or delete the fence and change the bucket's
+  versioning. `render-bucket-fence-policy.py` now builds that deny from an
+  explicit `Action` list instead, which this engine does enforce.
+  **workspace#320 is still open**, tracking exactly this operational
   re-fence. This runbook is that re-fence.
-- **The live lifecycle is one whole-bucket rule, not the four-rule document.**
-  The rule applied alongside that same 2026-08-28 fence (commit `8edfcfe`) is
-  a single rule, `branchleft-db-backups-noncurrent-expiry`, `Filter/Prefix`
-  empty, 35 days — it covers every object in the bucket, `media/` included,
-  today. `configure_backup_bucket.py`'s `lifecycle_document()` has since
-  grown to four prefix-scoped rules, but that document has never been
-  applied to this bucket.
-- **The split probe validated the document's mechanics, not this bucket.**
-  Rob ran `check-split` on 2026-09-27 against the throwaway bucket
-  `branchleft-lifecycle-probe-20260924` and it returned **PASS**
-  ([branchLeft/workspace#1325, issuecomment-5859953732](https://github.com/branchLeft/workspace/issues/1325#issuecomment-5859953732)):
-  the `media/`-style short rule pruned its own noncurrent content
-  independently of the `dumps/`-style long rule, and Hetzner honoured
-  `ExpiredObjectDeleteMarker`. That settled the open question about the
-  document's *shape*. It touched neither the fence nor the lifecycle rule
-  actually live on `branchleft-db-backups`.
+- **The lifecycle rule currently on `branchleft-db-backups` is one
+  whole-bucket rule, not the four-rule document.** It is a single rule,
+  `branchleft-db-backups-noncurrent-expiry`, `Filter/Prefix` empty, 35
+  days — it covers every object in the bucket, `media/` included, today.
+  `configure_backup_bucket.py`'s `lifecycle_document()` renders four
+  prefix-scoped rules instead, but that document has never been applied to
+  this bucket.
+- **The four-rule document's mechanics are verified; this bucket's own
+  fence and lifecycle are not.** A split probe against a throwaway bucket
+  confirmed the `media/`-style short rule prunes its own noncurrent content
+  independently of the `dumps/`-style long rule, and that Hetzner honours
+  `ExpiredObjectDeleteMarker` — see the PR description for the supporting
+  evidence. That settled the open question about the document's *shape*. It
+  touched neither the fence nor the lifecycle rule actually live on
+  `branchleft-db-backups`.
 
-Priority is High: media end-to-end is explicitly in MVP scope (Rob's ruling,
-2026-09-23 13:40 UTC), and no media backup run may be scheduled
-(ghost-platform#249, C-refresh) until the lifecycle document lands. The
-credential question that used to be a second, separate blocker is now
-settled — see the owner ruling above.
+Priority is High: media end-to-end is explicitly in MVP scope, and no media
+backup run may be scheduled (ghost-platform#249, C-refresh) until the
+lifecycle document lands.
 
 ---
 
@@ -96,15 +83,16 @@ with a live run, not an assumption.
 
 **Irreversible, in four different ways:**
 - **Step 6 puts the first *enforced* `Deny` on this bucket's own policy.**
-  The 2026-08-28 statement was `NotAction`, and workspace#320 proved that
-  construct inert — so nothing has actually withheld `PutBucketPolicy` from
-  anyone on this bucket, ever, until step 6 runs. If the new statement's
-  `NotPrincipal` exemption is wrong for any reason, the operator is locked
-  out permanently: recovery is a Hetzner support request, with the backups
-  unreachable meanwhile, and **not** the "Rollback" section below — a
-  rollback PUT needs exactly the access a lockout removes. 1c's PASS on
-  2026-08-28 and step 6's own dwelled double-PUT make this unlikely, not
-  impossible. See "Before you start" for what to have ready.
+  The statement currently on the bucket is `NotAction`, which this engine
+  does not enforce (workspace#320) — so nothing has actually withheld
+  `PutBucketPolicy` from anyone on this bucket, ever, until step 6 runs. If
+  the new statement's `NotPrincipal` exemption is wrong for any reason, the
+  operator is locked out permanently: recovery is a Hetzner support
+  request, with the backups unreachable meanwhile, and **not** the
+  "Rollback" section below — a rollback PUT needs exactly the access a
+  lockout removes. The account-level check in step 5 and step 6's own
+  dwelled double-PUT make this unlikely, not impossible. See "Before you
+  start" for what to have ready.
 - Short of a lockout, the fence and lifecycle documents themselves are
   recoverable — each is a PUT that replaces what was there, and step 3
   saves the current ones precisely so "Rollback" below can put them back.
@@ -125,9 +113,10 @@ with a live run, not an assumption.
 ## Before you start
 
 **Have this ready in case step 6 locks the bucket** (see "Blast radius"
-above — unlikely, given 1c's PASS, but this is the first time an enforced
-Deny governs this bucket's own policy, so it is possible for the first
-time). `RUNBOOK-bucket-fencing.md`'s "The lockout, and how to recover from
+above — unlikely, given the account-level check confirmed in step 5, but
+this is the first time an enforced Deny governs this bucket's own policy,
+so it is possible for the first time). `RUNBOOK-bucket-fencing.md`'s "The
+lockout, and how to recover from
 one" is the only recovery path; it is a Hetzner support request, not
 anything runnable from this terminal:
 - The bucket name (`branchleft-db-backups`) and project id (`p15766609`).
@@ -149,24 +138,22 @@ anything runnable from this terminal:
 
 - A checkout of `branchLeft/ghost-platform` on `main`, current enough to
   contain the four-rule `lifecycle_document()` and the `PARSER_REJECTS`
-  guard in `bucketpolicy.py` (both merged; #157 was the last of the three,
-  2026-09-10).
-- `branchleft-db-backups` is already versioned (2026-08-28) — that PUT stays
-  a no-op. It is **not** already fenced with the corrected document, and its
-  lifecycle rule is **not** already the four-rule one — see "What is wrong"
-  above.
+  guard in `bucketpolicy.py`.
+- `branchleft-db-backups` is already versioned — that PUT stays a no-op. It
+  is **not** already fenced with the corrected document, and its lifecycle
+  rule is **not** already the four-rule one — see "What is wrong" above.
 - Section 0 and step 1c of `RUNBOOK-bucket-fencing.md` are **not** repeated
   here: both test the account's policy engine (whether a `Deny` separates
   two keys at all, and whether `NotPrincipal` exempts), which is a property
-  of the account, not of this bucket, and both were already settled on
-  2026-08-28 (workspace#286).
+  of the account, not of this bucket, and both are already settled for this
+  account.
 - Three credentials, all Hetzner Console, project `15766609`:
   - **`fence-operator`** — this write must run as the operator throughout.
   - **`db-backups`** — id and secret. The id names the workload in the
     rendered policy; the secret is needed for step 7a's verify, which logs
     in as the workload to prove it can still read/write/list/delete. This is
-    also the credential media backups authenticate as — Rob's 2026-09-28
-    ruling on workspace#1325 — so nothing extra is needed for them here.
+    also the credential media backups authenticate as, so nothing extra is
+    needed for them here.
   - **`tenant-state`** — id and secret, needed only for step 7a, as the
     foreign key whose *denial* proves the fence discriminates.
 - The AWS CLI, reachable as `aws`, for every read-back and the rollback.
@@ -256,11 +243,10 @@ AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_
 ```
 
 Expected: the live policy JSON, printed. Read it now — its bucket-configuration
-`Deny` statement is expected to carry `NotAction`, per workspace#320 and the
-2026-08-28 apply. **If it does not contain `NotAction` anywhere, this bucket
-has already been re-fenced by someone else since — stop and find out when
-and by whom before going any further, because step 4's diff assumes this
-starting point.**
+`Deny` statement is expected to carry `NotAction`, per workspace#320.
+**If it does not contain `NotAction` anywhere, this bucket has already been
+re-fenced by someone else — stop and find out when and by whom before going
+any further, because step 4's diff assumes this starting point.**
 
 ```bash
 SAVED_LIFECYCLE_FILE="$ROLLBACK_DIR/branchleft-db-backups-live-lifecycle.json"
@@ -268,9 +254,9 @@ AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_
 ```
 
 Expected: one rule, `branchleft-db-backups-noncurrent-expiry`, `Filter.Prefix`
-empty, `NoncurrentDays: 35`, `Status: Enabled` — the whole-bucket rule from
-`8edfcfe`. **If it already shows four prefix-scoped rules, this write has
-already happened — stop, do not run step 6 again.**
+empty, `NoncurrentDays: 35`, `Status: Enabled` — the whole-bucket rule
+currently on the bucket. **If it already shows four prefix-scoped rules,
+this write has already happened — stop, do not run step 6 again.**
 
 **This has to see noncurrent versions and delete markers, not only current
 objects.** A prefix whose objects were all later deleted or overwritten
@@ -294,8 +280,8 @@ literal word `None`, not as nothing at all, so `None` here means "no such
 key", not an error. **If any other prefix appears in the first group, or
 anything other than `None` appears in the second or third, stop.** Whether
 to add a fifth rule or why that content does not need one is a decision for
-Rob, not something to guess past; do not proceed to step 6 until it is
-answered. **If `media/` appears in the first group:** step 6 will shorten
+the platform owner, not something to guess past; do not proceed to step 6
+until it is answered. **If `media/` appears in the first group:** step 6 will shorten
 its noncurrent-version expiry from today's 35 days to 1 — see "Blast
 radius" above for what that does at the next lifecycle pass.
 
@@ -319,10 +305,11 @@ Expected: no output, exit code 0.
 
 **`--workload-access-key "$FENCE_WORKLOAD_ACCESS_KEY_ID"` is the one
 principal this document names as the workload, and it is the db-backups
-key — the same key Rob's 2026-09-28 ruling above says media backups
-authenticate as too. One key, one `NotPrincipal` exemption in the rendered
-policy, covering both db1's pipeline and `media_backup_restore.py`. Nothing
-in this step needs to change for media backups.**
+key — the same key media backups authenticate as too, per "The
+media-backup credential" above. One key, one `NotPrincipal` exemption in
+the rendered policy, covering both db1's pipeline and
+`media_backup_restore.py`. Nothing in this step needs to change for media
+backups.**
 
 `$FENCE_WORKLOAD_ACCESS_KEY_ID` and `$FENCE_OPERATOR_ACCESS_KEY_ID` were
 both read with `-rs`, so there is nothing on screen to compare by eye — a
@@ -357,10 +344,11 @@ what closes workspace#320's operational gap. **Read it before going on.**
 ## 5. §1c is not repeated
 
 `NotPrincipal` exempting the operator is an account-wide engine property,
-already confirmed PASS on 2026-08-28 (workspace#286) and unaffected by the
-renderer fixes above — those changed which statements carry `NotAction` vs
-`Action`, not how `NotPrincipal` itself is read. Re-testing it here would
-tell you nothing you do not already know.
+already confirmed and unaffected by the renderer building its
+bucket-configuration deny from `Action` rather than `NotAction` — that
+changes which statements carry which construct, not how `NotPrincipal`
+itself is read. Re-testing it here would tell you nothing you do not
+already know.
 
 ---
 
@@ -512,10 +500,10 @@ rm -f "$POLICY_FILE"
 ```
 
 `$SAVED_POLICY_FILE` and `$SAVED_LIFECYCLE_FILE`, under `$ROLLBACK_DIR`, are
-no longer needed once this run has fully succeeded — they record the
-superseded, inert-`NotAction` fence and the whole-bucket lifecycle rule.
-`rm -rf "$ROLLBACK_DIR"` removes them, or leave the directory in place; it
-costs nothing to keep and nothing else in this repo reads it.
+no longer needed once this run has fully succeeded — they record the fence
+and lifecycle rule this run replaced. `rm -rf "$ROLLBACK_DIR"` removes them,
+or leave the directory in place; it costs nothing to keep and nothing else
+in this repo reads it.
 
 (Skip any of this if step 7 sent you to "Rollback" below — the saved files
 are what it uses. A step 6 failure never reaches "Rollback"; follow step 6's
@@ -536,11 +524,12 @@ or the operator's own read erroring) — go to "Before you start"'s Hetzner
 support request instead; a rollback PUT needs exactly the access a lockout
 removes.
 
-**This re-exposes workspace#320's operational gap** — the restored fence is
-the same `NotAction` one that does not withhold bucket-configuration access
-from the workload key. Use it only for a content problem (step 7a `FAIL` on
-a check other than administrability or the stored-policy match, or step 7b's
-pipeline check failing), and re-open workspace#320 if you do.
+**This re-exposes workspace#320's operational gap** — the restored fence's
+bucket-configuration deny uses `NotAction`, which this engine does not
+enforce, so it withholds nothing from the workload key. Use it only for a
+content problem (step 7a `FAIL` on a check other than administrability or
+the stored-policy match, or step 7b's pipeline check failing), and re-open
+workspace#320 if you do.
 
 **Before running the lifecycle PUT below, open `$SAVED_LIFECYCLE_FILE` and
 read it.** It was captured by `get-bucket-lifecycle-configuration`, and that
@@ -576,8 +565,8 @@ confirmed, clear the shell as step 8 says.
 
 **If a lockout happens later and Hetzner support removes the policy
 entirely:** the bucket is then left with no fence at all, which is worse
-than the inert `NotAction` one it had before. Re-apply the saved policy as
-soon as support confirms the removal. Support can take days, so treat this
+than a fence whose bucket-configuration deny uses `NotAction` and enforces
+nothing. Re-apply the saved policy as soon as support confirms the removal. Support can take days, so treat this
 as a fresh terminal with no shell state — none of `$SAVED_POLICY_FILE` or
 the `FENCE_OPERATOR_*` variables from earlier in this run can be assumed to
 still be set:
@@ -619,10 +608,10 @@ the project while a proper fence is worked out.
 
 It is safe to delete precisely because it is disposable by construction:
 `probe-media-lifecycle-expiration.py` refuses to write anywhere that is not
-prefixed `branchleft-lifecycle-probe-`, and this bucket has held nothing but
-the `setup-split` canaries and their receipt since 2026-09-24. Its content is
-already fully captured in issuecomment-5859953732 and — once the docs PR
-lands — in `14-hetzner-migration-programme.md` §16.
+prefixed `branchleft-lifecycle-probe-`, and this bucket holds nothing but
+the `setup-split` canaries and their receipt. Its content is already fully
+captured on the issue and — once the docs PR lands — in
+`14-hetzner-migration-programme.md` §16.
 
 **This section's name-guard is deliberately a second, independent layer on
 top of the production fence above.** 9d runs as the lab/administrative
@@ -759,10 +748,9 @@ branchLeft/workspace#1325. The probe bucket's deletion is #1325's other
 remaining action item, proven by step 9e.
 
 **This runbook's own share of ghost-platform#249 is unblocked once step 8
-passes.** The credential question is settled (Rob's 2026-09-28 ruling,
-above): `MEDIA_BACKUP_ACCESS_KEY_ID`/`SECRET` is the db-backups key, already
-the sole workload named in the fence this runbook applies, and the lifecycle
-document already carries `media/`'s own rule. Nothing named on
+passes.** `MEDIA_BACKUP_ACCESS_KEY_ID`/`SECRET` is the db-backups key,
+already the sole workload named in the fence this runbook applies, and the
+lifecycle document already carries `media/`'s own rule. Nothing named on
 workspace#1325 still blocks scheduling a run against
 `branchleft-db-backups`.
 
