@@ -1,6 +1,23 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
 import { slotAllocation, slotHealthPort, slotPort, slotUid } from '../../src/slotPorts.js';
+
+const GOLDEN_PORTS_PATH = fileURLToPath(
+  new URL('../../../../demo-host/provision/slot-ports.golden.json', import.meta.url)
+);
+
+interface GoldenPorts {
+  readonly appPortBase: number;
+  readonly healthPortBase: number;
+  readonly slots: readonly {
+    readonly slot: string;
+    readonly a: number;
+    readonly b: number;
+    readonly health: number;
+  }[];
+}
 
 /**
  * These formulas are the one authority both item 1's refusal (`app.ts`)
@@ -44,6 +61,37 @@ describe('slotPorts', () => {
       },
     });
     expect(allocation).toEqual({ uid: 30004, ports: { a: 9306, b: 9307, health: 9103 } });
+  });
+
+  // --- `demo-host/provision/render_demo_edge.py` mirrors this file's own
+  // formula deliberately (its docstring says why), and a mirror with no
+  // cross-check cannot tell a genuine drift apart from an intentional
+  // change on either side -- this suite and `test_render_demo_edge.py`'s
+  // own `CrossCheckAgainstSlotPortsTsTests` are both asserted against the
+  // same `slot-ports.golden.json`, so either formula drifting from that
+  // shared fixture fails that side's own test. (A formula drifting on
+  // both sides in the same wrong direction is the one shape this pair
+  // cannot catch -- accepted, since neither file reads the other's
+  // source.)
+  describe('cross-checked against demo-host/provision/render_demo_edge.py, via slot-ports.golden.json', () => {
+    let golden: GoldenPorts;
+
+    it("the golden fixture uses this file's own default bases", async () => {
+      golden = JSON.parse(await readFile(GOLDEN_PORTS_PATH, 'utf8')) as GoldenPorts;
+      expect(golden.appPortBase).toBe(9300);
+      expect(golden.healthPortBase).toBe(9100);
+      expect(golden.slots).toHaveLength(7);
+    });
+
+    it("every slot's app and health ports match the golden fixture", async () => {
+      golden = JSON.parse(await readFile(GOLDEN_PORTS_PATH, 'utf8')) as GoldenPorts;
+      for (const entry of golden.slots) {
+        const slot = entry.slot as SlotName;
+        expect(slotPort(golden.appPortBase, slot, 'a')).toBe(entry.a);
+        expect(slotPort(golden.appPortBase, slot, 'b')).toBe(entry.b);
+        expect(slotHealthPort(golden.healthPortBase, slot)).toBe(entry.health);
+      }
+    });
   });
 
   it('two different slots never share a port or a uid', () => {

@@ -45,6 +45,7 @@ describe('loadConfig', () => {
     expect(config.slotLiterals).toEqual(['0', '1', '2', '3', '4', '5', '6']);
     expect(config.drainPollTimeoutMs).toBe(30_000);
     expect(config.healthCheckTimeoutMs).toBe(2_000);
+    expect(config.ghostReadyPollTimeoutMs).toBe(30_000);
     expect(config.healthPortBase).toBe(9100);
     expect(typeof config.nowMs()).toBe('number');
   });
@@ -85,6 +86,7 @@ describe('loadConfig', () => {
         BROKER_SLOT_LITERALS: '0,1',
         BROKER_DRAIN_POLL_TIMEOUT_MS: '10000',
         BROKER_HEALTH_TIMEOUT_MS: '3000',
+        BROKER_GHOST_READY_TIMEOUT_MS: '15000',
         BROKER_HEALTH_PORT_BASE: '9200',
       }),
       readKey32
@@ -101,6 +103,7 @@ describe('loadConfig', () => {
     expect(config.slotLiterals).toEqual(['0', '1']);
     expect(config.drainPollTimeoutMs).toBe(10_000);
     expect(config.healthCheckTimeoutMs).toBe(3_000);
+    expect(config.ghostReadyPollTimeoutMs).toBe(15_000);
     expect(config.healthPortBase).toBe(9200);
   });
 

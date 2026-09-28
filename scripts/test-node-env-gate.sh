@@ -72,6 +72,15 @@ docker run -d \
     -e database__connection__filename="/var/lib/ghost/content/data/ghost-node-env-test.db" \
     -e privacy__useUpdateCheck="false" \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE="true" \
+    -e storage__images__adapter="ScanningStorageAdapter" \
+    -e storage__images__wraps="LocalImagesStorage" \
+    -e storage__images__quarantinePath="/var/lib/ghost/content/quarantine" \
+    -e storage__media__adapter="ScanningStorageAdapter" \
+    -e storage__media__wraps="LocalMediaStorage" \
+    -e storage__media__quarantinePath="/var/lib/ghost/content/quarantine" \
+    -e storage__files__adapter="ScanningStorageAdapter" \
+    -e storage__files__wraps="LocalFilesStorage" \
+    -e storage__files__quarantinePath="/var/lib/ghost/content/quarantine" \
     -e NODE_ENV="production" \
     "$GHOST_IMAGE" >/dev/null
 
@@ -99,6 +108,15 @@ docker run -d \
     -e database__connection__filename="/var/lib/ghost/content/data/ghost-node-env-test.db" \
     -e privacy__useUpdateCheck="false" \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE="true" \
+    -e storage__images__adapter="ScanningStorageAdapter" \
+    -e storage__images__wraps="LocalImagesStorage" \
+    -e storage__images__quarantinePath="/var/lib/ghost/content/quarantine" \
+    -e storage__media__adapter="ScanningStorageAdapter" \
+    -e storage__media__wraps="LocalMediaStorage" \
+    -e storage__media__quarantinePath="/var/lib/ghost/content/quarantine" \
+    -e storage__files__adapter="ScanningStorageAdapter" \
+    -e storage__files__wraps="LocalFilesStorage" \
+    -e storage__files__quarantinePath="/var/lib/ghost/content/quarantine" \
     -e NODE_ENV="development" \
     "$GHOST_IMAGE" >/dev/null
 

@@ -193,6 +193,15 @@ docker run -d --name "$SOURCE_GHOST" --network "$NET" -p "${SOURCE_GHOST_PORT}:2
     -e privacy__useUpdateCheck=false \
     -e "logging__transports=[\"stdout\"]" \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=LocalImagesStorage \
+    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__media__adapter=ScanningStorageAdapter \
+    -e storage__media__wraps=LocalMediaStorage \
+    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__files__adapter=ScanningStorageAdapter \
+    -e storage__files__wraps=LocalFilesStorage \
+    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
     "$GHOST_IMAGE" >/dev/null
 wait_for_http_200 "http://localhost:${SOURCE_GHOST_PORT}/" "source Ghost"
 
@@ -239,6 +248,12 @@ docker run -d --name "$GREEN_GHOST" --network "$NET" -p "${GREEN_GHOST_PORT}:236
     -e database__connection__database=ghost_tenant1 -e database__connection__user=root \
     -e database__connection__password="$MYSQL_ROOT_PASSWORD" \
     -e privacy__useUpdateCheck=false -e "logging__transports=[\"stdout\"]" -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+    -e storage__images__adapter=ScanningStorageAdapter -e storage__images__wraps=LocalImagesStorage \
+    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__media__adapter=ScanningStorageAdapter -e storage__media__wraps=LocalMediaStorage \
+    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__files__adapter=ScanningStorageAdapter -e storage__files__wraps=LocalFilesStorage \
+    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
     "$GHOST_IMAGE" >/dev/null
 docker run -d --name "$CONTROL_GHOST" --network "$NET" -p "${CONTROL_GHOST_PORT}:2368" -p "${CONTROL_SIDECAR_PORT}:8080" \
     -e url="http://localhost:${CONTROL_GHOST_PORT}" \
@@ -246,6 +261,12 @@ docker run -d --name "$CONTROL_GHOST" --network "$NET" -p "${CONTROL_GHOST_PORT}
     -e database__connection__database=ghost_tenant1 -e database__connection__user=root \
     -e database__connection__password="$MYSQL_ROOT_PASSWORD" \
     -e privacy__useUpdateCheck=false -e "logging__transports=[\"stdout\"]" -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+    -e storage__images__adapter=ScanningStorageAdapter -e storage__images__wraps=LocalImagesStorage \
+    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__media__adapter=ScanningStorageAdapter -e storage__media__wraps=LocalMediaStorage \
+    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__files__adapter=ScanningStorageAdapter -e storage__files__wraps=LocalFilesStorage \
+    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
     "$GHOST_IMAGE" >/dev/null
 
 note "Starting the real drain-sidecar (built from source, sharing each Ghost's network namespace) against each colour"

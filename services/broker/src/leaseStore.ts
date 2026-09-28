@@ -1,7 +1,9 @@
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   hashIdOf,
   leaseRecordFileName,
+  parseSlotLeaseRecord,
   type HashId,
   type LeaseId,
   type SlotLeaseRecord,
@@ -32,17 +34,37 @@ export async function writeLeaseAndHash(
   config: LeaseStoreConfig,
   host: string,
   slot: SlotName,
-  argon2idHash: string
+  argon2idHash: string,
+  options: {
+    /**
+     * Reuse the slot's current lease id when its record is already tied to
+     * this exact hash. For a same-tenancy colour swap only: a recycle must
+     * always mint a new lease, which is what evicts the previous visitor.
+     */
+    readonly keepTiedLease?: boolean;
+  } = {}
 ): Promise<{ readonly lease: LeaseId; readonly hashId: HashId }> {
   const hashId = hashIdOf(argon2idHash);
   const entry: SlotsFileEntry = { host, slot, gate: { kind: 'passphrase', argon2idHash } };
   await upsertSlotEntry(config.slotsPath, entry);
 
-  const lease = generateLeaseId(config.nowMs(), config.randomBytes);
+  const kept = options.keepTiedLease ? await tiedLeaseOf(config.leaseDir, slot, hashId) : null;
+  const lease = kept ?? generateLeaseId(config.nowMs(), config.randomBytes);
   const record: SlotLeaseRecord = { slot, lease, hashId };
   await writeFileAtomic(join(config.leaseDir, leaseRecordFileName(slot)), JSON.stringify(record));
 
   return { lease, hashId };
+}
+
+/** Any unreadable or malformed record reads as "no lease to keep", so the caller mints one. */
+async function tiedLeaseOf(dir: string, slot: SlotName, hashId: HashId): Promise<LeaseId | null> {
+  try {
+    const text = await readFile(join(dir, leaseRecordFileName(slot)), 'utf8');
+    const record = parseSlotLeaseRecord(text, slot);
+    return record.hashId === hashId ? record.lease : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
