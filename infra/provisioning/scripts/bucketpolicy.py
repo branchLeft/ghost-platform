@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""The pieces every Hetzner Object Storage bucket policy in this estate shares.
-
-Hetzner has no IAM: an S3 `Allow` narrows nothing, so a bucket-policy `Deny`
-is the only mechanism that fences a bucket at all. `decide()` is a MODEL of
-S3 policy evaluation, not Hetzner's implementation, except for `NotAction`,
-which this engine does not enforce and `assert_enforceable()` refuses to
-emit. See bucketpolicy.md#module-overview.
-"""
+"""The pieces every Hetzner Object Storage bucket policy here shares. See bucketpolicy.md."""
 
 from __future__ import annotations
 
@@ -25,27 +18,42 @@ ACCESS_KEY_PATTERN = re.compile(r"\A[A-Za-z0-9]{16,64}\Z")
 BUCKET_NAME_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\Z")
 
 
-# What each role must still be able to do once a fence is applied. Whether a
-# credential is locked out is an EVALUATION question that only `decide()`
-# answers — a structural scan of `NotPrincipal` lists cannot, since a working
-# fence deliberately contains Deny statements that name only the operator.
-# See bucketpolicy.md#recovery_actions.
+# What each role must still be able to do once a fence is applied. These are
+# the questions `decide()` is asked before a policy is written, by the renderer
+# on its way out and by `verify-bucket-fence.py`'s pre-flight on its way in.
+#
+# Whether a credential is locked out is an EVALUATION question, and only
+# `decide()` answers it. A structural scan of `NotPrincipal` lists cannot: a
+# fence deliberately contains Deny statements that name only the operator --
+# `DenyObjectMutationsExceptOperator` withholds the version-destroying actions
+# from the workload on purpose -- so "this Deny does not name the workload" is
+# what a working fence looks like, not a lockout.
 RECOVERY_ACTIONS = ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]
 
-# The whole of what a workload key does with its bucket: the two backup
-# pipelines write, `prune_backups.py` lists and deletes, a restore reads, and
-# Pulumi's S3 backend on the state bucket does the same four. Nothing here
-# includes an action the fence withholds by design.
-WORKLOAD_BUCKET_ACTIONS = ["s3:ListBucket"]
-WORKLOAD_OBJECT_ACTIONS = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+# What each non-operator role must keep, and nothing more. See bucketpolicy.md, "Roles".
+READ_WRITE = "read-write"
+PUT_ONLY = "put-only"
+READ_ONLY = "read-only"
+ROLES = (READ_WRITE, PUT_ONLY, READ_ONLY)
+
+ROLE_BUCKET_ACTIONS = {
+    READ_WRITE: ["s3:ListBucket"],
+    PUT_ONLY: [],
+    READ_ONLY: ["s3:ListBucket", "s3:ListBucketVersions"],
+}
+ROLE_OBJECT_ACTIONS = {
+    READ_WRITE: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+    PUT_ONLY: ["s3:PutObject"],
+    READ_ONLY: ["s3:GetObject", "s3:GetObjectVersion"],
+}
+
+# The read-write role under the name the verifier's preflight imports.
+WORKLOAD_BUCKET_ACTIONS = ROLE_BUCKET_ACTIONS[READ_WRITE]
+WORKLOAD_OBJECT_ACTIONS = ROLE_OBJECT_ACTIONS[READ_WRITE]
 
 
-# Every bucket-resource action that reads or rewrites the fence itself, plus
-# the version listing, which is a read but enumerates superseded objects.
-# Enumerated deliberately — a denylist falls open on an unlisted action — and
-# exactly as wide as the parser's vocabulary and no wider: padding it against
-# unsupported names made the whole document unacceptable to Hetzner's parser.
-# See bucketpolicy.md#bucket_configuration_actions.
+# No wider than the parser's vocabulary: one unknown name rejects the whole document
+# with an empty 503. See bucketpolicy.md, "Action lists are exactly as wide as the parser's vocabulary".
 BUCKET_CONFIGURATION_ACTIONS = [
     "s3:GetBucketPolicy",
     "s3:PutBucketPolicy",
@@ -88,10 +96,8 @@ BUCKET_CONFIGURATION_ACTIONS = [
     "s3:PutBucketOwnershipControls",
 ]
 
-# Action names this engine's policy parser REFUSES, measured against a live
-# bucket. Kept as data rather than deleted: it is the only record that these
-# were tried, and `test_no_emitted_action_is_one_the_parser_refuses` asserts
-# the emitted lists stay disjoint from it. See bucketpolicy.md#parser_rejects.
+# Names this engine's parser refused, measured live; kept so none is re-added.
+# See bucketpolicy.md, "Parser rejects".
 PARSER_REJECTS = frozenset({
     "s3:GetEncryptionConfiguration",
     "s3:PutEncryptionConfiguration",
@@ -152,6 +158,41 @@ NON_PUBLIC_OBJECT_ACTIONS = [
     # by BUCKET_CONFIGURATION_ACTIONS -- is not established; they are listed
     # because an unlisted action falls open and the cost of listing is a line.
 ]
+
+# Every object action this engine's parser is known to accept. The narrow
+# roles are fenced by denying them everything in it except their own actions,
+# rather than by listing what each must not do: that way an action is either
+# granted to the role on purpose or explicitly denied, and the only thing
+# that can fall open is a name outside the parser's vocabulary -- which no
+# policy here can mention anyway.
+OBJECT_ACTION_VOCABULARY = MEDIA_PUBLIC_OBJECT_ACTIONS + NON_PUBLIC_OBJECT_ACTIONS
+
+# The bucket reads. `ListBucketMultipartUploads` and the version listing
+# enumerate object keys as surely as `ListBucket` does, so a key that must not
+# list is denied all of them.
+BUCKET_READ_ACTIONS = [
+    "s3:ListBucket",
+    "s3:ListBucketVersions",
+    "s3:ListBucketMultipartUploads",
+    "s3:GetBucketLocation",
+]
+
+# What each narrow role is EXPLICITLY denied. An absent Allow is not a fence on
+# this engine: Hetzner's project default grants every key everything, so
+# without these statements a put-only key could still read and delete.
+#
+# `AbortMultipartUpload` and `ListMultipartUploadParts` are denied to the
+# put-only role too: aborting removes an upload in flight, and the parts list
+# reads one. The worker uploads with a single PUT after its producer exits,
+# so it needs neither.
+ROLE_DENIED_OBJECT_ACTIONS = {
+    role: [a for a in OBJECT_ACTION_VOCABULARY if a not in ROLE_OBJECT_ACTIONS[role]]
+    for role in (PUT_ONLY, READ_ONLY)
+}
+ROLE_DENIED_BUCKET_ACTIONS = {
+    PUT_ONLY: list(BUCKET_READ_ACTIONS),
+    READ_ONLY: [],
+}
 
 
 class PolicyInputError(ValueError):
@@ -224,10 +265,9 @@ def decide(policy: dict, principal: str, action: str, resource: str) -> str:
 
 
 def assert_enforceable(policy: dict) -> dict:
-    """Refuse a policy whose enforcement this engine will silently decline.
-    A `NotAction` statement round-trips byte-identical through
-    `get-bucket-policy` while enforcing nothing, visible only to a live
-    probe. Called by both generators on the way out. See bucketpolicy.md#assert_enforceable.
+    """Refuse a policy with NotAction or a parser-rejected action. Raises PolicyInputError.
+
+    See bucketpolicy.md, "Enforceability".
     """
     for statement in policy["Statement"]:
         actions = statement.get("Action", [])

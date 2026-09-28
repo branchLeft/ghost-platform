@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""One-time setup of the backup bucket's versioning, lifecycle and fence.
-
-Run once by the platform owner, with the operator's S3 credential -- never
-db1's backup credential. The policy is not optional: Hetzner's default is
-that every key pair in a project reaches every bucket in it.
-See configure_backup_bucket.md for the invocation and full rationale.
-"""
+"""One-time setup of the backup bucket's versioning, lifecycle and fence. See configure_backup_bucket.md."""
 
 from __future__ import annotations
 
@@ -57,11 +51,7 @@ DB_DUMP_PREFIX = "dumps/"
 DB_BINLOG_PREFIX = "binlogs/"
 MEDIA_OBJECT_PREFIX = "media/"
 
-# How long to hold between the fence policy's first PUT and its confirming
-# second one. A floor, not a budget: the live measurements behind it never
-# bounded the PUT-side visibility window below "cleared by t+90", so this
-# matches the verifier's own DWELL_SECONDS rather than undercutting it.
-# See configure_backup_bucket.md#fence_engine_dwell_seconds.
+# A floor, not a measured TTL. See configure_backup_bucket.md, "The fence dwell".
 FENCE_ENGINE_DWELL_SECONDS = 120.0
 
 # Indirected so tests can run the dwell without waiting.
@@ -91,8 +81,7 @@ def lifecycle_document(
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
     media_noncurrent_days: int = MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
 ) -> bytes:
-    """Four prefix-scoped rules, never one bucket-wide rule.
-    See configure_backup_bucket.md#lifecycle_document."""
+    """Four non-overlapping prefix rules. See configure_backup_bucket.md, "Lifecycle rules"."""
     rules = "".join(
         (
             f"<Rule><ID>branchleft-db-backups-{rule_id}-noncurrent-expiry</ID><Status>Enabled</Status>"
@@ -180,12 +169,41 @@ def _withheld(actions: list[str], required: list[str]) -> set[str]:
     return {action for action in required if any(_action_covers(p, action) for p in actions)}
 
 
+def _denied_to(statements: list, arn: str, resource: str, *, objects: bool) -> set:
+    """The Action patterns some Deny withholds from `arn` on one resource class.
+
+    See configure_backup_bucket.md, "Accounting for an exemption by a Deny".
+    """
+    withheld: set = set()
+    for statement in statements:
+        if statement.get("Effect") != "Deny" or "NotAction" in statement:
+            continue
+        resources = _string_list(statement.get("Resource"))
+        if objects:
+            reaches = any(r.startswith(resource) for r in resources)
+        else:
+            reaches = resource in resources
+        if not reaches:
+            continue
+        principals = _principals(statement, "Principal")
+        not_principals = _principals(statement, "NotPrincipal")
+        if principals is not _MISSING:
+            applies = arn in principals or "*" in principals
+        elif not_principals is not _MISSING:
+            applies = arn not in not_principals
+        else:
+            applies = False
+        if applies:
+            withheld.update(_string_list(statement.get("Action")))
+    return withheld
+
+
 def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_principal: str) -> None:
-    """Refuse a policy that names another bucket, locks out the caller,
-    fences nothing, or fences something other than what matters -- applying
-    a bucket policy is the one operation here that can be irreversible, and
-    anything this checker cannot bound is refused rather than passed.
-    See configure_backup_bucket.md#assert_policy_fences_this_bucket."""
+    """Refuse a policy that names another bucket, locks out the caller, fences
+    nothing, or fences something other than what matters. Raises BucketConfigError.
+
+    See configure_backup_bucket.md, "What the apply-time policy check refuses".
+    """
     bucket_arn = f"arn:aws:s3:::{bucket}"
     objects_prefix = f"{bucket_arn}/"
 
@@ -282,8 +300,10 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
                 granted: set = set()
                 if covers_bucket:
                     granted |= allowed_bucket_principals.get(arn, set())
+                    granted |= _denied_to(statements, arn, bucket_arn, objects=False)
                 if covers_objects:
                     granted |= allowed_object_principals.get(arn, set())
+                    granted |= _denied_to(statements, arn, objects_prefix, objects=True)
                 unaccounted = {
                     action
                     for action in required_here
@@ -434,10 +454,8 @@ def configure_backup_bucket(
         content_md5=content_md5,
     )
 
-    # The fence goes on LAST, after versioning and lifecycle have already
-    # landed. Applied twice: the second PUT is the control, and only means
-    # anything once `_await_engine_catchup`'s dwell has run -- see
-    # configure_backup_bucket.md#the-fence-apply-sequence-configure_backup_bucket.
+    # The fence goes on last, and twice: the second PUT, after the dwell, is the
+    # lockout control. See configure_backup_bucket.md, "Applying the fence".
     for attempt in range(2):
         if attempt:
             _await_engine_catchup(fence_dwell_seconds)
@@ -479,10 +497,16 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    # This script is a second path to an apply, reached by an operator
-    # rebuilding db1 who never opens RUNBOOK-bucket-fencing.md, so it does
-    # not let a fence ship on a rendered document alone.
-    # See configure_backup_bucket.md#the-engine-diagnostic-gate-main.
+    # THIS SCRIPT IS A SECOND PATH TO AN APPLY, and the operator who reaches it
+    # is rebuilding db1 from db/RUNBOOK-db.md and never opens
+    # RUNBOOK-bucket-fencing.md. A fence that locks the operator out is
+    # unrecoverable from inside the account -- a support request against the
+    # storage cluster, with the bucket unreachable meanwhile -- so this script
+    # does not let that shape ship on the strength of a rendered document
+    # alone. The flag is a claim the operator makes, not a check this script
+    # can run: the diagnostic needs three credentials and a bucket this script
+    # has no business touching. It exists so that applying a fence is a
+    # decision, confirmed once and deliberately, rather than the default.
     if not args.engine_diagnostic_passed:
         print(
             "configure_backup_bucket: refusing to apply a fence until the engine question is "
