@@ -77,6 +77,9 @@ const ALLOW_POLICY = {
 
 const SILENT_LOGGER = { error: () => {} };
 const WAIT = { timeout: 5000, interval: 10 };
+// Shorter than the test's own timeout, so a hold that never sticks fails
+// this wait's assertion rather than timing the whole test out.
+const STUCK_WAIT = { timeout: 2000, interval: 10 };
 const OWNER = 'LocalImagesStorage:/var/lib/ghost/content/images';
 
 let tmpDir;
@@ -698,12 +701,13 @@ describe('HoldRegistry with real digests', () => {
       run.mockClear();
 
       check.resolveTo({ classification: 'no-known-match' });
-      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+      await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
       await settle();
 
       expect(run).not.toHaveBeenCalled();
       expect(hold.onAllow).not.toHaveBeenCalled();
       expect(registry.isPending(DIGEST)).toBe(false);
+      expect(registry.isStuck(DIGEST)).toBe(true);
       expect(registry.stuckDigests()).toEqual([
         { digest: DIGEST, reason: 'the quarantined bytes do not match their digest' },
       ]);
@@ -735,7 +739,7 @@ describe('HoldRegistry with real digests', () => {
       await fs.rm(bytesPath());
       check.resolveTo({ classification: 'no-known-match' });
 
-      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), STUCK_WAIT);
       expect(hold.onAllow).not.toHaveBeenCalled();
     });
   });
@@ -758,8 +762,7 @@ describe('HoldRegistry with real digests', () => {
       await registry.hold(DIGEST, BYTES, { targetPath: 'a.png', onAllow, onRefuse: vi.fn() });
       check.resolveTo({ classification: 'no-known-match' });
 
-      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
-      await settle(300);
+      await settle(600);
 
       expect(onAllow).toHaveBeenCalledTimes(4);
       expect(registry.isPending(DIGEST)).toBe(false);
@@ -835,7 +838,7 @@ describe('HoldRegistry with real digests', () => {
       await registry.hold(DIGEST, BYTES, callbacks());
       await fs.truncate(bytesPath(), 1);
       check.resolveTo({ classification: 'no-known-match' });
-      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), STUCK_WAIT);
 
       const again = { targetPath: 'b.png', onAllow: vi.fn(), onRefuse: vi.fn() };
       await registry.hold(DIGEST, BYTES, again);
@@ -857,7 +860,7 @@ describe('HoldRegistry with real digests', () => {
       await fs.writeFile(path.join(quarantinePath, `${DIGEST}.holds.json`), '[]');
       check.resolveTo({ classification: 'no-known-match' });
 
-      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), STUCK_WAIT);
       expect(logger.lines.some((l) => l.includes('could not persist the stuck state'))).toBe(true);
     });
   });

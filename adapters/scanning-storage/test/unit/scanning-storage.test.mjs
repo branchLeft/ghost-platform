@@ -781,8 +781,9 @@ describe('verified, bounded hold retries through the adapter', () => {
     await fs.truncate(path.join(quarantinePath, BAD_DIGEST), 3);
 
     verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-    await vi.waitFor(() => expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true), WAIT);
+    await vi.waitFor(() => expect(instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
     expect(instance.wrapped.savedRaw).toHaveLength(0);
+    expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true);
   });
 
   it('sticks after holdMaxFailures consecutive failed promotions and stops trying', async () => {
@@ -799,8 +800,9 @@ describe('verified, bounded hold retries through the adapter', () => {
     await instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
 
     verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-    await vi.waitFor(() => expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true), WAIT);
-    await settle();
+    await settle(400);
     expect(attempts).toBe(3);
+    expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true);
+    expect(instance.hold.isPending(BAD_DIGEST)).toBe(false);
   });
 });
