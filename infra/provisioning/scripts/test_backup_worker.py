@@ -312,27 +312,48 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
 
     @classmethod
     def _wait_for_mysqld_ready(cls, *, deadline_s: float = 90.0) -> None:
+        """`mysqladmin ping` returns 0 even against MySQL's own transient,
+        socket-only init server (and even on access-denied) -- it cannot
+        tell "the real server is up" from "something answered". This polls
+        with the same real, authenticated, TLS-required query
+        `RemoteMysqldumpTransport` itself makes -- over TCP, inside the
+        container -- so a pass here means the real server, with real TLS
+        materials and the real root password, is actually ready. Once the
+        container is running at all, a timeout here is a genuine CI
+        failure, never a silent skip -- this is the one live proof of
+        VERIFY_CA and the grant set."""
         start = time.monotonic()
+        last_stderr = b""
         while time.monotonic() - start < deadline_s:
             probe = subprocess.run(
-                ["docker", "exec", _MYSQL_CONTAINER_NAME, "mysqladmin", "ping", "-uroot", f"-p{cls.root_pwd}"],
+                [
+                    "docker", "exec", _MYSQL_CONTAINER_NAME,
+                    "mysql", "--protocol=TCP", "--host=127.0.0.1", "--ssl-mode=REQUIRED",
+                    "-uroot", f"-p{cls.root_pwd}", "-e", "SELECT 1",
+                ],
                 capture_output=True,
             )
             if probe.returncode == 0:
                 return
+            last_stderr = probe.stderr
             time.sleep(1)
-        raise unittest.SkipTest("mysqld in the container never became ready")
+        raise AssertionError(
+            f"mysqld in the container never answered an authenticated TLS query within "
+            f"{deadline_s}s: {last_stderr.decode(errors='replace')}"
+        )
 
     @classmethod
     def _provision_database_and_account(cls) -> None:
-        # The floor tables backup_worker.py watches for, one row each --
-        # real GRANT statements, real TLS enforcement (REQUIRE SSL), and
-        # the exact privilege set db/RUNBOOK-db.md's "Backup worker
-        # account" section documents. '%' rather than one address: this
-        # container is reached over 127.0.0.1 with a mapped port, and the
-        # real account's host restriction is proven separately, in code,
-        # by `_require_allowed_source`-style host-side grants this test
-        # does not re-derive.
+        # One row per floor table, real GRANTs, real REQUIRE SSL, matching
+        # db/RUNBOOK-db.md's "Backup worker account" grant set -- LOCK
+        # TABLES and EVENT dropped; this test is what confirms mysqldump
+        # still runs without them. `backup_ops1` stays host-'%': this
+        # test's client runs on the CI runner, reaching the container
+        # through Docker's published-port NAT, whose source address inside
+        # the container isn't reliably 127.0.0.1. Host restriction is
+        # proven for real by `backup_wrong_host` below instead: an address
+        # nothing here has, refused from a connection this test controls fully
+        # (container-internal, genuinely 127.0.0.1 on both ends).
         sql_template = (
             "CREATE DATABASE ghost_blog;"
             "CREATE TABLE ghost_blog.users (id INT PRIMARY KEY, name VARCHAR(64));"
@@ -340,11 +361,14 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
             "CREATE TABLE ghost_blog.settings (id INT PRIMARY KEY, value VARCHAR(64));"
             "INSERT INTO ghost_blog.settings VALUES (1, 'title');"
             "CREATE USER 'backup_ops1'@'%' IDENTIFIED BY '{worker_pwd}' REQUIRE SSL;"
-            "GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT "
+            "GRANT SELECT, SHOW VIEW, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT "
             "ON *.* TO 'backup_ops1'@'%';"
+            "CREATE USER 'backup_wrong_host'@'10.99.99.99' IDENTIFIED BY '{wrong_host_pwd}' REQUIRE SSL;"
+            "GRANT SELECT ON *.* TO 'backup_wrong_host'@'10.99.99.99';"
             "FLUSH PRIVILEGES;"
         )
-        sql = sql_template.format(worker_pwd=cls.worker_pwd)
+        cls.wrong_host_pwd = "throwaway-wrong-host-pwd"
+        sql = sql_template.format(worker_pwd=cls.worker_pwd, wrong_host_pwd=cls.wrong_host_pwd)
         subprocess.run(
             ["docker", "exec", "-i", _MYSQL_CONTAINER_NAME, "mysql", "-uroot", f"-p{cls.root_pwd}"],
             input=sql,
@@ -352,6 +376,28 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
             check=True,
             capture_output=True,
         )
+
+    def test_the_host_restriction_actually_refuses_a_non_matching_address(self) -> None:
+        """Proves MySQL's own account matching genuinely enforces a
+        `CREATE USER ...@'<address>'` clause, the same mechanism the real
+        `backup_ops1`@`<ops1's address>` account relies on --
+        `backup_wrong_host` is granted only at `@'10.99.99.99'`, an
+        address nothing here has, so connecting to it from this
+        container's own `127.0.0.1`, using its real password, must still
+        be refused: no grant row matches the connecting host."""
+        # Run inside the container, over the same TCP loopback the
+        # readiness probe uses -- never assumes a `mysql` client exists on
+        # the CI runner itself, only inside the image already pulled.
+        probe = subprocess.run(
+            [
+                "docker", "exec", _MYSQL_CONTAINER_NAME,
+                "mysql", "--protocol=TCP", "--host=127.0.0.1", "--ssl-mode=REQUIRED",
+                "-u", "backup_wrong_host", f"-p{self.wrong_host_pwd}", "-e", "SELECT 1",
+            ],
+            capture_output=True,
+        )
+        self.assertNotEqual(probe.returncode, 0)
+        self.assertIn(b"Access denied", probe.stderr)
 
     def test_mysqldump_over_real_tls_against_the_grant_limited_account(self) -> None:
         transport = RemoteMysqldumpTransport(

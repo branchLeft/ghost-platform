@@ -470,51 +470,87 @@ listener, one more account on the port and TLS setup already here for
 tenant connections -- matching LLD-9's own rule that a database host never
 gains a second inbound path for a second purpose.
 
-**The account.** Same grants as the existing local `backup`@`localhost`
-account above, proven to be exactly what `mysqldump --single-transaction
---source-data=2 --routines --triggers --set-gtid-purged=OFF` needs against
-this server -- restated here for a second account rather than reused,
-because this one is reachable over the network and must be scoped to
-exactly one peer and require TLS. Run at the same `mysql>` prompt as step 4:
+**The account.** Nearly the same grants as the existing local
+`backup`@`localhost` account above -- `mysqldump --single-transaction
+--source-data=2 --routines --triggers --set-gtid-purged=OFF` needs no
+`LOCK TABLES` (that account's own `--single-transaction` already avoids a
+global lock) and no `EVENT` (nothing here passes `--events`), so this
+account drops both; the container-proof test in
+`test_backup_worker.py` (`RemoteMysqldumpAgainstARealMysqlContainerTests`)
+is what confirms the narrower set still works. Restated here for a second
+account rather than reused, because this one is reachable over the
+network and must be scoped to exactly one peer and require TLS.
 
-```sql
-CREATE USER 'backup_ops1'@'<ops1''s private-network address>'
-    IDENTIFIED BY '<matches DB_DUMP_MYSQL_PWD, read via read -rs>' REQUIRE SSL;
-GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT
-    ON *.* TO 'backup_ops1'@'<ops1''s private-network address>';
+Confirm `ops1`'s current private address first -- shared-infra's live
+`hetzner-host/addressPlan.ts` names `10.20.1.50` as of this writing, but
+the `@branchleft/hetzner-host` version this repo pins (`0.3.0`) predates
+that address landing in the package's own `HOST_IPS`, so it is not a
+value to trust from a constant. Then, on `db1` (from `/opt/branchleft/db`)
+-- generate the password the same way the exporter-rotation steps above do
+(`LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 40`), alnum-only so
+it can never break out of the single-quoted SQL literal below:
+
+```bash
+read -r OPS1_ADDR; export OPS1_ADDR
+read -rs DB_DUMP_MYSQL_PWD; export DB_DUMP_MYSQL_PWD
+docker compose exec -T -e MYSQL_PWD="$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' /etc/branchleft/db.env)" \
+  mysql mysql -uroot <<SQL
+CREATE USER 'backup_ops1'@'$OPS1_ADDR' IDENTIFIED BY '$DB_DUMP_MYSQL_PWD' REQUIRE SSL;
+GRANT SELECT, SHOW VIEW, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT
+    ON *.* TO 'backup_ops1'@'$OPS1_ADDR';
 FLUSH PRIVILEGES;
+SQL
 ```
 
-`ops1`'s current private address is in shared-infra's live `hetzner-host/addressPlan.ts`
-(`10.20.1.50` as of this writing) -- but the `@branchleft/hetzner-host`
-version this repo pins (`0.3.0`) predates that address landing in the
-package's own `HOST_IPS`, so confirm it directly rather than trusting a
-constant from here, and bump the pin once a release carries it.
+(the unquoted heredoc delimiter, `<<SQL`, is deliberate -- it is what lets
+`$OPS1_ADDR` and `$DB_DUMP_MYSQL_PWD` expand to the values just read,
+before the statement ever reaches `mysql`'s stdin).
+
+**The `mysqldump` client on `ops1`.** Not installed by anything today --
+`ops1` is shared-infra-owned, outside `db/provision`'s own reach. Install
+the same pinned, version-matched client `install_host_prereqs.py` puts on
+`db1` and for the same reason (Debian's own default client is MariaDB's,
+which rejects `--source-data`/`--set-gtid-purged`): copy that script to
+`ops1` and run it there too (it is idempotent and installs `age` alongside
+the MySQL client harmlessly, or narrow it to the `mysql-community-client`
+steps if `age` is unwanted on that host). Confirm the version landed:
+
+```bash
+mysqldump --version
+```
+
+Expect `Ver 8.0.<minor>` -- not `mariadb-dump`, and not `8.4` or newer
+(see that script's own docstring for why the client must match `db1`'s
+server line exactly).
 
 **TLS on the client side.** `require_secure_transport = ON` in
 `db/stack/conf.d/branchleft.cnf` already forces TLS for every TCP
 connection to this server (tenant accounts included, today), and the
 image auto-generates a self-signed `ca.pem` into the data volume on first
-start -- there is nothing new to configure on `db1` for TLS itself. `mysql-data`
-is a named Docker volume, not a host path, so read the cert back through
-the container (from `/opt/branchleft/db`):
+start -- there is nothing new to configure on `db1` for TLS itself.
+**Recreating or restoring the `mysql-data` volume mints a new CA**, and
+every backup then fails with a TLS verify error until the copy below is
+repeated -- loud and correct when it happens, but worth knowing in
+advance. `mysql-data` is a named Docker volume, not a host path, so read
+the cert back through the container (from `/opt/branchleft/db`):
 
 ```bash
 docker compose exec mysql cat /var/lib/mysql/ca.pem
 ```
 
 Copy that output to `ops1` out-of-band (scp, not this runbook's own
-delivery path) and set:
+delivery path), to a path of your choosing, then on `ops1` set:
 
 ```bash
-BACKUP_WORKER_DB_HOST=<db1's private-network address>
-BACKUP_WORKER_MYSQL_USER=backup_ops1
-BACKUP_WORKER_MYSQL_SSL_CA=<path to the copied ca.pem, on ops1>
-DB_DUMP_MYSQL_PWD=<matches the account above>
+read -r DB1_ADDR; export DB1_ADDR
+read -r CA_PATH; export CA_PATH
+printf 'BACKUP_WORKER_DB_HOST=%s\nBACKUP_WORKER_MYSQL_USER=backup_ops1\nBACKUP_WORKER_MYSQL_SSL_CA=%s\nDB_DUMP_MYSQL_PWD=%s\n' \
+  "$DB1_ADDR" "$CA_PATH" "$DB_DUMP_MYSQL_PWD"
 ```
 
 wherever `backup_worker.py` runs -- the password manager entry this goes
-in is `ops1`'s own, not this host's.
+in is `ops1`'s own, not this host's. `$DB_DUMP_MYSQL_PWD` is the same
+value read above, for the same account.
 
 **Firewall: there currently is none to update.** `db1` has no public
 interface (`infra/hosts/index.ts`: `publicNetworking: false`), and
@@ -522,7 +558,7 @@ shared-infra's `hetzner-host/firewalls.ts` states the other half plainly:
 a Hetzner Cloud firewall filters the public interface only, so private-network
 traffic "is never evaluated against these rules" -- and no host-level
 firewall (`nftables`/`ufw`) is provisioned anywhere in `db/` today. The
-MySQL account's own host-restriction (`@'<ops1's address>'` above) and
+MySQL account's own host-restriction (`@'$OPS1_ADDR'` above) and
 `REQUIRE SSL` are the only barriers this change adds. If a host firewall
 is added to `db1` later, restrict `:3306` to `ops1`'s address in it then --
 not a step this change can honestly claim to take today.

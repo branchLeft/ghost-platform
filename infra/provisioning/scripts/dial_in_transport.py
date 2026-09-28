@@ -15,6 +15,8 @@ import os
 import re
 import signal
 import subprocess
+import sys
+import tempfile
 import threading
 from collections.abc import Mapping, Sequence
 from typing import BinaryIO, Protocol
@@ -43,6 +45,10 @@ _CHILD_ENV_ALLOWLIST = ("PATH",)
 # itself rather than trusting whatever validated it on its way here.
 TENANT_NAME_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
 _TENANT_DB_PREFIX = "ghost_"
+
+# How much of mysqldump's own stderr this class ever holds in memory or
+# quotes back -- a chatty failure must not turn into an unbounded read.
+_STDERR_CAPTURE_LIMIT = 16 * 1024
 
 
 class DialInTransportError(Exception):
@@ -131,8 +137,10 @@ class RemoteMysqldumpTransport:
     tenant database host's existing port. Grants: `db/RUNBOOK-db.md`'s
     "Backup worker account" section. Re-validates the tenant independently
     -- this is the layer that turns it into a `--databases` argument.
-    `env["DB_DUMP_MYSQL_PWD"]` reaches `mysqldump` only as the child's own
-    `MYSQL_PWD`, never argv, so it never appears in a process listing."""
+    `env["DB_DUMP_MYSQL_PWD"]` reaches `mysqldump` only through an inherited
+    pipe fd (`--defaults-extra-file=/dev/fd/N`), read once at the child's
+    own startup -- never argv, never the child's environ, never a file on
+    disk."""
 
     def __init__(
         self,
@@ -163,8 +171,23 @@ class RemoteMysqldumpTransport:
             )
 
         db_name = _TENANT_DB_PREFIX + tenant.replace("-", "_")
+        child_env = {name: os.environ[name] for name in _CHILD_ENV_ALLOWLIST if name in os.environ}
+
+        # The credential never touches argv or the child's own environ: an
+        # anonymous pipe, passed by fd (subprocess.Popen's own `pass_fds`
+        # makes exactly the listed fd -- and only that one -- survive the
+        # exec), read by mysqldump itself as an option file at startup and
+        # never again. Short enough (well under a pipe's own OS buffer)
+        # that the write below can never block.
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, f"[client]\npassword={mysql_pwd}\n".encode())
+        finally:
+            os.close(write_fd)
+
         argv = [
             "mysqldump",
+            f"--defaults-extra-file=/dev/fd/{read_fd}",
             "--host", self._host,
             "--port", str(self._port),
             "--user", self._user,
@@ -177,18 +200,31 @@ class RemoteMysqldumpTransport:
             "--set-gtid-purged=OFF",
             "--databases", db_name,
         ]
-        child_env = {name: os.environ[name] for name in _CHILD_ENV_ALLOWLIST if name in os.environ}
-        child_env["MYSQL_PWD"] = mysql_pwd
 
-        # start_new_session so a kill on timeout reaches the whole process
-        # group `mysqldump` heads, not just the one pid this class holds --
-        # otherwise a child it spawned could keep the stdout pipe's write
-        # end open after the parent is gone, and the read loop below would
-        # block for however long that child took to exit on its own,
-        # rather than for this transport's own timeout.
-        process = self._popen(
-            argv, env=child_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
-        )
+        # A real temp file, not a pipe: dump_tenant.py's own run_mysqldump
+        # uses the same shape, for the same reason -- stderr is never read
+        # while stdout streams below, so a pipe would deadlock once
+        # mysqldump wrote more warnings than one OS pipe buffer holds.
+        stderr_file = tempfile.TemporaryFile()
+        try:
+            # start_new_session so a kill on timeout reaches the whole
+            # process group `mysqldump` heads, not just the one pid this
+            # class holds -- otherwise a child it spawned could keep the
+            # stdout pipe's write end open after the parent is gone, and
+            # the read loop below would block for however long that child
+            # took to exit on its own, rather than for this transport's
+            # own timeout.
+            process = self._popen(
+                argv,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+                start_new_session=True,
+                pass_fds=(read_fd,),
+            )
+        finally:
+            os.close(read_fd)  # this process's own copy; the child has its own, independent reference
+
         timed_out = threading.Event()
 
         def _on_timeout() -> None:
@@ -203,15 +239,31 @@ class RemoteMysqldumpTransport:
                     stdout.write(line)
             finally:
                 process.stdout.close()
-            process.stderr.close()
             exit_code = process.wait()
         finally:
             timer.cancel()
 
+        stderr_file.seek(0)
+        stderr_tail = stderr_file.read(_STDERR_CAPTURE_LIMIT)
+        stderr_file.close()
+
         if timed_out.is_set():
             raise DialInTransportError(
                 f"mysqldump against {self._host}:{self._port} exceeded its {self._timeout_seconds}s "
-                "timeout and was killed -- refusing to treat this as an ordinary producer failure"
+                "timeout and was killed -- refusing to treat this as an ordinary producer failure. "
+                f"stderr so far: {stderr_tail.decode(errors='replace')!r}"
+            )
+        if exit_code != 0 and stderr_tail:
+            # Not raised -- a nonzero producer exit is pull_encrypt_store.py's
+            # ordinary, expected outcome (see DialInTransportError's own
+            # docstring), reported through the return value, not this
+            # exception. mysqldump's own reason would otherwise be lost
+            # entirely: stderr was captured but nothing else ever surfaces
+            # it.
+            print(
+                f"dial_in_transport: mysqldump against {self._host}:{self._port} exited "
+                f"{exit_code}: {stderr_tail.decode(errors='replace')}",
+                file=sys.stderr,
             )
         return exit_code
 

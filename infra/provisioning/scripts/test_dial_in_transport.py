@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -184,9 +185,10 @@ class RemoteMysqldumpTransportArgvTests(unittest.TestCase):
     def test_builds_the_expected_mysqldump_invocation(self) -> None:
         captured = {}
 
-        def fake_popen(argv, *, env, stdout, stderr, start_new_session):
+        def fake_popen(argv, *, env, stdout, stderr, start_new_session, pass_fds):
             captured["argv"] = argv
             captured["env"] = env
+            captured["pass_fds"] = pass_fds
             return _FakeCompletedProcess()
 
         transport = _remote_transport(
@@ -210,15 +212,19 @@ class RemoteMysqldumpTransportArgvTests(unittest.TestCase):
             "--databases", "ghost_blog",
         ):
             self.assertIn(expected, argv)
-        # Never in argv -- see the class docstring. Only ever the child's
-        # own MYSQL_PWD.
-        self.assertNotIn("pw", argv)
-        self.assertEqual(captured["env"]["MYSQL_PWD"], "pw")
+        # Never a plain --password/-p argument, never MYSQL_PWD in the
+        # child's own environ -- see the class docstring. The credential
+        # travels only through the one fd named in --defaults-extra-file,
+        # which pass_fds is what keeps open across the exec.
+        self.assertTrue(any(a.startswith("--defaults-extra-file=/dev/fd/") for a in argv))
+        self.assertFalse(any("pw" in a for a in argv))
+        self.assertNotIn("MYSQL_PWD", captured["env"])
+        self.assertEqual(len(captured["pass_fds"]), 1)
 
     def test_a_hyphenated_tenant_becomes_the_underscored_database_name(self) -> None:
         captured = {}
 
-        def fake_popen(argv, *, env, stdout, stderr, start_new_session):
+        def fake_popen(argv, *, env, stdout, stderr, start_new_session, pass_fds):
             captured["argv"] = argv
             return _FakeCompletedProcess()
 
@@ -266,20 +272,50 @@ class RemoteMysqldumpTransportRealSubprocessTests(unittest.TestCase):
 
     def test_the_credential_never_appears_on_the_command_line(self) -> None:
         """The fake script echoes its own argv (never its env) -- if the
-        password were ever passed as an argument rather than through
-        MYSQL_PWD, it would show up in this output."""
+        password were ever passed as an argument rather than through the
+        passed fd, it would show up in this output."""
         self._write_fake_mysqldump('#!/bin/sh\necho "$@"\nexit 0\n')
         transport = _remote_transport()
         sink = _CollectingSink()
         transport.run(command=_COMMAND, env={"DB_DUMP_MYSQL_PWD": "s3cret-pw"}, stdout=sink)
         self.assertNotIn(b"s3cret-pw", b"".join(sink.chunks))
 
+    def test_the_credential_reaches_mysqldump_only_through_the_passed_fd(self) -> None:
+        """The positive half of the property above: the password DOES
+        reach the child -- by reading the exact file named in its own
+        `--defaults-extra-file=` argument -- and it is absent from the
+        child's own environ (`env` lists every inherited variable, one per
+        line; MYSQL_PWD is never among them)."""
+        self._write_fake_mysqldump(
+            "#!/bin/sh\n"
+            "for arg in \"$@\"; do\n"
+            "  case \"$arg\" in\n"
+            "    --defaults-extra-file=*) cat \"${arg#--defaults-extra-file=}\" ;;\n"
+            "  esac\n"
+            "done\n"
+            "env\n"
+            "exit 0\n"
+        )
+        transport = _remote_transport()
+        sink = _CollectingSink()
+        transport.run(command=_COMMAND, env={"DB_DUMP_MYSQL_PWD": "s3cret-pw"}, stdout=sink)
+        output = b"".join(sink.chunks)
+        self.assertIn(b"password=s3cret-pw", output)
+        self.assertNotIn(b"MYSQL_PWD=", output)
+
     def test_a_hanging_producer_is_killed_after_its_timeout(self) -> None:
         self._write_fake_mysqldump("#!/bin/sh\nsleep 30\n")
         transport = _remote_transport(timeout_seconds=0.3)
+        start = time.monotonic()
         with self.assertRaises(dit.DialInTransportError) as ctx:
             transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+        elapsed = time.monotonic() - start
         self.assertIn("timeout", str(ctx.exception))
+        # The bound a plain `process.kill()` (one pid, not the process
+        # group) would blow: an orphaned `sleep 30` keeps the stdout pipe
+        # open, and the read loop blocks for the full 30s instead of this
+        # 0.3s timeout. Comfortably under 30s, comfortably over 0.3s.
+        self.assertLess(elapsed, 5.0)
 
 
 if __name__ == "__main__":
