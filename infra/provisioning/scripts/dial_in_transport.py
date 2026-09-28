@@ -1,27 +1,9 @@
 #!/usr/bin/env python3
-"""The one channel an org/control-side worker dials a tenant host over.
-
-09-backup-and-recovery.html is explicit that the direction is fixed: the
-tenant host "never initiates outward" and the worker "dials in over the
-collector's channel -- one transport [reused]". LLD-2 §03 names the
-concrete shape once for the whole estate: bearer-token-authenticated,
-answers-never-calls HTTP -- `services/mailgun-shim`'s `GET /drain`
-(`services/mailgun-shim/src/routes/drain.ts`) is the shape as mail already
-implements it. `db/provision/dump_endpoint_server.py` is the same shape in
-front of `db/provision/dump_tenant.py`, per Rob's 2026-09-28 ruling on
-branchLeft/workspace#1203 (`transport=a`). This module holds:
-
-  - `DialInTransport`, the interface a caller like `pull_encrypt_store.py`
-    depends on, so it never has to know which concrete channel it is
-    running over;
-  - `LocalProcessTransport`, a local test double that runs a producer as an
-    ordinary local subprocess. It stands in for a real dial-in call so the
-    pipeline's floor-check, single-recipient and never-put-before-exit-0
-    properties can be proven against a real local database and a real
-    producer without any remote channel existing yet;
-  - `DumpEndpointTransport`, the real channel: dials
-    `dump_endpoint_server.py` over HTTP, with the same bearer-token
-    authentication that server enforces.
+"""The one channel an org/control-side worker dials a tenant host over:
+`DialInTransport` (the interface), `LocalProcessTransport` (a local test
+double), and `DumpEndpointTransport` (the real channel, dialling
+`db/provision/dump_endpoint_server.py`). Design and rationale:
+`db/provision/dump-endpoint.md`.
 """
 
 from __future__ import annotations
@@ -36,17 +18,12 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import BinaryIO, Protocol
 
-# Every prefix that names a storage or encryption credential in this
-# estate's convention (db/provision/dump_tenant.py's own
-# FORBIDDEN_ENV_PREFIXES, restated here rather than imported: this module
-# runs on the org/control side of the trust boundary the producer's own
-# check exists to enforce, and the two sides proving the same property
-# independently is the point, not a maintenance burden -- a caller-side
-# check that quietly drifted from the producer's would be exactly the kind
-# of gap this pipeline exists to close). AWS_* / DB_BACKUP_* for the
-# storage credential and endpoint, AGE_* for the encryption recipient: the
-# worker holds all three, and none of them may ever reach the environment a
-# producer command is invoked with.
+# Every prefix naming a storage or encryption credential in this estate's
+# convention, restated from db/provision/dump_tenant.py's own
+# FORBIDDEN_ENV_PREFIXES rather than imported: this module is the
+# org/control side of the same trust boundary, checking the same property
+# independently. None of AWS_* / DB_BACKUP_* / AGE_* may ever reach the
+# environment a producer command is invoked with.
 FORBIDDEN_ENV_PREFIXES = ("AWS_", "DB_BACKUP_", "AGE_")
 
 # What a local subprocess is allowed to see beyond the caller's own,
@@ -101,19 +78,11 @@ class DialInTransport(Protocol):
 
 
 class LocalProcessTransport:
-    """Runs the producer as an ordinary local subprocess.
-
-    This is a TEST DOUBLE, not the production channel -- see this module's
-    docstring. It exists so the pipeline's controls can be proven end to
-    end today, against a real producer talking to a real local database,
-    without depending on a remote dial-in channel that does not exist in
-    this repository yet.
-
-    Streams line-by-line, mirroring `db/provision/dump_tenant.py`'s own
-    `run_mysqldump`: a caller watching for a floor-table `INSERT` pattern
-    needs whole lines, and a chunk boundary that split one across two
-    `stdout.write()` calls would make that watch unreliable for no reason a
-    real remote channel would ever force on it.
+    """A TEST DOUBLE, not the production channel: proves the pipeline's
+    controls against a real local producer and database without a network
+    hop. Streams line-by-line, mirroring `dump_tenant.py`'s own
+    `run_mysqldump`, since a caller watching for a floor-table `INSERT`
+    needs whole lines.
     """
 
     def __init__(self, *, popen=subprocess.Popen) -> None:
@@ -157,28 +126,11 @@ def _tenant_from_command(command: Sequence[str]) -> str:
 
 class DumpEndpointTransport:
     """The real dial-in channel: fetches one tenant's dump from
-    `dump_endpoint_server.py`, running on the tenant database host, over
-    plain HTTP with the same bearer-token authentication that server
-    enforces (see its own docstring). This class makes no network call
-    until `run` is invoked, and it never retries -- a caller that wants a
-    retry policy owns that decision, same as `LocalProcessTransport` owns
-    none of it either.
-
-    **Never trusts that `command`'s tenant was already validated
-    upstream.** `run_tenant_dump` does validate it before building
-    `command`, but this class talks to the network and re-checks
-    independently before that value ever reaches a URL -- the same
-    two-independent-checks shape `assert_no_forbidden_env` documents for
-    itself above, not defense in depth against a defect in the check this
-    class runs, but a second barrier against a defect anywhere upstream of
-    it.
-
-    **Detects a response that stopped short.** The server always sends an
-    exact `Content-Length` for a 200 (see `dump_endpoint_server.py`'s own
-    docstring: it buffers the whole dump before responding, precisely so
-    it can). If the connection drops after fewer bytes than that, this
-    class raises rather than returning 0 -- a truncated dump must never
-    look like a successful one to `pull_encrypt_store.py`.
+    `dump_endpoint_server.py` over plain HTTP, with the same bearer-token
+    authentication that server enforces. Re-validates the tenant
+    independently rather than trusting `run_tenant_dump` already did, and
+    treats a response shorter than its own declared `Content-Length` as a
+    failure, never a 0 exit. Design: `db/provision/dump-endpoint.md`.
     """
 
     def __init__(
@@ -227,6 +179,11 @@ class DumpEndpointTransport:
 
         with response:
             expected_length = response.headers.get("Content-Length")
+            if expected_length is None:
+                raise DialInTransportError(
+                    f"the dump endpoint at {url} sent no Content-Length on a 200 -- refusing to "
+                    "trust a body this class cannot check for completeness"
+                )
             bytes_read = 0
             try:
                 for line in response:
@@ -237,7 +194,7 @@ class DumpEndpointTransport:
                     f"the dump stream from {url} broke before completing: {exc}"
                 ) from exc
 
-        if expected_length is not None and bytes_read != int(expected_length):
+        if bytes_read != int(expected_length):
             raise DialInTransportError(
                 f"the dump stream from {url} ended after {bytes_read} bytes, expected exactly "
                 f"{expected_length} (Content-Length) -- refusing to treat a truncated dump as "
@@ -250,12 +207,23 @@ class DumpEndpointTransport:
         if exc.code == 502:
             try:
                 payload = json.loads(body)
-                return int(payload["exit_code"])
+                exit_code = int(payload["exit_code"])
             except (ValueError, KeyError, TypeError):
                 raise DialInTransportError(
                     f"dump endpoint at {url} reported a producer failure (502) but the body "
                     f"was not the expected {{'exit_code': ...}} shape: {body!r}"
                 ) from None
+            if exit_code == 0:
+                # dump_endpoint_server.py only ever sends 502 from a caught
+                # DumpError, which always reports exit_code 1 -- a 502
+                # carrying 0 is not a shape the real server produces, and
+                # guessing 0 here would tell pull_encrypt_store.py to store
+                # a dump this response never actually delivered.
+                raise DialInTransportError(
+                    f"dump endpoint at {url} returned 502 but exit_code 0, a contradiction -- "
+                    "refusing to report this as a successful 0 exit"
+                )
+            return exit_code
         raise DialInTransportError(
             f"dump endpoint at {url} returned {exc.code}, not 200 or 502: {body!r}"
         )

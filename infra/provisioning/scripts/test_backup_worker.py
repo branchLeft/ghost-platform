@@ -1,32 +1,19 @@
 #!/usr/bin/env python3
-"""Unit tests for backup_worker.py, through its real entry points --
-`run_tenant_dump` AND, separately, `main()` itself -- against the REAL
-`db/provision/dump_tenant.py`, never a fake standing in for the producer
-itself. `mysql` and `mysqldump` are the two binaries faked (as tiny shell
-scripts placed first on `PATH`), because a real MySQL instance is the
-local-container proof this repo's own convention (see
-`db/provision/test_extract_tenant_binlog.py`) keeps out of the fast,
-hermetic unit suite.
-
-What IS real here: `dump_tenant.py`'s own Python code (its floor checks,
-its env-forwarding allowlist, its argument parsing),
-`dial_in_transport.LocalProcessTransport` spawning it as a genuine
-subprocess, `age` encrypting and decrypting the result, and, in
-`MainCopyWiringTests` below, `main()`'s own argument parsing and
-`BACKUP_WORKER_COPY_*` env-var wiring. The only things this file invents
-are the two MySQL client binaries, the storage "copies" (plain local files
-standing in for the two cloud buckets in the `run_tenant_dump`-level tests
--- their credentials are not this story's to provision, see the PR body),
-and, in `MainCopyWiringTests`, `shared_objectstorage.put_object` itself --
-that boundary is mocked there specifically so `main()`'s real env-parsing
-and copy-selection logic runs unmocked against synthetic, dummy credential
-values, with no real network call.
+"""Unit tests for backup_worker.py, through its real entry points, against
+the REAL `dump_tenant.py`. `mysql`/`mysqldump` are faked as tiny shell
+scripts on `PATH`. `RunTenantDumpAgainstTheRealProducerTests` uses
+`LocalProcessTransport`; `RunTenantDumpAgainstTheRealHttpEndpointTests`
+runs the same producer behind a real `dump_endpoint_server.py` subprocess
+and a real `DumpEndpointTransport`. `age` is real throughout; only the
+storage credential path is faked -- neither cloud credential is this
+file's to provision.
 """
 
 from __future__ import annotations
 
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import tempfile
@@ -36,34 +23,30 @@ import unittest
 from unittest import mock
 
 import backup_worker as bw
-from dial_in_transport import LocalProcessTransport
+from dial_in_transport import DialInTransportError, DumpEndpointTransport, LocalProcessTransport
 from pull_encrypt_store import CopyTarget
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _DUMP_TENANT_PATH = str(_REPO_ROOT / "db" / "provision" / "dump_tenant.py")
 
-_FAKE_MYSQL = """#!/bin/sh
-# Stands in for the real `mysql` client: db/provision/dump_tenant.py's
-# check_floor() calls this twice (once per floor table) with a `SELECT
-# COUNT(*)` and expects a bare row count on stdout. This fake ignores the
-# query entirely and always reports a nonzero count, so the pre-check
-# always passes -- the property these tests exercise is the worker's OWN
+# Stands in for the real `mysql` client: dump_tenant.py's check_floor()
+# calls this twice (once per floor table) with a `SELECT COUNT(*)` and
+# expects a bare row count on stdout. Always reports a nonzero count, so
+# the pre-check always passes -- these tests exercise the worker's own
 # plumbing, not MySQL's counting.
-echo 5
-"""
+_FAKE_MYSQL = """#!/bin/sh
+echo 5"""
 
 _FAKE_MYSQLDUMP_HAPPY = """#!/bin/sh
 echo "-- MySQL dump 10.13"
 echo "INSERT INTO \\`users\\` VALUES ('u1','Owner');"
 echo "INSERT INTO \\`settings\\` VALUES ('s1','title','Blog');"
-exit 0
-"""
+exit 0"""
 
 _FAKE_MYSQLDUMP_MISSING_SETTINGS = """#!/bin/sh
 echo "-- MySQL dump 10.13 (--no-data)"
 echo "INSERT INTO \\`users\\` VALUES ('u1','Owner');"
-exit 0
-"""
+exit 0"""
 
 
 def _write_fake_bin(directory: str, name: str, contents: str) -> None:
@@ -197,6 +180,177 @@ class RunTenantDumpAgainstTheRealProducerTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.primary.path))
 
 
+_DUMP_ENDPOINT_SERVER_PATH = str(_REPO_ROOT / "db" / "provision" / "dump_endpoint_server.py")
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _wait_until_accepting(host: str, port: int, *, deadline_s: float = 10.0) -> None:
+    start = time.monotonic()
+    while time.monotonic() - start < deadline_s:
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise TimeoutError(f"dump_endpoint_server never accepted a connection on {host}:{port}")
+
+
+class RunTenantDumpAgainstTheRealHttpEndpointTests(unittest.TestCase):
+    """[ISSUE #1553]'s own Done-means: `backup_worker.py` against the real
+    transport, as two real OS processes over real HTTP, nothing mocked --
+    `db/provision/dump_endpoint_server.py` launched as a genuine
+    subprocess, `DumpEndpointTransport` (real `urllib`) as the client,
+    both sides of the same fake `mysql`/`mysqldump` binaries
+    `RunTenantDumpAgainstTheRealProducerTests` uses, so the only thing
+    invented anywhere in this class is MySQL's own client binaries -- the
+    HTTP hop, the process boundary, the socket and every line of this
+    repo's own code between them are real."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bin_dir = os.path.join(self.tmp.name, "bin")
+        os.makedirs(self.bin_dir)
+        _write_fake_bin(self.bin_dir, "mysql", _FAKE_MYSQL)
+
+        self.identity_a, self.recipient_a = _generate_age_identity()
+        self.copies_dir = os.path.join(self.tmp.name, "copies")
+        os.makedirs(self.copies_dir)
+        self.primary = _FileCopy("primary", self.copies_dir)
+
+        self.token = "test-bearer-token"
+        self.port = _free_port()
+        server_env = dict(os.environ)
+        server_env["PATH"] = self.bin_dir + os.pathsep + os.environ.get("PATH", "")
+        server_env["DUMP_ENDPOINT_TOKEN"] = self.token
+        server_env["DUMP_ENDPOINT_HOST"] = "127.0.0.1"
+        server_env["DUMP_ENDPOINT_PORT"] = str(self.port)
+        server_env["DUMP_ENDPOINT_ALLOWED_SOURCE"] = "127.0.0.1"
+        # DUMP_ENDPOINT_SOCKET_PATH is left at its default -- the fake
+        # mysql/mysqldump scripts ignore whatever --socket value dump_tenant.py
+        # passes them, so it never has to resolve to a real socket file.
+        self.server = subprocess.Popen(
+            [sys.executable, _DUMP_ENDPOINT_SERVER_PATH],
+            env=server_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(self._stop_server)
+        _wait_until_accepting("127.0.0.1", self.port)
+
+    def _stop_server(self) -> None:
+        self.server.terminate()
+        try:
+            self.server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.server.kill()
+            self.server.wait(timeout=5)
+        if self.server.stdout is not None:
+            self.server.stdout.close()
+        if self.server.stderr is not None:
+            self.server.stderr.close()
+
+    def _run(self, tenant: str = "blog") -> bw.DumpResult:
+
+        return bw.run_tenant_dump(
+            tenant=tenant,
+            transport=DumpEndpointTransport(base_url=f"http://127.0.0.1:{self.port}", bearer_token=self.token),
+            mysql_pwd="irrelevant-fake-password",
+            age_recipient=self.recipient_a,
+            copies=[self.primary.as_target()],
+            dump_tenant_path=_DUMP_TENANT_PATH,  # ignored by the real transport; kept for the call shape
+        )
+
+    def test_happy_path_through_two_real_processes_over_real_http(self) -> None:
+        _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_HAPPY)
+        result = self._run()
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.floor_tables_seen, frozenset({"users", "settings"}))
+        self.assertEqual(result.copies_written, ("primary",))
+        with open(self.primary.path, "rb") as handle:
+            ciphertext = handle.read()
+        decrypted = subprocess.run(
+            ["age", "--decrypt", "-i", self.identity_a], input=ciphertext, capture_output=True, check=True
+        )
+        self.assertIn(b"INSERT INTO `users`", decrypted.stdout)
+
+    def test_a_dump_missing_the_settings_floor_writes_to_no_copy_over_real_http(self) -> None:
+        """The same missing-floor defect `RunTenantDumpAgainstTheRealProducerTests`
+        proves for `LocalProcessTransport`, over a real HTTP hop instead:
+        `dump_tenant.py`'s own floor check runs server-side and the
+        endpoint never streams a byte back for a failed run, so
+        `missing_floor_tables` reports both tables (the worker's watcher
+        saw nothing), unlike `LocalProcessTransport`'s one. Both are
+        correct for what each transport delivered; `ok=False` and no copy
+        written is what matters, and holds either way."""
+        _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_MISSING_SETTINGS)
+        result = self._run()
+        self.assertFalse(result.ok)
+        self.assertIn("settings", result.missing_floor_tables)
+        self.assertEqual(result.copies_written, ())
+        self.assertFalse(os.path.exists(self.primary.path))
+
+
+class TruncatedDumpEndpointResponseTests(unittest.TestCase):
+    """The one failure shape `dump_endpoint_server.py`'s own buffer-before-
+    respond design makes structurally unreachable from a well-behaved
+    server (see its module doc): a 200 whose body stops short of its own
+    `Content-Length`. Proving `DumpEndpointTransport`'s defense against it
+    needs a peer willing to lie, so this runs a second real process too --
+    a minimal, deliberately dishonest HTTP/1.1 responder, never
+    `dump_endpoint_server.py` itself, which cannot be made to do this
+    without editing production code to misbehave for a test."""
+
+    def setUp(self) -> None:
+        self.port = _free_port()
+        body = b"line one\nline two\n"
+        sent = body[:4]  # short by design -- the server claims a length it never delivers
+        claimed_length = len(body) + 100
+        response_head = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {claimed_length}\r\n\r\n".encode()
+        script = (
+            "import socket\n"
+            "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+            f"s.bind(('127.0.0.1', {self.port}))\n"
+            "s.listen(1)\n"
+            "conn, _ = s.accept()\n"
+            "conn.recv(65536)\n"
+            f"conn.sendall({response_head!r} + {sent!r})\n"
+            "conn.close()\n"
+        )
+        self.server = subprocess.Popen([sys.executable, "-c", script])
+        self.addCleanup(self._stop_server)
+        _wait_until_accepting("127.0.0.1", self.port)
+
+    def _stop_server(self) -> None:
+        self.server.terminate()
+        try:
+            self.server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.server.kill()
+            self.server.wait(timeout=5)
+        if self.server.stdout is not None:
+            self.server.stdout.close()
+        if self.server.stderr is not None:
+            self.server.stderr.close()
+
+    def test_a_short_body_against_its_own_declared_length_raises(self) -> None:
+
+        transport = DumpEndpointTransport(base_url=f"http://127.0.0.1:{self.port}", bearer_token="whatever")
+        with self.assertRaises(DialInTransportError):
+            transport.run(
+                command=[sys.executable, _DUMP_TENANT_PATH, "blog", "--socket", "/x.sock"],
+                env={"DB_DUMP_MYSQL_PWD": "pw"},
+                stdout=tempfile.TemporaryFile(),
+            )
+
+
 # Dummy values only -- never a real credential. These exist purely to give
 # main()'s env-parsing something syntactically present to read; nothing
 # here is escrowed anywhere or reaches a real endpoint, because
@@ -302,17 +456,13 @@ class MainCopyWiringTests(unittest.TestCase):
 
 
 class WiringSabotageForTheCopySelectionTests(unittest.TestCase):
-    """Proves the required/optional distinction is actually load-bearing --
-    not by breaking `backup_worker.py`'s shipped code (a permanently-red
-    test would fail every future CI run, which is not what "record red"
-    means here), but by demonstrating that the OLD shape --
-    `_copy_target_from_env(..., required=True)` for the secondary copy too,
-    which is exactly what `main()` did before this fix -- refuses the same
-    environment the fixed `main()` accepts today. Both are real, executed
-    assertions against the real function, not prose; the live edit/run/
-    revert transcript against `main()` itself is recorded in the PR body's
-    Sabotage section, since that half genuinely does require breaking and
-    restoring the shipped file."""
+    """Proves the required/optional distinction is load-bearing without
+    permanently breaking shipped code: the OLD shape --
+    `_copy_target_from_env(..., required=True)` for the secondary copy too
+    -- refuses the same environment the fixed `main()` accepts today, both
+    real, executed calls against the real function. The live edit/run/
+    revert transcript against `main()` itself is in the PR body's Sabotage
+    section."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -366,21 +516,13 @@ class WiringSabotageForTheCopySelectionTests(unittest.TestCase):
 
 class WiringSabotageThroughTheRealEntryPointTests(unittest.TestCase):
     """Proves the floor gate in `run_tenant_dump` is actually WIRED to
-    `pull_encrypt_and_store`'s `post_stream_check` parameter -- not merely
-    present as a method nobody calls.
-
-    This class deliberately does NOT run the real `dump_tenant.py`: that
-    producer's own `run_mysqldump` already raises `FloorError` (a nonzero
-    exit) the moment a floor table's `INSERT` never appears, so a dump
-    reaching this worker with the settings floor missing but a 0 exit is
-    never produced by the real producer -- it is exactly the shape a
-    DIFFERENT or future producer, or a stream corrupted between the
-    producer and this worker, could still produce. That is what this
-    worker's own independent watch exists to catch even so, and this class
-    isolates it with a bare shell command as the "producer" -- a fake one,
-    on purpose, so the real `dump_tenant.py`'s own floor check (proven
-    against separately above) cannot be the thing making this pass.
-    """
+    `pull_encrypt_and_store`'s `post_stream_check` -- not merely present as
+    a method nobody calls. Deliberately does NOT run the real
+    `dump_tenant.py` (whose own `run_mysqldump` already refuses a missing
+    floor table itself): a fake shell "producer" isolates the case a
+    DIFFERENT producer, or a corrupted stream, could still reach this
+    worker with a 0 exit and a missing floor -- what this worker's own
+    independent watch exists to catch even then."""
 
     def setUp(self) -> None:
         _, self.recipient = _generate_age_identity()

@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Unit tests for dump_endpoint_server.py.
-
-`handle_dump_request` is proven directly against plain arguments (no real
-socket) for every status-code path; a second section proves the real HTTP
-request/response cycle end to end, against a real `HTTPServer` on a real
-loopback socket and a real `DumpEndpointTransport` client
-(`infra/provisioning/scripts/dial_in_transport.py`, loaded by path -- see
-`_load_dial_in_transport` -- since the two directories are independently
-tested and neither is on the other's `sys.path` by convention), with only
-`run_dump` faked. That combination is what proves the wire contract itself
-(headers, status codes, `Content-Length`) rather than only the pure
-function underneath it.
+"""Unit tests for dump_endpoint_server.py: `handle_dump_request` against
+plain arguments for every status code, then the real HTTP cycle end to end
+against a real socket and a real `DumpEndpointTransport` client (loaded by
+path -- see `_load_dial_in_transport` -- two independently-tested
+directories, neither on the other's `sys.path`), with only `run_dump`
+faked.
 """
 
 from __future__ import annotations
@@ -20,8 +14,10 @@ import importlib.util
 import io
 import json
 import pathlib
+import socket
 import sys
 import threading
+import time
 import unittest
 from http import HTTPStatus
 
@@ -53,6 +49,20 @@ def _headers(*, token: str | None = None, mysql_pwd: str | None = None) -> _Head
     if mysql_pwd is not None:
         headers[des.MYSQL_PWD_HEADER] = mysql_pwd
     return headers
+
+
+_TRUSTED_PEER = "10.20.1.50"
+
+
+def _read_and_close(body) -> bytes:
+    """`handle_dump_request`'s success path hands back an open file, never
+    the whole dump materialised as `bytes` -- see `dump_endpoint_server.py`'s
+    own module doc. Tests that only care about the bytes use this rather
+    than repeating the read-then-close dance."""
+    try:
+        return body.read()
+    finally:
+        body.close()
 
 
 def _fake_run_dump_ok(dump_bytes: bytes):
@@ -97,6 +107,21 @@ class HandleDumpRequestAuthTests(unittest.TestCase):
         status, body, _ = self._call(headers=_headers(mysql_pwd="pw"))
         self.assertEqual(status, HTTPStatus.UNAUTHORIZED)
 
+    def test_an_empty_configured_token_refuses_even_an_empty_presented_one(self) -> None:
+        """`hmac.compare_digest("", "")` is `True` -- without this check,
+        a server misconfigured with an empty `expected_token` would accept
+        `Authorization: Bearer ` from anyone. Refused at the check itself,
+        not only by `main()`'s own `_require_env`."""
+        status, _, _ = des.handle_dump_request(
+            path="/dump/blog",
+            headers=_headers(token="", mysql_pwd="pw"),
+            expected_token="",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
+            run_dump=_fake_run_dump_ok(b"x"),
+        )
+        self.assertEqual(status, HTTPStatus.UNAUTHORIZED)
+
     def test_wrong_token_is_401(self) -> None:
         status, body, _ = self._call(headers=_headers(token="wrong", mysql_pwd="pw"))
         self.assertEqual(status, HTTPStatus.UNAUTHORIZED)
@@ -112,6 +137,8 @@ class HandleDumpRequestAuthTests(unittest.TestCase):
             path="/dump/blog",
             headers=_headers(token="wrong", mysql_pwd="pw"),
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=run_dump,
         )
         self.assertEqual(calls, [])
@@ -121,8 +148,56 @@ class HandleDumpRequestAuthTests(unittest.TestCase):
             path="/dump/blog",
             headers=headers,
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=_fake_run_dump_ok(b"dump bytes"),
         )
+
+
+class HandleDumpRequestSourceTests(unittest.TestCase):
+    """The second, independent layer beside the bearer token: a peer
+    address that does not match `allowed_source` is refused, whatever the
+    token says."""
+
+    def test_mismatched_peer_is_403(self) -> None:
+        status, _, _ = des.handle_dump_request(
+            path="/dump/blog",
+            headers=_headers(token="right", mysql_pwd="pw"),
+            expected_token="right",
+            peer_address="10.20.1.100",
+            allowed_source=_TRUSTED_PEER,
+            run_dump=_fake_run_dump_ok(b"x"),
+        )
+        self.assertEqual(status, HTTPStatus.FORBIDDEN)
+
+    def test_mismatched_peer_never_runs_the_producer_even_with_the_right_token(self) -> None:
+        calls = []
+
+        def run_dump(**kwargs):
+            calls.append(kwargs)
+            return "ghost_blog"
+
+        des.handle_dump_request(
+            path="/dump/blog",
+            headers=_headers(token="right", mysql_pwd="pw"),
+            expected_token="right",
+            peer_address="10.20.1.100",
+            allowed_source=_TRUSTED_PEER,
+            run_dump=run_dump,
+        )
+        self.assertEqual(calls, [])
+
+    def test_matching_peer_is_not_refused_on_that_ground(self) -> None:
+        status, body, _ = des.handle_dump_request(
+            path="/dump/blog",
+            headers=_headers(token="right", mysql_pwd="pw"),
+            expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
+            run_dump=_fake_run_dump_ok(b"x"),
+        )
+        self.assertEqual(status, HTTPStatus.OK)
+        _read_and_close(body)
 
 
 class HandleDumpRequestRoutingTests(unittest.TestCase):
@@ -135,6 +210,8 @@ class HandleDumpRequestRoutingTests(unittest.TestCase):
             path=path,
             headers=_headers(token="right", mysql_pwd="pw"),
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=_fake_run_dump_ok(b"dump bytes"),
         )
 
@@ -157,7 +234,7 @@ class HandleDumpRequestRoutingTests(unittest.TestCase):
     def test_valid_tenant_slug_reaches_the_producer(self) -> None:
         status, body, _ = self._call("/dump/blog")
         self.assertEqual(status, HTTPStatus.OK)
-        self.assertEqual(body, b"dump bytes")
+        self.assertEqual(_read_and_close(body), b"dump bytes")
 
 
 class HandleDumpRequestMysqlPwdTests(unittest.TestCase):
@@ -166,6 +243,8 @@ class HandleDumpRequestMysqlPwdTests(unittest.TestCase):
             path="/dump/blog",
             headers=_headers(token="right"),
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=_fake_run_dump_ok(b"x"),
         )
         self.assertEqual(status, HTTPStatus.BAD_REQUEST)
@@ -175,6 +254,8 @@ class HandleDumpRequestMysqlPwdTests(unittest.TestCase):
             path="/dump/blog",
             headers=_headers(token="right", mysql_pwd=""),
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=_fake_run_dump_ok(b"x"),
         )
         self.assertEqual(status, HTTPStatus.BAD_REQUEST)
@@ -187,12 +268,15 @@ class HandleDumpRequestMysqlPwdTests(unittest.TestCase):
             stdout.write(b"x")
             return "ghost_blog"
 
-        des.handle_dump_request(
+        status, body, _ = des.handle_dump_request(
             path="/dump/blog",
             headers=_headers(token="right", mysql_pwd="s3cret-pw"),
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=run_dump,
         )
+        _read_and_close(body)
         self.assertEqual(received["password"], "s3cret-pw")
 
 
@@ -202,17 +286,39 @@ class HandleDumpRequestProducerOutcomeTests(unittest.TestCase):
             path="/dump/blog",
             headers=_headers(token="right", mysql_pwd="pw"),
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=_fake_run_dump_ok(b"a real dump"),
         )
         self.assertEqual(status, HTTPStatus.OK)
-        self.assertEqual(body, b"a real dump")
+        self.assertEqual(_read_and_close(body), b"a real dump")
         self.assertEqual(headers["Content-Type"], "application/octet-stream")
+
+    def test_success_body_is_a_file_never_the_whole_dump_pre_read(self) -> None:
+        """Pins the streaming property finding (4) exists to catch: the
+        success path hands back an open, seekable file object, not a
+        `bytes` blob already materialised in memory."""
+        status, body, headers = des.handle_dump_request(
+            path="/dump/blog",
+            headers=_headers(token="right", mysql_pwd="pw"),
+            expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
+            run_dump=_fake_run_dump_ok(b"a real dump"),
+        )
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertFalse(isinstance(body, (bytes, bytearray)))
+        self.assertTrue(hasattr(body, "read"))
+        self.assertEqual(headers["Content-Length"], "11")
+        _read_and_close(body)
 
     def test_producer_failure_is_502_with_a_parseable_exit_code_never_the_plaintext(self) -> None:
         status, body, headers = des.handle_dump_request(
             path="/dump/blog",
             headers=_headers(token="right", mysql_pwd="pw"),
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=_fake_run_dump_fails("floor table empty"),
         )
         self.assertEqual(status, HTTPStatus.BAD_GATEWAY)
@@ -228,6 +334,8 @@ class HandleDumpRequestProducerOutcomeTests(unittest.TestCase):
             path="/dump/blog",
             headers=_headers(token="right", mysql_pwd="pw"),
             expected_token="right",
+            peer_address=_TRUSTED_PEER,
+            allowed_source=_TRUSTED_PEER,
             run_dump=run_dump,
         )
         self.assertEqual(status, HTTPStatus.BAD_REQUEST)
@@ -240,19 +348,24 @@ class _EphemeralDumpEndpoint:
     seam `DumpEndpointHandler.run_dump` exists for; nothing else about the
     request/response path is faked."""
 
-    def __init__(self, *, token: str, run_dump) -> None:
-        handler = type(
-            "TestDumpEndpointHandler",
-            (des.DumpEndpointHandler,),
-            {"expected_token": token, "run_dump": staticmethod(run_dump)},
-        )
+    def __init__(
+        self, *, token: str, run_dump, allowed_source: str = "127.0.0.1", timeout: float | None = None
+    ) -> None:
+        attrs = {"expected_token": token, "allowed_source": allowed_source, "run_dump": staticmethod(run_dump)}
+        if timeout is not None:
+            attrs["timeout"] = timeout
+        handler = type("TestDumpEndpointHandler", (des.DumpEndpointHandler,), attrs)
         self._server = http.server.HTTPServer(("127.0.0.1", 0), handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
     @property
     def base_url(self) -> str:
-        host, port = self._server.server_address
+        host, port = self.server_address
         return f"http://{host}:{port}"
+
+    @property
+    def server_address(self) -> tuple[str, int]:
+        return self._server.server_address
 
     def __enter__(self) -> "_EphemeralDumpEndpoint":
         self._thread.start()
@@ -312,6 +425,76 @@ class DumpEndpointTransportEndToEndTests(unittest.TestCase):
             )
         self.assertEqual(exit_code, 1)
         self.assertEqual(sink.getvalue(), b"")
+
+    def test_a_dump_larger_than_one_chunk_still_round_trips_exactly(self) -> None:
+        """Pins finding (4): the server streams from its temp file in
+        `_CHUNK_SIZE`-sized pieces rather than holding the whole dump in
+        memory. A dump spanning several chunks is the shape that would
+        expose a chunking bug (an off-by-one at a chunk boundary, a short
+        write) that a single-chunk dump could not."""
+        big_dump = b"".join(f"line {i:07d}\n".encode() for i in range(200_000))  # ~2.6 MiB, several chunks
+        self.assertGreater(len(big_dump), des._CHUNK_SIZE)
+        with _EphemeralDumpEndpoint(token="right-token", run_dump=_fake_run_dump_ok(big_dump)) as ep:
+            transport = self.dit.DumpEndpointTransport(base_url=ep.base_url, bearer_token="right-token")
+            sink = self._sink()
+            exit_code = transport.run(
+                command=["python3", "/x/dump_tenant.py", "blog", "--socket", "/x.sock"],
+                env={"DB_DUMP_MYSQL_PWD": "pw"},
+                stdout=sink,
+            )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(sink.getvalue(), big_dump)
+
+    def test_wrong_source_address_is_refused_over_a_real_socket(self) -> None:
+        """`DumpEndpointTransport` always dials from 127.0.0.1 in this
+        test process, so pointing `allowed_source` at a different address
+        proves the check fires on a real connection's real peer address,
+        not only on a hand-built `peer_address` string."""
+        with _EphemeralDumpEndpoint(
+            token="right-token", run_dump=_fake_run_dump_ok(b"x"), allowed_source="10.20.1.999"
+        ) as ep:
+            transport = self.dit.DumpEndpointTransport(base_url=ep.base_url, bearer_token="right-token")
+            with self.assertRaises(self.dit.DialInTransportError):
+                transport.run(
+                    command=["python3", "/x/dump_tenant.py", "blog", "--socket", "/x.sock"],
+                    env={"DB_DUMP_MYSQL_PWD": "pw"},
+                    stdout=self._sink(),
+                )
+
+
+class StalledConnectionTests(unittest.TestCase):
+    """Finding (5): one idle peer must not hold the server's single thread
+    forever. A short `timeout` and a connection that sends nothing prove
+    the server recovers, by proving a second, well-formed request still
+    gets answered promptly afterward -- the thing that would actually be
+    true of a live backup run if this control were missing is every OTHER
+    tenant's dump also failing that night."""
+
+    def test_an_idle_connection_does_not_block_the_next_request(self) -> None:
+        with _EphemeralDumpEndpoint(
+            token="right-token", run_dump=_fake_run_dump_ok(b"x"), timeout=0.3
+        ) as ep:
+            host, port = ep.server_address
+            stalled = socket.create_connection((host, port), timeout=5)
+            try:
+                # Opens the connection and sends nothing -- exactly what an
+                # unauthenticated peer probing this port would do.
+                start = time.monotonic()
+                dit = _load_dial_in_transport()
+                transport = dit.DumpEndpointTransport(base_url=ep.base_url, bearer_token="right-token")
+                exit_code = transport.run(
+                    command=["python3", "/x/dump_tenant.py", "blog", "--socket", "/x.sock"],
+                    env={"DB_DUMP_MYSQL_PWD": "pw"},
+                    stdout=io.BytesIO(),
+                )
+                elapsed = time.monotonic() - start
+            finally:
+                stalled.close()
+        self.assertEqual(exit_code, 0)
+        # Well under the stalled connection's own 0.3s timeout plus slack --
+        # the second request was answered on its own merits, not after
+        # waiting for the first one to time out.
+        self.assertLess(elapsed, 2.0)
 
 
 if __name__ == "__main__":

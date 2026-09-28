@@ -223,6 +223,29 @@ class DumpEndpointTransportTests(unittest.TestCase):
             transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
         self.assertIn("truncated", str(ctx.exception))
 
+    def test_a_200_with_no_content_length_raises_rather_than_trusting_it(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420",
+            bearer_token="t",
+            urlopen=lambda request, timeout: _FakeResponse([b"line one\n"], content_length=None),
+        )
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+
+    def test_502_with_exit_code_zero_raises_rather_than_reporting_success(self) -> None:
+        """dump_endpoint_server.py never sends this shape -- a 502 always
+        carries exit_code 1 -- so seeing one is itself a signal something
+        upstream is wrong, not evidence of a clean run."""
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420",
+            bearer_token="t",
+            urlopen=mock.Mock(
+                side_effect=_http_error(code=502, body=json.dumps({"error": "x", "exit_code": 0}).encode())
+            ),
+        )
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+
     def test_connection_failure_raises(self) -> None:
         def fake_urlopen(request, timeout):
             raise dit.urllib.error.URLError("connection refused")

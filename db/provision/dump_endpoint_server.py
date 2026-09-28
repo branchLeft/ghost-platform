@@ -1,61 +1,7 @@
 #!/usr/bin/env python3
-"""The tenant database host's one dial-in surface: a small HTTP server that
-answers one request shape, `GET /dump/<tenant>`, and initiates nothing of
-its own.
-
-LLD-2 §03 names the shape once for the whole estate and asks every pull
-channel to share it rather than each re-deriving one: bearer-token
-authenticated, "answers, never calls". `services/mailgun-shim`'s `GET
-/drain` (`services/mailgun-shim/src/routes/drain.ts`,
-`services/mailgun-shim/src/drainAuth.ts`) is the concrete shape that
-already exists; this module is the same shape applied to a tenant's
-database dump rather than its queued mail, per Rob's 2026-09-28 ruling on
-branchLeft/workspace#1203 (`transport=a`): "the worker fetches dumps from a
-small dump endpoint on the database host, using the same HTTP-and-bearer-
-token pattern as the mail collector."
-
-Three properties this module exists to hold, each independent of the
-others:
-
-  1. **Authentication is a constant-time compare.** `hmac.compare_digest`,
-     mirroring `drainAuth.ts`'s own reasoning: a timing side-channel on the
-     token itself, distinguishable by response latency across many
-     requests, is exactly the class of leak that matters for an endpoint
-     whose only credential gates a tenant's database dump.
-  2. **The tenant id is validated strictly**, against
-     `naming.py`'s own `validate_tenant_name` -- the same pattern
-     `dump_tenant.py` and every other tenant-scoped script in this repo
-     already enforces, not a second, looser copy of it.
-  3. **A caller can never name a path.** The only thing this server ever
-     reads out of a request is the tenant slug, and the only thing it ever
-     does with it is hand it to `dump_tenant.run_dump`, which turns it into
-     a MySQL database name and nothing else. There is no parameter, header
-     or body field anywhere in this module's request handling that reaches
-     a filesystem path, a socket path or a shell command. `run_dump` always
-     runs against this module's own fixed `DEFAULT_SOCKET`.
-
-`DB_DUMP_MYSQL_PWD` never lives on this host at rest -- see
-`backup_worker.py`'s own module docstring for the settled design decision
-this implements the other half of: the org/control-side worker holds it
-(read from the password manager at run time) and sends it once, per
-request, in the `X-Db-Dump-Mysql-Pwd` header. This server never writes it
-to disk, never logs it, and holds it only for the duration of the one
-`run_dump` call it is used for.
-
-**Why the response is buffered, not streamed live.** A caller must be able
-to trust the HTTP status line: 200 means a complete, floor-checked dump
-follows; a nonzero producer exit must never surface as a 200 with a
-truncated body, because `pull_encrypt_store.py`'s caller contract is that
-nothing is ever stored before a confirmed 0 exit, and it decides that from
-the transport's return value alone. Streaming `dump_tenant.py`'s stdout
-live into the HTTP response would mean committing to a 200 before knowing
-whether it finishes cleanly. Buffering into an anonymous `tempfile.
-TemporaryFile()` first (never a named path -- nothing here ever chooses a
-filename a second request or a restart could collide with or a caller
-could name) means the status line is only ever written once the real
-outcome is known, and `Content-Length` is always exact, which is what lets
-`DumpEndpointTransport` on the other end detect a connection that dropped
-mid-response rather than silently treating a truncated body as success.
+"""The tenant database host's dial-in surface: `GET /dump/<tenant>`,
+answered, never dialled out from. Design and rationale: `dump-endpoint.md`,
+this module's colocated doc.
 """
 
 from __future__ import annotations
@@ -64,16 +10,23 @@ import hmac
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import BinaryIO
 
 from dump_tenant import DEFAULT_SOCKET, DumpError, run_dump
 from naming import InvalidTenantName, validate_tenant_name
 
 BEARER_PREFIX = "Bearer "
 MYSQL_PWD_HEADER = "X-Db-Dump-Mysql-Pwd"
+
+# How much of one tenant's dump this process ever holds in memory at once
+# while streaming a 200 response -- 1 MiB, well below what would trouble
+# this host's memory even alongside mysqld's own footprint.
+_CHUNK_SIZE = 1024 * 1024
 
 # Matches exactly one path segment: `/dump/<tenant>`, nothing before or
 # after it. A tenant name can never itself contain `/` (naming.py's own
@@ -116,9 +69,26 @@ def constant_time_token_equals(presented: str, expected: str) -> bool:
 
 
 def _require_bearer_token(headers, expected_token: str) -> None:
+    # Refuses closed on an empty expected_token itself, not only on the
+    # caller side (main()'s _require_env): compare_digest("", "") is True,
+    # and an empty Authorization value would otherwise satisfy it.
+    if not expected_token:
+        raise DumpEndpointError(HTTPStatus.UNAUTHORIZED, "Unauthorized")
     presented = parse_bearer_token(headers.get("Authorization"))
     if presented is None or not constant_time_token_equals(presented, expected_token):
         raise DumpEndpointError(HTTPStatus.UNAUTHORIZED, "Unauthorized")
+
+
+def _require_allowed_source(peer_address: str, allowed_source: str) -> None:
+    """A second, independent layer beside the bearer token -- not a
+    replacement for nftables (`db/provision/dump-endpoint.md`'s handover
+    covers installing that), but a check this process makes for itself
+    regardless of whether the host firewall is configured yet. The
+    allowed peer is a required, explicit value: which host in org/control
+    ultimately runs the backup worker is an operational decision, not
+    this module's to assume."""
+    if peer_address != allowed_source:
+        raise DumpEndpointError(HTTPStatus.FORBIDDEN, "Forbidden")
 
 
 def _tenant_from_path(path: str) -> str:
@@ -139,28 +109,25 @@ def handle_dump_request(
     path: str,
     headers,
     expected_token: str,
+    peer_address: str,
+    allowed_source: str,
     socket_path: str = DEFAULT_SOCKET,
     run_dump=run_dump,
-) -> tuple[HTTPStatus, bytes, dict[str, str]]:
-    """The whole of this server's request logic, kept independent of
-    `BaseHTTPRequestHandler` so it can be unit-tested directly against
-    plain arguments rather than through a real socket.
-
-    Always returns `(status, body, extra_headers)`, on every path --
-    `DumpEndpointError` (auth, routing, malformed-request refusals) is
-    caught here, not left for a caller to handle, so this function has one
-    calling convention throughout rather than "return a tuple, except when
-    it raises". `body` is the complete dump on a 200; a JSON error object
-    -- never the dump's own plaintext -- on every other status.
-    `extra_headers` never includes `Content-Length` (the caller sets that
-    from `len(body)`, which is always exact because `body` is never
-    assembled before the underlying subprocess has finished).
+) -> tuple[HTTPStatus, bytes | BinaryIO, dict[str, str]]:
+    """This server's request logic, independent of `BaseHTTPRequestHandler`
+    so a test drives it with plain arguments, no socket. Always returns
+    `(status, body, extra_headers)` -- `DumpEndpointError` is caught here,
+    never left for a caller to handle. `body` is the complete dump on a
+    200, a JSON error object on every other status; `extra_headers` never
+    includes `Content-Length` (the caller derives that from `len(body)`).
     """
     try:
         return _handle_dump_request(
             path=path,
             headers=headers,
             expected_token=expected_token,
+            peer_address=peer_address,
+            allowed_source=allowed_source,
             socket_path=socket_path,
             run_dump=run_dump,
         )
@@ -173,12 +140,15 @@ def _handle_dump_request(
     path: str,
     headers,
     expected_token: str,
+    peer_address: str,
+    allowed_source: str,
     socket_path: str,
     run_dump,
-) -> tuple[HTTPStatus, bytes, dict[str, str]]:
+) -> tuple[HTTPStatus, bytes | BinaryIO, dict[str, str]]:
     """The happy-path/refusal logic -- raises `DumpEndpointError` for every
     refusal, `handle_dump_request` above is the one place that turns it
     into a wire response."""
+    _require_allowed_source(peer_address, allowed_source)
     _require_bearer_token(headers, expected_token)
     tenant = _tenant_from_path(path)
 
@@ -191,7 +161,14 @@ def _handle_dump_request(
     if not mysql_pwd:
         raise DumpEndpointError(HTTPStatus.BAD_REQUEST, f"{MYSQL_PWD_HEADER} must be set and non-empty")
 
-    with tempfile.TemporaryFile(prefix="dump-endpoint-", suffix=".sql") as dump_file:
+    # An anonymous temp file, never read whole into memory: `do_GET` streams
+    # it in chunks (see `_CHUNK_SIZE`) and closes it once sent. Left open on
+    # a successful return -- the `finally` below only closes it for a path
+    # that does NOT hand it back to the caller, so ownership always ends up
+    # with exactly one side.
+    dump_file = tempfile.TemporaryFile(prefix="dump-endpoint-", suffix=".sql")
+    handed_off = False
+    try:
         try:
             run_dump(
                 tenant_name=tenant,
@@ -211,10 +188,17 @@ def _handle_dump_request(
                 {"Content-Type": "application/json"},
             )
 
+        size = dump_file.tell()
         dump_file.seek(0)
-        body = dump_file.read()
-
-    return HTTPStatus.OK, body, {"Content-Type": "application/octet-stream"}
+        handed_off = True
+        return (
+            HTTPStatus.OK,
+            dump_file,
+            {"Content-Type": "application/octet-stream", "Content-Length": str(size)},
+        )
+    finally:
+        if not handed_off:
+            dump_file.close()
 
 
 class DumpEndpointHandler(BaseHTTPRequestHandler):
@@ -227,6 +211,7 @@ class DumpEndpointHandler(BaseHTTPRequestHandler):
     through."""
 
     expected_token: str = ""
+    allowed_source: str = "127.0.0.1"
     socket_path: str = DEFAULT_SOCKET
     # Overridable per test subclass, the same way expected_token and
     # socket_path are -- lets a test point this handler at a fake producer
@@ -235,6 +220,10 @@ class DumpEndpointHandler(BaseHTTPRequestHandler):
     # anything inside handle_dump_request itself.
     run_dump = staticmethod(run_dump)
     server_version = "branchleft-dump-endpoint/1"
+    # Read AND write timeout on the request socket -- an idle peer (opened
+    # a connection, sent nothing) must not hold the one thread this server
+    # ever has forever. See `main()` for the real value.
+    timeout = 60
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib signature
         # Never logs a header (the bearer token and the MySQL password both
@@ -248,15 +237,27 @@ class DumpEndpointHandler(BaseHTTPRequestHandler):
             path=self.path,
             headers=self.headers,
             expected_token=self.expected_token,
+            peer_address=self.client_address[0],
+            allowed_source=self.allowed_source,
             socket_path=self.socket_path,
             run_dump=self.run_dump,
         )
         self.send_response(status)
         for name, value in extra_headers.items():
             self.send_header(name, value)
-        self.send_header("Content-Length", str(len(body)))
+        if "Content-Length" not in extra_headers:
+            self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if isinstance(body, (bytes, bytearray)):
+            self.wfile.write(body)
+        else:
+            # The success path: an open file, never read whole into memory
+            # -- `_CHUNK_SIZE` bounds how much of one tenant's dump this
+            # process ever holds at once, regardless of the dump's size.
+            try:
+                shutil.copyfileobj(body, self.wfile, length=_CHUNK_SIZE)
+            finally:
+                body.close()
 
 
 def _require_env(name: str) -> str:
@@ -268,20 +269,34 @@ def _require_env(name: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     token = _require_env("DUMP_ENDPOINT_TOKEN")
-    host = os.environ.get("DUMP_ENDPOINT_HOST", "0.0.0.0")
+    # No 0.0.0.0 default: db1 has no public interface, but it shares one
+    # private subnet with every other estate host (app1, edge1, mon1,
+    # ops1) -- see dump-endpoint.md's "Reachability". Binding wide would
+    # still answer any of them, so the address is a required, explicit
+    # value, never a silent default.
+    host = _require_env("DUMP_ENDPOINT_HOST")
     port = int(os.environ.get("DUMP_ENDPOINT_PORT", "8420"))
     socket_path = os.environ.get("DUMP_ENDPOINT_SOCKET_PATH", DEFAULT_SOCKET)
+    # The one peer this process answers at all, checked per request
+    # alongside the bearer token -- required for the same reason `host` is:
+    # see dump-endpoint.md and `_require_allowed_source`.
+    allowed_source = _require_env("DUMP_ENDPOINT_ALLOWED_SOURCE")
+    timeout = int(os.environ.get("DUMP_ENDPOINT_TIMEOUT_SECONDS", "60"))
 
     handler = type(
         "ConfiguredDumpEndpointHandler",
         (DumpEndpointHandler,),
-        {"expected_token": token, "socket_path": socket_path},
+        {
+            "expected_token": token,
+            "allowed_source": allowed_source,
+            "socket_path": socket_path,
+            "timeout": timeout,
+        },
     )
     # A single-threaded HTTPServer, deliberately: it answers one request at
     # a time, which is the whole of what "one tenant dumped at a time"
-    # needs at this layer. Alerting on how long a caller waited for that
-    # turn is a separate control, tracked on branchLeft/workspace#1158's
-    # `lock=a` ruling, not this module's to add.
+    # needs at this layer. Alerting on a caller's wait for that turn is a
+    # separate, tracked control, not this module's to add.
     server = HTTPServer((host, port), handler)
     print(f"dump_endpoint_server: listening on {host}:{port}", file=sys.stderr)
     try:
