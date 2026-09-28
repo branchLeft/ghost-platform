@@ -125,7 +125,8 @@ class Curl:
             url += "?" + urllib.parse.urlencode(sorted(query.items()), quote_via=urllib.parse.quote)
         return url
 
-    def argv(self, method: str, url: str, body_path: str, header_path: str, payload: bytes | None) -> list[str]:
+    def argv(self, method: str, url: str, body_path: str, header_path: str,
+             payload_path: str | None, headers: dict[str, str] | None = None) -> list[str]:
         argv = [
             "curl", "--silent", "--show-error", "--config", "-",
             "--aws-sigv4", f"aws:amz:{self.region}:s3",
@@ -134,18 +135,28 @@ class Curl:
             "--max-time", "60",
         ]
         argv += ["--request", method]
-        if payload is not None:
-            argv += ["--data-binary", payload.decode()]
+        for name, value in sorted((headers or {}).items()):
+            argv += ["--header", f"{name}: {value}"]
+        if payload_path is not None:
+            # From a file, so a policy naming the bucket's keys never sits in argv.
+            argv += ["--data-binary", f"@{payload_path}"]
         argv.append(url)
         return argv
 
     def request(self, role: str, method: str, key: str | None = None,
-                query: dict[str, str] | None = None, payload: bytes | None = None) -> Response:
+                query: dict[str, str] | None = None, payload: bytes | None = None,
+                headers: dict[str, str] | None = None) -> Response:
         access_key, secret_key = self.credentials[role]
         with tempfile.TemporaryDirectory(prefix="role-fence-probe-") as scratch:
             body_path = os.path.join(scratch, "body")
             header_path = os.path.join(scratch, "headers")
-            argv = self.argv(method, self.url(key, query), body_path, header_path, payload)
+            payload_path = None
+            if payload is not None:
+                payload_path = os.path.join(scratch, "payload")
+                with open(payload_path, "wb") as handle:
+                    handle.write(payload)
+            argv = self.argv(method, self.url(key, query), body_path, header_path,
+                             payload_path, headers)
             try:
                 done = self.run(
                     argv, input=curl_config(access_key, secret_key),
@@ -214,8 +225,14 @@ def parse_versions(body: bytes) -> list[tuple[str, str]]:
 
 
 class Check:
+    """One request and its expected verdict.
+
+    `shape` names an operator check sending the same request; a denial counts
+    only if that check succeeded in the same pass.
+    """
+
     def __init__(self, role: str, name: str, expect: str, method: str, key=None, query=None,
-                 payload=None, control: bool = False):
+                 payload=None, control: bool = False, headers=None, shape: str | None = None):
         self.role = role
         self.name = name
         self.expect = expect
@@ -224,20 +241,54 @@ class Check:
         self.query = query
         self.payload = payload
         self.control = control
+        self.headers = headers
+        self.shape = shape
+
+
+VERSIONING_ENABLED = (
+    b'<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+    b"<Status>Enabled</Status></VersioningConfiguration>"
+)
+PRIVATE_ACL = {"x-amz-acl": "private"}
+
+OPERATOR_POLICY_PUT = "operator re-PUTs the identical bucket policy"
+OPERATOR_VERSIONING_PUT = "operator sets versioning to Enabled"
+OPERATOR_ACL_PUT = "operator sets a private ACL on the writer's object"
 
 
 def build_checks(run_prefix: str, seed_key: str, seed_version: str, upload_key: str,
-                 upload_id: str) -> list[Check]:
-    """Each role's controls first, then its denials. Removals run last in a pass."""
+                 upload_id: str, policy: bytes) -> list[Check]:
+    """Each role's controls first, then its denials. Removals run last in a pass.
+
+    Every configuration write is one that changes nothing if it is wrongly
+    allowed: the policy already stored, versioning already on, a private ACL
+    on a probe object.
+    """
     listing = {"list-type": "2", "prefix": run_prefix, "max-keys": "5"}
     versions = {"versions": "", "prefix": run_prefix, "max-keys": "5"}
     by_version = {"versionId": seed_version}
     upload = {"uploadId": upload_id}
     body = b"role-fence-probe"
+    writer_object = f"{run_prefix}writer-object"
     return [
         Check("operator", "operator reads the seed", "allow", "GET", seed_key, control=True),
         Check("writer", "writer PUTs a new object", "allow", "PUT",
-              f"{run_prefix}writer-object", payload=body, control=True),
+              writer_object, payload=body, control=True),
+        Check("operator", OPERATOR_POLICY_PUT, "allow", "PUT", None, {"policy": ""}, policy),
+        Check("operator", OPERATOR_VERSIONING_PUT, "allow", "PUT", None, {"versioning": ""},
+              VERSIONING_ENABLED),
+        Check("operator", OPERATOR_ACL_PUT, "allow", "PUT", writer_object, {"acl": ""},
+              headers=PRIVATE_ACL),
+        Check("writer", "writer re-PUTs the identical bucket policy", "deny", "PUT", None,
+              {"policy": ""}, policy, shape=OPERATOR_POLICY_PUT),
+        Check("writer", "writer sets versioning to Enabled", "deny", "PUT", None,
+              {"versioning": ""}, VERSIONING_ENABLED, shape=OPERATOR_VERSIONING_PUT),
+        Check("writer", "writer sets an ACL on its own object", "deny", "PUT", writer_object,
+              {"acl": ""}, headers=PRIVATE_ACL, shape=OPERATOR_ACL_PUT),
+        Check("reader", "reader re-PUTs the identical bucket policy", "deny", "PUT", None,
+              {"policy": ""}, policy, shape=OPERATOR_POLICY_PUT),
+        Check("reader", "reader sets versioning to Enabled", "deny", "PUT", None,
+              {"versioning": ""}, VERSIONING_ENABLED, shape=OPERATOR_VERSIONING_PUT),
         Check("writer", "writer GETs an object", "deny", "GET", seed_key),
         Check("writer", "writer GETs an object version", "deny", "GET", seed_key, by_version),
         Check("writer", "writer lists the bucket", "deny", "GET", None, listing),
@@ -263,7 +314,8 @@ def build_checks(run_prefix: str, seed_key: str, seed_version: str, upload_key: 
 
 def run_pass(curl: Curl, checks: list[Check]) -> dict[str, tuple[str, str]]:
     """Every check once. Returns name -> (verdict, reason)."""
-    outcomes = {c.name: curl.request(c.role, c.method, c.key, c.query, c.payload).outcome()
+    outcomes = {c.name: curl.request(c.role, c.method, c.key, c.query, c.payload,
+                                     c.headers).outcome()
                 for c in checks}
     controls_ok = {role: True for role in ROLES}
     for c in checks:
@@ -283,6 +335,9 @@ def run_pass(curl: Curl, checks: list[Check]) -> dict[str, tuple[str, str]]:
         elif not controls_ok[c.role]:
             results[c.name] = (INCONCLUSIVE, f"the {c.role} key's control did not succeed in "
                                "this pass, so a denial is not evidence about the fence")
+        elif c.shape and outcomes[c.shape][0] != "allowed":
+            results[c.name] = (INCONCLUSIVE, "the same request did not succeed for the "
+                               "operator, so its denial here may be the request, not the fence")
         else:
             results[c.name] = (PASS, "") if outcome == "denied" else (
                 FAIL, "the fence did not deny this")
@@ -304,7 +359,7 @@ def combine(first: dict, second: dict) -> dict[str, tuple[str, str]]:
     return combined
 
 
-def seed(curl: Curl, run_prefix: str) -> tuple[str, str, str, str]:
+def seed(curl: Curl, run_prefix: str) -> tuple[str, str, str, str, bytes]:
     seed_key = f"{run_prefix}seed"
     response = curl.request("operator", "PUT", seed_key, payload=b"role-fence-probe seed")
     outcome, reason = response.outcome()
@@ -326,7 +381,14 @@ def seed(curl: Curl, run_prefix: str) -> tuple[str, str, str, str]:
             f"the writer could not start a multipart upload ({outcome}: {reason}). That is "
             f"its put permission; if it fails, the writer's control fails too."
         )
-    return seed_key, seed_version, upload_key, upload_ids[0]
+    response = curl.request("operator", "GET", None, {"policy": ""})
+    outcome, reason = response.outcome()
+    if outcome != "allowed" or not response.body.strip():
+        raise ProbeError(
+            f"the operator could not read the bucket policy ({outcome}: {reason}). The "
+            f"configuration probes re-PUT it byte for byte, so they need it first."
+        )
+    return seed_key, seed_version, upload_key, upload_ids[0], response.body
 
 
 def cleanup(curl: Curl, run_prefix: str, upload_key: str | None, upload_id: str | None) -> list[str]:
@@ -363,8 +425,8 @@ def probe(curl: Curl, *, dwell: float, recheck: float, run_id: str) -> tuple[int
     lines = []
     upload_key = upload_id = None
     try:
-        seed_key, seed_version, upload_key, upload_id = seed(curl, run_prefix)
-        checks = build_checks(run_prefix, seed_key, seed_version, upload_key, upload_id)
+        seed_key, seed_version, upload_key, upload_id, policy = seed(curl, run_prefix)
+        checks = build_checks(run_prefix, seed_key, seed_version, upload_key, upload_id, policy)
         first = run_pass(curl, checks)
         wait(recheck, "second pass, so a result the cache produced cannot stand alone")
         second = run_pass(curl, checks)

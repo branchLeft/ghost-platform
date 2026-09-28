@@ -13,7 +13,9 @@ import contextlib
 import http.server
 import importlib.util
 import io
+import json
 import pathlib
+import re
 import shutil
 import subprocess
 import threading
@@ -63,6 +65,11 @@ def denied_xml(code: str = "AccessDenied") -> bytes:
 
 
 def s3_action(method: str, key: str | None, query: dict[str, str]) -> str:
+    if key is None and method == "PUT":
+        return {"policy": "s3:PutBucketPolicy", "versioning": "s3:PutBucketVersioning"}[
+            next(iter(query))]
+    if key is not None and "acl" in query:
+        return "s3:PutObjectAcl" if method == "PUT" else "s3:GetObjectAcl"
     if key is None:
         if "versions" in query:
             return "s3:ListBucketVersions"
@@ -93,6 +100,7 @@ class FakeEndpoint:
         self.transport_down = transport_down
         self.stray_key = stray_key
         self.versions: list[tuple[str, str]] = []
+        self.config_writes: list = []
         self.counter = 0
         self.calls: list[tuple[str, str, str | None, dict]] = []
         self.argvs: list[list[str]] = []
@@ -126,6 +134,11 @@ class FakeEndpoint:
         query = dict(urllib.parse.parse_qsl(url.query, keep_blank_values=True))
         role, access_key = self.role_of(input)
         action = s3_action(method, key, query)
+        self.last_payload = None
+        if "--data-binary" in argv:
+            with open(argv[argv.index("--data-binary") + 1].removeprefix("@"), "rb") as handle:
+                self.last_payload = handle.read()
+        self.last_headers = [argv[i + 1] for i, a in enumerate(argv) if a == "--header"]
         self.calls.append((role, action, key, query))
         status, body, headers = self.respond(role, access_key, action, method, key, query)
         with open(body_path, "wb") as handle:
@@ -143,6 +156,11 @@ class FakeEndpoint:
             return 403, denied_xml("InvalidAccessKeyId"), {}
         if self.decide(access_key, action, key) != "allow":
             return 403, denied_xml(), {}
+        if action == "s3:GetBucketPolicy":
+            return 200, json.dumps(self.policy or {}).encode(), {}
+        if action in ("s3:PutBucketPolicy", "s3:PutBucketVersioning", "s3:PutObjectAcl"):
+            self.config_writes.append((role, action, self.last_payload, self.last_headers))
+            return 200, b"", {}
         if action == "s3:PutObject" and method == "PUT":
             self.counter += 1
             version = f"v{self.counter}" if self.versioning else "null"
@@ -190,7 +208,7 @@ class TestAgainstTheRenderedFence(unittest.TestCase):
         code, lines = run_probe(endpoint)
         self.assertEqual(code, 0, "\n".join(lines))
         self.assertTrue(all(line.startswith("PASS") for line in lines), "\n".join(lines))
-        self.assertEqual(len(lines), 21)
+        self.assertEqual(len(lines), 29)
 
     def test_it_proves_each_allow_and_each_deny_per_role(self):
         _, lines = run_probe(FakeEndpoint(rendered_fence()))
@@ -451,10 +469,14 @@ class _Recorder(http.server.BaseHTTPRequestHandler):
     seen: list = []
 
     def do_GET(self):  # noqa: N802
-        type(self).seen.append((dict(self.headers), self.path))
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        type(self).seen.append((dict(self.headers), self.path, body))
         self.send_response(403)
         self.end_headers()
         self.wfile.write(denied_xml())
+
+    do_PUT = do_GET
 
     def log_message(self, *args):
         pass
@@ -482,13 +504,148 @@ class TestTheRealCurlSigns(unittest.TestCase):
             server.shutdown()
             server.server_close()
         self.assertEqual((outcome, reason), ("denied", "AccessDenied"))
-        headers, path = _Recorder.seen[0]
+        headers, path, _ = _Recorder.seen[0]
         self.assertEqual(path, f"/{BUCKET}/k")
         authorization = headers.get("Authorization", "")
         self.assertTrue(authorization.startswith("AWS4-HMAC-SHA256 Credential=" + KEYS["writer"][0]),
                         authorization)
         self.assertIn("/hel1/s3/aws4_request", authorization)
         self.assertNotIn(KEYS["writer"][1], authorization)
+
+    def test_curl_sends_the_payload_from_a_file_and_signs_the_acl_header(self):
+        _Recorder.seen = []
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Recorder)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            curl = probe.Curl(host="unused", region="hel1", bucket=BUCKET,
+                              credentials={"writer": KEYS["writer"]})
+            with mock.patch.object(
+                probe.Curl, "url",
+                lambda self, key, query: f"http://127.0.0.1:{port}/{BUCKET}/{key}?acl=",
+            ):
+                outcome, _ = curl.request("writer", "PUT", "k", {"acl": ""}, b"payload-bytes",
+                                          probe.PRIVATE_ACL).outcome()
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(outcome, "denied")
+        headers, _, body = _Recorder.seen[0]
+        self.assertEqual(body, b"payload-bytes")
+        self.assertEqual(headers.get("x-amz-acl"), "private")
+        signed = headers.get("Authorization", "").split("SignedHeaders=")[1].split(",")[0]
+        self.assertIn("x-amz-acl", signed.split(";"))
+
+
+class TestTheConfigurationDenies(unittest.TestCase):
+    """Rewriting the fence, suspending versioning and publishing an object."""
+
+    def test_they_pass_against_the_rendered_fence_with_their_shape_controls(self):
+        endpoint = FakeEndpoint(rendered_fence())
+        _, lines = run_probe(endpoint)
+        text = "\n".join(lines)
+        for role, expect, name in [
+            ("operator", "allow", probe.OPERATOR_POLICY_PUT),
+            ("operator", "allow", probe.OPERATOR_VERSIONING_PUT),
+            ("operator", "allow", probe.OPERATOR_ACL_PUT),
+            ("writer", "deny", "writer re-PUTs the identical bucket policy"),
+            ("writer", "deny", "writer sets versioning to Enabled"),
+            ("writer", "deny", "writer sets an ACL on its own object"),
+            ("reader", "deny", "reader re-PUTs the identical bucket policy"),
+            ("reader", "deny", "reader sets versioning to Enabled"),
+        ]:
+            self.assertRegex(text, rf"PASS\s+{role}\s+expect {expect}\s+{re.escape(name)}")
+
+    def test_every_write_is_a_no_op_if_it_lands(self):
+        endpoint = FakeEndpoint(rendered_fence())
+        run_probe(endpoint)
+        stored = json.dumps(rendered_fence()).encode()
+        writes = {action: (payload, headers) for _, action, payload, headers in endpoint.config_writes}
+        self.assertEqual(writes["s3:PutBucketPolicy"][0], stored)
+        self.assertIn(b"<Status>Enabled</Status>", writes["s3:PutBucketVersioning"][0])
+        self.assertEqual(writes["s3:PutObjectAcl"][1], ["x-amz-acl: private"])
+        for _, action, _, _ in endpoint.config_writes:
+            self.assertIn(action, writes)
+        self.assertEqual({role for role, *_ in endpoint.config_writes}, {"operator"})
+
+    def test_a_reader_that_can_rewrite_the_fence_fails(self):
+        # The sabotage: the configuration deny is gone. The writer is still
+        # held by the bucket catch-all; the reader, exempt from it, is not.
+        policy = rendered_fence()
+        policy["Statement"] = [
+            s for s in policy["Statement"] if s["Sid"] != "DenyBucketConfigurationExceptOperator"
+        ]
+        code, lines = run_probe(FakeEndpoint(policy))
+        self.assertEqual(code, 1)
+        self.assertTrue(line_for(lines, "reader re-PUTs the identical bucket policy").startswith("FAIL"))
+        self.assertTrue(line_for(lines, "writer re-PUTs the identical bucket policy").startswith("PASS"))
+
+    def test_a_writer_that_can_rewrite_the_fence_fails(self):
+        policy = rendered_fence()
+        policy["Statement"] = [
+            s for s in policy["Statement"] if s["Sid"] != "DenyBucketConfigurationExceptOperator"
+        ]
+        for s in policy["Statement"]:
+            if s["Sid"] == "DenyBucketAccessExceptNamedKeys":
+                s["NotPrincipal"]["AWS"].append(bucketpolicy.key_principal(PROJECT, KEYS["writer"][0]))
+        code, lines = run_probe(FakeEndpoint(policy))
+        self.assertEqual(code, 1)
+        self.assertTrue(line_for(lines, "writer re-PUTs the identical bucket policy").startswith("FAIL"))
+        self.assertTrue(line_for(lines, "writer sets versioning to Enabled").startswith("FAIL"))
+
+    def test_a_writer_that_can_set_an_acl_fails(self):
+        policy = rendered_fence()
+        for s in policy["Statement"]:
+            if s["Sid"] in ("DenyPutOnlyKeysReadsAndRemovals", "DenyObjectMutationsExceptOperator"):
+                s["Action"] = [a for a in s["Action"] if a != "s3:PutObjectAcl"]
+        code, lines = run_probe(FakeEndpoint(policy))
+        self.assertEqual(code, 1)
+        self.assertTrue(line_for(lines, "writer sets an ACL on its own object").startswith("FAIL"))
+
+    def test_a_request_the_operator_cannot_make_proves_no_denial(self):
+        endpoint = FakeEndpoint(rendered_fence())
+        original = endpoint.respond
+
+        def respond(role, access_key, action, method, key, query):
+            if action == "s3:PutBucketVersioning":
+                return 400, denied_xml("MalformedXML"), {}
+            return original(role, access_key, action, method, key, query)
+
+        endpoint.respond = respond
+        code, lines = run_probe(endpoint)
+        self.assertEqual(code, 2)
+        self.assertTrue(line_for(lines, "writer sets versioning to Enabled").startswith("INCONCLUSIVE"))
+
+    def test_an_operator_denied_its_shape_request_voids_the_denial(self):
+        endpoint = FakeEndpoint(rendered_fence())
+        original = endpoint.respond
+
+        def respond(role, access_key, action, method, key, query):
+            if role == "operator" and action == "s3:PutObjectAcl":
+                return 403, denied_xml(), {}
+            return original(role, access_key, action, method, key, query)
+
+        endpoint.respond = respond
+        code, lines = run_probe(endpoint)
+        self.assertEqual(code, 1)
+        self.assertTrue(line_for(lines, probe.OPERATOR_ACL_PUT).startswith("FAIL"))
+        self.assertTrue(line_for(lines, "writer sets an ACL on its own object").startswith(
+            "INCONCLUSIVE"))
+
+    def test_an_unreadable_policy_stops_before_any_check(self):
+        endpoint = FakeEndpoint(rendered_fence())
+        original = endpoint.respond
+
+        def respond(role, access_key, action, method, key, query):
+            if action == "s3:GetBucketPolicy" and role == "operator":
+                return 404, denied_xml("NoSuchBucketPolicy"), {}
+            return original(role, access_key, action, method, key, query)
+
+        endpoint.respond = respond
+        code, lines = run_probe(endpoint)
+        self.assertEqual(code, 2)
+        self.assertIn("could not read the bucket policy", lines[0])
 
 
 class TestMain(unittest.TestCase):
