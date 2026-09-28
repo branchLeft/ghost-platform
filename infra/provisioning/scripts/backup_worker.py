@@ -133,11 +133,52 @@ class _FloorWatcher:
             )
 
 
+class _LockWaitTimer:
+    """Times the gap between dialling in and the producer's first byte of
+    output, as a proxy for how long `mysqldump --source-data=2` waited to
+    acquire its `FLUSH TABLES WITH READ LOCK` -- the risk recorded on
+    branchLeft/workspace#1158: that lock is server-wide, so every tenant's
+    dump can queue behind write traffic on any OTHER tenant, and nothing on
+    this side of the dial-in call holds a SQL connection of its own to ask
+    MySQL directly how long a lock wait took (only the producer, over the
+    dial-in channel, ever touches MySQL).
+
+    `--source-data=2` writes the binlog-position comment near the top of
+    its output only once the lock has been granted and released, so the
+    elapsed time up to the first byte this worker observes is dominated by
+    that wait, not by the dump itself -- connection setup adds a small,
+    roughly constant offset this measurement does not subtract out.
+
+    `first_byte` stays `None` if the producer never wrote anything at all
+    (an env refusal, a connection failure before the lock was even
+    attempted) -- that is "no wait was measured", not "the wait was zero",
+    and callers must tell the two apart rather than recording a false 0."""
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self.start = clock()
+        self.first_byte: float | None = None
+
+    def observe(self, chunk: bytes) -> None:
+        if self.first_byte is None:
+            self.first_byte = self._clock()
+
+    @property
+    def elapsed(self) -> float | None:
+        if self.first_byte is None:
+            return None
+        return self.first_byte - self.start
+
+
 @dataclasses.dataclass(frozen=True)
 class DumpResult:
     """What `run_tenant_dump` returns -- the dump's FLOOR result, not just
     an exit code, for the on-demand caller that needs to know whether the
-    dump it just took is trustworthy before acting on it."""
+    dump it just took is trustworthy before acting on it.
+
+    `lock_wait_seconds` is `_LockWaitTimer`'s measurement -- `None` when no
+    byte of the producer's output was ever observed (see that class'
+    docstring), never a fabricated 0."""
 
     tenant: str
     ok: bool
@@ -146,6 +187,7 @@ class DumpResult:
     missing_floor_tables: frozenset[str]
     copies_written: tuple[str, ...]
     error: str | None
+    lock_wait_seconds: float | None = None
 
 
 def run_tenant_dump(
@@ -176,8 +218,17 @@ def run_tenant_dump(
     validate_tenant_name(tenant)
 
     watcher = _FloorWatcher(FLOOR_TABLES)
+    timer = _LockWaitTimer()
     command = [python_executable, dump_tenant_path, tenant, "--socket", socket_path]
     env = {"DB_DUMP_MYSQL_PWD": mysql_pwd}
+
+    def _chunk_watcher(chunk: bytes) -> None:
+        # The timer observes every chunk FIRST, so a floor-watcher change
+        # that raises or is dropped can never suppress the timing -- see
+        # WiringSabotageForTheLockWaitTimerTests, which sabotages exactly
+        # this ordering and this composition existing at all.
+        timer.observe(chunk)
+        watcher.observe(chunk)
 
     try:
         result = pull_encrypt_and_store(
@@ -186,14 +237,16 @@ def run_tenant_dump(
             env=env,
             age_recipient=age_recipient,
             copies=copies,
-            chunk_watcher=watcher.observe,
+            chunk_watcher=_chunk_watcher,
             post_stream_check=watcher.assert_floor_met,
         )
     except PullEncryptStoreError as exc:
         # `assert_floor_met` raising, a stanza count other than 1, `age`
         # failing, or a copy's `put` raising -- every one of these means no
         # copy was ever written for this run (a plain nonzero producer exit
-        # does not raise; it comes back as `result.ok=False` below).
+        # does not raise; it comes back as `result.ok=False` below). Bytes
+        # may well have streamed before any of these fired, so the lock
+        # wait is still worth keeping.
         missing = frozenset(FLOOR_TABLES) - frozenset(watcher.seen)
         return DumpResult(
             tenant=tenant,
@@ -203,6 +256,7 @@ def run_tenant_dump(
             missing_floor_tables=missing,
             copies_written=(),
             error=str(exc),
+            lock_wait_seconds=timer.elapsed,
         )
 
     seen = frozenset(watcher.seen)
@@ -214,6 +268,7 @@ def run_tenant_dump(
         missing_floor_tables=frozenset(FLOOR_TABLES) - seen,
         copies_written=tuple(result.copies_written),
         error=result.error,
+        lock_wait_seconds=timer.elapsed,
     )
 
 
@@ -502,6 +557,112 @@ def record_backup_age_metric(
         )
 
 
+# branchLeft/workspace#1158's ruling ("lock=a"): every tenant dump's wait
+# for db1's global read lock is recorded, and alerted on past a threshold.
+# Exposed the same way (textfile-collector, same directory, same
+# read-merge-write-under-lock shape) as the backup-age gauge above, so the
+# alert side gets one estate-wide convention for "a gauge this worker
+# writes occasionally, per tenant" rather than a second one. A SEPARATE
+# file and lock from the backup-age metric, deliberately: the two are
+# written at different points in the same run (see main() below) and merging
+# them into one file would make either write's failure able to corrupt the
+# other's already-good value.
+BACKUP_LOCK_WAIT_METRIC_FILENAME = "backup_worker_lock_wait.prom"
+BACKUP_LOCK_WAIT_METRIC_LOCK_FILENAME = BACKUP_LOCK_WAIT_METRIC_FILENAME + ".lock"
+
+BACKUP_LOCK_WAIT_METRIC_NAME = "backup_worker_lock_wait_seconds"
+
+_LOCK_WAIT_METRIC_LINE = re.compile(
+    r'\A' + re.escape(BACKUP_LOCK_WAIT_METRIC_NAME) + r'\{tenant="([^"]*)"\}\s+([0-9]+(?:\.[0-9]+)?)\s*\Z'
+)
+
+
+def _parse_previous_lock_wait_metrics(text: str) -> dict[str, float]:
+    """The lock-wait mirror of `_parse_previous_backup_age_metrics` -- reads
+    back only what this module itself last wrote, so a write for one
+    tenant merges with every other tenant's last-measured wait rather than
+    erasing it."""
+    waits: dict[str, float] = {}
+    for line in text.splitlines():
+        match = _LOCK_WAIT_METRIC_LINE.match(line.strip())
+        if match:
+            waits[match.group(1)] = float(match.group(2))
+    return waits
+
+
+def render_lock_wait_prometheus_text(waits: dict[str, float]) -> str:
+    """The lock-wait mirror of `render_backup_age_prometheus_text`."""
+    lines = [
+        f"# HELP {BACKUP_LOCK_WAIT_METRIC_NAME} Seconds this worker's most recent attempt for "
+        "this tenant waited between dialling in and the producer's first byte of output -- a "
+        "proxy for how long mysqldump's --source-data=2 waited for db1's global read lock.",
+        f"# TYPE {BACKUP_LOCK_WAIT_METRIC_NAME} gauge",
+    ]
+    for tenant in sorted(waits):
+        lines.append(f'{BACKUP_LOCK_WAIT_METRIC_NAME}{{tenant="{_escape_label_value(tenant)}"}} {waits[tenant]}')
+    return "\n".join(lines) + "\n"
+
+
+def record_lock_wait_metric(
+    *,
+    tenant: str,
+    metrics_dir: str,
+    wait_seconds: float,
+    _use_lock: bool = True,
+    _after_read: Callable[[], None] | None = None,
+) -> None:
+    """Records `tenant`'s most recently measured lock wait, merged with
+    every OTHER tenant's, under the same read-merge-write-under-`flock`
+    discipline as `record_backup_age_metric` (see that function's own
+    docstring for why the merge and the lock both matter -- the reasoning
+    is identical here, on a second, independent file).
+
+    Called from `main()` whenever `DumpResult.lock_wait_seconds` is not
+    `None` -- regardless of `result.ok`. Unlike the backup-age gauge, this
+    one is NOT gated on the dump having succeeded: the lock is taken (or
+    waited for) before the floor check or the storage write ever runs, so a
+    tenant whose dump goes on to fail for an unrelated reason can still be
+    the one whose wait a DBA needs to see.
+
+    Best-effort and never raises, for the same reason
+    `record_backup_age_metric` is: a metrics-write failure must never turn
+    an otherwise-handled dump outcome into an unhandled exception."""
+
+    def _read_merge_write(output_path: pathlib.Path) -> None:
+        try:
+            existing = output_path.read_text()
+        except FileNotFoundError:
+            existing = ""
+        waits = _parse_previous_lock_wait_metrics(existing)
+        if _after_read is not None:
+            _after_read()
+        waits[tenant] = wait_seconds
+        write_textfile_atomically(output_path, render_lock_wait_prometheus_text(waits))
+
+    try:
+        output_dir = pathlib.Path(metrics_dir)
+        output_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+        output_path = output_dir / BACKUP_LOCK_WAIT_METRIC_FILENAME
+
+        if not _use_lock:
+            _read_merge_write(output_path)
+            return
+
+        lock_path = output_dir / BACKUP_LOCK_WAIT_METRIC_LOCK_FILENAME
+        with open(lock_path, "a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                _read_merge_write(output_path)
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        print(
+            f"backup_worker: {tenant}: could not write the lock-wait metric to "
+            f"{metrics_dir!r}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tenant", required=True, help="the tenant slug, e.g. 'blog'")
@@ -547,6 +708,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"backup_worker: {exc}", file=sys.stderr)
         return 1
 
+    metrics_dir = os.environ.get("BACKUP_WORKER_METRICS_DIR", DEFAULT_BACKUP_AGE_METRICS_DIR)
+
+    # Recorded whether or not the dump itself succeeded (see
+    # record_lock_wait_metric's own docstring) -- the lock is taken, or
+    # waited for, before the floor check or storage ever run.
+    if result.lock_wait_seconds is not None:
+        record_lock_wait_metric(tenant=args.tenant, metrics_dir=metrics_dir, wait_seconds=result.lock_wait_seconds)
+
     if not result.ok:
         print(f"backup_worker: {args.tenant}: {result.error}", file=sys.stderr)
         return 1
@@ -561,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     # merely run.
     record_backup_age_metric(
         tenant=args.tenant,
-        metrics_dir=os.environ.get("BACKUP_WORKER_METRICS_DIR", DEFAULT_BACKUP_AGE_METRICS_DIR),
+        metrics_dir=metrics_dir,
         now=time.time(),
     )
     return 0

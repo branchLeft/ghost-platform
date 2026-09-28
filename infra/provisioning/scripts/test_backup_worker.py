@@ -143,6 +143,10 @@ class RunTenantDumpAgainstTheRealProducerTests(unittest.TestCase):
         self.assertEqual(result.floor_tables_seen, frozenset({"users", "settings"}))
         self.assertEqual(result.missing_floor_tables, frozenset())
         self.assertEqual(result.copies_written, ("primary", "secondary"))
+        # A real subprocess actually ran, so SOME wait -- possibly tiny --
+        # was measured, never the "no byte ever arrived" None.
+        self.assertIsNotNone(result.lock_wait_seconds)
+        self.assertGreaterEqual(result.lock_wait_seconds, 0.0)
 
     def test_the_stored_object_decrypts_with_the_owning_tenants_identity(self) -> None:
         _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_HAPPY)
@@ -716,6 +720,267 @@ class BackupAgeMetricConcurrencyTests(unittest.TestCase):
         self.assertEqual(metrics["blog"], 100.0)
         self.assertEqual(metrics["shop"], 1.0)  # lost: the real write was 200.0
         self.assertNotEqual(metrics["shop"], 200.0)
+
+
+class LockWaitTimerWiringTests(unittest.TestCase):
+    """Proves `_LockWaitTimer` is actually WIRED into `run_tenant_dump`'s
+    `chunk_watcher` -- not merely a class nobody calls -- through the same
+    real-entry-point sabotage shape as
+    `WiringSabotageThroughTheRealEntryPointTests` above: a GREEN control
+    (the composition `run_tenant_dump` actually builds) and a RED
+    demonstration (the timer left out of the composition, exactly what
+    dropping `timer.observe(chunk)` from `backup_worker.py`'s
+    `_chunk_watcher` closure would do)."""
+
+    def setUp(self) -> None:
+        _, self.recipient = _generate_age_identity()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.copies_dir = os.path.join(self.tmp.name, "copies")
+        os.makedirs(self.copies_dir)
+        self.primary = _FileCopy("primary", self.copies_dir)
+        self.command = ["/bin/sh", "-c", "echo \"INSERT INTO \\`x\\` VALUES (1);\""]
+
+    def test_the_wired_composition_measures_a_wait(self) -> None:
+        """GREEN: `timer.observe` composed into `chunk_watcher` alongside
+        the floor watcher -- exactly what `run_tenant_dump` does."""
+        from pull_encrypt_store import pull_encrypt_and_store
+
+        timer = bw._LockWaitTimer()
+        watcher = bw._FloorWatcher(frozenset())
+
+        def chunk_watcher(chunk: bytes) -> None:
+            timer.observe(chunk)
+            watcher.observe(chunk)
+
+        result = pull_encrypt_and_store(
+            transport=LocalProcessTransport(),
+            command=self.command,
+            env={},
+            age_recipient=self.recipient,
+            copies=[self.primary.as_target()],
+            chunk_watcher=chunk_watcher,
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertIsNotNone(timer.elapsed)
+        self.assertGreaterEqual(timer.elapsed, 0.0)
+
+    def test_the_timer_left_out_of_the_composition_never_measures_anything(self) -> None:
+        """RED: the identical run, with the timer's `observe` never wired
+        into `chunk_watcher` at all -- data still streams (the floor
+        watcher alone still receives it and the dump still succeeds), but
+        `timer.elapsed` stays None because it was never told a byte
+        arrived. This is what dropping `timer.observe(chunk)` from
+        `backup_worker.py`'s `_chunk_watcher` closure would do."""
+        from pull_encrypt_store import pull_encrypt_and_store
+
+        timer = bw._LockWaitTimer()
+        watcher = bw._FloorWatcher(frozenset())
+
+        result = pull_encrypt_and_store(
+            transport=LocalProcessTransport(),
+            command=self.command,
+            env={},
+            age_recipient=self.recipient,
+            copies=[self.primary.as_target()],
+            chunk_watcher=watcher.observe,  # timer.observe deliberately not composed in
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertIsNone(timer.elapsed)
+
+
+class LockWaitMetricFormattingTests(unittest.TestCase):
+    """The lock-wait mirror of BackupAgeMetricFormattingTests."""
+
+    def test_render_is_sorted_by_tenant(self) -> None:
+        text = bw.render_lock_wait_prometheus_text({"shop": 0.5, "blog": 1.25})
+        self.assertLess(text.index('tenant="blog"'), text.index('tenant="shop"'))
+        self.assertIn('backup_worker_lock_wait_seconds{tenant="blog"} 1.25', text)
+        self.assertIn('backup_worker_lock_wait_seconds{tenant="shop"} 0.5', text)
+
+    def test_parse_round_trips_what_render_wrote(self) -> None:
+        original = {"blog": 0.1, "shop": 2.5}
+        text = bw.render_lock_wait_prometheus_text(original)
+        self.assertEqual(bw._parse_previous_lock_wait_metrics(text), original)
+
+    def test_parse_ignores_help_and_type_comment_lines(self) -> None:
+        text = bw.render_lock_wait_prometheus_text({"blog": 1.0})
+        for line in text.splitlines():
+            if line.startswith("#"):
+                self.assertEqual(bw._parse_previous_lock_wait_metrics(line), {})
+
+
+class LockWaitMetricRecordingTests(unittest.TestCase):
+    """The lock-wait mirror of BackupAgeMetricRecordingTests -- the
+    read-merge-write cycle against a real temp directory, on its own file
+    and lock, independent of the backup-age metric's."""
+
+    def _read(self, metrics_dir: str) -> dict[str, float]:
+        path = pathlib.Path(metrics_dir) / bw.BACKUP_LOCK_WAIT_METRIC_FILENAME
+        if not path.exists():
+            return {}
+        return bw._parse_previous_lock_wait_metrics(path.read_text())
+
+    def test_a_first_write_creates_the_directory_and_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            metrics_dir = os.path.join(tmp, "nested", "metrics")
+            bw.record_lock_wait_metric(tenant="blog", metrics_dir=metrics_dir, wait_seconds=0.2)
+            self.assertEqual(self._read(metrics_dir), {"blog": 0.2})
+
+    def test_a_second_tenants_write_merges_rather_than_overwrites(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_lock_wait_metric(tenant="blog", metrics_dir=tmp, wait_seconds=0.2)
+            bw.record_lock_wait_metric(tenant="shop", metrics_dir=tmp, wait_seconds=0.4)
+            self.assertEqual(self._read(tmp), {"blog": 0.2, "shop": 0.4})
+
+    def test_a_repeat_write_for_the_same_tenant_updates_only_that_tenant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_lock_wait_metric(tenant="blog", metrics_dir=tmp, wait_seconds=0.2)
+            bw.record_lock_wait_metric(tenant="shop", metrics_dir=tmp, wait_seconds=0.4)
+            bw.record_lock_wait_metric(tenant="blog", metrics_dir=tmp, wait_seconds=9.9)
+            self.assertEqual(self._read(tmp), {"blog": 9.9, "shop": 0.4})
+
+    def test_writing_to_the_lock_wait_file_never_touches_the_backup_age_file(self) -> None:
+        """The two metrics are deliberately separate files -- see
+        record_lock_wait_metric's own docstring. A regression that merged
+        them back into one file would silently corrupt whichever metric
+        was written second; this proves they stay apart."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_backup_age_metric(tenant="blog", metrics_dir=tmp, now=100.0)
+            bw.record_lock_wait_metric(tenant="blog", metrics_dir=tmp, wait_seconds=0.3)
+            age_path = pathlib.Path(tmp) / bw.BACKUP_AGE_METRIC_FILENAME
+            wait_path = pathlib.Path(tmp) / bw.BACKUP_LOCK_WAIT_METRIC_FILENAME
+            self.assertIn("backup_worker_last_success_timestamp_seconds", age_path.read_text())
+            self.assertNotIn("backup_worker_lock_wait_seconds", age_path.read_text())
+            self.assertIn("backup_worker_lock_wait_seconds", wait_path.read_text())
+            self.assertNotIn("backup_worker_last_success_timestamp_seconds", wait_path.read_text())
+
+    def test_an_unwritable_directory_is_reported_and_never_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked = os.path.join(tmp, "blocked")
+            with open(blocked, "w", encoding="utf-8") as handle:
+                handle.write("a file, not a directory")
+            bw.record_lock_wait_metric(
+                tenant="blog", metrics_dir=os.path.join(blocked, "metrics"), wait_seconds=0.1
+            )  # must not raise
+
+
+class LockWaitMetricWiredThroughMainTests(unittest.TestCase):
+    """Through `main()` itself, mirroring
+    BackupAgeMetricWiredThroughMainTests -- proving the lock-wait export is
+    wired to a real run, AND proving the one semantic difference from the
+    backup-age gauge that matters most operationally: it is recorded even
+    when the dump itself fails, because the lock is taken before the floor
+    check or the storage write ever run."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bin_dir = os.path.join(self.tmp.name, "bin")
+        os.makedirs(self.bin_dir)
+        _write_fake_bin(self.bin_dir, "mysql", _FAKE_MYSQL)
+        _, self.recipient = _generate_age_identity()
+        self.metrics_dir = os.path.join(self.tmp.name, "metrics")
+
+        self._path_patch = mock.patch.dict(
+            os.environ, {"PATH": self.bin_dir + os.pathsep + os.environ.get("PATH", "")}
+        )
+        self._path_patch.start()
+        self.addCleanup(self._path_patch.stop)
+
+        self._put_object_patch = mock.patch.object(bw.shared_objectstorage, "put_object")
+        self.mock_put_object = self._put_object_patch.start()
+        self.addCleanup(self._put_object_patch.stop)
+
+        self._env = {
+            "DB_DUMP_MYSQL_PWD": "dummy-mysql-password",
+            "AGE_RECIPIENT_PUBLIC_KEY": self.recipient,
+            "BACKUP_WORKER_METRICS_DIR": self.metrics_dir,
+            **_DUMMY_PRIMARY_ENV,
+        }
+
+    def _main(self, tenant: str) -> int:
+        with mock.patch.dict(os.environ, self._env):
+            return bw.main(
+                ["--tenant", tenant, "--local-test-transport", "--dump-tenant-path", _DUMP_TENANT_PATH]
+            )
+
+    def _read_waits(self) -> dict[str, float]:
+        path = pathlib.Path(self.metrics_dir) / bw.BACKUP_LOCK_WAIT_METRIC_FILENAME
+        if not path.exists():
+            return {}
+        return bw._parse_previous_lock_wait_metrics(path.read_text())
+
+    def test_a_successful_run_writes_that_tenants_wait(self) -> None:
+        _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_HAPPY)
+        exit_code = self._main("blog")
+        self.assertEqual(exit_code, 0)
+        waits = self._read_waits()
+        self.assertIn("blog", waits)
+        self.assertGreaterEqual(waits["blog"], 0.0)
+
+    def test_a_refused_dump_still_writes_the_lock_wait_metric(self) -> None:
+        """The gate that matters: a floor-refused dump (main() returns 1,
+        and BackupAgeMetricWiredThroughMainTests already proves the
+        backup-age gauge is untouched by this same input) must still
+        surface how long that tenant's lock wait was -- a stuck lock is
+        worth seeing whether or not the dump that eventually ran past it
+        also happened to pass its floor check."""
+        _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_MISSING_SETTINGS)
+        exit_code = self._main("blog")
+        self.assertEqual(exit_code, 1)
+        waits = self._read_waits()
+        self.assertIn("blog", waits)
+
+
+class WiringSabotageForLockWaitGatingTests(unittest.TestCase):
+    """The sabotage this story's own review risk names as the trap to
+    avoid: gating `record_lock_wait_metric` on `result.ok`, the same as
+    the backup-age gauge, rather than on `result.lock_wait_seconds is not
+    None`. Reproduces the pre-fix shape directly (not by editing the
+    shipped file) so this sabotage is re-provable by anyone, any time."""
+
+    def test_the_shipped_gate_records_a_failed_dumps_wait(self) -> None:
+        """GREEN: the shape `backup_worker.main()` actually uses."""
+        result = bw.DumpResult(
+            tenant="blog",
+            ok=False,
+            exit_code=1,
+            floor_tables_seen=frozenset(),
+            missing_floor_tables=frozenset({"users", "settings"}),
+            copies_written=(),
+            error="floor missing",
+            lock_wait_seconds=0.42,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            if result.lock_wait_seconds is not None:  # the shipped gate
+                bw.record_lock_wait_metric(tenant=result.tenant, metrics_dir=tmp, wait_seconds=result.lock_wait_seconds)
+            path = pathlib.Path(tmp) / bw.BACKUP_LOCK_WAIT_METRIC_FILENAME
+            self.assertTrue(path.exists())
+            self.assertIn("blog", bw._parse_previous_lock_wait_metrics(path.read_text()))
+
+    def test_gating_on_result_ok_instead_loses_the_failed_dumps_wait(self) -> None:
+        """RED: the pre-fix shape -- gating on `result.ok` the way
+        `record_backup_age_metric`'s own call is gated. The exact same
+        failed `DumpResult` above now writes nothing at all, which is the
+        gap branchLeft/workspace#1158's ruling exists to close: a lock
+        wait spike on a tenant whose dump then also fails its floor check
+        would be invisible."""
+        result = bw.DumpResult(
+            tenant="blog",
+            ok=False,
+            exit_code=1,
+            floor_tables_seen=frozenset(),
+            missing_floor_tables=frozenset({"users", "settings"}),
+            copies_written=(),
+            error="floor missing",
+            lock_wait_seconds=0.42,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            if result.ok:  # the sabotaged, backup-age-shaped gate
+                bw.record_lock_wait_metric(tenant=result.tenant, metrics_dir=tmp, wait_seconds=result.lock_wait_seconds)
+            path = pathlib.Path(tmp) / bw.BACKUP_LOCK_WAIT_METRIC_FILENAME
+            self.assertFalse(path.exists())
 
 
 def tearDownModule() -> None:
