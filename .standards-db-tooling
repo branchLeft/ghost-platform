@@ -1,0 +1,10 @@
+# DB-1 scope declaration (branchLeft/standards v0.8.0, docs/databases.md).
+# Backup, restore and migration tooling that drives the database directly
+# (mysqldump, a restore, a provisioning script) -- never application code.
+# Each line's purpose and the files it covers is in this PR's body.
+db/provision/*.py
+db/recovery/*.py
+infra/provisioning/scripts/backup_*.py
+infra/provisioning/scripts/test_backup_*.py
+infra/provisioning/scripts/*pull_encrypt_store.py
+services/export-bundler/*scratchDatabase*
