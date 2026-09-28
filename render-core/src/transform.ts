@@ -2,14 +2,18 @@
  * The demo-to-tenant promotion transform LLD-1 §06 names: "transform() --
  * five unions + per-kind scalars". Moves exactly the five unions the
  * design's falsifying claim names -- `database`, `media`, `hostname`,
- * `gate`, `backup` -- plus the three per-kind scalars that are not unions
- * but still differ by kind: `limits`, `caps`, `expiresAt`. Everything else
- * on the descriptor, `slug` above all, survives unchanged: promotion is a
- * re-point of the configuration, never a migration (LLD-1 §06's own
- * closing claim, and the reason a name, a slug-derived path or a volume
- * identity is exactly what `assertAttributablePromotionDiff` below rejects).
+ * `gate`, `backup` -- plus `mail`'s own sending identity (LLD-6 §09's own
+ * handoff of a sixth attributable field to this schema: a demo's
+ * local-part identity becomes the tenant's own signed domain, the same
+ * re-point every other union gets, never a value this schema invents) and
+ * the three per-kind scalars that are not unions but still differ by kind:
+ * `limits`, `caps`, `expiresAt`. Everything else on the descriptor, `slug`
+ * above all, survives unchanged: promotion is a re-point of the
+ * configuration, never a migration (LLD-1 §06's own closing claim, and the
+ * reason a name, a slug-derived path or a volume identity is exactly what
+ * `assertAttributablePromotionDiff` below rejects).
  *
- * Four things this function deliberately does not decide, because deciding
+ * Five things this function deliberately does not decide, because deciding
  * them here would be inventing operational or tier policy the design does
  * not fix:
  * - Where the tenant's database and media bucket physically live
@@ -21,6 +25,11 @@
  *   (`targets.backupEncryptionRecipient`) -- a real per-tenant key
  *   identity assigned once at promotion by whatever process manages that
  *   recipient. A schema-level transform has no key-generation authority.
+ * - The tenant's own signed sending domain and DKIM selector
+ *   (`targets.mailIdentity`) -- a real domain-verification and DNS fact
+ *   (LLD-6 §06) this schema has no way to confirm, the same reasoning
+ *   `backupEncryptionRecipient` above already carries. A missing target
+ *   here is refused by name below, not defaulted.
  * - The target tier's `limits` (`targets.limits`) -- this repo's own
  *   `test/fixtures.ts` already encodes a tier-differentiated model here
  *   (`entryTenantDescriptor()`: capped; `professionalTenantDescriptor()`:
@@ -45,7 +54,7 @@
 
 import type { AbsoluteUrl, Port } from './brand.js';
 import { FieldValidationError } from './brand.js';
-import type { LimitsSpec, TenantDescriptor } from './descriptor.js';
+import type { LimitsSpec, SendingIdentitySpec, TenantDescriptor } from './descriptor.js';
 import { databaseAndUserName } from './naming.js';
 import { mediaBucketName } from './media.js';
 import type { ZoneConfig } from './validate.js';
@@ -65,12 +74,18 @@ export interface PromotionTargets {
   readonly mediaSrcsets: boolean;
   readonly backupEncryptionRecipient: string;
   readonly limits: LimitsSpec;
+  /** Shaped exactly as `SendingIdentitySpec`'s `tenant` arm, `kind` held
+   * back: `transform()` is the one place that writes `kind: 'tenant'`,
+   * the same way it writes `database.kind`/`media.kind` rather than taking
+   * them as promotion input. */
+  readonly mailIdentity: Omit<Extract<SendingIdentitySpec, { readonly kind: 'tenant' }>, 'kind'>;
 }
 
 /**
  * The top-level `TenantDescriptor` fields a promotion may legitimately
- * change: the five unions LLD-1 §06 names, plus the three per-kind scalars.
- * `kind` and `siteUrl` are folded in here too rather than tracked as a
+ * change: the five unions LLD-1 §06 names, plus `mail`'s sending identity
+ * (LLD-6 §09) and the three per-kind scalars. `kind` and `siteUrl` are
+ * folded in here too rather than tracked as a
  * separate bucket -- `kind` is the discriminant the whole transform exists
  * to flip, and `siteUrl` is `validate()`'s own single-cause consequence of
  * `hostname` changing (`checkSiteUrlMatchesHostname`), never an
@@ -83,6 +98,7 @@ export const ATTRIBUTABLE_PROMOTION_FIELDS: ReadonlySet<keyof TenantDescriptor> 
   'hostname',
   'gate',
   'backup',
+  'mail',
   'siteUrl',
   'limits',
   'caps',
@@ -95,7 +111,8 @@ export const ATTRIBUTABLE_PROMOTION_FIELDS: ReadonlySet<keyof TenantDescriptor> 
 export class UnattributedPromotionDiffError extends Error {
   constructor(public readonly fields: readonly string[]) {
     super(
-      `promotion diff touches field(s) outside the five unions and limits/caps/expiresAt: ` +
+      `promotion diff touches field(s) outside the five unions, mail's sending identity, and ` +
+        `limits/caps/expiresAt: ` +
         `${fields.join(', ')}. A difference in a name, a slug-derived path or a volume identity ` +
         `rebuilds the tenancy and must never pass unnoticed.`
     );
@@ -193,6 +210,14 @@ export function transform(
         `checkTierVariants() should already have rejected before this descriptor reached here.`
     );
   }
+  if (!targets.mailIdentity || !targets.mailIdentity.domain || !targets.mailIdentity.dkimSelector) {
+    throw new FieldValidationError(
+      'mailIdentity',
+      `transform() requires targets.mailIdentity (the promoted tenant's own signed sending ` +
+        `domain and DKIM selector) to write the promoted descriptor's mail identity -- there is ` +
+        `no tier-neutral default, the same reason backupEncryptionRecipient has none.`
+    );
+  }
 
   const slug = demo.slug;
   const sqlIdentity = databaseAndUserName(slug);
@@ -219,6 +244,14 @@ export function transform(
     hostname: { kind: 'ours', sub: demo.hostname.sub, gated: false },
     gate: { kind: 'none' },
     backup: { kind: 'bucket-native', encryptionRecipient: targets.backupEncryptionRecipient },
+    mail: {
+      ...demo.mail,
+      identity: {
+        kind: 'tenant',
+        domain: targets.mailIdentity.domain,
+        dkimSelector: targets.mailIdentity.dkimSelector,
+      },
+    },
     limits: targets.limits,
     expiresAt: null,
   };

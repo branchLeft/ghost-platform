@@ -59,11 +59,11 @@ function s3MediaOf(
  * matching `fixtures.ts`'s own test-only-domain convention, for the
  * operational fields `transform()` has no authority to decide
  * (`databaseHost`/`databasePort`/`mediaEndpoint`/`mediaRegion`/
- * `backupEncryptionRecipient`). The tier-differentiated fields
- * (`limits`/`mediaResize`/`mediaSrcsets`) are NOT invented here -- they are
- * read straight off this repo's own pre-existing, unmodified fixtures, so a
- * future change to what "entry" or "professional" means updates this test
- * for free rather than silently drifting from it.
+ * `backupEncryptionRecipient`/`mailIdentity`). The tier-differentiated
+ * fields (`limits`/`mediaResize`/`mediaSrcsets`) are NOT invented here --
+ * they are read straight off this repo's own pre-existing, unmodified
+ * fixtures, so a future change to what "entry" or "professional" means
+ * updates this test for free rather than silently drifting from it.
  */
 const PROMOTION_TARGETS_BY_TIER = {
   entry: (() => {
@@ -77,6 +77,7 @@ const PROMOTION_TARGETS_BY_TIER = {
       limits: fixture.limits,
       mediaResize: s3MediaOf(fixture).resize,
       mediaSrcsets: s3MediaOf(fixture).srcsets,
+      mailIdentity: { domain: 'blog.entry-promotion.example.test', dkimSelector: 'bl' },
     };
   })(),
   professional: (() => {
@@ -90,6 +91,7 @@ const PROMOTION_TARGETS_BY_TIER = {
       limits: fixture.limits,
       mediaResize: s3MediaOf(fixture).resize,
       mediaSrcsets: s3MediaOf(fixture).srcsets,
+      mailIdentity: { domain: 'news.professional-promotion.example.test', dkimSelector: 'pro' },
     };
   })(),
 } satisfies Record<'entry' | 'professional', PromotionTargets>;
@@ -154,8 +156,25 @@ describe.each([
       expect(tenant.hostname).not.toEqual(demo.hostname);
       expect(tenant.gate).not.toEqual(demo.gate);
       expect(tenant.backup).not.toEqual(demo.backup);
+      expect(tenant.mail).not.toEqual(demo.mail);
       expect(tenant.limits).not.toEqual(demo.limits);
       expect(tenant.expiresAt).not.toBe(demo.expiresAt);
+
+      // The mail identity landed exactly as the target supplied it, kind
+      // flipped to "tenant" by transform() itself -- never taken as
+      // promotion input (the same pattern database.kind/media.kind follow).
+      // Everything else in `mail` (whether it's enabled, both ceilings) is
+      // NOT tier policy this transform invents: `validate()` on origin/main
+      // fixes no tenant-tier value for either, so they survive from the
+      // demo unchanged, same as `caps`.
+      expect(tenant.mail.identity).toEqual({
+        kind: 'tenant',
+        domain: targets.mailIdentity.domain,
+        dkimSelector: targets.mailIdentity.dkimSelector,
+      });
+      expect(tenant.mail.enabled).toBe(demo.mail.enabled);
+      expect(tenant.mail.ceiling).toBe(demo.mail.ceiling);
+      expect(tenant.mail.estateCeiling).toBe(demo.mail.estateCeiling);
 
       // The tier under test actually landed: `limits`/`media.resize`/
       // `media.srcsets` reflect the TARGET tier's own values, not some other
@@ -189,10 +208,25 @@ describe.each([
       // must be byte-identical.
       expect(tenantArtefacts.get('image.env')).toBe(demoArtefacts.get('image.env'));
 
-      // ghost-settings.json (settings.ts) is a pure function of `codeInjection`
-      // alone, which transform() never touches -- byte-identical.
-      expect(tenantArtefacts.get('ghost-settings.json')).toBe(
-        demoArtefacts.get('ghost-settings.json')
+      // ghost-settings.json (settings.ts): `codeinjection_head`/
+      // `codeinjection_foot`/`codeInjectionExplainer` are a pure function of
+      // `codeInjection` alone, which transform() never touches -- those
+      // three stay byte-identical. `members_support_address` is sourced
+      // from `mail.identity` (`settings.ts#renderSettings`), which IS
+      // attributable now -- it must change alongside it.
+      const demoSettings = JSON.parse(demoArtefacts.get('ghost-settings.json')!) as Record<
+        string,
+        unknown
+      >;
+      const tenantSettings = JSON.parse(tenantArtefacts.get('ghost-settings.json')!) as Record<
+        string,
+        unknown
+      >;
+      for (const field of ['codeinjection_head', 'codeinjection_foot', 'codeInjectionExplainer']) {
+        expect(tenantSettings[field]).toEqual(demoSettings[field]);
+      }
+      expect(tenantSettings.members_support_address).not.toEqual(
+        demoSettings.members_support_address
       );
 
       // identity.json (identity.ts): `stackName`/`contentVolume`/
@@ -312,6 +346,18 @@ describe('transform() itself', () => {
       transform({ ...demo, kind: 'tenant' }, TEST_ZONES, PROMOTION_TARGETS_BY_TIER.professional)
     ).toThrow(/kind/);
   });
+
+  it('refuses a promotion with no mail target, naming the field', () => {
+    const demo = validate(demoDescriptor(), TEST_ZONES);
+    // `mailIdentity` is required by the type, so a runtime caller that
+    // skips it (an untyped JS caller, or a value read from outside this
+    // schema) is exercised here by constructing the omission deliberately.
+    const { mailIdentity: _mailIdentity, ...withoutMailIdentity } =
+      PROMOTION_TARGETS_BY_TIER.professional;
+    expect(() => transform(demo, TEST_ZONES, withoutMailIdentity as PromotionTargets)).toThrow(
+      /mailIdentity/
+    );
+  });
 });
 
 describe('CONTROL CASE — sabotage: real regressions the falsifying test must catch', () => {
@@ -375,6 +421,51 @@ describe('CONTROL CASE — sabotage: real regressions the falsifying test must c
     if (realTenant.media.kind !== 's3') throw new Error('expected s3 media');
     expect(realTenant.media.resize).toBe(PROMOTION_TARGETS_BY_TIER.entry.mediaResize);
     expect(realTenant.media.resize).toBe(false);
+  });
+
+  it('a transform() mutated to drop the mail write leaves a promoted tenant carrying its demo mail identity; the falsifying test catches it', async () => {
+    const demo = validate(demoDescriptor(), TEST_ZONES);
+
+    // RED: mutate transform.ts's real return object to drop the `mail`
+    // write entirely -- the promoted descriptor then carries the demo's
+    // own `mail.identity.kind: "demo"` forward unchanged, exactly the
+    // defect the owner's ruling exists to close. Nothing in transform()
+    // itself refuses this; `validate()`'s tier-vs-identity check
+    // (`checkTierVariants`) is what the falsifying test relies on to
+    // notice it.
+    const sabotaged = await importSabotaged<{ transform: typeof TransformFn }>(
+      'transform.ts',
+      (source) => {
+        const target =
+          "    mail: {\n      ...demo.mail,\n      identity: {\n        kind: 'tenant',\n" +
+          '        domain: targets.mailIdentity.domain,\n' +
+          '        dkimSelector: targets.mailIdentity.dkimSelector,\n' +
+          '      },\n    },\n    limits: targets.limits,';
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in transform.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, '    limits: targets.limits,');
+      }
+    );
+    const sabotagedTenant = sabotaged.transform(
+      demo,
+      TEST_ZONES,
+      PROMOTION_TARGETS_BY_TIER.professional
+    );
+    expect(sabotagedTenant.mail.identity).toEqual(demo.mail.identity);
+    expect(() => validate(sabotagedTenant, TEST_ZONES)).toThrow(/mail\.identity\.kind/);
+
+    // GREEN: the real, unmutated module writes the tenant's own mail
+    // identity, and the promoted descriptor validates.
+    const realTenant = transform(demo, TEST_ZONES, PROMOTION_TARGETS_BY_TIER.professional);
+    expect(realTenant.mail.identity).toEqual({
+      kind: 'tenant',
+      domain: PROMOTION_TARGETS_BY_TIER.professional.mailIdentity.domain,
+      dkimSelector: PROMOTION_TARGETS_BY_TIER.professional.mailIdentity.dkimSelector,
+    });
+    expect(() => validate(realTenant, TEST_ZONES)).not.toThrow();
   });
 
   it('an edge.ts mutated to never admit a hostname hides the demo-to-tenant certificate transition; the real module flips it', async () => {
