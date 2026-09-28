@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
@@ -6,11 +7,13 @@ import { hashIdOf } from '@branchleft/ghost-platform-render-core';
 import { buildDeps, loadPlugin } from '../../src/server.js';
 import type { BrokerConfig } from '../../src/config.js';
 import { makeTempDir } from '../../src/atomicFile.js';
+import { imagePushManifest } from '../../src/imagePush.js';
 import { generateTestKeyPair, signHeaders } from '../helpers/signer.js';
 import {
   writeShapelessPlugin,
   writeValidAdminApiPlugin,
   writeValidDrainSourcePlugin,
+  writeValidImageLoaderPlugin,
   writeValidRendererPlugin,
 } from '../helpers/pluginFixtures.js';
 import { findFreePort, spawnBroker, type SpawnedBroker } from '../helpers/spawnBroker.js';
@@ -28,6 +31,8 @@ function fakeConfig(overrides: Partial<BrokerConfig> = {}): BrokerConfig {
     stateDir: '/tmp/does-not-matter-for-buildDeps/state',
     drainFlagDir: '/tmp/does-not-matter-for-buildDeps/drain',
     slotDirBase: '/tmp/does-not-matter-for-buildDeps/slots',
+    imageTmpDir: '/tmp/does-not-matter-for-buildDeps/image-tmp',
+    imageMaxBytes: 4 * 1024 * 1024 * 1024,
     verifyKey: Buffer.alloc(32, 1),
     replayWindowSeconds: 60,
     wrapperCommand: '/bin/true',
@@ -53,7 +58,8 @@ describe('buildDeps (F5: the wiring server.ts actually uses)', () => {
       fakeConfig(),
       { render: async () => [] },
       { configure: async () => undefined },
-      { poll: async () => new Promise(() => undefined) }
+      { poll: async () => new Promise(() => undefined) },
+      { load: async () => ({ imageId: 'sha256:' + '0'.repeat(64) }) }
     );
     const nowMs = 1_700_000_000_000;
     expect(deps.auth.nonces.claim('abc', nowMs)).toBe(true);
@@ -65,7 +71,8 @@ describe('buildDeps (F5: the wiring server.ts actually uses)', () => {
       fakeConfig(),
       { render: async () => [] },
       { configure: async () => undefined },
-      { poll: async () => new Promise(() => undefined) }
+      { poll: async () => new Promise(() => undefined) },
+      { load: async () => ({ imageId: 'sha256:' + '0'.repeat(64) }) }
     );
     const slot = '0' as never;
     expect(deps.slotLock.claim(slot)).toBe(true);
@@ -77,7 +84,8 @@ describe('buildDeps (F5: the wiring server.ts actually uses)', () => {
       fakeConfig({ processStartSeconds: 123456 }),
       { render: async () => [] },
       { configure: async () => undefined },
-      { poll: async () => new Promise(() => undefined) }
+      { poll: async () => new Promise(() => undefined) },
+      { load: async () => ({ imageId: 'sha256:' + '0'.repeat(64) }) }
     );
     expect(deps.auth.processStartSeconds).toBe(123456);
   });
@@ -142,10 +150,12 @@ describe('the real dist/server.js entrypoint', () => {
     const drainFlagDir = join(root, 'drain');
     const slotDirBase = join(root, 'slots');
     const slotsPath = join(root, 'slots.json');
+    const imageTmpDir = join(root, 'image-tmp');
     await mkdir(stateDir, { recursive: true });
     await mkdir(leaseDir, { recursive: true });
     await mkdir(drainFlagDir, { recursive: true });
     await mkdir(slotDirBase, { recursive: true });
+    await mkdir(imageTmpDir, { recursive: true });
     return {
       keyPair,
       stateDir,
@@ -161,6 +171,7 @@ describe('the real dist/server.js entrypoint', () => {
         BROKER_STATE_DIR: stateDir,
         BROKER_DRAIN_FLAG_DIR: drainFlagDir,
         BROKER_SLOT_DIR_BASE: slotDirBase,
+        BROKER_IMAGE_TMP_DIR: imageTmpDir,
         BROKER_DEMO_ZONE: TEST_ZONES.demoZone,
         BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
         BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),
@@ -198,9 +209,9 @@ describe('the real dist/server.js entrypoint', () => {
     expect(broker.output()).toMatch(/no default export implementing the required interface/);
   });
 
-  it('starts, listens, verifies against the configured key, and actually enforces replay protection -- wired exactly as a real deploy would run it', async () => {
+  it('exits non-zero and never listens when no image-loader module is configured', async () => {
     const root = await makeTempDir('broker-plugin-');
-    const { env, keyPair } = await baseEnv();
+    const { env } = await baseEnv();
     const renderer = await writeValidRendererPlugin(root);
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
@@ -209,6 +220,26 @@ describe('the real dist/server.js entrypoint', () => {
       BROKER_RENDERER_MODULE: renderer,
       BROKER_ADMIN_API_MODULE: adminApi,
       BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      // BROKER_IMAGE_LOADER_MODULE deliberately left unset.
+    });
+    const code = await broker.waitExit(8000);
+    expect(code).not.toBe(0);
+    expect(broker.output()).toMatch(/BROKER_IMAGE_LOADER_MODULE is not set/);
+  });
+
+  it('starts, listens, verifies against the configured key, and actually enforces replay protection -- wired exactly as a real deploy would run it', async () => {
+    const root = await makeTempDir('broker-plugin-');
+    const { env, keyPair } = await baseEnv();
+    const renderer = await writeValidRendererPlugin(root);
+    const adminApi = await writeValidAdminApiPlugin(root);
+    const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
+    broker = spawnBroker({
+      ...env,
+      BROKER_RENDERER_MODULE: renderer,
+      BROKER_ADMIN_API_MODULE: adminApi,
+      BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      BROKER_IMAGE_LOADER_MODULE: imageLoader,
     });
     const { port } = await broker.waitListening(8000);
     const baseUrl = `http://127.0.0.1:${port}`;
@@ -274,6 +305,66 @@ describe('the real dist/server.js entrypoint', () => {
     expect(await statusRes.json()).toEqual({ slot: '0', phase: 'running', healthy: false });
   });
 
+  // --- push delivery, end to end through the real spawned process: a real
+  // Ed25519-signed push, over real HTTP, reaching the real dist/server.js
+  // -- not `startTestBroker()`'s in-process router (imagePush.test.ts
+  // already proves the handler's own logic there). ---
+  it('POST /image end to end through the real spawned process: matching digest loads, mismatched digest is refused', async () => {
+    const root = await makeTempDir('broker-plugin-');
+    const { env, keyPair } = await baseEnv();
+    const renderer = await writeValidRendererPlugin(root);
+    const adminApi = await writeValidAdminApiPlugin(root);
+    const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
+    broker = spawnBroker({
+      ...env,
+      BROKER_RENDERER_MODULE: renderer,
+      BROKER_ADMIN_API_MODULE: adminApi,
+      BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      BROKER_IMAGE_LOADER_MODULE: imageLoader,
+    });
+    const { port } = await broker.waitListening(8000);
+    const baseUrl = `http://127.0.0.1:${port}`;
+    await new Promise((resolve) => setTimeout(resolve, 1100)); // past the same-second floor
+
+    const bytes = Buffer.from('a stand-in for a real docker-save tar');
+    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const size = String(bytes.length);
+    const manifest = imagePushManifest(digest, size);
+    const goodHeaders = signHeaders(
+      keyPair,
+      'POST',
+      '/image',
+      manifest,
+      Math.floor(Date.now() / 1000)
+    );
+    const goodRes = await fetch(`${baseUrl}/image`, {
+      method: 'POST',
+      headers: { ...goodHeaders, 'X-Image-Digest': digest, 'X-Image-Size': size },
+      body: bytes,
+    });
+    expect(goodRes.status).toBe(200);
+    const goodBody = (await goodRes.json()) as { imageId: string; bytes: number };
+    expect(goodBody.imageId).toBe(`sha256:${'0'.repeat(64)}`); // the fixture's fixed ImageLoader answer
+    expect(goodBody.bytes).toBe(bytes.length);
+
+    const wrongDigest = `sha256:${'f'.repeat(64)}`;
+    const wrongManifest = imagePushManifest(wrongDigest, size);
+    const badHeaders = signHeaders(
+      keyPair,
+      'POST',
+      '/image',
+      wrongManifest,
+      Math.floor(Date.now() / 1000)
+    );
+    const badRes = await fetch(`${baseUrl}/image`, {
+      method: 'POST',
+      headers: { ...badHeaders, 'X-Image-Digest': wrongDigest, 'X-Image-Size': size },
+      body: bytes,
+    });
+    expect(badRes.status).toBe(409);
+  });
+
   // --- The colour swap, driven through the real spawned
   // entrypoint -- proving `buildDeps` wires `ghostReadiness` to a real HTTP
   // client against the real dist/server.js, not merely that app.ts's own
@@ -286,6 +377,7 @@ describe('the real dist/server.js entrypoint', () => {
     const renderer = await writeValidRendererPlugin(root);
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
     // Slot "0"'s own derived allocation under this spawn's default bases
     // (unchanged from `baseEnv()`) is exactly `demoDescriptor()`'s own
     // default ports -- colour "b" is 9301 (slotPorts.ts: appPortBase=9300
@@ -302,6 +394,7 @@ describe('the real dist/server.js entrypoint', () => {
         BROKER_RENDERER_MODULE: renderer,
         BROKER_ADMIN_API_MODULE: adminApi,
         BROKER_DRAIN_SOURCE_MODULE: drainSource,
+        BROKER_IMAGE_LOADER_MODULE: imageLoader,
         BROKER_GHOST_READY_TIMEOUT_MS: '5000',
       });
       const { port } = await broker.waitListening(8000);
@@ -396,11 +489,13 @@ describe('the real dist/server.js entrypoint', () => {
       const renderer = await writeValidRendererPlugin(root);
       const adminApi = await writeValidAdminApiPlugin(root);
       const drainSource = await writeValidDrainSourcePlugin(root);
+      const imageLoader = await writeValidImageLoaderPlugin(root);
       broker = spawnBroker({
         ...env,
         BROKER_RENDERER_MODULE: renderer,
         BROKER_ADMIN_API_MODULE: adminApi,
         BROKER_DRAIN_SOURCE_MODULE: drainSource,
+        BROKER_IMAGE_LOADER_MODULE: imageLoader,
       });
       const { port } = await broker.waitListening(8000);
       const baseUrl = `http://127.0.0.1:${port}`;
@@ -456,11 +551,13 @@ describe('the real dist/server.js entrypoint', () => {
     const renderer = await writeValidRendererPlugin(root);
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
     broker = spawnBroker({
       ...env,
       BROKER_RENDERER_MODULE: renderer,
       BROKER_ADMIN_API_MODULE: adminApi,
       BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      BROKER_IMAGE_LOADER_MODULE: imageLoader,
     });
     const { port } = await broker.waitListening(8000);
     const baseUrl = `http://127.0.0.1:${port}`;
@@ -506,11 +603,13 @@ describe('the real dist/server.js entrypoint', () => {
     const renderer = await writeValidRendererPlugin(root);
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
     broker = spawnBroker({
       ...env,
       BROKER_RENDERER_MODULE: renderer,
       BROKER_ADMIN_API_MODULE: adminApi,
       BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      BROKER_IMAGE_LOADER_MODULE: imageLoader,
     });
     await broker.waitListening(8000);
 

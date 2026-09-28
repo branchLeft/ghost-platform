@@ -9,6 +9,7 @@ function validEnv(overrides: Partial<BrokerEnv> = {}): BrokerEnv {
     BROKER_STATE_DIR: '/data/state',
     BROKER_DRAIN_FLAG_DIR: '/data/drain-flags',
     BROKER_SLOT_DIR_BASE: '/opt/branchleft',
+    BROKER_IMAGE_TMP_DIR: '/data/image-tmp',
     BROKER_DEMO_ZONE: 'demo-domain.example.test',
     BROKER_PLATFORM_ZONE: 'platform-domain.example.test',
     BROKER_OWNED_DOMAINS: 'demo-domain.example.test,platform-domain.example.test',
@@ -30,6 +31,8 @@ describe('loadConfig', () => {
     expect(config.stateDir).toBe('/data/state');
     expect(config.drainFlagDir).toBe('/data/drain-flags');
     expect(config.slotDirBase).toBe('/opt/branchleft');
+    expect(config.imageTmpDir).toBe('/data/image-tmp');
+    expect(config.imageMaxBytes).toBe(4 * 1024 * 1024 * 1024);
     expect(config.verifyKey).toEqual(Buffer.alloc(32, 7));
     expect(config.replayWindowSeconds).toBe(60);
     expect(config.wrapperCommand).toBe('/usr/local/sbin/branchleft-slot');
@@ -62,6 +65,7 @@ describe('loadConfig', () => {
     'BROKER_STATE_DIR',
     'BROKER_DRAIN_FLAG_DIR',
     'BROKER_SLOT_DIR_BASE',
+    'BROKER_IMAGE_TMP_DIR',
     'BROKER_DEMO_ZONE',
     'BROKER_PLATFORM_ZONE',
     'BROKER_OWNED_DOMAINS',
@@ -88,6 +92,7 @@ describe('loadConfig', () => {
         BROKER_HEALTH_TIMEOUT_MS: '3000',
         BROKER_GHOST_READY_TIMEOUT_MS: '15000',
         BROKER_HEALTH_PORT_BASE: '9200',
+        BROKER_IMAGE_MAX_BYTES: '1024',
       }),
       readKey32
     );
@@ -105,6 +110,7 @@ describe('loadConfig', () => {
     expect(config.healthCheckTimeoutMs).toBe(3_000);
     expect(config.ghostReadyPollTimeoutMs).toBe(15_000);
     expect(config.healthPortBase).toBe(9200);
+    expect(config.imageMaxBytes).toBe(1024);
   });
 
   it('rejects a non-numeric or out-of-range value for a bounded integer field', () => {
