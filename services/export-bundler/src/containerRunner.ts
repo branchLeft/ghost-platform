@@ -116,6 +116,16 @@ export function buildRelayRunArgs(spec: TenantColourTemplate): readonly string[]
     '--read-only',
     '--cap-drop',
     'ALL',
+    '--security-opt',
+    'no-new-privileges',
+    // The relay is one Node process forwarding one TCP port to the colour;
+    // these bound it far above that one job, not size it to it, so a bug in
+    // the relay script (or in the tenant's own image it runs from) can't
+    // turn the relay into a fork bomb or a memory sink on the shared host.
+    '--pids-limit',
+    '16',
+    '--memory',
+    '64m',
     '--user',
     'node',
     '--entrypoint',

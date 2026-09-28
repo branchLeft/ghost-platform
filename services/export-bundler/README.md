@@ -151,9 +151,11 @@ share a network created for the run, with no route off the host. Docker
 publishes no port for a container on an internal network, so the colour
 publishes nothing. Its one way in is a relay: a container of the tenant's
 own image running one fixed script that forwards `127.0.0.1:<port>` to the
-colour. The relay is read-only, has all capabilities dropped, and carries no
-environment and no volume. The dump container is the only one with a route
-to the tenant's database server, and it reads.
+colour. The relay is read-only, has all capabilities dropped, refuses
+privilege escalation (`--security-opt no-new-privileges`), is capped at 16
+pids and 64MB of memory, and carries no environment and no volume. The dump
+container is the only one with a route to the tenant's database server, and
+it reads.
 
 **No Docker logs of tenant data.** Every container in a run that can carry
 tenant data on stdout or stderr runs with `--log-driver none`: the dump,
@@ -203,12 +205,20 @@ happens to the copy only:
 - processing expired gifts;
 - reconciling the ActivityPub webhook rows.
 
-One effect still reaches outside the copy: the Stripe billing-portal
-configuration is registered with Stripe, as on any colour boot. The rows
-those boot paths change on the copy (`emails`, `email_batches`,
-`welcome_email_automation_runs`, `automated_email_recipients`) are outside
-the table allowlist of Ghost's default content export, so the archive does
-not carry them.
+Nothing reaches outside the copy any more: the run network is `--internal`,
+with no route off the host. On any boot where Stripe is connected, Ghost
+still *attempts* to register its billing-portal configuration with Stripe's
+API (`core/server/services/stripe/billing-portal-manager.js`, awaited from
+`core/boot.js`'s `initServices`) -- but on this network the attempt has
+nowhere to go. Verified against a real container (Ghost 6.55-alpine, a
+MySQL 8.0 scratch copy, a tenant with Stripe Connect keys set, on an
+`--internal` network with no outbound route): the connection fails within
+seconds, Ghost's own `stripe.init()` catches and logs the error without
+rethrowing it, and boot continues -- the colour still becomes healthy and
+serves the admin export routes normally. The rows those boot paths change
+on the copy (`emails`, `email_batches`, `welcome_email_automation_runs`,
+`automated_email_recipients`) are outside the table allowlist of Ghost's
+default content export, so the archive does not carry them.
 
 ## The audit record
 
@@ -225,6 +235,13 @@ starting its own transient colour, then re-reads it rather than trusting
 the write.
 
 ## Running it
+
+**Requires Docker 28 or later on the host.** Below Docker 28, a container
+on an `--internal` network can still reach the host's own address -- the
+isolation the run network (`scratchDatabase.ts`'s `--internal` network) is
+built on. The CLI reads `docker version`'s server version before it creates
+anything and refuses with a named `DockerTooOldError` on an older daemon;
+see `dockerVersion.ts`.
 
 Inside an open grant, on the tenant's app host, as a user that can read
 the tenant's root-owned secrets env:

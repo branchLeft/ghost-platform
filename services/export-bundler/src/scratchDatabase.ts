@@ -382,6 +382,11 @@ export function createMysqlScratch(
 
   return {
     async prepare() {
+      // Registered before this run's first `docker` command, dump
+      // included, not after it starts: a signal arriving before the dump
+      // container (or the network, or the scratch server) exists still
+      // runs removeSync, and its catch (below) makes that a no-op rather
+      // than a crash. test/unit/scratchDatabase.test.ts proves the timing.
       unregister = registry.register(`scratch database ${container}`, removeSync);
       await runDocker(docker, buildRunNetworkArgs(spec.runId));
       await withEnvFile(

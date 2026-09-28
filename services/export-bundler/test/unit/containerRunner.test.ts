@@ -257,6 +257,13 @@ describe('createDockerContainerRunner', () => {
     expect(RELAY_SCRIPT).toContain('net.connect(2368,target)');
   });
 
+  it('the relay is bounded: no privilege escalation, a small pid limit, a small memory cap', () => {
+    const args = buildRelayRunArgs({ ...template, network: 'n' });
+    expect(args[args.indexOf('--security-opt') + 1]).toBe('no-new-privileges');
+    expect(args[args.indexOf('--pids-limit') + 1]).toBe('16');
+    expect(args[args.indexOf('--memory') + 1]).toBe('64m');
+  });
+
   it('removes a colour that was created but failed to start, and takes it off the registry', async () => {
     const argvLogPath = join(dir, 'argv.log');
     const fakeDocker = await writeFakeDocker(dir, { argvLogPath });

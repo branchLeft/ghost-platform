@@ -8,6 +8,7 @@ import { createDockerContainerRunner, type VolumeMount } from './containerRunner
 import { createHttpGhostExportClient } from './ghostExportClient.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
 import { createFileAuditLog } from './auditLog.js';
+import { assertDockerServerSupported } from './dockerVersion.js';
 import { runExport } from './exportRunner.js';
 import { createPromptedTokenSource } from './operatorToken.js';
 import { createDockerStatusProbe } from './supportAccountProbe.js';
@@ -103,6 +104,9 @@ async function main(argv: readonly string[]): Promise<void> {
   // First: a Ctrl-C at any later point removes whatever the run has created
   // (colour, scratch copy, network, env files) before the process exits.
   installSignalCleanup();
+  // Before anything else: every tier's run network depends on --internal
+  // isolation that only Docker 28+ actually provides.
+  await assertDockerServerSupported();
   const opts = parseArgs(argv);
 
   let descriptorJson: unknown;

@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CleanupRegistry } from '../../src/cleanup.js';
 import {
@@ -330,6 +332,83 @@ describe('createMysqlScratch', () => {
       'rm -fv acme-export-42-db',
       'network rm acme-export-42-net',
     ]);
+  });
+
+  /**
+   * A fake `docker` for the "signal before the dump exists" case: `network
+   * create` -- the run's very first docker command -- touches a marker and
+   * then sleeps, giving the test a window to fire a signal while it is
+   * still in flight and nothing at all has been created yet. The three
+   * removal commands each answer the way a real `docker rm`/`network rm`
+   * does against a name that was never created: a non-zero exit with a
+   * "No such ..." stderr, not a bare success -- so the test proves the
+   * catch in scratchDatabase.ts's removeSync is what makes cleanup
+   * idempotent, not a fake that always says yes.
+   */
+  async function writeSignalTimingFakeDocker(
+    signalDir: string
+  ): Promise<{ path: string; argvLog: string; marker: string }> {
+    const argvLog = join(signalDir, 'argv.log');
+    const marker = join(signalDir, 'network-create-started');
+    const path = join(signalDir, 'fake-docker-signal-timing.sh');
+    const lines = [
+      '#!/bin/sh',
+      `echo "$*" >> '${argvLog}'`,
+      'case "$*" in',
+      `  "network create --internal acme-export-42-net") touch '${marker}'; sleep 0.3; exit 0 ;;`,
+      '  "rm -f acme-export-42-dump")',
+      '    echo "Error: No such container: acme-export-42-dump" >&2; exit 1 ;;',
+      '  "rm -fv acme-export-42-db")',
+      '    echo "Error: No such container: acme-export-42-db" >&2; exit 1 ;;',
+      '  "network rm acme-export-42-net")',
+      '    echo "Error: No such network: acme-export-42-net" >&2; exit 1 ;;',
+      'esac',
+      'exit 0',
+    ];
+    await writeFile(path, lines.join('\n') + '\n');
+    await chmod(path, 0o755);
+    return { path, argvLog, marker };
+  }
+
+  async function waitForFile(path: string, timeoutMs = 2000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (existsSync(path)) return;
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path} to exist`);
+      await sleep(5);
+    }
+  }
+
+  it("registers the dump container for cleanup before the run's first docker command, not after it -- a signal firing before the dump (or anything else) exists is a safe no-op, never an orphan", async () => {
+    const fake = await writeSignalTimingFakeDocker(dir);
+    const registry = new CleanupRegistry();
+    const scratch = createMysqlScratch(mysqlSpec, {
+      dockerCommand: fake.path,
+      registry,
+      pollMs: 1,
+      readyTimeoutMs: 50,
+    });
+
+    const prepared = scratch.prepare();
+    // `network create` -- the very first docker command this run issues --
+    // is still in flight (asleep). Nothing has been created: not the
+    // network, not the scratch server, and not the dump.
+    await waitForFile(fake.marker);
+    expect(registry.labels).toEqual(['scratch database acme-export-42-db']);
+    expect(await readFile(fake.argvLog, 'utf8')).not.toContain('mysqldump');
+
+    // The signal: every remover runs now, while the dump container has
+    // never existed and the fake docker answers each removal the way a
+    // real one would -- "No such container" / "No such network" -- proving
+    // the removeSync catch is what makes this a no-op, not a fake that
+    // always reports success.
+    expect(registry.runAll()).toEqual([]);
+    const argv = await readFile(fake.argvLog, 'utf8');
+    expect(argv).toContain('rm -f acme-export-42-dump');
+    expect(argv).toContain('rm -fv acme-export-42-db');
+    expect(argv).toContain('network rm acme-export-42-net');
+
+    await prepared.catch(() => undefined);
   });
 
   it('refuses a scratch target that already holds a database, before importing anything', async () => {
