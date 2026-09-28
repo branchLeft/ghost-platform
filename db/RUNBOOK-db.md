@@ -457,76 +457,75 @@ is nothing to prune yet, and running it against a brand-new bucket is a no-op
 at best. See "Backup retention" below for how to bring it onto an
 already-running `db1`.
 
-## The dump endpoint (pull-model transport)
+## Backup worker account (`route=b`)
 
-The org/control-side backup worker (`infra/provisioning/scripts/backup_worker.py`)
-dials in over `dump_endpoint_server.py` rather than this host pushing
-anything out -- see that module's own docstring, and the platform owner's
-2026-09-28 ruling on branchLeft/workspace#1203 (`transport=a`). This is the
-one long-running (`Type=simple`) unit `db/provision/` ships; everything
-else here is a `.service`/`.timer` oneshot pair.
+The org/control-side backup worker (`infra/provisioning/scripts/backup_worker.py`,
+run from `ops1`) runs `mysqldump` itself, over TLS, directly against this
+host's existing MySQL port -- `dial_in_transport.py`'s `RemoteMysqldumpTransport`.
+`db1` gains no new listener and holds no new service; the only change here
+is one more MySQL account.
 
-**Reachability, precisely.** `db1` has no public interface
-(`infra/hosts/index.ts`: `publicNetworking: false`), but a Hetzner
-firewall does not scope a private-network port -- `db1` shares one subnet
-(`10.20.1.0/24`) with every other estate host, `app1` included, and
-nothing at the network layer stops any of them reaching `:8420`. Two
-layers close that gap, neither optional: `nftables` on `db1` restricting
-`:8420` to the one trusted peer (owner step, below), and the app-level
-check `DUMP_ENDPOINT_ALLOWED_SOURCE` enforces per request regardless of
-whether the firewall rule has landed yet.
+This keeps `db1`'s exposed surface at what it already is -- no new
+listener, one more account on the port and TLS setup already here for
+tenant connections -- matching LLD-9's own rule that a database host never
+gains a second inbound path for a second purpose.
 
-**Owner decision: which host is the trusted peer.** `infra/provisioning/scripts/backup_worker.py`
-runs from `ops1` per branchLeft/workspace#1203's own Delivery note, and
-`ops1` is on this same subnet (shared-infra's `hetzner/estate.ts`, address
-`10.20.1.50`) -- but the `@branchleft/hetzner-host` version this repo
-currently pins (`0.3.0`) predates that address landing in the package's
-own `HOST_IPS`, so nothing here can assert it programmatically yet. Confirm
-`ops1`'s current private address before filling in `DUMP_ENDPOINT_ALLOWED_SOURCE`
-below, and bump the pinned package version once a release carries it.
+**The account.** Same grants as the existing local `backup`@`localhost`
+account above, proven to be exactly what `mysqldump --single-transaction
+--source-data=2 --routines --triggers --set-gtid-purged=OFF` needs against
+this server -- restated here for a second account rather than reused,
+because this one is reachable over the network and must be scoped to
+exactly one peer and require TLS. Run at the same `mysql>` prompt as step 4:
 
-Generate the bearer token once, off-host, the same way `escrow-tenant-
-passphrase.py`'s own key material is generated -- never derived from
-anything guessable, never reused across hosts:
-
-```bash
-LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 48; echo
+```sql
+CREATE USER 'backup_ops1'@'<ops1''s private-network address>'
+    IDENTIFIED BY '<matches DB_DUMP_MYSQL_PWD, read via read -rs>' REQUIRE SSL;
+GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT
+    ON *.* TO 'backup_ops1'@'<ops1''s private-network address>';
+FLUSH PRIVILEGES;
 ```
 
-Write it, and the rest of this unit's config, to `/etc/branchleft/dump-endpoint.env`
-on `db1` (mode 600, root-owned, the same convention as `/etc/branchleft/db.env`).
-Every value below is required -- the service refuses to start with any of
-them unset:
+`ops1`'s current private address is in shared-infra's live `hetzner-host/addressPlan.ts`
+(`10.20.1.50` as of this writing) -- but the `@branchleft/hetzner-host`
+version this repo pins (`0.3.0`) predates that address landing in the
+package's own `HOST_IPS`, so confirm it directly rather than trusting a
+constant from here, and bump the pin once a release carries it.
+
+**TLS on the client side.** `require_secure_transport = ON` in
+`db/stack/conf.d/branchleft.cnf` already forces TLS for every TCP
+connection to this server (tenant accounts included, today), and the
+image auto-generates a self-signed `ca.pem` into the data volume on first
+start -- there is nothing new to configure on `db1` for TLS itself. `mysql-data`
+is a named Docker volume, not a host path, so read the cert back through
+the container (from `/opt/branchleft/db`):
 
 ```bash
-DUMP_ENDPOINT_TOKEN=<the generated token>
-DUMP_ENDPOINT_HOST=<db1's own private-network address>
-DUMP_ENDPOINT_ALLOWED_SOURCE=<ops1's own private-network address>
+docker compose exec mysql cat /var/lib/mysql/ca.pem
 ```
 
-The org/control side needs the same token in `DUMP_ENDPOINT_BEARER_TOKEN`
-and the endpoint's reachable address in `DUMP_ENDPOINT_BASE_URL` (e.g.
-`http://<db1's private-network address>:8420`) wherever `backup_worker.py`
-runs -- the password manager entry this goes in is `ops1`'s own, not this
-host's.
-
-Restrict the port with `nftables` before the unit ever starts -- the
-second, network-layer barrier alongside `DUMP_ENDPOINT_ALLOWED_SOURCE`,
-not a substitute for it:
+Copy that output to `ops1` out-of-band (scp, not this runbook's own
+delivery path) and set:
 
 ```bash
-nft add rule inet filter input ip saddr != <ops1's private address> tcp dport 8420 drop
+BACKUP_WORKER_DB_HOST=<db1's private-network address>
+BACKUP_WORKER_MYSQL_USER=backup_ops1
+BACKUP_WORKER_MYSQL_SSL_CA=<path to the copied ca.pem, on ops1>
+DB_DUMP_MYSQL_PWD=<matches the account above>
 ```
 
-Install and start the endpoint:
+wherever `backup_worker.py` runs -- the password manager entry this goes
+in is `ops1`'s own, not this host's.
 
-```bash
-cp /opt/branchleft/db/provision/branchleft-db-dump-endpoint.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now branchleft-db-dump-endpoint.service
-systemctl status branchleft-db-dump-endpoint.service
-journalctl -u branchleft-db-dump-endpoint.service -n 40
-```
+**Firewall: there currently is none to update.** `db1` has no public
+interface (`infra/hosts/index.ts`: `publicNetworking: false`), and
+shared-infra's `hetzner-host/firewalls.ts` states the other half plainly:
+a Hetzner Cloud firewall filters the public interface only, so private-network
+traffic "is never evaluated against these rules" -- and no host-level
+firewall (`nftables`/`ufw`) is provisioned anywhere in `db/` today. The
+MySQL account's own host-restriction (`@'<ops1's address>'` above) and
+`REQUIRE SSL` are the only barriers this change adds. If a host firewall
+is added to `db1` later, restrict `:3306` to `ops1`'s address in it then --
+not a step this change can honestly claim to take today.
 
 ## Backup retention
 

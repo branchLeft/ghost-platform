@@ -1,2 +1,0 @@
-infra/provisioning/scripts/backup_worker.py	DB-1	# byte-pattern match against a streamed mysqldump, watching for a floor table's INSERT line -- not a SQL statement this code executes
-infra/provisioning/scripts/test_backup_worker.py	DB-1	# fake mysqldump fixture output and assertions against decrypted dump content -- SQL-shaped test data, never a statement this code executes

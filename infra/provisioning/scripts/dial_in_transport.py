@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """The one channel an org/control-side worker dials a tenant host over:
 `DialInTransport` (the interface), `LocalProcessTransport` (a local test
-double), and `DumpEndpointTransport` (the real channel, dialling
-`db/provision/dump_endpoint_server.py`). Design and rationale:
-`db/provision/dump-endpoint.md`.
+double), and `RemoteMysqldumpTransport` (the real channel: `mysqldump`,
+run locally on the worker's own host, connecting to the tenant database
+host's existing MySQL port over TLS -- no new listener anywhere, and the
+database host gains no new service). A dump endpoint listening on the
+database host was tried first and superseded on review: `db/RUNBOOK-db.md`'s
+"Backup worker account" section carries why.
 """
 
 from __future__ import annotations
 
-import http.client
-import json
 import os
 import re
+import signal
 import subprocess
-import urllib.error
-import urllib.request
+import threading
 from collections.abc import Mapping, Sequence
 from typing import BinaryIO, Protocol
 
@@ -34,12 +35,14 @@ FORBIDDEN_ENV_PREFIXES = ("AWS_", "DB_BACKUP_", "AGE_")
 # cannot leak them into a producer invocation by accident.
 _CHILD_ENV_ALLOWLIST = ("PATH",)
 
-# `db/provision/naming.py`'s own `TENANT_NAME_PATTERN`, restated rather than
-# imported -- same reasoning as `FORBIDDEN_ENV_PREFIXES` above: this module
-# is on the org/control side of the trust boundary, and it is the layer
-# that puts a tenant name into a URL, so it checks that value itself rather
-# than trusting whatever validated it (if anything did) on its way here.
+# `db/provision/naming.py`'s own `TENANT_NAME_PATTERN` and database-name
+# derivation, restated rather than imported -- same reasoning as
+# `FORBIDDEN_ENV_PREFIXES` above: this module is on the org/control side
+# of the trust boundary, and it is the layer that puts a tenant name into
+# a `mysqldump --databases` argument, so it checks and derives that value
+# itself rather than trusting whatever validated it on its way here.
 TENANT_NAME_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
+_TENANT_DB_PREFIX = "ghost_"
 
 
 class DialInTransportError(Exception):
@@ -106,124 +109,120 @@ class LocalProcessTransport:
 
 # The pattern `run_tenant_dump` builds its own `command` argument with --
 # see backup_worker.py: `[python_executable, dump_tenant_path, tenant,
-# "--socket", socket_path]`. `DumpEndpointTransport` cannot forward
-# `command` itself across the wire (a small HTTP endpoint that ran
-# whatever argv a caller handed it would be exactly the command-injection
-# surface `dump_endpoint_server.py`'s own "never lets a caller name a
-# path" rule exists to close); the tenant name is the only thing it
-# extracts from `command`, at this fixed position.
+# "--socket", socket_path]`. `RemoteMysqldumpTransport` runs `mysqldump`
+# itself rather than that argv (there is no remote producer script to
+# invoke any more -- see the module docstring); the tenant name is the
+# only thing it extracts from `command`, at this fixed position, the same
+# convention the pull-model design already used.
 _TENANT_COMMAND_INDEX = 2
 
 
 def _tenant_from_command(command: Sequence[str]) -> str:
     if len(command) <= _TENANT_COMMAND_INDEX:
         raise DialInTransportError(
-            f"cannot dial the dump endpoint: {list(command)!r} is shorter than the "
+            f"cannot derive a tenant name: {list(command)!r} is shorter than the "
             "[python, dump_tenant_path, tenant, ...] shape run_tenant_dump always builds"
         )
     return command[_TENANT_COMMAND_INDEX]
 
 
-class DumpEndpointTransport:
-    """The real dial-in channel: fetches one tenant's dump from
-    `dump_endpoint_server.py` over plain HTTP, with the same bearer-token
-    authentication that server enforces. Re-validates the tenant
-    independently rather than trusting `run_tenant_dump` already did, and
-    treats a response shorter than its own declared `Content-Length` as a
-    failure, never a 0 exit. Design: `db/provision/dump-endpoint.md`.
-    """
+class RemoteMysqldumpTransport:
+    """The real dial-in channel: `mysqldump`, local subprocess, TLS to the
+    tenant database host's existing port. Grants: `db/RUNBOOK-db.md`'s
+    "Backup worker account" section. Re-validates the tenant independently
+    -- this is the layer that turns it into a `--databases` argument.
+    `env["DB_DUMP_MYSQL_PWD"]` reaches `mysqldump` only as the child's own
+    `MYSQL_PWD`, never argv, so it never appears in a process listing."""
 
     def __init__(
         self,
         *,
-        base_url: str,
-        bearer_token: str,
-        timeout_seconds: float = 30.0,
-        urlopen=urllib.request.urlopen,
+        host: str,
+        user: str,
+        ssl_ca: str,
+        port: int = 3306,
+        timeout_seconds: float = 1800.0,
+        popen=subprocess.Popen,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._bearer_token = bearer_token
+        self._host = host
+        self._port = port
+        self._user = user
+        self._ssl_ca = ssl_ca
         self._timeout_seconds = timeout_seconds
-        self._urlopen = urlopen
+        self._popen = popen
 
     def run(self, *, command: Sequence[str], env: Mapping[str, str], stdout: BinaryIO) -> int:
         assert_no_forbidden_env(env)
         tenant = _tenant_from_command(command)
         if not TENANT_NAME_PATTERN.match(tenant):
-            raise DialInTransportError(
-                f"refusing to dial in: {tenant!r} is not a strictly valid tenant slug"
-            )
+            raise DialInTransportError(f"refusing to dial in: {tenant!r} is not a strictly valid tenant slug")
         mysql_pwd = env.get("DB_DUMP_MYSQL_PWD")
         if not mysql_pwd:
             raise DialInTransportError(
-                "refusing to dial in: env carries no DB_DUMP_MYSQL_PWD -- the dump endpoint "
-                "needs it in every request, since the tenant database host holds none at rest"
+                "refusing to dial in: env carries no DB_DUMP_MYSQL_PWD for the mysqldump child"
             )
 
-        url = f"{self._base_url}/dump/{tenant}"
-        request = urllib.request.Request(
-            url,
-            headers={
-                "Authorization": f"Bearer {self._bearer_token}",
-                "X-Db-Dump-Mysql-Pwd": mysql_pwd,
-            },
-        )
+        db_name = _TENANT_DB_PREFIX + tenant.replace("-", "_")
+        argv = [
+            "mysqldump",
+            "--host", self._host,
+            "--port", str(self._port),
+            "--user", self._user,
+            "--ssl-mode=VERIFY_CA",
+            "--ssl-ca", self._ssl_ca,
+            "--single-transaction",
+            "--source-data=2",
+            "--routines",
+            "--triggers",
+            "--set-gtid-purged=OFF",
+            "--databases", db_name,
+        ]
+        child_env = {name: os.environ[name] for name in _CHILD_ENV_ALLOWLIST if name in os.environ}
+        child_env["MYSQL_PWD"] = mysql_pwd
 
+        # start_new_session so a kill on timeout reaches the whole process
+        # group `mysqldump` heads, not just the one pid this class holds --
+        # otherwise a child it spawned could keep the stdout pipe's write
+        # end open after the parent is gone, and the read loop below would
+        # block for however long that child took to exit on its own,
+        # rather than for this transport's own timeout.
+        process = self._popen(
+            argv, env=child_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+        )
+        timed_out = threading.Event()
+
+        def _on_timeout() -> None:
+            timed_out.set()
+            self._kill_process_group(process)
+
+        timer = threading.Timer(self._timeout_seconds, _on_timeout)
+        timer.start()
         try:
-            response = self._urlopen(request, timeout=self._timeout_seconds)
-        except urllib.error.HTTPError as exc:
-            with exc:
-                return self._handle_error_response(exc, url=url)
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            raise DialInTransportError(f"dialling {url} failed: {exc}") from exc
-
-        with response:
-            expected_length = response.headers.get("Content-Length")
-            if expected_length is None:
-                raise DialInTransportError(
-                    f"the dump endpoint at {url} sent no Content-Length on a 200 -- refusing to "
-                    "trust a body this class cannot check for completeness"
-                )
-            bytes_read = 0
             try:
-                for line in response:
-                    bytes_read += len(line)
+                for line in process.stdout:
                     stdout.write(line)
-            except (http.client.HTTPException, ConnectionError, OSError) as exc:
-                raise DialInTransportError(
-                    f"the dump stream from {url} broke before completing: {exc}"
-                ) from exc
+            finally:
+                process.stdout.close()
+            process.stderr.close()
+            exit_code = process.wait()
+        finally:
+            timer.cancel()
 
-        if bytes_read != int(expected_length):
+        if timed_out.is_set():
             raise DialInTransportError(
-                f"the dump stream from {url} ended after {bytes_read} bytes, expected exactly "
-                f"{expected_length} (Content-Length) -- refusing to treat a truncated dump as "
-                "a successful 0 exit"
+                f"mysqldump against {self._host}:{self._port} exceeded its {self._timeout_seconds}s "
+                "timeout and was killed -- refusing to treat this as an ordinary producer failure"
             )
-        return 0
+        return exit_code
 
-    def _handle_error_response(self, exc: urllib.error.HTTPError, *, url: str) -> int:
-        body = exc.read()
-        if exc.code == 502:
-            try:
-                payload = json.loads(body)
-                exit_code = int(payload["exit_code"])
-            except (ValueError, KeyError, TypeError):
-                raise DialInTransportError(
-                    f"dump endpoint at {url} reported a producer failure (502) but the body "
-                    f"was not the expected {{'exit_code': ...}} shape: {body!r}"
-                ) from None
-            if exit_code == 0:
-                # dump_endpoint_server.py only ever sends 502 from a caught
-                # DumpError, which always reports exit_code 1 -- a 502
-                # carrying 0 is not a shape the real server produces, and
-                # guessing 0 here would tell pull_encrypt_store.py to store
-                # a dump this response never actually delivered.
-                raise DialInTransportError(
-                    f"dump endpoint at {url} returned 502 but exit_code 0, a contradiction -- "
-                    "refusing to report this as a successful 0 exit"
-                )
-            return exit_code
-        raise DialInTransportError(
-            f"dump endpoint at {url} returned {exc.code}, not 200 or 502: {body!r}"
-        )
+    @staticmethod
+    def _kill_process_group(process) -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (AttributeError, ProcessLookupError, PermissionError, OSError):
+            # AttributeError: a test double with no real pid/session.
+            # ProcessLookupError: already exited. PermissionError/OSError:
+            # os.killpg unavailable (e.g. Windows) or the group is gone --
+            # either way, falling back to killing this one pid is strictly
+            # weaker, never worse than doing nothing.
+            process.kill()

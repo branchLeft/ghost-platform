@@ -27,8 +27,8 @@ import shared_objectstorage
 from dial_in_transport import (
     DialInTransport,
     DialInTransportError,
-    DumpEndpointTransport,
     LocalProcessTransport,
+    RemoteMysqldumpTransport,
 )
 from pull_encrypt_store import CopyTarget, PullEncryptStoreError, pull_encrypt_and_store
 
@@ -136,10 +136,10 @@ def run_tenant_dump(
 ) -> DumpResult:
     """The single-tenant, on-demand call. `dump_tenant_path` and
     `socket_path` are real filesystem paths for
-    `dial_in_transport.LocalProcessTransport` only -- `DumpEndpointTransport`
-    reads the tenant slug out of `command` and ignores the rest, since the
-    real endpoint always runs against its own configured socket. `env`
-    carries exactly one entry, `DB_DUMP_MYSQL_PWD` -- never
+    `dial_in_transport.LocalProcessTransport` only -- `RemoteMysqldumpTransport`
+    reads the tenant slug out of `command` and ignores the rest, since it
+    runs `mysqldump` itself rather than that argv. `env` carries exactly
+    one entry, `DB_DUMP_MYSQL_PWD` -- never
     `AWS_*`/`DB_BACKUP_*`/`AGE_*`; every parameter that would carry a
     storage credential is consumed by `pull_encrypt_and_store` on this side
     of the dial-in call, never forwarded across it.
@@ -445,8 +445,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "use LocalProcessTransport instead of the real dial-in channel -- for proof "
             "against local containers only, never for a real tenant. Without this flag, "
-            "main() dials DUMP_ENDPOINT_BASE_URL for real, over dial_in_transport.py's "
-            "DumpEndpointTransport"
+            "main() runs mysqldump for real, over dial_in_transport.py's "
+            "RemoteMysqldumpTransport"
         ),
     )
     args = parser.parse_args(argv)
@@ -455,9 +455,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.local_test_transport:
         transport = LocalProcessTransport()
     else:
-        transport = DumpEndpointTransport(
-            base_url=_require_env("DUMP_ENDPOINT_BASE_URL"),
-            bearer_token=_require_env("DUMP_ENDPOINT_BEARER_TOKEN"),
+        transport = RemoteMysqldumpTransport(
+            host=_require_env("BACKUP_WORKER_DB_HOST"),
+            user=_require_env("BACKUP_WORKER_MYSQL_USER"),
+            ssl_ca=_require_env("BACKUP_WORKER_MYSQL_SSL_CA"),
+            port=int(os.environ.get("BACKUP_WORKER_DB_PORT", "3306")),
         )
 
     mysql_pwd = _require_env("DB_DUMP_MYSQL_PWD")
