@@ -57,7 +57,19 @@ class GhostContainer {
       database__connection__filename: '/var/lib/ghost/content/data/ghost.db',
       privacy__useUpdateCheck: 'false',
       mail__transport: 'stub',
+      // Bypasses only durability (docker-entrypoint.branchleft.sh) -- the
+      // scanning decorator is still required per feature, so it has to be
+      // named here even though this test never uploads or reads media.
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: 'true',
+      storage__images__adapter: 'ScanningStorageAdapter',
+      storage__images__wraps: 'LocalImagesStorage',
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+      storage__media__adapter: 'ScanningStorageAdapter',
+      storage__media__wraps: 'LocalMediaStorage',
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+      storage__files__adapter: 'ScanningStorageAdapter',
+      storage__files__wraps: 'LocalFilesStorage',
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
       adapters__sso__active: 'BreakGlassSSO',
       adapters__sso__BreakGlassSSO__publicKey: key.publicKeyBase64,
       adapters__sso__BreakGlassSSO__tenant: TENANT,
