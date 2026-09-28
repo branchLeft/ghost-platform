@@ -1,7 +1,8 @@
-// A committed runbook must not carry either half of the same defect: an
-// unsubstituted placeholder in a copy-pasteable command, or a concrete
-// operational value (a fixed host's address) committed as a literal.
-// See runbook-literal-placeholders.test.md#placeholder-and-literal-checks.
+// Two checks over the same fenced runbook blocks: an unresolved,
+// address-shaped placeholder, and a committed literal for a specific known
+// fixed host. See runbook-literal-placeholders.md for what each matches and
+// why, and why both are deliberately narrower than a blanket `<...>` or
+// IPv4-shaped scan.
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -15,6 +16,7 @@ const RUNBOOK_PATHS = [
   'RUNBOOK-media-backup-lifecycle.md',
   'RUNBOOK-tenant-onboarding.md',
   'db/RUNBOOK-db.md',
+  'services/broker/RUNBOOK-broker-deploy.md',
 ];
 
 const COMMAND_FENCE_LANGS = new Set(['bash', 'sql']);
@@ -68,14 +70,7 @@ function commandBlocks(text) {
   return blocks.filter((b) => COMMAND_FENCE_LANGS.has(b.lang));
 }
 
-/**
- * Every unresolved, address-shaped placeholder token in `blockText`,
- * wherever it sits -- an assignment's entire value, `export`ed, `local`,
- * quoted, split across a line continuation, or an argument inside a larger
- * command. Hostname and position are not the property that makes one of
- * these wrong: it reads as an address (its trailing word is
- * ip/ipv4/address/addr) and nothing has substituted it.
- */
+/** See runbook-literal-placeholders.md ("`addressPlaceholders`"). */
 function addressPlaceholders(blockText) {
   const found = [];
   let match;
@@ -90,11 +85,7 @@ function addressPlaceholders(blockText) {
   return found;
 }
 
-/**
- * Bare IPv4 literals in `blockText` equal to a specific, known address this
- * file pins in `FIXED_HOST_LITERALS` -- the anti-pattern the placeholder
- * check above exists to catch, committed instead of left unresolved.
- */
+/** See runbook-literal-placeholders.md ("`fixedHostLiterals`"). */
 function fixedHostLiterals(blockText) {
   const found = [];
   let match;
@@ -151,9 +142,8 @@ test('every RUNBOOK-*.md this repo ships is covered by the scan above', () => {
   assert.deepEqual(found.sort(), [...RUNBOOK_PATHS].sort());
 });
 
-// The Teardown section must stop the tenant's containers before removing
-// its directory or volumes, since the unit that starts them carries no
-// ExecStop. See runbook-literal-placeholders.test.md#teardown-ordering-check.
+// See runbook-literal-placeholders.md ("The RUNBOOK-tenant-onboarding.md
+// Teardown order check").
 const TEARDOWN_HEADING_RE = /^##\s+Teardown\s*$/m;
 const NEXT_HEADING_RE = /^##\s+\S/m;
 // The one correct stop step: `docker ps -q --filter
@@ -196,14 +186,7 @@ function teardownSectionText(fullText) {
   return nextHeadingOffset === -1 ? afterHeading : afterHeading.slice(0, nextHeadingOffset);
 }
 
-/**
- * Violations of the teardown order above, found in `sectionText`'s fenced
- * bash/sql blocks. Order is judged across the whole section, concatenating
- * every command block's lines in document order -- a stop step in one
- * fenced block still has to precede a removal step in a later one. A
- * `docker compose ... down` is a violation outright, regardless of where it
- * sits, because it cannot succeed against a real tenant stack at all.
- */
+/** See runbook-literal-placeholders.md ("The RUNBOOK-tenant-onboarding.md Teardown order check"). */
 function teardownOrderViolations(sectionText) {
   // Comment lines (explanatory prose, including the one right beside step 2
   // that names the banned form to explain why it's banned) are not commands

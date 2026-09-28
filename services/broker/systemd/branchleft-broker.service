@@ -1,0 +1,66 @@
+# Installed at /etc/systemd/system/branchleft-broker.service (RUNBOOK-broker-deploy.md's
+# install step). Every hardening directive below, and why each either stays
+# or is deliberately absent, is explained in systemd/README.md -- found only
+# by a real boot (broker-systemd-boot-ci.yml), not by reading the docs.
+
+[Unit]
+Description=branchLeft demo-host broker
+Documentation=https://github.com/branchLeft/ghost-platform/blob/main/services/broker/RUNBOOK-broker-deploy.md
+After=network.target
+
+[Service]
+Type=simple
+User=broker
+Group=broker
+
+EnvironmentFile=/etc/branchleft/broker.env
+WorkingDirectory=/opt/branchleft/broker/current
+# --preserve-symlinks-main: see systemd/README.md.
+ExecStart=/opt/branchleft/broker/node/bin/node --preserve-symlinks-main /opt/branchleft/broker/current/broker.mjs
+
+Restart=on-failure
+RestartSec=5s
+# A broker stuck in a fast crash loop is an operator problem, not something
+# this unit should paper over by respawning it forever at the sudoers
+# boundary's own front door.
+StartLimitIntervalSec=300
+StartLimitBurst=6
+
+TimeoutStopSec=30s
+
+# Creates and owns /var/lib/branchleft-broker (broker:broker, 0750) on every
+# start -- the fixed path `demo-host/provision/branchleft_slot.py`'s
+# IMAGE_LOAD_PATH already hardcodes for `image-tmp/image.tar`. The
+# process's own startup (`server.ts#main`) creates the `state/`,
+# `lease/`, `drain-flags/` and `image-tmp/` subdirectories under it.
+StateDirectory=branchleft-broker
+StateDirectoryMode=0750
+
+# --- Hardening compatible with the sudo -n call: see systemd/README.md ---
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectProc=invisible
+UMask=0022
+IPAddressDeny=any
+IPAddressAllow=localhost
+PrivateIPC=yes
+RemoveIPC=yes
+
+# /opt/branchleft, /etc/branchleft and /var/lib/branchleft: see
+# systemd/README.md ("`/etc/branchleft` and `/var/lib/branchleft` are
+# writable"). /opt/branchleft/demo-<slot> (BROKER_SLOT_DIR_BASE) is owned
+# and permissioned by the host-build/uid-claim work, not this unit -- left
+# writable here so this unit does not itself regress that path once it
+# exists.
+ReadWritePaths=/opt/branchleft /etc/branchleft /var/lib/branchleft
+# The deeper path wins inside a ReadWritePaths entry: this narrows the
+# verify key, broker.env and the installed release tree back to read-only
+# even though the whole directories above are writable. See
+# systemd/README.md ("The verify key").
+ReadOnlyPaths=/etc/branchleft/broker.env /etc/branchleft/broker-verify-key.bin /opt/branchleft/broker
+
+[Install]
+WantedBy=multi-user.target

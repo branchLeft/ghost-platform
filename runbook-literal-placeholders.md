@@ -1,6 +1,4 @@
-# runbook-literal-placeholders.test.js
-
-## Placeholder and literal checks
+# The runbook-literal-placeholders guard
 
 A committed runbook must not carry either half of the same defect: an
 unsubstituted placeholder in a copy-pasteable command, or a concrete
@@ -11,7 +9,7 @@ the value it copied stops being current. The fix in both directions is
 threading the value through a shell variable a lookup command populates,
 never a hardcoded string and never an unresolved placeholder.
 
-Two checks, not three, over the same fenced blocks:
+## Two checks, not three, over the same fenced blocks
 
 - `addressPlaceholders` matches any unresolved, address-shaped placeholder
   token anywhere in a command fence -- an assignment's whole value,
@@ -27,8 +25,7 @@ Two checks, not three, over the same fenced blocks:
   known fixed host, never a `/32` or a CIDR, and never a threaded
   `$VARIABLE` reference.
 
-Deliberately narrower than "no `<...>` anywhere in a fenced block" or "no
-IPv4-shaped token anywhere in a fenced block":
+## Deliberately narrower than "no `<...>` anywhere in a fenced block" or "no IPv4-shaped token anywhere in a fenced block"
 
 - Only `bash` and `sql` fences count as command blocks in this repo's
   runbooks -- `text`/`yaml`/`json` fences here hold illustrative sample
@@ -43,16 +40,36 @@ IPv4-shaped token anywhere in a fenced block":
   matches, whether it is an assignment's whole value or an argument
   inside a larger command.
 
-## Teardown ordering check
+## `addressPlaceholders`
 
-The Teardown section must not delete the directory that holds a tenant's
-Compose file before anything stops the containers that file describes --
-the unit that starts them carries no ExecStop, so nothing else in the
-section can stop them once that file is gone. This check pins the fix at
-the text level: a label-filtered `docker stop` (never a `docker compose
-... down`, which re-parses the Compose file and fails on every real
-tenant's mandatory `${VAR:?...}` secrets -- see the comment beside step 2
-in the runbook itself) has to appear, and it has to appear before the
-line that removes the tenant's directory and before the line that
-removes its named volumes, wherever those sit across the section's
-fenced blocks.
+Every unresolved, address-shaped placeholder token in a fenced block,
+wherever it sits -- an assignment's entire value, `export`ed, `local`,
+quoted, split across a line continuation, or an argument inside a larger
+command. Hostname and position are not the property that makes one of
+these wrong: it reads as an address (its trailing word is
+ip/ipv4/address/addr) and nothing has substituted it.
+
+## `fixedHostLiterals`
+
+Bare IPv4 literals equal to a specific, known address this file pins in
+`FIXED_HOST_LITERALS` -- the anti-pattern the placeholder check above
+exists to catch, committed instead of left unresolved.
+
+## The `RUNBOOK-tenant-onboarding.md` Teardown order check
+
+The `## Teardown` section must not delete the directory that holds a
+tenant's Compose file before anything stops the containers that file
+describes -- the unit that starts them carries no `ExecStop`, so nothing
+else in the section can stop them once that file is gone. This check pins
+the fix at the text level: a label-filtered `docker stop` (never a `docker
+compose ... down`, which re-parses the Compose file and fails on every real
+tenant's mandatory `${VAR:?...}` secrets) has to appear, and it has to
+appear before the line that removes the tenant's directory and before the
+line that removes its named volumes, wherever those sit across the
+section's fenced blocks.
+
+`teardownOrderViolations` judges order across the whole section,
+concatenating every command block's lines in document order -- a stop step
+in one fenced block still has to precede a removal step in a later one. A
+`docker compose ... down` is a violation outright, regardless of where it
+sits, because it cannot succeed against a real tenant stack at all.
