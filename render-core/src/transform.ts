@@ -13,7 +13,7 @@
  * reason a name, a slug-derived path or a volume identity is exactly what
  * `assertAttributablePromotionDiff` below rejects).
  *
- * Five things this function deliberately does not decide, because deciding
+ * Six things this function deliberately does not decide, because deciding
  * them here would be inventing operational or tier policy the design does
  * not fix:
  * - Where the tenant's database and media bucket physically live
@@ -30,6 +30,17 @@
  *   (LLD-6 §06) this schema has no way to confirm, the same reasoning
  *   `backupEncryptionRecipient` above already carries. A missing target
  *   here is refused by name below, not defaulted.
+ * - The tenant's own mail ceilings, and whether mail is enabled at all
+ *   (`targets.mailEnabled`/`mailCeiling`/`mailEstateCeiling`) -- LLD-6 §09
+ *   names these, alongside the domain and DKIM selector, as part of what a
+ *   *promoted tenant's own* sending identity carries, never something
+ *   inherited from the demo it was recycled from. This repo's own
+ *   `test/fixtures.ts` already models both ceilings as tier-differentiated
+ *   (`entryTenantDescriptor()`: 5000/5000; `professionalTenantDescriptor()`:
+ *   50000/50000) -- carrying the demo's own 20/500 test-send ceiling
+ *   forward would ship the demo's cap to a paying tenant indefinitely,
+ *   exactly the `limits`/media mistake this module's review already fixed
+ *   once, in a different field.
  * - The target tier's `limits` (`targets.limits`) -- this repo's own
  *   `test/fixtures.ts` already encodes a tier-differentiated model here
  *   (`entryTenantDescriptor()`: capped; `professionalTenantDescriptor()`:
@@ -79,6 +90,13 @@ export interface PromotionTargets {
    * the same way it writes `database.kind`/`media.kind` rather than taking
    * them as promotion input. */
   readonly mailIdentity: Omit<Extract<SendingIdentitySpec, { readonly kind: 'tenant' }>, 'kind'>;
+  /** The tenant's own mail ceilings and enablement (LLD-6 §09) -- never the
+   * demo's. See the module doc comment: this repo's own fixtures already
+   * model both ceilings as tier-differentiated, so there is no tier-neutral
+   * default, the same reason `limits` has none. */
+  readonly mailEnabled: boolean;
+  readonly mailCeiling: number;
+  readonly mailEstateCeiling: number;
 }
 
 /**
@@ -218,6 +236,21 @@ export function transform(
         `no tier-neutral default, the same reason backupEncryptionRecipient has none.`
     );
   }
+  if (typeof targets.mailEnabled !== 'boolean') {
+    throw new FieldValidationError(
+      'mailEnabled',
+      `transform() requires targets.mailEnabled (whether mail is enabled for the promoted ` +
+        `tenant's own tier, LLD-6 §09) -- there is no tier-neutral default.`
+    );
+  }
+  if (typeof targets.mailCeiling !== 'number' || typeof targets.mailEstateCeiling !== 'number') {
+    throw new FieldValidationError(
+      'mailCeiling',
+      `transform() requires targets.mailCeiling and targets.mailEstateCeiling (the promoted ` +
+        `tenant's own per-tenant and estate mail ceilings, LLD-6 §09) -- there is no ` +
+        `tier-neutral default, and the demo's own ceiling is never a promoted tenant's.`
+    );
+  }
 
   const slug = demo.slug;
   const sqlIdentity = databaseAndUserName(slug);
@@ -245,7 +278,9 @@ export function transform(
     gate: { kind: 'none' },
     backup: { kind: 'bucket-native', encryptionRecipient: targets.backupEncryptionRecipient },
     mail: {
-      ...demo.mail,
+      enabled: targets.mailEnabled,
+      ceiling: targets.mailCeiling,
+      estateCeiling: targets.mailEstateCeiling,
       identity: {
         kind: 'tenant',
         domain: targets.mailIdentity.domain,

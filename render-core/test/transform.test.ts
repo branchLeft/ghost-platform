@@ -60,10 +60,11 @@ function s3MediaOf(
  * operational fields `transform()` has no authority to decide
  * (`databaseHost`/`databasePort`/`mediaEndpoint`/`mediaRegion`/
  * `backupEncryptionRecipient`/`mailIdentity`). The tier-differentiated
- * fields (`limits`/`mediaResize`/`mediaSrcsets`) are NOT invented here --
- * they are read straight off this repo's own pre-existing, unmodified
- * fixtures, so a future change to what "entry" or "professional" means
- * updates this test for free rather than silently drifting from it.
+ * fields (`limits`/`mediaResize`/`mediaSrcsets`/`mailEnabled`/`mailCeiling`/
+ * `mailEstateCeiling`) are NOT invented here -- they are read straight off
+ * this repo's own pre-existing, unmodified fixtures, so a future change to
+ * what "entry" or "professional" means updates this test for free rather
+ * than silently drifting from it.
  */
 const PROMOTION_TARGETS_BY_TIER = {
   entry: (() => {
@@ -78,6 +79,9 @@ const PROMOTION_TARGETS_BY_TIER = {
       mediaResize: s3MediaOf(fixture).resize,
       mediaSrcsets: s3MediaOf(fixture).srcsets,
       mailIdentity: { domain: 'blog.entry-promotion.example.test', dkimSelector: 'bl' },
+      mailEnabled: fixture.mail.enabled,
+      mailCeiling: fixture.mail.ceiling,
+      mailEstateCeiling: fixture.mail.estateCeiling,
     };
   })(),
   professional: (() => {
@@ -92,6 +96,9 @@ const PROMOTION_TARGETS_BY_TIER = {
       mediaResize: s3MediaOf(fixture).resize,
       mediaSrcsets: s3MediaOf(fixture).srcsets,
       mailIdentity: { domain: 'news.professional-promotion.example.test', dkimSelector: 'pro' },
+      mailEnabled: fixture.mail.enabled,
+      mailCeiling: fixture.mail.ceiling,
+      mailEstateCeiling: fixture.mail.estateCeiling,
     };
   })(),
 } satisfies Record<'entry' | 'professional', PromotionTargets>;
@@ -103,10 +110,11 @@ if (
   PROMOTION_TARGETS_BY_TIER.entry.mediaResize ===
     PROMOTION_TARGETS_BY_TIER.professional.mediaResize ||
   JSON.stringify(PROMOTION_TARGETS_BY_TIER.entry.limits) ===
-    JSON.stringify(PROMOTION_TARGETS_BY_TIER.professional.limits)
+    JSON.stringify(PROMOTION_TARGETS_BY_TIER.professional.limits) ||
+  PROMOTION_TARGETS_BY_TIER.entry.mailCeiling === PROMOTION_TARGETS_BY_TIER.professional.mailCeiling
 ) {
   throw new Error(
-    'entryTenantDescriptor() and professionalTenantDescriptor() no longer differ in limits/media.resize -- ' +
+    'entryTenantDescriptor() and professionalTenantDescriptor() no longer differ in limits/media.resize/mail.ceiling -- ' +
       'update PROMOTION_TARGETS_BY_TIER (or this guard) to match whatever still tells the tiers apart.'
   );
 }
@@ -163,18 +171,25 @@ describe.each([
       // The mail identity landed exactly as the target supplied it, kind
       // flipped to "tenant" by transform() itself -- never taken as
       // promotion input (the same pattern database.kind/media.kind follow).
-      // Everything else in `mail` (whether it's enabled, both ceilings) is
-      // NOT tier policy this transform invents: `validate()` on origin/main
-      // fixes no tenant-tier value for either, so they survive from the
-      // demo unchanged, same as `caps`.
-      expect(tenant.mail.identity).toEqual({
-        kind: 'tenant',
-        domain: targets.mailIdentity.domain,
-        dkimSelector: targets.mailIdentity.dkimSelector,
+      // `enabled`/`ceiling`/`estateCeiling` are the TARGET TIER's own
+      // values too, never the demo's: LLD-6 §09 names them, alongside the
+      // domain and DKIM selector, as part of what a promoted tenant's own
+      // mail identity carries, and this repo's own fixtures already model
+      // both ceilings as tier-differentiated -- the same reason `limits`
+      // and `media.resize`/`srcsets` are caller-supplied below, not carried
+      // over from the demo the way `caps` legitimately is.
+      expect(tenant.mail).toEqual({
+        enabled: targets.mailEnabled,
+        ceiling: targets.mailCeiling,
+        estateCeiling: targets.mailEstateCeiling,
+        identity: {
+          kind: 'tenant',
+          domain: targets.mailIdentity.domain,
+          dkimSelector: targets.mailIdentity.dkimSelector,
+        },
       });
-      expect(tenant.mail.enabled).toBe(demo.mail.enabled);
-      expect(tenant.mail.ceiling).toBe(demo.mail.ceiling);
-      expect(tenant.mail.estateCeiling).toBe(demo.mail.estateCeiling);
+      expect(tenant.mail.ceiling).not.toBe(demo.mail.ceiling);
+      expect(tenant.mail.estateCeiling).not.toBe(demo.mail.estateCeiling);
 
       // The tier under test actually landed: `limits`/`media.resize`/
       // `media.srcsets` reflect the TARGET tier's own values, not some other
@@ -358,6 +373,22 @@ describe('transform() itself', () => {
       /mailIdentity/
     );
   });
+
+  it('refuses a promotion with no mail ceiling target, naming the field', () => {
+    const demo = validate(demoDescriptor(), TEST_ZONES);
+    // Same omission exercise as `mailIdentity` above, for the ceiling pair
+    // cycle 3's review found missing: a caller that skips `mailCeiling`
+    // (and, by construction here, `mailEstateCeiling` too) gets a named
+    // refusal, never a silent carry-over of the demo's own ceiling.
+    const {
+      mailCeiling: _mailCeiling,
+      mailEstateCeiling: _mailEstateCeiling,
+      ...withoutCeilings
+    } = PROMOTION_TARGETS_BY_TIER.professional;
+    expect(() => transform(demo, TEST_ZONES, withoutCeilings as PromotionTargets)).toThrow(
+      /mailCeiling/
+    );
+  });
 });
 
 describe('CONTROL CASE — sabotage: real regressions the falsifying test must catch', () => {
@@ -437,7 +468,8 @@ describe('CONTROL CASE — sabotage: real regressions the falsifying test must c
       'transform.ts',
       (source) => {
         const target =
-          "    mail: {\n      ...demo.mail,\n      identity: {\n        kind: 'tenant',\n" +
+          '    mail: {\n      enabled: targets.mailEnabled,\n      ceiling: targets.mailCeiling,\n' +
+          "      estateCeiling: targets.mailEstateCeiling,\n      identity: {\n        kind: 'tenant',\n" +
           '        domain: targets.mailIdentity.domain,\n' +
           '        dkimSelector: targets.mailIdentity.dkimSelector,\n' +
           '      },\n    },\n    limits: targets.limits,';
@@ -466,6 +498,59 @@ describe('CONTROL CASE — sabotage: real regressions the falsifying test must c
       dkimSelector: PROMOTION_TARGETS_BY_TIER.professional.mailIdentity.dkimSelector,
     });
     expect(() => validate(realTenant, TEST_ZONES)).not.toThrow();
+  });
+
+  it("a transform() mutated to carry the demo mail ceiling forward ships the demo test-send cap to a paying tenant; the real one uses the target tier's own ceiling", async () => {
+    const demo = validate(demoDescriptor(), TEST_ZONES);
+
+    // RED: mutate transform.ts's real mail block back to cycle 3's own
+    // review finding -- `...demo.mail` before overwriting only `identity`,
+    // so `enabled`/`ceiling`/`estateCeiling` are the demo's own values
+    // (20/500 in this repo's fixtures) rather than the target tier's
+    // (5000/5000 entry, 50000/50000 professional). Identity still gets
+    // written correctly, isolating this regression from the "drop the
+    // mail write" one above.
+    const sabotaged = await importSabotaged<{ transform: typeof TransformFn }>(
+      'transform.ts',
+      (source) => {
+        const target =
+          '    mail: {\n      enabled: targets.mailEnabled,\n      ceiling: targets.mailCeiling,\n' +
+          "      estateCeiling: targets.mailEstateCeiling,\n      identity: {\n        kind: 'tenant',\n" +
+          '        domain: targets.mailIdentity.domain,\n' +
+          '        dkimSelector: targets.mailIdentity.dkimSelector,\n' +
+          '      },\n    },';
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in transform.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(
+          target,
+          "    mail: {\n      ...demo.mail,\n      identity: {\n        kind: 'tenant',\n" +
+            '        domain: targets.mailIdentity.domain,\n' +
+            '        dkimSelector: targets.mailIdentity.dkimSelector,\n' +
+            '      },\n    },'
+        );
+      }
+    );
+    const sabotagedTenant = sabotaged.transform(
+      demo,
+      TEST_ZONES,
+      PROMOTION_TARGETS_BY_TIER.professional
+    );
+    // RED: the sabotaged copy ships the demo's own test-send ceiling, not
+    // the professional tier's own target -- the exact defect under test.
+    expect(sabotagedTenant.mail.ceiling).toBe(demo.mail.ceiling);
+    expect(sabotagedTenant.mail.ceiling).not.toBe(
+      PROMOTION_TARGETS_BY_TIER.professional.mailCeiling
+    );
+
+    // GREEN: the real, unmutated module ships the target tier's own ceiling.
+    const realTenant = transform(demo, TEST_ZONES, PROMOTION_TARGETS_BY_TIER.professional);
+    expect(realTenant.mail.ceiling).toBe(PROMOTION_TARGETS_BY_TIER.professional.mailCeiling);
+    expect(realTenant.mail.estateCeiling).toBe(
+      PROMOTION_TARGETS_BY_TIER.professional.mailEstateCeiling
+    );
   });
 
   it('an edge.ts mutated to never admit a hostname hides the demo-to-tenant certificate transition; the real module flips it', async () => {
