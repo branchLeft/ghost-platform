@@ -624,6 +624,15 @@ describe('the hold branch, against a real Ghost', () => {
           storage__images__unavailable: JSON.stringify([heldDigest]),
           storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
           storage__images__holdRetryMs: '1000',
+          // The entrypoint's fail-closed guard requires the decorator on
+          // every feature, not just the one this test exercises -- media
+          // and files never go on hold here, only let Ghost boot at all.
+          storage__media__adapter: 'ScanningStorageAdapter',
+          storage__media__wraps: 'LocalMediaStorage',
+          storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__files__adapter: 'ScanningStorageAdapter',
+          storage__files__wraps: 'LocalFilesStorage',
+          storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
         },
         { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
       );
@@ -709,6 +718,15 @@ describe('the hold branch, against a real Ghost', () => {
           storage__images__unavailable: JSON.stringify([heldDigest]),
           storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
           storage__images__holdRetryMs: '1000',
+          // The entrypoint's fail-closed guard requires the decorator on
+          // every feature, not just the one this test exercises -- media
+          // and files never go on hold here, only let Ghost boot at all.
+          storage__media__adapter: 'ScanningStorageAdapter',
+          storage__media__wraps: 'LocalMediaStorage',
+          storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__files__adapter: 'ScanningStorageAdapter',
+          storage__files__wraps: 'LocalFilesStorage',
+          storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
         },
         { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
       );
@@ -803,6 +821,36 @@ describe('the hold branch, against a real Ghost', () => {
             storage__images__wrappedConfig__secretAccessKey: 'scanning-storage-test',
             storage__images__wrappedConfig__multipartUploadThresholdBytes: '5242880',
             storage__images__wrappedConfig__multipartChunkSizeBytes: '5242880',
+            // See the local-adapter hold-branch tests' identical addition
+            // for why media and files need the decorator too -- same
+            // bucket and double, since this test's job is only to prove
+            // the images tier's hold behaviour.
+            storage__media__adapter: 'ScanningStorageAdapter',
+            storage__media__wraps: 'S3Storage',
+            storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+            storage__media__wrappedConfig__bucket: double.bucket,
+            storage__media__wrappedConfig__staticFileURLPrefix: 'content/media',
+            storage__media__wrappedConfig__cdnUrl: `http://${double.name}:9090/${double.bucket}`,
+            storage__media__wrappedConfig__endpoint: `http://${double.name}:9090`,
+            storage__media__wrappedConfig__region: 'us-east-1',
+            storage__media__wrappedConfig__forcePathStyle: 'true',
+            storage__media__wrappedConfig__accessKeyId: 'scanning-storage-test',
+            storage__media__wrappedConfig__secretAccessKey: 'scanning-storage-test',
+            storage__media__wrappedConfig__multipartUploadThresholdBytes: '5242880',
+            storage__media__wrappedConfig__multipartChunkSizeBytes: '5242880',
+            storage__files__adapter: 'ScanningStorageAdapter',
+            storage__files__wraps: 'S3Storage',
+            storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
+            storage__files__wrappedConfig__bucket: double.bucket,
+            storage__files__wrappedConfig__staticFileURLPrefix: 'content/files',
+            storage__files__wrappedConfig__cdnUrl: `http://${double.name}:9090/${double.bucket}`,
+            storage__files__wrappedConfig__endpoint: `http://${double.name}:9090`,
+            storage__files__wrappedConfig__region: 'us-east-1',
+            storage__files__wrappedConfig__forcePathStyle: 'true',
+            storage__files__wrappedConfig__accessKeyId: 'scanning-storage-test',
+            storage__files__wrappedConfig__secretAccessKey: 'scanning-storage-test',
+            storage__files__wrappedConfig__multipartUploadThresholdBytes: '5242880',
+            storage__files__wrappedConfig__multipartChunkSizeBytes: '5242880',
           },
           {
             network,
