@@ -61,6 +61,13 @@ This repo's IaC, split by shape rather than lumped into one program:
   pattern only: nothing here installs MySQL, Ghost or Compose -- those are
   delivered onto the hosts separately.
 
+- **`demo-host/`** -- one Pulumi program, one stack (`production`), for the
+  demo host `demo1` in the `branchLeft demos` Hetzner project: the server,
+  its two primary IPs and its firewall. Its own stack because a project token
+  has full power over its project. Same state bucket, same CI shape as
+  `hosts/` (`.github/workflows/infra-demo-host-ci.yml`), with the demos
+  project's own token. See `demo-host/README.md`.
+
 - **`provisioning/scripts/`** -- not a Pulumi program: the bucket-fencing,
   tenant-passphrase-escrow and provisioning-scoping guard scripts
   `.github/workflows/provision-tenant.yml` calls at tenant-onboarding time,

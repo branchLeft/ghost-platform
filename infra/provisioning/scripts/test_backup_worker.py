@@ -6,7 +6,7 @@ runs a real `mysqldump` through the real `RemoteMysqldumpTransport`
 (`route=b`); `RemoteMysqldumpAgainstARealMysqlContainerTests` runs that
 against a real MySQL server, skipping cleanly without Docker. `age` is
 real throughout; only the storage credential path is faked.
-"""
+See test_backup_worker.md#module-overview."""
 
 from __future__ import annotations
 
@@ -347,13 +347,14 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
     @classmethod
     def _provision_database_and_account(cls) -> None:
         # One row per floor table, real GRANTs, real REQUIRE SSL, matching
-        # db/RUNBOOK-db.md's "Backup worker account" grant set (LOCK
-        # TABLES and EVENT dropped; this test confirms mysqldump still
-        # runs without them). `backup_ops1` stays host-'%' -- this test's
-        # client reaches the container through Docker's NAT, whose source
-        # address inside the container isn't reliably 127.0.0.1. Host
-        # restriction is proven instead by `backup_right_host`/
-        # `backup_wrong_host`, a control pair tested container-internally.
+        # ghost-platform-docs/backup-worker-account-handover-runbook.md's
+        # grant set (LOCK TABLES and EVENT dropped; this test confirms
+        # mysqldump still runs without them). `backup_ops1` stays host-'%'
+        # -- this test's client reaches the container through Docker's NAT,
+        # whose source address inside the container isn't reliably
+        # 127.0.0.1. Host restriction is proven instead by
+        # `backup_right_host`/`backup_wrong_host`, a control pair tested
+        # container-internally.
         sql_template = (
             "CREATE DATABASE ghost_blog;"
             "CREATE TABLE ghost_blog.users (id INT PRIMARY KEY, name VARCHAR(64));"
@@ -576,13 +577,10 @@ class MainCopyWiringTests(unittest.TestCase):
 
 
 class WiringSabotageForTheCopySelectionTests(unittest.TestCase):
-    """Proves the required/optional distinction is load-bearing without
-    permanently breaking shipped code: the OLD shape --
-    `_copy_target_from_env(..., required=True)` for the secondary copy too
-    -- refuses the same environment the fixed `main()` accepts today, both
-    real, executed calls against the real function. The live edit/run/
-    revert transcript against `main()` itself is in the PR body's Sabotage
-    section."""
+    """Proves the required/optional distinction is actually load-bearing, by
+    demonstrating that the OLD shape (secondary copy required too) refuses
+    the same environment the fixed `main()` accepts today, without breaking
+    the shipped code itself. See test_backup_worker.md#wiringsabotageforthecopyselectiontests."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -636,13 +634,11 @@ class WiringSabotageForTheCopySelectionTests(unittest.TestCase):
 
 class WiringSabotageThroughTheRealEntryPointTests(unittest.TestCase):
     """Proves the floor gate in `run_tenant_dump` is actually WIRED to
-    `pull_encrypt_and_store`'s `post_stream_check` -- not merely present as
-    a method nobody calls. Deliberately does NOT run the real
-    `dump_tenant.py` (whose own `run_mysqldump` already refuses a missing
-    floor table itself): a fake shell "producer" isolates the case a
-    DIFFERENT producer, or a corrupted stream, could still reach this
-    worker with a 0 exit and a missing floor -- what this worker's own
-    independent watch exists to catch even then."""
+    `pull_encrypt_and_store`'s `post_stream_check` parameter, not merely
+    present as a method nobody calls. Deliberately does NOT run the real
+    `dump_tenant.py`, which already raises before this shape can occur.
+    See test_backup_worker.md#wiringsabotagethroughtherealentrypointtests.
+    """
 
     def setUp(self) -> None:
         _, self.recipient = _generate_age_identity()

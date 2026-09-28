@@ -4,9 +4,7 @@
 double), and `RemoteMysqldumpTransport` (the real channel: `mysqldump`,
 run locally on the worker's own host, connecting to the tenant database
 host's existing MySQL port over TLS -- no new listener anywhere, and the
-database host gains no new service). A dump endpoint listening on the
-database host was tried first and superseded on review: `db/RUNBOOK-db.md`'s
-"Backup worker account" section carries why.
+database host gains no new service). See dial_in_transport.md#module-overview.
 """
 
 from __future__ import annotations
@@ -21,12 +19,10 @@ import threading
 from collections.abc import Mapping, Sequence
 from typing import BinaryIO, Protocol
 
-# Every prefix naming a storage or encryption credential in this estate's
-# convention, restated from db/provision/dump_tenant.py's own
-# FORBIDDEN_ENV_PREFIXES rather than imported: this module is the
-# org/control side of the same trust boundary, checking the same property
-# independently. None of AWS_* / DB_BACKUP_* / AGE_* may ever reach the
-# environment a producer command is invoked with.
+# Every prefix that names a storage or encryption credential in this
+# estate's convention, restated here rather than imported since the two
+# sides proving the same property independently is the point, not a
+# maintenance burden. See dial_in_transport.md#forbidden_env_prefixes.
 FORBIDDEN_ENV_PREFIXES = ("AWS_", "DB_BACKUP_", "AGE_")
 
 # What a local subprocess is allowed to see beyond the caller's own,
@@ -87,11 +83,11 @@ class DialInTransport(Protocol):
 
 
 class LocalProcessTransport:
-    """A TEST DOUBLE, not the production channel: proves the pipeline's
-    controls against a real local producer and database without a network
-    hop. Streams line-by-line, mirroring `dump_tenant.py`'s own
-    `run_mysqldump`, since a caller watching for a floor-table `INSERT`
-    needs whole lines.
+    """Runs the producer as an ordinary local subprocess. A TEST DOUBLE, not
+    the production channel. Streams line-by-line, mirroring
+    `db/provision/dump_tenant.py`'s own `run_mysqldump`, since a caller
+    watching for a floor-table `INSERT` pattern needs whole lines.
+    See dial_in_transport.md#localprocesstransport.
     """
 
     def __init__(self, *, popen=subprocess.Popen) -> None:
@@ -134,12 +130,13 @@ def _tenant_from_command(command: Sequence[str]) -> str:
 
 class RemoteMysqldumpTransport:
     """The real dial-in channel: `mysqldump`, local subprocess, TLS to the
-    tenant database host's existing port. Grants: `db/RUNBOOK-db.md`'s
-    "Backup worker account" section. Re-validates the tenant independently
-    -- this is the layer that turns it into a `--databases` argument.
-    `env["DB_DUMP_MYSQL_PWD"]` reaches `mysqldump` only through an inherited
-    pipe fd (`--defaults-extra-file=/dev/fd/N`), read once at the child's
-    own startup -- never argv, never the child's environ, never a file on
+    tenant database host's existing port. Grants:
+    ghost-platform-docs/backup-worker-account-handover-runbook.md.
+    Re-validates the tenant independently -- this is the layer that turns
+    it into a `--databases` argument. `env["DB_DUMP_MYSQL_PWD"]` reaches
+    `mysqldump` only through an inherited pipe fd
+    (`--defaults-extra-file=/dev/fd/N`), read once at the child's own
+    startup -- never argv, never the child's environ, never a file on
     disk."""
 
     def __init__(

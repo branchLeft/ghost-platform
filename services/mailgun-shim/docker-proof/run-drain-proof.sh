@@ -54,7 +54,7 @@ require('node:dns').promises.lookup('example.com')
 "
 
 echo "=== 2. register a tenant via docker compose exec (the daemon socket, not the network) ==="
-REGISTER_OUT=$($COMPOSE exec -T shim node dist/cli.js register "$DOMAIN")
+REGISTER_OUT=$($COMPOSE exec -T shim node dist/cli.js register "$DOMAIN" --sender-domain "$DOMAIN")
 echo "$REGISTER_OUT"
 API_KEY=$(echo "$REGISTER_OUT" | tail -n1)
 

@@ -1,0 +1,63 @@
+name: Ring controller CI
+
+# Type-checks and unit-tests the per-tenant bump state machine
+# (services/ring-controller/). Pure code against a fake slot -- no cloud
+# credential, no real host, and no real broker/backup-worker call touches
+# this job.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/ring-controller/**
+      - .github/workflows/ring-controller-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - services/ring-controller/**
+      - .github/workflows/ring-controller-ci.yml
+
+# `packages: read` because this service takes a dev dependency on
+# `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers
+# 401 to an anonymous request even for a public package.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test:
+    name: Ring controller type check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/ring-controller
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/ring-controller/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: services/ring-controller/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run coverage
+
+      - name: Build
+        run: npm run build

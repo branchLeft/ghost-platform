@@ -4,10 +4,9 @@
 # `RUN --mount=type=secret` below rather than leaving it to whichever frontend
 # the local daemon happens to bundle.
 
-# node:sqlite (the durable queue/store backing this service) is a built-in
-# module, not a native npm dependency needing node-gyp — so there is no
-# musl-compatibility reason to prefer -alpine here. bookworm-slim is chosen
-# instead because it tracks Debian's glibc and Node's own release-testing
+# better-sqlite3 (the store's driver) ships prebuilt glibc and musl binaries
+# inside its npm package, so neither base needs a compiler. bookworm-slim is
+# chosen because it tracks Debian's glibc and Node's own release-testing
 # matrix, which matters more at this service's scale than the size delta.
 FROM node:26.5.0-bookworm-slim
 
@@ -21,14 +20,22 @@ COPY .npmrc package.json package-lock.json ./
 # this one RUN, so it never becomes part of a layer and is not reachable from
 # the built image. `npm ci` fails closed if the secret is absent, rather than
 # falling back to an anonymous request.
+#
+# --ignore-scripts: no install script is needed to build or run this image
+# (better-sqlite3 loads its bundled prebuilt binary), and npm would otherwise
+# try a node-gyp rebuild this image has no toolchain for.
 RUN --mount=type=secret,id=node_auth_token \
     sh -eu -c 'printf "//npm.pkg.github.com/:_authToken=%s\n" "$(cat /run/secrets/node_auth_token)" > /tmp/npmrc; \
-      NPM_CONFIG_USERCONFIG=/tmp/npmrc npm ci; \
+      NPM_CONFIG_USERCONFIG=/tmp/npmrc npm ci --ignore-scripts; \
       rm -f /tmp/npmrc'
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build
+
+# Read from disk at startup by dist/migrate.js; without them a fresh volume
+# cannot be created and an existing one cannot be migrated.
+COPY drizzle ./drizzle
 
 # Dev dependencies (typescript, vitest, etc.) are only needed for the build
 # step above — pruning them keeps @types/*, tsc and the test toolchain out

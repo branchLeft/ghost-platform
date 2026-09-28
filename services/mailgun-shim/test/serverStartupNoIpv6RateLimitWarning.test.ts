@@ -8,15 +8,9 @@ import type { Readable } from 'node:stream';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 /**
- * `rateLimit.ts`'s custom `keyGenerator` builds all three of its mounted
- * routers (messages, events, suppressions) at startup, before
- * `app.listen()` — express-rate-limit validates a custom keyGenerator
- * synchronously at that point and, finding one that reads the request IP
- * without the `ipKeyGenerator` helper, logs `ERR_ERL_KEY_GEN_IPV6` rather
- * than throwing. That made it a startup warning nobody read rather than a
- * boot failure anyone would notice — this spawns the real entrypoint and
- * checks the warning is gone from both streams, not just from a call to
- * the function in isolation.
+ * Runs the real entrypoint and checks express-rate-limit's IPv6 key
+ * generator warning is absent from both output streams.
+ * See serverStartupNoIpv6RateLimitWarning.test.md#no-ipv6-key-generator-warning.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

@@ -6,13 +6,13 @@ name: Generate lockfile in CI
 # read token belongs to a suspended machine account -- there is no live
 # token to authenticate the registry read `npm install` needs. This workflow
 # generates the lockfile in CI instead, using the run's own `GITHUB_TOKEN`
-# (scoped `packages: read` for exactly this), and pushes the result back to
+# (scoped `packages: read` for exactly this), and commits the result back to
 # the branch that asked for it. Nobody has to mint a new long-lived token to
 # unblock a branch.
 #
 # `workflow_dispatch` only, never `push` or `pull_request`, and certainly
 # never `pull_request_target`: this workflow's job holds `contents: write`
-# and ends by pushing a commit, and a repository write is not something any
+# and ends by writing a commit, and a repository write is not something any
 # push or PR event should trigger on someone else's say-so. Dispatching it
 # is itself the authorisation -- a person with write access, acting in the
 # Actions tab (or `gh workflow run`) on this repository. `workflow_dispatch`
@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch (in this repository) to check out, generate the lockfile on, and push the commit to'
+        description: 'Branch (in this repository) to check out, generate the lockfile on, and commit it to'
         required: true
       package_dir:
         description: 'Package directory to lock, e.g. services/ring-controller or adapters/sso -- must exist on that branch and contain a package.json'
@@ -38,8 +38,8 @@ on:
 permissions: {}
 
 # One dispatch at a time per (branch, package_dir): two overlapping runs
-# racing to commit and push the same file would leave the loser's push
-# rejected as non-fast-forward, and there is no reason to allow the race in
+# racing to commit the same file would leave the loser's mutation rejected
+# on a stale expectedHeadOid, and there is no reason to allow the race in
 # the first place.
 concurrency:
   group: generate-lockfile-${{ inputs.branch }}-${{ inputs.package_dir }}
@@ -90,7 +90,7 @@ jobs:
           # form checks a ref that doesn't exist and comes back unprotected)
           # -- but `actions/checkout` treats an already-qualified ref as
           # literal, so `refs/heads/main` would check out `main` while this
-          # job believes it validated something else, and the later push
+          # job believes it validated something else, and the later commit
           # would then write a new branch called `refs/heads/main` rather
           # than touching `main` at all. Refused outright: every input here
           # is a short branch name, never a qualified ref.
@@ -108,14 +108,14 @@ jobs:
           # workflow doesn't recognise.
           case "$BRANCH" in
             main | master)
-              fail "branch '$BRANCH' is refused outright: this workflow pushes a commit, and main/master are never a target."
+              fail "branch '$BRANCH' is refused outright: this workflow writes a commit, and main/master are never a target."
               ;;
           esac
 
           # A conservative allow-list for a git ref name, not an attempt at
           # the full git ref-name grammar: reject rather than guess at
           # anything this doesn't recognise, since this value is about to be
-          # used as a checkout ref and a push refspec.
+          # used as a checkout ref and a createCommitOnBranch branch name.
           [[ "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] \
             || fail "branch '$BRANCH' contains characters outside A-Za-z0-9._/- , or does not start with one of those -- refusing rather than passing it to git"
           [[ "$BRANCH" != *..* ]] \
@@ -146,13 +146,13 @@ jobs:
           fi
           RULE_COUNT="$(printf '%s' "$RULES_JSON" | jq 'length')"
           if [ "$RULE_COUNT" -gt 0 ]; then
-            echo "::error::refusing '$BRANCH': $RULE_COUNT ruleset rule(s) currently apply to it. This workflow pushes a commit directly and never targets a branch a ruleset protects."
+            echo "::error::refusing '$BRANCH': $RULE_COUNT ruleset rule(s) currently apply to it. This workflow writes a commit directly and never targets a branch a ruleset protects."
             exit 1
           fi
           echo "OK: no ruleset rule currently applies to '$BRANCH'"
 
   generate:
-    name: Generate and push the lockfile
+    name: Generate and commit the lockfile
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -174,11 +174,11 @@ jobs:
       # itself, so qualifying it here is the only place this ref is
       # assembled, and it always means the one thing it says.
       #
-      # `persist-credentials: false`: this job's token is `contents: write`,
-      # and `npm install` runs before the one step that needs to push. The
-      # token is never in this job's git config while an install (reading a
-      # package.json and a branch-supplied .npmrc) runs -- it is added back,
-      # scoped to a single command, only in the push step below.
+      # `persist-credentials: false`: nothing here needs the token in this
+      # checkout's git config at all -- the commit itself goes through the
+      # GitHub API (`gh api graphql`, its own `GH_TOKEN` env var) rather
+      # than `git push`, so `npm install` never runs with a write-scoped
+      # token sitting in `.git/config` either.
       - name: Checkout target branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -261,29 +261,111 @@ jobs:
             fi
           fi
 
-      - name: Commit and push the lockfile, if it changed
+      # `git commit`/`git push` cannot write a commit GitHub signs; `main`'s
+      # ruleset requires signed commits, so a PR built on one can never
+      # merge. See .github/workflows/README-generate-lockfile.md "Why
+      # createCommitOnBranch" for the full rationale and prior art.
+      - name: Commit the lockfile via the GitHub API, if it changed
+        id: commit
         env:
           PACKAGE_DIR: ${{ needs.validate.outputs.package_dir }}
           BRANCH: ${{ needs.validate.outputs.branch }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          CHANGE="$(git status --porcelain -- "$PACKAGE_DIR/package-lock.json")"
+          FILE_PATH="$PACKAGE_DIR/package-lock.json"
+          CHANGE="$(git status --porcelain -- "$FILE_PATH")"
           if [ -z "$CHANGE" ]; then
-            echo "no change to $PACKAGE_DIR/package-lock.json; nothing to push"
+            echo "no change to $FILE_PATH; nothing to commit"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$PACKAGE_DIR/package-lock.json"
-          git commit -m "ci: generate $PACKAGE_DIR/package-lock.json"
+          HEAD_OID="$(git rev-parse HEAD)"
 
-          # Checkout ran with persist-credentials: false, so nothing has
-          # written this token to .git/config yet. `-c` scopes it to this
-          # one `git push` process only -- it never touches a file on disk,
-          # and no later step (or a lifecycle script, had one run earlier)
-          # can read it back out of the working tree's git config.
-          AUTH_HEADER="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_HEADER" \
-            push origin "HEAD:refs/heads/$BRANCH"
+          # Linux caps a single argv or env string at MAX_ARG_STRLEN (128
+          # KiB) -- a real lockfile's base64 form can clear that (this
+          # repo's own services/mailgun-shim already does), so nothing
+          # below may carry the content through `-f`/an env var. `base64`
+          # writes straight to a file over stdout, `jq --rawfile` reads
+          # that file's bytes directly rather than taking them as a CLI
+          # argument, and the finished request goes to `gh` as a file it
+          # reads itself (`--input`), never a command-line string.
+          CONTENT_FILE="$RUNNER_TEMP/lockfile-content.b64"
+          base64 -w0 "$FILE_PATH" > "$CONTENT_FILE"
+
+          QUERY_FILE="$RUNNER_TEMP/create-commit-query.graphql"
+          cat > "$QUERY_FILE" <<'GRAPHQL'
+          mutation($repo: String!, $branch: String!, $headline: String!, $path: String!, $content: Base64String!, $oid: GitObjectID!) {
+            createCommitOnBranch(input: {
+              branch: {repositoryNameWithOwner: $repo, branchName: $branch}
+              message: {headline: $headline}
+              fileChanges: {
+                additions: [{path: $path, contents: $content}]
+              }
+              expectedHeadOid: $oid
+            }) {
+              commit { oid url }
+            }
+          }
+          GRAPHQL
+
+          # `rtrimstr`: `base64` itself appends one trailing newline to its
+          # output, which `--rawfile` reads back verbatim along with the
+          # encoded bytes -- stripped here rather than left for GitHub to
+          # reject as invalid base64.
+          REQUEST_FILE="$RUNNER_TEMP/create-commit-request.json"
+          jq -n \
+            --rawfile query "$QUERY_FILE" \
+            --arg repo "$REPO" \
+            --arg branch "$BRANCH" \
+            --arg headline "ci: generate $FILE_PATH" \
+            --arg path "$FILE_PATH" \
+            --rawfile content "$CONTENT_FILE" \
+            --arg oid "$HEAD_OID" \
+            '{query: $query, variables: {repo: $repo, branch: $branch, headline: $headline, path: $path, content: ($content | rtrimstr("\n")), oid: $oid}}' \
+            > "$REQUEST_FILE"
+
+          RESPONSE="$(gh api graphql --input "$REQUEST_FILE")"
+
+          NEW_OID="$(printf '%s' "$RESPONSE" | jq -r '.data.createCommitOnBranch.commit.oid // empty')"
+          if [ -z "$NEW_OID" ]; then
+            echo "::error::createCommitOnBranch returned no commit oid; response: $RESPONSE"
+            exit 1
+          fi
+
+          # The one gate that matters: refuse to report success on a commit
+          # that was never actually signed, read back from the API rather
+          # than assumed from "the mutation didn't error".
+          VERIFICATION="$(gh api "repos/$REPO/commits/$NEW_OID")"
+          VERIFIED="$(printf '%s' "$VERIFICATION" | jq -r '.commit.verification.verified')"
+          if [ "$VERIFIED" != "true" ]; then
+            REASON="$(printf '%s' "$VERIFICATION" | jq -r '.commit.verification.reason')"
+            echo "::error::commit $NEW_OID is not signed (verification.verified=$VERIFIED, reason=$REASON) -- refusing to report success on an unsigned commit"
+            exit 1
+          fi
+
+          echo "OK: committed $NEW_OID, verification.verified=true"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "oid=$NEW_OID" >> "$GITHUB_OUTPUT"
+
+      # See README-generate-lockfile.md "Why fail closed instead of
+      # dispatching CI" for the reasoning behind reporting and failing
+      # rather than dispatching CI itself.
+      - name: Fail closed -- the new head has no CI yet
+        if: steps.commit.outputs.committed == 'true'
+        env:
+          NEW_OID: ${{ steps.commit.outputs.oid }}
+          BRANCH: ${{ needs.validate.outputs.branch }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Lockfile committed and signed -- but the new head has no CI yet"
+            echo
+            echo "Commit \`$NEW_OID\` on \`$BRANCH\` landed and is GitHub-signed (\`verification.verified=true\`, checked above). This run still fails, on purpose: a \`GITHUB_TOKEN\`-authenticated write fires no \`push\`/\`pull_request\` event, so nothing has started a check run at this SHA, and a PR carrying it would otherwise show green with no check having run."
+            echo
+            echo "The commit itself needs nothing further. To start CI on it: close and reopen the pull request carrying this branch, or push an ordinary commit (from a real account) to \`$BRANCH\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::commit $NEW_OID landed and is signed, but no CI has run at this head -- see the job summary for how to start it"
+          exit 1

@@ -6,17 +6,8 @@ import { NO_CONTAINER_LOGS, runDocker, type VolumeMount } from './containerRunne
 import { withEnvFile } from './envFile.js';
 
 /**
- * The export colour never runs against the tenant's live database (owner
- * ruling, 2026-09-27: "the copy"). Each run takes a consistent snapshot of
- * the one tenant's database into a throwaway target that exists only for
- * the run, boots the colour against that, and removes it on every exit
- * path. Nothing is created on the tenant's database server; the snapshot is
- * a read.
- *
- * MySQL tier: `mysqldump --single-transaction` of the tenant's one schema,
- * streamed straight into a fresh MySQL 8.0 container on the run's own
- * network -- no dump file anywhere. SQLite tier: SQLite's online backup
- * API, into a volume that exists only for the run.
+ * The export colour never runs against the tenant's live database.
+ * See ../README.md#the-export-colour-runs-against-a-copy-never-the-live-database.
  */
 
 export class ScratchCopyError extends Error {
@@ -208,18 +199,9 @@ export function buildScratchMysqlRunArgs(runId: string, envFile: string): readon
 }
 
 /**
- * The same flags as db/provision/dump_tenant.py's per-tenant dump, over TCP
- * as the tenant's own account instead of db1's socket-only `backup`
- * account, which is unreachable from the app host. Two differ, both because
- * that account holds no global privilege: `--source-data=2` (a binlog
- * position, which only point-in-time recovery reads and which needs
- * RELOAD and REPLICATION CLIENT) is dropped, and `--no-tablespaces` (which
- * otherwise needs PROCESS) is added.
- *
- * `--log-driver none`: the whole database streams out of this container's
- * stdout, and Docker's default json-file driver would write every byte of
- * it to /var/lib/docker as it passed. Named, so cleanup can remove it by
- * name if the run is stopped mid-dump.
+ * The same flags as db/provision/dump_tenant.py's per-tenant dump, with
+ * two changes for the tenant's own TCP account.
+ * See ../README.md#the-export-colour-runs-against-a-copy-never-the-live-database.
  */
 export function buildDumpArgs(spec: MysqlScratchSpec, envFile: string): readonly string[] {
   return [

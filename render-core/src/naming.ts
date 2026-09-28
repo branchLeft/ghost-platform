@@ -1,13 +1,6 @@
 /**
- * Every name this package derives from a tenant slug, in one place.
- *
- * Ported from `infra/tenant/naming.ts` (LLD-1 §04: "Otherwise unchanged —
- * every path still derives from the slug"), including the reserved-name
- * list and the MySQL slug-length limit: LLD-1 §07 finding L1 is explicit
- * that a wrong slug here is "not harmless the moment the broker does [pick
- * slugs]", so both stay part of this package's own validation rather than
- * left to a caller. `validate()` calls `validateSlugAvailability` alongside
- * the grammar check `brand.ts#validateSlug` already does.
+ * Every name this package derives from a tenant slug, in one place, including
+ * the reserved-name list and the MySQL slug-length limit. See naming.md.
  */
 
 import type { Slug } from './brand.js';

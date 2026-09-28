@@ -37,8 +37,35 @@ Reads the server's pin live out of `db/RUNBOOK-db.md` (the
 the digest) and fails if `mysql`, `mysqldump` or `mysqlbinlog` inside the
 image do not report the same major.minor line. `--server-image` overrides
 the runbook read; the only reason to use it is to force a known-mismatched
-comparison, which is how the control case in the PR that added this file
-was produced.
+comparison, which is how the control case for this check is produced.
+
+A mismatched recovery image is worse than an obviously missing one:
+`mysqldump --source-data=2` from an 8.4 client issues `SHOW BINARY LOG
+STATUS` unconditionally, which an 8.0 server rejects outright — so the
+failure would otherwise surface only when the image is actually needed,
+under incident conditions, against a server that cannot be changed to
+suit it. This check moves that failure to build time instead.
+
+The pin lives only in `db/RUNBOOK-db.md`, never duplicated as a constant
+here: that runbook carries the one command that actually re-pins `db1`,
+and a second copy of the digest in this script would be exactly the kind
+of drift this design otherwise guards against — two things meant to
+agree, checked against each other only by both having been edited
+correctly. The runbook carries that command twice (the always-fails
+bootstrap run and the re-pin that follows it), and both are meant to name
+the same image, so the reader matches every occurrence rather than just
+the first, and refuses to pick a winner when they disagree.
+
+This compares against the runbook's pin, not against what `db1` itself
+currently reports running — there is no way to read
+`/etc/branchleft/db.image.env` back from CI. A green run here is evidence
+the runbook is internally consistent, not evidence it matches what `db1`
+is currently running; `db/RUNBOOK-db.md` carries the step that closes
+that gap by hand.
+
+The comparison is major.minor, not the full patch version, matching
+`install_host_prereqs.py`'s own `verify()` and design 09's own language:
+exact-matched to the server's line, not merely compatible with it.
 
 ## What is proven, and where
 
@@ -104,7 +131,9 @@ check is an emptiness check, not a name match against the tenant being
 restored, and there is no flag to bypass it.
 
 Two modes exist because a real orchestrator has to start the colour's own
-Ghost process in between importing the dump and checking it:
+Ghost process in between importing the dump and checking it — Ghost has to
+exist against the now-restored (or, in the control case, deliberately
+empty) database before anything can be asked of it over HTTP:
 
 ```bash
 python3 db/recovery/restore_drained.py --mode restore-only \
@@ -115,18 +144,73 @@ python3 db/recovery/restore_drained.py --mode verify-and-undrain \
   --flag-path <the drain flag this colour already carries>
 ```
 
-`--mode full` (the default) composes both halves for a target that already
-has a Ghost process running against it. `RESTORE_MYSQL_PWD` carries the
-recovery target's password; nothing here accepts, reads or forwards any
-other credential.
+`--mode full` (the default) composes both halves — the ordered chain
+design 09 07c names — for a target that already has a Ghost process
+running against it. `RESTORE_MYSQL_PWD` carries the recovery target's
+password; nothing here accepts, reads or forwards any other credential.
 
-`test_restore_drained.py` covers the ordering guarantee and both controls
-above with every external effect faked. `test-restore-drained-proof.sh`
-proves the same chain against real containers — real MySQL 8.0 servers,
-this directory's own recovery image (by digest), the platform image, and
-`services/drain-sidecar` built from source — including both controls run
-for real: an empty dump restored onto a fresh target (a real Ghost
-answering `200` against it, and the real sidecar staying drained
-throughout), and a target already holding a live database with known
-rows (refused before import, its row count and `CHECKSUM TABLE` value
-proven unchanged afterwards).
+The live-database refusal (`assert_target_has_no_live_database`) runs
+between readiness and the import, not merely before `restore_only`
+returns: it needs a live connection to list what the target already has,
+and it must complete before `restore_dump` gets anywhere near the target.
+
+## What the drained-restore unit tests prove
+
+`test_restore_drained.py` fakes every external effect — no real `mysql`
+client, no real HTTP call, no real sleep — and proves the ordering
+guarantee (readiness, restore, verify, undrain-last) plus the design's
+control case in isolation: a `200` with no expected content must never be
+read as success, and must be reported differently from "never answered at
+all". `run_drained_restore`'s ordering guarantee — the flag is only ever
+cleared after every earlier stage has passed — is proven for each stage by
+sabotaging that one stage's fake and checking the flag-clear fake was
+never called.
+
+## Running the real-container proof
+
+```bash
+./db/recovery/test-restore-drained-proof.sh <ghost-platform-image> <drain-sidecar-dist-dir>
+```
+
+Run from the repo root, or let the script `cd` there itself.
+`<drain-sidecar-dist-dir>` is `services/drain-sidecar`'s own directory,
+built first (`npm run build` there). The script mounts its `dist/`,
+`node_modules/` and `package.json` into a plain `node:26.5.0-bookworm-slim`
+container rather than building `services/drain-sidecar/Dockerfile` itself,
+because that Dockerfile's own `npm ci` needs a GitHub Packages read token
+this proof does not assume is available — the sidecar code under test is
+identical either way.
+
+Five containers: two real MySQL 8.0 servers standing in for the tenant
+database host and a fresh recovery target, this directory's own recovery
+image (by digest, never `latest`), this repo's own platform image serving
+each colour, and the real `services/drain-sidecar` code answering each
+colour's health port.
+
+**GREEN:** a real Ghost creates a real owner and a real, named post against
+a source database; that tenant's dump is taken with the same `mysqldump`
+flags `dump_tenant.py` itself uses; `restore_drained.py` restores it onto a
+fresh target that a second Ghost then boots against, already drained; the
+named post's body is read back from the rendered homepage; only then is
+the flag cleared, and the sidecar is checked before and after.
+
+**CONTROL:** the same chain, with an empty file in place of a real dump.
+The target Ghost boots its own migrations against nothing and answers
+`200` — and `restore_drained.py`'s content check must refuse that, leaving
+the colour drained.
+
+**LIVE-COLLISION:** a fourth MySQL server already holds a live
+`ghost_tenant1` with known rows, seeded before `restore_drained.py` ever
+runs. `--mode restore-only` must refuse before importing anything, and the
+live database's own row count and `CHECKSUM TABLE` value must be provably
+unchanged afterwards: restoring a per-tenant dump (its own `CREATE
+DATABASE IF NOT EXISTS`/`USE`) onto a host that already has that database
+restores INTO it, not beside it, so a target that already holds one must
+never be imported into at all.
+
+Local-sandbox simplification, stated rather than left implicit: `mysqldump`
+runs over TCP as root here, standing in for `dump_tenant.py`'s own unix
+socket and dedicated `backup`@`localhost` account (proven separately, and
+unit-tested, by `db/provision/test_dump_tenant.py`) — this proof's job is
+the restore-onto-a-drained-colour chain, not a second proof of the dump
+script's own connection boundary.

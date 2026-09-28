@@ -2,10 +2,8 @@
 """The org/control-side backup worker: pulls one tenant's database dump,
 encrypts it to that tenant's single `age` recipient, and stores it to both
 configured copies. `run_tenant_dump` is the single-tenant, on-demand call
-an upgrade pipeline needs before a bump: it returns a `DumpResult`
-carrying the dump's own FLOOR result, not just an exit code -- see
-`_FloorWatcher`. Where `DB_DUMP_MYSQL_PWD` comes from under the pull
-model: `db/provision/dump-endpoint.md`.
+an upgrade pipeline needs before bumping a tenant's Ghost.
+See backup_worker.md#module-overview.
 """
 
 from __future__ import annotations
@@ -39,13 +37,11 @@ _NAMING_SOURCE = _REPO_ROOT / "db" / "provision" / "naming.py"
 
 
 def _load_module(name: str, source: pathlib.Path, *, register_as: str | None = None):
-    """Imports a `db/provision/` module by path (as `shared_objectstorage.py`
-    does for `objectstorage.py`), so constants like `FLOOR_TABLES` stay
-    defined once. `register_as`, when given, also registers it in
-    `sys.modules` under that bare name, since `dump_tenant.py`'s own `from
-    naming import (...)` only resolves if something already put a module
-    named `naming` there -- `db/provision/` is never on this process's
-    `sys.path` (it is `scp -r`'d to the host and run in place)."""
+    """Imports a `db/provision/` module by path, so `FLOOR_TABLES` and
+    tenant-name validation stay defined once rather than drifting between
+    two hand-copied constants. `register_as` also registers it in
+    `sys.modules` under a bare name, since `dump_tenant.py`'s own imports
+    only resolve that way. See backup_worker.md#_load_module."""
     if not source.is_file():
         raise ImportError(
             f"{source} is missing -- check out the whole of branchLeft/ghost-platform rather "
@@ -134,15 +130,10 @@ def run_tenant_dump(
     socket_path: str = DEFAULT_SOCKET,
     python_executable: str = sys.executable,
 ) -> DumpResult:
-    """The single-tenant, on-demand call. `dump_tenant_path` and
-    `socket_path` are real filesystem paths for
-    `dial_in_transport.LocalProcessTransport` only -- `RemoteMysqldumpTransport`
-    reads the tenant slug out of `command` and ignores the rest, since it
-    runs `mysqldump` itself rather than that argv. `env` carries exactly
-    one entry, `DB_DUMP_MYSQL_PWD` -- never
-    `AWS_*`/`DB_BACKUP_*`/`AGE_*`; every parameter that would carry a
-    storage credential is consumed by `pull_encrypt_and_store` on this side
-    of the dial-in call, never forwarded across it.
+    """The single-tenant, on-demand call. `env` carries exactly one entry,
+    `DB_DUMP_MYSQL_PWD`, never a storage credential — `age_recipient` and
+    `copies` are consumed by `pull_encrypt_and_store` on this side of the
+    dial-in call, never forwarded across it. See backup_worker.md#run_tenant_dump.
     """
     validate_tenant_name(tenant)
 
@@ -188,14 +179,11 @@ def run_tenant_dump(
     )
 
 
-# The two copies' env-var prefixes. "primary" (the backup-only Hetzner
-# project) is REQUIRED: main() refuses to run without it. "secondary" (the
-# off-supplier second copy 09-backup-and-recovery.html's custody figure
-# names) is OPTIONAL until a provider is chosen -- absent, the worker runs
-# on the primary copy alone. A copy PARTIALLY configured (some but not all
-# of its five credential vars set) is never accepted either way: more
-# likely a typo than a deliberate choice, and running on it would silently
-# drop the copy the operator thought they had just configured.
+# The two copies' env-var prefixes: "primary" is REQUIRED, main() refuses to
+# run without it; "secondary" is the off-supplier second copy and OPTIONAL
+# until a provider is chosen. A PARTIALLY configured copy (some but not all
+# of its five credential vars set) is never accepted either way.
+# See backup_worker.md#copy-name-tiers.
 REQUIRED_COPY_NAMES: tuple[str, ...] = ("primary",)
 OPTIONAL_COPY_NAMES: tuple[str, ...] = ("secondary",)
 
@@ -219,12 +207,11 @@ def _require_env(name: str) -> str:
 
 
 def _copy_target_from_env(*, copy_name: str, tenant: str, required: bool) -> CopyTarget | None:
-    """Builds one `CopyTarget` from `BACKUP_WORKER_COPY_<NAME>_*` env vars,
-    or `None` for an OPTIONAL copy left entirely unconfigured. The only
-    place in this module that reads a storage credential, and it never
-    returns it -- `put` below closes over it. Three outcomes, never a
-    fourth: every var present, none present with `required=False`, or
-    anything else refuses outright, naming what's missing."""
+    """Builds one `CopyTarget` from `BACKUP_WORKER_COPY_<NAME>_*` env vars, or
+    `None` for an OPTIONAL copy that is entirely unconfigured. The only place
+    in this module that reads a storage credential; `put` below closes over
+    it and it is never stored on the `CopyTarget` or logged.
+    See backup_worker.md#_copy_target_from_env."""
     prefix = f"BACKUP_WORKER_COPY_{copy_name.upper()}_"
     var_names = tuple(prefix + suffix for suffix in _COPY_CREDENTIAL_VAR_SUFFIXES)
     values = {name: os.environ.get(name) for name in var_names}
@@ -286,13 +273,11 @@ def _copies_from_env(*, tenant: str) -> list[CopyTarget]:
     return copies
 
 
-# The monitored signal is the age of the newest successful backup per
-# tenant, reported by the worker (org/control), never the tenant host,
-# which holds no way to report on its own backups under the pull model.
-# Mirrors hetzner/monitoring's snds-collector: a node_exporter textfile-
-# collector file, written atomically, read back and merged. Outside
-# /opt/branchleft/ for the same reason that collector's own output
-# directory is -- a stack's own `--delete` rsync deploy can wipe it.
+# The monitored signal is reported by this worker, on the org/control side,
+# never the tenant host, which under the pull model holds no way to report
+# anything about its own backups. Shaped like hetzner/monitoring's own
+# snds-collector and kept outside /opt/branchleft/, which a stack's own
+# `--delete` rsync deploy can wipe. See backup_worker.md#backup-age-metric-directory.
 DEFAULT_BACKUP_AGE_METRICS_DIR = "/var/lib/branchleft/backup-worker-exporter"
 BACKUP_AGE_METRIC_FILENAME = "backup_worker.prom"
 
@@ -355,12 +340,11 @@ BACKUP_AGE_METRIC_LOCK_FILENAME = BACKUP_AGE_METRIC_FILENAME + ".lock"
 
 
 def write_textfile_atomically(path: pathlib.Path, content: str) -> None:
-    """Matches hetzner/monitoring's snds collector: node_exporter polls this
-    directory and can scrape a non-atomic write mid-write, so this writes a
-    sibling temp file and `os.replace`s it into place. The temp name is
-    unique per call (`tempfile.mkstemp`, never a fixed `<name>.tmp`) so a
-    caller that forgot the lock `record_backup_age_metric` otherwise takes
-    can't collide two `.tmp` files and rename the loser into place."""
+    """node_exporter can scrape this directory mid-write, so a sibling temp
+    file plus `os.replace` is atomic on the same filesystem. The temp name
+    is unique per call rather than fixed, so two callers of this helper
+    cannot collide regardless of what locking protects the call above it.
+    See backup_worker.md#write_textfile_atomically."""
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as handle:
@@ -386,14 +370,12 @@ def record_backup_age_metric(
     _use_lock: bool = True,
     _after_read: Callable[[], None] | None = None,
 ) -> None:
-    """Records `tenant`'s last-good timestamp, merged with every other
-    tenant already in the file. Called only after a floor-verified
-    `ok=True`. Read-merge-write is one critical section under an exclusive
-    `fcntl.flock`, so two tenants finishing close together can't revert
-    each other's fresh success to a stale value (`BackupAgeMetricConcurrencyTests`
-    forces that interleave). `_use_lock`/`_after_read` exist only for that
-    test. Best-effort, never raises: a write failure here must not turn a
-    stored dump into a failed run."""
+    """Records `tenant`'s last-good-backup timestamp, merged with every
+    OTHER tenant this module has previously recorded. Called only after a
+    floor-verified, `ok=True` result. The read, merge and write are one
+    critical section under an exclusive `fcntl.flock`, and this is
+    best-effort: a write failure here never turns a stored dump into a
+    failed run. See backup_worker.md#record_backup_age_metric."""
 
     def _read_merge_write(output_path: pathlib.Path) -> None:
         try:

@@ -349,23 +349,11 @@ export class OtherColourUnhealthyError extends Error {
 }
 
 /**
- * The swap LLD-4 §U3b describes: a slot already `running` one colour gets
- * a new descriptor deployed into the *other* one, live, with the first
- * colour still serving throughout. Called only once the caller has
- * confirmed `state.phase === 'running'` and `state.colour` is set; holds
- * the same per-slot lock `handleReconcile` already claimed, and both reads
- * and writes that lock's response itself so its caller can simply `return`
- * whatever this resolves to.
- *
- * **Never calls `deps.wrapper.reset()`.** That is the one thing this
- * function must not do that a fresh deploy's own retry path does on
- * failure (see `attempt()`, above): `reset` stops and wipes *both*
- * colours, and `state.colour` -- the one already running -- is still
- * genuinely serving readers for the entire duration of a swap attempt.
- * "Draining is not stopping" (LLD-4 §U3b, load-bearing) protects the old
- * colour just as much during a failed promotion as during a deliberate
- * rollback: a swap that cannot complete leaves the slot exactly as it
- * found it, never as an outage.
+ * Deploys a new descriptor into a running slot's other colour, live, while
+ * the first colour keeps serving throughout. Never calls
+ * `deps.wrapper.reset()`: that would stop and wipe both colours, and the
+ * live one is still genuinely serving readers for the whole attempt.
+ * See app.md#attemptcolourswap.
  */
 async function attemptColourSwap(
   deps: BrokerDeps,
@@ -405,18 +393,9 @@ async function attemptColourSwap(
   // because `liveColour` is serving and is preferred or about to stay so.
   await deps.drainFlags.set(slot, target);
 
-  // Recorded before any other side effect below, mirroring the fresh-deploy
-  // path's own `preparing` write: a crash partway through this function is
-  // otherwise invisible to `recoverCrashedSlots` (the persisted phase would
-  // stay `running`/`liveColour` for the swap's whole duration, exactly the
-  // gap a review of this story's first cycle found -- a retried /reconcile
-  // after such a crash would believe `liveColour` is still live and could
-  // drain the colour that crash actually left serving). `swapTarget` plus
-  // the new descriptor's own hash/hashId are what let
-  // `recoverSwapInFlight` (`stateStore.ts`) tell "a swap into `target` was
-  // in flight" apart from "this slot is quietly running", and adopt the
-  // right colour with the right hash if it finds `target` already safely
-  // live.
+  // Recorded before any other side effect, mirroring the fresh-deploy path's
+  // own `preparing` write: without it, a crash partway through this function
+  // is invisible to `recoverCrashedSlots`. See app.md#attemptcolourswap.
   async function restorePreSwapState(): Promise<void> {
     await writeSlotState(deps.stateDir, slot, {
       phase: 'running' satisfies Phase,
@@ -485,19 +464,11 @@ async function attemptColourSwap(
     });
   }
 
-  // Moving the traffic. The colours alternate, so the order in the edge's
-  // static upstream list can never encode "prefer the newer one" -- what
-  // makes the swap work in both directions is that a new colour always
-  // boots drained (above), combined with Caddy's `lb_policy first`
-  // preferring the first-listed, healthy upstream (LLD-4 §U3b):
-  //
-  // - Deploying into the first-listed colour ('a'): clearing its flag,
-  //   just above, is already the one flag change that moves everything --
-  //   it is healthy and first, so nothing further runs here.
-  // - Deploying into the second-listed colour ('b'): clearing its flag
-  //   moved nothing, because 'a' is still healthy and still preferred.
-  //   Only now, draining 'a', does traffic actually move -- which is
-  //   exactly why the refusal below guards this branch and no other.
+  // Moving the traffic: the swap works in both directions because a new
+  // colour always boots drained, combined with the edge's `lb_policy first`
+  // preferring the first-listed, healthy upstream. Only the second-listed
+  // colour's branch below needs to explicitly drain the survivor.
+  // See app.md#attemptcolourswap-traffic-move.
   if (target === 'b') {
     // The Done-means refusal: never drain `liveColour` unless `target` --
     // about to become this slot's only upstream -- is demonstrably
@@ -537,32 +508,11 @@ async function attemptColourSwap(
 }
 
 /**
- * Stops the colour a completed swap left running, drained,
- * for the whole bake window (LLD-4 §U7). Called only once the caller has
- * confirmed `state.phase === 'running'`, `state.colour` is set and
- * `state.trafficBaseline` is set -- the last of those is what distinguishes
- * "this tenancy arrived by a swap, so there is an old colour to stop" from
- * a fresh deploy's own `running`, which has none. Holds the same per-slot
- * lock `handleStop`'s caller already claimed.
- *
- * Two independent pre-stop checks, both refusing rather than guessing, in
- * the order that costs least first:
- *
- * 1. The falsification clause (LLD-4 §04): the new colour must have
- *    *served real traffic*, not merely reported healthy. `deps.realTraffic`
- *    is the one signal in the estate that actually observes an admitted
- *    reader request (`services/demo-gate`'s counter); refused until a
- *    fresh reading exceeds the baseline `attemptColourSwap` recorded.
- * 2. LLD-4 §U5, load-bearing: no email or batch may be `submitting` --
- *    stopping mid-send is what turns Ghost's own anti-duplicate rule into
- *    a reader getting a partial newsletter.
- *
- * A third check, immediately before the one irreversible side effect,
- * mirrors `attemptColourSwap`'s own second, independent readiness check:
- * the survivor must still be undrained and healthy right now, because "no
- * step may ever leave a tenant with no colour serving" binds here exactly
- * as hard as it does mid-swap, and neither pre-stop check above says
- * anything about the survivor's own current health.
+ * Stops the colour a completed swap left running, drained, for the whole
+ * bake window. Requires `state.trafficBaseline` to be set, which is what
+ * distinguishes a tenancy that arrived by a swap from a fresh deploy.
+ * Three independent refusal checks guard the one irreversible side effect.
+ * See app.md#attemptstopoldcolour.
  */
 async function attemptStopOldColour(
   deps: BrokerDeps,

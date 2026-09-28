@@ -16,17 +16,9 @@ export interface VersionState {
 }
 
 /**
- * The one seam LLD-8 §09's load-bearing mark turns on: "the reported
- * version is read from the undrained colour" is not a convention a
- * consumer has to remember to apply correctly -- it is enforced here, once,
- * by simply not producing a `reported` value at all for a drained colour.
- *
- * That is also the story's control case. A caller that reads
- * `rawReported` directly instead of this function's `reported` -- "answer
- * with whichever colour responds first" -- reintroduces exactly the bug
- * this exists to prevent: during a legitimate overlap, the retiring
- * colour's real (and, correctly, mismatching) version leaks through and
- * gets read as a stuck tenant.
+ * The one seam that enforces "the reported version is read from the
+ * undrained colour" by simply not producing a `reported` value at all for
+ * a drained colour. See ../README.md#get-metrics--per-tenant-health-and-version.
  */
 export function deriveVersionState(params: {
   intended: string | null;

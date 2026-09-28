@@ -1,7 +1,27 @@
-import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import Database from 'better-sqlite3';
+import {
+  and,
+  asc,
+  count,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  min,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
+import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { hashApiKey, verifyApiKey } from './crypto.js';
+import { migrateStore } from './migrate.js';
 import { isSafeRecipientAddress } from './recipientSafety.js';
+import { events, queueBatches, queueRecipients, suppressions, tenants } from './schema.js';
+
+// The store's design, its schema history and its concurrency guarantees: store.md.
 
 export type SuppressionType = 'bounces' | 'complaints' | 'unsubscribes';
 
@@ -14,14 +34,9 @@ export const SUPPRESSION_TYPES: readonly SuppressionType[] = [
 export interface Tenant {
   domain: string;
   /**
-   * The domain this tenant actually sends From — held separately from
-   * `domain` (the credential's lookup key) because the two are not
-   * guaranteed equal: tenant zero's credential key is the Mailgun
-   * `bulkEmailDomain` (`blog.branchleft.co.uk`), but its real newsletters
-   * go out From the apex (`branchleft.co.uk`). `null` for a tenant that
-   * predates this field (a row migrated in from before it existed) or was
-   * never given one — callers must fail closed on `null`, never fall back
-   * to `domain`.
+   * The domain this tenant sends From, which need not equal `domain`, the
+   * credential's lookup key. `null` must fail closed, never fall back to
+   * `domain`. See store.md#sender-domain.
    */
   senderDomain: string | null;
 }
@@ -74,25 +89,20 @@ export interface EnqueueBatchParams {
 
 /** A recipient row handed to a drain caller — held, with a lease, until it acks or the lease lapses. */
 export interface DrainedRecipient {
-  /** Stable across re-offers — the same crash-before-ack recipient comes back under this same id (LLD-6: "every message carries a stable id"). */
+  /** Stable across re-offers: a crash-before-ack recipient comes back under this same id. */
   id: string;
   batchId: string;
   domain: string;
   emailId: string | null;
   payload: QueueBatchPayload;
   recipient: string;
-  /** How many times this row has been drained (including this one) — handed out again is not itself an error, only an unacked one left forever would be. */
+  /** How many times this row has been drained, this time included. */
   drainCount: number;
 }
 
 /**
- * What an ack names: not just the id, but the claim generation (the
- * `drainCount` the drainer was handed alongside that id). An id alone
- * cannot distinguish "the drainer that is currently holding this row" from
- * "a drainer whose lease on it has since lapsed and been re-offered to
- * someone else" — the id never changes across a re-offer, only
- * `drain_count` does. Carrying the generation is what lets `ackDrain` tell
- * those two apart (see its own doc comment).
+ * What an ack names: the id and the claim generation (`drainCount`) it was
+ * handed at, since the id alone survives a re-offer. See store.md#acks-name-a-generation.
  */
 export interface AckRequest {
   id: string;
@@ -102,59 +112,28 @@ export interface AckRequest {
 export interface AckDrainResult {
   /** ids that were 'held' and are now 'sent' — this call's own work. */
   acked: string[];
-  /** ids already 'sent' before this call — a duplicate ack, not an error (LLD-6: "the drainer can refuse a duplicate"). */
+  /** ids already 'sent' before this call — a duplicate ack, not an error. */
   alreadyHandled: string[];
-  /** ids this store has no record of currently being held — an unknown id, or one whose lease had already lapsed and was re-offered under itself before this ack arrived. */
+  /** ids not currently held at the named generation: unknown, stale, or superseded. */
   unknown: string[];
 }
 
 /**
- * Storage seam for tenant keys, delivery events, suppressions and the
- * durable send queue.
- *
- * Backed by SQLite here — durable across process restarts with nothing to
- * provision, which is what a single Hetzner host with a persistent disk
- * needs: no cloud database, no separate queue service. It is not built for
- * multi-instance coordination — a local file isn't shared between
- * processes — which this service doesn't need at its single-instance,
- * single-tenant-credentials scale.
+ * Storage seam for tenant keys, delivery events, suppressions and the durable
+ * send queue: one SQLite file, single-instance by design. See store.md.
  */
 export interface ShimStore {
   /**
-   * `senderDomain` is required, never defaulted from `domain` — a caller
-   * that only has the credential key must decide explicitly (the CLI's
-   * `register` command refuses to run without `--sender-domain` for
-   * exactly this reason; see cli.ts). Pass `null` only for a test
-   * reproducing a pre-migration row; every real registration path must
-   * supply a real domain.
+   * `senderDomain` is required, never defaulted from `domain`; `null` only
+   * reproduces a row that predates the field. See store.md#sender-domain.
    */
   registerTenant(domain: string, apiKey: string, senderDomain: string | null): void;
-  /**
-   * Looks up the tenant by domain (always present in the URL path — see
-   * doc 13 §2.6) and verifies the presented key against that tenant's
-   * salted hash. Collapses "unknown domain" and "wrong key for a domain
-   * that exists" into a single check, since both get the same 401 (see
-   * requireTenantForDomain in auth.ts).
-   */
+  /** Resolves null for an unknown domain and for a wrong key alike: both are the same 401. */
   verifyTenant(domain: string, apiKey: string): Promise<Tenant | null>;
   tenantExists(domain: string): boolean;
-  /**
-   * Domain and sender domain together — an operator diagnosing "is the
-   * sender-domain control actually live for this tenant" (e.g. the
-   * shim-upgrade runbook's post-redeploy check) needs both, and a bare
-   * domain list can't answer it: a tenant with `senderDomain: null` shows
-   * identically to a fully-configured one in a list of credential domains
-   * alone. `senderDomain` is `null` exactly when `Tenant.senderDomain` is
-   * (see that field's own doc comment) — never defaulted or guessed here.
-   */
+  /** Every tenant with its sender domain, sorted by domain; `null` exactly when unset. */
   listTenants(): Array<{ domain: string; senderDomain: string | null }>;
-  /**
-   * Sets a tenant's sending domain without touching its API key — the
-   * operator path for a tenant that already exists (every row migrated in
-   * from before this field existed) rather than re-registering it, which
-   * would rotate its credential out from under it. Returns false if the
-   * domain isn't a registered tenant at all.
-   */
+  /** Sets a tenant's sender domain without rotating its key; false if the domain is unregistered. */
   setSenderDomain(domain: string, senderDomain: string): boolean;
 
   recordEvent(event: Omit<StoredEvent, 'id'>): void;
@@ -168,25 +147,10 @@ export interface ShimStore {
   enqueueBatch(params: EnqueueBatchParams): void;
 
   /**
-   * Atomically claims up to `limit` recipients for hand-over: every row
-   * already `pending`, plus every `held` row whose lease has lapsed
-   * (re-offered under its original id — nothing here mints a new one). A
-   * suppressed recipient is resolved in place (recorded, excluded, no
-   * event) rather than ever being handed to a drainer; an unsafe address
-   * is failed in place the same way. Both still count toward `limit`
-   * being consumed for this call, so a caller wanting more should call
-   * again rather than assume it always gets `limit` drainable rows back.
-   *
-   * `canSend` gates the hourly throttle — one bucket per shim process,
-   * shared by every tenant that process ever holds (the deleted worker's
-   * own `throttle.tryTake()` check immediately before dispatch — see
-   * throttle.ts). It is asked once per row that would otherwise become
-   * `held`, in claim order; the first `false` stops the whole claim
-   * rather than skipping just that row, so a throttled candidate and
-   * every candidate after it in this batch stay `pending` for the next
-   * call, never reordered around the one that was throttled.
-   * Suppressed/unsafe rows are resolved regardless of the throttle: they
-   * were never going to consume a send. Omitted means unthrottled.
+   * Atomically claims up to `limit` recipients: pending rows, and held rows
+   * whose lease lapsed, oldest batch first. Suppressed and unsafe rows are
+   * resolved in place and still count toward `limit`; the first `false` from
+   * `canSend` ends the claim. See store.md#claiming-for-drain.
    */
   claimForDrain(
     now: number,
@@ -196,39 +160,15 @@ export interface ShimStore {
   ): DrainedRecipient[];
 
   /**
-   * The other half of the handover: a `held` id at the SAME generation the
-   * ack names becomes `sent` (this store's job for that message is over),
-   * a duplicate ack (already `sent`) is reported rather than erroring, and
-   * anything else — an id this store has no record of, or one whose
-   * `drainCount` no longer matches the row's current one — is reported as
-   * `unknown` so the caller can decide what to do rather than have it
-   * silently swallowed.
-   *
-   * The generation check is load-bearing, not decorative: an id is stable
-   * across a re-offer (the row stays `held`, just with a new `held_until`
-   * and an incremented `drain_count`), so a LATE ack from the drainer that
-   * held it BEFORE that re-offer would otherwise still find `status ===
-   * 'held'` and be accepted — crediting a claim that has since been
-   * superseded, and silently discarding the mail the *new* holder is
-   * responsible for while the old holder wrongly believes it is done. The
-   * generation this ack was issued against, not just the id, is what
-   * "held" has to mean here.
-   *
-   * Deliberately does not synthesize a "delivered" event: an ack means
-   * the drainer took responsibility for the message, not that anyone
-   * received it (LLD-6 M5) — that distinction is the whole reason the
-   * old worker's premature "delivered" event was a defect, and it would
-   * be the same defect one hop later to synthesize it here.
+   * Moves each id held at the named generation to 'sent'. Never records a
+   * "delivered" event: an ack means the drainer took responsibility, not
+   * that anyone received it. See store.md#acks-name-a-generation.
    */
   ackDrain(acks: AckRequest[], now: number): AckDrainResult;
 
   /**
-   * Seconds since the oldest recipient still owed a hand-over (`pending`
-   * or `held`) was enqueued, or null if none are outstanding. `held`
-   * counts as outstanding on purpose: a drainer that keeps re-polling but
-   * never acking must show up as a growing number here exactly like one
-   * that stopped calling at all (LLD-8 §03b — "whatever it reports about
-   * itself").
+   * Seconds since the oldest pending or held recipient was enqueued, or null.
+   * Held counts, so a drainer that polls but never acks still shows here.
    */
   oldestUndrainedAgeSeconds(now: number): number | null;
 
@@ -243,22 +183,21 @@ export interface ShimStore {
   close(): void;
 }
 
-// SuppressionType is compile-time only — the suppressions route already
-// filters to known types before it reaches the store (routes/suppressions.ts),
-// but that guard doesn't cover other callers of this interface, and a
-// typo'd type string stored under a real-looking column would silently
-// never match a real isSuppressed lookup rather than failing loudly.
+type Db = BetterSQLite3Database;
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
+const TERMINAL_STATUSES: QueueRecipientStatus[] = ['sent', 'failed', 'suppressed'];
+const UNDRAINED_STATUSES: QueueRecipientStatus[] = ['pending', 'held'];
+
+// The type is compile-time only, and a typo'd string stored under a real
+// column would never match a lookup rather than fail loudly.
 function assertSuppressionType(type: SuppressionType): void {
   if (!(SUPPRESSION_TYPES as readonly string[]).includes(type)) {
     throw new TypeError(`Unknown suppression type: ${String(type)}`);
   }
 }
 
-/**
- * Exported so the branch that's unreachable through the real sqlite driver
- * in a test (a file-backed PRAGMA that reports something other than "wal")
- * can still be exercised directly.
- */
+/** Exported so the non-WAL branch, unreachable through a real file, can be tested directly. */
 export function assertWalEnabled(filename: string, journalMode: string | undefined): void {
   if (filename === ':memory:') {
     return;
@@ -271,675 +210,286 @@ export function assertWalEnabled(filename: string, journalMode: string | undefin
 }
 
 /**
- * True once `queue_recipients` is in the shape `createSqliteStore` writes
- * to: has an `id` column. False for the pre-drain-handover shape (`attempts`,
- * `next_attempt_at`, no `id` — see `ensureDrainShapedQueueRecipients`'s own
- * doc comment) and, trivially, for a database with no `queue_recipients`
- * table at all yet — the `CREATE TABLE IF NOT EXISTS` a few lines below
- * gives a brand-new database the drain-shaped table directly, so there is
- * nothing to migrate on that path either. `PRAGMA table_info` is cheap (no
- * table scan) and safe to run on every startup, so this always runs rather
- * than being gated behind a version check.
+ * Opens (creating if absent) the store's SQLite file and migrates it to the
+ * current schema. See store.md#opening-the-file.
  */
-function hasDrainShapedQueueRecipients(db: DatabaseSync): boolean {
-  const columns = db.prepare('PRAGMA table_info(queue_recipients)').all() as Array<{
-    name: string;
-  }>;
-  return columns.length === 0 || columns.some((col) => col.name === 'id');
-}
-
-/**
- * Migrates a pre-drain-handover `queue_recipients` table in place, losing no queued
- * mail: `attempts` and `next_attempt_at` are exactly the same counters the
- * new drain protocol needs (a monotonic per-row generation, and "not
- * claimable before this time"), just under new names, so this is a rename
- * rather than a value recompute — `drain_count`/`available_at` inherit
- * whatever the old worker had already counted, and `claimForDrain`/
- * `ackDrain` treat that as any other starting generation. `status` values
- * ('pending'/'sent'/'failed'/'suppressed') are identical strings in both
- * models — the new model adds 'held' but never requires an old row to
- * hold it, since the old worker never left one mid-lease — so no status
- * rewrite is needed either: a migrated 'sent'/'failed'/'suppressed' row
- * simply stays exactly as terminal as it already was, kept as history the
- * same way a row inserted under the new code is (cleanupCompletedBatches
- * removes it once its batch is old enough, unchanged by this migration),
- * and a migrated 'pending' row becomes drainable through the same
- * `claimForDrain` path as a freshly-enqueued one. Net effect: nothing is
- * dropped, and nothing already 'sent' can be re-offered.
- *
- * Only `id` is genuinely new — the old table never had a stable
- * drain-facing identity — so every existing row is backfilled with a
- * fresh one. The migrated table's `id` column can't be declared `NOT
- * NULL` the way a fresh `CREATE TABLE` declares it (`ALTER TABLE ... ADD
- * COLUMN` can't retroactively add that constraint without a full table
- * rebuild this function doesn't do) — but every row is backfilled with a
- * real id in the same transaction below, and every future INSERT
- * (`insertRecipient`) always supplies one, so the practical invariant
- * holds even though the schema text technically still allows NULL on
- * this one migrated table.
- *
- * Transactional (BEGIN IMMEDIATE...COMMIT, so a reader never observes a
- * half-renamed table) and idempotent: `hasDrainShapedQueueRecipients`
- * makes every call after the first a no-op, on both a genuinely fresh
- * database and an already-migrated one.
- *
- * Concurrent openers are safe only between two processes that both run
- * this code (the new image): the service and an operator's CLI
- * invocation run directly against the same pre-migration file at once, or
- * two CLI invocations back to back — the same race
- * `ensureSenderDomainColumn` documents for `tenants.sender_domain`.
- * `BEGIN IMMEDIATE` plus the busy timeout set above means the loser's
- * transaction simply waits for the winner's to commit, then starts
- * against the now-already-migrated table: its own first statement
- * (`RENAME COLUMN attempts`) fails with "no such column: attempts",
- * because the winner already renamed it away. That specific, expected
- * failure is caught and re-verified with a fresh
- * `hasDrainShapedQueueRecipients` read rather than left to crash startup;
- * any other error (a real schema problem, a wait that outlasts the busy
- * timeout) still propagates.
- *
- * An OLD process — one still running the pre-drain-handover code, with
- * the same file already open — is not one of the two openers above: it
- * never calls this function, so it can't be the race's "loser" and
- * nothing here protects it. Once any new-image process migrates the file
- * out from under it, its own prepared statements still name the old
- * `attempts`/`next_attempt_at` columns, and every one of them starts
- * failing for as long as it keeps running against the now-migrated file
- * — its enqueue with "no such column: attempts", its claim with "no such
- * column: qr.attempts". An old process sharing this file has to be
- * stopped before the first new-image open, not raced against it.
- */
-export function ensureDrainShapedQueueRecipients(db: DatabaseSync): void {
-  if (hasDrainShapedQueueRecipients(db)) {
-    return;
-  }
-  try {
-    db.exec('BEGIN IMMEDIATE');
-  } catch (err) {
-    /* v8 ignore start -- structurally close to unreachable through the
-     * real driver: BEGIN IMMEDIATE only fails outright once the busy
-     * timeout set above is fully exhausted (multiple seconds) waiting on
-     * another writer's lock. Within that window a concurrent migration
-     * finishing normally is exactly the two-real-processes scenario this
-     * module composes with (see the concurrency test in
-     * store.preDrainMigration.test.ts) — and there, this connection's own
-     * BEGIN IMMEDIATE succeeds once the winner commits and releases the
-     * lock, so it never reaches this catch at all; the very next
-     * statement (the RENAME below) is what sees the now-migrated table
-     * and hits the *other* catch instead. Reaching genuine SQLITE_BUSY
-     * here means the lock-holder didn't finish within the timeout, and a
-     * migration that hasn't finished can't have made this true either —
-     * so the branch below is retained as a fail-closed guard against a
-     * future sqlite/timeout tuning change making that combination
-     * possible, not because it is exercised today. */
-    if (hasDrainShapedQueueRecipients(db)) {
-      return;
-    }
-    /* v8 ignore stop */
-    throw err;
-  }
-  try {
-    db.exec('ALTER TABLE queue_recipients RENAME COLUMN attempts TO drain_count');
-    db.exec('ALTER TABLE queue_recipients RENAME COLUMN next_attempt_at TO available_at');
-    db.exec('ALTER TABLE queue_recipients ADD COLUMN held_until REAL');
-    db.exec('ALTER TABLE queue_recipients ADD COLUMN id TEXT');
-
-    const unmigratedRows = db
-      .prepare('SELECT rowid AS rowid FROM queue_recipients WHERE id IS NULL')
-      .all() as Array<{ rowid: number }>;
-    const assignId = db.prepare('UPDATE queue_recipients SET id = ? WHERE rowid = ?');
-    for (const row of unmigratedRows) {
-      assignId.run(randomUUID(), row.rowid);
-    }
-
-    // Superseded by idx_queue_recipients_status_available below, over the
-    // same (status, available_at) pair the rename just gave this old
-    // index's definition — dropped rather than left as permanent dead
-    // weight on every write.
-    db.exec('DROP INDEX IF EXISTS idx_queue_recipients_status_next');
-    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_recipients_id ON queue_recipients (id)');
-    db.exec('COMMIT');
-  } catch (err) {
-    try {
-      db.exec('ROLLBACK');
-    } catch {
-      // SQLite had already rolled the transaction back itself (e.g.
-      // SQLITE_FULL, an IOERR class) — ROLLBACK then has nothing left to
-      // undo and throws "cannot rollback - no transaction is active".
-      // `err` below is still the real cause; swallowed here so it isn't
-      // replaced by this housekeeping failure.
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    // Matched on both substrings rather than the exact quoted form: node's
-    // sqlite driver renders this as `no such column: "attempts"` (quoted),
-    // which a plain `'no such column: attempts'` substring check misses
-    // entirely — caught by the two-real-processes concurrency test below
-    // before this was corrected.
-    if (!message.includes('no such column') || !message.includes('attempts')) {
-      throw err;
-    }
-    // Re-verified rather than trusted on the message match alone: a
-    // genuine concurrent winner's migration is one transaction, so by the
-    // time this fails with this exact message the table really is fully
-    // migrated (proven by the two-real-processes test in
-    // store.preDrainMigration.test.ts) and this returns normally. Anything
-    // else that manages to produce the same message without actually
-    // finishing the migration — proven directly by that test file's own
-    // "genuine, non-race RENAME failure" case — still throws here rather
-    // than being swallowed.
-    if (!hasDrainShapedQueueRecipients(db)) {
-      throw err;
-    }
-  }
-}
-
-/**
- * `CREATE TABLE IF NOT EXISTS` below already gives a brand-new database
- * `sender_domain` from the start — this only patches a database created
- * before the column existed, which is the shim's live production state
- * (mx1's SQLite file predates this field). `PRAGMA table_info` is cheap
- * (no table scan) and safe to run on every startup, so this always runs
- * rather than being gated behind a version check: it is a no-op the
- * instant the column is already there, on both the fresh-install and the
- * already-migrated path.
- */
-function hasSenderDomainColumn(db: DatabaseSync): boolean {
-  const columns = db.prepare('PRAGMA table_info(tenants)').all() as Array<{ name: string }>;
-  return columns.some((col) => col.name === 'sender_domain');
-}
-
-/**
- * More than one process can reach this on the same pre-migration database
- * at once — the service's own container and an operator's `docker
- * run`/`exec` CLI invocation, or two CLI invocations back to back.
- * `PRAGMA table_info` then `ALTER TABLE` is a read followed
- * by a write with nothing serialising them, so two processes can both read
- * "column missing" before either has added it, and the loser's `ALTER`
- * fails with "duplicate column name: sender_domain" once the winner's has
- * committed. That failure means the column now exists — exactly what this
- * function was trying to ensure — so it is caught and re-verified via a
- * fresh `table_info` read rather than left to crash startup. Any other
- * error (a real schema problem, a locked-out connection past the busy
- * timeout) still propagates: this only swallows the one specific,
- * harmless race outcome.
- */
-export function ensureSenderDomainColumn(db: DatabaseSync): void {
-  if (hasSenderDomainColumn(db)) {
-    return;
-  }
-  try {
-    // Existing rows get NULL, never a guessed default (e.g. the credential
-    // key) — a tenant migrated in this way must fail closed until an
-    // operator sets its real sending domain explicitly (setSenderDomain /
-    // the CLI's set-sender-domain command), never be silently bound to a
-    // value nobody confirmed.
-    db.exec('ALTER TABLE tenants ADD COLUMN sender_domain TEXT');
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (!message.includes('duplicate column name: sender_domain')) {
-      throw err;
-    }
-    /* v8 ignore start -- proven unreachable through the real sqlite
-     * driver: it only ever raises this exact error once the column really
-     * is there, so the re-check below always succeeds. Kept as a
-     * fail-closed guard against a future sqlite version changing what
-     * "duplicate column" means, mirroring assertWalEnabled's own
-     * unreachable-branch pattern above. */
-    if (!hasSenderDomainColumn(db)) {
-      throw err;
-    }
-    /* v8 ignore stop */
-  }
-}
-
-function withTransaction<T>(db: DatabaseSync, fn: () => T): T {
-  db.exec('BEGIN');
-  try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-}
-
 export function createSqliteStore(filename = ':memory:'): ShimStore {
-  const db = new DatabaseSync(filename);
-
-  // busy_timeout BEFORE journal_mode=WAL, deliberately: sqlite's default
-  // busy timeout is 0 (fail immediately on SQLITE_BUSY, no wait at all),
-  // and the `PRAGMA journal_mode = WAL` statement itself takes a lock
-  // another concurrently-opening process (the CLI, run directly against
-  // this file — see below) can hold at the exact moment this one runs it.
-  // Setting the timeout first means that very first statement already
-  // waits rather than failing outright — the alternative ordering leaves a
-  // window, right at startup, where two processes opening the same
-  // pre-migration file at once could hit a bare SQLITE_BUSY before either
-  // had a timeout in effect.
-  db.exec('PRAGMA busy_timeout = 5000');
-
-  // WAL + that busy timeout rather than SQLite's default DELETE journal
-  // mode: the CLI (register/list/events) opens this same file directly
-  // while the service is running, and a snapshot-consistent backup needs
-  // to read the file without blocking on the service's writes. `PRAGMA
-  // journal_mode` returns the mode it actually ended up in (it can
-  // silently fall back, e.g. on some network filesystems) — read that
-  // back and fail startup rather than run every write path unprotected
-  // without saying so.
-  const journalModeRow = db.prepare('PRAGMA journal_mode = WAL').get() as
-    { journal_mode: string } | undefined;
+  // The busy timeout is set at open, before the WAL switch below can contend.
+  const client = new Database(filename, { timeout: 5000 });
+  const journalMode = client.pragma('journal_mode = WAL', { simple: true }) as string | undefined;
   try {
-    assertWalEnabled(filename, journalModeRow?.journal_mode);
+    assertWalEnabled(filename, journalMode);
+    migrateStore(client);
   } catch (err) {
-    // assertWalEnabled's own throw is unit-tested directly; forcing
-    // node:sqlite itself to report a non-wal mode for a file-backed DB
-    // isn't practical without mocking the built-in module.
-    /* v8 ignore start */
-    db.close();
+    client.close();
     throw err;
-    /* v8 ignore stop */
+  }
+  const db = drizzle(client);
+
+  function isSuppressedIn(q: Db | Tx, domain: string, type: string, email: string): boolean {
+    return (
+      q
+        .select({ email: suppressions.email })
+        .from(suppressions)
+        .where(
+          and(
+            eq(suppressions.domain, domain),
+            eq(suppressions.type, type),
+            eq(suppressions.email, email)
+          )
+        )
+        .get() !== undefined
+    );
   }
 
-  // Patches a database created by the pre-drain-handover worker (mx1's live
-  // production state) before the CREATE TABLE below runs: `CREATE TABLE
-  // IF NOT EXISTS queue_recipients` is a no-op against an existing table
-  // whatever shape it's in, so the drain-shaped `CREATE UNIQUE INDEX ...
-  // ON queue_recipients (id)` a few lines down would otherwise be the
-  // first statement to notice the old table has no `id` column at all —
-  // and it would fail startup outright ("no such column: id") rather than
-  // migrate anything. See the function's own doc comment.
-  ensureDrainShapedQueueRecipients(db);
+  function insertEvent(q: Db | Tx, event: Omit<StoredEvent, 'id'>): void {
+    q.insert(events)
+      .values({ id: randomUUID(), ...event })
+      .run();
+  }
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS tenants (
-      domain TEXT PRIMARY KEY,
-      api_key_salt TEXT NOT NULL,
-      api_key_hash TEXT NOT NULL,
-      sender_domain TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS events (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      id TEXT NOT NULL,
-      domain TEXT NOT NULL,
-      type TEXT NOT NULL,
-      severity TEXT,
-      recipient TEXT NOT NULL,
-      email_id TEXT,
-      provider_message_id TEXT,
-      timestamp REAL NOT NULL,
-      error_code INTEGER,
-      error_message TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_events_domain_seq ON events (domain, seq);
-
-    CREATE TABLE IF NOT EXISTS suppressions (
-      domain TEXT NOT NULL,
-      type TEXT NOT NULL,
-      email TEXT NOT NULL,
-      PRIMARY KEY (domain, type, email)
-    );
-
-    CREATE TABLE IF NOT EXISTS queue_batches (
-      batch_id TEXT PRIMARY KEY,
-      domain TEXT NOT NULL,
-      email_id TEXT,
-      payload TEXT NOT NULL,
-      created_at REAL NOT NULL,
-      completed_at REAL
-    );
-
-    -- id is the drain-facing identity: stable across re-offers, and what
-    -- an ack names. (batch_id, recipient) stays the primary key -- it is
-    -- what enqueueBatch's own de-duplication and every existing join rely
-    -- on -- id is a second, uniquely-indexed column rather than a
-    -- replacement for it.
-    CREATE TABLE IF NOT EXISTS queue_recipients (
-      id TEXT NOT NULL,
-      batch_id TEXT NOT NULL,
-      recipient TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      drain_count INTEGER NOT NULL DEFAULT 0,
-      available_at REAL NOT NULL,
-      held_until REAL,
-      last_error TEXT,
-      PRIMARY KEY (batch_id, recipient)
-    );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_recipients_id ON queue_recipients (id);
-    CREATE INDEX IF NOT EXISTS idx_queue_recipients_status_available
-      ON queue_recipients (status, available_at);
-    CREATE INDEX IF NOT EXISTS idx_queue_recipients_status_held_until
-      ON queue_recipients (status, held_until);
-  `);
-
-  // Patches a database created before sender_domain existed — see the
-  // function's own doc comment. Runs after the CREATE TABLE above (which
-  // already gives a brand-new database the column) so this is always a
-  // no-op except on a database that predates the column.
-  ensureSenderDomainColumn(db);
-
-  const insertTenant = db.prepare(
-    'INSERT OR REPLACE INTO tenants (domain, api_key_salt, api_key_hash, sender_domain) VALUES (?, ?, ?, ?)'
-  );
-  const selectTenantByDomain = db.prepare(
-    'SELECT domain, api_key_salt, api_key_hash, sender_domain FROM tenants WHERE domain = ?'
-  );
-  const updateSenderDomain = db.prepare('UPDATE tenants SET sender_domain = ? WHERE domain = ?');
-  const selectAllDomains = db.prepare(
-    'SELECT domain, sender_domain FROM tenants ORDER BY domain ASC'
-  );
-  const insertEvent = db.prepare(`
-    INSERT INTO events
-      (id, domain, type, severity, recipient, email_id, provider_message_id, timestamp, error_code, error_message)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const insertSuppression = db.prepare(
-    'INSERT OR IGNORE INTO suppressions (domain, type, email) VALUES (?, ?, ?)'
-  );
-  const deleteSuppression = db.prepare(
-    'DELETE FROM suppressions WHERE domain = ? AND type = ? AND email = ?'
-  );
-  const selectSuppression = db.prepare(
-    'SELECT 1 FROM suppressions WHERE domain = ? AND type = ? AND email = ?'
-  );
-
-  const insertBatch = db.prepare(
-    'INSERT INTO queue_batches (batch_id, domain, email_id, payload, created_at, completed_at) VALUES (?, ?, ?, ?, ?, NULL)'
-  );
-  const insertRecipient = db.prepare(
-    "INSERT INTO queue_recipients (id, batch_id, recipient, status, drain_count, available_at, held_until, last_error) VALUES (?, ?, ?, 'pending', 0, ?, NULL, NULL)"
-  );
-  const selectClaimCandidates = db.prepare(`
-    SELECT qr.id AS id, qr.batch_id AS batch_id, qr.recipient AS recipient, qr.drain_count AS drain_count,
-           qb.domain AS domain, qb.email_id AS email_id, qb.payload AS payload
-    FROM queue_recipients qr
-    JOIN queue_batches qb ON qb.batch_id = qr.batch_id
-    WHERE (qr.status = 'pending' AND qr.available_at <= ?)
-       OR (qr.status = 'held' AND qr.held_until <= ?)
-    ORDER BY qb.created_at ASC, qr.rowid ASC
-    LIMIT ?
-  `);
-  const updateHeld = db.prepare(
-    'UPDATE queue_recipients SET status = ?, drain_count = drain_count + 1, held_until = ? WHERE id = ?'
-  );
-  const updateSuppressedById = db.prepare(
-    "UPDATE queue_recipients SET status = 'suppressed', held_until = NULL WHERE id = ?"
-  );
-  const updateFailedById = db.prepare(
-    "UPDATE queue_recipients SET status = 'failed', held_until = NULL, last_error = ? WHERE id = ?"
-  );
-  const selectRecipientById = db.prepare(
-    'SELECT id, batch_id AS batch_id, status, drain_count FROM queue_recipients WHERE id = ?'
-  );
-  const updateSentById = db.prepare(
-    "UPDATE queue_recipients SET status = 'sent', held_until = NULL WHERE id = ?"
-  );
-  const countUndrained = db.prepare(
-    "SELECT COUNT(*) AS c FROM queue_recipients WHERE status IN ('pending', 'held')"
-  );
-  const selectOldestUndrained = db.prepare(`
-    SELECT MIN(qb.created_at) AS oldest
-    FROM queue_recipients qr
-    JOIN queue_batches qb ON qb.batch_id = qr.batch_id
-    WHERE qr.status IN ('pending', 'held')
-  `);
-  const countPendingForBatch = db.prepare(
-    "SELECT COUNT(*) AS c FROM queue_recipients WHERE batch_id = ? AND status NOT IN ('sent', 'failed', 'suppressed')"
-  );
-  const updateCompletedAt = db.prepare(
-    'UPDATE queue_batches SET completed_at = ? WHERE batch_id = ? AND completed_at IS NULL'
-  );
-  const selectOldBatchIds = db.prepare(
-    'SELECT batch_id FROM queue_batches WHERE completed_at IS NOT NULL AND completed_at < ?'
-  );
-  const deleteRecipientsForBatch = db.prepare('DELETE FROM queue_recipients WHERE batch_id = ?');
-  const deleteBatch = db.prepare('DELETE FROM queue_batches WHERE batch_id = ?');
-  const pingStmt = db.prepare('SELECT 1');
-
-  function maybeCompleteBatch(batchId: string, now: number): void {
-    const row = countPendingForBatch.get(batchId) as { c: number };
-    if (row.c === 0) {
-      updateCompletedAt.run(now, batchId);
+  function maybeCompleteBatch(tx: Tx, batchId: string, now: number): void {
+    const outstanding = tx
+      .select({ c: count() })
+      .from(queueRecipients)
+      .where(
+        and(
+          eq(queueRecipients.batchId, batchId),
+          notInArray(queueRecipients.status, TERMINAL_STATUSES)
+        )
+      )
+      .get();
+    if (outstanding?.c === 0) {
+      tx.update(queueBatches)
+        .set({ completedAt: now })
+        .where(and(eq(queueBatches.batchId, batchId), isNull(queueBatches.completedAt)))
+        .run();
     }
   }
 
   return {
     registerTenant(domain, apiKey, senderDomain) {
       const { salt, hash } = hashApiKey(apiKey);
-      insertTenant.run(domain, salt, hash, senderDomain);
+      const row = { apiKeySalt: salt, apiKeyHash: hash, senderDomain };
+      db.insert(tenants)
+        .values({ domain, ...row })
+        .onConflictDoUpdate({ target: tenants.domain, set: row })
+        .run();
     },
 
     async verifyTenant(domain, apiKey) {
-      const row = selectTenantByDomain.get(domain) as
-        | {
-            domain: string;
-            api_key_salt: string;
-            api_key_hash: string;
-            sender_domain: string | null;
-          }
-        | undefined;
+      const row = db.select().from(tenants).where(eq(tenants.domain, domain)).get();
       if (!row) {
         return null;
       }
-      const ok = await verifyApiKey(apiKey, { salt: row.api_key_salt, hash: row.api_key_hash });
-      return ok ? { domain: row.domain, senderDomain: row.sender_domain } : null;
+      const ok = await verifyApiKey(apiKey, { salt: row.apiKeySalt, hash: row.apiKeyHash });
+      return ok ? { domain: row.domain, senderDomain: row.senderDomain } : null;
     },
 
     tenantExists(domain) {
-      return selectTenantByDomain.get(domain) !== undefined;
-    },
-
-    listTenants() {
       return (
-        selectAllDomains.all() as Array<{ domain: string; sender_domain: string | null }>
-      ).map((row) => ({ domain: row.domain, senderDomain: row.sender_domain }));
-    },
-
-    setSenderDomain(domain, senderDomain) {
-      const result = updateSenderDomain.run(senderDomain, domain);
-      // `changes` is typed `number | bigint` (node:sqlite) — Number() first
-      // so this never risks a bigint/number operator mismatch.
-      return Number(result.changes) > 0;
-    },
-
-    recordEvent(event) {
-      insertEvent.run(
-        randomUUID(),
-        event.domain,
-        event.type,
-        event.severity,
-        event.recipient,
-        event.emailId,
-        event.providerMessageId,
-        event.timestamp,
-        event.errorCode,
-        event.errorMessage
+        db
+          .select({ domain: tenants.domain })
+          .from(tenants)
+          .where(eq(tenants.domain, domain))
+          .get() !== undefined
       );
     },
 
+    listTenants() {
+      return db
+        .select({ domain: tenants.domain, senderDomain: tenants.senderDomain })
+        .from(tenants)
+        .orderBy(asc(tenants.domain))
+        .all();
+    },
+
+    setSenderDomain(domain, senderDomain) {
+      const result = db
+        .update(tenants)
+        .set({ senderDomain })
+        .where(eq(tenants.domain, domain))
+        .run();
+      return result.changes > 0;
+    },
+
+    recordEvent(event) {
+      insertEvent(db, event);
+    },
+
     listEvents(domain, { limit, offset, eventTypes }) {
-      // mailgun.js's search syntax (`event: 'delivered OR opened OR ...'`)
-      // isn't reimplemented — Ghost only ever sends an OR-list of exact
-      // type names (email-analytics-provider-mailgun.js), so matching on
-      // that list covers every real caller without a query-language parser.
+      // Ghost only ever sends an OR-list of exact type names, so the filter
+      // is a list match on the page, not a query-language parser.
       const rows = db
-        .prepare('SELECT * FROM events WHERE domain = ? ORDER BY seq ASC LIMIT ? OFFSET ?')
-        .all(domain, limit, offset) as Array<{
-        id: string;
-        domain: string;
-        type: string;
-        severity: string | null;
-        recipient: string;
-        email_id: string | null;
-        provider_message_id: string | null;
-        timestamp: number;
-        error_code: number | null;
-        error_message: string | null;
-      }>;
+        .select()
+        .from(events)
+        .where(eq(events.domain, domain))
+        .orderBy(asc(events.seq))
+        .limit(limit)
+        .offset(offset)
+        .all();
 
       const filtered = eventTypes ? rows.filter((row) => eventTypes.includes(row.type)) : rows;
 
       return {
-        events: filtered.map((row) => ({
-          id: row.id,
-          domain: row.domain,
-          type: row.type,
-          severity: row.severity,
-          recipient: row.recipient,
-          emailId: row.email_id,
-          providerMessageId: row.provider_message_id,
-          timestamp: row.timestamp,
-          errorCode: row.error_code,
-          errorMessage: row.error_message,
-        })),
+        events: filtered.map(({ seq: _seq, ...event }) => event),
         nextOffset: offset + rows.length,
       };
     },
 
     addSuppression(domain, type, email) {
       assertSuppressionType(type);
-      insertSuppression.run(domain, type, email);
+      db.insert(suppressions).values({ domain, type, email }).onConflictDoNothing().run();
     },
 
     removeSuppression(domain, type, email) {
       assertSuppressionType(type);
-      deleteSuppression.run(domain, type, email);
+      db.delete(suppressions)
+        .where(
+          and(
+            eq(suppressions.domain, domain),
+            eq(suppressions.type, type),
+            eq(suppressions.email, email)
+          )
+        )
+        .run();
     },
 
     isSuppressed(domain, type, email) {
       assertSuppressionType(type);
-      return selectSuppression.get(domain, type, email) !== undefined;
+      return isSuppressedIn(db, domain, type, email);
     },
 
     enqueueBatch({ batchId, domain, emailId, payload, recipients, now }) {
-      withTransaction(db, () => {
-        insertBatch.run(batchId, domain, emailId, JSON.stringify(payload), now);
+      db.transaction((tx) => {
+        tx.insert(queueBatches)
+          .values({ batchId, domain, emailId, payload: JSON.stringify(payload), createdAt: now })
+          .run();
         for (const recipient of recipients) {
-          insertRecipient.run(randomUUID(), batchId, recipient, now);
+          tx.insert(queueRecipients)
+            .values({ id: randomUUID(), batchId, recipient, availableAt: now })
+            .run();
         }
       });
     },
 
     claimForDrain(now, leaseSeconds, limit, canSend) {
-      return withTransaction(db, () => {
-        const candidates = selectClaimCandidates.all(now, now, limit) as Array<{
-          id: string;
-          batch_id: string;
-          recipient: string;
-          drain_count: number;
-          domain: string;
-          email_id: string | null;
-          payload: string;
-        }>;
+      return db.transaction((tx) => {
+        const candidates = tx
+          .select({
+            id: queueRecipients.id,
+            batchId: queueRecipients.batchId,
+            recipient: queueRecipients.recipient,
+            drainCount: queueRecipients.drainCount,
+            domain: queueBatches.domain,
+            emailId: queueBatches.emailId,
+            payload: queueBatches.payload,
+          })
+          .from(queueRecipients)
+          .innerJoin(queueBatches, eq(queueBatches.batchId, queueRecipients.batchId))
+          .where(
+            or(
+              and(eq(queueRecipients.status, 'pending'), lte(queueRecipients.availableAt, now)),
+              and(eq(queueRecipients.status, 'held'), lte(queueRecipients.heldUntil, now))
+            )
+          )
+          // rowid is enqueue order within a batch; SQLite-only, and the one ordering key the schema lacks.
+          .orderBy(asc(queueBatches.createdAt), asc(sql`${queueRecipients}.rowid`))
+          .limit(limit)
+          .all();
 
         const drained: DrainedRecipient[] = [];
 
         for (const row of candidates) {
-          let suppressed = false;
-          for (const type of SUPPRESSION_TYPES) {
-            if (isSuppressed_(row.domain, type, row.recipient)) {
-              suppressed = true;
-              break;
-            }
-          }
-          if (suppressed) {
-            updateSuppressedById.run(row.id);
-            maybeCompleteBatch(row.batch_id, now);
+          if (
+            SUPPRESSION_TYPES.some((type) => isSuppressedIn(tx, row.domain, type, row.recipient))
+          ) {
+            tx.update(queueRecipients)
+              .set({ status: 'suppressed', heldUntil: null })
+              .where(eq(queueRecipients.id, row.id))
+              .run();
+            maybeCompleteBatch(tx, row.batchId, now);
             continue;
           }
 
           if (!isSafeRecipientAddress(row.recipient)) {
-            updateFailedById.run('Invalid recipient address', row.id);
-            // Recorded so Ghost's own events polling learns about it —
-            // the deleted worker recorded a 'failed' event for every
-            // terminal failure it produced, and an unsafe address is a
-            // terminal failure produced here now instead.
-            insertEvent.run(
-              randomUUID(),
-              row.domain,
-              'failed',
-              'permanent',
-              row.recipient,
-              row.email_id,
-              null,
-              now,
-              null,
-              'Invalid recipient address'
-            );
-            maybeCompleteBatch(row.batch_id, now);
+            tx.update(queueRecipients)
+              .set({ status: 'failed', heldUntil: null, lastError: 'Invalid recipient address' })
+              .where(eq(queueRecipients.id, row.id))
+              .run();
+            // Recorded so Ghost's events polling learns of this terminal failure.
+            insertEvent(tx, {
+              domain: row.domain,
+              type: 'failed',
+              severity: 'permanent',
+              recipient: row.recipient,
+              emailId: row.emailId,
+              providerMessageId: null,
+              timestamp: now,
+              errorCode: null,
+              errorMessage: 'Invalid recipient address',
+            });
+            maybeCompleteBatch(tx, row.batchId, now);
             continue;
           }
 
           if (canSend && !canSend()) {
-            // Throttled — this row and every candidate after it in this
-            // batch stay exactly as claimed (pending, or held with their
-            // existing lease if this was a re-offer candidate): a
-            // re-offer candidate that loses the throttle race keeps its
-            // original held_until rather than being touched, so it is
-            // still re-offered once that original lease lapses, not
-            // pushed further out by an unrelated rate limit.
+            // Throttled: this row and every later candidate stay exactly as they were,
+            // a lapsed lease keeping its original held_until. See store.md#claiming-for-drain.
             break;
           }
 
-          updateHeld.run('held', now + leaseSeconds, row.id);
+          const drainCount = row.drainCount + 1;
+          tx.update(queueRecipients)
+            .set({ status: 'held', drainCount, heldUntil: now + leaseSeconds })
+            .where(eq(queueRecipients.id, row.id))
+            .run();
           drained.push({
             id: row.id,
-            batchId: row.batch_id,
+            batchId: row.batchId,
             domain: row.domain,
-            emailId: row.email_id,
+            emailId: row.emailId,
             payload: JSON.parse(row.payload) as QueueBatchPayload,
             recipient: row.recipient,
-            drainCount: row.drain_count + 1,
+            drainCount,
           });
         }
 
         return drained;
       });
-
-      function isSuppressed_(domain: string, type: SuppressionType, email: string): boolean {
-        return selectSuppression.get(domain, type, email) !== undefined;
-      }
     },
 
     ackDrain(acks, now) {
-      return withTransaction(db, () => {
+      return db.transaction((tx) => {
         const acked: string[] = [];
         const alreadyHandled: string[] = [];
         const unknown: string[] = [];
 
         for (const { id, drainCount } of acks) {
-          const row = selectRecipientById.get(id) as
-            | { id: string; batch_id: string; status: QueueRecipientStatus; drain_count: number }
-            | undefined;
+          const row = tx
+            .select({
+              batchId: queueRecipients.batchId,
+              status: queueRecipients.status,
+              drainCount: queueRecipients.drainCount,
+            })
+            .from(queueRecipients)
+            .where(eq(queueRecipients.id, id))
+            .get();
           if (!row) {
             unknown.push(id);
-            continue;
-          }
-          if (row.status === 'sent') {
+          } else if (row.status === 'sent') {
             alreadyHandled.push(id);
-            continue;
-          }
-          if (row.status !== 'held') {
-            // 'pending' (lease lapsed and reclaimed before this ack arrived),
-            // 'failed' or 'suppressed' — this ack is stale, not a success.
+          } else if (row.status !== 'held' || row.drainCount !== drainCount) {
+            // Lapsed and reclaimed, resolved otherwise, or re-offered to a newer claim.
             unknown.push(id);
-            continue;
+          } else {
+            tx.update(queueRecipients)
+              .set({ status: 'sent', heldUntil: null })
+              .where(eq(queueRecipients.id, id))
+              .run();
+            maybeCompleteBatch(tx, row.batchId, now);
+            acked.push(id);
           }
-          if (row.drain_count !== drainCount) {
-            // Held, but at a NEWER generation than this ack was issued
-            // against: the lease lapsed and the row was re-offered (to
-            // this same drainer or another) between this drainer taking
-            // it and acking it. This ack is from a superseded claim —
-            // reported unknown, never accepted as the current holder's.
-            unknown.push(id);
-            continue;
-          }
-          updateSentById.run(id);
-          maybeCompleteBatch(row.batch_id, now);
-          acked.push(id);
         }
 
         return { acked, alreadyHandled, unknown };
@@ -947,31 +497,46 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     },
 
     oldestUndrainedAgeSeconds(now) {
-      const row = selectOldestUndrained.get() as { oldest: number | null };
-      return row.oldest === null ? null : now - row.oldest;
+      const row = db
+        .select({ oldest: min(queueBatches.createdAt) })
+        .from(queueRecipients)
+        .innerJoin(queueBatches, eq(queueBatches.batchId, queueRecipients.batchId))
+        .where(inArray(queueRecipients.status, UNDRAINED_STATUSES))
+        .get();
+      const oldest = row?.oldest ?? null;
+      return oldest === null ? null : now - oldest;
     },
 
     countUndrainedRecipients() {
-      return (countUndrained.get() as { c: number }).c;
+      const row = db
+        .select({ c: count() })
+        .from(queueRecipients)
+        .where(inArray(queueRecipients.status, UNDRAINED_STATUSES))
+        .get();
+      return row?.c ?? 0;
     },
 
     cleanupCompletedBatches(olderThan) {
-      return withTransaction(db, () => {
-        const rows = selectOldBatchIds.all(olderThan) as Array<{ batch_id: string }>;
-        for (const row of rows) {
-          deleteRecipientsForBatch.run(row.batch_id);
-          deleteBatch.run(row.batch_id);
+      return db.transaction((tx) => {
+        const rows = tx
+          .select({ batchId: queueBatches.batchId })
+          .from(queueBatches)
+          .where(and(isNotNull(queueBatches.completedAt), lt(queueBatches.completedAt, olderThan)))
+          .all();
+        for (const { batchId } of rows) {
+          tx.delete(queueRecipients).where(eq(queueRecipients.batchId, batchId)).run();
+          tx.delete(queueBatches).where(eq(queueBatches.batchId, batchId)).run();
         }
         return rows.length;
       });
     },
 
     ping() {
-      pingStmt.get();
+      db.select({ c: count() }).from(tenants).get();
     },
 
     close() {
-      db.close();
+      client.close();
     },
   };
 }

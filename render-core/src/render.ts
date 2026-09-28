@@ -1,54 +1,9 @@
 /**
- * The descriptor-to-artefacts step LLD-2 §03 calls "render" — pure and
- * total: same seven artefacts, from the same functions, for every kind and
- * both reconcilers (LLD-1 §02, "the pure core, unchanged in both, extended
- * in §04"). `render()` performs no I/O — see `test/render.test.ts`'s own
- * no-I/O assertion, and `test/dependency-closure.test.ts`, which already
- * refuses any import of a Node built-in (`node:fs`, `node:http`, …) as a
- * bare specifier leaving the package, so an I/O call could not be added
- * here without failing that test first. (That is also why this module
- * implements its own tiny `dirname` below rather than importing
- * `node:path`.)
- *
- * **No secret ever appears in an artefact.** `render()`'s own parameter is
- * a `TenantDescriptor`, which carries no secret field to begin with — the
- * schema's only credential-shaped values (`gate.argon2idHash`,
- * `backup.encryptionRecipient`) are not secrets by the estate's own
- * definition (a hash and a public age recipient) — so every place a real
- * secret belongs is rendered as a `${VAR:?…}` reference into a file this
- * package never touches (`environment.ts`) or as a blank key name in a
- * template an operator fills in by hand (`secrets.env` below, from
- * `renderSecretsTemplate`).
- *
- * **The seven artefacts, mapped from LLD-1 §04's diagram:**
- *
- * 1. `compose.yml` — `compose.ts`
- * 2. `secrets.env` — the *names* this kind needs in
- *    `/etc/branchleft/<slug>.env`, never their values (LLD-1's `<slug>.env`
- *    box)
- * 3. `image.env` — the digest-pinned image reference (LLD-1's
- *    `<slug>.image.env` box; today rendered by `branchleft-deploy`, not by
- *    this component — folded in here because nothing about the value is
- *    secret and a reconciler that already writes six artefacts should not
- *    have to special-case the seventh out of band)
- * 4. `provision.sh` — the host commands LLD-1's diagram shows as a fourth
- *    box beside the three file artefacts above (volume creation for a
- *    paying tenant; informational only for a demo — see
- *    `renderProvisionScript`)
- * 5. `edge.json` — `edge.ts`, **new**
- * 6. `ghost-settings.json` — `settings.ts`, **new**
- * 7. `identity.json` — `identity.ts`, **new**
- *
- * **Known Done-criterion conflict, not resolved here — see the PR body.**
- * The story's own Done means says tenant zero's rendered Compose and
- * environment are byte-identical to what `infra/tenant` renders today.
- * `compose.ts`'s own doc comment explains why that cannot hold at the same
- * time as LLD-1 §03b's ruling that blue/green applies "everywhere, demos
- * included": today's renderer emits one service on one port; this one
- * necessarily emits two. The environment *values* this module renders
- * match for every key `TransportSpec` can carry; `environment.ts`'s own
- * doc comment on `transportEnvironment` names the four keys it cannot yet,
- * and why.
+ * The descriptor-to-artefacts render step: pure and total, same seven
+ * artefacts from the same functions for every kind and both reconcilers.
+ * Performs no I/O. No secret ever appears in an artefact. See
+ * render.md#render-step-overview for the artefact list and a known
+ * Done-criterion conflict.
  */
 
 import {
@@ -158,17 +113,8 @@ function shellQuote(value: string): string {
 
 /**
  * The exact root-run command that must create a paying tenant's two named
- * volumes, owned to its uid, before its unit can start — ported from
- * `infra/tenant/index.ts`'s `hostProvisioningCommand`, at the path
- * `RUNBOOK-tenant-onboarding.md` actually invokes it from (a bare command
- * name would fail "command not found" as a standalone script).
- *
- * A demo renders no equivalent command: its one directory is host-
- * provisioned once, at demo-host build time (LLD-2 §01, not yet built) —
- * never per recycle, and never keyed by `slug` (a demo's slug is a
- * throwaway per-lease value). `provision.sh` still exists for a demo, per
- * the story's own Done means ("all seven artefacts... for a demo"), but is
- * informational rather than a command to run.
+ * volumes, owned to its uid, before its unit can start. A demo renders no
+ * equivalent command. See render.md#provision-script.
  */
 function renderProvisionScript(descriptor: TenantDescriptor): string {
   const lines = ['#!/bin/sh', 'set -eu'];
@@ -225,16 +171,10 @@ function demoDataMount(descriptor: TenantDescriptor): DemoDataMount | null {
 }
 
 /**
- * Re-checks the fields the broker's own reconcile handler already guards
- * before calling a `Renderer` (`slotAllocation` — LLD-2 §01, load-bearing:
- * "no port to pick, no uid to compute"), plus the two fields
- * `renderProvisionScript`/`renderImageEnv` interpolate into shell and env
- * file text (`slug`, `image`) — so this function is safe to call directly,
- * outside that handler, by a caller with no `validate()` of its own (a
- * test, a descriptor rendered for review). Allocating the *right* uid/port
- * for a given slot is still the caller's job, not this one's; see
- * `compose.ts`'s own comment on why the descriptor's own fields are the
- * only source `render()` ever reads a uid or a port from.
+ * Re-checks the fields the broker's own reconcile handler already guards,
+ * plus the two fields interpolated into shell and env file text, so this
+ * function is safe to call directly by a caller with no `validate()` of its
+ * own. See render.md#assertallocationshape.
  */
 function assertAllocationShape(descriptor: TenantDescriptor): void {
   validateTenantUid(descriptor.uid);
@@ -249,26 +189,9 @@ function assertAllocationShape(descriptor: TenantDescriptor): void {
 
 /**
  * `descriptor` must already have passed `validate()` — `render()` does not
- * re-run it (that would make every call two passes over the same
- * cross-field rules) but does re-check every field it interpolates into
- * shell, env or Compose text directly, via `assertAllocationShape`, so a
- * caller that skipped `validate()` gets a named refusal here rather than a
- * malformed artefact.
- *
- * Returns the seven artefacts directly — the shape `services/broker/src/
- * render.ts`'s `Renderer.render()` seam expects, and what the story's own
- * Done means names: "`render(descriptor)` returns all seven artefacts".
- * `renderEdgeSiteBlock`/`renderSettings`/`renderIdentity` stay separately
- * exported for a caller (a test, a future reconciler) that wants one
- * artefact's typed value rather than re-parsing it back out of `content`.
- *
- * `themeCsp` (the strict content policy) defaults to
- * `THEME_CSP_UNAVAILABLE` — the fail-soft posture — so every existing
- * caller of `render(descriptor, zones)` keeps compiling and keeps rendering
- * the report-only policy exactly as before. No caller in this repo passes a
- * computed set yet: the harness that derives one at theme-admission time
- * (LLD-3) does not exist here — wiring a real value through is that
- * story's job, not this one's.
+ * re-run it, but does re-check every field it interpolates into shell, env
+ * or Compose text directly, via `assertAllocationShape`. Returns the seven
+ * artefacts directly. See render.md#render.
  */
 export function render(
   descriptor: TenantDescriptor,

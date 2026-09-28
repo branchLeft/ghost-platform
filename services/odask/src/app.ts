@@ -4,16 +4,10 @@ import { isSyntacticallyValidHostname, normalizeHostname } from './hostname.js';
 import type { TokenBucket } from './rateLimiter.js';
 
 /**
- * The one route Caddy's `on_demand_tls { ask ... }` calls, once per new SNI,
- * before it orders anything: `GET /?domain=<sni>`. 200 admits the name; any
- * other status refuses it and the handshake fails with no HTTP status at
- * all on Caddy's side (LLD-5 E1) -- so every refusal path here can pick
- * whichever non-2xx status is clearest for our own logs without changing
- * what Caddy does with it.
- *
- * Fails closed by construction: every branch below that is not the single
- * "hostname is in the served set" branch ends in a non-200 response, and
- * there is no branch that falls through without setting a status.
+ * Caddy's `on_demand_tls { ask ... }` route, called once per new SNI:
+ * `GET /?domain=<sni>`. Fails closed by construction -- every branch not
+ * the single "hostname is served" branch ends in a non-200 response.
+ * See ../README.md#app-createapp.
  */
 export function createApp(store: DescriptorStore, rateLimiter: TokenBucket): Express {
   const app = express();

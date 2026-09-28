@@ -26,15 +26,9 @@ function looksLikeFlag(value: string | undefined): boolean {
 }
 
 /**
- * A plain lowercase hostname: DNS labels only, at least one dot (a bare
- * TLD is never a real sending domain here), no scheme, no `@`, no
- * whitespace. Deliberately stricter than `senderAuthorization.ts`'s
- * `normalizeDomain` (which IDN-normalises and lowercases *for* a caller) —
- * this is the operator-input gate, where a typo should be refused outright
- * rather than silently coerced. A typo'd sender domain here does not fail
- * loudly at registration time otherwise: `senderBelongsToTenant` would
- * just refuse every real send against it later, which reads as the
- * sender-binding control being broken, not as a bad CLI argument.
+ * Operator input is refused, never coerced: a typo'd sender domain would
+ * otherwise surface later as every real send being refused.
+ * See cli.md#hostname-pattern.
  */
 const HOSTNAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 

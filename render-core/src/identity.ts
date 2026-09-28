@@ -1,22 +1,7 @@
 /**
  * The fields whose change destroys or orphans live tenant data rather than
- * updating it — a **new** artefact per LLD-1 §04.
- *
- * Ported in spirit from `infra/tenant/index.ts`'s `GhostTenantIdentity`
- * (there, read by `scripts/assert-no-tenant-deletes.py` out of the Pulumi
- * component's own preview state): rename the content volume and the
- * tenant's themes, settings and generated assets are orphaned on the host
- * under the old name; change the UID and the tenant loses access to its own
- * `0700` volume; change the database name and Ghost boots against an empty
- * schema. Rendered here as a plain artefact rather than a Pulumi output so
- * the same identity a delete guard can diff is available to a reconciler
- * that never touches Pulumi at all (the broker).
- *
- * `maxUserConnections` is not carried: it lived on the old component's
- * `GhostTenantArgs`, not on anything `TenantDescriptor` carries today, and
- * fabricating a value here would be a config surface this schema does not
- * yet expose. A consumer that needs it still has `db/provision`'s own
- * default.
+ * updating it. Rendered as a plain artefact so a delete guard can diff it
+ * without touching Pulumi. See identity.md#tenant-identity.
  */
 
 import type { Slug, TenantUid } from './brand.js';

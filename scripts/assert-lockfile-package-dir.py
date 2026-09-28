@@ -5,22 +5,9 @@ Usage:
     assert-lockfile-package-dir.py <package_dir>
     assert-lockfile-package-dir.py --self-test
 
-`generate-lockfile.yml` takes `package_dir` as free-text `workflow_dispatch`
-input and later uses it to build a filesystem path and a `git add` argument
-in a job that holds `contents: write`. This is the one gate between that
-free text and the filesystem: it accepts only `services/<name>` or
-`adapters/<name>`, where `<name>` is lowercase alphanumeric groups joined
-by single hyphens -- no leading, trailing or doubled hyphen, no path
-separator inside `<name>` and no way to spell `..`. A value this rejects
-never reaches `npm install`, `git add` or a shell string.
-
-This checks *shape* only -- that the value cannot address anything outside
-the two directories npm packages live in here. Whether the directory exists
-and holds a `package.json` is checked separately, once the target branch is
-actually on disk (see `generate-lockfile.yml`), because that answer depends
-on which branch is checked out and this script does not take one.
-
-Exit 0 if `package_dir` has the required shape, 1 if not, 2 on usage error.
+Accepts only `services/<name>` or `adapters/<name>` shape (existence is
+checked separately, elsewhere). Exit 0 if it matches, 1 if not, 2 on
+usage error. See scripts/assert-lockfile-package-dir.md#what-this-gate-checks.
 """
 
 from __future__ import annotations

@@ -1,17 +1,7 @@
-// Drives the REAL, built createDeadMansSwitch (dist/heartbeat.js, produced
-// by `npm run build` from src/heartbeat.ts -- not a reimplementation) against
-// a real local Healthchecks instance, to prove the dead man's switch:
-//
-//   - idle (no drain activity, only completed empty cycles): stays "up"
-//   - stopped (nothing calls onCycleComplete() again): "up" -> "grace"
-//     ("Late") -> "down"
-//   - killed once and restarted within the grace window: never "down"
-//
-// Run from services/mail-collector/ after `npm run build`, with the
-// healthchecks container already up (docker-compose.deadmans-switch-proof.yml)
-// and PROOF_* env vars exported by docker-proof/deadmans-switch/hc_setup.py's
-// output. Never run against a production Healthchecks URL -- see the
-// module's own doc comment on why a ping is fire-and-forget either way.
+// Drives the real, built createDeadMansSwitch against a real local
+// Healthchecks instance. Run from services/mail-collector/ after `npm run
+// build`, with the healthchecks container already up. Never run against a
+// production Healthchecks URL. See proof-harness.md#what-this-drives.
 import { createDeadMansSwitch } from '../../dist/heartbeat.js';
 
 const BASE = process.env.PROOF_SITE_ROOT ?? 'http://localhost:8095';

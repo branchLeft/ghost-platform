@@ -1,21 +1,10 @@
 import { randomBytes } from 'node:crypto';
 
 /**
- * The export colour is a second Ghost process on the tenant's live
- * database, booted with the tenant's own environment. On its own, Ghost 6.55
- * would, from that process:
- *
- * - send transactional and bulk mail through the tenant's real transports;
- * - reschedule every scheduled post and newsletter on boot, and publish or
- *   send each when due;
- * - start the email-analytics and click-tracking recurring jobs;
- * - check for updates;
- * - reconcile the tenant's Stripe webhook against its own URL.
- *
- * These overrides turn each of those off, by the settings Ghost reads for
- * them. Every existing key under a switched-off prefix is dropped first, so
- * nothing of the tenant's own mail or scheduler config survives alongside
- * the override.
+ * Turns off what Ghost 6.55 would otherwise do from a second process
+ * booted on the tenant's live database and environment: mail, scheduling,
+ * recurring jobs, update checks, the Stripe webhook.
+ * See ../README.md#the-export-colour-sends-nothing-and-schedules-nothing-the-second-layer.
  */
 
 /** Ghost's own stub transport: accepts a message and sends it nowhere. */
