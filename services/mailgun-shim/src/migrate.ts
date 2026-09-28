@@ -97,10 +97,14 @@ function runMigrationStatement(tx: Tx, index: number, statement: string): void {
   try {
     tx.run(sql.raw(statement));
   } catch (err) {
-    const reason = err instanceof Error && err.cause instanceof Error ? err.cause : err;
-    const message = reason instanceof Error ? reason.message : String(reason);
-    throw new Error(`Migration ${index} failed: ${message}`, { cause: err });
+    throw new Error(`Migration ${index} failed: ${failureReason(err)}`, { cause: err });
   }
+}
+
+/** SQLite's own reason for a failed statement: the wrapped cause's message when there is one. */
+export function failureReason(err: unknown): string {
+  const reason = err instanceof Error && err.cause instanceof Error ? err.cause : err;
+  return reason instanceof Error ? reason.message : String(reason);
 }
 
 function latestApplied(tx: Tx): number | undefined {
