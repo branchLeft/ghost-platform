@@ -7,19 +7,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const UNIT_PATH = join(HERE, '../../systemd/branchleft-broker.service');
 
 /**
- * `RUNBOOK-broker-deploy.md`'s upgrade step swaps `/opt/branchleft/broker/
- * current` (a symlink) to a new release directory rather than overwriting
- * files in place, so a request in flight never sees half-written files.
- * That pattern is only safe with `--preserve-symlinks-main` on the `node`
- * invocation: proved by a real boot without it (this PR's body) --
- * `server.ts#isEntryPoint`'s `import.meta.url === pathToFileURL(process.argv[1]).href`
- * check resolves `import.meta.url` through the symlink to its target under
- * `releases/<release>/` but never re-resolves `argv[1]`, so the two URLs
- * disagree, `main()` silently never runs, and the unit exits
- * `0/SUCCESS` in under two seconds with nothing listening -- no log line,
- * no error, no restart (a clean exit is not `Restart=on-failure`'s job).
- * Sabotage-proven: dropping the flag from the committed unit file turns
- * this test red (see this PR's body for the recorded run).
+ * Without --preserve-symlinks-main, the `current` symlink swap silently
+ * defeats server.ts's own entrypoint check -- see systemd/README.md.
  */
 describe('the broker unit invokes node with --preserve-symlinks-main', () => {
   it('ExecStart carries the flag, ahead of the entrypoint path', () => {

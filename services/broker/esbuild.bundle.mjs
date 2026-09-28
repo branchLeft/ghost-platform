@@ -1,19 +1,6 @@
-// Produces the artefacts `RUNBOOK-broker-deploy.md`'s install step rsyncs to
-// demo1: one self-contained ESM file per entrypoint, each with
-// `@branchleft/ghost-platform-render-core` (and this package's own modules)
-// inlined. `render-core`'s own package.json says why a bundle rather than a
-// plain `npm ci` on the host: "to be published the same way ... no publish
-// workflow exists for it yet". Without a registry, a host install would
-// otherwise need the whole monorepo checkout staged at the exact relative
-// layout `file:../../render-core` resolves against (proven locally: `npm
-// ci` here links `node_modules/@branchleft/ghost-platform-render-core` as a
-// symlink four directories up) -- fragile to rsync and easy to drift.
-// `dist/server.js` (built by `tsc` first, see `package.json`'s `bundle`
-// script) is the one entrypoint Node runs directly; the plugin modules are
-// bundled separately because `server.ts#loadPlugin` reaches them via a
-// runtime `import(modulePath)` of a value read from an environment
-// variable, which esbuild cannot inline through -- each therefore needs to
-// be independently self-contained.
+// Produces the self-contained ESM artefacts RUNBOOK-broker-deploy.md's
+// install step ships (why a bundle rather than `npm ci` on the host: see
+// "Runtime: a bundled single file" in that runbook).
 import { build } from 'esbuild';
 
 const targets = [

@@ -10,15 +10,8 @@ const SYSTEMD_DIR = join(HERE, '../../systemd');
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
 /**
- * Owner ruling (branchLeft/workspace#966, 2026-09-28, `control=a`): ops1
- * reaches this broker only through an SSH tunnel from edge1, so it must
- * never bind anything but loopback. `config.ts#loadConfig` already defaults
- * `LISTEN_HOST` to `127.0.0.1` -- proven by `config.test.ts`'s own "loads
- * every required field" case. What that test cannot catch is a *deployment
- * artefact* overriding the default: this file's own committed env template
- * or the unit file itself setting `LISTEN_HOST` to something else. Proven
- * by sabotage: setting `LISTEN_HOST=0.0.0.0` in either committed file turns
- * this suite red (see this PR's body for the recorded run).
+ * A deployment artefact (the env template or the unit file) silently
+ * overriding config.ts's own loopback default -- see systemd/README.md.
  */
 function parseEnvFile(path: string): Map<string, string> {
   const out = new Map<string, string>();

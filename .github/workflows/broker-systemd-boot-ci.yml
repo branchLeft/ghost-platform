@@ -2,20 +2,9 @@ name: Broker systemd boot CI
 
 # The Done-means proof branchLeft/workspace#1545 asks for: a real boot, in a
 # throwaway container running a real systemd, showing branchleft-broker.service
-# starting, answering `/status`, and reaching the wrapper through `sudo -n`
-# -- not merely that broker-ci.yml's vitest suite passes. Runs inside a
-# throwaway container rather than the runner's own init, for the same
-# reason demo-host-sudoers-ci.yml gives for its own throwaway container:
-# this installs a sudoers rule and a system user, neither of which belongs
-# on whatever runs this build.
-#
-# `services/broker/test/live/fixtures/systemd-boot/Dockerfile`'s own header
-# has the full story of what this workflow found by actually booting it --
-# a symlinked entrypoint that silently never ran `main()`, a verify-key
-# file that needed the opposite ownership from what looked obviously
-# correct, and a `NoNewPrivileges=no` override that turned out not to
-# override every seccomp-backed hardening directive it looked like it
-# should.
+# starting, answering `/status`, and reaching the wrapper through `sudo -n`.
+# services/broker/systemd/README.md has the full story of what this
+# workflow found by actually booting it.
 
 on:
   push:
@@ -85,11 +74,24 @@ jobs:
           echo "$body" | grep -q '"slot":"0"'
           echo "$body" | grep -q '"phase":"free"'
 
+      - name: The fixture seeded a real leased slot in the shared slots file
+        run: |
+          docker exec broker-boot-proof cat /var/lib/branchleft/slots.json | tee /tmp/slots-before.json
+          grep -q 'proof-leased.demo.trypublicpress.co.uk' /tmp/slots-before.json
+
       - name: A real signed POST /reset reaches the wrapper through sudo -n
         run: |
           docker exec broker-boot-proof /opt/branchleft/broker/node/bin/node \
             /opt/branchleft/broker/proof/sign-request.mjs POST /reset '{"slot":"0"}' \
             /opt/branchleft/broker/proof/signing-key.bin http://127.0.0.1:8090
+
+      - name: The reset actually wrote the shared slots file through the ProtectSystem=strict mount
+        run: |
+          docker exec broker-boot-proof cat /var/lib/branchleft/slots.json | tee /tmp/slots-after.json
+          if grep -q 'proof-leased.demo.trypublicpress.co.uk' /tmp/slots-after.json; then
+            echo "slots.json still carries the leased entry after /reset -- the write never happened" >&2
+            exit 1
+          fi
 
       - name: The wrapper's own sudo session is in the journal, not merely a 200
         run: |

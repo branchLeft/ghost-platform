@@ -33,13 +33,20 @@ RUN (cd /lib/systemd/system/sysinit.target.wants/; for unit in *; do \
  && rm -f /lib/systemd/system/basic.target.wants/* \
  && rm -f /lib/systemd/system/anaconda.target.wants/* 2>/dev/null || true
 
-# Node, pinned exactly as RUNBOOK-broker-deploy.md's install step 1 does.
+# Node, pinned exactly as RUNBOOK-broker-deploy.md's install step 1 does
+# (arch mapping and checksum verification: see systemd/README.md).
 ARG NODE_VERSION=v26.5.0
-RUN ARCH="$(dpkg --print-architecture)" \
- && curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${ARCH}.tar.xz" \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) NODE_ARCH=x64 ;; \
+      arm64) NODE_ARCH=arm64 ;; \
+      *) echo "unsupported dpkg architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+ && curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" \
+ && grep " node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz\$" SHASUMS256.txt | sha256sum -c - \
  && mkdir -p /opt/branchleft/broker/node \
- && tar -xJf "node-${NODE_VERSION}-linux-${ARCH}.tar.xz" --strip-components=1 -C /opt/branchleft/broker/node \
- && rm "node-${NODE_VERSION}-linux-${ARCH}.tar.xz" \
+ && tar -xJf "node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" --strip-components=1 -C /opt/branchleft/broker/node \
+ && rm "node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt \
  && /opt/branchleft/broker/node/bin/node --version
 
 # The real wrapper and sudoers generator (RUNBOOK-broker-deploy.md step 3),
@@ -85,25 +92,16 @@ RUN ln -s /opt/branchleft/broker/releases/proof /opt/branchleft/broker/current \
 COPY services/broker/test/live/fixtures/systemd-boot/noop-admin-api.mjs services/broker/test/live/fixtures/systemd-boot/noop-drain-source.mjs /opt/branchleft/broker/current/plugins/
 
 COPY services/broker/test/live/fixtures/systemd-boot/make-verify-key.mjs services/broker/test/live/fixtures/systemd-boot/sign-request.mjs /opt/branchleft/broker/proof/
-# broker:broker, not root:root: unlike broker.env (read by systemd-as-root
-# on the process's behalf via EnvironmentFile=), this path is opened
-# directly by the broker process itself (`config.ts#loadConfig`'s
-# `readFileSync`) -- proved wrong first: a real boot with this root:root
-# 0600 failed loudly with EACCES before this fix (this PR's body).
-# `{"slots": []}`, not `{}`: `slotsFile.ts#readSlotsFile` reads
-# `parsed.slots` as the array itself (`services/demo-gate/src/slots.ts`
-# reads the same shape) -- proved wrong first, too: the proof's real signed
-# `POST /reset` 500'd with "parsed.slots is not iterable" against an empty
-# object before this fix (this PR's body). Owned broker:broker like the
-# verify key, for the same reason: `writeLeaseAndHash`/`clearLeaseAndHash`
-# write this file directly from the unprivileged broker process, atomically
-# (write a temp file into the same directory, then rename), so both the
-# file and its containing directory need to be broker-writable.
+# root:broker 0640, and a non-empty slots.json seeding a real leased slot
+# "0": see systemd/README.md for why (ownership found by EACCES, the
+# `{"slots": []}` shape found by a 500, and the non-empty seed added after a
+# review round found `/reset` on an empty slots file never exercises the
+# real write-rename against the ProtectSystem=strict mount at all).
 RUN mkdir -p /etc/branchleft /var/lib/branchleft \
  && /opt/branchleft/broker/node/bin/node /opt/branchleft/broker/proof/make-verify-key.mjs /etc/branchleft/broker-verify-key.bin /opt/branchleft/broker/proof/signing-key.bin \
- && chown broker:broker /etc/branchleft/broker-verify-key.bin \
- && chmod 0600 /etc/branchleft/broker-verify-key.bin \
- && echo '{"slots": []}' > /var/lib/branchleft/slots.json \
+ && chown root:broker /etc/branchleft/broker-verify-key.bin \
+ && chmod 0640 /etc/branchleft/broker-verify-key.bin \
+ && printf '{"slots": [{"host": "proof-leased.demo.trypublicpress.co.uk", "slot": "0", "gate": {"kind": "passphrase", "argon2idHash": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA"}}]}' > /var/lib/branchleft/slots.json \
  && chown -R broker:broker /var/lib/branchleft
 
 COPY services/broker/test/live/fixtures/systemd-boot/broker.env /etc/branchleft/broker.env

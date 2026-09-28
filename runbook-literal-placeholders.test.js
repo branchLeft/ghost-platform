@@ -51,6 +51,7 @@ const RUNBOOK_PATHS = [
   'RUNBOOK-media-backup-lifecycle.md',
   'RUNBOOK-tenant-onboarding.md',
   'db/RUNBOOK-db.md',
+  'services/broker/RUNBOOK-broker-deploy.md',
 ];
 
 const COMMAND_FENCE_LANGS = new Set(['bash', 'sql']);

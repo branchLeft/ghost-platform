@@ -54,13 +54,21 @@ step; nothing here runs from CI (`services/broker/**`'s
 `.claude/delivery-paths.json` row is `not_merge_delivered`/`version_pin`,
 because no publish path exists yet either -- see "Delivery path" below).
 
-1. **Pin Node.** On demo1:
+1. **Pin Node.** On demo1 -- `dpkg`'s architecture name and nodejs.org's own
+   tarball name disagree (`amd64` vs. `x64`), and the tarball is verified
+   against Node's own published checksums before it is ever extracted:
    ```bash
-   ARCH="$(dpkg --print-architecture)"  # amd64 or arm64
-   curl -fsSLO "https://nodejs.org/dist/v26.5.0/node-v26.5.0-linux-${ARCH}.tar.xz"
+   case "$(dpkg --print-architecture)" in
+     amd64) NODE_ARCH=x64 ;;
+     arm64) NODE_ARCH=arm64 ;;
+     *) echo "unsupported dpkg architecture: $(dpkg --print-architecture)" >&2; exit 1 ;;
+   esac
+   curl -fsSLO "https://nodejs.org/dist/v26.5.0/node-v26.5.0-linux-${NODE_ARCH}.tar.xz"
+   curl -fsSLO "https://nodejs.org/dist/v26.5.0/SHASUMS256.txt"
+   grep " node-v26.5.0-linux-${NODE_ARCH}.tar.xz\$" SHASUMS256.txt | sha256sum -c -
    sudo mkdir -p /opt/branchleft/broker/node
-   sudo tar -xJf "node-v26.5.0-linux-${ARCH}.tar.xz" --strip-components=1 -C /opt/branchleft/broker/node
-   rm "node-v26.5.0-linux-${ARCH}.tar.xz"
+   sudo tar -xJf "node-v26.5.0-linux-${NODE_ARCH}.tar.xz" --strip-components=1 -C /opt/branchleft/broker/node
+   rm "node-v26.5.0-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt
    /opt/branchleft/broker/node/bin/node --version   # expect v26.5.0
    ```
    Installed once per Node version, independent of the app's own release
@@ -97,27 +105,30 @@ because no publish path exists yet either -- see "Delivery path" below).
    `--chown` flag on the rsync step above pins that explicitly rather than
    relying on the destination `mv` alone.
 
-5. **Write `/etc/branchleft/broker.env`** on demo1 from
+5. **Create the directories the unit's `ReadWritePaths=`/`ReadOnlyPaths=`
+   expect to already exist** -- a missing path here fails the unit with
+   `226/NAMESPACE` at start, not at install:
+   ```bash
+   sudo mkdir -p /etc/branchleft
+   sudo mkdir -p /var/lib/branchleft && sudo chown broker:broker /var/lib/branchleft
+   ```
+
+6. **Write `/etc/branchleft/broker.env`** on demo1 from
    `systemd/broker.env.example`, root:root, mode 0600:
    ```bash
    sudo install -o root -g root -m 0600 /dev/null /etc/branchleft/broker.env
    sudo $EDITOR /etc/branchleft/broker.env   # fill in the real values; never echo them to a shell history
    ```
    Fill in a real `BROKER_VERIFY_KEY_FILE` at the path it names, 32 raw
-   Ed25519 public-key bytes, owned **`broker:broker`, mode 0600** -- not
-   root:root. Unlike `broker.env` itself (read by systemd-as-root on the
-   process's behalf via `EnvironmentFile=`), this file is opened directly
-   by the broker process (`config.ts#loadConfig`'s `readFileSync`), so it
-   must be readable by the account the unit runs as. Proved the hard way:
-   the boot proof's first attempt at root:root 0600 failed loudly with
-   `EACCES: permission denied` (this PR's body). Point
-   `BROKER_ADMIN_API_MODULE`/
+   Ed25519 public-key bytes, owned **`root:broker`, mode 0640**. See
+   `systemd/README.md` ("The verify key") for why it is group-readable
+   rather than broker-owned. Point `BROKER_ADMIN_API_MODULE`/
    `BROKER_DRAIN_SOURCE_MODULE` at real modules once those stories land
    (see "Left out, deliberately"). **Never set `LISTEN_HOST`** --
    `test/unit/listenHostDefault.test.ts` is the guard that keeps this file's
    own committed template from regressing that.
 
-6. **Install and start the unit:**
+7. **Install and start the unit:**
    ```bash
    sudo install -o root -g root -m 0644 systemd/branchleft-broker.service /etc/systemd/system/branchleft-broker.service
    sudo systemctl daemon-reload
@@ -171,21 +182,9 @@ install steps do, starts the unit under `systemctl`, and:
    -- so the wrapper's own real `systemctl stop` calls have something to
    succeed against.
 
-Three things below were found only by running this, not by reading the
-issue or the systemd docs -- each is explained in full where its fix
-actually lives (`systemd/branchleft-broker.service`'s own header comment,
-and step 5 below for the second one):
-
-- the `current` symlink silently defeated `server.ts`'s own
-  `isEntryPoint` check (fixed with `--preserve-symlinks-main`);
-- the verify-key file needed `broker:broker`, not `root:root` (step 5);
-- `NoNewPrivileges=no` alone did not override several other hardening
-  directives that each independently force the kernel's `no_new_privs` bit
-  on a non-root `User=`, and `ProtectSystem=strict` made `/etc` read-only
-  for the `sudo`-elevated wrapper too, not just this unit's own process
-  (both are why `ReadWritePaths=/opt/branchleft /etc/branchleft` and the
-  specific directive list are what they are, not a longer "safe-looking"
-  list).
+Everything this proof found by actually booting the unit -- not by reading
+the issue or the systemd docs -- is explained in full in `systemd/README.md`,
+with a short pointer at each line the finding fixed.
 
 Run locally the same way CI does, from the repo root (the build needs both
 `demo-host/provision/` and `services/broker/dist/bundle/` -- run `npm run
@@ -196,7 +195,9 @@ docker build -f services/broker/test/live/fixtures/systemd-boot/Dockerfile -t br
 docker run -d --name broker-boot-proof --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw branchleft-broker-boot-proof
 docker exec broker-boot-proof systemctl is-active branchleft-broker.service
 docker exec broker-boot-proof curl -s http://127.0.0.1:8090/status/0
+docker exec broker-boot-proof cat /var/lib/branchleft/slots.json   # carries the fixture's seeded leased slot "0"
 docker exec broker-boot-proof /opt/branchleft/broker/node/bin/node /opt/branchleft/broker/proof/sign-request.mjs POST /reset '{"slot":"0"}' /opt/branchleft/broker/proof/signing-key.bin http://127.0.0.1:8090
+docker exec broker-boot-proof cat /var/lib/branchleft/slots.json   # the leased entry is gone: the write-rename reached the real mount
 docker rm -f broker-boot-proof
 ```
 
@@ -211,17 +212,20 @@ docker rm -f broker-boot-proof
   (`/reset`, `/stop`) are. The boot proof's own stand-ins for these two
   seams live only under `test/live/fixtures/` and are never installed by
   this runbook.
-- **`BROKER_SLOTS_FILE` / `BROKER_SLOT_DIR_BASE` ownership.** The slots file
-  is shared with `services/demo-gate` (its own `GATE_SLOTS_FILE`), and
-  `BROKER_SLOT_DIR_BASE`'s directories are written by an unprivileged
-  broker process into what `config.ts`'s own doc comment calls "root-owned"
-  paths -- the uid/permission scheme that reconciles those two facts is
-  branchLeft/workspace#1447/#1448's, not this issue's. The values in
-  `systemd/broker.env.example` are reasonable defaults, not a settled
-  contract with those stories yet. Whoever seeds `BROKER_SLOTS_FILE`'s
-  actual first content needs two things the boot proof got wrong before it
-  got right: the shape is `{"slots": []}` (`slotsFile.ts#readSlotsFile`
-  reads `parsed.slots` as the array itself, not `{}`), and both the file
-  and its containing directory need to be writable by the `broker` account
-  -- `writeLeaseAndHash`/`clearLeaseAndHash` write it directly, atomically
-  (a temp file in the same directory, then a rename).
+- **`BROKER_SLOTS_FILE` writability.** This issue's own scope: the file and
+  its containing directory (`/var/lib/branchleft`) are created by step 5
+  above and are in the unit's `ReadWritePaths=`, so a real `/reconcile` or
+  `/reset` can write it. The shape is `{"slots": []}`
+  (`slotsFile.ts#readSlotsFile` reads `parsed.slots` as the array itself,
+  not `{}`) -- the boot proof's fixture seeds a real leased entry and
+  resets it, so this can't silently regress again. See `systemd/README.md`.
+- **`BROKER_SLOT_DIR_BASE` vs. the wrapper's own path.** Still open:
+  `writeArtefacts.ts` writes under `<BROKER_SLOT_DIR_BASE>/<slot>/`, but
+  `branchleft_slot.py`'s `reset` wipes `/opt/branchleft/demo-<slot>` -- a
+  different, hyphenated path no value of `BROKER_SLOT_DIR_BASE` can produce
+  through `path.join`. A reset therefore never clears what a prior
+  reconcile wrote. Fixing it touches either `writeArtefacts.ts`'s own
+  directory convention (tested elsewhere against `<base>/<slot>`) or the
+  wrapper's `SLOT_DIR` -- both branchLeft/workspace#1447/#1448's territory,
+  not this issue's, and not worked around here. See `systemd/README.md`
+  ("Known gap").
