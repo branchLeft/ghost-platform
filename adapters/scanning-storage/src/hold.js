@@ -82,28 +82,9 @@ function readSidecarSync(file) {
   return parsed;
 }
 
-// Tracks bytes accepted with no verdict yet (the hold branch's asynchronous route).
-// There is no real verdict channel yet (it is a separate story in a
-// separate repo), so "a later verdict arrives" can only mean one thing
-// this decorator can observe: the same in-process VerdictClient answering
-// differently on a later call. This registry polls for that, at a cost
-// this component owns rather than the upload -- an author who is never
-// told to wait must not become a request that never resolves either.
-//
-// The quarantine directory is the only source of truth. Nothing about a
-// pending hold lives only in this process's memory: the bytes are on disk
-// from the moment they are held (quarantineBytes, same as a refusal), and
-// which target paths are waiting on them is a JSON sidecar next to that
-// file. A process restart -- a deploy, a crash, an OOM kill, a health-check
-// restart -- loses only the in-memory retry timers, which resumeFromQuarantine
-// rebuilds from disk. The upload's own bytes are never held in memory for
-// longer than a single retry tick: #retry re-reads them from quarantine
-// every time rather than keeping a buffer resident for the item's whole
-// (potentially unbounded) lifetime.
-//
-// A refusal by any owner is final for every owner: the refusal record next
-// to the bytes (quarantine.js) is checked before every promotion, and bytes
-// it names are never deleted.
+// Tracks bytes accepted with no verdict yet. The quarantine directory, not
+// this process's memory, is the source of truth, and a refusal by any owner
+// is final for every owner: see the README's "The hold branch".
 class HoldRegistry {
   constructor({
     checks,
@@ -217,17 +198,9 @@ class HoldRegistry {
     return true;
   }
 
-  // Restart-safety: called once, synchronously, from the adapter's own
-  // constructor, before it can serve a single request -- see
-  // scanning-storage.js. `buildCallbacks(targetPath)` must return the same
-  // shape `hold()`'s caller does; it is how this registry, which knows
-  // nothing about a wrapped storage adapter, gets a promote function back.
-  //
-  // Synchronous on purpose: this only re-derives which digests are pending
-  // and schedules their first retry. The bytes themselves are never read
-  // here -- #retry reads them fresh from quarantine on its own first tick,
-  // exactly as it does on every later one, so a resumed hold costs no more
-  // memory at startup than a fresh one costs per poll.
+  // Called synchronously from the adapter's constructor, before it can serve
+  // a request. `buildCallbacks(targetPath)` returns what hold()'s caller
+  // passes. Bytes are not read here; #retry reads them on its first tick.
   resumeFromQuarantine(buildCallbacks) {
     let names;
     try {
@@ -344,7 +317,8 @@ class HoldRegistry {
     if (this.computeDigest(buffer) !== digest) {
       // Bytes that do not hash to their name are not the upload: judging
       // them would put a verdict on the wrong content, and retrying cannot
-      // repair them. Only a fresh upload of the real bytes can (hold()).
+      // repair them. A stuck hold stays stuck until an operator clears it
+      // (README, "Stuck holds"); a later upload only rewrites the bytes.
       this.#markStuck(digest, 'the quarantined bytes do not match their digest');
       return;
     }
@@ -428,7 +402,8 @@ class HoldRegistry {
   // is still waiting on the digest are the sidecar and (for a promotion)
   // the bytes removed -- another feature's registry re-reads those bytes
   // on its own next retry. Bytes a refusal record names are never removed,
-  // whoever releases last. Otherwise best-effort: promotion makes the
+  // whoever releases last: the record is read in the same synchronous tick
+  // as the unlink, and a read error keeps the bytes. Otherwise best-effort: promotion makes the
   // object backup-eligible from its real served location, so a leftover
   // file here is untidy, never unsafe.
   #release(digest, { keepBytes }) {

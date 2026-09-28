@@ -16,6 +16,7 @@ const { FakeVerdictClient } = require('../../src/verdict-client.js');
 const { SafetyPolicy } = require('../../src/policy.js');
 const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
 const { digestBytes } = require('../../src/pdq.js');
+const { sealRefusal } = require('../../src/quarantine.js');
 const GhostErrors = require('@tryghost/errors');
 
 const CLEAN_BYTES = Buffer.from('clean-image-bytes');
@@ -325,18 +326,9 @@ describe('checks the adapter is told not to implement', () => {
   });
 });
 
-// The hold branch: accept on no verdict, serve nothing until a clean one,
-// on both storage backends. The verdict client is made to never answer
-// (FakeVerdictClient's `unavailable`) rather than hang, because checks.js's
-// own timeout already proves that race -- duplicating it here would only
-// make every test in this suite slower.
-//
-// Review cycle 1: both backends now defer the real write until promotion --
-// the design's own words for the local backend, "held outside the served
-// tree," are no longer local-only advice this decorator diverged from. The
-// two backends differ only in URL shape (a bucket config builds a CDN URL;
-// anything else builds a site-relative one), so the behavioural cases below
-// are shared, parametrised over which `wrappedConfig` builds which adapter.
+// The hold branch, on both backends. The verdict client answers
+// `unavailable` rather than hanging: checks.js's own tests prove the timeout.
+// The backends differ only in URL shape, so the cases are parametrised.
 describe('the hold branch', () => {
   function localAdapter(overrides) {
     return buildAdapter({ wrappedConfig: { storagePath: 'wrapped' }, ...overrides });
@@ -768,6 +760,45 @@ describe('a refusal by any feature', () => {
 
     expect(media.instance.wrapped.savedRaw).toHaveLength(0);
     expect(await fs.readFile(path.join(quarantinePath, BAD_DIGEST))).toEqual(BAD_BYTES);
+  });
+});
+
+describe('a refusal sealed while an upload waits for its verdict', () => {
+  it('still refuses the upload after a clean verdict', async () => {
+    const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
+      loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
+      GhostErrors,
+    });
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const slowCleanCheck = {
+      kind: 'media',
+      blocking: true,
+      async run({ buffer }) {
+        // Another feature refuses the same bytes while this verdict is pending.
+        await sealRefusal(
+          quarantinePath,
+          digestBytes(buffer),
+          buffer,
+          { classification: 'csam' },
+          digestBytes
+        );
+        return { classification: 'no-known-match', evidence: digestBytes(buffer), source: 'test' };
+      },
+    };
+    const adapter = new Adapter({
+      wraps: 'FakeAdapter',
+      wrappedConfig: { storagePath: 'wrapped' },
+      quarantinePath,
+      checks: [slowCleanCheck],
+      policy: new SafetyPolicy(),
+      computeDigest: digestBytes,
+      holdLogger: SILENT_LOGGER,
+    });
+
+    await expect(adapter.save(await writeTempFile(BAD_BYTES, 'a.png'))).rejects.toBeInstanceOf(
+      GhostErrors.UnsupportedMediaTypeError
+    );
+    expect(adapter.wrapped.saved).toHaveLength(0);
   });
 });
 

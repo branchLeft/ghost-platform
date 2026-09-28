@@ -1,21 +1,7 @@
-// Drives the built Ghost image through the real adapter manager and the
-// real storage adapters it wraps. Usage:
+// Drives the built Ghost image through the real adapter manager. Usage:
 //   IMAGE=ghost-platform:ci npm --prefix adapters/scanning-storage run test:image
-//
-// Every refusal is asserted through Ghost's own answer (the 415 and its
-// body) and against the filesystem/bucket directly (nothing refused ever
-// lands where a reader could see it, and the quarantine copy is keyed by
-// digest).
-//
-// Upload-time resize (imageOptimization.resize) is turned off for these
-// containers: Ghost otherwise calls store.save() twice per upload -- once
-// for a re-encoded "processed" copy, once for the untouched "_o" original
-// -- and the two calls hash different bytes. That is a real property of
-// the upload path, not of this decorator, and it is orthogonal to what
-// this story proves: that a single save()/saveRaw() call refuses a
-// matching digest and delegates a clean one. Turning resize off keeps each
-// upload to one call, so a test can name the one digest it expects to be
-// checked without also asserting something about Ghost's own re-encoding.
+// Why upload-time resize is off, and the bind-mount ownership handling:
+// the README's "Tests" section.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -61,30 +47,9 @@ function removeNetwork(name) {
   dockerOk('network', 'rm', name);
 }
 
-// The base Ghost image's own upstream entrypoint runs `find $GHOST_CONTENT
-// ! -user node -exec chown node {} +` as root on every boot (see
-// docker-entrypoint.sh, shipped by the base image) -- it reaches every
-// bind-mounted directory under content, including the resolvePath mount the
-// hold-branch tests use to deliver a verdict, and takes it from the test
-// runner's own uid to the container's "node" uid. `fs.mkdtempSync`'s default
-// mode (0700, owner-only) then denies the test runner read/write/exec on
-// that directory from the moment the container boots -- not just at
-// teardown's `fs.rmSync`, but for every `fs.writeFileSync` the test itself
-// makes mid-run to deliver a verdict, since both need the same access this
-// chown just took away. A real permission boundary, not a flake, and one
-// this test must clear itself rather than relax the image's own chown --
-// see `resolveHostDir`'s own `fs.chmodSync(..., 0o777)` call, made right
-// after `mkdtempSync` and before the container that will chown it ever
-// starts, which is what actually keeps both the mid-test write and the
-// final teardown working regardless of who ends up owning the directory.
-//
-// `reclaimHostOwnership` is kept as a second, independent line of defence
-// for teardown specifically -- a throwaway container run as root (the
-// image's own default user, since neither Dockerfile sets one) chowns the
-// mount back to the test runner's uid/gid before `fs.rmSync` runs. Every
-// caller wraps it in try/catch: a cleanup step must never replace a real
-// assertion failure already in flight from the try block with its own
-// error, so a failure here is logged and swallowed rather than thrown.
+// Teardown's second line of defence after the chmod 0777 at setup: chowns
+// the bind mount back to this runner (README, "Tests"). Never throws, so it
+// cannot mask an assertion failure already in flight.
 function reclaimHostOwnership(hostDir) {
   try {
     docker(

@@ -111,8 +111,12 @@ function refusalPath(quarantinePath, digest) {
   return path.join(quarantinePath, `${digest}${REFUSED_SUFFIX}`);
 }
 
+// Fails closed: only a missing record means "not refused". Any other stat
+// error throws, so no caller can read it as licence to promote or delete.
 function isRefused(quarantinePath, digest) {
-  return fsSync.existsSync(refusalPath(quarantinePath, digest));
+  return (
+    fsSync.statSync(refusalPath(quarantinePath, digest), { throwIfNoEntry: false }) !== undefined
+  );
 }
 
 // Returns the verdict a refusal was recorded with, or null when the digest
@@ -138,15 +142,11 @@ function readRefusal(quarantinePath, digest) {
   return { classification: 'csam', evidence: digest };
 }
 
-// Seals a refusal: the bytes first, then the record that names them, so a
-// record never points at bytes that were not written. Bytes already on disk
-// that match their digest are left alone -- another feature may be reading
-// them -- and bytes that do not match are replaced with the ones in hand.
+// Record first, bytes second: see the README's "Sealing order". Matching
+// bytes are left alone, since another feature may be reading them.
 async function sealRefusal(quarantinePath, digest, buffer, verdict, computeDigest) {
-  if (!(await quarantinedBytesMatch(quarantinePath, digest, computeDigest))) {
-    await quarantineBytes(quarantinePath, digest, buffer);
-  }
   if (!isRefused(quarantinePath, digest)) {
+    await fs.mkdir(quarantinePath, { recursive: true });
     await writeFileAtomic(
       refusalPath(quarantinePath, digest),
       JSON.stringify({
@@ -155,6 +155,9 @@ async function sealRefusal(quarantinePath, digest, buffer, verdict, computeDiges
         source: verdict && verdict.source,
       })
     );
+  }
+  if (!(await quarantinedBytesMatch(quarantinePath, digest, computeDigest))) {
+    await quarantineBytes(quarantinePath, digest, buffer);
   }
 }
 

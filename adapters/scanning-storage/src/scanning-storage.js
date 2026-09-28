@@ -8,20 +8,8 @@ const { buildRefusalError } = require('./refusal-error');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const { HoldRegistry, evaluate } = require('./hold');
 
-// Builds the decorator class over Ghost's storage base class. Kept apart
-// from the entry file so the logic is testable without Ghost's module tree
-// or a real StorageBase (mirrors adapters/sso's break-glass.js split).
-//
-// `StorageBase` is Ghost's own dependency (ghost-storage-base, already
-// installed in the built image because Ghost core itself depends on it) --
-// injected rather than required here, so a test double can stand in without
-// installing Ghost's own package tree.
-//
-// This class composes with the wrapped adapter instance rather than
-// extending it. A decorator that instead subclassed one concrete adapter
-// (say, the local one) would leave every other adapter -- S3Storage included
-// -- entirely unwrapped and unscanned, silently, because the class would
-// simply not be in that adapter's path.
+// Builds the decorator over an injected StorageBase, composing with the
+// wrapped adapter rather than subclassing one: README traps 3 and 4 say why.
 function defineScanningStorageAdapter(StorageBase, deps) {
   const { loadWrappedAdapterClass, GhostErrors } = deps;
 
@@ -161,6 +149,13 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       const { decision, verdict } = await evaluate(this.checks, this.policy, buffer);
 
       if (decision === 'allow') {
+        // Another feature may have sealed this digest while the verdict was
+        // in flight.
+        const sealedSince = readRefusal(this.quarantinePath, digest);
+        if (sealedSince) {
+          await sealRefusal(this.quarantinePath, digest, buffer, sealedSince, this.computeDigest);
+          throw buildRefusalError(GhostErrors, sealedSince);
+        }
         return proceed();
       }
 

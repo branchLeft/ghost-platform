@@ -126,7 +126,7 @@ describe('sealRefusal', () => {
   const digest = digestBytes(bytes);
   const verdict = { classification: 'csam', matchType: 'exact', source: 'test' };
 
-  it('writes the bytes, then a record naming the refusal', async () => {
+  it('writes a record naming the refusal, and the bytes', async () => {
     const quarantinePath = path.join(tmpDir, 'quarantine');
     expect(isRefused(quarantinePath, digest)).toBe(false);
     expect(readRefusal(quarantinePath, digest)).toBeNull();
@@ -184,5 +184,22 @@ describe('sealRefusal', () => {
     const quarantinePath = path.join(tmpDir, 'quarantine');
     await fs.mkdir(path.join(quarantinePath, `${digest}.refused.json`), { recursive: true });
     expect(() => readRefusal(quarantinePath, digest)).toThrow();
+  });
+});
+
+describe('isRefused', () => {
+  it('fails closed: a record it cannot stat is an error, never "not refused"', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    await fs.mkdir(quarantinePath);
+    const record = path.join(quarantinePath, 'abc.refused.json');
+    // A link to itself: existsSync would call this "absent"; stat says ELOOP.
+    await fs.symlink(record, record);
+    expect(() => isRefused(quarantinePath, 'abc')).toThrow(/ELOOP/);
+  });
+
+  it('is false only when the record is missing', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    await fs.mkdir(quarantinePath);
+    expect(isRefused(quarantinePath, 'abc')).toBe(false);
   });
 });

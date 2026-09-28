@@ -167,7 +167,32 @@ upload, and before each promotion of a held digest, so bytes one feature
 refused are never served by another, whatever its own verdict says
 (positive verdicts never expire). Bytes a refusal record names are never
 deleted by this decorator; retention and release are the reporting
-runbook's, not this code's.
+runbook's, not this code's. An upload is checked against the record both
+before its verdict is asked for and again after a clean one, so a refusal
+sealed by another feature while the verdict was in flight still wins.
+
+**Sealing order.** `sealRefusal` writes the record first (atomically), and
+only then makes sure the bytes are present, rewriting them from the buffer
+in hand if they are missing or do not match. Bytes are removed in one place
+only, a hold's last-owner release, which reads the record in the same
+synchronous tick as the unlink. So either the release sees the record and
+keeps the bytes, or it ran before the record existed and the sealer, which
+checks the bytes only after the record is in place, writes them back. A
+crash between the two steps leaves a record whose bytes may still be
+missing: the digest is refused from then on, and the next refusal of it
+rewrites the bytes. A refusal can no longer leave bytes with no record. A
+record that cannot be read for any reason other than not existing counts
+as present: a promotion fails (and is retried, then stuck), and a release
+keeps the bytes.
+
+**Why the registry is shaped as it is.** There is no real verdict channel
+yet, so "a later verdict arrives" means the same in-process `VerdictClient`
+answering differently on a later call, and `HoldRegistry` polls for it at
+its own cost rather than the upload's. It never keeps a held buffer
+resident: every retry re-reads the bytes from quarantine. Resumption after
+a restart is synchronous, from the adapter's constructor, and only
+re-derives which digests are pending; the bytes are read on the first
+retry.
 
 **Quarantine reads are verified.** Every quarantine write (bytes, sidecar,
 refusal record) goes to a temp file, is fsynced, then renamed into place, so
@@ -257,3 +282,17 @@ the upload is still withheld immediately afterward and that both the
 quarantine bytes and the `.holds.json` sidecar survived, then deliver a
 clean verdict only after the restart and assert it still promotes and
 serves.
+
+**A refusal in one feature is proven against a real Ghost too:** the files
+feature refuses the bytes the images feature is holding, the images
+verdict then comes back clean, and the image must stay unserved with the
+sealed bytes and `.refused.json` still in quarantine.
+
+**Bind-mount ownership.** The base image's entrypoint chowns everything
+under the content directory to `node` on every boot, including the
+`resolvePath` mount the hold tests write verdicts into. A `mkdtemp`
+directory (mode 0700) would then deny the test runner both its mid-test
+verdict writes and its teardown. So the test chmods the directory 0777
+before the container starts, and `reclaimHostOwnership` chowns it back
+from a throwaway root container before teardown as a second line of
+defence.

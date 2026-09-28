@@ -687,6 +687,93 @@ describe('HoldRegistry with real digests', () => {
       await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
       expect(sealedWhenCalled).toBe(true);
     });
+
+    // A synchronous refusal elsewhere has no sidecar entry, so a hold's
+    // last-owner release can run while it is sealing. The rename of the
+    // record is held open until that release has run.
+    it('a seal racing a last-owner release still leaves the bytes behind the record', async () => {
+      const realRename = fs.rename.bind(fs);
+      let reachedRecordRename;
+      const atRecordRename = new Promise((resolve) => {
+        reachedRecordRename = resolve;
+      });
+      let openGate;
+      const gate = new Promise((resolve) => {
+        openGate = resolve;
+      });
+      const rename = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (String(to).endsWith('.refused.json')) {
+          reachedRecordRename();
+          await gate;
+        }
+        return realRename(from, to);
+      });
+      try {
+        const check = flippingCheck();
+        const registry = realRegistry([check]);
+        let sealing;
+        await registry.hold(DIGEST, BYTES, {
+          targetPath: 'a.png',
+          onAllow: async () => {
+            sealing = sealRefusal(
+              quarantinePath,
+              DIGEST,
+              BYTES,
+              { classification: 'csam' },
+              digestBytes
+            );
+            await atRecordRename;
+          },
+          onRefuse: vi.fn(),
+        });
+
+        check.resolveTo({ classification: 'no-known-match' });
+        await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
+        openGate();
+        await sealing;
+
+        expect(isRefused(quarantinePath, DIGEST)).toBe(true);
+        expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      } finally {
+        rename.mockRestore();
+      }
+    });
+
+    it('keeps the bytes when the refusal record cannot be read at release', async () => {
+      const check = flippingCheck();
+      const logger = recordingLogger();
+      const registry = realRegistry([check], { logger });
+      const record = path.join(quarantinePath, `${DIGEST}.refused.json`);
+      await registry.hold(DIGEST, BYTES, {
+        targetPath: 'a.png',
+        onAllow: async () => {
+          await fs.symlink(record, record);
+        },
+        onRefuse: vi.fn(),
+      });
+
+      check.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
+
+      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      expect(logger.lines.some((l) => l.includes('quarantine cleanup failed'))).toBe(true);
+    });
+
+    it('never promotes while the refusal record cannot be read', async () => {
+      const check = flippingCheck();
+      const logger = recordingLogger();
+      const registry = realRegistry([check], { logger, maxConsecutiveFailures: 2 });
+      const hold = callbacks();
+      await registry.hold(DIGEST, BYTES, hold);
+      const record = path.join(quarantinePath, `${DIGEST}.refused.json`);
+      await fs.symlink(record, record);
+
+      check.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
+
+      expect(hold.onAllow).not.toHaveBeenCalled();
+      expect(registry.isStuck(DIGEST)).toBe(true);
+    });
   });
 
   describe('verified reads', () => {
