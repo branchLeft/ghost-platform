@@ -30,6 +30,22 @@ its own GraphQL variable rather than a literal in the query text, because
 `package_dir` is caller input here in a way the sibling workflow's fixed
 paths never were.
 
+## Why the request is built in a file, not passed to `gh` as an argument
+
+Linux caps a single `execve` argv or env string at `MAX_ARG_STRLEN` (128
+KiB). A lockfile's base64 form can clear that well within this repo's real
+sizes — `services/mail-collector` and `services/mailgun-shim` already do —
+so passing the encoded content to `gh api graphql -f content=...` fails
+with "Argument list too long" before `gh` ever runs, for exactly the
+lockfiles this workflow most needs to handle. An env var carries the same
+cap, so moving the content there is not a fix either.
+
+Instead, `base64` writes straight to a file over stdout, `jq --rawfile`
+reads that file's bytes directly rather than taking them as a `--arg`, and
+the finished `{query, variables}` request goes to `gh api graphql --input
+<file>` as a file `gh` reads itself — the content is never a command-line
+string or an environment value at any point.
+
 ## Why fail closed instead of dispatching CI
 
 A commit written through the GitHub API is still `GITHUB_TOKEN`-authenticated
@@ -47,7 +63,12 @@ renamed, and adding `workflow_dispatch` to each would be a repo-wide change
 far outside this workflow's own concern — the opposite of the narrow, single-
 file fix this workflow otherwise is.
 
-Instead, the job reports plainly, in its own summary, that the new head has
-no CI and exactly how to get it: close and reopen the pull request carrying
-the branch, or push an ordinary commit to it. Both are actions a person
-already takes to get CI running today; this just tells them to.
+Instead, the job writes its summary and then **fails the run** (`exit 1`)
+whenever it committed: the commit itself is fine — already GitHub-signed,
+already read back and checked — but a green tick here would be exactly the
+"looks checked, nothing ran" state this workflow exists to remove. The
+summary says plainly that the commit landed and is signed, that the
+failure means only that CI hasn't run yet, and how to start it: close and
+reopen the pull request carrying the branch, or push an ordinary commit to
+it. Both are actions a person already takes to get CI running today; this
+just tells them to, and fails until they do.

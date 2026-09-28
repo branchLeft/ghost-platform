@@ -1,6 +1,6 @@
-// createCommitOnBranch signs what it writes; a step that calls it but never
-// reads verification.verified back can't tell a signed commit from an
-// unsigned one the API merely accepted. See
+// Scoped to createCommitOnBranch steps only -- never looks at `git push`,
+// so a revert to it would not by itself be caught here (main's
+// signed-commit ruleset still refuses that commit at merge). See
 // .github/workflows/README-generate-lockfile.md "Why createCommitOnBranch".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
