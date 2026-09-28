@@ -16,8 +16,13 @@
 # place is dropping it.
 * @reviewer-agent-branchLeft @branchLeft/branchleft-admin
 
-# branchLeft/standards v0.8.0: DB-1's scope declaration, same escape-hatch
-# ownership as .standardsignore (neither has an explicit line above yet --
-# both are covered today only by the blanket "*" pattern; this repo's own
-# CODEOWNERS predates templates/codeowners' explicit escape-hatch lines).
+# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these six
+# lines must be this file's final lines, in this order — GitHub applies the
+# LAST matching CODEOWNERS pattern regardless of specificity, so anything
+# after or between them would silently take ownership of an escape hatch).
+/.standardsignore        @branchLeft/branchleft-admin
+/.standards.mode         @branchLeft/branchleft-admin
+/.docs-lint*             @branchLeft/branchleft-admin
+/tools/floors.tsv        @branchLeft/branchleft-admin
 /.standards-db-tooling   @branchLeft/branchleft-admin
+/.github/                @branchLeft/branchleft-admin
