@@ -61,8 +61,10 @@ module.exports = class ScanningStorageAdapter extends Adapter {
       ...config,
       checks: [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })],
       policy: new SafetyPolicy(),
+      computeDigest: digestBytes,
       holdRetryMs: config.holdRetryMs ? Number(config.holdRetryMs) : undefined,
       holdMaxRetryMs: config.holdMaxRetryMs ? Number(config.holdMaxRetryMs) : undefined,
+      holdMaxFailures: config.holdMaxFailures ? Number(config.holdMaxFailures) : undefined,
     });
   }
 };

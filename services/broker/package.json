@@ -9,6 +9,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "bundle": "npm run build --prefix ../../render-core && npm run build && node esbuild.bundle.mjs",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "start": "node dist/server.js"
@@ -20,6 +21,7 @@
     "@branchleft/tsconfig": "^0.4.0",
     "@types/node": "^26.5.1",
     "@vitest/coverage-v8": "4.1.11",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
   }

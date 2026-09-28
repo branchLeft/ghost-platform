@@ -1,0 +1,104 @@
+name: Broker systemd boot CI
+
+# A real boot, in a throwaway container running a real systemd, showing
+# branchleft-broker.service starting, answering `/status`, and reaching the
+# wrapper through `sudo -n`. services/broker/systemd/README.md has the full
+# story of what this workflow found by actually booting it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  boot-proof:
+    name: Real systemd boot, /status, and a signed /reset through sudo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/broker/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: services/broker/package-lock.json
+
+      - name: Build render-core
+        working-directory: render-core
+        run: npm ci && npm run build
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the broker's deployable bundle
+        working-directory: services/broker
+        run: npm ci && npm run bundle
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the proof image
+        run: docker build -f services/broker/test/live/fixtures/systemd-boot/Dockerfile -t branchleft-broker-boot-proof .
+
+      - name: Boot a real systemd and wait for it to settle
+        run: |
+          docker run -d --name broker-boot-proof --privileged --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw branchleft-broker-boot-proof
+          for i in $(seq 1 20); do
+            if [ "$(docker exec broker-boot-proof systemctl is-system-running 2>/dev/null || true)" = "running" ]; then
+              echo "systemd is running"
+              break
+            fi
+            sleep 1
+          done
+          docker exec broker-boot-proof systemctl is-system-running
+
+      - name: The broker unit is active under real systemd
+        run: |
+          docker exec broker-boot-proof systemctl is-active branchleft-broker.service
+
+      - name: A real GET /status/0 answers
+        run: |
+          body="$(docker exec broker-boot-proof curl -sf http://127.0.0.1:8090/status/0)"
+          echo "$body"
+          echo "$body" | grep -q '"slot":"0"'
+          echo "$body" | grep -q '"phase":"free"'
+
+      - name: The fixture seeded a real leased slot in the shared slots file
+        run: |
+          docker exec broker-boot-proof cat /var/lib/branchleft/slots.json | tee /tmp/slots-before.json
+          grep -q 'proof-leased.demo.trypublicpress.co.uk' /tmp/slots-before.json
+
+      - name: A real signed POST /reset reaches the wrapper through sudo -n
+        run: |
+          docker exec broker-boot-proof /opt/branchleft/broker/node/bin/node \
+            /opt/branchleft/broker/proof/sign-request.mjs POST /reset '{"slot":"0"}' \
+            /opt/branchleft/broker/proof/signing-key.bin http://127.0.0.1:8090
+
+      - name: The reset actually wrote the shared slots file through the ProtectSystem=strict mount
+        run: |
+          docker exec broker-boot-proof cat /var/lib/branchleft/slots.json | tee /tmp/slots-after.json
+          if grep -q 'proof-leased.demo.trypublicpress.co.uk' /tmp/slots-after.json; then
+            echo "slots.json still carries the leased entry after /reset -- the write never happened" >&2
+            exit 1
+          fi
+
+      - name: The wrapper's own sudo session is in the journal, not merely a 200
+        run: |
+          docker exec broker-boot-proof journalctl -u branchleft-broker.service --no-pager \
+            | tee /tmp/broker-journal.log
+          grep -q 'COMMAND=/usr/local/sbin/branchleft-slot 0 reset' /tmp/broker-journal.log
+          grep -q 'session opened for user root' /tmp/broker-journal.log
+
+      - name: Clean up the container this job created
+        if: always()
+        run: docker rm -f broker-boot-proof || true

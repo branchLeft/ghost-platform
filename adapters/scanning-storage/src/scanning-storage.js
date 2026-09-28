@@ -3,25 +3,13 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 
-const { quarantineBytes } = require('./quarantine');
+const { readRefusal, sealRefusal } = require('./quarantine');
 const { buildRefusalError } = require('./refusal-error');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const { HoldRegistry, evaluate } = require('./hold');
 
-// Builds the decorator class over Ghost's storage base class. Kept apart
-// from the entry file so the logic is testable without Ghost's module tree
-// or a real StorageBase (mirrors adapters/sso's break-glass.js split).
-//
-// `StorageBase` is Ghost's own dependency (ghost-storage-base, already
-// installed in the built image because Ghost core itself depends on it) --
-// injected rather than required here, so a test double can stand in without
-// installing Ghost's own package tree.
-//
-// This class composes with the wrapped adapter instance rather than
-// extending it. A decorator that instead subclassed one concrete adapter
-// (say, the local one) would leave every other adapter -- S3Storage included
-// -- entirely unwrapped and unscanned, silently, because the class would
-// simply not be in that adapter's path.
+// Builds the decorator over an injected StorageBase, composing with the
+// wrapped adapter rather than subclassing one: README traps 3 and 4 say why.
 function defineScanningStorageAdapter(StorageBase, deps) {
   const { loadWrappedAdapterClass, GhostErrors } = deps;
 
@@ -52,12 +40,19 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     constructor(config = {}) {
       super();
       ScanningStorageAdapter.validate(config);
-      const { wraps, wrappedConfig, checks, policy } = config;
+      const { wraps, wrappedConfig, checks, policy, computeDigest } = config;
       if (!policy || typeof policy.decide !== 'function') {
         throw new Error(
           'ScanningStorageAdapter requires config.policy implementing decide(verdict)'
         );
       }
+      // The same function the blocking checks name bytes with: quarantine
+      // files are filed under it, and a digest's refusal record is looked up
+      // by it before any verdict is asked for.
+      if (typeof computeDigest !== 'function') {
+        throw new Error('ScanningStorageAdapter requires config.computeDigest(buffer)');
+      }
+      this.computeDigest = computeDigest;
 
       const WrappedClass = loadWrappedAdapterClass(wraps);
       this.wrapped = new WrappedClass(wrappedConfig);
@@ -81,8 +76,10 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // staticFileURLPrefix for S3Storage), and it is where a promotion
         // lands -- so it is what a resumed hold must match.
         owner: `${wraps}:${this.storagePath ?? ''}`,
+        computeDigest,
         retryIntervalMs: config.holdRetryMs,
         maxRetryIntervalMs: config.holdMaxRetryMs,
+        maxConsecutiveFailures: config.holdMaxFailures,
         logger: config.holdLogger,
       });
       // Restart-safety (load-bearing per the design): the quarantine directory is
@@ -140,14 +137,36 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     }
 
     async #scanAndProceed(buffer, { proceed, onHold }) {
+      // A digest any feature has refused stays refused here too, whatever a
+      // verdict would say now: positive verdicts never expire.
+      const digest = this.computeDigest(buffer);
+      const sealed = readRefusal(this.quarantinePath, digest);
+      if (sealed) {
+        await sealRefusal(this.quarantinePath, digest, buffer, sealed, this.computeDigest);
+        throw buildRefusalError(GhostErrors, sealed);
+      }
+
       const { decision, verdict } = await evaluate(this.checks, this.policy, buffer);
 
       if (decision === 'allow') {
+        // Another feature may have sealed this digest while the verdict was
+        // in flight.
+        const sealedSince = readRefusal(this.quarantinePath, digest);
+        if (sealedSince) {
+          await sealRefusal(this.quarantinePath, digest, buffer, sealedSince, this.computeDigest);
+          throw buildRefusalError(GhostErrors, sealedSince);
+        }
         return proceed();
       }
 
       if (decision === 'refuse') {
-        await quarantineBytes(this.quarantinePath, verdict.evidence, buffer);
+        await sealRefusal(
+          this.quarantinePath,
+          verdict.evidence,
+          buffer,
+          verdict,
+          this.computeDigest
+        );
         throw buildRefusalError(GhostErrors, verdict);
       }
 
