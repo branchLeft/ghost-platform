@@ -16,17 +16,21 @@ this runbook.
 
 ## Owner ruling — the media-backup credential
 
-**Rob, 2026-09-28, on branchLeft/workspace#1325:** *"Same as the db-backups
-key."* Media backups (ghost-platform#249, `media_backup_restore.py`)
+**Rob chose, 2026-09-28, on branchLeft/workspace#1325:** *Same as the
+db-backups key.* The choice was between that and naming a separate
+credential (which would have needed adding to the fence as a second
+`--workload-access-key`); the wording of the options was the agent's, the
+choosing his. Media backups (ghost-platform#249, `media_backup_restore.py`)
 authenticate with the same Object Storage key as db-backups —
 `MEDIA_BACKUP_ACCESS_KEY_ID` / `MEDIA_BACKUP_SECRET_ACCESS_KEY` must be set
 to that same credential's id and secret, not a separate one.
 
 This settles what was an open question through review round 2: the fence
-this runbook applies names exactly one workload key,
-`--workload-access-key db-backups` (step 4), and that already covers media
-backups. **No second key, no second `--workload-access-key`, and no fence
-change beyond what this runbook already does.**
+this runbook applies names exactly one workload key — the id read into
+`$FENCE_WORKLOAD_ACCESS_KEY_ID` in step 2, the db-backups credential — and
+that already covers media backups. **No second key, no second
+`--workload-access-key`, and no fence change beyond what this runbook
+already does.**
 
 ---
 
@@ -135,6 +139,13 @@ anything runnable from this terminal:
   (<https://console.hetzner.com>).
 - This run's terminal output from step 4 (the diff) and step 6, to attach —
   it is the fastest way to show Hetzner support what was sent.
+- **While a lockout lasts, do not rebuild, resize or destroy db1.**
+  `RUNBOOK-bucket-fencing.md`'s lockout section is explicit: db1's local
+  binlogs, retained 7 days, are the only recovery material left while
+  `branchleft-db-backups` is unreachable. This applies whichever step routed
+  you here — step 6's own second-PUT failure or step 7a's
+  `STILL ADMINISTRABLE — FAIL`/read-error route both land on the same
+  lockout, so both are covered by reading this list once, here.
 
 - A checkout of `branchLeft/ghost-platform` on `main`, current enough to
   contain the four-rule `lifecycle_document()` and the `PARSER_REJECTS`
@@ -218,15 +229,31 @@ nothing — re-run that one block before going on.
 This is the rollback copy, taken before anything is written, and the check
 that catches a prefix this document does not know about.
 
+**These go to a named, dated directory under your home, not `mktemp`.** A
+Hetzner support request over a genuine lockout (see "Before you start" and
+step 6 below) can take days, and files under `$TMPDIR` are not guaranteed to
+survive that — macOS purges old temp files, and the shell variables holding
+their names die with the terminal regardless. A fixed, predictable path
+survives both: you can retype it from memory in a new terminal days later,
+with no shell state to recover first.
+
 ```bash
-SAVED_POLICY_FILE=$(mktemp -t branchleft-db-backups-live-policy)
-echo "Saved live policy to: $SAVED_POLICY_FILE"
-AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api get-bucket-policy --bucket branchleft-db-backups --query Policy --output text > "$SAVED_POLICY_FILE" && cat "$SAVED_POLICY_FILE"
+ROLLBACK_DIR="$HOME/branchleft-runbook-1325-rollback-$(date +%Y%m%d)"
+mkdir -p -m 0700 "$ROLLBACK_DIR"
+echo "Rollback copies go to: $ROLLBACK_DIR"
 ```
 
-**Write down the printed path.** If the terminal is lost later — plausible
-on the lockout path above — `$SAVED_POLICY_FILE` dies with it, and the path
-is the only way to find the file again.
+Expected: the directory path, printed. **Write it down now** — if this
+terminal is lost later, this line and the two file names below (fixed, not
+random) are how you find these files again without any shell variable.
+Consider also copying the two files this section writes into ProtonPass or
+`ops-docs` once they exist, for a copy that survives even this workstation
+being unavailable.
+
+```bash
+SAVED_POLICY_FILE="$ROLLBACK_DIR/branchleft-db-backups-live-policy.json"
+AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api get-bucket-policy --bucket branchleft-db-backups --query Policy --output text > "$SAVED_POLICY_FILE" && cat "$SAVED_POLICY_FILE"
+```
 
 Expected: the live policy JSON, printed. Read it now — its bucket-configuration
 `Deny` statement is expected to carry `NotAction`, per workspace#320 and the
@@ -236,16 +263,14 @@ and by whom before going any further, because step 4's diff assumes this
 starting point.**
 
 ```bash
-SAVED_LIFECYCLE_FILE=$(mktemp -t branchleft-db-backups-live-lifecycle)
-echo "Saved live lifecycle to: $SAVED_LIFECYCLE_FILE"
+SAVED_LIFECYCLE_FILE="$ROLLBACK_DIR/branchleft-db-backups-live-lifecycle.json"
 AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api get-bucket-lifecycle-configuration --bucket branchleft-db-backups | tee "$SAVED_LIFECYCLE_FILE"
 ```
 
 Expected: one rule, `branchleft-db-backups-noncurrent-expiry`, `Filter.Prefix`
 empty, `NoncurrentDays: 35`, `Status: Enabled` — the whole-bucket rule from
 `8edfcfe`. **If it already shows four prefix-scoped rules, this write has
-already happened — stop, do not run step 6 again.** Write down the printed
-path, for the same reason as `$SAVED_POLICY_FILE` above.
+already happened — stop, do not run step 6 again.**
 
 **This has to see noncurrent versions and delete markers, not only current
 objects.** A prefix whose objects were all later deleted or overwritten
@@ -297,9 +322,19 @@ principal this document names as the workload, and it is the db-backups
 key — the same key Rob's 2026-09-28 ruling above says media backups
 authenticate as too. One key, one `NotPrincipal` exemption in the rendered
 policy, covering both db1's pipeline and `media_backup_restore.py`. Nothing
-in this step needs to change for media backups; confirm this by reading
-`$POLICY_FILE` and checking it names exactly one workload access key id —
-the one you read into `$FENCE_WORKLOAD_ACCESS_KEY_ID` in step 2 — not two.**
+in this step needs to change for media backups.**
+
+`$FENCE_WORKLOAD_ACCESS_KEY_ID` and `$FENCE_OPERATOR_ACCESS_KEY_ID` were
+both read with `-rs`, so there is nothing on screen to compare by eye — a
+**count**, not a visual match, is the check:
+
+```bash
+grep -o 'user/p[0-9]*:[A-Za-z0-9]*' "$POLICY_FILE" | sort -u | wc -l
+```
+
+Expected: `2` — one principal for the operator, one for the workload.
+**Anything other than 2 means a key was named more than once or an extra
+one crept in; stop and re-render rather than applying it.**
 
 ```bash
 diff <(python3 -m json.tool "$SAVED_POLICY_FILE") <(python3 -m json.tool "$POLICY_FILE")
@@ -330,6 +365,15 @@ tell you nothing you do not already know.
 ---
 
 ## 6. Apply — versioning (no-op), the new lifecycle document, the new fence
+
+**If this exits non-zero on the versioning call, the lifecycle call, or the
+*first* `put-bucket-policy`** (i.e. before the roughly two-minute dwell
+described below starts) **— nothing was changed.** Each of those calls runs
+before anything that could lock the bucket, and `configure_backup_bucket.py`
+does not proceed past a rejected call. Record the error verbatim and stop;
+`RUNBOOK-bucket-fencing.md`'s case 4 ("the PUT is rejected") covers the
+policy side. This is not "Rollback" below — there is nothing to roll back,
+because the write never landed — and it is not the lockout path either.
 
 > **This pauses for close to two minutes between its two `put-bucket-policy`
 > calls.** That is the lockout check working — Hetzner's policy-engine read
@@ -396,7 +440,9 @@ from the rest, exactly as that file says:
   lockout described in "Blast radius" above. **Do not attempt "Rollback"
   below** — a rollback PUT uses this same operator credential, so it would
   be denied for the same reason. Go straight to "Before you start"'s Hetzner
-  support request.
+  support request, and **do not rebuild, resize or destroy db1, and do not
+  stop or restart its backup pipeline** while the lockout lasts — its local
+  binlogs are the only recovery material left.
 - **`the stored policy is the one that was sent` — `FAIL`:** the engine
   accepted and stored a different document than the one sent. Treat the
   bucket as unfenced and stop — go to "Rollback" below.
@@ -462,15 +508,28 @@ Clear the shell:
 
 ```bash
 unset FENCE_OPERATOR_ACCESS_KEY_ID FENCE_OPERATOR_SECRET_ACCESS_KEY FENCE_WORKLOAD_ACCESS_KEY_ID FENCE_WORKLOAD_SECRET_ACCESS_KEY FENCE_FOREIGN_ACCESS_KEY_ID FENCE_FOREIGN_SECRET_ACCESS_KEY
-rm -f "$POLICY_FILE" "$SAVED_POLICY_FILE" "$SAVED_LIFECYCLE_FILE"
+rm -f "$POLICY_FILE"
 ```
 
-(Skip the `rm` if step 7 or 6 sent you to "Rollback" below — the saved files
-are what it uses.)
+`$SAVED_POLICY_FILE` and `$SAVED_LIFECYCLE_FILE`, under `$ROLLBACK_DIR`, are
+no longer needed once this run has fully succeeded — they record the
+superseded, inert-`NotAction` fence and the whole-bucket lifecycle rule.
+`rm -rf "$ROLLBACK_DIR"` removes them, or leave the directory in place; it
+costs nothing to keep and nothing else in this repo reads it.
+
+(Skip any of this if step 7 sent you to "Rollback" below — the saved files
+are what it uses. A step 6 failure never reaches "Rollback"; follow step 6's
+own routing instead.)
 
 ---
 
-## Rollback — for steps 6 or 7 failing, when the operator is still administrable
+## Rollback — for step 7 failing, when the operator is still administrable
+
+**Not for step 6.** A step 6 failure before the dwell means nothing was
+written (see step 6 above — record and stop). A step 6 failure on the second
+PUT means a possible lockout (see step 6 above — go to the support request,
+never here). This section is reached only from step 7a's content-only `FAIL`
+routing or step 7b's pipeline check.
 
 **Do not use this for a lockout** (`THE BUCKET IS STILL ADMINISTRABLE — FAIL`,
 or the operator's own read erroring) — go to "Before you start"'s Hetzner
@@ -517,10 +576,35 @@ confirmed, clear the shell as step 8 says.
 
 **If a lockout happens later and Hetzner support removes the policy
 entirely:** the bucket is then left with no fence at all, which is worse
-than the inert `NotAction` one it had before. Re-PUT `$SAVED_POLICY_FILE`
-(the command above) as soon as support confirms the removal, so the bucket
-is not left open to every credential in the project while a proper fence is
-worked out.
+than the inert `NotAction` one it had before. Re-apply the saved policy as
+soon as support confirms the removal. Support can take days, so treat this
+as a fresh terminal with no shell state — none of `$SAVED_POLICY_FILE` or
+the `FENCE_OPERATOR_*` variables from earlier in this run can be assumed to
+still be set:
+
+```bash
+read -rs FENCE_OPERATOR_ACCESS_KEY_ID; export FENCE_OPERATOR_ACCESS_KEY_ID; echo "${#FENCE_OPERATOR_ACCESS_KEY_ID} chars read"
+```
+
+```bash
+read -rs FENCE_OPERATOR_SECRET_ACCESS_KEY; export FENCE_OPERATOR_SECRET_ACCESS_KEY; echo "${#FENCE_OPERATOR_SECRET_ACCESS_KEY} chars read"
+```
+
+```bash
+read -r SAVED_POLICY_FILE
+```
+
+Paste the path step 3 printed and you wrote down —
+`$HOME/branchleft-runbook-1325-rollback-<the date you ran step 3>/branchleft-db-backups-live-policy.json`
+— or the ProtonPass/`ops-docs` copy if this workstation's own copy is gone.
+
+```bash
+AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api put-bucket-policy --bucket branchleft-db-backups --policy "file://$SAVED_POLICY_FILE"
+```
+
+Read it back (the same `get-bucket-policy` command above) to confirm before
+clearing the shell, so the bucket is not left open to every credential in
+the project while a proper fence is worked out.
 
 ---
 
@@ -674,12 +758,20 @@ close workspace#320's operational half and this runbook's share of
 branchLeft/workspace#1325. The probe bucket's deletion is #1325's other
 remaining action item, proven by step 9e.
 
-**Media backup runs (ghost-platform#249) are unblocked once step 8
+**This runbook's own share of ghost-platform#249 is unblocked once step 8
 passes.** The credential question is settled (Rob's 2026-09-28 ruling,
 above): `MEDIA_BACKUP_ACCESS_KEY_ID`/`SECRET` is the db-backups key, already
 the sole workload named in the fence this runbook applies, and the lifecycle
-document already carries `media/`'s own rule. Nothing else in this runbook,
-or named anywhere on workspace#1325, still blocks scheduling a run.
+document already carries `media/`'s own rule. Nothing named on
+workspace#1325 still blocks scheduling a run against
+`branchleft-db-backups`.
+
+**This is not the whole of #249, though.** A backup run also reads each
+tenant's own live media bucket with `MEDIA_LIVE_ACCESS_KEY_ID`/`SECRET`, and
+that bucket sits behind its own, separate fence
+(`render-media-bucket-policy.py`, `RUNBOOK-tenant-onboarding.md` §6) —
+nothing this runbook touches. Do not read this section as clearing #249
+fully; it clears `branchleft-db-backups`'s half.
 
 Close branchLeft/workspace#1325 through the `board` skill's decision-only-issue
 path (no PR carries a `Closes` trailer here — this is a live console/CLI
