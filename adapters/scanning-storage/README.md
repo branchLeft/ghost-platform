@@ -178,35 +178,40 @@ same owner key. So the protocol relies only on atomic operations on one
 filesystem (`rename`, and a record that appears by `rename`), never on the
 event loop.
 
-- `sealRefusal`: (S1) the record is renamed into place; (S2) only then are
-  the bytes made present: kept if they match, else a `<digest>.releasing.*`
-  copy is moved back, else they are rewritten from the buffer in hand.
+- `sealRefusal` has two steps. _Write record_: the record is renamed into
+  place. _Ensure bytes_: only then are the bytes made present, kept if they
+  match, else a `<digest>.releasing.*` copy is moved back, else they are
+  rewritten from the buffer in hand.
 - `releaseBytes`, the only code that removes quarantined bytes (a hold's
-  last-owner promotion): (R1) rename `<digest>` aside to a unique
-  `<digest>.releasing.<pid>.<random>`; (R2) check for the record; (R3) if
-  there is one, rename the copy back, otherwise unlink the copy. Only the
-  aside name is ever unlinked.
+  last-owner promotion), has three. _Move aside_: rename `<digest>` to a
+  unique `<digest>.releasing.<pid>.<random>`. _Check_: look for the record.
+  _Finish_: if there is one, rename the copy back, otherwise unlink the
+  copy. Only the aside name is ever unlinked.
 
-If S1 lands before R2, the releaser sees the record and puts the bytes back
-(if S2 already restored or rewrote them, the rename-back finds nothing or
-replaces them with identical bytes). If R2 comes first, then R1 is before
-R2 is before S1 is before S2, so S2 finds `<digest>` gone and restores or
-rewrites it; R3's unlink touches only the aside name. Every interleaving
-ends with the record and the bytes. A crash between S1 and S2 leaves the
-digest refused, and its next refusal rewrites the bytes. A refusal cannot
-leave bytes with no record. A crash between R1 and R3 leaves an aside copy.
-Each adapter sweeps them at start-up: restored if the digest is refused,
-deleted otherwise. That is safe against a live releaser for the same
-reason R3 is. A record that cannot be read for any reason but absence
-counts as present: a promotion fails (and is retried, then stuck), a
-release puts the bytes back, and a sweep leaves the copy.
-`test/unit/cross-process.test.mjs` runs a sealer and a releaser as two
-real processes, pausing each between its two steps, in all six orders.
+If write record lands before check, the releaser sees the record and puts
+the bytes back (if ensure bytes already restored or rewrote them, the
+rename-back finds nothing or replaces them with identical bytes). If check
+comes first, then move aside came before write record, which comes before
+ensure bytes, so ensure bytes finds `<digest>` gone and restores or
+rewrites it; finish unlinks only the aside name. Every interleaving ends
+with the record and the bytes. A crash between write record and ensure
+bytes leaves the digest refused, and its next refusal rewrites the bytes.
+A refusal cannot leave bytes with no record. A crash between move aside
+and finish leaves an aside copy. Each adapter sweeps them at start-up:
+restored if the digest is refused, deleted otherwise. That is safe against
+a live releaser for the same reason finish is. A record that cannot be read
+for any reason but absence counts as present: a promotion fails (and is
+retried, then stuck), a release puts the bytes back, and a sweep leaves the
+copy. `test/unit/cross-process.test.mjs` runs a sealer and a releaser as
+two real processes, pausing each between its steps, in all six orders.
 
-The hold sidecar's read-modify-write is still single-process: two
-processes updating one sidecar at once can lose an owner's entry. The
-worst outcome is the other owner's hold failing its retries until it is
-stuck; it is never served and never loses sealed bytes.
+The hold sidecar's read-modify-write is still single-process, which is a
+safety-neutral but real availability gap: a held digest is never served
+and never loses sealed bytes, but during a swap both colours re-arm the
+same holds, so a hold one colour promotes can fail its retries in the
+other and raise a false "hold stuck" alert, and two processes updating
+one sidecar at once can drop an owner's entry, leaving a hold that is
+never resumed and never marked stuck, with nothing logged.
 
 **Why the registry is shaped as it is.** There is no real verdict channel
 yet, so "a later verdict arrives" means the same in-process `VerdictClient`
