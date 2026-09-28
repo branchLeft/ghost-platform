@@ -457,6 +457,52 @@ is nothing to prune yet, and running it against a brand-new bucket is a no-op
 at best. See "Backup retention" below for how to bring it onto an
 already-running `db1`.
 
+## The dump endpoint (pull-model transport)
+
+The org/control-side backup worker (`infra/provisioning/scripts/backup_worker.py`,
+run from `ops1`) dials in over `dump_endpoint_server.py` rather than this
+host pushing anything out -- see that module's own docstring, and Rob's
+2026-09-28 ruling on branchLeft/workspace#1203 (`transport=a`). This is the
+one long-running (`Type=simple`) unit `db/provision/` ships; everything
+else here is a `.service`/`.timer` oneshot pair.
+
+Generate the bearer token once, off-host, the same way `escrow-tenant-
+passphrase.py`'s own key material is generated -- never derived from
+anything guessable, never reused across hosts:
+
+```bash
+LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 48; echo
+```
+
+Write it to `/etc/branchleft/dump-endpoint.env` on `db1` (mode 600, root-
+owned, the same convention as `/etc/branchleft/db.env`):
+
+```bash
+DUMP_ENDPOINT_TOKEN=<the generated token>
+```
+
+The org/control side needs the same token in `DUMP_ENDPOINT_BEARER_TOKEN`
+and the endpoint's reachable address in `DUMP_ENDPOINT_BASE_URL` (e.g.
+`http://<db1's private-network address>:8420`) wherever `backup_worker.py`
+runs -- the password manager entry this goes in is `ops1`'s own, not this
+host's.
+
+Install and start the endpoint:
+
+```bash
+cp /opt/branchleft/db/provision/branchleft-db-dump-endpoint.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now branchleft-db-dump-endpoint.service
+systemctl status branchleft-db-dump-endpoint.service
+journalctl -u branchleft-db-dump-endpoint.service -n 40
+```
+
+**Firewalling this port is out of this file's scope and must happen before
+this unit is started on a real host** -- `DUMP_ENDPOINT_HOST` defaults to
+`0.0.0.0`; the private-network segmentation that limits who can reach it is
+a Hetzner firewall rule, the same layer that already scopes every other
+port on this host, not a control this Python process enforces itself.
+
 ## Backup retention
 
 Nothing before this pruned a *current* object: dumps and shipped binlogs

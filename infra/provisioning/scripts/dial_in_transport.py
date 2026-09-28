@@ -3,14 +3,13 @@
 
 09-backup-and-recovery.html is explicit that the direction is fixed: the
 tenant host "never initiates outward" and the worker "dials in over the
-collector's channel -- one transport [reused]". The channel already has one
-concrete shape today -- `services/mailgun-shim`'s bearer-token-authenticated
-`GET /drain`, dialled by the mail collector -- but that collector's own
-production implementation is still being built elsewhere in this estate,
-and this repository has no equivalent dial-in server standing in front of
-`db/provision/dump_tenant.py` yet either. Guessing either shape here would
-be exactly the mistake this file exists to avoid, so this module holds
-only:
+collector's channel -- one transport [reused]". LLD-2 §03 names the
+concrete shape once for the whole estate: bearer-token-authenticated,
+answers-never-calls HTTP -- `services/mailgun-shim`'s `GET /drain`
+(`services/mailgun-shim/src/routes/drain.ts`) is the shape as mail already
+implements it. `db/provision/dump_endpoint_server.py` is the same shape in
+front of `db/provision/dump_tenant.py`, per Rob's 2026-09-28 ruling on
+branchLeft/workspace#1203 (`transport=a`). This module holds:
 
   - `DialInTransport`, the interface a caller like `pull_encrypt_store.py`
     depends on, so it never has to know which concrete channel it is
@@ -20,22 +19,20 @@ only:
     pipeline's floor-check, single-recipient and never-put-before-exit-0
     properties can be proven against a real local database and a real
     producer without any remote channel existing yet;
-  - `UnwiredCollectorChannelTransport`, the loud placeholder a real caller
-    gets until the actual channel lands.
-
-OPEN ITEM, flagged rather than guessed at: the real transport -- the one
-`services/mailgun-shim`'s `GET /drain` calls "the collector's channel" --
-does not exist in this repository yet. It is being built elsewhere, in a
-sibling stream of work, and the collector's own shape is that stream's to
-decide, not this module's to invent. Wiring a real `DialInTransport`
-implementation on top of whatever that stream lands is a follow-up, not
-part of this change.
+  - `DumpEndpointTransport`, the real channel: dials
+    `dump_endpoint_server.py` over HTTP, with the same bearer-token
+    authentication that server enforces.
 """
 
 from __future__ import annotations
 
+import http.client
+import json
 import os
+import re
 import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import BinaryIO, Protocol
 
@@ -59,6 +56,13 @@ FORBIDDEN_ENV_PREFIXES = ("AWS_", "DB_BACKUP_", "AGE_")
 # `pull_encrypt_store.py` makes), and an allowlist is the only shape that
 # cannot leak them into a producer invocation by accident.
 _CHILD_ENV_ALLOWLIST = ("PATH",)
+
+# `db/provision/naming.py`'s own `TENANT_NAME_PATTERN`, restated rather than
+# imported -- same reasoning as `FORBIDDEN_ENV_PREFIXES` above: this module
+# is on the org/control side of the trust boundary, and it is the layer
+# that puts a tenant name into a URL, so it checks that value itself rather
+# than trusting whatever validated it (if anything did) on its way here.
+TENANT_NAME_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
 
 
 class DialInTransportError(Exception):
@@ -130,18 +134,128 @@ class LocalProcessTransport:
         return process.wait()
 
 
-class UnwiredCollectorChannelTransport:
-    """The transport a real caller gets until the mail collector's channel
-    lands and someone wires this backup worker onto it. Raises loudly
-    rather than silently falling back to `LocalProcessTransport`, which
-    would make a production deploy quietly run the test double."""
+
+# The pattern `run_tenant_dump` builds its own `command` argument with --
+# see backup_worker.py: `[python_executable, dump_tenant_path, tenant,
+# "--socket", socket_path]`. `DumpEndpointTransport` cannot forward
+# `command` itself across the wire (a small HTTP endpoint that ran
+# whatever argv a caller handed it would be exactly the command-injection
+# surface `dump_endpoint_server.py`'s own "never lets a caller name a
+# path" rule exists to close); the tenant name is the only thing it
+# extracts from `command`, at this fixed position.
+_TENANT_COMMAND_INDEX = 2
+
+
+def _tenant_from_command(command: Sequence[str]) -> str:
+    if len(command) <= _TENANT_COMMAND_INDEX:
+        raise DialInTransportError(
+            f"cannot dial the dump endpoint: {list(command)!r} is shorter than the "
+            "[python, dump_tenant_path, tenant, ...] shape run_tenant_dump always builds"
+        )
+    return command[_TENANT_COMMAND_INDEX]
+
+
+class DumpEndpointTransport:
+    """The real dial-in channel: fetches one tenant's dump from
+    `dump_endpoint_server.py`, running on the tenant database host, over
+    plain HTTP with the same bearer-token authentication that server
+    enforces (see its own docstring). This class makes no network call
+    until `run` is invoked, and it never retries -- a caller that wants a
+    retry policy owns that decision, same as `LocalProcessTransport` owns
+    none of it either.
+
+    **Never trusts that `command`'s tenant was already validated
+    upstream.** `run_tenant_dump` does validate it before building
+    `command`, but this class talks to the network and re-checks
+    independently before that value ever reaches a URL -- the same
+    two-independent-checks shape `assert_no_forbidden_env` documents for
+    itself above, not defense in depth against a defect in the check this
+    class runs, but a second barrier against a defect anywhere upstream of
+    it.
+
+    **Detects a response that stopped short.** The server always sends an
+    exact `Content-Length` for a 200 (see `dump_endpoint_server.py`'s own
+    docstring: it buffers the whole dump before responding, precisely so
+    it can). If the connection drops after fewer bytes than that, this
+    class raises rather than returning 0 -- a truncated dump must never
+    look like a successful one to `pull_encrypt_store.py`.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        bearer_token: str,
+        timeout_seconds: float = 30.0,
+        urlopen=urllib.request.urlopen,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._bearer_token = bearer_token
+        self._timeout_seconds = timeout_seconds
+        self._urlopen = urlopen
 
     def run(self, *, command: Sequence[str], env: Mapping[str, str], stdout: BinaryIO) -> int:
-        raise NotImplementedError(
-            "no production DialInTransport is wired yet. This pipeline is built behind this "
-            "interface deliberately, because the real channel -- the one services/mailgun-shim's "
-            "GET /drain calls \"the collector's channel\" -- is still being built elsewhere, in a "
-            "sibling stream of work, and its shape is that stream's to decide. Wiring a real "
-            "DialInTransport on top of it is a follow-up. For local proof, pass a "
-            "LocalProcessTransport instead."
+        assert_no_forbidden_env(env)
+        tenant = _tenant_from_command(command)
+        if not TENANT_NAME_PATTERN.match(tenant):
+            raise DialInTransportError(
+                f"refusing to dial in: {tenant!r} is not a strictly valid tenant slug"
+            )
+        mysql_pwd = env.get("DB_DUMP_MYSQL_PWD")
+        if not mysql_pwd:
+            raise DialInTransportError(
+                "refusing to dial in: env carries no DB_DUMP_MYSQL_PWD -- the dump endpoint "
+                "needs it in every request, since the tenant database host holds none at rest"
+            )
+
+        url = f"{self._base_url}/dump/{tenant}"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {self._bearer_token}",
+                "X-Db-Dump-Mysql-Pwd": mysql_pwd,
+            },
+        )
+
+        try:
+            response = self._urlopen(request, timeout=self._timeout_seconds)
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return self._handle_error_response(exc, url=url)
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            raise DialInTransportError(f"dialling {url} failed: {exc}") from exc
+
+        with response:
+            expected_length = response.headers.get("Content-Length")
+            bytes_read = 0
+            try:
+                for line in response:
+                    bytes_read += len(line)
+                    stdout.write(line)
+            except (http.client.HTTPException, ConnectionError, OSError) as exc:
+                raise DialInTransportError(
+                    f"the dump stream from {url} broke before completing: {exc}"
+                ) from exc
+
+        if expected_length is not None and bytes_read != int(expected_length):
+            raise DialInTransportError(
+                f"the dump stream from {url} ended after {bytes_read} bytes, expected exactly "
+                f"{expected_length} (Content-Length) -- refusing to treat a truncated dump as "
+                "a successful 0 exit"
+            )
+        return 0
+
+    def _handle_error_response(self, exc: urllib.error.HTTPError, *, url: str) -> int:
+        body = exc.read()
+        if exc.code == 502:
+            try:
+                payload = json.loads(body)
+                return int(payload["exit_code"])
+            except (ValueError, KeyError, TypeError):
+                raise DialInTransportError(
+                    f"dump endpoint at {url} reported a producer failure (502) but the body "
+                    f"was not the expected {{'exit_code': ...}} shape: {body!r}"
+                ) from None
+        raise DialInTransportError(
+            f"dump endpoint at {url} returned {exc.code}, not 200 or 502: {body!r}"
         )

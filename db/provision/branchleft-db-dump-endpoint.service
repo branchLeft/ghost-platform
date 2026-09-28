@@ -1,0 +1,33 @@
+# The pull-model dial-in channel: serves one tenant's dump on request to
+# the org/control-side backup worker, over the bearer-token-authenticated
+# channel dump_endpoint_server.py implements. Long-running, unlike this
+# directory's other units (branchleft-db-dump.service and its siblings are
+# Type=oneshot, triggered by a .timer) -- this one listens.
+[Unit]
+Description=branchLeft per-tenant dump endpoint
+After=branchleft-compose@db.service
+Requires=branchleft-compose@db.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/branchleft/dump-endpoint.env
+WorkingDirectory=/opt/branchleft/db/provision
+ExecStart=/usr/bin/python3 /opt/branchleft/db/provision/dump_endpoint_server.py
+
+# Never DB_DUMP_MYSQL_PWD -- see dump_endpoint_server.py's own module
+# docstring: that credential never lives on this host at rest, only
+# per-request, in a header, for the duration of one dump. This
+# EnvironmentFile holds DUMP_ENDPOINT_TOKEN (the bearer token this service
+# checks every request against) and, if this host's private-network
+# address needs to be pinned explicitly rather than left at the default,
+# DUMP_ENDPOINT_HOST and DUMP_ENDPOINT_PORT.
+Restart=on-failure
+RestartSec=5
+
+# A crashed or hung dump endpoint is a backup outage, not a silent gap --
+# an operator restart storm is the more visible failure of the two.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

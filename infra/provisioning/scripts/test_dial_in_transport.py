@@ -11,6 +11,8 @@ fake `Popen` would otherwise assume correct.
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import sys
 import tempfile
@@ -118,12 +120,154 @@ class LocalProcessTransportTests(unittest.TestCase):
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", output)
 
 
-class UnwiredCollectorChannelTransportTests(unittest.TestCase):
-    def test_raises_loudly_rather_than_silently_running_anything(self) -> None:
-        transport = dit.UnwiredCollectorChannelTransport()
-        with self.assertRaises(NotImplementedError) as ctx:
-            transport.run(command=["true"], env={}, stdout=_CollectingSink())
-        self.assertIn("no production DialInTransport is wired yet", str(ctx.exception))
+_COMMAND = ["python3", "/x/dump_tenant.py", "blog", "--socket", "/x.sock"]
+_ENV = {"DB_DUMP_MYSQL_PWD": "pw"}
+
+
+class _FakeResponse:
+    """Stands in for the object `urllib.request.urlopen` hands back on a
+    2xx: a context manager whose iteration yields lines, with a `headers`
+    mapping supporting `.get`, exactly the two things `DumpEndpointTransport`
+    reads off it."""
+
+    def __init__(self, lines: list[bytes], *, content_length: int | None = None) -> None:
+        self._lines = lines
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+def _http_error(*, code: int, body: bytes) -> "dit.urllib.error.HTTPError":
+    return dit.urllib.error.HTTPError("http://db1/dump/blog", code, "error", None, io.BytesIO(body))
+
+
+class DumpEndpointTransportTests(unittest.TestCase):
+    def test_refuses_before_dialling_when_env_is_forbidden(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420", bearer_token="t", urlopen=mock.Mock(side_effect=AssertionError)
+        )
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=_COMMAND, env={"AWS_ACCESS_KEY_ID": "leak"}, stdout=_CollectingSink())
+
+    def test_refuses_a_command_too_short_to_carry_a_tenant(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420", bearer_token="t", urlopen=mock.Mock(side_effect=AssertionError)
+        )
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=["python3"], env=_ENV, stdout=_CollectingSink())
+
+    def test_refuses_a_tenant_that_fails_the_strict_slug_pattern(self) -> None:
+        """Independent of whatever validated (or failed to validate) the
+        tenant name upstream -- see the class docstring's own
+        two-independent-checks note. A caller-controlled string with a
+        path separator or shell metacharacter must never reach a URL."""
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420", bearer_token="t", urlopen=mock.Mock(side_effect=AssertionError)
+        )
+        command = ["python3", "/x/dump_tenant.py", "../../etc/passwd", "--socket", "/x.sock"]
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=command, env=_ENV, stdout=_CollectingSink())
+
+    def test_refuses_when_env_carries_no_mysql_password(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420", bearer_token="t", urlopen=mock.Mock(side_effect=AssertionError)
+        )
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=_COMMAND, env={}, stdout=_CollectingSink())
+
+    def test_sends_the_bearer_token_and_mysql_password_as_headers(self) -> None:
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["headers"] = dict(request.headers)
+            captured["url"] = request.full_url
+            return _FakeResponse([b"dump\n"], content_length=5)
+
+        transport = dit.DumpEndpointTransport(base_url="http://db1:8420", bearer_token="s3cret", urlopen=fake_urlopen)
+        transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer s3cret")
+        self.assertEqual(captured["headers"]["X-db-dump-mysql-pwd"], "pw")
+        self.assertEqual(captured["url"], "http://db1:8420/dump/blog")
+
+    def test_streams_every_line_into_stdout_and_returns_zero(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420",
+            bearer_token="t",
+            urlopen=lambda request, timeout: _FakeResponse([b"line one\n", b"line two\n"], content_length=18),
+        )
+        sink = _CollectingSink()
+        exit_code = transport.run(command=_COMMAND, env=_ENV, stdout=sink)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(b"".join(sink.chunks), b"line one\nline two\n")
+
+    def test_a_truncated_response_raises_rather_than_returning_zero(self) -> None:
+        """The sabotage this test exists to catch: a response that stopped
+        short of its own declared Content-Length must never be reported as
+        a clean 0 exit -- see DumpEndpointTransport's own docstring."""
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420",
+            bearer_token="t",
+            # Server said 100 bytes were coming; only 8 actually arrived.
+            urlopen=lambda request, timeout: _FakeResponse([b"line one"], content_length=100),
+        )
+        with self.assertRaises(dit.DialInTransportError) as ctx:
+            transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+        self.assertIn("truncated", str(ctx.exception))
+
+    def test_connection_failure_raises(self) -> None:
+        def fake_urlopen(request, timeout):
+            raise dit.urllib.error.URLError("connection refused")
+
+        transport = dit.DumpEndpointTransport(base_url="http://db1:8420", bearer_token="t", urlopen=fake_urlopen)
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+
+    def test_401_raises_rather_than_returning_an_exit_code(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420",
+            bearer_token="t",
+            urlopen=mock.Mock(side_effect=_http_error(code=401, body=b'{"error": "Unauthorized"}')),
+        )
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+
+    def test_502_returns_the_producers_own_exit_code(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420",
+            bearer_token="t",
+            urlopen=mock.Mock(
+                side_effect=_http_error(code=502, body=json.dumps({"error": "x", "exit_code": 1}).encode())
+            ),
+        )
+        exit_code = transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+        self.assertEqual(exit_code, 1)
+
+    def test_502_with_an_unparseable_body_raises_rather_than_guessing_zero(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420",
+            bearer_token="t",
+            urlopen=mock.Mock(side_effect=_http_error(code=502, body=b"not json")),
+        )
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+
+    def test_an_unexpected_status_raises(self) -> None:
+        transport = dit.DumpEndpointTransport(
+            base_url="http://db1:8420",
+            bearer_token="t",
+            urlopen=mock.Mock(side_effect=_http_error(code=500, body=b"boom")),
+        )
+        with self.assertRaises(dit.DialInTransportError):
+            transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
 
 
 if __name__ == "__main__":

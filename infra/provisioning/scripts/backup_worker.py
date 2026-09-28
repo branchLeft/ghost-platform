@@ -48,7 +48,12 @@ import time
 from collections.abc import Callable
 
 import shared_objectstorage
-from dial_in_transport import DialInTransport, LocalProcessTransport, UnwiredCollectorChannelTransport
+from dial_in_transport import (
+    DialInTransport,
+    DialInTransportError,
+    DumpEndpointTransport,
+    LocalProcessTransport,
+)
 from pull_encrypt_store import CopyTarget, PullEncryptStoreError, pull_encrypt_and_store
 
 # infra/provisioning/scripts/ -> infra/provisioning/ -> infra/ -> repo root.
@@ -517,8 +522,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "use LocalProcessTransport instead of the real dial-in channel -- for proof "
             "against local containers only, never for a real tenant. Without this flag, "
-            "main() uses UnwiredCollectorChannelTransport and refuses to run at all, because "
-            "no production channel is wired yet (see dial_in_transport.py's open item)"
+            "main() dials DUMP_ENDPOINT_BASE_URL for real, over dial_in_transport.py's "
+            "DumpEndpointTransport"
         ),
     )
     args = parser.parse_args(argv)
@@ -527,7 +532,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.local_test_transport:
         transport = LocalProcessTransport()
     else:
-        transport = UnwiredCollectorChannelTransport()
+        transport = DumpEndpointTransport(
+            base_url=_require_env("DUMP_ENDPOINT_BASE_URL"),
+            bearer_token=_require_env("DUMP_ENDPOINT_BEARER_TOKEN"),
+        )
 
     mysql_pwd = _require_env("DB_DUMP_MYSQL_PWD")
     age_recipient = _require_env("AGE_RECIPIENT_PUBLIC_KEY")
@@ -543,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
             dump_tenant_path=args.dump_tenant_path,
             socket_path=args.socket_path,
         )
-    except (InvalidTenantName, NotImplementedError) as exc:
+    except (InvalidTenantName, NotImplementedError, DialInTransportError) as exc:
         print(f"backup_worker: {exc}", file=sys.stderr)
         return 1
 
