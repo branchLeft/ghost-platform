@@ -204,10 +204,20 @@ before(async () => {
     mail__transport: 'stub',
     // This test never uploads or reads media -- it exists to prove the
     // provisioning script against a real MySQL backend, not to prove
-    // storage. Bypasses the image's own boot guard for an unset
-    // storage__active (see docker-entrypoint.branchleft.sh), the same
-    // escape hatch the SQLite image test already uses.
+    // storage. The local-dev hatch (docker-entrypoint.branchleft.sh)
+    // waives only durability now, not the scanning decorator itself, so
+    // the decorator still has to be named per feature even though this
+    // test never exercises it.
     BRANCHLEFT_ALLOW_LOCAL_STORAGE: 'true',
+    storage__images__adapter: 'ScanningStorageAdapter',
+    storage__images__wraps: 'LocalImagesStorage',
+    storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+    storage__media__adapter: 'ScanningStorageAdapter',
+    storage__media__wraps: 'LocalMediaStorage',
+    storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+    storage__files__adapter: 'ScanningStorageAdapter',
+    storage__files__wraps: 'LocalFilesStorage',
+    storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
   };
   const envArgs = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
   docker(

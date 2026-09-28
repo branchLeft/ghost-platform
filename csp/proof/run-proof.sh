@@ -62,6 +62,15 @@ start_ghost() {
         -e database__connection__filename=/var/lib/ghost/content/data/ghost-csp-proof.db \
         -e privacy__useUpdateCheck=false \
         -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+        -e storage__images__adapter=ScanningStorageAdapter \
+        -e storage__images__wraps=LocalImagesStorage \
+        -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+        -e storage__media__adapter=ScanningStorageAdapter \
+        -e storage__media__wraps=LocalMediaStorage \
+        -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+        -e storage__files__adapter=ScanningStorageAdapter \
+        -e storage__files__wraps=LocalFilesStorage \
+        -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
         -e logging__transports='["stdout"]' \
         -e portal__url="$ORIGIN/bl-assets/portal.min.js" \
         -e sodoSearch__url="$ORIGIN/bl-assets/sodo-search.min.js" \
