@@ -1,14 +1,7 @@
 /**
  * The Ghost version a descriptor *intends*, read from `descriptor.image`
- * rather than stored a second time. `image` is pinned by digest
- * (`brand.ts#validateDigestPinnedRef`); the optional human-readable tag
- * beside the digest — kept, per that validator's own comment, "for a human
- * reading the ref" — is the only place a Ghost version appears anywhere in
- * this schema. LLD-8 §09 needs it for one purpose only: comparing it
- * against what a running Ghost instance reports about itself. That
- * "reported" half never comes from here — LLD-4's mark is explicit that
- * the reported version comes from the instance, never from our own
- * records — so this module knows nothing about probing anything live.
+ * rather than stored a second time. This module knows nothing about probing
+ * a running instance for its reported version. See version.md.
  */
 
 import type { TenantDescriptor } from './descriptor.js';

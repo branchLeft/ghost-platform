@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for mint-tenant-passphrase.
 
-This script's output becomes a tenant's `PULUMI_CONFIG_PASSPHRASE` -- the only
-thing standing between that tenant's stack and permanent unavailability once
-GCP KMS is gone. These tests check the properties that matter for that: the
-generator is the CSPRNG one and not the predictable one, the entropy floor is
-enforced rather than merely documented, two mints never collide in a sample
-large enough to make a collision meaningful, and the value on stdout is
-exactly the passphrase -- no newline, no label, nothing a naive `$(...)`
-capture in the workflow could get wrong.
+This script's output becomes a tenant's `PULUMI_CONFIG_PASSPHRASE`, so these
+tests check the CSPRNG generator, the enforced entropy floor, collision-free
+mints, and that stdout carries exactly the passphrase.
+See test_mint_tenant_passphrase.md#module-overview.
 """
 
 import importlib.util

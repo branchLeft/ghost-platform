@@ -2,16 +2,11 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /**
- * server.ts is excluded from coverage (vitest.config.ts) because it is a
- * process entrypoint -- reading real env vars, starting a real timer,
- * wiring real signal handlers -- none of which is unit-testable without
- * starting an actual OS process. `reachability.test.ts` covers the
- * *behaviour* this file's binding call produces by spawning the real
- * built `dist/server.js`. This test covers the *source* directly, as a
- * fast, no-build-required first line of defence: it fails on any rewrite
- * of the one `.listen()` call site's host argument, including one whose
- * behaviour a reachability test would still have to actually run a
- * process and open a socket to notice.
+ * `server.ts` is excluded from coverage since it is a process entrypoint,
+ * unit-testable only by starting a real OS process. This test covers the
+ * *source* directly as a fast first line of defence for the one
+ * `.listen()` call site's host argument.
+ * See ../../README.md#server-test-wiring.
  */
 describe('server.ts wiring', () => {
   it('binds to config.bindHost exactly -- no literal, no fallback, no wrapping expression', () => {

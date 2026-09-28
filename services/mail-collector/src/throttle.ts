@@ -24,25 +24,13 @@ const SECONDS_PER_HOUR = 3600;
 const POLL_INTERVAL_MS = 250;
 
 /**
- * The estate-wide token bucket, in messages/hour. This is the shim's own
- * per-spool bucket (`services/mailgun-shim/src/throttle.ts`), relocated
- * rather than copied by import: that module's own comment documents why it
- * has to move once every host gets its own spool (LLD-6's end state) --
- * N spools each independently allowed up to `messagesPerHour` is N times
- * the intended rate against the one address that carries mx1's sending
- * reputation. This collector is the single egress point every spool's mail
- * converges on, so it is the one place left that can still bound the real
- * rate; the shim's bucket stays where it is, gating how much any one spool
- * can hand over in a single drain, never the estate total.
- *
- * Starts with exactly ONE grace token, not a full bucket and not zero, for
- * the same reason the shim's own bucket does: zero would make the very
- * first message this process ever forwards wait out a full 1/messagesPerHour
- * hour before anything has actually burst, breaking this story's own "within
- * a second of enqueue" cold-start criterion for no protective reason; a full
- * bucket would let a freshly restarted collector burst up to the hourly cap
- * immediately, defeating the point of a ceiling that exists to protect mx1's
- * IP reputation across restarts, not just within one process lifetime.
+ * The estate-wide token bucket, in messages/hour -- the shim's own
+ * per-spool bucket relocated here because this collector is the single
+ * egress point every spool's mail converges on. Starts with exactly one
+ * grace token, not a full bucket and not zero, so the first message
+ * forwarded after a restart neither waits out a full period nor lets a
+ * restart burst up to the hourly cap.
+ * See ../README.md#throttle-token-bucket.
  */
 export function createThrottle(opts: ThrottleOptions): Throttle {
   const now = opts.now ?? (() => Date.now() / 1000);

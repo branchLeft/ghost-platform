@@ -345,17 +345,11 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     });
 
     it('a message queued shortly AFTER an edit, on an otherwise-idle collector, sees the new rate -- proactive reload, not only reload-while-waiting', async () => {
-      // throttle.ts's own `waitForToken()` already calls `reload()` on
-      // every attempt while a message is actively waiting for a token --
-      // that path was never the gap. The gap is a collector with NO
-      // message in flight at all: nothing calls `waitForToken()`, so
-      // nothing reloads, unless the main loop itself reloads on every
-      // iteration regardless of drain content (collectorLoop.ts's own
-      // call, right after re-reading the live target). This test isolates
-      // exactly that: the collector sits idle on empty drains for a while,
-      // the file is edited, and ONLY THEN does a message get enqueued --
-      // proving the new rate was already loaded before there was
-      // anything to throttle, not fetched reactively once needed.
+      // Isolates the idle-collector reload path (no in-flight message ever
+      // calls waitForToken(), so only collectorLoop.ts's own per-iteration
+      // reload can pick up the edit) from the already-covered
+      // reload-while-waiting path.
+      // See ../../README.md#collectorloop-test-proactive-throttle-reload.
       const configPath = join(throttleDir, 'throttle.json');
       writeFileSync(configPath, JSON.stringify({ messagesPerHour: 5 }));
       const throttle = createThrottle({ configPath, messagesPerHour: 5 });

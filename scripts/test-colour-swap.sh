@@ -1,35 +1,11 @@
 #!/bin/sh
-# Proves the colour-swap mechanism this story adds on top of the drain
-# sidecar's own contract: two real Ghost containers, one shared SQLite database
-# (U4's own spike, extended here with real writes during the overlap and a
-# real swap in both directions), and the drain flag as the one thing that
-# ever moves traffic between them.
-#
-# What this proves, against real containers:
-#   - Booting a new colour always drains it first (this script sets each
-#     colour's flag before starting it, the same order
-#     services/broker/src/app.ts's attemptColourSwap always uses).
-#   - A swap in each order (a->b and b->a) moves continuous requests to
-#     exactly one version at a time, with none failing.
-#   - Swap latency: time from the flag change to the sidecar reporting it,
-#     polled at the same 2s interval LLD-4 §U3b sets for the real edge.
-#   - SQLite behaviour under concurrent requests against both colours'
-#     shared file during the overlap, counted -- read-path only (see the
-#     caveat where this is measured: no authenticated write path is
-#     fixtured here, so this does not yet prove genuine write contention).
-#   - Sabotage (this story's own Done-means case, distinct from the drain
-#     sidecar's own sabotage): with both colours' flags cleared at once,
-#     both answer 200 -- proven directly against each colour's own
-#     sidecar, since this script does not run a real Caddy/router (see the
-#     PR body for why: the edge's own routing behaviour for this exact
-#     topology was already measured when the health-port ambiguity that
-#     blocked this story was settled).
-#
+# Proves the colour-swap mechanism against real containers: two real Ghost
+# containers sharing one SQLite database, and the drain flag as the one
+# thing that ever moves traffic between them.
 # Usage:
 #   docker build -t ghost-platform:local .
-#   (build drain-sidecar:local -- see the PR body for tonight's workaround
-#    for the dead GitHub Packages token the real Dockerfile needs)
 #   ./scripts/test-colour-swap.sh drain-sidecar:local ghost-platform:local
+# See scripts/test-colour-swap.md#what-this-proves.
 set -e
 
 SIDECAR_IMAGE="${1:?usage: test-colour-swap.sh <sidecar-image-tag> <platform-image-tag>}"
@@ -154,17 +130,11 @@ assert_status_now "http://localhost:$SIDECAR_B_PORT/healthz" 503 "colour b's sid
 echo
 
 echo "--- SQLite contention during the overlap: concurrent traffic against both colours' shared file while both are up ---"
-# CAVEAT, stated rather than hidden: this repo's authenticated write paths
-# all need an Admin API session or a configured mail transport this
-# throwaway fixture does not set up, so every request below is refused by
-# Ghost's own auth middleware (401/400) before it reaches SQLite at all --
-# it measures concurrent *read-path* throughput against the shared file
-# (both colours' boot-time migrations and queries), not a genuine write
-# race. A real authenticated-write contention run is discovered work (see
-# the PR body); reporting "0 busy errors" from requests that never wrote
-# anything would be exactly the false-negative shape this estate's own
-# fixtures have produced before, so this prints what was actually measured
-# rather than a number that looks like the Done-means bullet but isn't.
+# CAVEAT: every request below is refused by Ghost's own auth middleware
+# before it reaches SQLite, since no Admin API session or mail transport
+# is fixtured here -- this measures concurrent read-path throughput only,
+# never genuine write contention.
+# See scripts/test-colour-swap.md#sqlite-contention-caveat.
 BUSY_ERRORS=0
 CONCURRENT_REQUESTS=20
 i=0

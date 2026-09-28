@@ -35,22 +35,11 @@ export interface CollectorRuntime {
 const DEFAULT_DEDUPE_SWEEP_MS = 5 * 60 * 1000;
 
 /**
- * Runs one drain-and-deliver loop per host the descriptor currently names,
- * and reconciles that set of loops every `descriptorRefreshMs` against
- * whatever the descriptor now says -- adding a loop for a host that just
- * appeared, and retiring one for a host that dropped out or expired. A
- * host absent from the descriptor at construction time, or removed from it
- * later, never gets a loop at all: this is the mechanism behind LLD-6 §09's
- * load-bearing property, that a host not in the drain list is a host whose
- * mail is never collected, however reachable it stays on the network.
- *
- * `deps.throttle` and `deps.health` are each shared across EVERY target
- * loop this function starts -- one instance, passed once, never
- * constructed per-target. That sharing is what makes the throttle an
- * estate-wide ceiling rather than N independent per-host ones (see the PR
- * body's Design section and its review-response proof), and what lets
- * `health` reflect the collector's submission health as a whole rather
- * than one host's routine outage.
+ * Reconciles one drain-and-deliver loop per descriptor-named host on every
+ * refresh; a host absent or removed never gets a loop at all (LLD-6 §09).
+ * `deps.throttle` and `deps.health` are shared across every target loop,
+ * never constructed per-target.
+ * See ../README.md#collectorloop-createcollectorruntime.
  */
 export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntime {
   const running = new Map<string, { stopped: boolean; done: Promise<void> }>();

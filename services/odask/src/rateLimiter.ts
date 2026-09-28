@@ -1,15 +1,8 @@
 /**
- * A single global token bucket, applied only to requests for a hostname the
- * served set does not contain (LLD-5 E3: Caddy's own on-demand-issuance
- * throttle no longer exists, so the ceiling moves into this service). A
- * served hostname is never throttled -- it is a legitimate, bounded-cost
- * `Set.has()` regardless of rate.
- *
- * The bucket is two numbers (`tokens`, `lastRefillMs`), not a per-hostname
- * or per-source map: a burst of many *different* unknown names costs the
- * same one decrement each, so nothing here grows with how many distinct
- * names an attacker tries -- refused without growing memory, not merely
- * refused behind a large enough cap.
+ * A single global token bucket for unserved-hostname requests (LLD-5 E3).
+ * Two numbers, not a per-hostname map, so a burst of many different
+ * unknown names costs memory nothing extra per name.
+ * See ../README.md#ratelimiter-tokenbucket.
  */
 export class TokenBucket {
   private tokens: number;

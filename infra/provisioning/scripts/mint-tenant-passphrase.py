@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """Mint one tenant's own Pulumi secrets passphrase.
 
-Prints exactly one high-entropy value to stdout and nothing else, so the
-caller captures it with plain command substitution -- no prefix, no trailing
-explanation, nothing a stray print could mix into the value that then gets
-written into a GitHub Actions secret and an `encryptionsalt`-bearing config
-file.
+Usage: mint-tenant-passphrase.py [--bytes N]
 
-Uses `secrets.token_urlsafe`, the CSPRNG-backed generator, never `random`:
-`random` is a Mersenne Twister, seedable and predictable from enough output,
-and a passphrase is exactly the value that must not be.
-
-    mint-tenant-passphrase.py [--bytes N]
+Prints exactly one high-entropy value to stdout and nothing else. Uses
+`secrets.token_urlsafe`, the CSPRNG-backed generator, never `random`, which
+is seedable and predictable from enough output.
+See mint-tenant-passphrase.md#module-overview.
 """
 
 import argparse

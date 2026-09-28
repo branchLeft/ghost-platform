@@ -447,18 +447,11 @@ describe('the real dist/server.js entrypoint', () => {
     }
   });
 
-  // --- The review's own
-  // concrete scenario, end to end through the real spawned entrypoint --
-  // a process died right after a colour swap safely reached its target
-  // (the target's flag cleared, the source's drained), before its own
-  // final `writeSlotState` ran. Pre-seeds exactly the `swapping` state
-  // and drain-flag files `attemptColourSwap` would have left at that
-  // instant (see app.test.ts's "writes the swapping marker" test for the
-  // deterministic proof that it really does write this, before any side
-  // effect). Recovery must adopt the target, and a retried /reconcile
-  // with the same new descriptor must hit the idempotent branch --
-  // returning immediately, touching no flag and draining nothing a
-  // second time -- rather than believing the stale source is still live.
+  // End to end through the real spawned entrypoint: a process died right
+  // after a colour swap safely reached its target, before its own final
+  // `writeSlotState` ran. Recovery must adopt the target, and a retried
+  // /reconcile must hit the idempotent branch rather than believing the
+  // stale source is still live. See server.test.md#crash-after-swap-recovery.
   it('recovers a crash right after a swap reached its target, and a retried reconcile never re-drains anything', async () => {
     const { env, keyPair, stateDir, drainFlagDir } = await baseEnv();
     const second = demoDescriptor({ ownerEmail: 'second@example.com' as never });

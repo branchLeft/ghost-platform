@@ -123,6 +123,29 @@ regression test against the real file-backed readers in
    unlike trusting a write order, which only holds if the broker's actual
    order matches what was assumed.
 
+## The traffic counter
+
+`trafficCounter.ts`'s store is a per-slot count of real reader requests:
+incremented once for every `verify()` call that ends up admitting the
+request (a `200`, meaning Caddy's `forward_auth` will proxy it on to the
+slot's own colour pair -- LLD-5 §03's placement). This is the one place in
+the estate that sees every real request to a gated host before it reaches
+Ghost, which is exactly why `services/broker`'s pre-stop check reads this
+file rather than anything Ghost or the drain sidecar can report: a
+sidecar answers for a colour's own health, never for whether a reader has
+actually been admitted, and the falsification clause (LLD-4 §04) is
+explicit that "reported healthy" must never stand in for that.
+
+It is colour-blind by construction: this file never learns which colour
+ultimately serves an admitted request (`$SLOT_UPSTREAM` in the proof
+Caddyfile is the slot's whole colour pair; Caddy's own `lb_policy first`
+decides after this check already ran). That is sufficient for
+`services/broker`'s use of it, not a gap -- at every instant only the
+slot's one preferred, undrained colour can actually be selected
+(LLD-4 §U3b: "exactly one flag change moves the traffic"), so a count
+taken after a swap has finished moving traffic is, by that invariant, a
+count of requests the new colour alone received.
+
 ## Minting a hash
 
 `node dist/hashCli.js` reads a passphrase on stdin and writes its
@@ -130,6 +153,18 @@ regression test against the real file-backed readers in
 recommended option: 64 MiB, 3 passes, 4-way parallel). It never touches the
 slots file or the lease directory — the descriptor is rendered from its
 output, not the other way round.
+
+## Resolving the request source
+
+`source.ts`'s `SourceResolver.resolve` decides who is asking, for the
+purpose of the attempt ceiling. The socket peer is the only fact about a
+request nobody on the far side can choose. `X-Forwarded-For` is read only
+when that peer is a configured trusted proxy -- the edge -- and then only
+its rightmost entry, which is the address the edge itself saw; anything to
+its left was written by the client. A trusted peer that sends no usable
+header yields no source at all, and the caller refuses rather than falling
+back to the proxy's own address, which would pool every visitor into one
+bucket.
 
 ## A trusted-proxy list left empty
 
@@ -140,6 +175,89 @@ it trips the limit. Setting it is the edge story's responsibility
 ([ISSUE branchLeft/workspace#1254](https://github.com/branchLeft/workspace/issues/1254)),
 not something this service can default its way out of: it has no way to
 know which peer address is really the edge.
+
+## `peek` and the reclaim sweep
+
+`ceiling.ts`'s `peek` gives the verdict `attempt` would give right now,
+without recording an attempt: no entry created for the key, no count
+incremented. It may still evict other sources' already-expired windows when
+the table looks full, the same reclaiming `attempt` itself does — without
+that, a table that once reached `maxSources` would refuse every source
+forever, since nothing else ever runs a sweep once every caller peeks before
+it ever calls `attempt`.
+
+For a caller checking more than one ceiling before deciding whether to
+charge any of them: peek every ceiling first, and only call `attempt` on
+ones that already peeked `allowed`, so a request refused by one ceiling
+never creates or charges an entry in another.
+
+## Why `attempt` and `peek` share one decision path
+
+`ceiling.ts`'s `attempt` and `peek` share the whole decision function, sweep
+included, so the two can never disagree about what "allowed" means. `peek`
+was the regression the sweep's old home (only inside `attempt`) caused: once
+a table held `maxSources` expired windows, `peek` refused every source
+forever, and `login()` never reaches `attempt` on a source `peek` has
+already refused, so nothing was left to reclaim them.
+
+The sweep is safe to run from a read-only call: it only ever deletes entries
+already treated as absent for every verdict, so evicting one changes no
+decision, only the table's own size.
+
+## The broad ceiling's default of 1000
+
+`GATE_CEILING_BROAD_ATTEMPTS` buckets one bucket per IPv6 /48 rather than
+/64, so a flood spread across many /64s inside a single /48 (a block
+routinely allocated whole to one customer) still exhausts a bucket instead
+of multiplying past the per-/64 limit uncounted. `login()` checks both
+tiers without charging either, and charges both together only when both
+admit -- a request either tier refuses costs neither, and creates no new
+narrow-table entry, so one /48's own narrow-limited attempts are the only
+thing that can ever spend its broad budget, never someone else's refused
+attempts.
+
+1000 is a compromise, not a proof: low enough that one /48 can add at most
+~1% to the narrow table (needing on the order of 100 /48s to fill it,
+versus one before this tier existed), high enough that ordinary
+shared-allocation traffic to a low-volume demo estate is very unlikely to
+hit it. A client that can rotate through many /64s inside its own /48 can
+still exhaust that /48's own budget -- this tier bounds the blast radius to
+one /48, it does not make that /48's visitors immune to each other.
+
+## The argon2 concurrency cap's default of 3
+
+`GATE_ARGON2_MAX_CONCURRENT` is bounded at 3, one below Node's default
+libuv threadpool size (4): `crypto.argon2` and `fs` share that pool, and
+`verify` -- which runs on every forward_auth, every page and every asset --
+does several `fs` calls of its own (the slots read; open/read/close on the
+lease record).
+
+Measured on the reference machine: with the cap at 4, saturating it pushed
+`verify`'s own file operations from a 0.13 ms idle median to a 112 ms
+median (130 ms max) -- the whole pool was busy deriving. At 3, one thread
+stays free for `fs` work and the same measurement holds at a 0.3 ms median
+(1.8 ms max).
+
+The fix is the cap sitting below the pool, not above or equal to it;
+raising `UV_THREADPOOL_SIZE` instead would also work but adds a second
+place to keep in sync, so this config does not do that. `GATE_ARGON2_MAX_QUEUED`'s
+64 concurrent waiters is the queue's own cap, so a flood is refused once it
+would hold more pending derivations than that.
+
+## Why a derivation gate exists
+
+The per-source ceiling (`ceiling.ts`) limits attempts from one source over
+time, but places no limit on how many distinct sources can be
+mid-derivation together, and each derivation the slot's own hash allows can
+hold up to 256 MiB and run for as long as its parameters ask. A flood
+spread across many addresses that never each trip their own ceiling would
+otherwise queue an unbounded number of derivations, unbounded in memory as
+much as in count.
+
+A slot past the concurrency cap waits in a queue rather than running
+immediately; a slot past the queue's own cap is refused outright, so the
+bound holds under load instead of shifting into an unbounded backlog of
+waiters.
 
 ## The derivation concurrency cap (design amendment)
 

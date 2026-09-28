@@ -1,29 +1,11 @@
 #!/usr/bin/env node
-// Runs Ghost's own owner-setup wizard against a fresh container (an
-// announcement, a published post of our own), then drives a real headless
-// Chromium against the origin container (Caddy in front of the pinned
-// Ghost image), recording every network request the browser makes while
-// exercising the home page with the admin-toolbar marker cookie set,
-// Portal's sign-in overlay, search, the published post (comments), and a
-// signup-form embed built from Ghost's own live config. Portal and
-// sodoSearch render unconditionally, in ghost_head.js, on any install; the
-// other four do not -- announcementBar needs a configured announcement,
-// comments needs a post whose comment_id context the theme's helper
-// receives, adminToolbar needs the marker cookie, and signupForm is never
-// requested by a Ghost-rendered page at all (it is meant to be pasted onto
-// an external page, so this proof builds that page itself). A proof that
-// skipped setup could never have caught a broken override for any of the
-// first three.
-//
-// Fails (exit 1) if any pinned bundle is never requested at all -- the
-// primary signal, independent of where a fallback lands -- or if any
-// script/stylesheet request's origin is not the origin under test, the
-// resource types CSP's script-src/style-src govern and the only ones a
-// Ghost config-key override can redirect. Every third-party request of any
-// type is still recorded in the output, scored or not. A setup step that
-// fails (Admin API rejects the request, no session cookie, no post slug) is
-// fatal (exit 2) -- swallowing it here would silently narrow the proof to
-// whichever bundles happen to render without any content at all.
+// Drives Ghost's own owner-setup wizard against a fresh container, then a
+// real headless Chromium against the origin, exercising every surface a
+// pinned bundle can render behind (home page, Portal, search, a post,
+// comments, a signup-form embed). A setup step that fails is fatal (exit
+// 2): swallowing it here would silently narrow the proof to whichever
+// bundles happen to render without any content at all.
+// See ../README.md#capture-network-setup-and-signal.
 import { chromium } from 'playwright';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -35,17 +17,11 @@ const LABEL = process.env.PROOF_LABEL || 'run';
 
 const originUrl = new URL(ORIGIN);
 
-// The CSP directive this story closes is script-src (LLD-5 C2; the issue's
-// own priority comment: "the strict CSP needs zero third-party script
-// origins") -- so the pass/fail signal is scoped to the resource types that
-// directive governs: script and stylesheet, exactly the two Ghost config
-// keys pins.json overrides. img-src is a different, much more permissive
-// directive that this story's mechanism (a fixed set of config-key URLs)
-// cannot address -- see widgets/README.md for what it actually covers.
-// Every third-party request is still recorded in `allThirdParty` below
-// regardless of type, so nothing is hidden -- only the exit code is scoped
-// to what pinning can actually fix. Bundle *absence* (missingBundles,
-// below) is a separate, type-independent signal and is not scoped at all.
+// The pass/fail signal is scoped to script and stylesheet requests, the
+// resource types CSP's script-src directive governs and the only two
+// Ghost config keys pins.json overrides -- img-src is a different, more
+// permissive directive a fixed set of config-key URLs cannot address.
+// See ../README.md#capture-network-csp-scope.
 const SCOPED_TYPES = new Set(['script', 'stylesheet']);
 
 function isThirdPartyOrigin(requestUrl) {

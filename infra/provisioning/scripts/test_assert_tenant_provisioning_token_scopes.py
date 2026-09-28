@@ -2,13 +2,10 @@
 """Unit tests for assert-tenant-provisioning-token-scopes.py.
 
 This is the preflight `provision-tenant.yml` runs before it creates
-anything: a token missing `workflow` or `repo` fails the run on whichever
-later step needs it, after a repository, a stack and a published secret
-already exist. These tests exercise the header-extraction and set logic
-directly, including the superstring cases (`workflow_dispatch`,
-`repo:status`) that a substring-matching check would wrongly accept in
-place of the scope it actually requires, and the header-absent case that
-must refuse rather than abort.
+anything, so these tests exercise the header-extraction and set logic
+directly, including the superstring cases a substring-matching check would
+wrongly accept, and the header-absent case.
+See test_assert_tenant_provisioning_token_scopes.md#module-overview.
 """
 
 from __future__ import annotations

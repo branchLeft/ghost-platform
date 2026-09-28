@@ -6,14 +6,7 @@ export interface SidecarConfig {
   ghostAdminSiteUrl: string;
   /**
    * The Ghost version the descriptor intends, or `null` when nothing has
-   * told this process yet. Deliberately optional and sourced from the
-   * environment rather than computed here: this service has no descriptor
-   * and no opinion on how one reaches it -- render-core's
-   * `intendedGhostVersion()` is what a reconciler calls before setting
-   * this, and where that wiring lands is a slot-placement decision this
-   * service has no more opinion on than it has on `DRAIN_FLAG_PATH`'s own
-   * placement (see README.md). Unset, `/metrics` still reports Ghost's own
-   * version; it just cannot say whether that matches anything.
+   * told this process yet. See ../README.md#get-metrics--per-tenant-health-and-version.
    */
   intendedGhostVersion: string | null;
 }

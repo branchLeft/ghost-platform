@@ -1,20 +1,9 @@
 /**
- * The real control this story's review asked for: a rendered demo does
- * not merely write seven files — it runs. Renders the demo golden
- * fixture's own `compose.yml` (the actual `render()` output, not a
- * hand-written stand-in), provisions its three external volumes exactly
- * as the eventual demo-host build step would, starts `ghost-a` for real
- * against the platform image, and asserts Ghost answers on loopback while
- * never publishing on the private-IP-shaped address a demo's own
- * `appHostIp` field carries.
- *
- * Needs Docker and the `ghost-platform:ci` image (built by this repo's
- * `docker build .` at the repo root — see `build.yml`'s "docker build" job,
- * which already builds and smoke-tests it on every PR). `render-core-ci.yml`
- * runs `npm ci`/test/coverage inside `render-core/` only and never builds
- * that image, so this suite detects its absence and skips rather than
- * failing a CI job that has no way to produce it — proven locally, where
- * both preconditions hold, and recorded as run in the PR body.
+ * A rendered demo does not merely write seven files — it runs. Boots the
+ * demo golden fixture's real `compose.yml` output against the platform
+ * image and asserts Ghost answers on loopback only. Needs Docker and the
+ * `ghost-platform:ci` image; skips rather than fails when either is
+ * absent. See live-demo-boot.md.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

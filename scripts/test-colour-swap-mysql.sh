@@ -1,16 +1,9 @@
 #!/bin/sh
 # The MySQL half of the colour-swap proof (test-colour-swap.sh is the
-# SQLite half): two real Ghost containers, one real MySQL database, proving
-# the swap in each order and the drain-flag sabotage are backend-agnostic --
-# neither depends on SQLite's own single-writer file lock. Does not repeat
-# the SQLite-specific busy-error measurement (SQLite's own contention shape
-# has no MySQL equivalent worth counting the same way).
-#
-# Usage:
-#   docker build -t ghost-platform:local .
-#   (build drain-sidecar:local -- see the PR body for tonight's workaround
-#    for the dead GitHub Packages token the real Dockerfile needs)
-#   ./scripts/test-colour-swap-mysql.sh drain-sidecar:local ghost-platform:local
+# SQLite half): proves the swap and the drain-flag sabotage are
+# backend-agnostic, against a real MySQL database.
+# Usage: ./scripts/test-colour-swap-mysql.sh <sidecar-image-tag> <platform-image-tag>
+# See scripts/test-colour-swap-mysql.md#what-this-proves.
 set -e
 
 SIDECAR_IMAGE="${1:?usage: test-colour-swap-mysql.sh <sidecar-image-tag> <platform-image-tag>}"
