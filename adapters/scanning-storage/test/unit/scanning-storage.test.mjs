@@ -41,6 +41,7 @@ const RETRY_MS = 20;
 const settle = (ms = RETRY_MS * 4) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const SILENT_LOGGER = { error: () => {} };
+const WAIT = { timeout: 5000, interval: 10 };
 
 function buildAdapter({
   refuse = new Map(),
@@ -506,6 +507,96 @@ describe('the hold branch', () => {
 
       expect(secondAdapter.wrapped.savedRaw).toHaveLength(0);
       expect(secondAdapter.hold.isPending(BAD_DIGEST)).toBe(true);
+    });
+
+    // Ghost builds one decorator per storage feature, and a deployment
+    // gives all three the same quarantinePath. After a restart, only the
+    // feature that accepted the upload may resume and promote its hold;
+    // the others' verdict clients answering "clean" first must neither
+    // promote it into their own served tree nor delete the bytes the
+    // owning feature is still waiting on.
+    describe.each([
+      ['local', (feature) => ({ storagePath: `/var/lib/ghost/content/${feature}` })],
+      [
+        'object storage',
+        (feature) => ({
+          storagePath: `content/${feature}`,
+          bucket: 'test-bucket',
+          cdnUrl: 'https://cdn.example.test/test-bucket',
+        }),
+      ],
+    ])('three features sharing one quarantinePath (%s backend)', (_name, featureConfig) => {
+      function bootAllFeatures(quarantinePath, imagesUnavailable) {
+        const boot = (feature, unavailable) =>
+          buildAdapter({
+            quarantinePath,
+            unavailable,
+            holdMaxRetryMs: RETRY_MS,
+            wrappedConfig: featureConfig(feature),
+          });
+        return {
+          images: boot('images', imagesUnavailable),
+          media: boot('media', []),
+          files: boot('files', []),
+        };
+      }
+
+      it('a restarted process promotes a held image only through the images feature, never another', async () => {
+        const quarantinePath = path.join(tmpDir, 'quarantine');
+        const before = bootAllFeatures(quarantinePath, [BAD_DIGEST]);
+        await before.images.instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+        for (const { instance } of Object.values(before)) instance.hold.stopAll();
+
+        const after = bootAllFeatures(quarantinePath, [BAD_DIGEST]);
+        expect(after.images.instance.hold.isPending(BAD_DIGEST)).toBe(true);
+        expect(after.media.instance.hold.isPending(BAD_DIGEST)).toBe(false);
+        expect(after.files.instance.hold.isPending(BAD_DIGEST)).toBe(false);
+
+        await settle(RETRY_MS * 6);
+        expect(after.media.instance.wrapped.savedRaw).toHaveLength(0);
+        expect(after.files.instance.wrapped.savedRaw).toHaveLength(0);
+        expect(after.images.instance.wrapped.savedRaw).toHaveLength(0);
+
+        after.images.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+        await vi.waitFor(
+          () => expect(after.images.instance.hold.isPending(BAD_DIGEST)).toBe(false),
+          WAIT
+        );
+
+        expect(after.images.instance.wrapped.savedRaw).toHaveLength(1);
+        expect(after.images.instance.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
+        expect(after.media.instance.wrapped.savedRaw).toHaveLength(0);
+        expect(after.files.instance.wrapped.savedRaw).toHaveLength(0);
+      });
+
+      it('the same bytes held by two features both promote, each into its own tree, and the bytes outlive the first promotion', async () => {
+        const quarantinePath = path.join(tmpDir, 'quarantine');
+        const boot = (feature) =>
+          buildAdapter({
+            quarantinePath,
+            unavailable: [BAD_DIGEST],
+            holdMaxRetryMs: RETRY_MS,
+            wrappedConfig: featureConfig(feature),
+          });
+        const images = boot('images');
+        const media = boot('media');
+        await images.instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+        await media.instance.save(await writeTempFile(BAD_BYTES, 'held.mp4'));
+
+        images.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+        await vi.waitFor(
+          () => expect(images.instance.hold.isPending(BAD_DIGEST)).toBe(false),
+          WAIT
+        );
+        expect(images.instance.wrapped.savedRaw).toHaveLength(1);
+        expect(await fs.readFile(path.join(quarantinePath, BAD_DIGEST))).toEqual(BAD_BYTES);
+
+        media.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+        await vi.waitFor(() => expect(media.instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+        expect(media.instance.wrapped.savedRaw).toHaveLength(1);
+        expect(media.instance.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
+        await expect(fs.readFile(path.join(quarantinePath, BAD_DIGEST))).rejects.toThrow();
+      });
     });
   });
 
