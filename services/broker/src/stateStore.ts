@@ -5,8 +5,9 @@ import { writeFileAtomic } from './atomicFile.js';
 import type { DrainFlagStore } from './drainFlag.js';
 import { waitUntilReady, type GhostReadinessChecker } from './ghostReadiness.js';
 import { clearLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
-import type { Colour } from './literals.js';
+import { otherColour, type Colour } from './literals.js';
 import { slotPort } from './slotPorts.js';
+import type { SlotWrapper } from './wrapper.js';
 
 /**
  * LLD-2 §04's state machine. `preparing` is the slot claimed but not yet
@@ -23,9 +24,21 @@ import { slotPort } from './slotPorts.js';
  * more than just "mark it error" (unlike `preparing`/`resetting`,
  * something is genuinely still serving throughout a swap, and guessing
  * wrong about which colour that is would fail the wrong one closed).
+ *
+ * `stopping` is `attemptStopOldColour`'s own equivalent (`app.ts`): recorded
+ * before calling the wrapper's `stop` on the colour a completed swap left
+ * running-but-drained (LLD-4 §U7), so a crash between that call and this
+ * phase's own final write is recoverable rather than silently leaving the
+ * slot's persisted state saying "running, colour X" while an operator has
+ * no way to tell whether the other colour was actually stopped. Unlike
+ * `swapping`, nothing here is ambiguous about *which* colour to act on --
+ * `state.colour` already names the one survivor, so the other one is
+ * `otherColour(state.colour)` by construction, not something recovery has
+ * to re-derive from health signals the way `recoverSwapInFlight` must for
+ * `swapping`.
  */
 export type Phase =
-  'free' | 'preparing' | 'running' | 'swapping' | 'resetting' | 'detaching' | 'error';
+  'free' | 'preparing' | 'running' | 'swapping' | 'stopping' | 'resetting' | 'detaching' | 'error';
 
 export interface SlotState {
   readonly phase: Phase;
@@ -66,6 +79,26 @@ export interface SlotState {
    */
   readonly swapDescriptorHash?: string;
   readonly swapHashId?: HashId;
+  /**
+   * Set only on a `running` state reached by a completed swap (never by a
+   * fresh deploy into a `free` slot, which has no "old colour" to stop):
+   * `services/demo-gate`'s real-traffic counter's own reading for this
+   * slot, taken the instant the swap's traffic-moving step finished.
+   * `attemptStopOldColour` refuses until a fresh reading exceeds this one
+   * -- the falsification clause's "served real traffic", not "reported
+   * healthy" (LLD-4 §04). Colour-blind like the counter itself: valid
+   * precisely because only `colour` (the survivor) can receive traffic
+   * from the moment this was taken (see `realTraffic.ts`'s doc comment).
+   */
+  readonly trafficBaseline?: number;
+  /**
+   * Set once `attemptStopOldColour` has actually stopped
+   * `otherColour(colour)`. Absent (or `false`) means the old colour is
+   * still running, drained, per U7 -- the bake-window default a completed
+   * swap always leaves behind. Makes a second `/stop` call idempotent
+   * without re-running either pre-stop check.
+   */
+  readonly oldColourStopped?: boolean;
 }
 
 export class UnrotatedHashError extends Error {
@@ -305,6 +338,79 @@ export async function recoverSwapInFlight(
 }
 
 /**
+ * Recovers a slot found `stopping` at boot -- a crash between
+ * `attemptStopOldColour` calling `wrapper.stop` and its own final
+ * `writeSlotState`. Unlike `recoverSwapInFlight`, which colour to act on is
+ * never ambiguous: `state.colour` already names the survivor by
+ * construction (a `stopping` write is only ever reached from a `running`
+ * state with `colour` set), so the other colour is unambiguous, and
+ * stopping it is idempotent -- `systemctl stop` on an already-stopped unit
+ * is a no-op (LLD-2 §02).
+ *
+ * **Still re-checks the survivor is live before retrying, exactly like
+ * `attemptStopOldColour`'s own third check, immediately before its call to
+ * `wrapper.stop` (`app.ts`).** A crash can land here for reasons that have
+ * nothing to do with the stop itself -- the survivor can have gone
+ * unhealthy in the gap between the original attempt and this reboot -- and
+ * retrying `wrapper.stop` on the other colour in that world is exactly the
+ * fault "no step may ever leave a tenant with no colour serving" exists to
+ * refuse mid-swap: it would remove the *only* colour with any chance of
+ * being live. Idempotence of the stop call says nothing about whether it is
+ * still *safe* to make; only re-deriving liveness, not the stale persisted
+ * phase, answers that. If the survivor is not confirmed live, this marks
+ * the slot `error` instead of stopping anything -- the same fail-closed
+ * outcome `recoverSwapInFlight` reaches when neither colour is confirmed
+ * live, rather than a boot-time retry that stops the other colour
+ * unconditionally, with no liveness re-check at all.
+ */
+export async function recoverStoppingSlot(
+  dir: string,
+  slot: SlotName,
+  state: SlotState,
+  wrapper: Pick<SlotWrapper, 'stop'>,
+  drainFlags: Pick<DrainFlagStore, 'isSet'>,
+  ghostReadiness: Pick<GhostReadinessChecker, 'isReady'>,
+  appPortBase: number,
+  log: (line: string) => void
+): Promise<void> {
+  if (state.colour === undefined) {
+    // Unreachable in practice (see the doc comment above), guarded the
+    // same way `recoverSwapInFlight` guards its own two required fields:
+    // a state file is host-writable data, not a type the runtime can
+    // trust.
+    log(`slot "${slot}" was left "stopping" with no recorded colour -- marking "error"`);
+    await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+    return;
+  }
+  const survivor = state.colour;
+  const target = otherColour(survivor);
+
+  const survivorPort = slotPort(appPortBase, slot, survivor);
+  const survivorLive =
+    !(await drainFlags.isSet(slot, survivor)) && (await ghostReadiness.isReady(survivorPort));
+  if (!survivorLive) {
+    log(
+      `slot "${slot}" was left "stopping" colour "${target}" by a process that died before recording it, but survivor colour "${survivor}" is not confirmed live now -- marking "error" rather than stopping colour "${target}" and leaving the slot with no colour serving`
+    );
+    await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+    return;
+  }
+
+  log(
+    `slot "${slot}" was left "stopping" colour "${target}" by a process that died before recording it -- retrying the stop (idempotent) and completing the transition`
+  );
+  await wrapper.stop(slot, target);
+  await writeSlotState(dir, slot, {
+    phase: 'running',
+    colour: survivor,
+    descriptorHash: state.descriptorHash,
+    lastHashId: state.lastHashId,
+    trafficBaseline: state.trafficBaseline,
+    oldColourStopped: true,
+  });
+}
+
+/**
  * Boot-time recovery for a slot whose lock holder died mid-transition. The
  * per-slot lock lives in process memory (`slotLock.ts`), so it never
  * survives a restart -- a persisted `preparing` or `resetting` phase found
@@ -345,6 +451,16 @@ export async function recoverCrashedSlots(
     readonly ghostReadiness: GhostReadinessChecker;
     readonly appPortBase: number;
     readonly readyPollTimeoutMs: number;
+  },
+  /**
+   * Optional so every existing caller that never exercises `stopping`
+   * keeps compiling unchanged. Its absence is itself fail-safe: a
+   * `stopping` slot found with no wrapper to retry the stop against is
+   * marked `error` below, exactly like a `preparing`/`resetting` slot with
+   * no live lock holder -- never guessed back to `running`.
+   */
+  stopRecovery?: {
+    readonly wrapper: Pick<SlotWrapper, 'stop'>;
   }
 ): Promise<void> {
   for (const literal of slotLiterals) {
@@ -361,6 +477,26 @@ export async function recoverCrashedSlots(
         swapRecovery.readyPollTimeoutMs,
         log
       );
+      continue;
+    }
+    if (state.phase === 'stopping') {
+      if (stopRecovery) {
+        await recoverStoppingSlot(
+          dir,
+          slot,
+          state,
+          stopRecovery.wrapper,
+          swapRecovery.drainFlags,
+          swapRecovery.ghostReadiness,
+          swapRecovery.appPortBase,
+          log
+        );
+      } else {
+        log(
+          `slot "${slot}" was left "stopping" with no stop-recovery wrapper configured -- marking "error" rather than guessing the old colour was ever actually stopped`
+        );
+        await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+      }
       continue;
     }
     if (LOCK_HELD_PHASES.includes(state.phase)) {

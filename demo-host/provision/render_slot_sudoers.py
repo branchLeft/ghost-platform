@@ -10,21 +10,23 @@ Prints the generated sudoers file to stdout, or writes it safely to `--out`
 (the same safe write, then `chown root:root` -- see `install_generated_file`;
 requires root, and is the form host build runs).
 
-The demo host's broker runs as an unprivileged user and needs root for two
-things: starting, stopping or resetting a slot's systemd units, and loading
-a control-plane-pushed image into the local Docker daemon. The slot verbs'
-legal invocations are finite and known before any prospect exists -- fixed
-slots, two colours, three verbs -- so the boundary can enumerate every one
-of them literally rather than accept a pattern. A wildcard in a sudoers
-command matches spaces, which turns any pattern-based restriction into
-argument injection the moment something reaches it; enumeration has no
+The demo host's broker runs as an unprivileged user and needs root for three
+things: starting, stopping or resetting a slot's systemd units, one
+read-only check the broker cannot otherwise make without a second
+privileged read path of its own, and loading a control-plane-pushed image
+into the local Docker daemon. The slot verbs' legal invocations are finite
+and known before any prospect exists -- fixed slots, two colours, three
+privileged verbs plus one read-only verb -- so the boundary can enumerate
+every one of them literally rather than accept a pattern. A wildcard in a
+sudoers command matches spaces, which turns any pattern-based restriction
+into argument injection the moment something reaches it; enumeration has no
 pattern to subvert. `load` cannot be enumerated the same way (its argument
 names a file, not one of a finite set of literals), so it is instead
 granted for exactly one unchanging literal path -- see `IMAGE_LOAD_INVOCATION`
 below for why that is still wildcard-free.
 
 This module is the single source of truth for that enumeration: the slot
-table below, not thirty-five hand-typed sudoers lines. Extending the slot
+table below, not forty-nine hand-typed sudoers lines. Extending the slot
 count means adding to the table, not editing generated output by hand.
 
 **What sudoers actually binds, and what it does not.** sudo compares the
@@ -39,9 +41,9 @@ argument boundaries to pin, only the string it is compared against. The
 wrapper (built separately from this generator) must therefore reject
 anything that is not exactly two or three distinct arguments, each matching
 its own literal shape -- a known slot name, then either `reset` alone or a
-colour in `{a,b}` followed by `start`/`stop`. That is the second layer the
-design already calls for; this file cannot do that job structurally, so the
-wrapper has to.
+colour in `{a,b}` followed by `start`/`stop`/`email-batches`. That is the
+second layer the design already calls for; this file cannot do that job
+structurally, so the wrapper has to.
 """
 
 from __future__ import annotations
@@ -72,6 +74,18 @@ SLOT_NAMES: tuple[str, ...] = tuple(str(n) for n in range(7))
 # because it destroys the tenancy rather than a single container.
 COLOURS: tuple[str, ...] = ("a", "b")
 START_STOP_VERBS: tuple[str, ...] = ("start", "stop")
+
+# A read-only verb for the one check `attemptStopOldColour`
+# (services/broker/src/app.ts) needs before it will ever stop a colour:
+# whether an email or batch is still "submitting". Enumerated exactly like
+# a privileged verb (slot + colour, nothing else, never a path or SQL
+# text) even though the query it runs is read-only and colour-blind (the
+# colour pair shares one SQLite file) -- LLD-2 §02 anticipates precisely
+# this: "incidental on the exact invocation set -- a sixth costs seven
+# more lines and keeps the property." Kept in its own tuple, never merged
+# into START_STOP_VERBS, so a caller of this module can still ask "is this
+# verb privileged?" without inspecting strings.
+READ_VERBS: tuple[str, ...] = ("email-batches",)
 
 # A slot name reaches sudoers as a literal string, so it must be exactly
 # what the wrapper's argv-parsing expects and nothing more -- a slot name
@@ -122,16 +136,16 @@ def _validate_slot_name(slot: str) -> None:
 
 
 def slot_invocations(slot: str) -> list[str]:
-    """The five legal wrapper argument strings for one slot.
+    """The seven legal wrapper argument strings for one slot.
 
-    Reset first, then colour x verb in a stable order, so the generated
-    file's diff between runs is confined to whichever slots actually
-    changed.
+    Reset first, then colour x verb (privileged verbs before the read-only
+    one, within each colour) in a stable order, so the generated file's
+    diff between runs is confined to whichever slots actually changed.
     """
     _validate_slot_name(slot)
     invocations = [f"{slot} reset"]
     for colour in COLOURS:
-        for verb in START_STOP_VERBS:
+        for verb in (*START_STOP_VERBS, *READ_VERBS):
             invocations.append(f"{slot} {colour} {verb}")
     return invocations
 

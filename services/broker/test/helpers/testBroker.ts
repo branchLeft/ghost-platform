@@ -3,7 +3,11 @@ import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
-import type { TenantDescriptor, ZoneConfig } from '@branchleft/ghost-platform-render-core';
+import type {
+  SlotName,
+  TenantDescriptor,
+  ZoneConfig,
+} from '@branchleft/ghost-platform-render-core';
 import { createBrokerHandler, type BrokerDeps } from '../../src/app.js';
 import type { AdminApiClient } from '../../src/adminApi.js';
 import { imagePushManifest } from '../../src/imagePush.js';
@@ -11,6 +15,8 @@ import { createInMemoryNonceStore } from '../../src/nonceStore.js';
 import { createDrainFlagStore } from '../../src/drainFlag.js';
 import type { DrainPayload, DrainSource } from '../../src/drainSource.js';
 import { createHttpHealthChecker } from '../../src/healthCheck.js';
+import type { EmailBatchChecker } from '../../src/emailBatchChecker.js';
+import type { RealTrafficChecker } from '../../src/realTraffic.js';
 import type { Artefact, Renderer } from '../../src/render.js';
 import { createSlotLock } from '../../src/slotLock.js';
 import { createSlotWrapper } from '../../src/wrapper.js';
@@ -61,6 +67,16 @@ export interface ControllableGhostReadiness {
   setReadySequence(port: number, values: readonly boolean[]): void;
 }
 
+export interface ControllableRealTraffic extends RealTrafficChecker {
+  /** Every slot reads `0` by default (the fail-closed starting point). */
+  setCount(slot: SlotName, count: number): void;
+}
+
+export interface ControllableEmailBatchChecker extends EmailBatchChecker {
+  /** Every slot reads "no submitting batch" by default. */
+  setSubmitting(slot: SlotName, submitting: boolean): void;
+}
+
 export interface TestBroker {
   readonly baseUrl: string;
   readonly keyPair: TestKeyPair;
@@ -71,6 +87,8 @@ export interface TestBroker {
   readonly imageLoader: RecordingImageLoader;
   readonly imageTmpDir: string;
   readonly ghostReadiness: ControllableGhostReadiness;
+  readonly realTraffic: ControllableRealTraffic;
+  readonly emailBatchChecker: ControllableEmailBatchChecker;
   readonly wrapperLogPath: string;
   readonly stateDir: string;
   readonly leaseDir: string;
@@ -187,6 +205,30 @@ function createControllableDrainSource(): ControllableDrainSource {
   };
 }
 
+function createControllableRealTraffic(): ControllableRealTraffic {
+  const counts = new Map<string, number>();
+  return {
+    async readCount(slot) {
+      return counts.get(slot) ?? 0;
+    },
+    setCount(slot, count) {
+      counts.set(slot, count);
+    },
+  };
+}
+
+function createControllableEmailBatchChecker(): ControllableEmailBatchChecker {
+  const submitting = new Map<string, boolean>();
+  return {
+    async hasSubmittingBatch(slot) {
+      return submitting.get(slot) ?? false;
+    },
+    setSubmitting(slot, value) {
+      submitting.set(slot, value);
+    },
+  };
+}
+
 export interface TestBrokerOptions {
   /** Lets a test interpose on the real dependencies, e.g. to observe on-disk state at each await. */
   readonly wrapDeps?: (deps: BrokerDeps) => BrokerDeps;
@@ -226,6 +268,8 @@ export async function startTestBroker(options: TestBrokerOptions = {}): Promise<
   const drainSource = createControllableDrainSource();
   const imageLoader = createRecordingImageLoader();
   const ghostReadiness = createControllableGhostReadiness();
+  const realTraffic = createControllableRealTraffic();
+  const emailBatchChecker = createControllableEmailBatchChecker();
 
   const deps: BrokerDeps = {
     auth: {
@@ -258,6 +302,8 @@ export async function startTestBroker(options: TestBrokerOptions = {}): Promise<
     },
     healthChecker: createHttpHealthChecker('127.0.0.1', 500),
     ghostReadiness,
+    realTraffic,
+    emailBatchChecker,
     ghostReadyPollTimeoutMs: 300,
     healthPortBase: 9100,
     appPortBase: 9300,
@@ -288,6 +334,8 @@ export async function startTestBroker(options: TestBrokerOptions = {}): Promise<
     imageLoader,
     imageTmpDir,
     ghostReadiness,
+    realTraffic,
+    emailBatchChecker,
     wrapperLogPath,
     stateDir,
     leaseDir,

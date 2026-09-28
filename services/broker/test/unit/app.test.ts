@@ -362,6 +362,160 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     });
   });
 
+  describe('stopping the old colour', () => {
+    /** Reconciles "a", then swaps into "b" -- the old colour left running, drained, is "a". */
+    async function swappedToB(): Promise<void> {
+      const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
+      await broker!.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first });
+      const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
+      const res = await broker!.signedFetch('POST', '/reconcile', {
+        slot: '0',
+        descriptor: second,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ colour: 'b' });
+    }
+
+    it('refuses with 409 when the slot has no old colour to stop -- a fresh deploy, never swapped', async () => {
+      broker = await startTestBroker();
+      const descriptor = demoDescriptor();
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor });
+
+      const res = await broker.signedFetch('POST', '/stop', { slot: '0' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        error: expect.stringContaining('no old colour to stop'),
+      });
+    });
+
+    it("refuses while the live colour's real-traffic counter has not advanced past the swap's own baseline -- the falsification clause", async () => {
+      broker = await startTestBroker();
+      await swappedToB();
+      // The default: `realTraffic` reads 0 for every slot until told
+      // otherwise, exactly the baseline `attemptColourSwap` itself
+      // recorded (the swap ran before any traffic existed in this test).
+      const res = await broker.signedFetch('POST', '/stop', { slot: '0' });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({
+        colour: 'b',
+        error: expect.stringContaining('served no real traffic'),
+      });
+      // Refused before touching the wrapper at all -- "b" (the survivor)
+      // must never be stopped, and "a" must not be stopped either.
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      expect(invocations.some((inv: string[]) => inv[2] === 'stop')).toBe(false);
+    });
+
+    it('permits the stop once the counter has advanced past the baseline, and stops exactly the old colour', async () => {
+      broker = await startTestBroker();
+      await swappedToB();
+      broker.realTraffic.setCount('0' as SlotName, 1);
+
+      const res = await broker.signedFetch('POST', '/stop', { slot: '0' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ slot: '0', phase: 'running', colour: 'b' });
+
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      // "a" stopped -- never "b", the colour still serving readers.
+      expect(invocations.at(-1)).toEqual(['0', 'a', 'stop']);
+      expect(
+        invocations.some((inv: string[]) => inv[0] === '0' && inv[1] === 'b' && inv[2] === 'stop')
+      ).toBe(false);
+    });
+
+    it('refuses while an email or batch is still "submitting" -- LLD-4 §U5, even with real traffic already served', async () => {
+      broker = await startTestBroker();
+      await swappedToB();
+      broker.realTraffic.setCount('0' as SlotName, 5);
+      broker.emailBatchChecker.setSubmitting('0' as SlotName, true);
+
+      const res = await broker.signedFetch('POST', '/stop', { slot: '0' });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ error: expect.stringContaining('submitting') });
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      expect(invocations.some((inv: string[]) => inv[2] === 'stop')).toBe(false);
+    });
+
+    it('permits the stop once the submitting batch has cleared', async () => {
+      broker = await startTestBroker();
+      await swappedToB();
+      broker.realTraffic.setCount('0' as SlotName, 5);
+      broker.emailBatchChecker.setSubmitting('0' as SlotName, false);
+
+      const res = await broker.signedFetch('POST', '/stop', { slot: '0' });
+      expect(res.status).toBe(200);
+    });
+
+    it('refuses to stop the old colour when the survivor is not confirmed live right now -- never leave the slot with no colour serving', async () => {
+      broker = await startTestBroker();
+      await swappedToB();
+      broker.realTraffic.setCount('0' as SlotName, 1);
+      // "b" is the survivor at port 9301 -- unhealthy right now, despite
+      // having served the traffic that advanced the counter above (a
+      // regression in the narrow window after that, not impossible).
+      broker.ghostReadiness.setReady(9301, false);
+
+      const res = await broker.signedFetch('POST', '/stop', { slot: '0' });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({
+        error: expect.stringContaining('not confirmed live'),
+      });
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      expect(invocations.some((inv: string[]) => inv[2] === 'stop')).toBe(false);
+    });
+
+    it('is idempotent: a second /stop after a successful one returns 200 without re-running either check or stopping again', async () => {
+      broker = await startTestBroker();
+      await swappedToB();
+      broker.realTraffic.setCount('0' as SlotName, 1);
+
+      const first = await broker.signedFetch('POST', '/stop', { slot: '0' });
+      expect(first.status).toBe(200);
+
+      // Both checks now set to refuse -- if the second call re-ran either,
+      // it would get a 503 instead of the idempotent 200 below.
+      broker.realTraffic.setCount('0' as SlotName, 0);
+      broker.emailBatchChecker.setSubmitting('0' as SlotName, true);
+
+      const second = await broker.signedFetch('POST', '/stop', { slot: '0' });
+      expect(second.status).toBe(200);
+      expect(await second.json()).toEqual({ slot: '0', phase: 'running', colour: 'b' });
+
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      expect(invocations.filter((inv: string[]) => inv[2] === 'stop')).toHaveLength(1);
+    });
+
+    it('refuses with 409 on a slot that is not "running" at all -- still "free", never reconciled', async () => {
+      broker = await startTestBroker();
+      const res = await broker.signedFetch('POST', '/stop', { slot: '1' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        error: expect.stringContaining('not in a running state'),
+      });
+    });
+
+    it('an unknown slot literal on /stop is refused with 422, never reaching the lock or either check', async () => {
+      broker = await startTestBroker();
+      const res = await broker.signedFetch('POST', '/stop', { slot: '9' });
+      expect(res.status).toBe(422);
+    });
+  });
+
   it('a slot mid-transition (not "free", no colour recorded) is still refused with 409', async () => {
     broker = await startTestBroker();
     await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: demoDescriptor() });

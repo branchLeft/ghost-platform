@@ -70,6 +70,17 @@ export interface BrokerConfig {
    */
   readonly processStartSeconds: number;
   readonly nowMs: () => number;
+  /**
+   * Absent by default. `services/demo-gate`'s own counter directory
+   * (`GATE_TRAFFIC_COUNTER_DIR`) -- read-only from here. Unset means
+   * `attemptStopOldColour` always reads a real-traffic count of `0` and
+   * therefore always refuses to stop the old colour: the same fail-closed
+   * posture `createSudoEmailBatchChecker` takes on any wrapper error
+   * (`emailBatchChecker.ts`), not `requireEnv`'d because an unset value
+   * degrades one new check rather than the whole service's ability to
+   * start.
+   */
+  readonly trafficCounterDir?: string;
 }
 
 export type BrokerEnv = Record<string, string | undefined>;
@@ -183,5 +194,6 @@ export function loadConfig(
     uidBase: positiveInteger(env, 'BROKER_UID_BASE', 30001, 65000),
     processStartSeconds: Math.floor(Date.now() / 1000),
     nowMs: () => Date.now(),
+    trafficCounterDir: env.BROKER_TRAFFIC_COUNTER_DIR || undefined,
   };
 }

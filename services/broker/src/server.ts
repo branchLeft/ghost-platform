@@ -7,13 +7,21 @@ import { createInMemoryNonceStore } from './nonceStore.js';
 import { loadConfig, type BrokerConfig, type BrokerEnv } from './config.js';
 import { createDrainFlagStore } from './drainFlag.js';
 import type { DrainSource } from './drainSource.js';
+import { createSudoEmailBatchChecker, type EmailBatchChecker } from './emailBatchChecker.js';
 import { createHttpGhostReadinessChecker } from './ghostReadiness.js';
 import { createHttpHealthChecker } from './healthCheck.js';
 import type { ImageLoader } from './imagePush.js';
+import { createFileRealTrafficChecker, createZeroRealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { createSlotLock } from './slotLock.js';
 import { recoverCrashedSlots } from './stateStore.js';
 import { createSlotWrapper } from './wrapper.js';
+
+function isEmailBatchChecker(candidate: unknown): candidate is EmailBatchChecker {
+  return (
+    typeof (candidate as Partial<EmailBatchChecker> | undefined)?.hasSubmittingBatch === 'function'
+  );
+}
 
 function isRenderer(candidate: unknown): candidate is Renderer {
   return typeof (candidate as Partial<Renderer> | undefined)?.render === 'function';
@@ -114,6 +122,25 @@ export function buildDeps(
     },
     healthChecker: createHttpHealthChecker('127.0.0.1', config.healthCheckTimeoutMs),
     ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
+    // `realTraffic` defaults to the fail-closed side of the stop-old-colour
+    // pre-stop gate: absent configuration must never read as "safe to
+    // stop" (see `createZeroRealTrafficChecker`'s own doc comment).
+    // `emailBatchChecker`'s real implementation is itself fail-closed on
+    // every error path (`createSudoEmailBatchChecker`'s own doc comment),
+    // so wiring it unconditionally here, rather than behind a config flag
+    // like `trafficCounterDir`, is safe: an unconfigured or unreachable
+    // wrapper still refuses to stop, exactly like the old placeholder did.
+    realTraffic: config.trafficCounterDir
+      ? createFileRealTrafficChecker(config.trafficCounterDir)
+      : createZeroRealTrafficChecker(),
+    emailBatchChecker: createSudoEmailBatchChecker(
+      {
+        command: config.wrapperCommand,
+        prefix: config.wrapperPrefix,
+        timeoutMs: config.wrapperTimeoutMs,
+      },
+      (line) => console.error(line)
+    ),
     ghostReadyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
     healthPortBase: config.healthPortBase,
     appPortBase: config.appPortBase,
@@ -133,12 +160,16 @@ export async function main(): Promise<Server> {
   await mkdir(config.drainFlagDir, { recursive: true });
   await mkdir(config.leaseDir, { recursive: true });
   await mkdir(config.imageTmpDir, { recursive: true });
+  if (config.trafficCounterDir) {
+    await mkdir(config.trafficCounterDir, { recursive: true });
+  }
 
   // Before anything below can accept a request: a slot a previous process
-  // left `preparing`/`resetting`/`swapping` had its lock holder die with it
-  // (the lock is in-memory and this is a fresh process), so it cannot be
-  // trusted as still in flight. See `recoverCrashedSlots`'s and
-  // `recoverSwapInFlight`'s own doc comments for what each phase needs.
+  // left `preparing`/`resetting`/`swapping`/`stopping` had its lock holder
+  // die with it (the lock is in-memory and this is a fresh process), so it
+  // cannot be trusted as still in flight. See `recoverCrashedSlots`'s,
+  // `recoverSwapInFlight`'s and `recoverStoppingSlot`'s own doc comments
+  // for what each phase needs.
   await recoverCrashedSlots(
     config.stateDir,
     config.slotLiterals,
@@ -153,6 +184,13 @@ export async function main(): Promise<Server> {
       // reason (`ghostReadiness.ts`'s own doc comment on Ghost's post-boot
       // maintenance window).
       readyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
+    },
+    {
+      wrapper: createSlotWrapper({
+        command: config.wrapperCommand,
+        prefix: config.wrapperPrefix,
+        timeoutMs: config.wrapperTimeoutMs,
+      }),
     }
   );
 
@@ -161,7 +199,21 @@ export async function main(): Promise<Server> {
   const drainSource = await loadPlugin('BROKER_DRAIN_SOURCE_MODULE', process.env, isDrainSource);
   const imageLoader = await loadPlugin('BROKER_IMAGE_LOADER_MODULE', process.env, isImageLoader);
 
-  const deps = buildDeps(config, renderer, adminApi, drainSource, imageLoader);
+  let deps = buildDeps(config, renderer, adminApi, drainSource, imageLoader);
+
+  // Optional fifth seam, deliberately not required at start-up the way
+  // the four above are: `buildDeps` already wires `createSudoEmailBatchChecker`
+  // as the real default (`emailBatchChecker.ts`'s own doc comment), and this
+  // override exists only for a deploy that wants something else entirely --
+  // never for "no real implementation exists yet", which is no longer true.
+  if (process.env.BROKER_EMAIL_BATCH_CHECKER_MODULE) {
+    const emailBatchChecker = await loadPlugin(
+      'BROKER_EMAIL_BATCH_CHECKER_MODULE',
+      process.env,
+      isEmailBatchChecker
+    );
+    deps = { ...deps, emailBatchChecker };
+  }
 
   const handler = createBrokerHandler(deps);
   const server = createServer((req, res) => void handler(req, res));
