@@ -38,6 +38,35 @@ function sidecarPath(quarantinePath, digest) {
   return path.join(quarantinePath, `${digest}${HOLDS_SUFFIX}`);
 }
 
+// Sidecar shape: {"owners": {"<owner>": ["<targetPath>", ...]}}. Ghost
+// constructs one decorator per storage feature, and a deployment gives all
+// three the same quarantinePath, so one digest's sidecar can be shared by
+// several registries in one process. Each registry reads and writes only
+// its own owner's entry, and only the last owner to release a digest
+// removes the bytes. Returns null when there is no sidecar; throws when
+// there is one this code cannot attribute to an owner.
+function readSidecarSync(file) {
+  let raw;
+  try {
+    raw = fsSync.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  const parsed = JSON.parse(raw);
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    !parsed.owners ||
+    typeof parsed.owners !== 'object' ||
+    Array.isArray(parsed.owners)
+  ) {
+    throw new Error('hold sidecar has no owners map');
+  }
+  return parsed;
+}
+
 // Tracks bytes accepted with no verdict yet (the hold branch's asynchronous route).
 // There is no real verdict channel yet (it is a separate story in a
 // separate repo), so "a later verdict arrives" can only mean one thing
@@ -61,10 +90,18 @@ class HoldRegistry {
     checks,
     policy,
     quarantinePath,
+    owner,
     retryIntervalMs = DEFAULT_RETRY_INTERVAL_MS,
     maxRetryIntervalMs = DEFAULT_MAX_RETRY_INTERVAL_MS,
     logger = console,
   }) {
+    // Without an owner, a registry resuming after a restart would pick up
+    // every feature's holds from a shared quarantine directory and promote
+    // them through its own wrapped adapter -- into the wrong served tree.
+    if (typeof owner !== 'string' || owner.length === 0) {
+      throw new Error('HoldRegistry requires an owner naming where its holds promote to');
+    }
+    this.owner = owner;
     this.checks = checks;
     this.policy = policy;
     this.quarantinePath = quarantinePath;
@@ -96,15 +133,21 @@ class HoldRegistry {
     const existing = this.entries.get(digest);
     if (existing) {
       existing.holds.push({ targetPath, onAllow, onRefuse });
-      await this.#writeSidecar(
+      this.#writeOwnTargets(
         digest,
         existing.holds.map((h) => h.targetPath)
       );
       return;
     }
 
-    await quarantineBytes(this.quarantinePath, digest, buffer);
-    await this.#writeSidecar(digest, [targetPath]);
+    // Another feature's registry may already hold these exact bytes and be
+    // about to re-read them for a retry; rewriting would truncate the file
+    // under that read. Same digest, same bytes, so an existing file is
+    // already correct.
+    if (!fsSync.existsSync(path.join(this.quarantinePath, digest))) {
+      await quarantineBytes(this.quarantinePath, digest, buffer);
+    }
+    this.#writeOwnTargets(digest, [targetPath]);
     const entry = {
       holds: [{ targetPath, onAllow, onRefuse }],
       timer: null,
@@ -146,7 +189,11 @@ class HoldRegistry {
 
       let targetPaths;
       try {
-        targetPaths = JSON.parse(fsSync.readFileSync(path.join(this.quarantinePath, name), 'utf8'));
+        const sidecar = readSidecarSync(path.join(this.quarantinePath, name));
+        if (!sidecar || !Object.prototype.hasOwnProperty.call(sidecar.owners, this.owner)) {
+          continue; // another feature's hold, promoted by that feature's own registry
+        }
+        targetPaths = sidecar.owners[this.owner];
         if (!Array.isArray(targetPaths) || targetPaths.length === 0) {
           throw new Error('empty or malformed sidecar');
         }
@@ -204,7 +251,7 @@ class HoldRegistry {
         await hold.onAllow(buffer);
       }
       this.#forget(digest);
-      await this.#removeQuarantine(digest, { keepBytes: false });
+      this.#release(digest, { keepBytes: false });
       return;
     }
 
@@ -218,7 +265,7 @@ class HoldRegistry {
         await hold.onRefuse();
       }
       this.#forget(digest);
-      await this.#removeQuarantine(digest, { keepBytes: true });
+      this.#release(digest, { keepBytes: true });
       return;
     }
 
@@ -229,19 +276,37 @@ class HoldRegistry {
     this.#scheduleRetry(digest);
   }
 
-  async #writeSidecar(digest, targetPaths) {
-    await fs.writeFile(sidecarPath(this.quarantinePath, digest), JSON.stringify(targetPaths));
+  // Synchronous read-modify-write, so no other registry sharing this
+  // sidecar can interleave between the read and the write. An existing
+  // sidecar this code cannot attribute throws rather than being
+  // overwritten: it may be someone's pending hold.
+  #writeOwnTargets(digest, targetPaths) {
+    const file = sidecarPath(this.quarantinePath, digest);
+    const sidecar = readSidecarSync(file) || { owners: {} };
+    sidecar.owners[this.owner] = targetPaths;
+    fsSync.writeFileSync(file, JSON.stringify(sidecar));
   }
 
-  async #removeQuarantine(digest, { keepBytes }) {
-    // Best-effort: promotion makes the object backup-eligible from its
-    // real served location and a refusal's own bytes are the permanent
-    // record either way, so a leftover file here is untidy, never unsafe.
+  // Drops this registry's entry from the sidecar. Only when no other owner
+  // is still waiting on the digest are the sidecar and (for a promotion)
+  // the bytes removed -- another feature's registry re-reads those bytes
+  // on its own next retry. Best-effort: promotion makes the object
+  // backup-eligible from its real served location and a refusal's own
+  // bytes are the permanent record either way, so a leftover file here is
+  // untidy, never unsafe.
+  #release(digest, { keepBytes }) {
+    const file = sidecarPath(this.quarantinePath, digest);
     try {
-      if (!keepBytes) {
-        await fs.rm(path.join(this.quarantinePath, digest), { force: true });
+      const sidecar = readSidecarSync(file) || { owners: {} };
+      delete sidecar.owners[this.owner];
+      if (Object.keys(sidecar.owners).length > 0) {
+        fsSync.writeFileSync(file, JSON.stringify(sidecar));
+        return;
       }
-      await fs.rm(sidecarPath(this.quarantinePath, digest), { force: true });
+      if (!keepBytes) {
+        fsSync.rmSync(path.join(this.quarantinePath, digest), { force: true });
+      }
+      fsSync.rmSync(file, { force: true });
     } catch (err) {
       this.logger.error(`ScanningStorageAdapter: quarantine cleanup failed for ${digest}`, err);
     }

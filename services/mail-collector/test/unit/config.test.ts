@@ -27,7 +27,6 @@ describe('loadConfig', () => {
       user: 'collector',
       pass: 'secret',
     });
-    expect(config.heartbeatIntervalMs).toBe(60000);
     expect(config.shimScheme).toBe('http');
     expect(config.heartbeatFailureThreshold).toBe(5);
   });

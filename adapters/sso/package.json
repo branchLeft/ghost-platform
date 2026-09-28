@@ -8,7 +8,7 @@
   "scripts": {
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
-    "test:image": "node --test test/image/break-glass.image.test.mjs"
+    "test:image": "node --test test/image/*.test.mjs"
   },
   "devDependencies": {
     "@tryghost/adapter-base-sso": "0.1.1",

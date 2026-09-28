@@ -33,6 +33,7 @@ export {
 
 export type {
   BackupSpec,
+  BreakGlassSpec,
   CodeInjectionSpec,
   DatabaseSpec,
   GateSpec,

@@ -69,8 +69,15 @@ export interface CollectorConfig {
     pass: string;
   };
 
+  /**
+   * The estate's dead-man's-switch ping URL (Healthchecks.io, or the local
+   * instance standing in for it in proof). No interval config sits beside
+   * this one -- the ping cadence is a side effect of the collector's own
+   * poll cycle (collectorLoop.ts), never a timer this module owns; how
+   * often Healthchecks itself expects to hear from that URL is a property
+   * of the check configured against it there, not of this process.
+   */
   heartbeatUrl: string;
-  heartbeatIntervalMs: number;
   /**
    * How many CONSECUTIVE delivery failures (mx1 submissions, not drain
    * fetches) suppress the heartbeat ping. A collector that cannot submit
@@ -106,7 +113,6 @@ const DEFAULT_DRAIN_RETRY_BACKOFF_MS = 2_000;
 const DEFAULT_EMPTY_POLL_BACKOFF_MS = 250;
 const DEFAULT_MESSAGES_PER_HOUR = 50;
 const DEFAULT_DEDUPE_TTL_MS = 60 * 60 * 1000;
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 const DEFAULT_SHIM_SCHEME = 'http';
 const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD = 5;
 
@@ -163,11 +169,6 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       pass: requireEnv(env, 'COLLECTOR_SMTP_PASS'),
     },
     heartbeatUrl: requireEnv(env, 'COLLECTOR_HEARTBEAT_URL'),
-    heartbeatIntervalMs: positiveIntEnv(
-      env,
-      'COLLECTOR_HEARTBEAT_INTERVAL_MS',
-      DEFAULT_HEARTBEAT_INTERVAL_MS
-    ),
     heartbeatFailureThreshold: positiveIntEnv(
       env,
       'COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD',

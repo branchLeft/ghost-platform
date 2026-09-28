@@ -68,6 +68,8 @@ const ALLOW_POLICY = {
 };
 
 const SILENT_LOGGER = { error: () => {} };
+const WAIT = { timeout: 5000, interval: 10 };
+const OWNER = 'LocalImagesStorage:/var/lib/ghost/content/images';
 
 let tmpDir;
 let quarantinePath;
@@ -109,11 +111,122 @@ describe('HoldRegistry', () => {
       checks,
       policy: ALLOW_POLICY,
       quarantinePath,
+      owner: OWNER,
       retryIntervalMs: RETRY_MS,
       logger: SILENT_LOGGER,
       ...overrides,
     });
   }
+
+  it('refuses to construct without an owner', () => {
+    expect(() => buildRegistry([unavailableCheck()], { owner: undefined })).toThrow(/owner/);
+    expect(() => buildRegistry([unavailableCheck()], { owner: '' })).toThrow(/owner/);
+  });
+
+  describe('several owners sharing one quarantine directory', () => {
+    const OTHER = 'LocalMediaStorage:/var/lib/ghost/content/media';
+
+    it("resumes only its own owner's targets, never another owner's", async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      await fs.writeFile(
+        path.join(quarantinePath, 'digest.holds.json'),
+        JSON.stringify({ owners: { [OWNER]: ['a.png'] } })
+      );
+
+      const other = buildRegistry([flippingCheck()], { owner: OTHER });
+      const otherOnAllow = vi.fn();
+      other.resumeFromQuarantine(() => ({ onAllow: otherOnAllow, onRefuse: vi.fn() }));
+      expect(other.isPending('digest')).toBe(false);
+
+      const own = buildRegistry([unavailableCheck()]);
+      const seen = [];
+      own.resumeFromQuarantine((targetPath) => {
+        seen.push(targetPath);
+        return { onAllow: vi.fn(), onRefuse: vi.fn() };
+      });
+      expect(own.isPending('digest')).toBe(true);
+      expect(seen).toEqual(['a.png']);
+      own.stopAll();
+    });
+
+    it("keeps the bytes and the other owner's entry when one owner promotes, and removes both once the last does", async () => {
+      const first = flippingCheck();
+      const second = flippingCheck();
+      const own = buildRegistry([first], { maxRetryIntervalMs: RETRY_MS });
+      const other = buildRegistry([second], { owner: OTHER, maxRetryIntervalMs: RETRY_MS });
+      await own.hold('digest', Buffer.from('bytes'), {
+        targetPath: 'a.png',
+        onAllow: async () => {},
+        onRefuse: async () => {},
+      });
+      await other.hold('digest', Buffer.from('bytes'), {
+        targetPath: 'b.mp4',
+        onAllow: async () => {},
+        onRefuse: async () => {},
+      });
+      expect(
+        JSON.parse(await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8'))
+      ).toEqual({ owners: { [OWNER]: ['a.png'], [OTHER]: ['b.mp4'] } });
+
+      first.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(own.isPending('digest')).toBe(false), WAIT);
+      expect(own.isPending('digest')).toBe(false);
+      expect((await fs.readFile(path.join(quarantinePath, 'digest'))).toString()).toBe('bytes');
+      expect(
+        JSON.parse(await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8'))
+      ).toEqual({ owners: { [OTHER]: ['b.mp4'] } });
+
+      second.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(other.isPending('digest')).toBe(false), WAIT);
+      expect(other.isPending('digest')).toBe(false);
+      await expect(fs.readFile(path.join(quarantinePath, 'digest'))).rejects.toThrow();
+      await expect(fs.readFile(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
+    });
+
+    it('never rewrites bytes another owner already quarantined under the same digest', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'already-there');
+      const registry = buildRegistry([unavailableCheck()]);
+      await registry.hold('digest', Buffer.from('already-there-rewritten'), {
+        targetPath: 'a.png',
+        onAllow: async () => {},
+        onRefuse: async () => {},
+      });
+      expect((await fs.readFile(path.join(quarantinePath, 'digest'))).toString()).toBe(
+        'already-there'
+      );
+      registry.stopAll();
+    });
+
+    it('fails the hold rather than overwrite a sidecar it cannot attribute to an owner', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(['a.png']));
+      const registry = buildRegistry([unavailableCheck()]);
+      await expect(
+        registry.hold('digest', Buffer.from('bytes'), {
+          targetPath: 'b.png',
+          onAllow: async () => {},
+          onRefuse: async () => {},
+        })
+      ).rejects.toThrow(/owners/);
+      expect(await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8')).toBe(
+        JSON.stringify(['a.png'])
+      );
+    });
+
+    it('leaves an unattributable sidecar held but unresumed, and logs it', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(['a.png']));
+      const logger = { error: vi.fn() };
+      const registry = buildRegistry([flippingCheck()], { logger });
+      registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+      expect(registry.isPending('digest')).toBe(false);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+  });
 
   it('quarantines the bytes by digest as soon as it is held, exactly as a refusal does', async () => {
     const registry = buildRegistry([unavailableCheck()]);
@@ -136,7 +249,7 @@ describe('HoldRegistry', () => {
     const sidecar = JSON.parse(
       await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8')
     );
-    expect(sidecar).toEqual(['a.png']);
+    expect(sidecar).toEqual({ owners: { [OWNER]: ['a.png'] } });
   });
 
   it('is pending immediately, before any retry has run', async () => {
@@ -244,7 +357,7 @@ describe('HoldRegistry', () => {
     const sidecar = JSON.parse(
       await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8')
     );
-    expect(sidecar).toEqual(['a.png', 'b.png']);
+    expect(sidecar).toEqual({ owners: { [OWNER]: ['a.png', 'b.png'] } });
 
     check.resolveTo({ classification: 'no-known-match' });
     await settle();
@@ -312,7 +425,10 @@ describe('HoldRegistry', () => {
     it('resumes a hold left behind by a previous process instance, and promotes it on a later allow', async () => {
       await fs.mkdir(quarantinePath, { recursive: true });
       await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
-      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(['a.png']));
+      await fs.writeFile(
+        path.join(quarantinePath, 'digest.holds.json'),
+        JSON.stringify({ owners: { [OWNER]: ['a.png'] } })
+      );
 
       const check = flippingCheck();
       const registry = buildRegistry([check]);
@@ -335,7 +451,10 @@ describe('HoldRegistry', () => {
     it('a resumed hold that never clears is still never promoted (the restart control case)', async () => {
       await fs.mkdir(quarantinePath, { recursive: true });
       await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
-      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(['a.png']));
+      await fs.writeFile(
+        path.join(quarantinePath, 'digest.holds.json'),
+        JSON.stringify({ owners: { [OWNER]: ['a.png'] } })
+      );
 
       const registry = buildRegistry([unavailableCheck()]);
       const onAllow = vi.fn();
@@ -362,7 +481,7 @@ describe('HoldRegistry', () => {
       await fs.mkdir(quarantinePath, { recursive: true });
       await fs.writeFile(
         path.join(quarantinePath, 'orphan-sidecar.holds.json'),
-        JSON.stringify(['a.png'])
+        JSON.stringify({ owners: { [OWNER]: ['a.png'] } })
       );
       await fs.writeFile(path.join(quarantinePath, 'malformed-digest'), 'bytes');
       await fs.writeFile(path.join(quarantinePath, 'malformed-digest.holds.json'), 'not json');
@@ -378,7 +497,10 @@ describe('HoldRegistry', () => {
     it('never keeps the resumed buffer resident: onAllow receives what is on disk at retry time, not at resume time', async () => {
       await fs.mkdir(quarantinePath, { recursive: true });
       await fs.writeFile(path.join(quarantinePath, 'digest'), 'first-bytes');
-      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(['a.png']));
+      await fs.writeFile(
+        path.join(quarantinePath, 'digest.holds.json'),
+        JSON.stringify({ owners: { [OWNER]: ['a.png'] } })
+      );
 
       const check = flippingCheck();
       const registry = buildRegistry([check]);

@@ -7,6 +7,7 @@ import { createInMemoryNonceStore } from './nonceStore.js';
 import { loadConfig, type BrokerConfig, type BrokerEnv } from './config.js';
 import { createDrainFlagStore } from './drainFlag.js';
 import type { DrainSource } from './drainSource.js';
+import { createHttpGhostReadinessChecker } from './ghostReadiness.js';
 import { createHttpHealthChecker } from './healthCheck.js';
 import type { Renderer } from './render.js';
 import { createSlotLock } from './slotLock.js';
@@ -98,6 +99,8 @@ export function buildDeps(
     },
     drainFlags: createDrainFlagStore(config.drainFlagDir),
     healthChecker: createHttpHealthChecker('127.0.0.1', config.healthCheckTimeoutMs),
+    ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
+    ghostReadyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
     healthPortBase: config.healthPortBase,
     appPortBase: config.appPortBase,
     uidBase: config.uidBase,
@@ -117,16 +120,25 @@ export async function main(): Promise<Server> {
   await mkdir(config.leaseDir, { recursive: true });
 
   // Before anything below can accept a request: a slot a previous process
-  // left `preparing` or `resetting` had its lock holder die with it (the
-  // lock is in-memory and this is a fresh process), so it cannot be trusted
-  // as still in flight. See `recoverCrashedSlots`'s own doc comment for why
-  // `error` (fail-closed) rather than a guess at `free` or `running`, and
-  // why a `resetting` slot also has its lease and hash revoked here.
+  // left `preparing`/`resetting`/`swapping` had its lock holder die with it
+  // (the lock is in-memory and this is a fresh process), so it cannot be
+  // trusted as still in flight. See `recoverCrashedSlots`'s and
+  // `recoverSwapInFlight`'s own doc comments for what each phase needs.
   await recoverCrashedSlots(
     config.stateDir,
     config.slotLiterals,
     { slotsPath: config.slotsPath, leaseDir: config.leaseDir },
-    (line) => console.error(line)
+    (line) => console.error(line),
+    {
+      drainFlags: createDrainFlagStore(config.drainFlagDir),
+      ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
+      appPortBase: config.appPortBase,
+      // The swap's own bring-up budget, not a shorter one: recovery polls
+      // exactly the same way `attemptColourSwap` itself does, for the same
+      // reason (`ghostReadiness.ts`'s own doc comment on Ghost's post-boot
+      // maintenance window).
+      readyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
+    }
   );
 
   const renderer = await loadPlugin('BROKER_RENDERER_MODULE', process.env, isRenderer);

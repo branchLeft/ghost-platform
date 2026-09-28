@@ -63,3 +63,22 @@ Comments state what the code cannot: a constraint, an invariant, a reason a naiv
 ## Publishing
 
 Don't run `npm publish` locally. Releases are triggered by pushing a `v*.*.*` tag and handled entirely by [publish-tenant-package.yml](.github/workflows/publish-tenant-package.yml).
+
+## Generating a lockfile in CI
+
+A package that depends on a private `@branchleft/*` GitHub Packages package needs an authenticated registry read to produce a `package-lock.json` at all — `npm install`/`npm ci` fails closed with no lockfile if the read is unauthenticated. If your own GitHub Packages read access isn't set up, or a package you're working on doesn't have a lockfile yet, [generate-lockfile.yml](.github/workflows/generate-lockfile.yml) generates one in CI, using that run's own `GITHUB_TOKEN`, and pushes it straight to your branch.
+
+Run it from the Actions tab (**Generate lockfile in CI** → **Run workflow**), or:
+
+```bash
+gh workflow run generate-lockfile.yml --repo branchLeft/ghost-platform \
+  -f branch=<your-branch-name> \
+  -f package_dir=services/<your-service>   # or adapters/<your-adapter>
+```
+
+- `branch` must already exist in this repository (not a fork) and must not be `main` or a branch a ruleset currently protects.
+- `package_dir` must be `services/<name>` or `adapters/<name>`, and that directory must already exist on `branch` with a `package.json` and a `.nvmrc`.
+
+It pushes a commit only if `package-lock.json` actually changed, authored as `github-actions[bot]`. **That commit needs the normal review round like any push to the branch** — the ruleset's require-last-push-approval rule means a reviewer has to approve again after it lands, the same as after any other push.
+
+**A push authenticated with `GITHUB_TOKEN` does not trigger `pull_request`/`synchronize` workflows.** After this workflow pushes the lockfile commit, the PR's required status checks (build, type check, format/lint, docs-lint, standards gates) stay stuck on "Expected — waiting for status to be reported": nothing will ever report them from that push alone. To get them running again, either push an ordinary commit to the branch yourself (from your own account), or close and reopen the PR. Do this before asking anyone to look at the PR — a merge attempt will otherwise just sit blocked on checks that were never going to run.

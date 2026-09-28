@@ -1,0 +1,44 @@
+# Local sandbox proving the dead man's switch against a local Healthchecks
+# instance standing in for the hosted one. A real healthchecks/healthchecks
+# image, default (sqlite) database --
+# no Postgres needed for one throwaway check -- so the proof exercises the
+# REAL status state machine (new -> up -> grace ("Late") -> down) rather
+# than anything this repo asserts about itself.
+#
+# ALLOWED_HOSTS/SECRET_KEY below are fixed, throwaway values for a
+# container whose database is destroyed with it -- never a credential for
+# anything else, and never used outside this sandbox.
+services:
+  # The image runs as uid 999 ("hc"), and /opt/healthchecks itself is
+  # root-owned -- the same reasoning docker-compose.drain-proof.yml gives
+  # for its own init-shim-data step: the named volume Docker creates is
+  # root-owned until something chowns it.
+  init-hc-data:
+    image: node:26.5.0-bookworm-slim
+    user: root
+    volumes:
+      - hc_data:/data
+    command: ['chown', '999:999', '/data']
+
+  healthchecks:
+    image: healthchecks/healthchecks:latest
+    ports:
+      - '8095:8000'
+    volumes:
+      - hc_data:/data
+    depends_on:
+      init-hc-data:
+        condition: service_completed_successfully
+    environment:
+      DB_NAME: /data/hc.sqlite
+      ALLOWED_HOSTS: '*'
+      SECRET_KEY: deadmans-switch-proof-not-a-real-secret
+      SITE_ROOT: http://localhost:8095
+    healthcheck:
+      test: ['CMD', 'python3', 'docker/fetchstatus.py']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  hc_data:

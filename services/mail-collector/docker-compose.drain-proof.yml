@@ -169,11 +169,12 @@ services:
       COLLECTOR_SMTP_USER: collector
       COLLECTOR_SMTP_PASS: sink-secret
       # A real endpoint this sandbox already has, so the heartbeat's pings
-      # genuinely succeed rather than logging a warning every tick --
-      # The estate's real dead-man's-switch is a production URL this
-      # sandbox has no business calling.
+      # genuinely succeed rather than logging a warning every completed
+      # cycle -- the estate's real dead-man's-switch is a production URL
+      # this sandbox has no business calling. No interval config sits
+      # beside this one: the ping now follows the collector's own poll
+      # cycle rather than a timer (see src/heartbeat.ts).
       COLLECTOR_HEARTBEAT_URL: http://shim-a:8080/healthz
-      COLLECTOR_HEARTBEAT_INTERVAL_MS: '2000'
     depends_on:
       shim-a:
         condition: service_healthy
