@@ -39,17 +39,8 @@ FAKE_RESTORE = lines(
     'exit "$FAKE_RESTORE_EXIT"',
 )
 
-EXPECTED_RULESET = lines(
-    "*filter",
-    ":BRANCHLEFT-DEMO-EGRESS - [0:0]",
-    ":BRANCHLEFT-DEMO-INPUT - [0:0]",
-    "-A BRANCHLEFT-DEMO-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
-    "-A BRANCHLEFT-DEMO-EGRESS -i docker0 ! -o docker0 -j REJECT",
-    "-A BRANCHLEFT-DEMO-EGRESS -i br-+ ! -o br-+ -j REJECT",
-    "-A BRANCHLEFT-DEMO-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
-    "-A BRANCHLEFT-DEMO-INPUT -j REJECT",
-    "COMMIT",
-)
+with open(os.path.join(HERE, "demo-egress-ruleset.golden"), encoding="utf-8") as _golden:
+    EXPECTED_RULESET = _golden.read()
 
 JUMP_INSERTS = [
     "-t filter -I DOCKER-USER 1 -j BRANCHLEFT-DEMO-EGRESS",
