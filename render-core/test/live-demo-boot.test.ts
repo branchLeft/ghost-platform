@@ -44,10 +44,17 @@ function imageAvailable(): boolean {
 
 const canRun = dockerAvailable() && imageAvailable();
 
+// A demo now needs the bulk-email secret (its mail is enabled — see
+// fixtures.ts's demoDescriptor()), so Compose's own `${…:?}` interpolation
+// refuses to start at all without it. A fixed, obviously-fake value: this
+// suite proves Ghost boots and answers, never that the bulk-email path
+// itself works, so no real credential belongs here.
+const FAKE_BULK_EMAIL_API_KEY = 'live-boot-proof-not-a-real-key';
+
 function compose(...args: string[]): string {
   return execFileSync('docker', ['compose', '-f', COMPOSE_FILE, '-p', PROJECT, ...args], {
     encoding: 'utf-8',
-    env: { ...process.env, IMAGE },
+    env: { ...process.env, IMAGE, GHOST_BULK_EMAIL_API_KEY: FAKE_BULK_EMAIL_API_KEY },
   });
 }
 

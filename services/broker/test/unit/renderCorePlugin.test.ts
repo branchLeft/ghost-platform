@@ -9,6 +9,7 @@ import { generateTestKeyPair, signHeaders } from '../helpers/signer.js';
 import {
   writeValidAdminApiPlugin,
   writeValidDrainSourcePlugin,
+  writeValidImageLoaderPlugin,
   writeValidRendererPlugin,
 } from '../helpers/pluginFixtures.js';
 import { findFreePort, spawnBroker, type SpawnedBroker } from '../helpers/spawnBroker.js';
@@ -22,6 +23,8 @@ describe('renderCorePlugin — the adapter itself', () => {
     process.env.BROKER_DEMO_ZONE = TEST_ZONES.demoZone;
     process.env.BROKER_PLATFORM_ZONE = TEST_ZONES.platformZone;
     process.env.BROKER_OWNED_DOMAINS = TEST_ZONES.ownedDomains.join(',');
+    process.env.BROKER_DEMO_MAIL_DOMAIN = TEST_ZONES.demoMailDomain;
+    process.env.BROKER_MAIL_SPOOL_BASE_URL = TEST_ZONES.mailSpoolBaseUrl;
     const mod = (await import('../../src/plugins/renderCorePlugin.js')) as {
       default: { render: (d: unknown) => Promise<readonly { path: string; content: string }[]> };
     };
@@ -44,6 +47,8 @@ describe('renderCorePlugin — the adapter itself', () => {
     delete process.env.BROKER_DEMO_ZONE;
     process.env.BROKER_PLATFORM_ZONE = TEST_ZONES.platformZone;
     process.env.BROKER_OWNED_DOMAINS = TEST_ZONES.ownedDomains.join(',');
+    process.env.BROKER_DEMO_MAIL_DOMAIN = TEST_ZONES.demoMailDomain;
+    process.env.BROKER_MAIL_SPOOL_BASE_URL = TEST_ZONES.mailSpoolBaseUrl;
     // Fresh module instance per test would need a registry reset; instead
     // this asserts the exported function's own env read, which is what
     // `zonesFromEnv` actually is — re-imported modules are cached by
@@ -87,10 +92,12 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const drainFlagDir = join(root, 'drain');
     const slotDirBase = join(root, 'slots');
     const slotsPath = join(root, 'slots.json');
+    const imageTmpDir = join(root, 'image-tmp');
     await mkdir(stateDir, { recursive: true });
     await mkdir(leaseDir, { recursive: true });
     await mkdir(drainFlagDir, { recursive: true });
     await mkdir(slotDirBase, { recursive: true });
+    await mkdir(imageTmpDir, { recursive: true });
     return {
       keyPair,
       slotDirBase,
@@ -103,9 +110,12 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
         BROKER_STATE_DIR: stateDir,
         BROKER_DRAIN_FLAG_DIR: drainFlagDir,
         BROKER_SLOT_DIR_BASE: slotDirBase,
+        BROKER_IMAGE_TMP_DIR: imageTmpDir,
         BROKER_DEMO_ZONE: TEST_ZONES.demoZone,
         BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
         BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),
+        BROKER_DEMO_MAIL_DOMAIN: TEST_ZONES.demoMailDomain,
+        BROKER_MAIL_SPOOL_BASE_URL: TEST_ZONES.mailSpoolBaseUrl,
         BROKER_WRAPPER_COMMAND: join(SERVICE_ROOT, 'test/helpers/fakeWrapper.mjs'),
         BROKER_WRAPPER_PREFIX: process.execPath,
         BROKER_SLOT_LITERALS: '0,1,2,3,4,5,6',
@@ -131,11 +141,13 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const { env, keyPair, slotDirBase } = await baseEnv();
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
     broker = spawnBroker({
       ...env,
       BROKER_RENDERER_MODULE: REAL_PLUGIN_DIST,
       BROKER_ADMIN_API_MODULE: adminApi,
       BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      BROKER_IMAGE_LOADER_MODULE: imageLoader,
     });
     const { port } = await broker.waitListening(8000);
     // Past item 2's same-second floor (see server.test.ts's own comment).
@@ -178,11 +190,13 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const genericRenderer = await writeValidRendererPlugin(root);
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
     broker = spawnBroker({
       ...env,
       BROKER_RENDERER_MODULE: genericRenderer,
       BROKER_ADMIN_API_MODULE: adminApi,
       BROKER_DRAIN_SOURCE_MODULE: drainSource,
+      BROKER_IMAGE_LOADER_MODULE: imageLoader,
     });
     const { port } = await broker.waitListening(8000);
     await new Promise((resolve) => setTimeout(resolve, 1100));

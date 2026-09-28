@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   hashIdOf,
   validate,
+  type HashId,
   type SlotName,
   type TenantDescriptor,
   type ZoneConfig,
@@ -11,20 +12,26 @@ import { type AuthDeps, verifyRequest } from './auth.js';
 import { descriptorHash } from './descriptorHash.js';
 import { EMPTY_DRAIN_PAYLOAD, type DrainSource } from './drainSource.js';
 import type { DrainFlagStore } from './drainFlag.js';
+import type { EmailBatchChecker } from './emailBatchChecker.js';
+import type { GhostReadinessChecker } from './ghostReadiness.js';
+import { waitUntilReady } from './ghostReadiness.js';
 import type { HealthChecker } from './healthCheck.js';
 import { hostOf } from './hostOf.js';
+import { handleImagePush, type ImagePushDeps } from './imagePush.js';
 import { clearLeaseAndHash, writeLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
-import { validateSlotLiteral, type Colour } from './literals.js';
+import { otherColour, validateSlotLiteral, type Colour } from './literals.js';
+import type { RealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { type SlotLock } from './slotLock.js';
 import { slotAllocation, slotPort } from './slotPorts.js';
-import { HostConflictError, hostHeldByAnotherSlot } from './slotsFile.js';
+import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slotsFile.js';
 import {
   assertHashRotated,
   readSlotState,
   writeSlotState,
   UnrotatedHashError,
   type Phase,
+  type SlotState,
 } from './stateStore.js';
 import type { SlotWrapper } from './wrapper.js';
 import { writeArtefacts } from './writeArtefacts.js';
@@ -42,7 +49,15 @@ export interface BrokerDeps {
   readonly drainSource: DrainSource;
   readonly leaseStoreConfig: LeaseStoreConfig;
   readonly drainFlags: DrainFlagStore;
+  readonly imagePush: ImagePushDeps;
   readonly healthChecker: HealthChecker;
+  readonly ghostReadiness: GhostReadinessChecker;
+  /** The first stop-old-colour pre-stop check: the falsification clause's "served real traffic". */
+  readonly realTraffic: RealTrafficChecker;
+  /** The second stop-old-colour pre-stop check: LLD-4 §U5's "no send in flight". */
+  readonly emailBatchChecker: EmailBatchChecker;
+  /** How long a swap waits for a freshly started colour to answer 200 before giving up on it. */
+  readonly ghostReadyPollTimeoutMs: number;
   readonly healthPortBase: number;
   readonly appPortBase: number;
   readonly uidBase: number;
@@ -204,6 +219,25 @@ async function handleReconcile(
     if (state.phase === 'running' && state.descriptorHash === hash) {
       return send(res, 200, { slot, phase: state.phase, colour: state.colour });
     }
+    // A new descriptor for a slot that is already `running` a different
+    // one moves the tenancy to the other colour rather than refusing it --
+    // the whole reason a slot reserves a colour pair at all. Every other
+    // non-`free` phase (`preparing`, `resetting`,
+    // `detaching`, `error`) still refuses below: none of them has a
+    // `colour` this reconcile could safely deploy alongside.
+    if (state.phase === 'running' && state.colour !== undefined) {
+      return await attemptColourSwap(
+        deps,
+        res,
+        slot,
+        state,
+        descriptor,
+        host,
+        argon2idHash,
+        hash,
+        newHashId
+      );
+    }
     if (state.phase !== 'free') {
       return send(res, 409, { error: `slot "${slot}" is occupied (phase "${state.phase}")` });
     }
@@ -292,6 +326,353 @@ async function handleReconcile(
       lastHashId: newHashId,
     });
     send(res, 200, { slot, phase: 'running', colour: FRESH_COLOUR });
+  } finally {
+    deps.slotLock.release(slot);
+  }
+}
+
+/**
+ * Raised only immediately before the one step that would leave a single
+ * colour as the slot's whole upstream: refusing it is the control LLD-4
+ * §U3b names ("draining is refused while the other colour reports 503"),
+ * because a slot with both colours drained has no healthy upstream at all
+ * and every reader gets 502 (see this file's own sabotage test for what
+ * removing this check does to that state).
+ */
+export class OtherColourUnhealthyError extends Error {
+  constructor(readonly colour: Colour) {
+    super(
+      `colour "${colour}" is not answering 200 -- refusing to drain the colour it would leave as this slot's only upstream`
+    );
+    this.name = 'OtherColourUnhealthyError';
+  }
+}
+
+/**
+ * The swap LLD-4 §U3b describes: a slot already `running` one colour gets
+ * a new descriptor deployed into the *other* one, live, with the first
+ * colour still serving throughout. Called only once the caller has
+ * confirmed `state.phase === 'running'` and `state.colour` is set; holds
+ * the same per-slot lock `handleReconcile` already claimed, and both reads
+ * and writes that lock's response itself so its caller can simply `return`
+ * whatever this resolves to.
+ *
+ * **Never calls `deps.wrapper.reset()`.** That is the one thing this
+ * function must not do that a fresh deploy's own retry path does on
+ * failure (see `attempt()`, above): `reset` stops and wipes *both*
+ * colours, and `state.colour` -- the one already running -- is still
+ * genuinely serving readers for the entire duration of a swap attempt.
+ * "Draining is not stopping" (LLD-4 §U3b, load-bearing) protects the old
+ * colour just as much during a failed promotion as during a deliberate
+ * rollback: a swap that cannot complete leaves the slot exactly as it
+ * found it, never as an outage.
+ */
+async function attemptColourSwap(
+  deps: BrokerDeps,
+  res: ServerResponse,
+  slot: SlotName,
+  state: SlotState,
+  descriptor: TenantDescriptor,
+  host: string,
+  argon2idHash: string,
+  hash: string,
+  newHashId: HashId
+): Promise<void> {
+  const liveColour = state.colour as Colour;
+  const target = otherColour(liveColour);
+
+  const heldBy = await hostHeldByAnotherSlot(deps.leaseStoreConfig.slotsPath, host, slot);
+  if (heldBy !== null) {
+    return send(res, 409, { error: `host "${host}" is already held by slot "${heldBy}"` });
+  }
+  // Both colours share one database, so a swap carries the running
+  // tenancy's data into whatever it deploys. A descriptor for a different
+  // host is a different tenancy: that is a recycle, which only `/reset`
+  // (which wipes the data) may start.
+  const runningHost = await hostOfSlotEntry(deps.leaseStoreConfig.slotsPath, slot);
+  if (runningHost !== host) {
+    return send(res, 409, {
+      error: `slot "${slot}" is running a different tenancy (host "${runningHost ?? 'none'}") -- /reset it first`,
+    });
+  }
+
+  // Drained before the marker below is written, never after. Recovery reads
+  // "target's flag is clear" as "target was rebuilt by this swap", and that
+  // only holds if the flag cannot be clear at any instant the marker is on
+  // disk before this swap's own `clear(target)`. The target is routinely
+  // left live and undrained by the previous swap in the other direction,
+  // still running the version before last; draining it here is safe
+  // because `liveColour` is serving and is preferred or about to stay so.
+  await deps.drainFlags.set(slot, target);
+
+  // Recorded before any other side effect below, mirroring the fresh-deploy
+  // path's own `preparing` write: a crash partway through this function is
+  // otherwise invisible to `recoverCrashedSlots` (the persisted phase would
+  // stay `running`/`liveColour` for the swap's whole duration, exactly the
+  // gap a review of this story's first cycle found -- a retried /reconcile
+  // after such a crash would believe `liveColour` is still live and could
+  // drain the colour that crash actually left serving). `swapTarget` plus
+  // the new descriptor's own hash/hashId are what let
+  // `recoverSwapInFlight` (`stateStore.ts`) tell "a swap into `target` was
+  // in flight" apart from "this slot is quietly running", and adopt the
+  // right colour with the right hash if it finds `target` already safely
+  // live.
+  async function restorePreSwapState(): Promise<void> {
+    await writeSlotState(deps.stateDir, slot, {
+      phase: 'running' satisfies Phase,
+      colour: liveColour,
+      descriptorHash: state.descriptorHash,
+      lastHashId: state.lastHashId,
+    });
+  }
+  await writeSlotState(deps.stateDir, slot, {
+    phase: 'swapping' satisfies Phase,
+    colour: liveColour,
+    // The source's own hash, so a recovery that reverts to it restores
+    // idempotent replay rather than recording no hash at all.
+    descriptorHash: state.descriptorHash,
+    swapTarget: target,
+    swapDescriptorHash: hash,
+    swapHashId: newHashId,
+    lastHashId: state.lastHashId,
+  });
+
+  try {
+    const artefacts = await deps.renderer.render(descriptor);
+    await writeArtefacts(deps.slotDirBase, slot, artefacts);
+    await deps.wrapper.start(slot, target);
+    const targetPort = slotPort(deps.appPortBase, slot, target);
+    await deps.adminApi.configure(`http://127.0.0.1:${targetPort}`, descriptor);
+    // "Migrate, verify by calling it directly" (LLD-4 §U3b) -- Ghost's own
+    // app port is never ambiguous between colours (unlike the slot's one
+    // shared health port), so this needs no router to ask a specific
+    // colour whether it is ready.
+    const ready = await waitUntilReady(
+      deps.ghostReadiness,
+      targetPort,
+      deps.ghostReadyPollTimeoutMs
+    );
+    if (!ready) {
+      throw new Error(
+        `colour "${target}" of slot "${slot}" never answered 200 within ${deps.ghostReadyPollTimeoutMs}ms`
+      );
+    }
+    // Same tenancy, so the lease survives: rotating it here would log out
+    // every reader holding a gate cookie. It still rotates if the hash
+    // changed, since the lease is tied to the hash it was issued against.
+    await writeLeaseAndHash(deps.leaseStoreConfig, host, slot, argon2idHash, {
+      keepTiedLease: true,
+    });
+    await deps.drainFlags.clear(slot, target);
+  } catch (err) {
+    // `target`'s flag is left exactly as `set`/`clear` above last reached
+    // it; the persisted slot state is restored to exactly what it was
+    // before this attempt -- still `running`, still `liveColour`, still
+    // the old hash -- so a caller that reads `/status` or retries
+    // `/reconcile` with the old descriptor sees the tenancy exactly as it
+    // was before this attempt. (A real crash instead of this synchronous
+    // catch never reaches this line at all; that is `recoverSwapInFlight`'s
+    // job, above.)
+    await restorePreSwapState();
+    deps.log(
+      `colour swap failed for slot "${slot}" (target "${target}"): ${(err as Error).message}`
+    );
+    return send(res, 503, {
+      slot,
+      phase: 'running',
+      colour: liveColour,
+      error: (err as Error).message,
+    });
+  }
+
+  // Moving the traffic. The colours alternate, so the order in the edge's
+  // static upstream list can never encode "prefer the newer one" -- what
+  // makes the swap work in both directions is that a new colour always
+  // boots drained (above), combined with Caddy's `lb_policy first`
+  // preferring the first-listed, healthy upstream (LLD-4 §U3b):
+  //
+  // - Deploying into the first-listed colour ('a'): clearing its flag,
+  //   just above, is already the one flag change that moves everything --
+  //   it is healthy and first, so nothing further runs here.
+  // - Deploying into the second-listed colour ('b'): clearing its flag
+  //   moved nothing, because 'a' is still healthy and still preferred.
+  //   Only now, draining 'a', does traffic actually move -- which is
+  //   exactly why the refusal below guards this branch and no other.
+  if (target === 'b') {
+    // The Done-means refusal: never drain `liveColour` unless `target` --
+    // about to become this slot's only upstream -- is demonstrably
+    // serving. This is a second, independent check, not a re-read of the
+    // readiness poll above: it runs immediately before the flag change
+    // that actually moves traffic, so a target that regressed in the
+    // narrow window between the two still refuses here rather than
+    // draining blind.
+    const targetPort = slotPort(deps.appPortBase, slot, target);
+    const stillReady = await deps.ghostReadiness.isReady(targetPort);
+    if (!stillReady) {
+      await restorePreSwapState();
+      const err = new OtherColourUnhealthyError(target);
+      deps.log(`colour swap for slot "${slot}" refused to drain "${liveColour}": ${err.message}`);
+      return send(res, 503, { slot, phase: 'running', colour: liveColour, error: err.message });
+    }
+    await deps.drainFlags.set(slot, liveColour);
+  }
+
+  // The stop-old-colour baseline: taken here, once, at the instant the swap's
+  // own traffic-moving step is done -- not read again later by
+  // `attemptStopOldColour`'s own check, which must see it *advance* from
+  // this fixed point rather than the checker's current value at every
+  // call. Read after the state write would risk a real request landing in
+  // the gap and being silently absorbed into "the starting point" instead
+  // of "evidence of progress"; reading it first, here, costs nothing and
+  // cannot manufacture false evidence the other direction.
+  const trafficBaseline = await deps.realTraffic.readCount(slot);
+  await writeSlotState(deps.stateDir, slot, {
+    phase: 'running' satisfies Phase,
+    colour: target,
+    descriptorHash: hash,
+    lastHashId: newHashId,
+    trafficBaseline,
+  });
+  send(res, 200, { slot, phase: 'running', colour: target });
+}
+
+/**
+ * Stops the colour a completed swap left running, drained,
+ * for the whole bake window (LLD-4 §U7). Called only once the caller has
+ * confirmed `state.phase === 'running'`, `state.colour` is set and
+ * `state.trafficBaseline` is set -- the last of those is what distinguishes
+ * "this tenancy arrived by a swap, so there is an old colour to stop" from
+ * a fresh deploy's own `running`, which has none. Holds the same per-slot
+ * lock `handleStop`'s caller already claimed.
+ *
+ * Two independent pre-stop checks, both refusing rather than guessing, in
+ * the order that costs least first:
+ *
+ * 1. The falsification clause (LLD-4 §04): the new colour must have
+ *    *served real traffic*, not merely reported healthy. `deps.realTraffic`
+ *    is the one signal in the estate that actually observes an admitted
+ *    reader request (`services/demo-gate`'s counter); refused until a
+ *    fresh reading exceeds the baseline `attemptColourSwap` recorded.
+ * 2. LLD-4 §U5, load-bearing: no email or batch may be `submitting` --
+ *    stopping mid-send is what turns Ghost's own anti-duplicate rule into
+ *    a reader getting a partial newsletter.
+ *
+ * A third check, immediately before the one irreversible side effect,
+ * mirrors `attemptColourSwap`'s own second, independent readiness check:
+ * the survivor must still be undrained and healthy right now, because "no
+ * step may ever leave a tenant with no colour serving" binds here exactly
+ * as hard as it does mid-swap, and neither pre-stop check above says
+ * anything about the survivor's own current health.
+ */
+async function attemptStopOldColour(
+  deps: BrokerDeps,
+  res: ServerResponse,
+  slot: SlotName,
+  state: SlotState
+): Promise<void> {
+  if (state.colour === undefined || state.trafficBaseline === undefined) {
+    return send(res, 409, {
+      error: `slot "${slot}" has no old colour to stop -- its current tenancy was not reached by a colour swap`,
+    });
+  }
+  if (state.oldColourStopped === true) {
+    // Idempotent replay (the same discipline `handleReconcile` gives a
+    // repeated identical descriptor): neither check below needs to run
+    // again for a step that already happened.
+    return send(res, 200, { slot, phase: 'running', colour: state.colour });
+  }
+
+  const liveColour = state.colour;
+  const oldColour = otherColour(liveColour);
+
+  const currentTraffic = await deps.realTraffic.readCount(slot);
+  if (currentTraffic <= state.trafficBaseline) {
+    return send(res, 503, {
+      slot,
+      phase: 'running',
+      colour: liveColour,
+      error: `colour "${liveColour}" has served no real traffic since its swap completed -- refusing to stop colour "${oldColour}"`,
+    });
+  }
+
+  if (await deps.emailBatchChecker.hasSubmittingBatch(slot)) {
+    return send(res, 503, {
+      slot,
+      phase: 'running',
+      colour: liveColour,
+      error: `slot "${slot}" has an email or batch still "submitting" -- refusing to stop colour "${oldColour}" mid-send`,
+    });
+  }
+
+  const liveColourPort = slotPort(deps.appPortBase, slot, liveColour);
+  const stillLive =
+    !(await deps.drainFlags.isSet(slot, liveColour)) &&
+    (await deps.ghostReadiness.isReady(liveColourPort));
+  if (!stillLive) {
+    return send(res, 503, {
+      slot,
+      phase: 'running',
+      colour: liveColour,
+      error: `colour "${liveColour}" is not confirmed live right now -- refusing to stop colour "${oldColour}", which would leave slot "${slot}" with no colour serving`,
+    });
+  }
+
+  // The in-flight marker, written before the one side effect that follows
+  // -- `recoverStoppingSlot` (`stateStore.ts`) is what makes a crash here
+  // recoverable rather than an unrecorded stop nobody can tell happened.
+  await writeSlotState(deps.stateDir, slot, {
+    phase: 'stopping' satisfies Phase,
+    colour: liveColour,
+    descriptorHash: state.descriptorHash,
+    lastHashId: state.lastHashId,
+    trafficBaseline: state.trafficBaseline,
+  });
+  await deps.wrapper.stop(slot, oldColour);
+  await writeSlotState(deps.stateDir, slot, {
+    phase: 'running' satisfies Phase,
+    colour: liveColour,
+    descriptorHash: state.descriptorHash,
+    lastHashId: state.lastHashId,
+    trafficBaseline: state.trafficBaseline,
+    oldColourStopped: true,
+  });
+  send(res, 200, { slot, phase: 'running', colour: liveColour });
+}
+
+async function handleStop(
+  deps: BrokerDeps,
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  const rawBody = await authenticate(deps, req, res, '/stop');
+  if (rawBody === null) return;
+
+  let payload: { slot?: unknown };
+  try {
+    payload = parseJson(rawBody) as typeof payload;
+  } catch {
+    return send(res, 400, { error: 'body is not valid JSON' });
+  }
+  let slot: SlotName;
+  try {
+    slot = validateSlotLiteral(payload.slot, deps.slotLiterals);
+  } catch (err) {
+    return send(res, 422, { error: (err as Error).message });
+  }
+
+  // Same lock as `/reconcile` and `/reset` (F1): a stop racing either must
+  // not act on a slot either of them still believes it owns.
+  if (!deps.slotLock.claim(slot)) {
+    return send(res, 409, { error: `slot "${slot}" is locked by a concurrent request` });
+  }
+  try {
+    const state = await readSlotState(deps.stateDir, slot);
+    if (state.phase !== 'running') {
+      return send(res, 409, {
+        error: `slot "${slot}" is not in a running state (phase "${state.phase}")`,
+      });
+    }
+    await attemptStopOldColour(deps, res, slot, state);
   } finally {
     deps.slotLock.release(slot);
   }
@@ -418,7 +799,10 @@ export function createBrokerHandler(deps: BrokerDeps): Handler {
       if (path === '/reconcile' && req.method === 'POST')
         return await handleReconcile(deps, req, res);
       if (path === '/reset' && req.method === 'POST') return await handleReset(deps, req, res);
+      if (path === '/stop' && req.method === 'POST') return await handleStop(deps, req, res);
       if (path === '/drain' && req.method === 'GET') return await handleDrain(deps, req, res);
+      if (path === '/image' && req.method === 'POST')
+        return await handleImagePush(deps.auth, deps.imagePush, req, res);
       const statusMatch = /^\/status\/([^/]+)$/.exec(path);
       if (statusMatch && req.method === 'GET') {
         let slotParam: string;

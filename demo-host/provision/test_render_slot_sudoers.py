@@ -26,15 +26,17 @@ import render_slot_sudoers as rss
 # Matches one rule line's shape and captures the invocation. Used with
 # `fullmatch` against a single line at a time -- `finditer` against the whole
 # multi-line file would need `re.M` for `\A`/`\Z` to anchor per line, and
-# without it silently matches nothing.
+# without it silently matches nothing. Carries `/` and `.` too, unlike the
+# slot verbs' own characters, because the `load` rule's invocation is a
+# filesystem path.
 RULE_LINE_PATTERN = re.compile(
     re.escape(f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} ")
-    + r"(?P<invocation>[a-zA-Z0-9 ]+)"
+    + r"(?P<invocation>[a-zA-Z0-9 /.\-]+)"
 )
 
 
 def _expected_rule_lines() -> list[str]:
-    """The 35 rule lines, reconstructed independently of render()'s own
+    """The 50 rule lines, reconstructed independently of render()'s own
     loop -- from the slot table and the fixed line shape only, so a bug in
     render()'s assembly (an appended line, a dropped slot, a duplicate)
     shows up as a mismatch rather than being reproduced on both sides.
@@ -43,11 +45,14 @@ def _expected_rule_lines() -> list[str]:
     for slot in rss.SLOT_NAMES:
         lines.append(f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} {slot} reset")
         for colour in rss.COLOURS:
-            for verb in rss.START_STOP_VERBS:
+            for verb in (*rss.START_STOP_VERBS, *rss.READ_VERBS):
                 lines.append(
                     f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} "
                     f"{slot} {colour} {verb}"
                 )
+    lines.append(
+        f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} {rss.IMAGE_LOAD_INVOCATION}"
+    )
     return lines
 
 
@@ -56,16 +61,29 @@ def _expected_full_text() -> str:
 
 
 class SlotInvocationsTests(unittest.TestCase):
-    def test_five_invocations_per_slot_in_stable_order(self):
+    def test_seven_invocations_per_slot_in_stable_order(self):
         self.assertEqual(
             rss.slot_invocations("3"),
-            ["3 reset", "3 a start", "3 a stop", "3 b start", "3 b stop"],
+            [
+                "3 reset",
+                "3 a start",
+                "3 a stop",
+                "3 a email-batches",
+                "3 b start",
+                "3 b stop",
+                "3 b email-batches",
+            ],
         )
 
     def test_reset_carries_no_colour(self):
         for invocation in rss.slot_invocations("0"):
             if invocation.endswith("reset"):
                 self.assertEqual(invocation, "0 reset")
+
+    def test_read_verb_present_exactly_once_per_colour(self):
+        invocations = rss.slot_invocations("5")
+        self.assertEqual(invocations.count("5 a email-batches"), 1)
+        self.assertEqual(invocations.count("5 b email-batches"), 1)
 
     def test_every_slot_name_is_a_plain_digit_string(self):
         # The wrapper's first argument is matched literally by sudoers, so a
@@ -96,9 +114,9 @@ class SlotNameValidationTests(unittest.TestCase):
 
 
 class AllInvocationsTests(unittest.TestCase):
-    def test_seven_slots_times_five_invocations_is_thirty_five(self):
+    def test_seven_slots_times_seven_invocations_is_forty_nine(self):
         self.assertEqual(len(rss.SLOT_NAMES), 7)
-        self.assertEqual(len(rss.all_invocations()), 35)
+        self.assertEqual(len(rss.all_invocations()), 49)
 
     def test_every_invocation_is_unique(self):
         invocations = rss.all_invocations()
@@ -106,11 +124,11 @@ class AllInvocationsTests(unittest.TestCase):
 
     def test_scales_with_a_smaller_slot_table(self):
         # Proves the enumeration is derived from the table rather than a
-        # hardcoded count of thirty-five: three slots must yield fifteen.
-        self.assertEqual(len(rss.all_invocations(("0", "1", "2"))), 15)
+        # hardcoded count of forty-nine: three slots must yield twenty-one.
+        self.assertEqual(len(rss.all_invocations(("0", "1", "2"))), 21)
 
     def test_scales_with_a_larger_slot_table(self):
-        self.assertEqual(len(rss.all_invocations(tuple(str(n) for n in range(9)))), 45)
+        self.assertEqual(len(rss.all_invocations(tuple(str(n) for n in range(9)))), 63)
 
 
 class RenderPinnedLiteralsTests(unittest.TestCase):
@@ -130,6 +148,21 @@ class RenderPinnedLiteralsTests(unittest.TestCase):
         self.assertIn(
             "broker ALL=(root) NOPASSWD: /usr/local/sbin/branchleft-slot 6 b stop", content
         )
+        self.assertIn(
+            "broker ALL=(root) NOPASSWD: /usr/local/sbin/branchleft-slot 6 b email-batches",
+            content,
+        )
+
+    def test_rendered_output_pins_the_literal_load_rule(self):
+        # Not derived from `rss.IMAGE_LOAD_INVOCATION` -- a test built from
+        # the same constant the generator reads moves with it, exactly the
+        # reason this class's own docstring gives for the two lines above.
+        content = rss.render()
+        self.assertIn(
+            "broker ALL=(root) NOPASSWD: /usr/local/sbin/branchleft-slot load "
+            "/var/lib/branchleft-broker/image-tmp/image.tar",
+            content,
+        )
 
 
 class RenderExactnessTests(unittest.TestCase):
@@ -147,9 +180,24 @@ class RenderExactnessTests(unittest.TestCase):
                 f"nor a '# ' comment: {line!r}",
             )
 
-    def test_exactly_thirty_five_rule_lines(self):
+    def test_exactly_fifty_rule_lines(self):
         matched = sum(1 for line in rss.render().splitlines() if line in set(_expected_rule_lines()))
-        self.assertEqual(matched, 35)
+        self.assertEqual(matched, 50)
+
+
+class ReadVerbTests(unittest.TestCase):
+    def test_read_verbs_is_disjoint_from_start_stop_verbs(self):
+        self.assertEqual(set(rss.READ_VERBS) & set(rss.START_STOP_VERBS), set())
+
+    def test_read_verb_invocation_takes_only_slot_and_colour(self):
+        for slot in rss.SLOT_NAMES:
+            for colour in rss.COLOURS:
+                for verb in rss.READ_VERBS:
+                    invocation = f"{slot} {colour} {verb}"
+                    self.assertIn(invocation, rss.all_invocations())
+                    # Exactly three space-separated fields -- never a fourth
+                    # (a path, a query, anything else).
+                    self.assertEqual(len(invocation.split(" ")), 3)
 
 
 class RenderTests(unittest.TestCase):
@@ -169,7 +217,7 @@ class RenderTests(unittest.TestCase):
                 continue
             matched += 1
             self.assertNotIn("ALL", match.group("invocation"))
-        self.assertEqual(matched, 35, "the matcher itself matched nothing -- see test docstring")
+        self.assertEqual(matched, 50, "the matcher itself matched nothing -- see test docstring")
 
     def test_render_is_deterministic(self):
         self.assertEqual(rss.render(), rss.render())
@@ -240,6 +288,50 @@ class WriteGeneratedFileTests(unittest.TestCase):
             self.assertEqual(target.read_text(), "previous good content\n")
 
 
+class InstallGeneratedFileTests(unittest.TestCase):
+    """`install_generated_file` is `write_generated_file` plus `chown
+    root:root` -- a property review named directly: `write_generated_file`
+    sets mode 0440 but not ownership, and sudo ignores a sudoers.d file it
+    is set on either count.
+    """
+
+    def test_chowns_the_written_file_to_root_root(self):
+        # `os.chown` needs real root to succeed against a real file, which a
+        # test process is not guaranteed to be -- so the call itself is
+        # mocked and its arguments asserted, rather than skipped outright.
+        # `test_render_slot_sudoers_ci.yml`'s container job is what proves
+        # this against a real root chown; this test proves the call happens
+        # at all and with the right arguments.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "branchleft-slot"
+            with mock.patch("render_slot_sudoers.os.chown") as chown:
+                rss.install_generated_file(str(target), rss.render())
+            chown.assert_called_once_with(str(target), 0, 0)
+            self.assertEqual(target.read_text(), rss.render())
+
+    def test_chown_failure_propagates_rather_than_being_swallowed(self):
+        # A caller that cannot set root:root has not installed a working
+        # boundary -- silently accepting a chown failure would leave a file
+        # sudo ignores while reporting success.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "branchleft-slot"
+            with mock.patch(
+                "render_slot_sudoers.os.chown", side_effect=PermissionError("not root")
+            ):
+                with self.assertRaises(PermissionError):
+                    rss.install_generated_file(str(target), rss.render())
+            # write_generated_file's own atomicity still held: the file it
+            # wrote is there even though the chown after it failed.
+            self.assertEqual(target.read_text(), rss.render())
+
+    def test_still_mode_0440_after_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "branchleft-slot"
+            with mock.patch("render_slot_sudoers.os.chown"):
+                rss.install_generated_file(str(target), rss.render())
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o440)
+
+
 class MainTests(unittest.TestCase):
     def test_main_writes_the_rendered_content_to_stdout_by_default(self):
         original_stdout = sys.stdout
@@ -258,6 +350,22 @@ class MainTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(out_path.read_text(), rss.render())
             self.assertEqual(stat.S_IMODE(out_path.stat().st_mode), 0o440)
+
+    def test_main_installs_via_install_and_chowns_root_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = pathlib.Path(tmp) / "generated-sudoers"
+            with mock.patch("render_slot_sudoers.os.chown") as chown:
+                exit_code = rss.main(["--install", str(out_path)])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(out_path.read_text(), rss.render())
+            self.assertEqual(stat.S_IMODE(out_path.stat().st_mode), 0o440)
+            chown.assert_called_once_with(str(out_path), 0, 0)
+
+    def test_out_and_install_are_mutually_exclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(pathlib.Path(tmp) / "generated-sudoers")
+            with self.assertRaises(SystemExit):
+                rss.main(["--out", path, "--install", path])
 
 
 if __name__ == "__main__":

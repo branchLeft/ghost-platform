@@ -1,3 +1,4 @@
+import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { createGateHandler } from './app.js';
@@ -7,6 +8,7 @@ import { loadConfig } from './config.js';
 import { createDerivationGate } from './derivationGate.js';
 import { createLeaseReader, createSlotsSource } from './slots.js';
 import { createSourceResolver } from './source.js';
+import { createTrafficCounterStore } from './trafficCounter.js';
 
 const config = loadConfig(process.env);
 const slots = createSlotsSource(config.slotsPath);
@@ -14,10 +16,17 @@ const slots = createSlotsSource(config.slotsPath);
 // rather than at the first visitor.
 await slots();
 
+if (config.trafficCounterDir) {
+  await mkdir(config.trafficCounterDir, { recursive: true });
+}
+
 const handler = createGateHandler({
   slots,
   leaseOf: createLeaseReader(config.leaseDir),
   signingKey: config.signingKey,
+  trafficCounter: config.trafficCounterDir
+    ? createTrafficCounterStore(config.trafficCounterDir)
+    : undefined,
   ceiling: createAttemptCeiling({
     limit: config.ceilingLimit,
     windowMs: config.ceilingWindowMs,

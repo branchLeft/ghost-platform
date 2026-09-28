@@ -40,6 +40,15 @@ TENANT_NAME_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
 # independent boundary alongside `require_secure_transport`.
 TENANT_USER_HOST = "10.20.1.%"
 
+# No reserved-name guard here, deliberately: `scripts/assert-slug-pattern-
+# consistency.py` records the decision explicitly (it excludes this module
+# from its cross-copy reserved-name comparison for the same reason) --
+# `infra/tenant`'s `GhostTenant` component already refuses a reserved slug
+# during `pulumi up`, before DB provisioning against that slug is ever run,
+# so this module was never given a second copy of that check. Adding one
+# would not tighten anything upstream of it and would be a fifth place for
+# the reserved set to drift.
+
 
 class InvalidTenantName(ValueError):
     """Raised for a tenant name this stack refuses to provision from."""

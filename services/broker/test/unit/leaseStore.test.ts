@@ -61,6 +61,38 @@ describe('leaseStore', () => {
     expect(second.hashId).not.toBe(first.hashId);
   });
 
+  it('keepTiedLease reuses the lease id when the record is already tied to the same hash', async () => {
+    const slot = '0' as SlotName;
+    const first = await writeLeaseAndHash(config, 'k7m.demo.test', slot, HASH);
+    const second = await writeLeaseAndHash(config, 'k7m.demo.test', slot, HASH, {
+      keepTiedLease: true,
+    });
+    expect(second.lease).toBe(first.lease);
+  });
+
+  it('keepTiedLease still mints a new lease when the hash changed', async () => {
+    const slot = '0' as SlotName;
+    const first = await writeLeaseAndHash(config, 'k7m.demo.test', slot, HASH);
+    const secondHash = '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bGFzaA';
+    const second = await writeLeaseAndHash(config, 'k7m.demo.test', slot, secondHash, {
+      keepTiedLease: true,
+    });
+    expect(second.lease).not.toBe(first.lease);
+    expect(second.hashId).toBe(hashIdOf(secondHash));
+  });
+
+  it('keepTiedLease mints a lease when there is no readable record to keep', async () => {
+    const slot = '0' as SlotName;
+    const { lease } = await writeLeaseAndHash(config, 'k7m.demo.test', slot, HASH, {
+      keepTiedLease: true,
+    });
+    const record = parseSlotLeaseRecord(
+      await readFile(join(dir, leaseRecordFileName(slot)), 'utf8'),
+      slot
+    );
+    expect(record.lease).toBe(lease);
+  });
+
   it('clearLeaseAndHash removes both the lease record and the slots-file entry', async () => {
     const slot = '0' as SlotName;
     await writeLeaseAndHash(config, 'k7m.demo.test', slot, HASH);

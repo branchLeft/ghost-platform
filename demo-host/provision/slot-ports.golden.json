@@ -1,0 +1,14 @@
+{
+  "_comment": "The one shared fixture both slotPorts.ts (services/broker) and render_demo_edge.py (this directory) are tested against, so a formula drifting on either side fails that side's own test rather than silently desyncing the generated Caddy snippet from the real container ports it addresses. Neither file reads this at runtime -- appPortBase/healthPortBase stay each side's own env-configurable default (9300/9100); this fixture pins that default's expansion for all seven slots as the comparison point.",
+  "appPortBase": 9300,
+  "healthPortBase": 9100,
+  "slots": [
+    { "slot": "0", "a": 9300, "b": 9301, "health": 9100 },
+    { "slot": "1", "a": 9302, "b": 9303, "health": 9101 },
+    { "slot": "2", "a": 9304, "b": 9305, "health": 9102 },
+    { "slot": "3", "a": 9306, "b": 9307, "health": 9103 },
+    { "slot": "4", "a": 9308, "b": 9309, "health": 9104 },
+    { "slot": "5", "a": 9310, "b": 9311, "health": 9105 },
+    { "slot": "6", "a": 9312, "b": 9313, "health": 9106 }
+  ]
+}

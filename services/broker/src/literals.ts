@@ -26,3 +26,8 @@ export function validateColour(value: unknown): Colour {
   }
   return value;
 }
+
+/** The other half of a colour pair -- a swap always targets this. */
+export function otherColour(colour: Colour): Colour {
+  return colour === 'a' ? 'b' : 'a';
+}

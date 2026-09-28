@@ -57,6 +57,15 @@ class GhostContainer {
       privacy__useUpdateCheck: 'false',
       mail__transport: 'stub',
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: 'true',
+      storage__images__adapter: 'ScanningStorageAdapter',
+      storage__images__wraps: 'LocalImagesStorage',
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+      storage__media__adapter: 'ScanningStorageAdapter',
+      storage__media__wraps: 'LocalMediaStorage',
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+      storage__files__adapter: 'ScanningStorageAdapter',
+      storage__files__wraps: 'LocalFilesStorage',
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
     };
     if (active) env.adapters__sso__active = active;
     for (const [key, value] of Object.entries(adapterConfig ?? {})) {

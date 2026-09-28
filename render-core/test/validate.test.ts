@@ -11,7 +11,7 @@ import {
 } from '../src/validate.js';
 import { FieldValidationError } from '../src/brand.js';
 import type { Instant } from '../src/brand.js';
-import { TEST_ZONES, demoDescriptor, tenantDescriptor } from './fixtures.js';
+import { TEST_ZONES, breakGlassEnabled, demoDescriptor, tenantDescriptor } from './fixtures.js';
 
 describe('validate() — descriptors that violate nothing', () => {
   it('accepts a well-formed demo descriptor', () => {
@@ -475,6 +475,221 @@ describe('validate() — per-tier variant rules (not the three numbered invarian
   it('rejects a demo with no expiry', () => {
     const descriptor: TenantDescriptor = { ...demoDescriptor(), expiresAt: null };
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
+  });
+
+  it('rejects a demo carrying a tenant-shaped mail identity — a selector or a domain of its own', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: {
+        ...demoDescriptor().mail,
+        identity: { kind: 'tenant', domain: 'evil.example', dkimSelector: 'bl' },
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TierMismatchError);
+    expect((caught as Error).message).toContain('mail.identity.kind');
+  });
+
+  it('rejects a paying tenant carrying a demo-shaped mail identity', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: { ...tenantDescriptor().mail, identity: { kind: 'demo', localPart: 'acme' } },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(TierMismatchError);
+  });
+});
+
+describe('validate() — mail sending identity', () => {
+  it('rejects a demo carrying an unknown-key mail.identity payload (a domain smuggled onto the demo arm)', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      mail: {
+        ...demoDescriptor().mail,
+        identity: { kind: 'demo', localPart: 'demo-1', domain: 'evil.example' },
+      },
+    } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.identity');
+  });
+
+  it('rejects mail.identity.kind outside the declared set', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, identity: { kind: 'Demo', localPart: 'demo-1' } },
+    } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(UnknownDiscriminantError);
+    expect((caught as UnknownDiscriminantError).field).toBe('mail.identity');
+  });
+
+  it('rejects an unknown key on mail itself', () => {
+    const descriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, extra: 1 },
+    } as unknown as TenantDescriptor;
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail');
+  });
+
+  it('rejects mail.ceiling greater than mail.estateCeiling — one abuser must not spend the estate cap', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, ceiling: 1000, estateCeiling: 500 },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.ceiling');
+  });
+
+  it('accepts mail.ceiling equal to mail.estateCeiling', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, ceiling: 500, estateCeiling: 500 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).not.toThrow();
+  });
+
+  it.each([-1, 1.5, Infinity, NaN])('rejects mail.ceiling %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, ceiling: value, estateCeiling: 500 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it.each([-1, 1.5, Infinity])('rejects mail.estateCeiling %s', (value) => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      mail: { ...demoDescriptor().mail, ceiling: 1, estateCeiling: value },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it.each(['', ' ', 'demo one', 'demo@one', '-demo', 'demo-'])(
+    'rejects a malformed mail.identity.localPart %j',
+    (value) => {
+      const descriptor: TenantDescriptor = {
+        ...demoDescriptor(),
+        mail: { ...demoDescriptor().mail, identity: { kind: 'demo', localPart: value } },
+      };
+      expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+    }
+  );
+
+  it.each(['demo-1', 'demo.one', 'demo_one', 'a'])(
+    'accepts a well-formed mail.identity.localPart %j',
+    (value) => {
+      const descriptor: TenantDescriptor = {
+        ...demoDescriptor(),
+        mail: { ...demoDescriptor().mail, identity: { kind: 'demo', localPart: value } },
+      };
+      expect(() => validate(descriptor, TEST_ZONES)).not.toThrow();
+    }
+  );
+
+  it('rejects a tenant mail.identity.domain that is an IP literal', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: '203.0.113.5', dkimSelector: 'bl' },
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a tenant mail.identity.domain equal to a platform-owned domain', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: 'platform-domain.example.test', dkimSelector: 'bl' },
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.identity.domain');
+  });
+
+  it('rejects a tenant mail.identity.domain equal to zones.demoMailDomain — the exact domain every demo shares', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: TEST_ZONES.demoMailDomain, dkimSelector: 'bl' },
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('mail.identity.domain');
+  });
+
+  it('rejects a tenant mail.identity.domain that is a subdomain of zones.demoMailDomain', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: {
+          kind: 'tenant',
+          domain: `sub.${TEST_ZONES.demoMailDomain}`,
+          dkimSelector: 'bl',
+        },
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a malformed tenant mail.identity.dkimSelector', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      mail: {
+        ...tenantDescriptor().mail,
+        identity: { kind: 'tenant', domain: 'blog.acme.example', dkimSelector: 'not a label' },
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('accepts a well-formed tenant mail.identity', () => {
+    const descriptor: TenantDescriptor = tenantDescriptor();
+    expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
   });
 });
 
@@ -966,7 +1181,127 @@ describe("validate() — siteUrl must match the descriptor's hostname", () => {
   });
 });
 
-describe('validate() — zone configuration (item 1: no hard-coded platform name)', () => {
+describe('validate() — the zone configuration itself is validated', () => {
+  it('rejects an empty ownedDomains array', () => {
+    const zones = { ...TEST_ZONES, ownedDomains: [] };
+    let caught: unknown;
+    try {
+      validate(tenantDescriptor(), zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.ownedDomains');
+  });
+
+  it('rejects ownedDomains: [""] -- an empty entry can never match a fqdn, so it must not silently make every fqdn look outside every owned domain', () => {
+    const zones = { ...TEST_ZONES, ownedDomains: [''] };
+    // Without this check, a code-injection grant on a subdomain of the
+    // platform zone would validate: the malformed entry never matches, so
+    // isOutsideOwnedDomains would wrongly say "outside".
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      siteUrl: `https://x.${TEST_ZONES.platformZone}` as never,
+      hostname: {
+        kind: 'theirs',
+        fqdn: `x.${TEST_ZONES.platformZone}`,
+        verifiedAt: '2026-09-01T00:00:00.000Z' as never,
+      },
+      codeInjection: { kind: 'granted', by: 'support', reason: 'ticket', until: null },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.ownedDomains');
+  });
+
+  it('rejects ownedDomains: [" x"] -- a label with an embedded space is not well-formed', () => {
+    const zones = { ...TEST_ZONES, ownedDomains: [' x'] };
+    let caught: unknown;
+    try {
+      validate(tenantDescriptor(), zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.ownedDomains');
+  });
+
+  it('rejects ownedDomains: [".x"] -- a leading dot is an empty first label', () => {
+    const zones = { ...TEST_ZONES, ownedDomains: ['.x'] };
+    let caught: unknown;
+    try {
+      validate(tenantDescriptor(), zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.ownedDomains');
+  });
+
+  it('rejects an empty demoZone -- an unchecked demoZone would let a demo\'s siteUrl validate as "https://<sub>."', () => {
+    const zones = { ...TEST_ZONES, demoZone: '' };
+    let caught: unknown;
+    try {
+      validate(demoDescriptor(), zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.demoZone');
+  });
+
+  it('rejects a platformZone outside every owned domain', () => {
+    const zones = { ...TEST_ZONES, platformZone: 'unowned.example.test' };
+    let caught: unknown;
+    try {
+      validate(tenantDescriptor(), zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.platformZone');
+  });
+
+  it('rejects ownedDomains arriving undefined with a named error, not a raw TypeError', () => {
+    const zones = { ...TEST_ZONES, ownedDomains: undefined } as unknown as typeof TEST_ZONES;
+    let caught: unknown;
+    try {
+      validate(tenantDescriptor(), zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.ownedDomains');
+  });
+
+  it('rejects zones arriving as null with a named error, not a raw TypeError', () => {
+    let caught: unknown;
+    try {
+      validate(tenantDescriptor(), null as unknown as typeof TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones');
+  });
+
+  it('accepts a platformZone that is itself an owned domain, with no subdomain', () => {
+    const zones = { ...TEST_ZONES, platformZone: TEST_ZONES.ownedDomains[1] };
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: { kind: 'ours', sub: 'acme', gated: false },
+      siteUrl: `https://acme.${zones.platformZone}` as never,
+    };
+    expect(validate(descriptor, zones)).toBe(descriptor);
+  });
+});
+
+describe('validate() — zone configuration: no hard-coded platform name', () => {
   it('accepts a demo on the demo zone', () => {
     const descriptor = demoDescriptor();
     expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
@@ -1071,7 +1406,9 @@ describe('validate() — zone configuration (item 1: no hard-coded platform name
   it('rejects an uppercase variant of an owned domain, compared case-insensitively', () => {
     const zonesWithMixedCaseEntry = {
       ...TEST_ZONES,
-      ownedDomains: ['Platform-Domain.Example.TEST'],
+      // demoZone must stay an owned domain too, or zone validation itself
+      // (not the hostname.fqdn check this test targets) would be what throws.
+      ownedDomains: ['Platform-Domain.Example.TEST', TEST_ZONES.demoZone],
     };
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),
@@ -1093,7 +1430,12 @@ describe('validate() — zone configuration (item 1: no hard-coded platform name
   });
 
   it('trims a trailing dot before comparing an owned domain', () => {
-    const zonesWithTrailingDot = { ...TEST_ZONES, ownedDomains: ['platform-domain.example.test.'] };
+    const zonesWithTrailingDot = {
+      ...TEST_ZONES,
+      // demoZone must stay an owned domain too, or zone validation itself
+      // (not the hostname.fqdn check this test targets) would be what throws.
+      ownedDomains: ['platform-domain.example.test.', TEST_ZONES.demoZone],
+    };
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),
       siteUrl: 'https://sub.platform-domain.example.test' as never,
@@ -1107,7 +1449,7 @@ describe('validate() — zone configuration (item 1: no hard-coded platform name
   });
 });
 
-describe('validate() — range checks (item 2)', () => {
+describe('validate() — range checks', () => {
   it.each([-1, 0, Infinity, 1.5])('rejects caps.cpuShares %s', (value) => {
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),
@@ -1173,9 +1515,57 @@ describe('validate() — range checks (item 2)', () => {
     const descriptor = demoDescriptor();
     expect(validate(descriptor, TEST_ZONES)).toBe(descriptor);
   });
+
+  it('rejects caps.pidsLimit of 1e300 -- Number.isInteger alone accepts it; Number.isSafeInteger does not', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, pidsLimit: 1e300 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects caps.nofile of 1e300', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, nofile: 1e300 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects caps.cpuShares of 1e300', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, cpuShares: 1e300 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it("rejects limits.membersCap of 2^53+2 -- above Number.isSafeInteger's own ceiling", () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      limits: { ...demoDescriptor().limits, membersCap: 2 ** 53 + 2 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects limits.staffCap of a safe integer that is still past its sane ceiling', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      limits: { ...demoDescriptor().limits, staffCap: 50_000 },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects caps.cpus of 32 digits -- exactly at the character-length cap, so the length check alone would accept it', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      caps: { ...demoDescriptor().caps, cpus: '1'.repeat(32) },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
 });
 
-describe('validate() — siteUrl exact match (item 4)', () => {
+describe('validate() — siteUrl exact match', () => {
   it('accepts an optional trailing slash', () => {
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),
@@ -1249,7 +1639,7 @@ describe('validate() — siteUrl exact match (item 4)', () => {
   });
 });
 
-describe('validate() — hostname.sub is a DNS label (item 5)', () => {
+describe('validate() — hostname.sub is a DNS label', () => {
   it('rejects an empty sub', () => {
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),
@@ -1296,7 +1686,7 @@ describe('validate() — hostname.sub is a DNS label (item 5)', () => {
   });
 });
 
-describe('validate() — unknown keys are rejected at every object level (item 6)', () => {
+describe('validate() — unknown keys are rejected at every object level', () => {
   it('rejects an unknown top-level key', () => {
     const descriptor = { ...demoDescriptor(), extra: 'nope' } as unknown as TenantDescriptor;
     let caught: unknown;
@@ -1381,7 +1771,7 @@ describe('validate() — unknown keys are rejected at every object level (item 6
   });
 });
 
-describe('validate() — a theirs fqdn must not be an IP literal (item 7)', () => {
+describe('validate() — a theirs fqdn must not be an IP literal, or IPv4 shorthand for one', () => {
   it('rejects an IPv4 literal', () => {
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),
@@ -1413,9 +1803,31 @@ describe('validate() — a theirs fqdn must not be an IP literal (item 7)', () =
     };
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
+
+  // `new URL('https://127.1').host` is `127.0.0.1` — each of these is a
+  // shorter, still-valid-to-a-URL-parser way of writing the same IPv4
+  // literal, which would let a "theirs" custom domain actually resolve
+  // through the URL parser as a raw IP address rather than a DNS name.
+  it.each(['127.1', '127.0.1', '0x7f.1', '0x7f.0.0.1'])(
+    'rejects the IPv4 shorthand literal %s',
+    (fqdn) => {
+      const descriptor: TenantDescriptor = {
+        ...tenantDescriptor(),
+        hostname: { kind: 'theirs', fqdn, verifiedAt: '2026-09-01T00:00:00.000Z' as never },
+      };
+      let caught: unknown;
+      try {
+        validate(descriptor, TEST_ZONES);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(FieldValidationError);
+      expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+    }
+  );
 });
 
-describe('validate() — path and host fields reject empty values and ".." (item 8)', () => {
+describe('validate() — path and host fields reject empty, relative, traversal and injection-shaped values', () => {
   it('rejects an empty database.path (sqlite)', () => {
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),
@@ -1435,7 +1847,7 @@ describe('validate() — path and host fields reject empty values and ".." (item
   it('rejects a media.path with a ".." segment', () => {
     const descriptor: TenantDescriptor = {
       ...demoDescriptor(),
-      media: { ...demoDescriptor().media, path: '../../etc' } as never,
+      media: { ...demoDescriptor().media, path: '/data/../../etc' } as never,
     };
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
@@ -1484,6 +1896,168 @@ describe('validate() — path and host fields reject empty values and ".." (item
       transport: { kind: 'smtp', host: '', port: 587 as never, user: 'ghost' },
     };
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a transport.host with an embedded space -- the same character check database.host already gets', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      transport: { kind: 'smtp', host: 'mx internal.example', port: 587 as never, user: 'ghost' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a transport.host with a semicolon', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      transport: {
+        kind: 'smtp',
+        host: 'mx.internal;DROP TABLE x',
+        port: 587 as never,
+        user: 'ghost',
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a relative database.path', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      database: { kind: 'sqlite', path: 'relative/ghost.db' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a relative transport.path', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      transport: { kind: 'queue', path: 'relative/spool' },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a database.path carrying a backslash traversal segment ("..\\\\x")', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      database: { kind: 'sqlite', path: '/data\\..\\x' },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('database.path');
+  });
+
+  it('rejects an empty database.name (mysql) -- the slug-derived identity check never matches an empty name', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      database: { ...tenantDescriptor().database, name: '' } as never,
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('database.name');
+  });
+
+  it('rejects an empty database.user (mysql) -- the slug-derived identity check never matches an empty user', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      database: { ...tenantDescriptor().database, user: '' } as never,
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('database.user');
+  });
+
+  it('rejects a database.host with an embedded space', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      database: { ...tenantDescriptor().database, host: 'db t1.internal' } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects a database.host with a semicolon', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      database: { ...tenantDescriptor().database, host: 'db-t1.internal;DROP TABLE x' } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('rejects an empty media.bucket (s3, tenant) -- the slug-derived identity check never matches an empty bucket', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      media: { ...tenantDescriptor().media, bucket: '' } as never,
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('media.bucket');
+  });
+
+  it('rejects an empty media.region (s3, tenant)', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      media: { ...tenantDescriptor().media, region: '' } as never,
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('media.region');
+  });
+
+  it('rejects a media.endpoint of "javascript:alert(1)"', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      media: { ...tenantDescriptor().media, endpoint: 'javascript:alert(1)' } as never,
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('media.endpoint');
+  });
+
+  it('rejects hostname.verifiedAt of "2026-02-30T00:00:00.000Z" -- not a real calendar date', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      hostname: {
+        kind: 'theirs',
+        fqdn: 'blog.acme.example',
+        verifiedAt: '2026-02-30T00:00:00.000Z' as never,
+      },
+    };
+    let caught: unknown;
+    try {
+      validate(descriptor, TEST_ZONES);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('hostname.verifiedAt');
   });
 });
 
@@ -1584,5 +2158,190 @@ describe('servedHostnameOf() — what a certificate-admission decision may admit
       },
     };
     expect(servedHostnameOf(trailingDot, TEST_ZONES)).toBeNull();
+  });
+});
+
+describe('validate() — breakGlass', () => {
+  it('accepts a tenant with breakGlass enabled, image pinned in the allowlist', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: breakGlassEnabled(tenantDescriptor().slug),
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).not.toThrow();
+  });
+
+  it('refuses an unknown breakGlass.kind', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: { kind: 'maybe' } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(UnknownDiscriminantError);
+  });
+
+  it('refuses breakGlass.kind "enabled" missing publicKey -- a partial triple, not half-rendered', () => {
+    const enabled = breakGlassEnabled(tenantDescriptor().slug);
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: {
+        kind: 'enabled',
+        tenant: enabled.tenant,
+        supportIdentity: enabled.supportIdentity,
+      } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('refuses breakGlass.kind "enabled" missing tenant', () => {
+    const enabled = breakGlassEnabled(tenantDescriptor().slug);
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: {
+        kind: 'enabled',
+        publicKey: enabled.publicKey,
+        supportIdentity: enabled.supportIdentity,
+      } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('refuses breakGlass.kind "enabled" missing supportIdentity', () => {
+    const enabled = breakGlassEnabled(tenantDescriptor().slug);
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: {
+        kind: 'enabled',
+        publicKey: enabled.publicKey,
+        tenant: enabled.tenant,
+      } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('refuses breakGlass.kind "enabled" carrying an unknown extra key', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: { ...breakGlassEnabled(tenantDescriptor().slug), extra: 'nope' } as never,
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it("refuses breakGlass.tenant that disagrees with the descriptor's own slug -- an audience mix-up, not a formatting issue", () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: breakGlassEnabled('some-other-tenant'),
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(
+      /breakGlass\.tenant .* must equal this descriptor's own slug/
+    );
+  });
+
+  it.each(['2024', 'true', 'false', 'null'])(
+    "refuses breakGlass.tenant %j -- Ghost's own env parser would read it as JSON, not a string",
+    (value) => {
+      const descriptor: TenantDescriptor = {
+        ...tenantDescriptor(),
+        breakGlass: { ...breakGlassEnabled(value), tenant: value },
+      };
+      expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+    }
+  );
+
+  it.each(['2024', 'true', 'false', 'null'])(
+    'refuses breakGlass.publicKey %j -- caught by the JSON-scalar guard specifically, not incidentally by the identity or email checks (which tenant/supportIdentity would also fail on their own)',
+    (value) => {
+      const descriptor: TenantDescriptor = {
+        ...tenantDescriptor(),
+        breakGlass: { ...breakGlassEnabled(tenantDescriptor().slug), publicKey: value },
+      };
+      let caught: unknown;
+      try {
+        validate(descriptor, TEST_ZONES);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(FieldValidationError);
+      expect((caught as FieldValidationError).field).toBe('breakGlass.publicKey');
+    }
+  );
+
+  it('refuses breakGlass.supportIdentity that is not a well-formed email address', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: {
+        ...breakGlassEnabled(tenantDescriptor().slug),
+        supportIdentity: 'not-an-email' as never,
+      },
+    };
+    expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
+  });
+
+  it('refuses breakGlass enabled for an image outside zones.imagesWithBreakGlassAdapter -- the ordering rule', () => {
+    const descriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: breakGlassEnabled(tenantDescriptor().slug),
+    };
+    // tenantDescriptor()'s own image is deliberately absent from this list --
+    // it is present in TEST_ZONES (see fixtures.ts), so this test builds its
+    // own zones rather than TEST_ZONES to exercise the refusal.
+    const zonesWithNoKnownAdapterImages = { ...TEST_ZONES, imagesWithBreakGlassAdapter: [] };
+    expect(() => validate(descriptor, zonesWithNoKnownAdapterImages)).toThrow(
+      /to be one of zones\.imagesWithBreakGlassAdapter/
+    );
+  });
+
+  it('accepts breakGlass enabled when zones.imagesWithBreakGlassAdapter is left unset -- an absent list is empty, not a caller error, and disabled is unaffected by it', () => {
+    const zonesWithoutTheField = {
+      demoZone: TEST_ZONES.demoZone,
+      platformZone: TEST_ZONES.platformZone,
+      ownedDomains: TEST_ZONES.ownedDomains,
+      demoMailDomain: TEST_ZONES.demoMailDomain,
+      mailSpoolBaseUrl: TEST_ZONES.mailSpoolBaseUrl,
+    };
+    expect(() => validate(tenantDescriptor(), zonesWithoutTheField)).not.toThrow();
+
+    const enabledDescriptor: TenantDescriptor = {
+      ...tenantDescriptor(),
+      breakGlass: breakGlassEnabled(tenantDescriptor().slug),
+    };
+    expect(() => validate(enabledDescriptor, zonesWithoutTheField)).toThrow(
+      /to be one of zones\.imagesWithBreakGlassAdapter/
+    );
+  });
+
+  it('refuses breakGlass enabled on a demo -- a demo visitor already holds admin on their own disposable slot', () => {
+    const descriptor: TenantDescriptor = {
+      ...demoDescriptor(),
+      breakGlass: breakGlassEnabled(demoDescriptor().slug),
+    };
+    const zones = { ...TEST_ZONES, imagesWithBreakGlassAdapter: [descriptor.image] };
+    expect(() => validate(descriptor, zones)).toThrow(TierMismatchError);
+  });
+
+  it('accepts breakGlass disabled on a demo', () => {
+    expect(() => validate(demoDescriptor(), TEST_ZONES)).not.toThrow();
+  });
+
+  it('rejects zones.imagesWithBreakGlassAdapter that is not an array (and not undefined) with a named error', () => {
+    const zones = { ...TEST_ZONES, imagesWithBreakGlassAdapter: 'not-an-array' as never };
+    let caught: unknown;
+    try {
+      validate(tenantDescriptor(), zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.imagesWithBreakGlassAdapter');
+  });
+
+  it('rejects a non-string entry in zones.imagesWithBreakGlassAdapter', () => {
+    const zones = { ...TEST_ZONES, imagesWithBreakGlassAdapter: [''] };
+    let caught: unknown;
+    try {
+      validate(tenantDescriptor(), zones);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FieldValidationError);
+    expect((caught as FieldValidationError).field).toBe('zones.imagesWithBreakGlassAdapter');
   });
 });

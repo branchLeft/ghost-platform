@@ -44,8 +44,19 @@ services:
       url: 'https://k7m-vale-bright.demo-domain.example.test'
       database__client: 'sqlite3'
       database__connection__filename: '/data/demo-1/ghost.db'
-      storage__active: 'LocalImagesStorage'
+      storage__images__adapter: 'ScanningStorageAdapter'
+      storage__images__wraps: 'LocalImagesStorage'
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__adapter: 'ScanningStorageAdapter'
+      storage__media__wraps: 'LocalMediaStorage'
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__adapter: 'ScanningStorageAdapter'
+      storage__files__wraps: 'LocalFilesStorage'
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: true
+      mail__from: 'demo-1@demo-mail.example.test'
+      bulkEmail__mailgun__baseUrl: 'http://mail-spool.internal.example.test:8080'
+      bulkEmail__mailgun__domain: 'demo-mail.example.test'
       hostSettings__limits__members__max: 50
       hostSettings__limits__staff__max: 1
       security__allowWebhookInternalIPs: false
@@ -54,6 +65,7 @@ services:
       theme__uploadLimits__totalUncompressedBytes: 67108864
       privacy__useUpdateCheck: false
       logging__transports: '["stdout"]'
+      bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
     volumes:
       - 'ghost-demo-1-content:/var/lib/ghost/content'
       - 'ghost-demo-1-adapters:/var/lib/ghost/content/adapters:ro'
@@ -104,8 +116,19 @@ services:
       url: 'https://k7m-vale-bright.demo-domain.example.test'
       database__client: 'sqlite3'
       database__connection__filename: '/data/demo-1/ghost.db'
-      storage__active: 'LocalImagesStorage'
+      storage__images__adapter: 'ScanningStorageAdapter'
+      storage__images__wraps: 'LocalImagesStorage'
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__adapter: 'ScanningStorageAdapter'
+      storage__media__wraps: 'LocalMediaStorage'
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__adapter: 'ScanningStorageAdapter'
+      storage__files__wraps: 'LocalFilesStorage'
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: true
+      mail__from: 'demo-1@demo-mail.example.test'
+      bulkEmail__mailgun__baseUrl: 'http://mail-spool.internal.example.test:8080'
+      bulkEmail__mailgun__domain: 'demo-mail.example.test'
       hostSettings__limits__members__max: 50
       hostSettings__limits__staff__max: 1
       security__allowWebhookInternalIPs: false
@@ -114,6 +137,7 @@ services:
       theme__uploadLimits__totalUncompressedBytes: 67108864
       privacy__useUpdateCheck: false
       logging__transports: '["stdout"]'
+      bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
     volumes:
       - 'ghost-demo-1-content:/var/lib/ghost/content'
       - 'ghost-demo-1-adapters:/var/lib/ghost/content/adapters:ro'

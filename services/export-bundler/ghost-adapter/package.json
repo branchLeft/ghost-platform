@@ -1,0 +1,7 @@
+{
+  "name": "ghost-platform-export-colour-scheduling-disabled",
+  "private": true,
+  "license": "SEE LICENSE IN ../../../LICENSE",
+  "description": "The export colour's no-op Ghost scheduling adapter. CommonJS, as Ghost loads it; the Dockerfile copies the two .js files into Ghost's internal scheduling adapters directory.",
+  "type": "commonjs"
+}

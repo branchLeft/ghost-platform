@@ -7,11 +7,21 @@ import { createInMemoryNonceStore } from './nonceStore.js';
 import { loadConfig, type BrokerConfig, type BrokerEnv } from './config.js';
 import { createDrainFlagStore } from './drainFlag.js';
 import type { DrainSource } from './drainSource.js';
+import { createSudoEmailBatchChecker, type EmailBatchChecker } from './emailBatchChecker.js';
+import { createHttpGhostReadinessChecker } from './ghostReadiness.js';
 import { createHttpHealthChecker } from './healthCheck.js';
+import type { ImageLoader } from './imagePush.js';
+import { createFileRealTrafficChecker, createZeroRealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { createSlotLock } from './slotLock.js';
 import { recoverCrashedSlots } from './stateStore.js';
 import { createSlotWrapper } from './wrapper.js';
+
+function isEmailBatchChecker(candidate: unknown): candidate is EmailBatchChecker {
+  return (
+    typeof (candidate as Partial<EmailBatchChecker> | undefined)?.hasSubmittingBatch === 'function'
+  );
+}
 
 function isRenderer(candidate: unknown): candidate is Renderer {
   return typeof (candidate as Partial<Renderer> | undefined)?.render === 'function';
@@ -22,16 +32,21 @@ function isAdminApiClient(candidate: unknown): candidate is AdminApiClient {
 function isDrainSource(candidate: unknown): candidate is DrainSource {
   return typeof (candidate as Partial<DrainSource> | undefined)?.poll === 'function';
 }
+function isImageLoader(candidate: unknown): candidate is ImageLoader {
+  return typeof (candidate as Partial<ImageLoader> | undefined)?.load === 'function';
+}
 
 /**
- * `Renderer`, `AdminApiClient` and `DrainSource` are all loaded as plugin
- * modules rather than built into this entrypoint, for the same reason in
- * each case: a fake implementation would silently pass its own tests while
- * doing nothing real in production. `Renderer` is filled for real today
- * (`plugins/renderCorePlugin.ts`, adapting `render-core`'s own `render()`).
- * The Admin API call's content is unspecified by any design document; the
- * drain source depends on LLD-6's unbuilt mail spool and an unbuilt
- * "reaper" -- both still seams. This entrypoint loads each from a module
+ * `Renderer`, `AdminApiClient`, `DrainSource` and `ImageLoader` are all
+ * loaded as plugin modules rather than built into this entrypoint, for the
+ * same reason in each case: a fake implementation would silently pass its
+ * own tests while doing nothing real in production. `Renderer` is filled
+ * for real today (`plugins/renderCorePlugin.ts`, adapting `render-core`'s
+ * own `render()`), and so is `ImageLoader` (`plugins/dockerImageLoader.ts`,
+ * `docker load` and nothing else). The Admin API call's content is
+ * unspecified by any design document; the drain source depends on LLD-6's
+ * unbuilt mail spool and an unbuilt "reaper" -- both still seams. This
+ * entrypoint loads each from a module
  * path named by its own environment variable and refuses to start if one
  * is missing *or if its default export does not have the seam's required
  * function*: a module that loads cleanly but exports nothing usable must
@@ -60,7 +75,7 @@ export async function loadPlugin<T>(
 }
 
 /**
- * The whole of how a loaded config and the three plugin seams become the
+ * The whole of how a loaded config and the four plugin seams become the
  * deps `createBrokerHandler` runs against -- extracted so a test can build
  * the exact same wiring `main()` uses (see server.test.ts) rather than
  * reconstructing an approximation of it (`test/helpers/testBroker.ts`
@@ -71,7 +86,8 @@ export function buildDeps(
   config: BrokerConfig,
   renderer: Renderer,
   adminApi: AdminApiClient,
-  drainSource: DrainSource
+  drainSource: DrainSource,
+  imageLoader: ImageLoader
 ): BrokerDeps {
   return {
     auth: {
@@ -97,7 +113,35 @@ export function buildDeps(
       nowMs: config.nowMs,
     },
     drainFlags: createDrainFlagStore(config.drainFlagDir),
+    imagePush: {
+      loader: imageLoader,
+      tmpDir: config.imageTmpDir,
+      maxBytes: config.imageMaxBytes,
+      nowMs: config.nowMs,
+      log: (line) => console.error(line),
+    },
     healthChecker: createHttpHealthChecker('127.0.0.1', config.healthCheckTimeoutMs),
+    ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
+    // `realTraffic` defaults to the fail-closed side of the stop-old-colour
+    // pre-stop gate: absent configuration must never read as "safe to
+    // stop" (see `createZeroRealTrafficChecker`'s own doc comment).
+    // `emailBatchChecker`'s real implementation is itself fail-closed on
+    // every error path (`createSudoEmailBatchChecker`'s own doc comment),
+    // so wiring it unconditionally here, rather than behind a config flag
+    // like `trafficCounterDir`, is safe: an unconfigured or unreachable
+    // wrapper still refuses to stop, exactly like the old placeholder did.
+    realTraffic: config.trafficCounterDir
+      ? createFileRealTrafficChecker(config.trafficCounterDir)
+      : createZeroRealTrafficChecker(),
+    emailBatchChecker: createSudoEmailBatchChecker(
+      {
+        command: config.wrapperCommand,
+        prefix: config.wrapperPrefix,
+        timeoutMs: config.wrapperTimeoutMs,
+      },
+      (line) => console.error(line)
+    ),
+    ghostReadyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
     healthPortBase: config.healthPortBase,
     appPortBase: config.appPortBase,
     uidBase: config.uidBase,
@@ -115,25 +159,61 @@ export async function main(): Promise<Server> {
   await mkdir(config.stateDir, { recursive: true });
   await mkdir(config.drainFlagDir, { recursive: true });
   await mkdir(config.leaseDir, { recursive: true });
+  await mkdir(config.imageTmpDir, { recursive: true });
+  if (config.trafficCounterDir) {
+    await mkdir(config.trafficCounterDir, { recursive: true });
+  }
 
   // Before anything below can accept a request: a slot a previous process
-  // left `preparing` or `resetting` had its lock holder die with it (the
-  // lock is in-memory and this is a fresh process), so it cannot be trusted
-  // as still in flight. See `recoverCrashedSlots`'s own doc comment for why
-  // `error` (fail-closed) rather than a guess at `free` or `running`, and
-  // why a `resetting` slot also has its lease and hash revoked here.
+  // left `preparing`/`resetting`/`swapping`/`stopping` had its lock holder
+  // die with it (the lock is in-memory and this is a fresh process), so it
+  // cannot be trusted as still in flight. See `recoverCrashedSlots`'s,
+  // `recoverSwapInFlight`'s and `recoverStoppingSlot`'s own doc comments
+  // for what each phase needs.
   await recoverCrashedSlots(
     config.stateDir,
     config.slotLiterals,
     { slotsPath: config.slotsPath, leaseDir: config.leaseDir },
-    (line) => console.error(line)
+    (line) => console.error(line),
+    {
+      drainFlags: createDrainFlagStore(config.drainFlagDir),
+      ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
+      appPortBase: config.appPortBase,
+      // The swap's own bring-up budget, not a shorter one: recovery polls
+      // exactly the same way `attemptColourSwap` itself does, for the same
+      // reason (`ghostReadiness.ts`'s own doc comment on Ghost's post-boot
+      // maintenance window).
+      readyPollTimeoutMs: config.ghostReadyPollTimeoutMs,
+    },
+    {
+      wrapper: createSlotWrapper({
+        command: config.wrapperCommand,
+        prefix: config.wrapperPrefix,
+        timeoutMs: config.wrapperTimeoutMs,
+      }),
+    }
   );
 
   const renderer = await loadPlugin('BROKER_RENDERER_MODULE', process.env, isRenderer);
   const adminApi = await loadPlugin('BROKER_ADMIN_API_MODULE', process.env, isAdminApiClient);
   const drainSource = await loadPlugin('BROKER_DRAIN_SOURCE_MODULE', process.env, isDrainSource);
+  const imageLoader = await loadPlugin('BROKER_IMAGE_LOADER_MODULE', process.env, isImageLoader);
 
-  const deps = buildDeps(config, renderer, adminApi, drainSource);
+  let deps = buildDeps(config, renderer, adminApi, drainSource, imageLoader);
+
+  // Optional fifth seam, deliberately not required at start-up the way
+  // the four above are: `buildDeps` already wires `createSudoEmailBatchChecker`
+  // as the real default (`emailBatchChecker.ts`'s own doc comment), and this
+  // override exists only for a deploy that wants something else entirely --
+  // never for "no real implementation exists yet", which is no longer true.
+  if (process.env.BROKER_EMAIL_BATCH_CHECKER_MODULE) {
+    const emailBatchChecker = await loadPlugin(
+      'BROKER_EMAIL_BATCH_CHECKER_MODULE',
+      process.env,
+      isEmailBatchChecker
+    );
+    deps = { ...deps, emailBatchChecker };
+  }
 
   const handler = createBrokerHandler(deps);
   const server = createServer((req, res) => void handler(req, res));

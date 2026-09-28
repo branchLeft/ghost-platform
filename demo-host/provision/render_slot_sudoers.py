@@ -2,23 +2,31 @@
 """Render the demo host's sudoers boundary from the slot table.
 
 Usage:
-    render_slot_sudoers.py [--out FILE]
+    render_slot_sudoers.py [--out FILE | --install FILE]
 
 Prints the generated sudoers file to stdout, or writes it safely to `--out`
 (syntax-checked with `visudo -c -f` and written atomically -- see
-`write_generated_file`).
+`write_generated_file`), or writes and installs it with `--install`
+(the same safe write, then `chown root:root` -- see `install_generated_file`;
+requires root, and is the form host build runs).
 
-The demo host's broker runs as an unprivileged user and needs root for
-exactly one thing: starting, stopping or resetting a slot's systemd units.
-The set of legal invocations is finite and known before any prospect exists
--- fixed slots, two colours, three verbs -- so the boundary can enumerate
+The demo host's broker runs as an unprivileged user and needs root for three
+things: starting, stopping or resetting a slot's systemd units, one
+read-only check the broker cannot otherwise make without a second
+privileged read path of its own, and loading a control-plane-pushed image
+into the local Docker daemon. The slot verbs' legal invocations are finite
+and known before any prospect exists -- fixed slots, two colours, three
+privileged verbs plus one read-only verb -- so the boundary can enumerate
 every one of them literally rather than accept a pattern. A wildcard in a
 sudoers command matches spaces, which turns any pattern-based restriction
 into argument injection the moment something reaches it; enumeration has no
-pattern to subvert.
+pattern to subvert. `load` cannot be enumerated the same way (its argument
+names a file, not one of a finite set of literals), so it is instead
+granted for exactly one unchanging literal path -- see `IMAGE_LOAD_INVOCATION`
+below for why that is still wildcard-free.
 
 This module is the single source of truth for that enumeration: the slot
-table below, not thirty-five hand-typed sudoers lines. Extending the slot
+table below, not forty-nine hand-typed sudoers lines. Extending the slot
 count means adding to the table, not editing generated output by hand.
 
 **What sudoers actually binds, and what it does not.** sudo compares the
@@ -33,9 +41,9 @@ argument boundaries to pin, only the string it is compared against. The
 wrapper (built separately from this generator) must therefore reject
 anything that is not exactly two or three distinct arguments, each matching
 its own literal shape -- a known slot name, then either `reset` alone or a
-colour in `{a,b}` followed by `start`/`stop`. That is the second layer the
-design already calls for; this file cannot do that job structurally, so the
-wrapper has to.
+colour in `{a,b}` followed by `start`/`stop`/`email-batches`. That is the
+second layer the design already calls for; this file cannot do that job
+structurally, so the wrapper has to.
 """
 
 from __future__ import annotations
@@ -67,11 +75,43 @@ SLOT_NAMES: tuple[str, ...] = tuple(str(n) for n in range(7))
 COLOURS: tuple[str, ...] = ("a", "b")
 START_STOP_VERBS: tuple[str, ...] = ("start", "stop")
 
+# A read-only verb for the one check `attemptStopOldColour`
+# (services/broker/src/app.ts) needs before it will ever stop a colour:
+# whether an email or batch is still "submitting". Enumerated exactly like
+# a privileged verb (slot + colour, nothing else, never a path or SQL
+# text) even though the query it runs is read-only and colour-blind (the
+# colour pair shares one SQLite file) -- LLD-2 §02 anticipates precisely
+# this: "incidental on the exact invocation set -- a sixth costs seven
+# more lines and keeps the property." Kept in its own tuple, never merged
+# into START_STOP_VERBS, so a caller of this module can still ask "is this
+# verb privileged?" without inspecting strings.
+READ_VERBS: tuple[str, ...] = ("email-batches",)
+
 # A slot name reaches sudoers as a literal string, so it must be exactly
 # what the wrapper's argv-parsing expects and nothing more -- a slot name
 # carrying a space, a glob character or anything else would either fail to
 # match its own rule or, worse, change what the rule matches.
 SLOT_NAME_PATTERN = re.compile(r"\A[0-9]+\Z")
+
+# `load` is the one verb whose argument is not one of a finite, enumerable
+# set -- it names a file, not a slot/colour/verb combination -- so it
+# cannot be enumerated the way `slot_invocations` enumerates the other
+# three. It is instead granted for exactly one literal path: the fixed
+# filename the broker's `/image` handler (`services/broker/src/imagePush.ts`,
+# `IMAGE_STAGING_FILENAME`) always stages a verified push at, inside the
+# one fixed directory that filename lives in. There is no wildcard here --
+# a wildcard would authorise the same argument-injection shape this file
+# refuses everywhere else, since it matches spaces exactly as freely as any
+# other character. The broker itself never sends anything else; the second
+# layer that refuses an invocation this rule was not written for is
+# `branchleft_slot.parse_invocation`, running as root on the other side of
+# this grant -- `services/broker/src/plugins/dockerImageLoader.ts`'s own
+# `realpath` check runs inside the broker, the untrusted principal this
+# boundary exists to constrain, so it is bug defence for that process, not
+# a second layer this file can rely on.
+IMAGE_STAGING_DIR = "/var/lib/branchleft-broker/image-tmp"
+IMAGE_STAGING_FILENAME = "image.tar"
+IMAGE_LOAD_INVOCATION = f"load {IMAGE_STAGING_DIR}/{IMAGE_STAGING_FILENAME}"
 
 HEADER_COMMENT_LINES: tuple[str, ...] = (
     "# Generated by render_slot_sudoers.py from the slot table -- edit the",
@@ -96,16 +136,16 @@ def _validate_slot_name(slot: str) -> None:
 
 
 def slot_invocations(slot: str) -> list[str]:
-    """The five legal wrapper argument strings for one slot.
+    """The seven legal wrapper argument strings for one slot.
 
-    Reset first, then colour x verb in a stable order, so the generated
-    file's diff between runs is confined to whichever slots actually
-    changed.
+    Reset first, then colour x verb (privileged verbs before the read-only
+    one, within each colour) in a stable order, so the generated file's
+    diff between runs is confined to whichever slots actually changed.
     """
     _validate_slot_name(slot)
     invocations = [f"{slot} reset"]
     for colour in COLOURS:
-        for verb in START_STOP_VERBS:
+        for verb in (*START_STOP_VERBS, *READ_VERBS):
             invocations.append(f"{slot} {colour} {verb}")
     return invocations
 
@@ -122,11 +162,14 @@ def render(slots: Sequence[str] = SLOT_NAMES) -> str:
     """Build the sudoers file's full text.
 
     One NOPASSWD rule per invocation, each command a literal, fully
-    space-delimited argument list, nothing else in the file at all.
+    space-delimited argument list, nothing else in the file at all -- the
+    35 slot invocations, then the one `load` rule, which is not part of the
+    slot table and does not scale with it.
     """
     lines = list(HEADER_COMMENT_LINES) + [""]
     for invocation in all_invocations(slots):
         lines.append(f"{BROKER_USER} ALL=(root) NOPASSWD: {WRAPPER_PATH} {invocation}")
+    lines.append(f"{BROKER_USER} ALL=(root) NOPASSWD: {WRAPPER_PATH} {IMAGE_LOAD_INVOCATION}")
     lines.append("")
     return "\n".join(lines)
 
@@ -136,9 +179,9 @@ def write_generated_file(path: str, content: str) -> None:
     directory, syntax-checked with `visudo -c -f` before anything can read
     it, then renamed into place atomically.
 
-    This writes a file; it does not install one. Setting ownership and
-    making the path an active sudoers.d entry are a host-build concern this
-    generator does not perform.
+    This writes and mode-checks a file; it does not set its owner or make
+    the path an active sudoers.d entry -- that is `install_generated_file`,
+    below, which host build actually runs.
 
     `visudo -c -f` checks syntax only -- it does not check the file's mode.
     A file at 0644 parses exactly as one at 0440 does; it is
@@ -177,21 +220,47 @@ def write_generated_file(path: str, content: str) -> None:
         raise
 
 
+def install_generated_file(path: str, content: str) -> None:
+    """`write_generated_file`, then set the owner sudo actually requires.
+
+    sudo refuses a sudoers.d entry not owned by root, regardless of mode --
+    `write_generated_file`'s 0440 alone is not enough, and a file left
+    owned by whichever account ran this generator is silently ignored by
+    sudo rather than erroring. This is the host-build install step, so it
+    is only ever called as root; it raises whatever `os.chown` raises
+    (`PermissionError` when it is not) rather than masking it, because a
+    caller that cannot set root:root has not installed a working boundary.
+    """
+    write_generated_file(path, content)
+    os.chown(path, 0, 0)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
         "--out",
         help=(
             "path to write the generated file to, syntax-checked and written "
             "atomically; defaults to printing to stdout with no check"
         ),
     )
+    output.add_argument(
+        "--install",
+        help=(
+            "like --out, but also chowns the result to root:root -- the shape "
+            "sudo actually requires of a sudoers.d file, and the host-build form "
+            "of this command. Requires root."
+        ),
+    )
     args = parser.parse_args(argv)
     content = render()
-    if args.out is None:
-        sys.stdout.write(content)
-    else:
+    if args.install is not None:
+        install_generated_file(args.install, content)
+    elif args.out is not None:
         write_generated_file(args.out, content)
+    else:
+        sys.stdout.write(content)
     return 0
 
 

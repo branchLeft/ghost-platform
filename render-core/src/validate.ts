@@ -20,7 +20,7 @@ import {
 } from './brand.js';
 import type { TenantDescriptor } from './descriptor.js';
 import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
-import { validateMediaBucket } from './media.js';
+import { mediaPublicBaseUrl, validateMediaBucket } from './media.js';
 
 export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3';
 
@@ -101,9 +101,11 @@ const TENANT_KIND_VALUES = ['demo', 'tenant'] as const;
 const DATABASE_KIND_VALUES = ['sqlite', 'mysql'] as const;
 const MEDIA_KIND_VALUES = ['local', 's3'] as const;
 const TRANSPORT_KIND_VALUES = ['queue', 'smtp'] as const;
+const SENDING_IDENTITY_KIND_VALUES = ['demo', 'tenant'] as const;
 const HOSTNAME_KIND_VALUES = ['ours', 'theirs'] as const;
 const GATE_KIND_VALUES = ['none', 'passphrase'] as const;
 const BACKUP_KIND_VALUES = ['none', 'bucket-native'] as const;
+const BREAK_GLASS_KIND_VALUES = ['disabled', 'enabled'] as const;
 
 /**
  * The schema versions this build of the package knows how to render. A
@@ -179,6 +181,7 @@ const DESCRIPTOR_KEYS = [
   'database',
   'media',
   'transport',
+  'mail',
   'hostname',
   'gate',
   'backup',
@@ -186,6 +189,7 @@ const DESCRIPTOR_KEYS = [
   'limits',
   'caps',
   'safety',
+  'breakGlass',
   'expiresAt',
 ] as const;
 const PORTS_KEYS = ['a', 'b', 'health'] as const;
@@ -195,6 +199,9 @@ const MEDIA_LOCAL_KEYS = ['kind', 'path', 'resize', 'srcsets'] as const;
 const MEDIA_S3_KEYS = ['kind', 'endpoint', 'region', 'bucket', 'resize', 'srcsets'] as const;
 const TRANSPORT_QUEUE_KEYS = ['kind', 'path'] as const;
 const TRANSPORT_SMTP_KEYS = ['kind', 'host', 'port', 'user'] as const;
+const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity'] as const;
+const SENDING_IDENTITY_DEMO_KEYS = ['kind', 'localPart'] as const;
+const SENDING_IDENTITY_TENANT_KEYS = ['kind', 'domain', 'dkimSelector'] as const;
 const HOSTNAME_OURS_KEYS = ['kind', 'sub', 'gated'] as const;
 const HOSTNAME_THEIRS_KEYS = ['kind', 'fqdn', 'verifiedAt'] as const;
 const GATE_NONE_KEYS = ['kind'] as const;
@@ -207,6 +214,8 @@ const CODE_INJECTION_MANAGED_KEYS = ['kind', 'head', 'foot'] as const;
 const LIMITS_KEYS = ['membersCap', 'staffCap'] as const;
 const CAPS_KEYS = ['cpus', 'cpuShares', 'pidsLimit', 'nofile'] as const;
 const SAFETY_KEYS = ['near', 'exact'] as const;
+const BREAK_GLASS_DISABLED_KEYS = ['kind'] as const;
+const BREAK_GLASS_ENABLED_KEYS = ['kind', 'publicKey', 'tenant', 'supportIdentity'] as const;
 
 function assertNullableNumber(value: unknown, field: string): void {
   if (value !== null && (typeof value !== 'number' || Number.isNaN(value))) {
@@ -218,26 +227,48 @@ function assertNullableNumber(value: unknown, field: string): void {
 }
 
 /**
- * Finite, positive, whole — the container-runtime numbers where 0 or a
- * negative value carries a *different* meaning to a validator that skips
- * range-checking: Compose reads a `pids_limit` of 0 or -1 as "unlimited",
- * on a host shared with every other demo tenant.
+ * Finite, positive, whole and no larger than `ceiling` — the container-runtime
+ * numbers where 0 or a negative value carries a *different* meaning to a
+ * validator that skips range-checking: Compose reads a `pids_limit` of 0 or
+ * -1 as "unlimited", on a host shared with every other demo tenant.
+ * `Number.isSafeInteger` alone stops at ±2^53-1 — well above every ceiling
+ * below, so a value like `1e300` or `2^53+2` needs the ceiling to be
+ * rejected at all, not merely the safe-integer check.
  */
-function assertFinitePositiveInteger(value: number, field: string): void {
-  if (!Number.isInteger(value) || value <= 0) {
+function assertFinitePositiveInteger(value: number, field: string, ceiling: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > ceiling) {
     throw new FieldValidationError(
       field,
-      `${field} must be a finite positive integer, got ${value}.`
+      `${field} must be a finite positive integer of at most ${ceiling}, got ${value}.`
     );
   }
 }
 
-/** A cap of `null` means "no cap" — a negative or fractional one means nothing at all. */
-function assertNonNegativeIntegerOrNull(value: number | null, field: string): void {
-  if (value !== null && (!Number.isInteger(value) || value < 0)) {
+/**
+ * A cap of `null` means "no cap" — a negative or fractional one means
+ * nothing at all, and anything past `ceiling` is not a real Ghost site's
+ * membership or staff count, whatever `Number.isSafeInteger` lets through.
+ */
+function assertNonNegativeIntegerOrNull(
+  value: number | null,
+  field: string,
+  ceiling: number
+): void {
+  if (value !== null && (!Number.isSafeInteger(value) || value < 0 || value > ceiling)) {
     throw new FieldValidationError(
       field,
-      `${field} must be a finite non-negative integer or null, got ${value}.`
+      `${field} must be a finite non-negative integer of at most ${ceiling}, or null, got ${value}.`
+    );
+  }
+}
+
+/** A ceiling has no "no cap" spelling — unlike `limits`, `null` is not a
+ * value either mail ceiling field can carry, so this has no `OrNull` arm. */
+function assertNonNegativeInteger(value: number, field: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new FieldValidationError(
+      field,
+      `${field} must be a finite non-negative integer, got ${value}.`
     );
   }
 }
@@ -248,6 +279,12 @@ function assertNonNegativeIntegerOrNull(value: number | null, field: string): vo
 // ./brand.ts for why a length cap always runs before a pattern does here.
 const CPUS_PATTERN = /^(0\.\d*[1-9]\d*|[1-9]\d*(\.\d+)?)$/;
 const MAX_CPUS_LENGTH = 32;
+
+// No app host in this estate's fleet carries anywhere near this many cores;
+// the ceiling exists to reject a value like a 32-digit string (which the
+// length cap above alone does not: it is exactly at the character limit)
+// while leaving every real allocation far under it.
+const MAX_CPUS_VALUE = 128;
 
 function validateCpus(value: string): void {
   if (value.length === 0 || value.length > MAX_CPUS_LENGTH) {
@@ -260,6 +297,13 @@ function validateCpus(value: string): void {
     throw new FieldValidationError(
       'caps.cpus',
       `caps.cpus "${value}" must be a positive decimal, e.g. "1.0" or "0.5".`
+    );
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric > MAX_CPUS_VALUE) {
+    throw new FieldValidationError(
+      'caps.cpus',
+      `caps.cpus "${value}" must be at most ${MAX_CPUS_VALUE}.`
     );
   }
 }
@@ -325,6 +369,21 @@ function assertShape(descriptor: TenantDescriptor): void {
     assertString(descriptor.transport.user, 'transport.user');
   }
 
+  assertObject(descriptor.mail, 'mail');
+  assertNoUnknownKeys(descriptor.mail, MAIL_KEYS, 'mail');
+  assertBoolean(descriptor.mail.enabled, 'mail.enabled');
+  assertNumber(descriptor.mail.ceiling, 'mail.ceiling');
+  assertNumber(descriptor.mail.estateCeiling, 'mail.estateCeiling');
+  assertObject(descriptor.mail.identity, 'mail.identity');
+  if (descriptor.mail.identity.kind === 'demo') {
+    assertNoUnknownKeys(descriptor.mail.identity, SENDING_IDENTITY_DEMO_KEYS, 'mail.identity');
+    assertString(descriptor.mail.identity.localPart, 'mail.identity.localPart');
+  } else {
+    assertNoUnknownKeys(descriptor.mail.identity, SENDING_IDENTITY_TENANT_KEYS, 'mail.identity');
+    assertString(descriptor.mail.identity.domain, 'mail.identity.domain');
+    assertString(descriptor.mail.identity.dkimSelector, 'mail.identity.dkimSelector');
+  }
+
   if (descriptor.hostname.kind === 'ours') {
     assertNoUnknownKeys(descriptor.hostname, HOSTNAME_OURS_KEYS, 'hostname');
     assertString(descriptor.hostname.sub, 'hostname.sub');
@@ -381,19 +440,60 @@ function assertShape(descriptor: TenantDescriptor): void {
   assertBoolean(descriptor.safety.near, 'safety.near');
   assertBoolean(descriptor.safety.exact, 'safety.exact');
 
+  // Presence of all three, not just their type: a `breakGlass.kind` of
+  // "enabled" missing `tenant` (say) fails here with a named error, before
+  // any renderer reads `undefined` into an env var — the runtime half of
+  // "a descriptor with one or two of the three is refused, not
+  // half-rendered" (assertDiscriminant, above in validate(), is the other
+  // half: it already refuses a `kind` outside the two declared literals).
+  if (descriptor.breakGlass.kind === 'enabled') {
+    assertNoUnknownKeys(descriptor.breakGlass, BREAK_GLASS_ENABLED_KEYS, 'breakGlass');
+    assertString(descriptor.breakGlass.publicKey, 'breakGlass.publicKey');
+    assertString(descriptor.breakGlass.tenant, 'breakGlass.tenant');
+    assertString(descriptor.breakGlass.supportIdentity, 'breakGlass.supportIdentity');
+  } else {
+    assertNoUnknownKeys(descriptor.breakGlass, BREAK_GLASS_DISABLED_KEYS, 'breakGlass');
+  }
+
   if (descriptor.expiresAt !== null) {
     assertString(descriptor.expiresAt, 'expiresAt');
   }
 }
 
-/** The range half of `assertShape`'s type checks, for the fields item 2 named. */
+// cgroup v1's own kernel-enforced ceiling for `cpu.shares` — Docker's
+// `--cpu-shares` cannot exceed it either.
+const MAX_CPU_SHARES = 262144;
+// Generous headroom over any real tenant's process count, well under a
+// value that could exhaust the host's own pid space.
+const MAX_PIDS_LIMIT = 100000;
+// Linux's own default `fs.nr_open` ceiling — the kernel refuses a higher
+// open-file limit without a sysctl change, so nothing rendered here could
+// ever be honoured past it anyway.
+const MAX_NOFILE = 1048576;
+// Sane ceilings for a single Ghost site's membership and staff counts —
+// comfortably above any tenant this platform has ever hosted, and nowhere
+// near `Number.MAX_SAFE_INTEGER`.
+const MAX_MEMBERS_CAP = 10_000_000;
+const MAX_STAFF_CAP = 10_000;
+
+/**
+ * The range half of `assertShape`'s type checks: presence and JS type are
+ * checked there; numeric bounds — including the safe-integer-ness and the
+ * upper ceilings below — are checked here.
+ */
 function checkRanges(descriptor: TenantDescriptor): void {
-  assertNonNegativeIntegerOrNull(descriptor.limits.membersCap, 'limits.membersCap');
-  assertNonNegativeIntegerOrNull(descriptor.limits.staffCap, 'limits.staffCap');
+  assertNonNegativeIntegerOrNull(
+    descriptor.limits.membersCap,
+    'limits.membersCap',
+    MAX_MEMBERS_CAP
+  );
+  assertNonNegativeIntegerOrNull(descriptor.limits.staffCap, 'limits.staffCap', MAX_STAFF_CAP);
   validateCpus(descriptor.caps.cpus);
-  assertFinitePositiveInteger(descriptor.caps.cpuShares, 'caps.cpuShares');
-  assertFinitePositiveInteger(descriptor.caps.pidsLimit, 'caps.pidsLimit');
-  assertFinitePositiveInteger(descriptor.caps.nofile, 'caps.nofile');
+  assertFinitePositiveInteger(descriptor.caps.cpuShares, 'caps.cpuShares', MAX_CPU_SHARES);
+  assertFinitePositiveInteger(descriptor.caps.pidsLimit, 'caps.pidsLimit', MAX_PIDS_LIMIT);
+  assertFinitePositiveInteger(descriptor.caps.nofile, 'caps.nofile', MAX_NOFILE);
+  assertNonNegativeInteger(descriptor.mail.ceiling, 'mail.ceiling');
+  assertNonNegativeInteger(descriptor.mail.estateCeiling, 'mail.estateCeiling');
 }
 
 /** Below 1024, a rendered port would collide with a privileged service on a
@@ -431,11 +531,43 @@ function assertNonEmptyString(value: string, field: string): void {
   }
 }
 
-/** A traversal segment reaches outside whatever directory the render core placed the tenant in. */
+/**
+ * A traversal segment reaches outside whatever directory the render core
+ * placed the tenant in, and it must be absolute — every path this schema
+ * carries names a fixed location under `/data`, `/var/spool` or similar, so
+ * a relative one would resolve against whatever directory happened to be
+ * the working one when a renderer's output ran, not a place this validator
+ * ever inspected. A backslash is rejected outright rather than treated as a
+ * separator: this schema's paths are Linux container paths, which never
+ * need one, and allowing it would let a ".." segment hide from the
+ * forward-slash split below (`"..\\x"` is a single segment to `split('/')`).
+ */
 function assertNonEmptyPath(value: string, field: string): void {
   assertNonEmptyString(value, field);
+  if (value.includes('\\')) {
+    throw new FieldValidationError(field, `${field} must not contain a backslash.`);
+  }
+  if (!value.startsWith('/')) {
+    throw new FieldValidationError(field, `${field} must be an absolute path, got "${value}".`);
+  }
   if (value.split('/').includes('..')) {
     throw new FieldValidationError(field, `${field} must not contain a ".." path segment.`);
+  }
+}
+
+// A hostname or IPv4 literal's own character set — nothing a MySQL
+// connection string or a shell reads specially. Rejecting anything outside
+// it (a space, a ";") stops a value that merely fails to *name* a real host
+// from being read as a second argument or command by whatever consumes it.
+const HOST_CHAR_PATTERN = /^[A-Za-z0-9.-]+$/;
+
+function assertValidHost(value: string, field: string): void {
+  assertNonEmptyString(value, field);
+  if (!HOST_CHAR_PATTERN.test(value)) {
+    throw new FieldValidationError(
+      field,
+      `${field} "${value}" must contain only letters, digits, "." and "-".`
+    );
   }
 }
 
@@ -447,7 +579,7 @@ function validateDatabase(
     assertNonEmptyPath(database.path, 'database.path');
     return;
   }
-  assertNonEmptyString(database.host, 'database.host');
+  assertValidHost(database.host, 'database.host');
   validatePort(database.port, 'database.port');
   // A descriptor must never be able to name another tenant's database — the
   // same isolation control `validateMediaBucket` below applies to the
@@ -460,6 +592,12 @@ function validateMedia(slug: TenantDescriptor['slug'], media: TenantDescriptor['
     assertNonEmptyPath(media.path, 'media.path');
     return;
   }
+  assertNonEmptyString(media.region, 'media.region');
+  // Throws for anything but a bare https host — see `mediaPublicBaseUrl`'s
+  // own doc comment. Calling it here, at validate() time, is what stops
+  // "javascript:alert(1)" (or an http endpoint, or one carrying a path)
+  // from ever reaching a renderer inside an already-"valid" descriptor.
+  mediaPublicBaseUrl(media.endpoint, slug);
   // A descriptor naming another tenant's bucket must not validate, not
   // merely be refused later by a caller that happens to re-check it.
   validateMediaBucket(slug, media);
@@ -497,8 +635,89 @@ function validateTransport(transport: TenantDescriptor['transport']): void {
     assertNonEmptyPath(transport.path, 'transport.path');
     return;
   }
-  assertNonEmptyString(transport.host, 'transport.host');
+  // The same host-character check database.host already gets (assertValidHost,
+  // above) -- transport.host reaches a Compose `environment:` value exactly
+  // the way database.host does, so the same "nothing a shell or a connection
+  // string reads specially" reasoning applies unchanged.
+  assertValidHost(transport.host, 'transport.host');
   validatePort(transport.port, 'transport.port');
+}
+
+// Bounded, single-quantifier groups either side of the boundary character —
+// the same shape validateEmailAddress's own comment explains, kept here
+// because a local part is interpolated into a rendered email address and
+// deserves the identical ReDoS defence rather than a "this one's short
+// enough" exception.
+const LOCAL_PART_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
+
+/**
+ * `mail.ceiling`/`mail.estateCeiling`'s own cross-field rule (LLD-6 §05:
+ * "per slot… per estate: a hard cap all demo slots share… one abuser
+ * cannot spend everyone's"), plus each `identity` arm's own format check.
+ * The tier-vs-`identity.kind` agreement — the actual "refuses a demo
+ * carrying a selector or a domain of its own" rule — is `checkTierVariants`
+ * below, alongside every other kind-fixed-shape rule; this function only
+ * checks what is well-formed for whichever arm the descriptor already has.
+ */
+function validateMailIdentity(mail: TenantDescriptor['mail'], zones: ZoneConfig): void {
+  if (mail.ceiling > mail.estateCeiling) {
+    throw new FieldValidationError(
+      'mail.ceiling',
+      `mail.ceiling (${mail.ceiling}) must not exceed mail.estateCeiling (${mail.estateCeiling}) ` +
+        `— one abuser must never be able to spend the whole estate's cap.`
+    );
+  }
+
+  if (mail.identity.kind === 'demo') {
+    assertNonEmptyString(mail.identity.localPart, 'mail.identity.localPart');
+    if (!LOCAL_PART_PATTERN.test(mail.identity.localPart)) {
+      throw new FieldValidationError(
+        'mail.identity.localPart',
+        `mail.identity.localPart "${mail.identity.localPart}" must be a well-formed email local ` +
+          `part: letters, digits, "." "_" "-", starting and ending with a letter or digit.`
+      );
+    }
+    return;
+  }
+
+  assertNonEmptyString(mail.identity.domain, 'mail.identity.domain');
+  if (!isWellFormedFqdn(mail.identity.domain)) {
+    throw new FieldValidationError(
+      'mail.identity.domain',
+      `mail.identity.domain "${mail.identity.domain}" must be a well-formed, non-empty domain ` +
+        `name, and not an IP address literal or shorthand for one.`
+    );
+  }
+  if (!isOutsideOwnedDomains(mail.identity.domain, zones.ownedDomains)) {
+    throw new FieldValidationError(
+      'mail.identity.domain',
+      `mail.identity.domain "${mail.identity.domain}" must be outside every registrable domain ` +
+        `the platform owns (${zones.ownedDomains.join(', ')}) — a tenant signs its own domain, ` +
+        `never the platform's.`
+    );
+  }
+  // `demoMailDomain` is itself a registrable domain the platform owns, but it
+  // is deliberately kept out of `ownedDomains` (the two describe different
+  // things — see that field's own doc comment) so this needs its own check:
+  // without it, a tenant could sign under the exact domain every demo
+  // shares, colliding with a demo slot on local part alone and undermining
+  // the whole point of a separate demo sending domain (LLD-6 §05).
+  if (isEqualToOrSubdomainOf(mail.identity.domain, zones.demoMailDomain)) {
+    throw new FieldValidationError(
+      'mail.identity.domain',
+      `mail.identity.domain "${mail.identity.domain}" must not be, or be a subdomain of, ` +
+        `zones.demoMailDomain "${zones.demoMailDomain}" — a tenant signs its own domain, never ` +
+        `the one every demo shares.`
+    );
+  }
+  assertNonEmptyString(mail.identity.dkimSelector, 'mail.identity.dkimSelector');
+  if (!HOSTNAME_LABEL_PATTERN.test(mail.identity.dkimSelector)) {
+    throw new FieldValidationError(
+      'mail.identity.dkimSelector',
+      `mail.identity.dkimSelector "${mail.identity.dkimSelector}" must be a valid DNS label — it ` +
+        `names the DKIM selector's own DNS record.`
+    );
+  }
 }
 
 function validateGate(gate: TenantDescriptor['gate']): void {
@@ -506,6 +725,90 @@ function validateGate(gate: TenantDescriptor['gate']): void {
     throw new FieldValidationError(
       'gate.argon2idHash',
       'gate.argon2idHash must be non-empty for a passphrase gate.'
+    );
+  }
+}
+
+/**
+ * Ghost parses environment values as JSON where it can, so a value that
+ * happens to *look* like a JSON number, boolean or `null` (a tenant name of
+ * `2024`, say) arrives as that type rather than the string the adapter's
+ * own config schema expects, and the adapter disables itself, fail-safe
+ * (`adapters/sso/README.md`). Refused here, on every break-glass value that
+ * reaches an env var, rather than left for a real tenant to trip over.
+ * `JSON.parse` throwing means the value is not valid JSON at all — safely a
+ * string as far as Ghost's own parser is concerned — so only a *successful*
+ * parse into one of the three scalar kinds is refused.
+ */
+function assertNotJsonScalar(value: string, field: string): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return;
+  }
+  if (typeof parsed === 'number' || typeof parsed === 'boolean' || parsed === null) {
+    throw new FieldValidationError(
+      field,
+      `${field} "${value}" must not be a value Ghost's own env parser reads as JSON (a number, ` +
+        `boolean or null) — it must stay a string on every path.`
+    );
+  }
+}
+
+function validateBreakGlass(breakGlass: TenantDescriptor['breakGlass']): void {
+  if (breakGlass.kind !== 'enabled') {
+    return;
+  }
+  assertNonEmptyString(breakGlass.publicKey, 'breakGlass.publicKey');
+  assertNonEmptyString(breakGlass.tenant, 'breakGlass.tenant');
+  validateEmailAddress(breakGlass.supportIdentity, 'breakGlass.supportIdentity');
+  assertNotJsonScalar(breakGlass.publicKey, 'breakGlass.publicKey');
+  assertNotJsonScalar(breakGlass.tenant, 'breakGlass.tenant');
+  assertNotJsonScalar(breakGlass.supportIdentity, 'breakGlass.supportIdentity');
+}
+
+/**
+ * `breakGlass.tenant` is the value the adapter checks a token's `aud`
+ * against, so it must name *this* tenant and no other — the same isolation
+ * control `validateDatabaseIdentity`/`validateMediaBucket` already apply to
+ * the database and the bucket, applied here to the audience a signed token
+ * is checked against. Re-deriving it from `slug` rather than accepting a
+ * caller-chosen value is what makes a copy-paste mistake between two
+ * tenants' descriptors a refusal rather than an audience mix-up.
+ */
+function checkBreakGlassIdentity(descriptor: TenantDescriptor): void {
+  if (descriptor.breakGlass.kind !== 'enabled') {
+    return;
+  }
+  if (descriptor.breakGlass.tenant !== descriptor.slug) {
+    throw new FieldValidationError(
+      'breakGlass.tenant',
+      `breakGlass.tenant "${descriptor.breakGlass.tenant}" must equal this descriptor's own slug ` +
+        `"${descriptor.slug}" — a mismatch would let a token minted for this tenant's audience be ` +
+        `accepted under a different tenant's rendered config, or vice versa.`
+    );
+  }
+}
+
+/**
+ * The ordering rule: never select the adapter for an image pin that
+ * predates it landing in the image. A `DigestPinnedRef` carries no
+ * ordering to check this against directly, so `zones.imagesWithBreakGlassAdapter`
+ * (an exact-match allowlist the caller maintains from its own build/rollout
+ * history) is what this checks against instead — see that field's own doc
+ * comment for why the check has to live there.
+ */
+function checkBreakGlassImageOrdering(descriptor: TenantDescriptor, zones: ZoneConfig): void {
+  if (descriptor.breakGlass.kind !== 'enabled') {
+    return;
+  }
+  if (!(zones.imagesWithBreakGlassAdapter ?? []).includes(descriptor.image)) {
+    throw new FieldValidationError(
+      'breakGlass',
+      `breakGlass.kind "enabled" requires descriptor.image ("${descriptor.image}") to be one of ` +
+        `zones.imagesWithBreakGlassAdapter — selecting the adapter on an image pin that predates it ` +
+        `stops Ghost booting at all. Bump and deploy the image pin first, then enable break-glass.`
     );
   }
 }
@@ -528,6 +831,49 @@ export interface ZoneConfig {
    * name, not merely under a different-looking label of it.
    */
   readonly ownedDomains: readonly string[];
+  /**
+   * Digest-pinned image refs known to carry the break-glass SSO adapter —
+   * an exact-match allowlist, not a version comparison: a `DigestPinnedRef`
+   * carries no ordering a renderer could compare (two builds of the same
+   * Ghost version tag can differ only in whether the adapter is baked in),
+   * so "does this pin carry the adapter" is a fact only the caller who
+   * tracks what has actually been built and rolled out can supply — the
+   * same reasoning as `ownedDomains` above, applied to image history
+   * instead of DNS. Selecting the adapter (`breakGlass.kind = "enabled"`)
+   * for an `image` outside this list is refused by `validate()`: on such an
+   * image Ghost cannot find the adapter and does not boot at all — measured
+   * against the real image; see `adapters/sso/README.md`'s "Turning it on
+   * for a tenant" section. **Optional, and absent means empty** — the
+   * existing callers of this interface (the broker, today) predate
+   * break-glass entirely, and requiring every one of them to be edited in
+   * the same change that adds this field would make an additive schema
+   * change look like a breaking one. Absent or `[]` are both the same safe
+   * posture — "no image has been confirmed to carry it yet" — which is not
+   * a caller error the way an empty `ownedDomains` is, since a demo/platform
+   * zone must always resolve inside `ownedDomains` and no equivalent
+   * "must resolve" rule holds here.
+   */
+  readonly imagesWithBreakGlassAdapter?: readonly string[];
+  /**
+   * The one domain every demo's sending address shares (HLD §07, LLD-6 §05:
+   * "a local part per demo, not a subdomain per demo" — every demo slot
+   * signs under this domain, distinguished only by its own local part).
+   * Kept as its own field rather than folded into `ownedDomains` above
+   * because the two are checked for opposite reasons here — a `theirs`
+   * hostname must be outside every owned domain, but a tenant's *sending*
+   * domain must additionally be outside this one specific owned domain,
+   * checked by name (`validateMailIdentity`'s own tenant branch).
+   */
+  readonly demoMailDomain: string;
+  /**
+   * Where every host's Ghost reaches its own mail spool's Mailgun-shaped
+   * bulk API (LLD-6 §03: "one mail spool per host, serving both SMTP and
+   * the Mailgun-shaped API"). A caller supplies the real address; this
+   * package has no opinion on the network path between a Ghost container
+   * and its spool, and never will — that path is the mail spool
+   * component's own contract, not a tenant descriptor's.
+   */
+  readonly mailSpoolBaseUrl: string;
 }
 
 function normalizeDomain(value: string): string {
@@ -555,22 +901,106 @@ function isOutsideOwnedDomains(fqdn: string, ownedDomains: readonly string[]): b
 const HOSTNAME_LABEL_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_FQDN_LENGTH = 253;
 
+// A last label that is all digits, or `0x` hex, is what `new URL(...).host`
+// reads back as an IPv4 address in shorthand notation —
+// `new URL('https://127.1').host` is `127.0.0.1`, and the same holds for
+// `127.0.1`, `0x7f.1` and `0x7f.0.0.1`. Every label in a shorthand form is
+// already digits (or hex) only, which is what lets this tell it apart from
+// a DNS name without needing a separate IP-literal check: no real DNS TLD
+// is, or could ever register as, purely numeric.
+const NUMERIC_SHORTHAND_LAST_LABEL = /^(0x[0-9a-f]+|[0-9]+)$/i;
+
 function isWellFormedFqdn(fqdn: string): boolean {
   if (fqdn.length === 0 || fqdn.length > MAX_FQDN_LENGTH) {
     return false;
   }
   const labels = fqdn.split('.');
-  return labels.length >= 2 && labels.every((label) => HOSTNAME_LABEL_PATTERN.test(label));
+  if (labels.length < 2 || !labels.every((label) => HOSTNAME_LABEL_PATTERN.test(label))) {
+    return false;
+  }
+  return !NUMERIC_SHORTHAND_LAST_LABEL.test(labels[labels.length - 1]);
 }
 
-// Bounded repetition only ({1,3} four times) — no ReDoS exposure, same
-// reasoning as HOSTNAME_LABEL_PATTERN above. This only needs to recognise
-// the *shape* of an IPv4 literal, not validate one: every label in it is
-// already digits-only, which is enough to tell it apart from a DNS name.
-const IPV4_LITERAL_SHAPE = /^\d{1,3}(\.\d{1,3}){3}$/;
-
-function looksLikeIpLiteral(value: string): boolean {
-  return IPV4_LITERAL_SHAPE.test(value) || value.includes(':');
+/**
+ * Every field of `zones` is caller-supplied, unbranded input — unlike the
+ * descriptor, nothing upstream of `validate()` has ever checked it — so an
+ * `ownedDomains` of `[]`, `[""]`, `[" x"]` or `[".x"]` must be refused here
+ * rather than silently making every "theirs" fqdn look like it is outside
+ * every owned domain (an empty or malformed entry can never match anything,
+ * so `isOutsideOwnedDomains` would wrongly say "outside" for a domain that
+ * is really inside), and `ownedDomains` arriving `undefined` (an unset env
+ * var, split and never checked) must throw a named error rather than a raw
+ * `TypeError` from `.some`. `demoZone`/`platformZone` are checked the same
+ * way: each must be well-formed *and* equal to, or a subdomain of, an owned
+ * domain — otherwise an empty `demoZone` renders every demo's `siteUrl` as
+ * `https://<sub>.`, which is exactly as ill-formed as the fqdn checks below
+ * exist to reject. Well-formedness is checked against each value
+ * *normalised* (trailing dot trimmed, lowercased), matching how
+ * `isEqualToOrSubdomainOf` already compares them below — a zone config is
+ * caller-authored, not attacker-supplied, and case or a trailing dot is not
+ * itself a defect the way it is in a "theirs" fqdn (see `validateHostname`'s
+ * own comment on why *that* string is held to an exact-case standard).
+ */
+function validateZoneConfig(zones: ZoneConfig): void {
+  if (typeof zones !== 'object' || zones === null) {
+    throw new FieldValidationError('zones', `zones must be an object, got ${describeType(zones)}.`);
+  }
+  if (!Array.isArray(zones.ownedDomains) || zones.ownedDomains.length === 0) {
+    throw new FieldValidationError(
+      'zones.ownedDomains',
+      `zones.ownedDomains must be a non-empty array of domain names, got ` +
+        `${describeType(zones.ownedDomains)}.`
+    );
+  }
+  zones.ownedDomains.forEach((domain, index) => {
+    if (typeof domain !== 'string' || !isWellFormedFqdn(normalizeDomain(domain))) {
+      throw new FieldValidationError(
+        'zones.ownedDomains',
+        `zones.ownedDomains[${index}] ${JSON.stringify(domain)} must be a well-formed domain name.`
+      );
+    }
+  });
+  // Unlike ownedDomains, an absent or empty value is legitimate here (see
+  // this field's own doc comment) — `undefined` is accepted outright, and
+  // anything else is checked for shape: an array of non-empty strings, so a
+  // caller's unset env var arriving as a single empty string (from
+  // splitting "") fails loudly here rather than comparing every image
+  // against a silently-empty-looking entry.
+  if (
+    zones.imagesWithBreakGlassAdapter !== undefined &&
+    !Array.isArray(zones.imagesWithBreakGlassAdapter)
+  ) {
+    throw new FieldValidationError(
+      'zones.imagesWithBreakGlassAdapter',
+      `zones.imagesWithBreakGlassAdapter must be an array of image refs or undefined, got ` +
+        `${describeType(zones.imagesWithBreakGlassAdapter)}.`
+    );
+  }
+  (zones.imagesWithBreakGlassAdapter ?? []).forEach((ref, index) => {
+    if (typeof ref !== 'string' || ref.trim() === '') {
+      throw new FieldValidationError(
+        'zones.imagesWithBreakGlassAdapter',
+        `zones.imagesWithBreakGlassAdapter[${index}] ${JSON.stringify(ref)} must be a non-empty ` +
+          `image ref.`
+      );
+    }
+  });
+  for (const field of ['demoZone', 'platformZone'] as const) {
+    const value = zones[field];
+    if (typeof value !== 'string' || !isWellFormedFqdn(normalizeDomain(value))) {
+      throw new FieldValidationError(
+        `zones.${field}`,
+        `zones.${field} ${JSON.stringify(value)} must be a well-formed domain name.`
+      );
+    }
+    if (isOutsideOwnedDomains(value, zones.ownedDomains)) {
+      throw new FieldValidationError(
+        `zones.${field}`,
+        `zones.${field} "${value}" must be equal to, or a subdomain of, one of zones.ownedDomains ` +
+          `(${zones.ownedDomains.join(', ')}).`
+      );
+    }
+  }
 }
 
 function validateHostname(hostname: TenantDescriptor['hostname'], zones: ZoneConfig): void {
@@ -588,13 +1018,8 @@ function validateHostname(hostname: TenantDescriptor['hostname'], zones: ZoneCon
   if (!isWellFormedFqdn(hostname.fqdn)) {
     throw new FieldValidationError(
       'hostname.fqdn',
-      `hostname.fqdn "${hostname.fqdn}" must be a well-formed, non-empty domain name.`
-    );
-  }
-  if (looksLikeIpLiteral(hostname.fqdn)) {
-    throw new FieldValidationError(
-      'hostname.fqdn',
-      `hostname.fqdn "${hostname.fqdn}" must be a domain name, not an IP address literal.`
+      `hostname.fqdn "${hostname.fqdn}" must be a well-formed, non-empty domain name, and not an ` +
+        `IP address literal or shorthand for one.`
     );
   }
   if (!isOutsideOwnedDomains(hostname.fqdn, zones.ownedDomains)) {
@@ -664,7 +1089,7 @@ export function servedHostnameOf(
     return normalizeDomain(`${descriptor.hostname.sub}.${zones.platformZone}`);
   }
   const fqdn = descriptor.hostname.fqdn;
-  if (!isWellFormedFqdn(fqdn) || looksLikeIpLiteral(fqdn)) {
+  if (!isWellFormedFqdn(fqdn)) {
     return null;
   }
   if (!isOutsideOwnedDomains(fqdn, zones.ownedDomains)) {
@@ -797,6 +1222,12 @@ function checkTierVariants(descriptor: TenantDescriptor): void {
         `kind "tenant" requires media.kind "s3", got "${descriptor.media.kind}".`
       );
     }
+    if (descriptor.mail.identity.kind !== 'tenant') {
+      throw new TierMismatchError(
+        `kind "tenant" requires mail.identity.kind "tenant", got ` +
+          `"${descriptor.mail.identity.kind}".`
+      );
+    }
     // No separate backup check here: this function already forces a
     // tenant's media to "s3", so INV-3 (media "s3" implies backup
     // "bucket-native", checked earlier in validate()) already rejects a
@@ -831,8 +1262,24 @@ function checkTierVariants(descriptor: TenantDescriptor): void {
         `never reaches the platform under a custom domain.`
     );
   }
+  if (descriptor.mail.identity.kind !== 'demo') {
+    throw new TierMismatchError(
+      `kind "demo" requires mail.identity.kind "demo", got "${descriptor.mail.identity.kind}". ` +
+        `Demo slots get no DKIM key, selector or domain of their own.`
+    );
+  }
   if (descriptor.expiresAt === null) {
     throw new TierMismatchError('kind "demo" requires a non-null expiresAt.');
+  }
+  // Incidental, decided by the implementing agent: a demo visitor already
+  // holds admin on their own disposable slot, so
+  // there is nothing left for a support identity to reach that the visitor
+  // cannot already reach — the break-glass mechanism exists for a *paying*
+  // tenant's own admin, which a demo has no separate one of.
+  if (descriptor.breakGlass.kind !== 'disabled') {
+    throw new TierMismatchError(
+      `kind "demo" requires breakGlass.kind "disabled", got "${descriptor.breakGlass.kind}".`
+    );
   }
 }
 
@@ -857,24 +1304,34 @@ function checkHostnameGateConsistency(descriptor: TenantDescriptor): void {
 
 /**
  * Validates a complete descriptor against the caller's zone configuration:
- * closed-set discriminants and unknown-key checks first (so nothing below
- * reads a field a wrong `kind` would not have, or trusts a key nothing
- * declared), then the schema version, then every field's own format and
- * range, then the three named invariants, the code-injection hostname
- * precondition, the per-tier variant rules, and the hostname/gate and
- * siteUrl/hostname consistency checks. Returns the same descriptor on
- * success so a caller can chain it into `render()`; throws on the first
- * violation found rather than collecting every one, because both callers
- * reject before any side effect regardless of how many things are wrong.
+ * the zone configuration itself first (it is exactly as unchecked as the
+ * descriptor, and every hostname check below trusts it), then closed-set
+ * discriminants and unknown-key checks (so nothing below reads a field a
+ * wrong `kind` would not have, or trusts a key nothing declared), then the
+ * schema version, then every field's own format and range, then the three
+ * named invariants, the code-injection hostname precondition, the per-tier
+ * variant rules, the hostname/gate and siteUrl/hostname consistency checks,
+ * and finally the break-glass identity and image-ordering checks. Returns
+ * the same descriptor on success so a caller can chain it
+ * into `render()`; throws on the first violation found rather than
+ * collecting every one, because both callers reject before any side effect
+ * regardless of how many things are wrong.
  */
 export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): TenantDescriptor {
+  // The caller's own input, checked before anything below trusts it to mean
+  // what its fields say — see validateZoneConfig's own doc comment.
+  validateZoneConfig(zones);
+
   assertDiscriminant(descriptor, 'kind', TENANT_KIND_VALUES);
   assertDiscriminant(descriptor.database, 'database', DATABASE_KIND_VALUES);
   assertDiscriminant(descriptor.media, 'media', MEDIA_KIND_VALUES);
   assertDiscriminant(descriptor.transport, 'transport', TRANSPORT_KIND_VALUES);
+  assertObject(descriptor.mail, 'mail');
+  assertDiscriminant(descriptor.mail.identity, 'mail.identity', SENDING_IDENTITY_KIND_VALUES);
   assertDiscriminant(descriptor.hostname, 'hostname', HOSTNAME_KIND_VALUES);
   assertDiscriminant(descriptor.gate, 'gate', GATE_KIND_VALUES);
   assertDiscriminant(descriptor.backup, 'backup', BACKUP_KIND_VALUES);
+  assertDiscriminant(descriptor.breakGlass, 'breakGlass', BREAK_GLASS_KIND_VALUES);
   // codeInjection's discriminant gate is checkInv1, called here rather than
   // with the other invariants below: every per-field validator after this
   // point assumes codeInjection is already a valid object with one of its
@@ -901,9 +1358,11 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   validateMedia(descriptor.slug, descriptor.media);
   validateBackup(descriptor.backup);
   validateTransport(descriptor.transport);
+  validateMailIdentity(descriptor.mail, zones);
   validateHostname(descriptor.hostname, zones);
   validateGate(descriptor.gate);
   validateCodeInjection(descriptor.codeInjection);
+  validateBreakGlass(descriptor.breakGlass);
   if (descriptor.expiresAt !== null) {
     validateInstant(descriptor.expiresAt, 'expiresAt');
   }
@@ -915,6 +1374,8 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   checkCodeInjectionHostnamePrecondition(descriptor);
   checkTierVariants(descriptor);
   checkHostnameGateConsistency(descriptor);
+  checkBreakGlassIdentity(descriptor);
+  checkBreakGlassImageOrdering(descriptor, zones);
 
   return descriptor;
 }
