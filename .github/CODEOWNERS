@@ -16,6 +16,11 @@
 # place is dropping it.
 * @reviewer-agent-branchLeft @branchLeft/branchleft-admin
 
+# DB-1's database-tooling declaration, owned like the escape hatches below
+# (standards REPO-5). It joins the shared template when the pin reaches a
+# standards release that lists it.
+/.standards-db-tooling   @branchLeft/branchleft-admin
+
 # The shared escape hatches, from branchLeft/standards templates/codeowners. They
 # stay last: GitHub applies the last matching pattern.
 /.standardsignore        @branchLeft/branchleft-admin

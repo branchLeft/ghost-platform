@@ -1,0 +1,19 @@
+# Database tooling, out of DB-1's scope (standards docs/databases.md):
+# backup, restore and migration tooling that drives the database directly.
+
+# Backup: logical dumps and binary-log shipping, taken on db1.
+db/provision/dump_nightly.py
+db/provision/dump_tenant.py
+db/provision/test_dump_tenant.py
+db/provision/ship_binlogs.py
+db/provision/test_ship_binlogs.py
+
+# Restore: scoping a point-in-time replay to one tenant, and restoring a dump.
+db/provision/extract_tenant_binlog.py
+db/provision/test_extract_tenant_binlog.py
+db/recovery/*
+
+# Backup: the control-side worker that pulls, encrypts and stores a dump.
+infra/provisioning/scripts/backup_worker.py
+infra/provisioning/scripts/test_backup_worker.py
+infra/provisioning/scripts/test_pull_encrypt_store.py
