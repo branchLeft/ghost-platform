@@ -1,0 +1,22 @@
+{
+  "name": "ghost-platform-export-bundler",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "description": "Calls Ghost's two existing admin exports (content & settings, post analytics) against a drained colour and hands back one archive plus a manifest, audited as a bulk read of a tenant's data (see ghost-platform-docs/19-try-it-now-design/08-portal.html §08b).",
+  "type": "module",
+  "main": "dist/cli.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/node": "^26.0.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}

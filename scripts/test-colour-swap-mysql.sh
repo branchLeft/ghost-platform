@@ -104,6 +104,15 @@ start_ghost() {
         -e database__connection__database="ghost_colour_swap_test" \
         -e privacy__useUpdateCheck="false" \
         -e BRANCHLEFT_ALLOW_LOCAL_STORAGE="true" \
+        -e storage__images__adapter="ScanningStorageAdapter" \
+        -e storage__images__wraps="LocalImagesStorage" \
+        -e storage__images__quarantinePath="/var/lib/ghost/content/quarantine" \
+        -e storage__media__adapter="ScanningStorageAdapter" \
+        -e storage__media__wraps="LocalMediaStorage" \
+        -e storage__media__quarantinePath="/var/lib/ghost/content/quarantine" \
+        -e storage__files__adapter="ScanningStorageAdapter" \
+        -e storage__files__wraps="LocalFilesStorage" \
+        -e storage__files__quarantinePath="/var/lib/ghost/content/quarantine" \
         "$GHOST_IMAGE" >/dev/null
 }
 
