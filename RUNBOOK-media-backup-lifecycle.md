@@ -1,140 +1,271 @@
-# Runbook — apply the four-rule media backup lifecycle, then retire the probe bucket
+# Runbook — re-fence `branchleft-db-backups` and apply its four-rule lifecycle
 
-Closes two of branchLeft/workspace#1325's three remaining action items: applying
-`db/provision/configure_backup_bucket.py`'s current four-prefix lifecycle
-document to the production backup bucket, and deleting the throwaway bucket
-the split probe was run against. The third item — recording the probe's PASS
-in `14-hetzner-migration-programme.md` §16 — is a separate docs PR, not part
-of this runbook.
+Closes two of branchLeft/workspace#1325's three remaining action items:
+applying `db/provision/configure_backup_bucket.py`'s current four-prefix
+lifecycle document to the production backup bucket, and deleting the
+throwaway bucket the split probe was run against. It also closes the
+operational half of branchLeft/workspace#320, left open since 2026-08-28:
+`branchleft-db-backups`'s live fence still uses a `NotAction` statement that
+this engine does not enforce, so the workload key can currently read,
+rewrite or delete that fence and change the bucket's versioning. The third
+action item from #1325 — recording the probe PASS in
+`14-hetzner-migration-programme.md` §16 — is a separate docs PR, not part of
+this runbook.
+
+---
+
+## Open question for Rob — not settled anywhere on `main` or on an issue
+
+**Which Console credential will media backups (ghost-platform#249,
+`media_backup_restore.py`) authenticate as?** The code reads
+`MEDIA_BACKUP_ACCESS_KEY_ID` / `MEDIA_BACKUP_SECRET_ACCESS_KEY`, but nothing
+on `main` — no runbook, no Pulumi config, no issue — says which real Hetzner
+credential that is. `media-backup-restore-proof.sh` only ever sets it to a
+local MinIO test credential.
+
+The fence this runbook applies names exactly one workload key,
+`db-backups`. **If media backups are meant to share that key, say so and
+this runbook will add nothing further — the existing `--workload-access-key
+db-backups` already covers it. If media backups get their own key, it has
+to be added as a second `--workload-access-key` before step 6 renders the
+policy, or media backup runs will be denied `s3:*` outright the first time
+they try to write.** Until this is answered, this runbook does **not** claim
+to unblock ghost-platform#249 — see "After it succeeds" below.
 
 ---
 
 ## What is wrong / why now
 
-`branchleft-db-backups` was fenced and given versioning + a lifecycle rule by
-`RUNBOOK-bucket-fencing.md` before media backups existed. `configure_backup_bucket.py`
-now renders **four** prefix-scoped lifecycle rules — the original `dumps/` and
-`binlogs/` rules at 35 days, plus a new `media/` rule (1 day, with
-`ExpiredObjectDeleteMarker`) and a new `fence-probe/` rule (1 day) — but that
-document has never been *applied*. Until it is, the production bucket still
-carries whatever lifecycle document the earlier run wrote, with no rule at all
-for `media/`.
+- **The live fence predates the renderer it came from.** `branchleft-db-backups`
+  was fenced on 2026-08-28 (workspace#286) by the `render-bucket-fence-policy.py`
+  of that day, which built its bucket-configuration deny as a `NotAction`
+  statement. workspace#320 proved on 2026-09-02 that this engine does not
+  enforce `NotAction` at all — it is stored and does nothing. The renderer has
+  since been corrected three times, all merged to `main`: #150 (2026-09-03,
+  explicit `Action` lists), #171 (2026-09-04, `configure_backup_bucket.py`
+  now refuses to emit or accept any `NotAction` statement), and #157
+  (2026-09-10, fixed 12 action names this engine's parser was silently
+  rejecting — the prerequisite workspace#320 named for re-fencing at all).
+  **workspace#320 is still open**, waiting on exactly this operational
+  re-fence. This runbook is that re-fence.
+- **The live lifecycle is one whole-bucket rule, not the four-rule document.**
+  The rule applied alongside that same 2026-08-28 fence (commit `8edfcfe`) is
+  a single rule, `branchleft-db-backups-noncurrent-expiry`, `Filter/Prefix`
+  empty, 35 days — it covers every object in the bucket, `media/` included,
+  today. `configure_backup_bucket.py`'s `lifecycle_document()` has since
+  grown to four prefix-scoped rules, but that document has never been
+  applied to this bucket.
+- **The split probe validated the document's mechanics, not this bucket.**
+  Rob ran `check-split` on 2026-09-27 against the throwaway bucket
+  `branchleft-lifecycle-probe-20260924` and it returned **PASS**
+  ([branchLeft/workspace#1325, issuecomment-5859953732](https://github.com/branchLeft/workspace/issues/1325#issuecomment-5859953732)):
+  the `media/`-style short rule pruned its own noncurrent content
+  independently of the `dumps/`-style long rule, and Hetzner honoured
+  `ExpiredObjectDeleteMarker`. That settled the open question about the
+  document's *shape*. It touched neither the fence nor the lifecycle rule
+  actually live on `branchleft-db-backups`.
 
-Rob ran `check-split` on 2026-09-27 against the throwaway bucket
-`branchleft-lifecycle-probe-20260924` and it returned **PASS**
-([branchLeft/workspace#1325, issuecomment-5859953732](https://github.com/branchLeft/workspace/issues/1325#issuecomment-5859953732)):
-the `media/`-style short rule pruned its own noncurrent versions and delete
-marker without touching the `dumps/`-style long rule's content, and Hetzner
-honoured `ExpiredObjectDeleteMarker`. That was the last open question standing
-between this document and the real bucket. Priority is High: media end-to-end
-is explicitly in MVP scope (Rob's ruling, 2026-09-23 13:40 UTC), and no media
-backup run may be scheduled (ghost-platform#249, C-refresh) until this lands.
+Priority is High: media end-to-end is explicitly in MVP scope (Rob's ruling,
+2026-09-23 13:40 UTC), and no media backup run may be scheduled
+(ghost-platform#249, C-refresh) until the lifecycle document lands — separately
+from the open credential question above.
 
 ---
 
 ## Blast radius
 
-**Changes:** `branchleft-db-backups` gains two lifecycle rules it does not
-currently have (`media/`, `fence-probe/`, both 1-day noncurrent expiry, the
-`media/` one also carrying `ExpiredObjectDeleteMarker`). Nothing about
-`dumps/` or `binlogs/`'s existing 35-day rule changes — `configure_backup_bucket.py`
-renders them byte-for-byte the same as before.
+**The fence on `branchleft-db-backups` WILL change, and this is not a no-op.**
+Step 6 replaces the live `NotAction`-based statement with an explicit
+`Action`-list + `NotPrincipal` one. Step 4 below renders it and diffs it
+against what step 3 reads live, specifically so this is seen before it is
+applied rather than asserted.
 
-**Does not change:** the bucket's fence (re-applied as part of this write, but
-identical to what is already live — see step 3) and its versioning (already
-`Enabled`, the PUT is a no-op). db1's nightly dump and binlog-ship pipeline
-keeps running throughout; nothing here touches db1, and its credential never
-had permission to write lifecycle configuration in the first place.
+**The lifecycle rule WILL change from one whole-bucket rule to four
+prefix-scoped ones.** `dumps/` and `binlogs/` keep the same 35-day figure,
+but as their own rules rather than as part of today's bucket-wide default;
+`media/` and `fence-probe/` get a new 1-day rule. **Anything written under a
+fifth prefix would silently lose its expiry entirely** — step 3 lists the
+bucket's actual top-level prefixes before anything is written, specifically
+to catch that before it happens rather than discover it later.
 
-**Irreversible, in two different ways:**
-- The lifecycle document itself is not irreversible — a lifecycle PUT simply
-  replaces the document, and it can be re-rendered and re-applied if a number
-  needs to change later.
-- What the lifecycle rule *does*, once it fires, is: a noncurrent version or
-  delete marker older than its rule's window is gone for good, on both the
-  bucket this runbook touches and (already, today) on any bucket already
-  running one. Nothing in this runbook accelerates that.
-- Deleting `branchleft-lifecycle-probe-20260924` (section 2) is flatly
+**Does not change:** db1's nightly dump and binlog-ship pipeline keeps
+running throughout — its own object keys, under `dumps/` and `binlogs/`,
+are the two prefixes whose rule content does not change. Step 7b proves this
+with a live run, not an assumption.
+
+**Irreversible, in three different ways:**
+- The fence and lifecycle documents themselves are not irreversible — each
+  is a PUT that replaces what was there, and step 3 saves the current ones
+  precisely so "Rollback" below can put them back.
+- What a lifecycle rule *does*, once it fires, is irreversible: a noncurrent
+  version or delete marker past its rule's window is gone for good. Nothing
+  in this runbook shortens any window that is already running.
+- Deleting `branchleft-lifecycle-probe-20260924` (section 8) is flatly
   irreversible — see that section.
 
 ---
 
 ## Before you start
 
-- `branchleft-db-backups` is already fenced and versioned — confirmed by
-  `RUNBOOK-bucket-fencing.md` §1e/§1f, already run. This runbook does **not**
-  repeat section 0 or step 1c of that file: both test the account's policy
-  engine, not this bucket, and both are already settled.
-- A checkout of `branchLeft/ghost-platform` on `main` (current enough to
-  contain the four-rule `lifecycle_document()` — check with `git log -1
-  db/provision/configure_backup_bucket.py`; its docstring should mention
-  "FOUR NON-OVERLAPPING PREFIX RULES").
-- The **`fence-operator`** Object Storage credential (Hetzner Cloud Console,
-  project `15766609`) — this write must run as the operator, because the
-  fence already withholds `PutLifecycleConfiguration` from every other key in
-  the project, db1's backup key included.
-- The **`db-backups`** credential's access key **id** only (not its secret) —
-  from `/etc/branchleft/db.env` on db1, the password manager, or Console
-  credential `db-backups` directly. It is only used to name the workload in
-  the re-rendered fence policy; the render is deterministic, so this
-  reproduces the exact document already live.
-- The AWS CLI, reachable as `aws`, for the read-back steps only —
-  `configure_backup_bucket.py` itself signs its own requests.
+- A checkout of `branchLeft/ghost-platform` on `main`, current enough to
+  contain the four-rule `lifecycle_document()` and the `PARSER_REJECTS`
+  guard in `bucketpolicy.py` (both merged; #157 was the last of the three,
+  2026-09-10).
+- `branchleft-db-backups` is already versioned (2026-08-28) — that PUT stays
+  a no-op. It is **not** already fenced with the corrected document, and its
+  lifecycle rule is **not** already the four-rule one — see "What is wrong"
+  above.
+- Section 0 and step 1c of `RUNBOOK-bucket-fencing.md` are **not** repeated
+  here: both test the account's policy engine (whether a `Deny` separates
+  two keys at all, and whether `NotPrincipal` exempts), which is a property
+  of the account, not of this bucket, and both were already settled on
+  2026-08-28 (workspace#286).
+- Three credentials, all Hetzner Console, project `15766609`:
+  - **`fence-operator`** — this write must run as the operator throughout.
+  - **`db-backups`** — id and secret. The id names the workload in the
+    rendered policy; the secret is needed for step 7a's verify, which logs
+    in as the workload to prove it can still read/write/list/delete.
+  - **`tenant-state`** — id and secret, needed only for step 7a, as the
+    foreign key whose *denial* proves the fence discriminates.
+- The AWS CLI, reachable as `aws`, for every read-back and the rollback.
+  `configure_backup_bucket.py` and `verify-bucket-fence.py` sign their own
+  writes and denial probes; `aws s3api` is used here only for plain reads
+  and for the two rollback PUTs, neither of which needs to classify a
+  denial.
 
 ---
 
-## 1. Read the two credentials into the shell
-
-Each block below is exactly one line and expects exactly one paste in
-response before the next block is sent — a `read` sharing a block with
-anything else risks the next block's first line being swallowed as the
-value instead of running.
+## 1. Confirm the checkout
 
 ```bash
-read -rs FENCE_OPERATOR_ACCESS_KEY_ID; export FENCE_OPERATOR_ACCESS_KEY_ID
+cd ~/branchLeft/ghost-platform && git switch main && git pull --ff-only
 ```
 
-```bash
-read -rs FENCE_OPERATOR_SECRET_ACCESS_KEY; export FENCE_OPERATOR_SECRET_ACCESS_KEY
-```
-
-```bash
-read -rs DB_BACKUPS_ACCESS_KEY_ID; export DB_BACKUPS_ACCESS_KEY_ID
-```
-
-Expected: no output from any of the three — a bare shell prompt back is the
-pass condition.
+Expected: `Already up to date.` or a fast-forward summary, exit code 0.
 
 ---
 
-## 2. Re-render the fence policy
+## 2. Read the three credentials into the shell
 
-From the `branchLeft/ghost-platform` checkout, on `main`:
+Each block is exactly one line and expects exactly one paste in response
+before the next block is sent — combining a `read` with anything else risks
+the next block's first line being swallowed as the value instead of running.
+The length echo is the one check that catches a `read -rs -p` that silently
+captured nothing.
 
 ```bash
+read -rs FENCE_OPERATOR_ACCESS_KEY_ID; export FENCE_OPERATOR_ACCESS_KEY_ID; echo "${#FENCE_OPERATOR_ACCESS_KEY_ID} chars read"
+```
+
+```bash
+read -rs FENCE_OPERATOR_SECRET_ACCESS_KEY; export FENCE_OPERATOR_SECRET_ACCESS_KEY; echo "${#FENCE_OPERATOR_SECRET_ACCESS_KEY} chars read"
+```
+
+```bash
+read -rs FENCE_WORKLOAD_ACCESS_KEY_ID; export FENCE_WORKLOAD_ACCESS_KEY_ID; echo "${#FENCE_WORKLOAD_ACCESS_KEY_ID} chars read"
+```
+
+```bash
+read -rs FENCE_WORKLOAD_SECRET_ACCESS_KEY; export FENCE_WORKLOAD_SECRET_ACCESS_KEY; echo "${#FENCE_WORKLOAD_SECRET_ACCESS_KEY} chars read"
+```
+
+```bash
+read -rs FENCE_FOREIGN_ACCESS_KEY_ID; export FENCE_FOREIGN_ACCESS_KEY_ID; echo "${#FENCE_FOREIGN_ACCESS_KEY_ID} chars read"
+```
+
+```bash
+read -rs FENCE_FOREIGN_SECRET_ACCESS_KEY; export FENCE_FOREIGN_SECRET_ACCESS_KEY; echo "${#FENCE_FOREIGN_SECRET_ACCESS_KEY} chars read"
+```
+
+Expected each time: a non-zero character count. Zero means the read captured
+nothing — re-run that one block before going on.
+
+---
+
+## 3. Save the live policy and lifecycle, and list what the bucket actually holds
+
+This is the rollback copy, taken before anything is written, and the check
+that catches a prefix this document does not know about.
+
+```bash
+SAVED_POLICY_FILE=$(mktemp -t branchleft-db-backups-live-policy)
+AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api get-bucket-policy --bucket branchleft-db-backups --query Policy --output text > "$SAVED_POLICY_FILE" && cat "$SAVED_POLICY_FILE"
+```
+
+Expected: the live policy JSON, printed. Read it now — its bucket-configuration
+`Deny` statement is expected to carry `NotAction`, per workspace#320 and the
+2026-08-28 apply. **If it does not contain `NotAction` anywhere, this bucket
+has already been re-fenced by someone else since — stop and find out when
+and by whom before going any further, because step 5's diff assumes this
+starting point.**
+
+```bash
+SAVED_LIFECYCLE_FILE=$(mktemp -t branchleft-db-backups-live-lifecycle)
+AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api get-bucket-lifecycle-configuration --bucket branchleft-db-backups | tee "$SAVED_LIFECYCLE_FILE"
+```
+
+Expected: one rule, `branchleft-db-backups-noncurrent-expiry`, `Filter.Prefix`
+empty, `NoncurrentDays: 35`, `Status: Enabled` — the whole-bucket rule from
+`8edfcfe`. **If it already shows four prefix-scoped rules, this write has
+already happened — stop, do not run step 6 again.**
+
+```bash
+AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api list-objects-v2 --bucket branchleft-db-backups --delimiter / --query 'CommonPrefixes[].Prefix' --output text
+```
+
+Expected: some subset of `dumps/`, `binlogs/`, `media/`, `fence-probe/`, and
+nothing else — those are the only prefixes the new lifecycle document
+covers. **If any other prefix appears, stop.** Whether to add a fifth rule
+or why that prefix does not need one is a decision for Rob, not something to
+guess past; do not proceed to step 6 until it is answered.
+
+---
+
+## 4. Render the new fence policy and diff it against the live one
+
+From the checkout, on `main`:
+
+```bash
+POLICY_FILE=$(mktemp -t branchleft-db-backups-new-policy)
 python3 infra/provisioning/scripts/render-bucket-fence-policy.py \
   --bucket branchleft-db-backups \
   --project-id 15766609 \
-  --workload-access-key "$DB_BACKUPS_ACCESS_KEY_ID" \
+  --workload-access-key "$FENCE_WORKLOAD_ACCESS_KEY_ID" \
   --admin-access-key "$FENCE_OPERATOR_ACCESS_KEY_ID" \
-  > /tmp/branchleft-db-backups-policy.json
+  > "$POLICY_FILE"
 ```
 
-Expected: no output, exit code 0. Given the same three inputs the render is
-deterministic, so this reproduces the exact document `RUNBOOK-bucket-fencing.md`
-already proved safe and already applied — step 3 is not writing a new fence,
-only a new lifecycle document alongside the same one.
-
-Read it before going on — it must be a JSON object with a top-level
-`Statement` array naming `branchleft-db-backups` and no other bucket:
+Expected: no output, exit code 0.
 
 ```bash
-cat /tmp/branchleft-db-backups-policy.json
+diff <(python3 -m json.tool "$SAVED_POLICY_FILE") <(python3 -m json.tool "$POLICY_FILE")
 ```
+
+Expected: a **real diff**, not an empty one. At minimum, every `NotAction`
+key on the live side is gone on the rendered side, replaced by an explicit
+`Action` array plus a `NotPrincipal` naming the operator — this is exactly
+what closes workspace#320's operational gap. **Read it before going on.**
+
+- If the diff is **empty**: either this bucket was already re-fenced with
+  the current renderer (stop; nothing to do), or the checkout in step 1 is
+  stale and picked up the old renderer (check `git log`). Either way, do not
+  proceed on an empty diff without knowing which.
+- **State plainly to yourself here: the fence on `branchleft-db-backups`
+  is about to change. Step 6 is not a no-op.**
 
 ---
 
-## 3. Apply — versioning (no-op), the new lifecycle document, the fence (no-op)
+## 5. §1c is not repeated
+
+`NotPrincipal` exempting the operator is an account-wide engine property,
+already confirmed PASS on 2026-08-28 (workspace#286) and unaffected by the
+renderer fixes above — those changed which statements carry `NotAction` vs
+`Action`, not how `NotPrincipal` itself is read. Re-testing it here would
+tell you nothing you do not already know.
+
+---
+
+## 6. Apply — versioning (no-op), the new lifecycle document, the new fence
 
 > **This pauses for close to two minutes between its two `put-bucket-policy`
 > calls.** That is the lockout check working — Hetzner's policy-engine read
@@ -149,7 +280,7 @@ AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" \
   --bucket branchleft-db-backups \
   --endpoint hel1.your-objectstorage.com \
   --region hel1 \
-  --policy-file /tmp/branchleft-db-backups-policy.json \
+  --policy-file "$POLICY_FILE" \
   --engine-diagnostic-passed
 ```
 
@@ -162,13 +293,67 @@ configure_backup_bucket: versioning enabled, 35-day noncurrent expiry set on dum
 **If it exits non-zero on the second `put-bucket-policy`,** the bucket may be
 locked. Do not close this terminal — go straight to `RUNBOOK-bucket-fencing.md`'s
 "The lockout, and how to recover from one" section and follow it from there;
-that file, not this one, owns the recovery procedure.
+that file, not this one, owns the recovery procedure, and "Rollback" below
+does not apply to a locked bucket.
 
 ---
 
-## 4. Verify — read the live lifecycle configuration back
+## 7. Verify — mandatory, not optional
 
-The authoritative source is the bucket itself, not the script's exit code.
+The script's own success line says "The fence is not proven to FENCE anything
+until `verify-bucket-fence.py` passes — run it now, from this terminal."
+Steps 7a and 7b are that instruction, plus the pipeline check
+`RUNBOOK-bucket-fencing.md` §1g requires after any fence change on this
+bucket. **Do not treat step 9's lifecycle read-back as sufficient on its own
+— it proves the lifecycle document, not that the fence still lets the real
+pipeline work.**
+
+### 7a. Both directions, against the live bucket (§1f)
+
+```bash
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+
+python3 infra/provisioning/scripts/verify-bucket-fence.py \
+  --bucket branchleft-db-backups \
+  --foreign-control-bucket branchleft-tenant-pulumi-state \
+  --policy-file "$POLICY_FILE" \
+  --versioning-already-enabled
+```
+
+Expected: every line `PASS`, exit code 0, including `the stored policy is the
+one that was sent`. **Do not go on to step 7b or step 9 on anything less** —
+read a `FAIL` or `INCONCLUSIVE` exactly as `RUNBOOK-bucket-fencing.md` §1f
+describes (cited rather than re-derived here), and if it is a `FAIL`, go to
+"Rollback" below rather than touching the lifecycle read-back.
+
+### 7b. Confirm db1's own pipeline still works (§1g)
+
+`db1` has no public address; this goes through `edge1`, the same jump host
+every other remote command in this repo uses.
+
+```bash
+EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
+  systemctl start branchleft-db-binlog-ship.service &&
+  systemctl start branchleft-db-dump.service &&
+  systemctl is-failed branchleft-db-binlog-ship.service branchleft-db-dump.service;
+  journalctl -u branchleft-db-dump.service -n 20 --no-pager
+'
+```
+
+Expected: both units report `inactive` from `is-failed` (a oneshot that
+succeeded) and the dump log ends in a successful upload. **If either unit is
+`failed`, go to "Rollback" below** — the new fence withheld something the
+real pipeline needs, and that is exactly the failure scenario this step
+exists to catch before it is discovered by someone needing a restore.
+
+---
+
+## 8. Verify — read the live lifecycle configuration back
+
+The authoritative source is the bucket itself, not step 6's exit code.
 
 ```bash
 AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" \
@@ -180,38 +365,88 @@ AWS_DEFAULT_REGION=hel1 \
 
 Expected: a `Rules` array with exactly these four entries, and nothing else:
 
-| `ID` | `Filter.Prefix` | `NoncurrentVersionExpiration.NoncurrentDays` | Other |
-|---|---|---|---|
-| `branchleft-db-backups-dumps-noncurrent-expiry` | `dumps/` | 35 | — |
-| `branchleft-db-backups-binlogs-noncurrent-expiry` | `binlogs/` | 35 | — |
-| `branchleft-db-backups-media-noncurrent-expiry` | `media/` | 1 | `Expiration.ExpiredObjectDeleteMarker: true` |
-| `branchleft-db-backups-fence-probe-noncurrent-expiry` | `fence-probe/` | 1 | — |
+| `ID` | `Filter.Prefix` | `NoncurrentVersionExpiration.NoncurrentDays` | `Status` | Other |
+|---|---|---|---|---|
+| `branchleft-db-backups-dumps-noncurrent-expiry` | `dumps/` | 35 | `Enabled` | — |
+| `branchleft-db-backups-binlogs-noncurrent-expiry` | `binlogs/` | 35 | `Enabled` | — |
+| `branchleft-db-backups-media-noncurrent-expiry` | `media/` | 1 | `Enabled` | `Expiration.ExpiredObjectDeleteMarker: true` |
+| `branchleft-db-backups-fence-probe-noncurrent-expiry` | `fence-probe/` | 1 | `Enabled` | — |
 
-If any rule is missing, has a different prefix or day count, or the `media/`
-rule lacks `ExpiredObjectDeleteMarker`, the PUT did not land as intended —
-record the output verbatim and stop rather than re-running blind.
-
-**What becomes true:** the production backup bucket now carries the same
-lifecycle document already proven safe against a throwaway bucket
-(issuecomment-5859953732) — media backup runs (ghost-platform#249) can be
-scheduled once this step's read-back has passed.
+If any rule is missing, has a different prefix, day count or `Status`, or the
+`media/` rule lacks `ExpiredObjectDeleteMarker`, the PUT did not land as
+intended. Before concluding that, re-read once more after 60 seconds — a
+read taken too soon after the PUT can still reflect the prior document. If
+it still does not match, record the output verbatim and stop rather than
+re-running blind.
 
 Clear the shell:
 
 ```bash
-unset FENCE_OPERATOR_ACCESS_KEY_ID FENCE_OPERATOR_SECRET_ACCESS_KEY DB_BACKUPS_ACCESS_KEY_ID
-rm -f /tmp/branchleft-db-backups-policy.json
+unset FENCE_OPERATOR_ACCESS_KEY_ID FENCE_OPERATOR_SECRET_ACCESS_KEY FENCE_WORKLOAD_ACCESS_KEY_ID FENCE_WORKLOAD_SECRET_ACCESS_KEY FENCE_FOREIGN_ACCESS_KEY_ID FENCE_FOREIGN_SECRET_ACCESS_KEY
+rm -f "$POLICY_FILE" "$SAVED_POLICY_FILE" "$SAVED_LIFECYCLE_FILE"
 ```
 
-**Rollback:** none needed for this step in the ordinary sense — a lifecycle
-document can be re-rendered and re-applied at will if a number turns out
-wrong. There is no rollback for content a rule has already expired once its
-window has passed, on this bucket or any other; nothing in this step shortens
-any existing window.
+(Skip the `rm` if step 7 or 6 sent you to "Rollback" below — the saved files
+are what it uses.)
 
 ---
 
-## 5. Delete the throwaway probe bucket `branchleft-lifecycle-probe-20260924`
+## Rollback — for steps 6 or 7 failing
+
+**This re-exposes workspace#320's operational gap** — the restored fence is
+the same `NotAction` one that does not withhold bucket-configuration access
+from the workload key. Use it only if the new fence broke something worse
+(step 7a `FAIL` or step 7b's pipeline check failing), and re-open workspace#320
+if you do.
+
+```bash
+AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api put-bucket-policy --bucket branchleft-db-backups --policy "file://$SAVED_POLICY_FILE"
+```
+
+```bash
+AWS_ACCESS_KEY_ID="$FENCE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$FENCE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api put-bucket-lifecycle-configuration --bucket branchleft-db-backups --lifecycle-configuration "file://$SAVED_LIFECYCLE_FILE"
+```
+
+Then re-read both back (the same commands step 3 used) to confirm the
+restore actually landed — do not trust either PUT's exit code; `aws s3api`
+has been observed on this provider returning an uninformative error on a
+denial, so a clean exit is not proof and neither is a failure necessarily
+the whole story. Once confirmed, clear the shell as step 8 says.
+
+---
+
+## After it succeeds
+
+The lifecycle document is proven live once step 8 passes, and the fence is
+proven live once step 7a passes — those two, together with step 7b, are what
+close workspace#320's operational half and this runbook's share of
+branchLeft/workspace#1325.
+
+**Media backup runs (ghost-platform#249) are not unblocked by this alone.**
+The open question at the top of this file — which credential
+`MEDIA_BACKUP_ACCESS_KEY_ID` actually is, and whether it needs adding to the
+fence's `--workload-access-key` list — is still open. If it turns out to be
+a new key, re-run steps 4–8 with both `--workload-access-key` values before
+scheduling anything.
+
+Close branchLeft/workspace#1325 through the `board` skill's decision-only-issue
+path (no PR carries a `Closes` trailer here — this is a live console/CLI
+change), citing:
+- step 4's diff, showing the fence actually changed;
+- step 7a and 7b's PASS output;
+- step 8's `get-bucket-lifecycle-configuration` output, showing all four
+  rules live;
+- the docs PR recording the probe PASS in `14-hetzner-migration-programme.md`
+  §16, once it has merged.
+
+Comment on workspace#320 citing step 4's diff and step 7a's PASS as the
+operational close, separately from #1325.
+
+Never quote a secret value in either closing comment.
+
+---
+
+## 9. Delete the throwaway probe bucket `branchleft-lifecycle-probe-20260924`
 
 > **IRREVERSIBLE. This deletes a bucket and everything in it — every version,
 > every delete marker — permanently.** There is no undo, no recycle bin, and
@@ -227,21 +462,30 @@ the `setup-split` canaries and their receipt since 2026-09-24. Its content is
 already fully captured in issuecomment-5859953732 and — once the docs PR
 lands — in `14-hetzner-migration-programme.md` §16.
 
-### 5a. Read the credential that administers this bucket
+**This section's name-guard is deliberately a second, independent layer on
+top of the production fence above.** 9d runs as the lab/administrative
+credential that created this bucket, and it must **never** run as
+`FENCE_OPERATOR_*` or any credential named in section 2 — once step 6 has
+run, the production fence denies the lab credential `s3:*` on
+`branchleft-db-backups` outright, and mixing the two credentials in this
+section risks a guarded, correctly-named delete running against the wrong
+bucket's administrator instead of a refusal.
+
+### 9a. Read the credential that administers this bucket
 
 The same one used to run `setup-split` / `check-split` — read fresh even if
 it is still exported in your shell from that run, so this section does not
 depend on state left over from a different one.
 
 ```bash
-read -rs LAB_ACCESS_KEY_ID; export LAB_ACCESS_KEY_ID
+read -rs LAB_ACCESS_KEY_ID; export LAB_ACCESS_KEY_ID; echo "${#LAB_ACCESS_KEY_ID} chars read"
 ```
 
 ```bash
-read -rs LAB_SECRET_ACCESS_KEY; export LAB_SECRET_ACCESS_KEY
+read -rs LAB_SECRET_ACCESS_KEY; export LAB_SECRET_ACCESS_KEY; echo "${#LAB_SECRET_ACCESS_KEY} chars read"
 ```
 
-### 5b. Control — confirm the credential can see the bucket, and see only what the probe wrote
+### 9b. Control — confirm the credential can see the bucket, and see only what the probe wrote
 
 ```bash
 AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket branchleft-lifecycle-probe-20260924
@@ -255,7 +499,7 @@ before deleting anything** — this bucket may hold something the probe did
 not write, and the guard below only checks the bucket's name, not its
 contents.
 
-### 5c. Type the bucket name to confirm it, in its own line
+### 9c. Type the bucket name to confirm it, in its own line
 
 Deliberately visible, not `-s`: the whole point of this step is that you see
 what you typed before it is checked against the one bucket this section may
@@ -267,40 +511,49 @@ read -r CONFIRM_BUCKET
 
 Paste exactly: `branchleft-lifecycle-probe-20260924`
 
-### 5d. The guarded delete — refuses on any mismatch, stops on any failure
+### 9d. The guarded delete — refuses on any mismatch, and stays inside its own subshell
 
-One block, `&&`-chained throughout, so a failed guard or a failed delete
-stops the sequence rather than letting a later command run against a bucket
-in an unknown state.
-
-```bash
-set -o pipefail && \
-[ "$CONFIRM_BUCKET" = "branchleft-lifecycle-probe-20260924" ] || { echo "REFUSING: typed name does not exactly match branchleft-lifecycle-probe-20260924 -- nothing touched" >&2; exit 1; } && \
-AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket "$CONFIRM_BUCKET" --output text --query 'Versions[].[Key,VersionId]' | while read -r key vid; do AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api delete-object --bucket "$CONFIRM_BUCKET" --key "$key" --version-id "$vid" || exit 1; done && \
-AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket "$CONFIRM_BUCKET" --output text --query 'DeleteMarkers[].[Key,VersionId]' | while read -r key vid; do AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api delete-object --bucket "$CONFIRM_BUCKET" --key "$key" --version-id "$vid" || exit 1; done && \
-AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api delete-bucket --bucket "$CONFIRM_BUCKET"
-```
-
-Expected: the block ends silently and the exit code is 0 — every version and
-delete marker removed, then the bucket itself removed. Any non-zero exit
-means something stopped partway; re-run `5b`'s listing before trying again,
-since a partially emptied bucket is a different state from the one this
-block assumed.
-
-### 5e. Verify — the bucket is actually gone
-
-The control in 5b already proved this credential can reach the bucket, so a
-denial here would mean something rather than nothing:
+The whole block runs inside `( … )` with `set -eo pipefail`, so any failure —
+the guard, a failed delete, anything — stops the sequence there and exits
+only that subshell. Nothing here can close or kill your interactive terminal.
 
 ```bash
-AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api head-bucket --bucket branchleft-lifecycle-probe-20260924
+(
+  set -eo pipefail
+  [ "$CONFIRM_BUCKET" = "branchleft-lifecycle-probe-20260924" ] || { echo "REFUSING: typed name does not exactly match branchleft-lifecycle-probe-20260924 -- nothing touched" >&2; exit 1; }
+  AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket "$CONFIRM_BUCKET" --output text --query 'Versions[].[Key,VersionId]' |
+  while read -r key vid; do
+    [ "$key" = "None" ] && continue
+    AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api delete-object --bucket "$CONFIRM_BUCKET" --key "$key" --version-id "$vid"
+  done
+  AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket "$CONFIRM_BUCKET" --output text --query 'DeleteMarkers[].[Key,VersionId]' |
+  while read -r key vid; do
+    [ "$key" = "None" ] && continue
+    AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api delete-object --bucket "$CONFIRM_BUCKET" --key "$key" --version-id "$vid"
+  done
+  AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api delete-bucket --bucket "$CONFIRM_BUCKET"
+) && echo "bucket deleted" || echo "ABORTED before or during deletion -- see the message above; your shell is unaffected. Re-run 9b before trying again, since a partially emptied bucket is a different state from the one this block assumed." >&2
 ```
 
-Expected: fails with `Not Found` (HTTP 404) — the bucket no longer exists.
-A `403 Forbidden` instead means the bucket still exists and is merely
-unreadable by this credential; that is not the same finding, and it does not
-mean the delete succeeded — stop and check by hand rather than reading it as
-"gone".
+Expected: prints `bucket deleted`. Any other outcome means something stopped
+partway — re-run 9b's listing before trying again.
+
+### 9e. Verify — the bucket is actually gone
+
+`aws s3api` has been observed on this provider rendering a denial as an
+uninformative error with no code, so a per-bucket `head-bucket` read is not
+trusted here. `list-buckets` is: the call succeeding is its own control (the
+credential still works), and the probe bucket's absence from the result is
+the proof, with no per-bucket error to misclassify.
+
+```bash
+AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1 aws --endpoint-url https://hel1.your-objectstorage.com s3api list-buckets --query 'Buckets[].Name' --output text
+```
+
+Expected: the call succeeds and prints a list of bucket names that does
+**not** include `branchleft-lifecycle-probe-20260924`. If the call itself
+fails, that says something about the credential, not the bucket — fix that
+before drawing any conclusion from the list's contents.
 
 **Rollback:** none. A deleted bucket cannot be recreated with its history.
 This is acceptable here because the bucket was created solely for this probe
@@ -312,20 +565,3 @@ Clear the shell:
 ```bash
 unset LAB_ACCESS_KEY_ID LAB_SECRET_ACCESS_KEY CONFIRM_BUCKET
 ```
-
----
-
-## After it succeeds
-
-Close branchLeft/workspace#1325 through the `board` skill's decision-only-issue
-path (no PR carries a `Closes` trailer here — this is a live console/CLI
-change), citing:
-- section 4's `get-bucket-lifecycle-configuration` output, showing all four
-  rules live on `branchleft-db-backups`;
-- section 5e's `404` on `branchleft-lifecycle-probe-20260924`;
-- the docs PR recording the probe PASS in `14-hetzner-migration-programme.md`
-  §16, once it has merged.
-
-Never quote a secret value in the closing comment. Media backup runs
-(ghost-platform#249) are unblocked once section 4 has passed — nothing else
-in this runbook gates that.
