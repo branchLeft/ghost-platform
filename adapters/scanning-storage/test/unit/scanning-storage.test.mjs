@@ -50,6 +50,7 @@ function buildAdapter({
   wrappedConfig,
   holdRetryMs = RETRY_MS,
   holdMaxRetryMs,
+  holdMaxFailures,
   holdLogger = SILENT_LOGGER,
 } = {}) {
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
@@ -65,8 +66,10 @@ function buildAdapter({
     quarantinePath: resolvedQuarantinePath,
     checks,
     policy: new SafetyPolicy(),
+    computeDigest: digestBytes,
     holdRetryMs,
     holdMaxRetryMs,
+    holdMaxFailures,
     holdLogger,
   });
   return { instance, verdictClient, quarantinePath: resolvedQuarantinePath };
@@ -135,6 +138,17 @@ describe('ScanningStorageAdapter construction', () => {
       GhostErrors,
     });
     expect(() => new Adapter({ wraps: 'FakeAdapter', quarantinePath: '/tmp/q' })).toThrow(/policy/);
+  });
+
+  it('rejects config missing computeDigest', () => {
+    const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
+      loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
+      GhostErrors,
+    });
+    expect(
+      () =>
+        new Adapter({ wraps: 'FakeAdapter', quarantinePath: '/tmp/q', policy: new SafetyPolicy() })
+    ).toThrow(/computeDigest/);
   });
 
   it('static validate runs the same checks without constructing an instance', () => {
@@ -304,6 +318,7 @@ describe('checks the adapter is told not to implement', () => {
       quarantinePath: path.join(tmpDir, 'quarantine'),
       checks: [check],
       policy: { decide: () => 'flag' },
+      computeDigest: digestBytes,
     });
     const file = await writeTempFile(CLEAN_BYTES, 'x.png');
     await expect(adapter.save(file)).rejects.toThrow(/flag/);
@@ -663,9 +678,129 @@ describe('non-blocking checks', () => {
       quarantinePath: path.join(tmpDir, 'quarantine'),
       checks: [advisory],
       policy: new SafetyPolicy(),
+      computeDigest: digestBytes,
     });
     const file = await writeTempFile(CLEAN_BYTES, 'x.png');
     await adapter.save(file);
     expect(ran).toBe(false);
+  });
+});
+
+// Three features share one quarantine directory. A digest one of them
+// refuses must be refused by all of them, and its bytes kept, whatever the
+// order the verdicts land in.
+describe('a refusal by any feature', () => {
+  const refusedAsCsam = () =>
+    new Map([[BAD_DIGEST, { classification: 'csam', matchType: 'exact' }]]);
+  const feature = (name) => ({ storagePath: `/var/lib/ghost/content/${name}` });
+
+  it('stops a held copy in another feature from ever promoting, and keeps the sealed bytes', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const images = buildAdapter({
+      quarantinePath,
+      unavailable: [BAD_DIGEST],
+      holdMaxRetryMs: RETRY_MS,
+      wrappedConfig: feature('images'),
+    });
+    const media = buildAdapter({
+      quarantinePath,
+      refuse: refusedAsCsam(),
+      wrappedConfig: feature('media'),
+    });
+
+    await images.instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+    await expect(
+      media.instance.save(await writeTempFile(BAD_BYTES, 'x.mp4'))
+    ).rejects.toBeInstanceOf(GhostErrors.UnsupportedMediaTypeError);
+
+    images.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(images.instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+
+    expect(images.instance.wrapped.savedRaw).toHaveLength(0);
+    expect(await fs.readFile(path.join(quarantinePath, BAD_DIGEST))).toEqual(BAD_BYTES);
+    expect(await fs.readdir(quarantinePath)).toEqual(
+      expect.arrayContaining([BAD_DIGEST, `${BAD_DIGEST}.refused.json`])
+    );
+  });
+
+  it('refuses a later upload of the same bytes in another feature whose own verdict is clean, worded by the sealed classification', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const images = buildAdapter({
+      quarantinePath,
+      refuse: refusedAsCsam(),
+      wrappedConfig: feature('images'),
+    });
+    const files = buildAdapter({ quarantinePath, wrappedConfig: feature('files') });
+
+    await expect(images.instance.saveRaw(BAD_BYTES, 'a.png')).rejects.toBeInstanceOf(
+      GhostErrors.UnsupportedMediaTypeError
+    );
+    let caught;
+    try {
+      await files.instance.save(await writeTempFile(BAD_BYTES, 'a.png'));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(GhostErrors.UnsupportedMediaTypeError);
+    expect(caught.context).not.toMatch(/csam/);
+    expect(files.instance.wrapped.saved).toHaveLength(0);
+    expect(files.instance.wrapped.savedRaw).toHaveLength(0);
+  });
+
+  it('keeps the bytes when one feature promotes a clean verdict and another then refuses', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const boot = (name) =>
+      buildAdapter({
+        quarantinePath,
+        unavailable: [BAD_DIGEST],
+        holdMaxRetryMs: RETRY_MS,
+        wrappedConfig: feature(name),
+      });
+    const images = boot('images');
+    const media = boot('media');
+    await images.instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+    await media.instance.save(await writeTempFile(BAD_BYTES, 'held.mp4'));
+
+    images.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(images.instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+    media.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'csam', matchType: 'exact' });
+    await vi.waitFor(() => expect(media.instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+
+    expect(media.instance.wrapped.savedRaw).toHaveLength(0);
+    expect(await fs.readFile(path.join(quarantinePath, BAD_DIGEST))).toEqual(BAD_BYTES);
+  });
+});
+
+describe('verified, bounded hold retries through the adapter', () => {
+  it('never promotes a held upload whose quarantined bytes were truncated', async () => {
+    const { instance, verdictClient, quarantinePath } = buildAdapter({
+      unavailable: [BAD_DIGEST],
+      holdMaxRetryMs: RETRY_MS,
+    });
+    await instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+    await fs.truncate(path.join(quarantinePath, BAD_DIGEST), 3);
+
+    verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true), WAIT);
+    expect(instance.wrapped.savedRaw).toHaveLength(0);
+  });
+
+  it('sticks after holdMaxFailures consecutive failed promotions and stops trying', async () => {
+    const { instance, verdictClient } = buildAdapter({
+      unavailable: [BAD_DIGEST],
+      holdMaxRetryMs: RETRY_MS,
+      holdMaxFailures: 3,
+    });
+    let attempts = 0;
+    instance.wrapped.saveRaw = async () => {
+      attempts += 1;
+      throw new Error('bucket unavailable');
+    };
+    await instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+
+    verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true), WAIT);
+    await settle();
+    expect(attempts).toBe(3);
   });
 });

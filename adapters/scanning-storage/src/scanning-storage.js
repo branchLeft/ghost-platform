@@ -3,7 +3,7 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 
-const { quarantineBytes } = require('./quarantine');
+const { readRefusal, sealRefusal } = require('./quarantine');
 const { buildRefusalError } = require('./refusal-error');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const { HoldRegistry, evaluate } = require('./hold');
@@ -52,12 +52,19 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     constructor(config = {}) {
       super();
       ScanningStorageAdapter.validate(config);
-      const { wraps, wrappedConfig, checks, policy } = config;
+      const { wraps, wrappedConfig, checks, policy, computeDigest } = config;
       if (!policy || typeof policy.decide !== 'function') {
         throw new Error(
           'ScanningStorageAdapter requires config.policy implementing decide(verdict)'
         );
       }
+      // The same function the blocking checks name bytes with: quarantine
+      // files are filed under it, and a digest's refusal record is looked up
+      // by it before any verdict is asked for.
+      if (typeof computeDigest !== 'function') {
+        throw new Error('ScanningStorageAdapter requires config.computeDigest(buffer)');
+      }
+      this.computeDigest = computeDigest;
 
       const WrappedClass = loadWrappedAdapterClass(wraps);
       this.wrapped = new WrappedClass(wrappedConfig);
@@ -81,8 +88,10 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // staticFileURLPrefix for S3Storage), and it is where a promotion
         // lands -- so it is what a resumed hold must match.
         owner: `${wraps}:${this.storagePath ?? ''}`,
+        computeDigest,
         retryIntervalMs: config.holdRetryMs,
         maxRetryIntervalMs: config.holdMaxRetryMs,
+        maxConsecutiveFailures: config.holdMaxFailures,
         logger: config.holdLogger,
       });
       // Restart-safety (load-bearing per the design): the quarantine directory is
@@ -140,6 +149,15 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     }
 
     async #scanAndProceed(buffer, { proceed, onHold }) {
+      // A digest any feature has refused stays refused here too, whatever a
+      // verdict would say now: positive verdicts never expire.
+      const digest = this.computeDigest(buffer);
+      const sealed = readRefusal(this.quarantinePath, digest);
+      if (sealed) {
+        await sealRefusal(this.quarantinePath, digest, buffer, sealed, this.computeDigest);
+        throw buildRefusalError(GhostErrors, sealed);
+      }
+
       const { decision, verdict } = await evaluate(this.checks, this.policy, buffer);
 
       if (decision === 'allow') {
@@ -147,7 +165,13 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       }
 
       if (decision === 'refuse') {
-        await quarantineBytes(this.quarantinePath, verdict.evidence, buffer);
+        await sealRefusal(
+          this.quarantinePath,
+          verdict.evidence,
+          buffer,
+          verdict,
+          this.computeDigest
+        );
         throw buildRefusalError(GhostErrors, verdict);
       }
 

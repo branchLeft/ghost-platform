@@ -76,8 +76,9 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__resolvePath` | A directory the fake verdict client polls for `<digest>.json` files, letting an image-test driver in a separate process "deliver" a verdict for a held digest by writing one. Never used outside the image-test harness. |
 | `storage__images__holdRetryMs` | How often a held digest is first re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 | `storage__images__holdMaxRetryMs` | The ceiling that interval backs off to on repeated non-answers -- a bound on the polling *rate* during a prolonged outage, never on how long a hold lives. Defaults to 60 seconds. |
+| `storage__images__holdMaxFailures` | How many consecutive retries may *fail* (a throw from the filesystem or the wrapped adapter, not a verdict that is still pending) before the hold is stuck. Defaults to 8. |
 
-The same eight keys apply under `storage__media__*` and `storage__files__*`.
+The same nine keys apply under `storage__media__*` and `storage__files__*`.
 Wrapping `media`/`files` today only makes sense once a `Check` exists for
 that content type; until then it is configuration with no effect.
 
@@ -157,6 +158,34 @@ be served. When the same bytes are held by two features, each promotes
 into its own tree and only the last to release the digest removes the
 bytes. A sidecar with no `owners` map is left held and unresumed, and
 logged, rather than guessed at.
+
+**A refusal by any feature is final for every feature.** A refusal --
+synchronous, or a held digest's later match -- writes the bytes, then a
+`<digest>.refused.json` record beside them. That record is the sealed
+record's marker: every feature checks it before asking for a verdict on an
+upload, and before each promotion of a held digest, so bytes one feature
+refused are never served by another, whatever its own verdict says
+(positive verdicts never expire). Bytes a refusal record names are never
+deleted by this decorator; retention and release are the reporting
+runbook's, not this code's.
+
+**Quarantine reads are verified.** Every quarantine write (bytes, sidecar,
+refusal record) goes to a temp file, is fsynced, then renamed into place, so
+no reader ever sees a partial file. Every retry hashes the bytes it reads
+back and compares them with the digest they are filed under before any
+verdict is asked for; bytes that do not match are never judged or promoted.
+A later upload of the real bytes replaces a copy that does not match.
+
+**Stuck holds.** A hold whose quarantined bytes do not match their digest,
+or whose retries fail `holdMaxFailures` times in a row (backing off
+exponentially up to `holdMaxRetryMs` between failures), is *stuck*: its
+retry loop stops, it is never promoted, and its bytes and targets stay on
+disk. It is logged once with the fixed prefix
+`ScanningStorageAdapter: hold stuck` and recorded in its sidecar as
+`"stuck": {"<owner>": {"reason": "..."}}`; a restart that finds it logs the
+same line again rather than resuming it. To retry a stuck hold once its
+cause is fixed, remove that owner's `stuck` entry from the sidecar and
+restart Ghost.
 
 ## What Ghost's extension point does, and the traps in it
 

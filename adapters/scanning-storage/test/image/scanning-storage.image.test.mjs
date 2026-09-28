@@ -247,6 +247,19 @@ class GhostContainer {
     return { status: res.status, body };
   }
 
+  async uploadFile(cookie, filePath, filename, type) {
+    const bytes = fs.readFileSync(filePath);
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type }), filename);
+    const res = await fetch(`${this.base}/ghost/api/admin/files/upload/`, {
+      method: 'POST',
+      headers: { origin: this.base, cookie },
+      body: form,
+    });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, body };
+  }
+
   async createPost(cookie) {
     const res = await fetch(`${this.base}/ghost/api/admin/posts/`, {
       method: 'POST',
@@ -916,6 +929,91 @@ describe('the hold branch, against a real Ghost', () => {
         if (ghost) ghost.stop();
         if (double) double.stop();
         removeNetwork(network);
+        reclaimHostOwnership(resolveHostDir);
+        fs.rmSync(resolveHostDir, { recursive: true, force: true });
+      }
+    }
+  );
+});
+
+// The three features' decorators share one quarantine directory. Bytes the
+// files feature refuses are held by the images feature at the same time;
+// the images feature's own verdict then comes back clean. The refusal must
+// win: nothing is promoted, and the refused bytes stay as the sealed record.
+describe('a refusal in one feature, against a real Ghost', () => {
+  it(
+    'stops a held image with the same bytes from ever being served, and keeps the sealed record',
+    { timeout: 150_000 },
+    async () => {
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const digest = sha256Hex(cleanBytes);
+      const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-xfeature-'));
+      // See the first hold-branch test's identical call for why.
+      fs.chmodSync(resolveHostDir, 0o777);
+
+      const ghost = await GhostContainer.start(
+        {
+          storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__wraps: 'LocalImagesStorage',
+          storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__images__unavailable: JSON.stringify([digest]),
+          storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
+          storage__images__holdRetryMs: '1000',
+          storage__media__adapter: 'ScanningStorageAdapter',
+          storage__media__wraps: 'LocalMediaStorage',
+          storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__files__adapter: 'ScanningStorageAdapter',
+          storage__files__wraps: 'LocalFilesStorage',
+          storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__files__refuse: JSON.stringify({
+            [digest]: { classification: 'csam', matchType: 'exact' },
+          }),
+        },
+        { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
+      );
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const held = await ghost.uploadImage(cookie, path.join(FIXTURES, 'clean.png'), 'held.png');
+        assert.equal(held.status, 201, JSON.stringify(held.body));
+        const originalPath = new URL(held.body.images[0].url).pathname;
+        assert.equal(await ghost.getStatus(originalPath), 404, 'held, so not served yet');
+
+        // The same bytes through the files feature, named as a type that
+        // feature accepts: the digest is of the bytes, never the name.
+        const refused = await ghost.uploadFile(
+          cookie,
+          path.join(FIXTURES, 'clean.png'),
+          'record.pdf',
+          'application/pdf'
+        );
+        assert.equal(refused.status, 415, JSON.stringify(refused.body));
+
+        fs.writeFileSync(
+          path.join(resolveHostDir, `${digest}.json`),
+          JSON.stringify({ classification: 'no-known-match' })
+        );
+        await sleep(6000);
+
+        assert.equal(
+          await ghost.getStatus(originalPath),
+          404,
+          'bytes another feature refused must never be promoted, whatever this feature was told'
+        );
+        const quarantined = ghost.ls('/var/lib/ghost/content/quarantine');
+        assert.ok(
+          quarantined.includes(digest) && quarantined.includes(`${digest}.refused.json`),
+          `the sealed bytes and the refusal record must both remain: ${quarantined}`
+        );
+        assert.ok(
+          !quarantined.includes(`${digest}.holds.json`),
+          `the images hold must be resolved as refused, not left pending: ${quarantined}`
+        );
+      } finally {
+        ghost.stop();
         reclaimHostOwnership(resolveHostDir);
         fs.rmSync(resolveHostDir, { recursive: true, force: true });
       }

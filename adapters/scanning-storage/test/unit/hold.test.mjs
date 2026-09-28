@@ -5,7 +5,15 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const require = createRequire(import.meta.url);
-const { HoldRegistry, evaluate, DEFAULT_MAX_RETRY_INTERVAL_MS } = require('../../src/hold.js');
+const {
+  HoldRegistry,
+  evaluate,
+  DEFAULT_MAX_RETRY_INTERVAL_MS,
+  DEFAULT_MAX_CONSECUTIVE_FAILURES,
+  STUCK_LOG_PREFIX,
+} = require('../../src/hold.js');
+const { digestBytes } = require('../../src/pdq.js');
+const { isRefused, sealRefusal } = require('../../src/quarantine.js');
 
 // Real, short timers rather than vi.useFakeTimers(): the retry loop's own
 // cleanup step touches the real filesystem, and a fake clock only fast
@@ -112,6 +120,7 @@ describe('HoldRegistry', () => {
       policy: ALLOW_POLICY,
       quarantinePath,
       owner: OWNER,
+      computeDigest: () => 'digest',
       retryIntervalMs: RETRY_MS,
       logger: SILENT_LOGGER,
       ...overrides,
@@ -404,7 +413,9 @@ describe('HoldRegistry', () => {
     });
 
     check.resolveTo({ classification: 'no-known-match' });
-    await settle();
+    // The retry after a failure is backed off, so it lands later than one
+    // plain interval.
+    await vi.waitFor(() => expect(registry.isPending('digest')).toBe(false), WAIT);
 
     expect(onAllow.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(registry.isPending('digest')).toBe(false);
@@ -523,5 +534,331 @@ describe('HoldRegistry', () => {
 describe('DEFAULT_MAX_RETRY_INTERVAL_MS', () => {
   it('is a positive, finite ceiling', () => {
     expect(DEFAULT_MAX_RETRY_INTERVAL_MS).toBeGreaterThan(0);
+  });
+});
+
+describe('DEFAULT_MAX_CONSECUTIVE_FAILURES', () => {
+  it('is a positive, finite bound', () => {
+    expect(DEFAULT_MAX_CONSECUTIVE_FAILURES).toBeGreaterThan(0);
+    expect(Number.isFinite(DEFAULT_MAX_CONSECUTIVE_FAILURES)).toBe(true);
+  });
+});
+
+// These registries hash for real, so the digest a file is filed under is
+// the digest of its bytes -- the property the verified-read control rests on.
+describe('HoldRegistry with real digests', () => {
+  const BYTES = Buffer.from('the-whole-upload');
+  const DIGEST = digestBytes(BYTES);
+  const IMAGES = 'LocalImagesStorage:/var/lib/ghost/content/images';
+  const MEDIA = 'LocalMediaStorage:/var/lib/ghost/content/media';
+
+  function recordingLogger() {
+    const lines = [];
+    return { lines, error: (...args) => lines.push(args.map(String).join(' ')) };
+  }
+
+  function realRegistry(checks, overrides = {}) {
+    return new HoldRegistry({
+      checks,
+      policy: ALLOW_POLICY,
+      quarantinePath,
+      owner: IMAGES,
+      computeDigest: digestBytes,
+      retryIntervalMs: RETRY_MS,
+      maxRetryIntervalMs: RETRY_MS,
+      logger: SILENT_LOGGER,
+      ...overrides,
+    });
+  }
+
+  function callbacks() {
+    return { targetPath: 'a.png', onAllow: vi.fn(), onRefuse: vi.fn() };
+  }
+
+  const bytesPath = () => path.join(quarantinePath, DIGEST);
+  const sidecar = async () =>
+    JSON.parse(await fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`), 'utf8'));
+
+  it('requires a computeDigest function', () => {
+    expect(() => realRegistry([unavailableCheck()], { computeDigest: undefined })).toThrow(
+      /computeDigest/
+    );
+  });
+
+  describe('a refusal by any owner wins', () => {
+    it('a refusal by one feature stops a later clean verdict in another from promoting, and the bytes stay', async () => {
+      const imagesCheck = flippingCheck();
+      const mediaCheck = flippingCheck();
+      const images = realRegistry([imagesCheck]);
+      const media = realRegistry([mediaCheck], { owner: MEDIA });
+      const imagesHold = callbacks();
+      const mediaHold = callbacks();
+      await images.hold(DIGEST, BYTES, imagesHold);
+      await media.hold(DIGEST, BYTES, mediaHold);
+
+      mediaCheck.resolveTo({ classification: 'csam', matchType: 'exact' });
+      await vi.waitFor(() => expect(media.isPending(DIGEST)).toBe(false), WAIT);
+      expect(isRefused(quarantinePath, DIGEST)).toBe(true);
+
+      imagesCheck.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(images.isPending(DIGEST)).toBe(false), WAIT);
+
+      expect(imagesHold.onAllow).not.toHaveBeenCalled();
+      expect(imagesHold.onRefuse).toHaveBeenCalledTimes(1);
+      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      await expect(
+        fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`))
+      ).rejects.toThrow();
+    });
+
+    it('a clean promotion by one feature never removes the bytes another feature then refuses', async () => {
+      const imagesCheck = flippingCheck();
+      const mediaCheck = flippingCheck();
+      const images = realRegistry([imagesCheck]);
+      const media = realRegistry([mediaCheck], { owner: MEDIA });
+      const imagesHold = callbacks();
+      await images.hold(DIGEST, BYTES, imagesHold);
+      await media.hold(DIGEST, BYTES, callbacks());
+
+      imagesCheck.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(images.isPending(DIGEST)).toBe(false), WAIT);
+      expect(imagesHold.onAllow).toHaveBeenCalledTimes(1);
+
+      mediaCheck.resolveTo({ classification: 'csam', matchType: 'exact' });
+      await vi.waitFor(() => expect(media.isPending(DIGEST)).toBe(false), WAIT);
+
+      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      expect(isRefused(quarantinePath, DIGEST)).toBe(true);
+    });
+
+    it('a refusal sealed while this owner is mid-promotion stops the remaining promotions', async () => {
+      const check = flippingCheck();
+      const registry = realRegistry([check]);
+      const first = {
+        targetPath: 'a.png',
+        onAllow: vi.fn(async () => {
+          await sealRefusal(quarantinePath, DIGEST, BYTES, { classification: 'csam' }, digestBytes);
+        }),
+        onRefuse: vi.fn(),
+      };
+      const second = callbacks();
+      await registry.hold(DIGEST, BYTES, first);
+      await registry.hold(DIGEST, BYTES, { ...second, targetPath: 'b.png' });
+
+      check.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
+
+      expect(second.onAllow).not.toHaveBeenCalled();
+      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+    });
+
+    it('never deletes bytes a refusal record names, even when the last owner out promoted', async () => {
+      const check = flippingCheck();
+      const registry = realRegistry([check]);
+      await registry.hold(DIGEST, BYTES, {
+        targetPath: 'a.png',
+        onAllow: async () => {
+          await sealRefusal(quarantinePath, DIGEST, BYTES, { classification: 'csam' }, digestBytes);
+        },
+        onRefuse: vi.fn(),
+      });
+
+      check.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
+
+      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+    });
+
+    it('its own later refusal seals a record before any callback runs', async () => {
+      const check = flippingCheck();
+      const registry = realRegistry([check]);
+      let sealedWhenCalled;
+      await registry.hold(DIGEST, BYTES, {
+        targetPath: 'a.png',
+        onAllow: vi.fn(),
+        onRefuse: async () => {
+          sealedWhenCalled = isRefused(quarantinePath, DIGEST);
+        },
+      });
+      check.resolveTo({ classification: 'harmful-abusive-material', matchType: 'near' });
+      await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
+      expect(sealedWhenCalled).toBe(true);
+    });
+  });
+
+  describe('verified reads', () => {
+    it('a truncated quarantine file is never judged or promoted: the hold sticks and the bytes stay', async () => {
+      const check = flippingCheck();
+      const run = vi.spyOn(check, 'run');
+      const logger = recordingLogger();
+      const registry = realRegistry([check], { logger });
+      const hold = callbacks();
+      await registry.hold(DIGEST, BYTES, hold);
+      await fs.truncate(bytesPath(), 5);
+      run.mockClear();
+
+      check.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+      await settle();
+
+      expect(run).not.toHaveBeenCalled();
+      expect(hold.onAllow).not.toHaveBeenCalled();
+      expect(registry.isPending(DIGEST)).toBe(false);
+      expect(registry.stuckDigests()).toEqual([
+        { digest: DIGEST, reason: 'the quarantined bytes do not match their digest' },
+      ]);
+      expect(logger.lines.some((l) => l.startsWith(`${STUCK_LOG_PREFIX} for ${DIGEST}`))).toBe(
+        true
+      );
+      expect((await sidecar()).stuck[IMAGES].reason).toMatch(/do not match/);
+      expect((await fs.readFile(bytesPath())).length).toBe(5);
+    });
+
+    it('a hold of the real bytes replaces a quarantined copy that does not match its digest', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(bytesPath(), BYTES.subarray(0, 3));
+      const check = flippingCheck();
+      const registry = realRegistry([check]);
+      const hold = callbacks();
+      await registry.hold(DIGEST, BYTES, hold);
+
+      check.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(registry.isPending(DIGEST)).toBe(false), WAIT);
+      expect(hold.onAllow).toHaveBeenCalledWith(BYTES);
+    });
+
+    it('a missing quarantine file counts as a failed retry, not a verdict', async () => {
+      const check = flippingCheck();
+      const registry = realRegistry([check], { maxConsecutiveFailures: 2 });
+      const hold = callbacks();
+      await registry.hold(DIGEST, BYTES, hold);
+      await fs.rm(bytesPath());
+      check.resolveTo({ classification: 'no-known-match' });
+
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+      expect(hold.onAllow).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('bounded retries', () => {
+    it('a retry that keeps failing backs off, then sticks after the bound and is never tried again', async () => {
+      const check = flippingCheck();
+      const logger = recordingLogger();
+      const registry = realRegistry([check], {
+        retryIntervalMs: 10,
+        maxRetryIntervalMs: 1000,
+        maxConsecutiveFailures: 4,
+        logger,
+      });
+      const at = [];
+      const onAllow = vi.fn(async () => {
+        at.push(Date.now());
+        throw new Error('backend down');
+      });
+      await registry.hold(DIGEST, BYTES, { targetPath: 'a.png', onAllow, onRefuse: vi.fn() });
+      check.resolveTo({ classification: 'no-known-match' });
+
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+      await settle(300);
+
+      expect(onAllow).toHaveBeenCalledTimes(4);
+      expect(registry.isPending(DIGEST)).toBe(false);
+      // Each gap is at least the doubled interval: 20, 40, 80 ms.
+      const gaps = at.slice(1).map((t, i) => t - at[i]);
+      gaps.forEach((gap, i) => expect(gap).toBeGreaterThanOrEqual(10 * 2 ** (i + 1) - 2));
+      expect(
+        logger.lines.filter((l) => l.startsWith(`${STUCK_LOG_PREFIX} for ${DIGEST}`))
+      ).toHaveLength(1);
+      expect((await sidecar()).stuck[IMAGES].reason).toMatch(/4 consecutive retries failed/);
+      // Kept: the bytes and the target are still on disk for an operator.
+      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+      expect((await sidecar()).owners[IMAGES]).toEqual(['a.png']);
+    });
+
+    it('a pass that is merely still waiting for a verdict resets the failure count', async () => {
+      let calls = 0;
+      const check = {
+        kind: 'media',
+        blocking: true,
+        async run() {
+          calls += 1;
+          // Throw on odd calls, wait on even ones: never two failures in a row.
+          if (calls % 2 === 1) throw new Error('flaky');
+          return { classification: 'unavailable', evidence: DIGEST, source: 'test' };
+        },
+      };
+      const registry = realRegistry([check], { maxConsecutiveFailures: 2 });
+      await registry.hold(DIGEST, BYTES, callbacks());
+
+      await vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(6), WAIT);
+      expect(registry.isStuck(DIGEST)).toBe(false);
+      expect(registry.isPending(DIGEST)).toBe(true);
+      registry.stopAll();
+    });
+
+    it('a restart does not resume a stuck hold, and says so again', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(bytesPath(), BYTES);
+      await fs.writeFile(
+        path.join(quarantinePath, `${DIGEST}.holds.json`),
+        JSON.stringify({ owners: { [IMAGES]: ['a.png'] }, stuck: { [IMAGES]: { reason: 'r' } } })
+      );
+      const logger = recordingLogger();
+      const registry = realRegistry([ALLOW_CHECK], { logger });
+      const onAllow = vi.fn();
+      registry.resumeFromQuarantine(() => ({ onAllow, onRefuse: vi.fn() }));
+
+      expect(registry.isPending(DIGEST)).toBe(false);
+      expect(registry.isStuck(DIGEST)).toBe(true);
+      expect(logger.lines.some((l) => l.startsWith(`${STUCK_LOG_PREFIX} for ${DIGEST}`))).toBe(
+        true
+      );
+      await settle();
+      expect(onAllow).not.toHaveBeenCalled();
+    });
+
+    it('a stuck record with no reason still reads as stuck', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(bytesPath(), BYTES);
+      await fs.writeFile(
+        path.join(quarantinePath, `${DIGEST}.holds.json`),
+        JSON.stringify({ owners: { [IMAGES]: ['a.png'] }, stuck: { [IMAGES]: {} } })
+      );
+      const registry = realRegistry([ALLOW_CHECK]);
+      registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+      expect(registry.stuckDigests()).toEqual([{ digest: DIGEST, reason: 'unknown' }]);
+    });
+
+    it('a new upload of a stuck digest is recorded but stays held and unpromoted', async () => {
+      const check = flippingCheck();
+      const registry = realRegistry([check]);
+      await registry.hold(DIGEST, BYTES, callbacks());
+      await fs.truncate(bytesPath(), 1);
+      check.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+
+      const again = { targetPath: 'b.png', onAllow: vi.fn(), onRefuse: vi.fn() };
+      await registry.hold(DIGEST, BYTES, again);
+      await settle();
+
+      expect(again.onAllow).not.toHaveBeenCalled();
+      expect(registry.isPending(DIGEST)).toBe(false);
+      expect((await sidecar()).owners[IMAGES]).toEqual(['a.png', 'b.png']);
+      // The fresh upload did repair the bytes, ready for an operator to retry.
+      expect(await fs.readFile(bytesPath())).toEqual(BYTES);
+    });
+
+    it('logs, rather than throws, when the stuck state cannot be persisted', async () => {
+      const check = flippingCheck();
+      const logger = recordingLogger();
+      const registry = realRegistry([check], { logger });
+      await registry.hold(DIGEST, BYTES, callbacks());
+      await fs.truncate(bytesPath(), 1);
+      await fs.writeFile(path.join(quarantinePath, `${DIGEST}.holds.json`), '[]');
+      check.resolveTo({ classification: 'no-known-match' });
+
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), WAIT);
+      expect(logger.lines.some((l) => l.includes('could not persist the stuck state'))).toBe(true);
+    });
   });
 });
