@@ -191,7 +191,7 @@ class RemoteMysqldumpTransport:
             "--host", self._host,
             "--port", str(self._port),
             "--user", self._user,
-            "--ssl-mode=VERIFY_CA",
+            "--ssl-mode=REQUIRED",
             "--ssl-ca", self._ssl_ca,
             "--single-transaction",
             "--source-data=2",
