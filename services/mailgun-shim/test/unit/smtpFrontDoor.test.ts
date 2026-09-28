@@ -523,8 +523,7 @@ async function startHarness(
     submitterMessagesPerMinute: overrides.submitterMessagesPerMinute ?? 120,
   });
 
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  await frontDoor.listen(port, overrides.host ?? '127.0.0.1');
+  const port = await frontDoor.listen(0, overrides.host ?? '127.0.0.1');
 
   return {
     store,
@@ -594,6 +593,15 @@ describe('SMTP front door — acceptance into the durable queue', () => {
 
   afterEach(async () => {
     await harness?.close();
+  });
+
+  it('listens on an OS-chosen port when given 0, and reports and logs that port rather than 0', async () => {
+    harness = await startHarness();
+    expect(harness.port).toBeGreaterThan(0);
+    const listening = harness.logs.find(
+      (line) => line.event === 'worker_lifecycle' && line.fields.event === 'smtp_listening'
+    );
+    expect(listening?.fields.port).toBe(harness.port);
   });
 
   it('accepts an authenticated submission, enqueues it durably and kicks the worker', async () => {

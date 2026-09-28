@@ -1,4 +1,4 @@
-import { BlockList, isIPv4, isIPv6 } from 'node:net';
+import { BlockList, isIPv4, isIPv6, type AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import {
   SMTPServer,
@@ -420,7 +420,8 @@ export interface SmtpFrontDoorOptions {
 }
 
 export interface SmtpFrontDoor {
-  listen(port: number, host: string): Promise<void>;
+  /** Resolves with the bound port, so a caller passing 0 learns which one the OS chose. */
+  listen(port: number, host: string): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -1073,13 +1074,14 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
   });
 
   return {
-    listen(port: number, host: string): Promise<void> {
+    listen(port: number, host: string): Promise<number> {
       return new Promise((resolve, reject) => {
         server.once('error', reject);
         server.listen(port, host, () => {
           server.removeListener('error', reject);
-          log.info('worker_lifecycle', { event: 'smtp_listening', port, host });
-          resolve();
+          const bound = (server.server.address() as AddressInfo).port;
+          log.info('worker_lifecycle', { event: 'smtp_listening', port: bound, host });
+          resolve(bound);
         });
       });
     },
