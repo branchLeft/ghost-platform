@@ -37,7 +37,7 @@ reused name. Versioning is the second, independent layer required by doc 14
 §8's own backup design: a bug in the namespacing, a manually re-run dump
 under a hand-typed key, or any other write this pipeline did not anticipate
 still lands as a new version rather than destroying the object it replaces.
-The lifecycle rule bounds how long a *superseded* version survives --
+The lifecycle rule bounds how long a *noncurrent* version survives --
 `NoncurrentDays=35` comfortably outlives the 7-day on-host binlog retention
 this stack otherwise relies on for recovery, without keeping every
 overwritten version forever.

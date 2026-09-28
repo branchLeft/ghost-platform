@@ -49,7 +49,7 @@ the renderer and the verifier's preflight both ask `decide()` about them.
 ## Action lists are exactly as wide as the parser's vocabulary
 
 Every bucket-resource action that reads or rewrites the fence itself, plus
-the version listing, which is a read but enumerates superseded objects.
+the version listing, which is a read but enumerates noncurrent objects.
 
 Enumerated, and that is a REGRESSION accepted rather than a design choice.
 The `NotAction` form these lists replace made an action nobody thought of
