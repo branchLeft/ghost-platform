@@ -1,198 +1,138 @@
 #!/usr/bin/env python3
-"""Unit tests for backup_worker_policy.py.
-
-The property under test is the issue's own load-bearing mark: "the
-worker's put credential is an explicit allow, never a deny-except". Every
-test below either proves the rendered policy passes its own assertion, or
-proves the assertion actually refuses each way a policy can fail to be
-that -- an absent policy, a NotAction/NotPrincipal statement, a wildcard
-action, an over-wide grant, an unscoped resource, or simply naming no one.
-"""
+"""Unit tests for backup_worker_policy.py: it must accept the fence and refuse an allow-only grant."""
 
 from __future__ import annotations
 
+import copy
 import unittest
 
 import backup_worker_policy as bwp
+import bucketpolicy
 
-BUCKET = "branchleft-db-backups"
-PREFIX = "dumps/"
-PRINCIPAL = "arn:aws:iam:::user/1234:AKIAEXAMPLE"
+PROJECT = "1231234"
+BUCKET = "branchleft-backups"
+WORKER = "P" * 20
+DRILL = "R" * 20
+ADMIN = "O" * 20
+WORKER_ARN = bucketpolicy.key_principal(PROJECT, WORKER)
 
 
-class RenderedPolicyPassesItsOwnAssertionTests(unittest.TestCase):
-    def test_the_rendered_policy_is_an_explicit_allow(self) -> None:
-        policy = bwp.render_backup_worker_put_policy(bucket=BUCKET, prefix=PREFIX, worker_principal=PRINCIPAL)
-        bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)  # must not raise
+def fence() -> dict:
+    return bwp.render_backup_worker_put_policy(
+        bucket=BUCKET, project_id=PROJECT, worker_access_key=WORKER,
+        admin_access_key=ADMIN, drill_access_keys=(DRILL,),
+    )
 
-    def test_a_prefix_without_a_trailing_slash_is_refused_at_render_time(self) -> None:
+
+def allow_only() -> dict:
+    return {
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Sid": "backup-worker-put-only",
+            "Effect": "Allow",
+            "Principal": {"AWS": [WORKER_ARN]},
+            "Action": ["s3:PutObject"],
+            "Resource": [f"arn:aws:s3:::{BUCKET}/dumps/*"],
+        }],
+    }
+
+
+def check(policy: dict) -> None:
+    bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=WORKER_ARN)
+
+
+class TestTheFenceIsAccepted(unittest.TestCase):
+    def test_the_rendered_fence_passes(self):
+        check(fence())
+
+    def test_it_passes_without_a_drill_key(self):
+        check(bwp.render_backup_worker_put_policy(
+            bucket=BUCKET, project_id=PROJECT, worker_access_key=WORKER, admin_access_key=ADMIN))
+
+    def test_it_is_the_fence_renderer_output(self):
+        policy = fence()
+        self.assertIn("AllowPutOnlyKeysPut", [s["Sid"] for s in policy["Statement"]])
+        self.assertIn("DenyPutOnlyKeysReadsAndRemovals", [s["Sid"] for s in policy["Statement"]])
+
+    def test_the_allowed_actions_are_the_role_table(self):
+        self.assertEqual(bwp.ALLOWED_ACTIONS, ("s3:PutObject",))
+
+
+class TestAnAllowOnlyGrantIsRefused(unittest.TestCase):
+    def test_an_allow_only_document_fences_nothing_and_is_refused(self):
+        with self.assertRaises(bwp.BackupWorkerPolicyError) as caught:
+            check(allow_only())
+        self.assertIn("project default", str(caught.exception))
+
+    def test_the_fence_without_its_worker_deny_is_refused(self):
+        policy = fence()
+        policy["Statement"] = [
+            s for s in policy["Statement"] if s["Sid"] != "DenyPutOnlyKeysReadsAndRemovals"
+        ]
         with self.assertRaises(bwp.BackupWorkerPolicyError):
-            bwp.render_backup_worker_put_policy(bucket=BUCKET, prefix="dumps", worker_principal=PRINCIPAL)
+            check(policy)
+
+    def test_the_fence_without_its_listing_deny_and_catch_all_is_refused(self):
+        policy = fence()
+        policy["Statement"] = [
+            s for s in policy["Statement"]
+            if s["Sid"] not in ("DenyPutOnlyKeysListing", "DenyBucketAccessExceptNamedKeys")
+        ]
+        with self.assertRaises(bwp.BackupWorkerPolicyError) as caught:
+            check(policy)
+        self.assertIn("s3:List", str(caught.exception))
 
 
-class RefusesAnAbsentOrUnscopedPolicyTests(unittest.TestCase):
-    def test_no_statement_at_all_is_refused(self) -> None:
-        with self.assertRaises(bwp.BackupWorkerPolicyError) as ctx:
-            bwp.assert_explicit_allow_put_only({}, bucket=BUCKET, worker_principal=PRINCIPAL)
-        self.assertIn("no Statement", str(ctx.exception))
+class TestTheGrantMustBeExact(unittest.TestCase):
+    def test_no_statement_is_refused(self):
+        for policy in ({}, {"Statement": []}):
+            with self.assertRaises(bwp.BackupWorkerPolicyError):
+                check(policy)
 
-    def test_a_statement_naming_a_different_principal_is_not_enough(self) -> None:
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Sid": "someone-else",
-                    "Effect": "Allow",
-                    "Principal": {"AWS": ["arn:aws:iam:::user/9999:AKIAOTHER"]},
-                    "Action": ["s3:PutObject"],
-                    "Resource": [f"arn:aws:s3:::{BUCKET}/dumps/*"],
-                }
-            ],
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError) as ctx:
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
-        self.assertIn("no statement names", str(ctx.exception))
+    def test_no_allow_naming_the_worker_is_refused(self):
+        policy = fence()
+        policy["Statement"] = [s for s in policy["Statement"] if s["Sid"] != "AllowPutOnlyKeysPut"]
+        with self.assertRaises(bwp.BackupWorkerPolicyError) as caught:
+            check(policy)
+        self.assertIn("no Allow", str(caught.exception))
 
+    def test_a_wildcard_or_a_wider_grant_is_refused(self):
+        for actions in (["s3:*"], "s3:*", ["s3:PutObject", "s3:GetObject"], ["s3:GetObject"]):
+            policy = fence()
+            for s in policy["Statement"]:
+                if s["Sid"] == "AllowPutOnlyKeysPut":
+                    s["Action"] = actions
+            with self.subTest(actions=actions), self.assertRaises(bwp.BackupWorkerPolicyError):
+                check(policy)
 
-class RefusesNotActionAndNotPrincipalTests(unittest.TestCase):
-    """The NotAction defect Hetzner's own bucket-policy engine has already
-    shown once (backup_worker_policy.py's own module docstring; see the
-    memory note this run's own context carries: "Hetzner stores a
-    bucket-policy NotAction and enforces NOTHING"). This module refuses the
-    construct outright rather than trying to reason about what it would
-    do."""
+    def test_a_resource_outside_the_bucket_is_refused(self):
+        for resource in ("arn:aws:s3:::other-bucket/*", f"arn:aws:s3:::{BUCKET}", None):
+            policy = fence()
+            for s in policy["Statement"]:
+                if s["Sid"] == "AllowPutOnlyKeysPut":
+                    s["Resource"] = resource
+            with self.subTest(resource=resource), self.assertRaises(bwp.BackupWorkerPolicyError):
+                check(policy)
 
-    def test_a_not_action_statement_is_refused_even_naming_the_right_principal(self) -> None:
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "not-action",
-                    "Effect": "Allow",
-                    "Principal": {"AWS": [PRINCIPAL]},
-                    "NotAction": ["s3:DeleteBucket"],
-                    "Resource": [f"arn:aws:s3:::{BUCKET}/dumps/*"],
-                }
-            ]
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError) as ctx:
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
-        self.assertIn("NotAction", str(ctx.exception))
-
-    def test_a_not_principal_statement_is_refused(self) -> None:
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "not-principal",
-                    "Effect": "Allow",
-                    "NotPrincipal": {"AWS": ["arn:aws:iam:::user/9999:AKIAOTHER"]},
-                    "Action": ["s3:PutObject"],
-                    "Resource": [f"arn:aws:s3:::{BUCKET}/dumps/*"],
-                }
-            ]
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError):
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
+    def test_notaction_is_refused(self):
+        policy = copy.deepcopy(fence())
+        policy["Statement"].append({
+            "Sid": "Inert", "Effect": "Deny", "Principal": {"AWS": [WORKER_ARN]},
+            "NotAction": ["s3:PutObject"], "Resource": f"arn:aws:s3:::{BUCKET}/*",
+        })
+        with self.assertRaises(bwp.BackupWorkerPolicyError) as caught:
+            check(policy)
+        self.assertIn("NotAction", str(caught.exception))
 
 
-class RefusesWildcardAndOverWideActionsTests(unittest.TestCase):
-    def test_s3_star_is_refused_even_though_it_covers_put_object(self) -> None:
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "too-wide",
-                    "Effect": "Allow",
-                    "Principal": {"AWS": [PRINCIPAL]},
-                    "Action": "s3:*",
-                    "Resource": [f"arn:aws:s3:::{BUCKET}/dumps/*"],
-                }
-            ]
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError) as ctx:
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
-        self.assertIn("wildcard", str(ctx.exception))
-
-    def test_an_action_beyond_put_object_is_refused(self) -> None:
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "too-much",
-                    "Effect": "Allow",
-                    "Principal": {"AWS": [PRINCIPAL]},
-                    "Action": ["s3:PutObject", "s3:DeleteObject"],
-                    "Resource": [f"arn:aws:s3:::{BUCKET}/dumps/*"],
-                }
-            ]
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError) as ctx:
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
-        self.assertIn("DeleteObject", str(ctx.exception))
-
-    def test_a_statement_missing_put_object_entirely_is_refused(self) -> None:
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "wrong-action",
-                    "Effect": "Allow",
-                    "Principal": {"AWS": [PRINCIPAL]},
-                    "Action": ["s3:GetObject"],
-                    "Resource": [f"arn:aws:s3:::{BUCKET}/dumps/*"],
-                }
-            ]
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError):
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
-
-
-class RefusesEffectDenyAndUnscopedResourceTests(unittest.TestCase):
-    def test_a_deny_naming_this_principal_is_refused_as_not_an_allow(self) -> None:
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "deny",
-                    "Effect": "Deny",
-                    "Principal": {"AWS": [PRINCIPAL]},
-                    "Action": ["s3:PutObject"],
-                    "Resource": [f"arn:aws:s3:::{BUCKET}/dumps/*"],
-                }
-            ]
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError) as ctx:
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
-        self.assertIn("Deny", str(ctx.exception))
-
-    def test_a_resource_naming_a_different_bucket_is_refused(self) -> None:
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "wrong-bucket",
-                    "Effect": "Allow",
-                    "Principal": {"AWS": [PRINCIPAL]},
-                    "Action": ["s3:PutObject"],
-                    "Resource": ["arn:aws:s3:::some-other-bucket/dumps/*"],
-                }
-            ]
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError) as ctx:
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
-        self.assertIn("not scoped under", str(ctx.exception))
-
-    def test_a_bucket_level_resource_with_no_object_prefix_is_refused(self) -> None:
-        """`arn:aws:s3:::bucket` (no trailing `/...`) does not start with
-        `arn:aws:s3:::bucket/` -- this credential only ever needs an
-        object-level grant, never the bucket resource itself."""
-        policy = {
-            "Statement": [
-                {
-                    "Sid": "bucket-level",
-                    "Effect": "Allow",
-                    "Principal": {"AWS": [PRINCIPAL]},
-                    "Action": ["s3:PutObject"],
-                    "Resource": [f"arn:aws:s3:::{BUCKET}"],
-                }
-            ]
-        }
-        with self.assertRaises(bwp.BackupWorkerPolicyError):
-            bwp.assert_explicit_allow_put_only(policy, bucket=BUCKET, worker_principal=PRINCIPAL)
+class TestRenderRefusals(unittest.TestCase):
+    def test_bad_input_is_a_worker_policy_error(self):
+        for kwargs in ({"worker_access_key": "short"}, {"worker_access_key": ADMIN},
+                       {"bucket": "Bad.Bucket"}):
+            args = {"bucket": BUCKET, "project_id": PROJECT, "worker_access_key": WORKER,
+                    "admin_access_key": ADMIN, **kwargs}
+            with self.subTest(kwargs=kwargs), self.assertRaises(bwp.BackupWorkerPolicyError):
+                bwp.render_backup_worker_put_policy(**args)
 
 
 if __name__ == "__main__":
