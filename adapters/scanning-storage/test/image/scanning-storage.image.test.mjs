@@ -1,21 +1,7 @@
-// Drives the built Ghost image through the real adapter manager and the
-// real storage adapters it wraps. Usage:
+// Drives the built Ghost image through the real adapter manager. Usage:
 //   IMAGE=ghost-platform:ci npm --prefix adapters/scanning-storage run test:image
-//
-// Every refusal is asserted through Ghost's own answer (the 415 and its
-// body) and against the filesystem/bucket directly (nothing refused ever
-// lands where a reader could see it, and the quarantine copy is keyed by
-// digest).
-//
-// Upload-time resize (imageOptimization.resize) is turned off for these
-// containers: Ghost otherwise calls store.save() twice per upload -- once
-// for a re-encoded "processed" copy, once for the untouched "_o" original
-// -- and the two calls hash different bytes. That is a real property of
-// the upload path, not of this decorator, and it is orthogonal to what
-// this story proves: that a single save()/saveRaw() call refuses a
-// matching digest and delegates a clean one. Turning resize off keeps each
-// upload to one call, so a test can name the one digest it expects to be
-// checked without also asserting something about Ghost's own re-encoding.
+// Why upload-time resize is off, and the bind-mount ownership handling:
+// the README's "Tests" section.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -61,30 +47,9 @@ function removeNetwork(name) {
   dockerOk('network', 'rm', name);
 }
 
-// The base Ghost image's own upstream entrypoint runs `find $GHOST_CONTENT
-// ! -user node -exec chown node {} +` as root on every boot (see
-// docker-entrypoint.sh, shipped by the base image) -- it reaches every
-// bind-mounted directory under content, including the resolvePath mount the
-// hold-branch tests use to deliver a verdict, and takes it from the test
-// runner's own uid to the container's "node" uid. `fs.mkdtempSync`'s default
-// mode (0700, owner-only) then denies the test runner read/write/exec on
-// that directory from the moment the container boots -- not just at
-// teardown's `fs.rmSync`, but for every `fs.writeFileSync` the test itself
-// makes mid-run to deliver a verdict, since both need the same access this
-// chown just took away. A real permission boundary, not a flake, and one
-// this test must clear itself rather than relax the image's own chown --
-// see `resolveHostDir`'s own `fs.chmodSync(..., 0o777)` call, made right
-// after `mkdtempSync` and before the container that will chown it ever
-// starts, which is what actually keeps both the mid-test write and the
-// final teardown working regardless of who ends up owning the directory.
-//
-// `reclaimHostOwnership` is kept as a second, independent line of defence
-// for teardown specifically -- a throwaway container run as root (the
-// image's own default user, since neither Dockerfile sets one) chowns the
-// mount back to the test runner's uid/gid before `fs.rmSync` runs. Every
-// caller wraps it in try/catch: a cleanup step must never replace a real
-// assertion failure already in flight from the try block with its own
-// error, so a failure here is logged and swallowed rather than thrown.
+// Teardown's second line of defence after the chmod 0777 at setup: chowns
+// the bind mount back to this runner (README, "Tests"). Never throws, so it
+// cannot mask an assertion failure already in flight.
 function reclaimHostOwnership(hostDir) {
   try {
     docker(
@@ -239,6 +204,19 @@ class GhostContainer {
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: 'image/png' }), filename);
     const res = await fetch(`${this.base}/ghost/api/admin/images/upload/`, {
+      method: 'POST',
+      headers: { origin: this.base, cookie },
+      body: form,
+    });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, body };
+  }
+
+  async uploadFile(cookie, filePath, filename, type) {
+    const bytes = fs.readFileSync(filePath);
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type }), filename);
+    const res = await fetch(`${this.base}/ghost/api/admin/files/upload/`, {
       method: 'POST',
       headers: { origin: this.base, cookie },
       body: form,
@@ -916,6 +894,91 @@ describe('the hold branch, against a real Ghost', () => {
         if (ghost) ghost.stop();
         if (double) double.stop();
         removeNetwork(network);
+        reclaimHostOwnership(resolveHostDir);
+        fs.rmSync(resolveHostDir, { recursive: true, force: true });
+      }
+    }
+  );
+});
+
+// The three features' decorators share one quarantine directory. Bytes the
+// files feature refuses are held by the images feature at the same time;
+// the images feature's own verdict then comes back clean. The refusal must
+// win: nothing is promoted, and the refused bytes stay as the sealed record.
+describe('a refusal in one feature, against a real Ghost', () => {
+  it(
+    'stops a held image with the same bytes from ever being served, and keeps the sealed record',
+    { timeout: 150_000 },
+    async () => {
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const digest = sha256Hex(cleanBytes);
+      const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-xfeature-'));
+      // See the first hold-branch test's identical call for why.
+      fs.chmodSync(resolveHostDir, 0o777);
+
+      const ghost = await GhostContainer.start(
+        {
+          storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__wraps: 'LocalImagesStorage',
+          storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__images__unavailable: JSON.stringify([digest]),
+          storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
+          storage__images__holdRetryMs: '1000',
+          storage__media__adapter: 'ScanningStorageAdapter',
+          storage__media__wraps: 'LocalMediaStorage',
+          storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__files__adapter: 'ScanningStorageAdapter',
+          storage__files__wraps: 'LocalFilesStorage',
+          storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__files__refuse: JSON.stringify({
+            [digest]: { classification: 'csam', matchType: 'exact' },
+          }),
+        },
+        { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
+      );
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const held = await ghost.uploadImage(cookie, path.join(FIXTURES, 'clean.png'), 'held.png');
+        assert.equal(held.status, 201, JSON.stringify(held.body));
+        const originalPath = new URL(held.body.images[0].url).pathname;
+        assert.equal(await ghost.getStatus(originalPath), 404, 'held, so not served yet');
+
+        // The same bytes through the files feature, named as a type that
+        // feature accepts: the digest is of the bytes, never the name.
+        const refused = await ghost.uploadFile(
+          cookie,
+          path.join(FIXTURES, 'clean.png'),
+          'record.pdf',
+          'application/pdf'
+        );
+        assert.equal(refused.status, 415, JSON.stringify(refused.body));
+
+        fs.writeFileSync(
+          path.join(resolveHostDir, `${digest}.json`),
+          JSON.stringify({ classification: 'no-known-match' })
+        );
+        await sleep(6000);
+
+        assert.equal(
+          await ghost.getStatus(originalPath),
+          404,
+          'bytes another feature refused must never be promoted, whatever this feature was told'
+        );
+        const quarantined = ghost.ls('/var/lib/ghost/content/quarantine');
+        assert.ok(
+          quarantined.includes(digest) && quarantined.includes(`${digest}.refused.json`),
+          `the sealed bytes and the refusal record must both remain: ${quarantined}`
+        );
+        assert.ok(
+          !quarantined.includes(`${digest}.holds.json`),
+          `the images hold must be resolved as refused, not left pending: ${quarantined}`
+        );
+      } finally {
+        ghost.stop();
         reclaimHostOwnership(resolveHostDir);
         fs.rmSync(resolveHostDir, { recursive: true, force: true });
       }

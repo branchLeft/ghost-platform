@@ -16,6 +16,7 @@ const { FakeVerdictClient } = require('../../src/verdict-client.js');
 const { SafetyPolicy } = require('../../src/policy.js');
 const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
 const { digestBytes } = require('../../src/pdq.js');
+const { sealRefusal } = require('../../src/quarantine.js');
 const GhostErrors = require('@tryghost/errors');
 
 const CLEAN_BYTES = Buffer.from('clean-image-bytes');
@@ -42,6 +43,8 @@ const settle = (ms = RETRY_MS * 4) => new Promise((resolve) => setTimeout(resolv
 
 const SILENT_LOGGER = { error: () => {} };
 const WAIT = { timeout: 5000, interval: 10 };
+// Inside the test's own timeout, so a wait that never succeeds fails its assertion.
+const SHORT_WAIT = { timeout: 2000, interval: 10 };
 
 function buildAdapter({
   refuse = new Map(),
@@ -50,6 +53,7 @@ function buildAdapter({
   wrappedConfig,
   holdRetryMs = RETRY_MS,
   holdMaxRetryMs,
+  holdMaxFailures,
   holdLogger = SILENT_LOGGER,
 } = {}) {
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
@@ -65,8 +69,10 @@ function buildAdapter({
     quarantinePath: resolvedQuarantinePath,
     checks,
     policy: new SafetyPolicy(),
+    computeDigest: digestBytes,
     holdRetryMs,
     holdMaxRetryMs,
+    holdMaxFailures,
     holdLogger,
   });
   return { instance, verdictClient, quarantinePath: resolvedQuarantinePath };
@@ -135,6 +141,17 @@ describe('ScanningStorageAdapter construction', () => {
       GhostErrors,
     });
     expect(() => new Adapter({ wraps: 'FakeAdapter', quarantinePath: '/tmp/q' })).toThrow(/policy/);
+  });
+
+  it('rejects config missing computeDigest', () => {
+    const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
+      loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
+      GhostErrors,
+    });
+    expect(
+      () =>
+        new Adapter({ wraps: 'FakeAdapter', quarantinePath: '/tmp/q', policy: new SafetyPolicy() })
+    ).toThrow(/computeDigest/);
   });
 
   it('static validate runs the same checks without constructing an instance', () => {
@@ -304,24 +321,16 @@ describe('checks the adapter is told not to implement', () => {
       quarantinePath: path.join(tmpDir, 'quarantine'),
       checks: [check],
       policy: { decide: () => 'flag' },
+      computeDigest: digestBytes,
     });
     const file = await writeTempFile(CLEAN_BYTES, 'x.png');
     await expect(adapter.save(file)).rejects.toThrow(/flag/);
   });
 });
 
-// The hold branch: accept on no verdict, serve nothing until a clean one,
-// on both storage backends. The verdict client is made to never answer
-// (FakeVerdictClient's `unavailable`) rather than hang, because checks.js's
-// own timeout already proves that race -- duplicating it here would only
-// make every test in this suite slower.
-//
-// Review cycle 1: both backends now defer the real write until promotion --
-// the design's own words for the local backend, "held outside the served
-// tree," are no longer local-only advice this decorator diverged from. The
-// two backends differ only in URL shape (a bucket config builds a CDN URL;
-// anything else builds a site-relative one), so the behavioural cases below
-// are shared, parametrised over which `wrappedConfig` builds which adapter.
+// The hold branch, on both backends. The verdict client answers
+// `unavailable` rather than hanging: checks.js's own tests prove the timeout.
+// The backends differ only in URL shape, so the cases are parametrised.
 describe('the hold branch', () => {
   function localAdapter(overrides) {
     return buildAdapter({ wrappedConfig: { storagePath: 'wrapped' }, ...overrides });
@@ -377,7 +386,7 @@ describe('the hold branch', () => {
       await adapter.save(file);
 
       verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
+      await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
 
       expect(adapter.wrapped.savedRaw).toHaveLength(1);
       expect(adapter.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
@@ -409,7 +418,7 @@ describe('the hold branch', () => {
         classification: 'harmful-abusive-material',
         matchType: 'exact',
       });
-      await settle();
+      await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
 
       expect(adapter.wrapped.saved).toHaveLength(0);
       expect(adapter.wrapped.savedRaw).toHaveLength(0);
@@ -433,7 +442,7 @@ describe('the hold branch', () => {
       expect(adapter.wrapped.savedRaw).toHaveLength(0);
 
       verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
+      await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
 
       // One promotion per place the bytes were ever promised, from one shared retry loop.
       expect(adapter.wrapped.savedRaw).toHaveLength(2);
@@ -483,7 +492,7 @@ describe('the hold branch', () => {
       // And it is not just present but genuinely live: a clean verdict
       // delivered to the SECOND instance's own verdict client promotes it.
       secondVerdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
+      await vi.waitFor(() => expect(secondAdapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
 
       expect(secondAdapter.wrapped.savedRaw).toHaveLength(1);
       expect(secondAdapter.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
@@ -663,9 +672,189 @@ describe('non-blocking checks', () => {
       quarantinePath: path.join(tmpDir, 'quarantine'),
       checks: [advisory],
       policy: new SafetyPolicy(),
+      computeDigest: digestBytes,
     });
     const file = await writeTempFile(CLEAN_BYTES, 'x.png');
     await adapter.save(file);
     expect(ran).toBe(false);
+  });
+});
+
+// Three features share one quarantine directory. A digest one of them
+// refuses must be refused by all of them, and its bytes kept, whatever the
+// order the verdicts land in.
+describe('a refusal by any feature', () => {
+  const refusedAsCsam = () =>
+    new Map([[BAD_DIGEST, { classification: 'csam', matchType: 'exact' }]]);
+  const feature = (name) => ({ storagePath: `/var/lib/ghost/content/${name}` });
+
+  it('stops a held copy in another feature from ever promoting, and keeps the sealed bytes', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const images = buildAdapter({
+      quarantinePath,
+      unavailable: [BAD_DIGEST],
+      holdMaxRetryMs: RETRY_MS,
+      wrappedConfig: feature('images'),
+    });
+    const media = buildAdapter({
+      quarantinePath,
+      refuse: refusedAsCsam(),
+      wrappedConfig: feature('media'),
+    });
+
+    await images.instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+    await expect(
+      media.instance.save(await writeTempFile(BAD_BYTES, 'x.mp4'))
+    ).rejects.toBeInstanceOf(GhostErrors.UnsupportedMediaTypeError);
+
+    images.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(images.instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+
+    expect(images.instance.wrapped.savedRaw).toHaveLength(0);
+    expect(await fs.readFile(path.join(quarantinePath, BAD_DIGEST))).toEqual(BAD_BYTES);
+    expect(await fs.readdir(quarantinePath)).toEqual(
+      expect.arrayContaining([BAD_DIGEST, `${BAD_DIGEST}.refused.json`])
+    );
+  });
+
+  it('refuses a later upload of the same bytes in another feature whose own verdict is clean, worded by the sealed classification', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const images = buildAdapter({
+      quarantinePath,
+      refuse: refusedAsCsam(),
+      wrappedConfig: feature('images'),
+    });
+    const files = buildAdapter({ quarantinePath, wrappedConfig: feature('files') });
+
+    await expect(images.instance.saveRaw(BAD_BYTES, 'a.png')).rejects.toBeInstanceOf(
+      GhostErrors.UnsupportedMediaTypeError
+    );
+    let caught;
+    try {
+      await files.instance.save(await writeTempFile(BAD_BYTES, 'a.png'));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(GhostErrors.UnsupportedMediaTypeError);
+    expect(caught.context).not.toMatch(/csam/);
+    expect(files.instance.wrapped.saved).toHaveLength(0);
+    expect(files.instance.wrapped.savedRaw).toHaveLength(0);
+  });
+
+  it('keeps the bytes when one feature promotes a clean verdict and another then refuses', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const boot = (name) =>
+      buildAdapter({
+        quarantinePath,
+        unavailable: [BAD_DIGEST],
+        holdMaxRetryMs: RETRY_MS,
+        wrappedConfig: feature(name),
+      });
+    const images = boot('images');
+    const media = boot('media');
+    await images.instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+    await media.instance.save(await writeTempFile(BAD_BYTES, 'held.mp4'));
+
+    images.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(images.instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+    media.verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'csam', matchType: 'exact' });
+    await vi.waitFor(() => expect(media.instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+
+    expect(media.instance.wrapped.savedRaw).toHaveLength(0);
+    expect(await fs.readFile(path.join(quarantinePath, BAD_DIGEST))).toEqual(BAD_BYTES);
+  });
+});
+
+describe('stale aside copies at start-up', () => {
+  it('the adapter restores one whose digest is refused and deletes one whose digest is not', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    await fs.mkdir(quarantinePath);
+    await fs.writeFile(path.join(quarantinePath, `${BAD_DIGEST}.releasing.1.aaa`), BAD_BYTES);
+    await fs.writeFile(path.join(quarantinePath, `${BAD_DIGEST}.refused.json`), '{}');
+    const cleanDigest = digestBytes(CLEAN_BYTES);
+    await fs.writeFile(path.join(quarantinePath, `${cleanDigest}.releasing.1.bbb`), CLEAN_BYTES);
+
+    buildAdapter({ quarantinePath });
+
+    expect((await fs.readdir(quarantinePath)).sort()).toEqual(
+      [BAD_DIGEST, `${BAD_DIGEST}.refused.json`].sort()
+    );
+    await expect(fs.readFile(path.join(quarantinePath, BAD_DIGEST))).resolves.toEqual(BAD_BYTES);
+  });
+});
+
+describe('a refusal sealed while an upload waits for its verdict', () => {
+  it('still refuses the upload after a clean verdict', async () => {
+    const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
+      loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
+      GhostErrors,
+    });
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const slowCleanCheck = {
+      kind: 'media',
+      blocking: true,
+      async run({ buffer }) {
+        // Another feature refuses the same bytes while this verdict is pending.
+        await sealRefusal(
+          quarantinePath,
+          digestBytes(buffer),
+          buffer,
+          { classification: 'csam' },
+          digestBytes
+        );
+        return { classification: 'no-known-match', evidence: digestBytes(buffer), source: 'test' };
+      },
+    };
+    const adapter = new Adapter({
+      wraps: 'FakeAdapter',
+      wrappedConfig: { storagePath: 'wrapped' },
+      quarantinePath,
+      checks: [slowCleanCheck],
+      policy: new SafetyPolicy(),
+      computeDigest: digestBytes,
+      holdLogger: SILENT_LOGGER,
+    });
+
+    await expect(adapter.save(await writeTempFile(BAD_BYTES, 'a.png'))).rejects.toBeInstanceOf(
+      GhostErrors.UnsupportedMediaTypeError
+    );
+    expect(adapter.wrapped.saved).toHaveLength(0);
+  });
+});
+
+describe('verified, bounded hold retries through the adapter', () => {
+  it('never promotes a held upload whose quarantined bytes were truncated', async () => {
+    const { instance, verdictClient, quarantinePath } = buildAdapter({
+      unavailable: [BAD_DIGEST],
+      holdMaxRetryMs: RETRY_MS,
+    });
+    await instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+    await fs.truncate(path.join(quarantinePath, BAD_DIGEST), 3);
+
+    verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(instance.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+    expect(instance.wrapped.savedRaw).toHaveLength(0);
+    expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true);
+  });
+
+  it('sticks after holdMaxFailures consecutive failed promotions and stops trying', async () => {
+    const { instance, verdictClient } = buildAdapter({
+      unavailable: [BAD_DIGEST],
+      holdMaxRetryMs: RETRY_MS,
+      holdMaxFailures: 3,
+    });
+    let attempts = 0;
+    instance.wrapped.saveRaw = async () => {
+      attempts += 1;
+      throw new Error('bucket unavailable');
+    };
+    await instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
+
+    verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true), SHORT_WAIT);
+    await settle();
+    expect(attempts).toBe(3);
+    expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true);
+    expect(instance.hold.isPending(BAD_DIGEST)).toBe(false);
   });
 });
