@@ -238,6 +238,15 @@ services:
       privacy__useUpdateCheck: "false"
       logging__transports: '["stdout"]'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: "true"
+      storage__images__adapter: ScanningStorageAdapter
+      storage__images__wraps: LocalImagesStorage
+      storage__images__quarantinePath: /var/lib/ghost/content/quarantine
+      storage__media__adapter: ScanningStorageAdapter
+      storage__media__wraps: LocalMediaStorage
+      storage__media__quarantinePath: /var/lib/ghost/content/quarantine
+      storage__files__adapter: ScanningStorageAdapter
+      storage__files__wraps: LocalFilesStorage
+      storage__files__quarantinePath: /var/lib/ghost/content/quarantine
       mail__transport: SMTP
       mail__options__host: mail.proof.invalid
       mail__options__port: "587"
@@ -281,6 +290,15 @@ docker run -d --name "$SEED_NAME" -p "127.0.0.1:$SEED_PORT:2368" \
     -e database__connection__ssl__rejectUnauthorized=false \
     -e privacy__useUpdateCheck=false \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=LocalImagesStorage \
+    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__media__adapter=ScanningStorageAdapter \
+    -e storage__media__wraps=LocalMediaStorage \
+    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__files__adapter=ScanningStorageAdapter \
+    -e storage__files__wraps=LocalFilesStorage \
+    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
     "$GHOST_IMAGE" >/dev/null
 deadline=$(($(date +%s) + 240))
 seed_ready=false
