@@ -377,6 +377,7 @@ describe('the real dist/server.js entrypoint', () => {
     const renderer = await writeValidRendererPlugin(root);
     const adminApi = await writeValidAdminApiPlugin(root);
     const drainSource = await writeValidDrainSourcePlugin(root);
+    const imageLoader = await writeValidImageLoaderPlugin(root);
     // Slot "0"'s own derived allocation under this spawn's default bases
     // (unchanged from `baseEnv()`) is exactly `demoDescriptor()`'s own
     // default ports -- colour "b" is 9301 (slotPorts.ts: appPortBase=9300
@@ -393,6 +394,7 @@ describe('the real dist/server.js entrypoint', () => {
         BROKER_RENDERER_MODULE: renderer,
         BROKER_ADMIN_API_MODULE: adminApi,
         BROKER_DRAIN_SOURCE_MODULE: drainSource,
+        BROKER_IMAGE_LOADER_MODULE: imageLoader,
         BROKER_GHOST_READY_TIMEOUT_MS: '5000',
       });
       const { port } = await broker.waitListening(8000);
@@ -487,11 +489,13 @@ describe('the real dist/server.js entrypoint', () => {
       const renderer = await writeValidRendererPlugin(root);
       const adminApi = await writeValidAdminApiPlugin(root);
       const drainSource = await writeValidDrainSourcePlugin(root);
+      const imageLoader = await writeValidImageLoaderPlugin(root);
       broker = spawnBroker({
         ...env,
         BROKER_RENDERER_MODULE: renderer,
         BROKER_ADMIN_API_MODULE: adminApi,
         BROKER_DRAIN_SOURCE_MODULE: drainSource,
+        BROKER_IMAGE_LOADER_MODULE: imageLoader,
       });
       const { port } = await broker.waitListening(8000);
       const baseUrl = `http://127.0.0.1:${port}`;
