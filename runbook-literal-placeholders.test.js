@@ -186,6 +186,230 @@ test('every RUNBOOK-*.md this repo ships is covered by the scan above', () => {
   assert.deepEqual(found.sort(), [...RUNBOOK_PATHS].sort());
 });
 
+// The Teardown section must not delete the directory that holds a tenant's
+// Compose file before anything stops the containers that file describes --
+// the unit that starts them carries no ExecStop, so nothing else in the
+// section can stop them once that file is gone. This check pins the fix at
+// the text level: a label-filtered `docker stop` (never a `docker compose
+// ... down`, which re-parses the Compose file and fails on every real
+// tenant's mandatory `${VAR:?...}` secrets -- see the comment beside step 2
+// in the runbook itself) has to appear, and it has to appear before the
+// line that removes the tenant's directory and before the line that
+// removes its named volumes, wherever those sit across the section's
+// fenced blocks.
+const TEARDOWN_HEADING_RE = /^##\s+Teardown\s*$/m;
+const NEXT_HEADING_RE = /^##\s+\S/m;
+// The one correct stop step: `docker ps -q --filter
+// label=com.docker.compose.project=<slug>` piped into `xargs -r docker
+// stop` -- plain `docker`, so it never touches the Compose file at all.
+const LABEL_FILTERED_STOP_RE =
+  /docker\s+ps\s+-a?q\b.*--filter\s+label=com\.docker\.compose\.project=<slug>.*\|\s*xargs\s+-r\s+docker\s+stop\b/;
+// The regression this check exists to catch: an ad-hoc `docker compose ...
+// down` re-interpolates the whole Compose file over a bare SSH session,
+// which carries none of the secrets systemd's EnvironmentFile= supplies --
+// it fails before it ever reaches the Docker daemon, on every real tenant.
+const COMPOSE_DOWN_RE = /docker compose\b.*\bdown\b/;
+const RM_TENANT_DIR_RE = /rm\s+-rf\s+\/opt\/branchleft\/<slug>/;
+const VOLUME_RM_RE = /docker volume rm\b/;
+// The tenant's two content volumes are declared `external: true`
+// (infra/tenant/compose.ts), so Compose never labels them -- a label filter
+// against them always prints nothing, whether they are gone or still there.
+// This is the regression a second review round found in the verification
+// this PR added: it must be rejected outright, same treatment as the
+// `docker compose ... down` regression above.
+const VOLUME_LABEL_FILTER_RE =
+  /docker\s+volume\s+ls\b[^\n]*--filter\s+label=com\.docker\.compose\.project=<slug>/;
+// The correct form: `docker volume ls` filtered by the volumes' own exact
+// names -- the same two names the removal line (`docker volume rm ...`)
+// above already uses -- rather than by a label they never carry.
+const VOLUME_NAME_CHECK_RE =
+  /docker\s+volume\s+ls\b(?=[^\n]*name=\^ghost-<slug>-content\$)(?=[^\n]*name=\^ghost-<slug>-adapters\$)/;
+
+/**
+ * The `## Teardown` section's text, from its heading up to (but not
+ * including) the next `## ` heading or end of file. Throws if the file has
+ * no such heading, so a renamed section fails loudly rather than silently
+ * emptying the check below.
+ */
+function teardownSectionText(fullText) {
+  const start = fullText.search(TEARDOWN_HEADING_RE);
+  assert.notEqual(start, -1, 'no "## Teardown" heading found');
+  const afterHeading = fullText.slice(start + fullText.slice(start).indexOf('\n') + 1);
+  const nextHeadingOffset = afterHeading.search(NEXT_HEADING_RE);
+  return nextHeadingOffset === -1 ? afterHeading : afterHeading.slice(0, nextHeadingOffset);
+}
+
+/**
+ * Violations of the teardown order above, found in `sectionText`'s fenced
+ * bash/sql blocks. Order is judged across the whole section, concatenating
+ * every command block's lines in document order -- a stop step in one
+ * fenced block still has to precede a removal step in a later one. A
+ * `docker compose ... down` is a violation outright, regardless of where it
+ * sits, because it cannot succeed against a real tenant stack at all.
+ */
+function teardownOrderViolations(sectionText) {
+  // Comment lines (explanatory prose, including the one right beside step 2
+  // that names the banned form to explain why it's banned) are not commands
+  // and must not trip either detector.
+  const lines = commandBlocks(sectionText)
+    .flatMap((b) => b.lines)
+    .filter((l) => !/^\s*#/.test(l));
+  const stopIdx = lines.findIndex((l) => LABEL_FILTERED_STOP_RE.test(l));
+  const composeDownIdx = lines.findIndex((l) => COMPOSE_DOWN_RE.test(l));
+  const rmTenantDirIdx = lines.findIndex((l) => RM_TENANT_DIR_RE.test(l));
+  const volumeRmIdx = lines.findIndex((l) => VOLUME_RM_RE.test(l));
+  const violations = [];
+  if (composeDownIdx !== -1) {
+    violations.push(
+      '`docker compose ... down` re-interpolates the Compose file and fails against ' +
+        'every real tenant stack -- use the label-filtered `docker stop` pattern instead'
+    );
+  }
+  if (stopIdx === -1) {
+    violations.push('no label-filtered `docker stop` command in the Teardown section');
+  }
+  if (rmTenantDirIdx !== -1 && stopIdx !== -1 && stopIdx > rmTenantDirIdx) {
+    violations.push(
+      'the label-filtered `docker stop` must come before `rm -rf /opt/branchleft/<slug>`'
+    );
+  }
+  if (volumeRmIdx !== -1 && stopIdx !== -1 && stopIdx > volumeRmIdx) {
+    violations.push(
+      'the label-filtered `docker stop` must come before `docker volume rm` ' +
+        '(the containers holding the volumes must be stopped first)'
+    );
+  }
+  if (lines.some((l) => VOLUME_LABEL_FILTER_RE.test(l))) {
+    violations.push(
+      "a post-removal volume check must not filter by label -- the tenant's " +
+        'volumes are `external: true` and Compose never labels them, so the ' +
+        'check would print "all clear" whether or not they were actually removed; ' +
+        "filter by the volumes' exact name instead"
+    );
+  }
+  if (!lines.some((l) => VOLUME_NAME_CHECK_RE.test(l))) {
+    violations.push('no name-filtered check for both tenant volumes in the Teardown section');
+  }
+  return violations;
+}
+
+test('RUNBOOK-tenant-onboarding.md stops the containers before removing the tenant directory or its volumes', () => {
+  const text = readFileSync(path.join(ROOT, 'RUNBOOK-tenant-onboarding.md'), 'utf8');
+  const violations = teardownOrderViolations(teardownSectionText(text));
+  assert.deepEqual(violations, [], violations.join('\n'));
+});
+
+test('self-test: the teardown-order check rejects a docker compose ... down even in the right position', () => {
+  // This is the exact regression the check exists to catch: correctly
+  // ordered, but the command itself cannot succeed against a real tenant.
+  const sample = [
+    '```bash',
+    'docker compose -p <slug> -f /opt/branchleft/<slug>/compose.yml down',
+    '```',
+    '',
+    '```bash',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(
+    violations.some((v) => v.includes('docker compose ... down')),
+    'expected the compose-down regression to be flagged'
+  );
+});
+
+test('self-test: the teardown-order check flags a stop step placed after the removals', () => {
+  const sample = [
+    '```bash',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    'docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(violations.length > 0, 'expected the reordered sample to be flagged');
+});
+
+test('self-test: the teardown-order check flags a missing stop step', () => {
+  const sample = [
+    '```bash',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(violations.length > 0, 'expected the missing-stop-step sample to be flagged');
+});
+
+test('self-test: the teardown-order check rejects a label-filtered volume check', () => {
+  // The regression a second review round found: the tenant's volumes are
+  // `external: true`, so Compose never labels them -- a label filter here
+  // always prints "all clear", whether or not the volumes are actually gone.
+  const sample = [
+    '```bash',
+    'docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    'docker volume ls -q --filter label=com.docker.compose.project=<slug>',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(
+    violations.some((v) => v.includes('must not filter by label')),
+    'expected the label-filtered volume check to be flagged'
+  );
+});
+
+test('self-test: the teardown-order check flags a missing name-filtered volume check', () => {
+  const sample = [
+    '```bash',
+    'docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    '```',
+  ].join('\n');
+  const violations = teardownOrderViolations(sample);
+  assert.ok(
+    violations.some((v) => v.includes('no name-filtered check')),
+    'expected the missing volume-name check to be flagged'
+  );
+});
+
+test('self-test: the teardown-order check ignores a banned command only mentioned in a comment', () => {
+  // The runbook's own step-2 comment names the banned form to explain why
+  // it's banned -- that explanatory line must not itself be read as the
+  // command.
+  const sample = [
+    '```bash',
+    '# Not `docker compose -p <slug> -f .../compose.yml down`: see below.',
+    'docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    'docker volume ls -q --filter "name=^ghost-<slug>-content$" --filter "name=^ghost-<slug>-adapters$"',
+    '```',
+  ].join('\n');
+  assert.deepEqual(teardownOrderViolations(sample), []);
+});
+
+test('self-test: the teardown-order check passes the correct order, even split across blocks', () => {
+  const sample = [
+    '```bash',
+    'docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop',
+    'docker ps -aq --filter label=com.docker.compose.project=<slug> | xargs -r docker rm',
+    '```',
+    '',
+    'some prose in between',
+    '',
+    '```bash',
+    'rm -rf /opt/branchleft/<slug>',
+    'docker volume rm ghost-<slug>-content ghost-<slug>-adapters',
+    'docker volume ls -q --filter "name=^ghost-<slug>-content$" --filter "name=^ghost-<slug>-adapters$"',
+    '```',
+  ].join('\n');
+  assert.deepEqual(teardownOrderViolations(sample), []);
+});
+
 // Self-tests: prove the scanner still draws the distinctions it exists for,
 // against synthetic input rather than today's tree, so a coincidentally
 // clean tree can't hide a scanner that quietly stopped matching.

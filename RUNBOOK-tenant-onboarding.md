@@ -885,52 +885,93 @@ APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/ho
 ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "/root/platform-provision/provision_deploy_slot.py --revoke <slug>"
 
-# 2. Stop and disable the unit.
+# 2. Stop the containers. The unit
+#    (hetzner/provision/branchleft-compose@.service, branchLeft/shared-infra)
+#    has no ExecStop, so this is the step that actually stops them, and it
+#    has to run before anything below removes host-side state.
+#
+#    Not `docker compose -p <slug> -f .../compose.yml down`: every tenant's
+#    compose.yml renders the DB password and both S3 keys as a mandatory
+#    `${VAR:?...}` substitution, sourced only via systemd's EnvironmentFile=
+#    at ExecStart. A bare SSH session carries none of those, so an ad-hoc
+#    `docker compose` invocation re-parses and re-interpolates the whole
+#    file itself and fails on the first missing secret before it ever
+#    reaches the Docker daemon -- the same failure RUNBOOK-nextcloud.md
+#    documents for this unit's read path. Plain `docker` with label filters
+#    never re-reads the Compose file at all, so it works regardless.
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" '
+  docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop
+  docker ps -aq --filter label=com.docker.compose.project=<slug> | xargs -r docker rm
+  docker network ls -q --filter label=com.docker.compose.project=<slug> | xargs -r docker network rm
+'
+
+# 3. Verify step 2 actually worked before relying on it. A non-empty result
+#    here means a container from this stack is still up; stop and find out
+#    why rather than continuing into steps that assume it is gone.
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
+  "docker ps -aq --filter label=com.docker.compose.project=<slug>"
+
+# 4. Disable the unit so nothing restarts the stack on a later boot.
 ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "systemctl disable --now branchleft-compose@<slug>"
 ```
 
-3. **Take the final backups you intend to keep** — the database dump and the
-   whole of `branchleft-media-<slug>`. After step 5 there is no configured place
+5. **Take the final backups you intend to keep** — the database dump and the
+   whole of `branchleft-media-<slug>`. After step 6 there is no configured place
    to put them back.
 
-4. **`pulumi destroy` and `pulumi stack rm`, before the repository or its
+6. **`pulumi destroy` and `pulumi stack rm`, before the repository or its
    passphrase secret is deleted.** A stack whose passphrase is gone cannot be
    destroyed either, because destroy reads a checkpoint it can no longer
    decrypt.
 
 ```bash
-# 5. Host-side state, on the app host as root.
+# 7. Host-side state, on the app host as root. The containers are already
+#    stopped (step 2) and verified gone (step 3), so removing the directory
+#    that holds compose.yml here cannot strand anything, and the volume
+#    removal below cannot hit "volume is in use" the way it did before this
+#    stack's containers had actually stopped.
 rm -f /etc/branchleft/<slug>.env /etc/branchleft/<slug>.image.env
 rm -rf /opt/branchleft/<slug>
 docker volume rm ghost-<slug>-content ghost-<slug>-adapters
 rm -f /etc/branchleft/tenant-uids/<slug>
 
-# 6. The database and its user, on db1 as root. `<sql-slug>` is the slug with
+# Verify: nothing is left anywhere -- no container, no volume, no network.
+# All three must print nothing. The two content volumes are `external: true`
+# (infra/tenant/compose.ts) so that a host-side provisioning step, not
+# Compose, owns their creation -- Compose never labels a resource it did not
+# create, so a label filter here would always print nothing regardless of
+# whether the volumes are actually gone. Check them by the exact names the
+# removal line above uses instead.
+docker ps -aq --filter label=com.docker.compose.project=<slug>
+docker volume ls -q --filter "name=^ghost-<slug>-content$" --filter "name=^ghost-<slug>-adapters$"
+docker network ls -q --filter label=com.docker.compose.project=<slug>
+
+# 8. The database and its user, on db1 as root. `<sql-slug>` is the slug with
 #    every hyphen replaced by an underscore -- MySQL identifiers cannot carry
 #    the hyphens a slug may, so `acme-blog` is `ghost_acme_blog` here.
 mysql --socket /opt/branchleft/db/run/mysqld/mysqld.sock --user root \
   -e "DROP DATABASE ghost_<sql-slug>; DROP USER 'ghost_<sql-slug>'@'10.20.1.%';"
 ```
 
-7. Remove this tenant's site block from the edge site registry.
+9. Remove this tenant's site block from the edge site registry.
 
-8. Archive the tenant repository rather than deleting it, unless the tenant
-   asked otherwise. Archiving keeps the audit trail; deleting removes the record
-   that the stack ever existed.
+10. Archive the tenant repository rather than deleting it, unless the tenant
+    asked otherwise. Archiving keeps the audit trail; deleting removes the
+    record that the stack ever existed.
 
-9. **The media credential, then the bucket, in the Cloud Console.** Both count
-   against account-wide allowances — 200 S3 credentials and 100 buckets across
-   all projects — so a teardown that leaves them behind spends two of a fixed
-   budget on a tenant that no longer exists. Delete the credential first: a
-   bucket deleted while its key still exists leaves a key with no policy fencing
-   it, valid for every other bucket in the project. Emptying the bucket needs
-   your operator key, because the tenant's own cannot delete.
+11. **The media credential, then the bucket, in the Cloud Console.** Both count
+    against account-wide allowances — 200 S3 credentials and 100 buckets across
+    all projects — so a teardown that leaves them behind spends two of a fixed
+    budget on a tenant that no longer exists. Delete the credential first: a
+    bucket deleted while its key still exists leaves a key with no policy fencing
+    it, valid for every other bucket in the project. Emptying the bucket needs
+    your operator key, because the tenant's own cannot delete.
 
 A tenant removed without step 1 leaves a working deploy key for a stack that no
 longer exists, and on a host that has not been rebuilt the on-host register is
 the only place that would show it.
 
-**The UID is not reused.** Step 5 frees the claim, but handing the same number
+**The UID is not reused.** Step 7 frees the claim, but handing the same number
 to a later tenant means any file left anywhere on that host under the old UID
 becomes the new tenant's. Allocate forward.
