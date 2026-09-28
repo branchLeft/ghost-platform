@@ -33,15 +33,18 @@ export {
 
 export type {
   BackupSpec,
+  BreakGlassSpec,
   CodeInjectionSpec,
   DatabaseSpec,
   GateSpec,
   HostnameSpec,
   LimitsSpec,
+  MailSpec,
   MediaSpec,
   PortTriple,
   ResourceCaps,
   SafetySpec,
+  SendingIdentitySpec,
   TenantDescriptor,
   TenantKind,
   TransportSpec,
@@ -86,6 +89,8 @@ export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
 export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
+export { renderSendingAddress, sendingDomainOf } from './mail.js';
+export { renderDrainList } from './drain.js';
 export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
 export type { ComposeStackArgs, DemoDataMount } from './compose.js';
 export {

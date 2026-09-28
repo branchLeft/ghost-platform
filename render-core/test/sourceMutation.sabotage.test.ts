@@ -11,6 +11,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { validate } from '../src/validate.js';
 import type { render as RenderFn } from '../src/render.js';
 import type { tenantEnvironment as TenantEnvironmentFn } from '../src/environment.js';
+import type { renderSettings as RenderSettingsFn } from '../src/settings.js';
 import { TEST_ZONES, entryTenantDescriptor } from './fixtures.js';
 import { cleanupSabotageTmp, importSabotaged } from './helpers/sourceSabotage.js';
 import { uploadLimits } from '../src/runtime.js';
@@ -43,7 +44,8 @@ describe('NO-SECRET-IN-OUTPUT — source-mutation sabotage', () => {
     const sabotagedEnv = sabotaged.tenantEnvironment(
       descriptor,
       uploadLimits(),
-      secretsEnvPath(descriptor.slug)
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
     );
     expect(sabotagedEnv.database__connection__password).toBe('hunter2');
     expect(Object.values(sabotagedEnv)).toContain('hunter2');
@@ -53,10 +55,57 @@ describe('NO-SECRET-IN-OUTPUT — source-mutation sabotage', () => {
     const realEnv = realTenantEnvironment(
       descriptor,
       uploadLimits(),
-      secretsEnvPath(descriptor.slug)
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
     );
     expect(Object.values(realEnv)).not.toContain('hunter2');
     expect(realEnv.database__connection__password).toContain('${GHOST_DB_PASSWORD:?');
+  });
+});
+
+describe('DECORATOR-PER-FEATURE — source-mutation sabotage', () => {
+  it('dropping one storage feature from STORAGE_FEATURES silently leaves it unwrapped; the real module wraps all three', async () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+
+    // RED: mutate environment.ts's actual STORAGE_FEATURES list so `files`
+    // is dropped -- exactly the failure mode this control exists to catch: a
+    // mechanism that renders the decorator for some storage features and
+    // not others, silently, with every test for the ones it does cover
+    // green.
+    const sabotaged = await importSabotaged<{ tenantEnvironment: typeof TenantEnvironmentFn }>(
+      'environment.ts',
+      (source) => {
+        const target = "const STORAGE_FEATURES = ['images', 'media', 'files'] as const;";
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in environment.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, "const STORAGE_FEATURES = ['images', 'media'] as const;");
+      }
+    );
+    const sabotagedEnv = sabotaged.tenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(sabotagedEnv).not.toHaveProperty('storage__files__adapter');
+    expect(sabotagedEnv).not.toHaveProperty('storage__files__wraps');
+
+    // GREEN: the real, unmutated module wraps every one of the three
+    // storage features, `files` included.
+    const { tenantEnvironment: realTenantEnvironment } = await import('../src/environment.js');
+    const realEnv = realTenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(realEnv.storage__files__adapter).toBe('ScanningStorageAdapter');
+    expect(realEnv.storage__files__wraps).toBe('S3Storage');
+    expect(realEnv.storage__images__adapter).toBe('ScanningStorageAdapter');
+    expect(realEnv.storage__media__adapter).toBe('ScanningStorageAdapter');
   });
 });
 
@@ -93,5 +142,45 @@ describe('DETERMINISM — source-mutation sabotage', () => {
       (a) => a.path === 'image.env'
     )!.content;
     expect(realFirst).toBe(realSecond);
+  });
+});
+
+describe('MAIL-ADDRESS-CONSISTENCY — source-mutation sabotage', () => {
+  it('members_support_address computed independently of mail__from can disagree; the real settings.ts never does', async () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+
+    // RED: mutate settings.ts's actual `renderSettings` so
+    // `members_support_address` is a hardcoded literal instead of the
+    // shared `renderSendingAddress` call — reproducing the exact trap the
+    // story names: the two keys computed independently, free to disagree.
+    const sabotaged = await importSabotaged<{ renderSettings: typeof RenderSettingsFn }>(
+      'settings.ts',
+      (source) => {
+        const target =
+          'members_support_address: renderSendingAddress(descriptor.mail.identity, zones),';
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in settings.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, "members_support_address: 'wrong@example.invalid',");
+      }
+    );
+    const sabotagedSettings = sabotaged.renderSettings(descriptor, TEST_ZONES);
+    const { tenantEnvironment: realTenantEnvironment } = await import('../src/environment.js');
+    const realEnv = realTenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    // RED: the sabotaged setting disagrees with the real mail__from — the
+    // exact magic-link trap the story names ("a test fails if they differ").
+    expect(sabotagedSettings.members_support_address).not.toBe(realEnv.mail__from);
+
+    // GREEN: the real, unmutated settings.ts always agrees with it.
+    const { renderSettings: realRenderSettings } = await import('../src/settings.js');
+    const realSettings = realRenderSettings(descriptor, TEST_ZONES);
+    expect(realSettings.members_support_address).toBe(realEnv.mail__from);
   });
 });

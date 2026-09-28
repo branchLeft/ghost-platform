@@ -7,6 +7,7 @@ import { createSubmittedTracker } from '../../src/dedupe.js';
 import { createDrainClient, type DrainAck, type DrainClient } from '../../src/drainClient.js';
 import { createDeliveryClient } from '../../src/deliveryClient.js';
 import { createHealthState } from '../../src/health.js';
+import { createDeadMansSwitch, type DeadMansSwitch } from '../../src/heartbeat.js';
 import { createThrottle, type Throttle } from '../../src/throttle.js';
 import { createLogger } from '../../src/log.js';
 import { FakeShimServer, type QueuedMessage } from '../helpers/fakeShimServer.js';
@@ -58,7 +59,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
   function buildRuntime(
     targets: DrainTarget[],
-    overrides: { drainClient?: DrainClient; throttle?: Throttle } = {}
+    overrides: { drainClient?: DrainClient; throttle?: Throttle; heartbeat?: DeadMansSwitch } = {}
   ) {
     const store = createFakeTargetStore(targets);
     const drainClient =
@@ -84,6 +85,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       throttle,
       dedupe,
       health,
+      heartbeat: overrides.heartbeat,
       log,
       descriptorRefreshMs: 50,
       drainRetryBackoffMs: 50,
@@ -451,4 +453,314 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       deliveryClient.close();
     });
   });
+
+  describe("the dead man's switch pings once per completed poll cycle, through the real loop", () => {
+    it('an idle host -- reachable, described, nothing queued -- still pings on every empty cycle', async () => {
+      const pings = vi.fn();
+      const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+        heartbeat,
+      });
+      runtime.start();
+      // emptyPollBackoffMs is 20ms in buildRuntime -- several idle cycles
+      // comfortably complete inside this window with nothing ever enqueued.
+      await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(3));
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('a cycle that actually drains and delivers something still pings, same as an empty one', async () => {
+      shimA.enqueue(message('m1'));
+      const pings = vi.fn();
+      const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+        heartbeat,
+      });
+      runtime.start();
+      await sink.waitForCount(1, 1000);
+      await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(1));
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('a drain failure against one host never reports a completed cycle for it -- the failing iteration is not counted', async () => {
+      // Per-host gating: a host that cannot complete a cycle must not
+      // report success, so collectorLoop.ts's drain-failure branch calls
+      // heartbeat.onCycleComplete() for NEITHER this host nor the switch
+      // as a whole -- the loop keeps retrying (it is not stuck), it just
+      // never counts as a success while the failure persists.
+      const failingDrainClient: DrainClient = {
+        drain: () => Promise.reject(new Error('simulated: host unreachable')),
+        ack: () => Promise.resolve({ acked: [], alreadyHandled: [], unknown: [] }),
+      };
+      const pings = vi.fn();
+      const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+        drainClient: failingDrainClient,
+        heartbeat,
+      });
+      runtime.start();
+      await new Promise((r) => setTimeout(r, 200)); // several failed-drain retries elapse
+      expect(pings).not.toHaveBeenCalled();
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('with no heartbeat supplied, the loop runs exactly as before -- the dependency is optional, not required', async () => {
+      shimA.enqueue(message('m1'));
+      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+      runtime.start();
+      const received = await sink.waitForCount(1, 1000);
+      expect(received[0]!.envelopeTo).toEqual(['reader-m1@example.com']);
+      await runtime.stop();
+      deliveryClient.close();
+    });
+
+    it('SABOTAGE -- gating the ping on "something was drained" starves the idle case: RED, then the real wiring: GREEN', async () => {
+      // This reproduces the issue's own named sabotage: a heartbeat wired
+      // to fire only when a cycle actually drained a message, rather than
+      // on every completed cycle. Against a genuinely idle host this is
+      // indistinguishable from a wedged loop -- the switch would go
+      // Late then Down for a worker that is doing exactly what it should.
+      const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+      const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+      const deliveryClient = createDeliveryClient({
+        host: '127.0.0.1',
+        port: sink.port,
+        secure: false,
+        user: 'collector',
+        pass: 'sink-secret',
+      });
+      const throttle = createThrottle({ messagesPerHour: 360_000 });
+      const dedupe = createSubmittedTracker(60_000);
+      const health = createHealthState();
+      const log = createLogger(() => {});
+
+      const pings = vi.fn();
+      // The sabotaged wiring: nothing enqueued on shimA at any point in
+      // this test, so a correct implementation calling onCycleComplete()
+      // on every empty cycle pings repeatedly; the sabotage below only
+      // calls it from inside a branch this test never reaches.
+      const sabotagedHeartbeat: DeadMansSwitch = {
+        onCycleComplete: () => {
+          // Naive bug: this only runs when SOMETHING was drained. This
+          // test's loop only ever sees empty drains, so this line never
+          // fires at all -- the RED half of the sabotage.
+          if (false as boolean) {
+            pings();
+          }
+        },
+      };
+
+      const redRuntime = createCollectorRuntime({
+        store,
+        drainClient,
+        deliveryClient,
+        throttle,
+        dedupe,
+        health,
+        heartbeat: sabotagedHeartbeat,
+        log,
+        descriptorRefreshMs: 50,
+        drainRetryBackoffMs: 50,
+        emptyPollBackoffMs: 20,
+      });
+      redRuntime.start();
+      await new Promise((r) => setTimeout(r, 150)); // several empty cycles complete
+      expect(pings).not.toHaveBeenCalled(); // RED: the idle worker never pinged
+      await redRuntime.stop();
+
+      // The real wiring, same idle scenario: onCycleComplete() fires on
+      // every completed cycle regardless of what it drained.
+      const realHeartbeat = createDeadMansSwitch({
+        url: 'https://heartbeat.example/ping',
+        log,
+        getExpectedTargetIds: () => store.targets.map((t) => t.id),
+        fetchImpl: (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch,
+      });
+      const greenRuntime = createCollectorRuntime({
+        store,
+        drainClient,
+        deliveryClient,
+        throttle,
+        dedupe,
+        health,
+        heartbeat: realHeartbeat,
+        log,
+        descriptorRefreshMs: 50,
+        drainRetryBackoffMs: 50,
+        emptyPollBackoffMs: 20,
+      });
+      greenRuntime.start();
+      await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(3)); // GREEN
+      await greenRuntime.stop();
+      deliveryClient.close();
+    });
+  });
+
+  describe(
+    'PER-HOST GATING: the switch pings only once EVERY described host has ' +
+      'completed a cycle since the last ping',
+    () => {
+      function buildTwoHostRuntime(drainClient: DrainClient, fetchImpl: typeof fetch) {
+        const store = createFakeTargetStore([
+          { id: 'tenant-a', baseUrl: baseUrlA },
+          { id: 'tenant-b', baseUrl: baseUrlB },
+        ]);
+        const deliveryClient = createDeliveryClient({
+          host: '127.0.0.1',
+          port: sink.port,
+          secure: false,
+          user: 'collector',
+          pass: 'sink-secret',
+        });
+        const throttle = createThrottle({ messagesPerHour: 360_000 });
+        const dedupe = createSubmittedTracker(60_000);
+        const health = createHealthState();
+        const log = createLogger(() => {});
+        const heartbeat = createDeadMansSwitch({
+          url: 'https://heartbeat.example/ping',
+          log,
+          fetchImpl,
+          getExpectedTargetIds: () => store.targets.map((t) => t.id),
+        });
+        const runtime = createCollectorRuntime({
+          store,
+          drainClient,
+          deliveryClient,
+          throttle,
+          dedupe,
+          health,
+          heartbeat,
+          log,
+          descriptorRefreshMs: 50,
+          drainRetryBackoffMs: 30,
+          emptyPollBackoffMs: 20,
+        });
+        return { runtime, deliveryClient };
+      }
+
+      it('ALL HOSTS EMPTY: two idle described hosts still ping -- zero mail across the estate is not a failure', async () => {
+        const realDrainClient = createDrainClient({
+          drainToken: DRAIN_TOKEN,
+          drainTimeoutMs: 5000,
+        });
+        const pings = vi.fn();
+        const fetchImpl = (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch;
+        const { runtime, deliveryClient } = buildTwoHostRuntime(realDrainClient, fetchImpl);
+        runtime.start();
+        await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(1));
+        await runtime.stop();
+        deliveryClient.close();
+      });
+
+      it('ONE HOST PERMANENTLY FAILING: tenant-a keeps completing cycles, tenant-b never drains successfully -- no ping ever', async () => {
+        const realDrainClient = createDrainClient({
+          drainToken: DRAIN_TOKEN,
+          drainTimeoutMs: 5000,
+        });
+        const perTargetDrainClient: DrainClient = {
+          drain: (target, signal) => {
+            if (target.id === 'tenant-b') {
+              return Promise.reject(new Error('simulated: tenant-b permanently unreachable'));
+            }
+            return realDrainClient.drain(target, signal);
+          },
+          ack: (target, acks, signal) => realDrainClient.ack(target, acks, signal),
+        };
+        const pings = vi.fn();
+        const fetchImpl = (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch;
+        const { runtime, deliveryClient } = buildTwoHostRuntime(perTargetDrainClient, fetchImpl);
+        runtime.start();
+        // Give tenant-a several successful empty cycles and tenant-b
+        // several failed retries -- if the SABOTAGE (any target completing
+        // pings, rather than every target) were still in place, tenant-a
+        // alone would already have pinged repeatedly by now.
+        await new Promise((r) => setTimeout(r, 250));
+        expect(pings).not.toHaveBeenCalled();
+        await runtime.stop();
+        deliveryClient.close();
+      });
+
+      it("ONE HOST WEDGED: tenant-b's drain never resolves at all -- no ping while it is stuck", async () => {
+        const realDrainClient = createDrainClient({
+          drainToken: DRAIN_TOKEN,
+          drainTimeoutMs: 5000,
+        });
+        // A genuinely wedged host's own drain() call never settles -- and,
+        // by construction, nothing can ever cancel it either (production
+        // collectorLoop.ts passes no AbortSignal into drain()). unwedge()
+        // exists only so this test can let the pending await resolve
+        // AFTER the assertion, so runtime.stop() -- which waits for every
+        // target loop to notice `stopped` and exit -- does not hang the
+        // test suite forever the way a real wedge legitimately would.
+        let unwedge: (() => void) | undefined;
+        const wedgedDrain = new Promise<never[]>((resolve) => {
+          unwedge = () => resolve([]);
+        });
+        const perTargetDrainClient: DrainClient = {
+          drain: (target, signal) => {
+            if (target.id === 'tenant-b') {
+              return wedgedDrain;
+            }
+            return realDrainClient.drain(target, signal);
+          },
+          ack: (target, acks, signal) => realDrainClient.ack(target, acks, signal),
+        };
+        const pings = vi.fn();
+        const fetchImpl = (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch;
+        const { runtime, deliveryClient } = buildTwoHostRuntime(perTargetDrainClient, fetchImpl);
+        runtime.start();
+        await new Promise((r) => setTimeout(r, 250)); // tenant-a completes several cycles; tenant-b's loop is stuck on its first
+        expect(pings).not.toHaveBeenCalled();
+        unwedge?.();
+        await new Promise((r) => setTimeout(r, 50)); // let tenant-b's now-unstuck iteration reach its next stop-check
+        await runtime.stop();
+        deliveryClient.close();
+      });
+
+      it('RECOVERY: once the failing host starts completing cycles again, pinging resumes', async () => {
+        const realDrainClient = createDrainClient({
+          drainToken: DRAIN_TOKEN,
+          drainTimeoutMs: 5000,
+        });
+        let tenantBFailing = true;
+        const perTargetDrainClient: DrainClient = {
+          drain: (target, signal) => {
+            if (target.id === 'tenant-b' && tenantBFailing) {
+              return Promise.reject(new Error('simulated: tenant-b unreachable for now'));
+            }
+            return realDrainClient.drain(target, signal);
+          },
+          ack: (target, acks, signal) => realDrainClient.ack(target, acks, signal),
+        };
+        const pings = vi.fn();
+        const fetchImpl = (async () => {
+          pings();
+          return { ok: true, status: 200 } as Response;
+        }) as typeof fetch;
+        const { runtime, deliveryClient } = buildTwoHostRuntime(perTargetDrainClient, fetchImpl);
+        runtime.start();
+        await new Promise((r) => setTimeout(r, 200));
+        expect(pings).not.toHaveBeenCalled(); // silenced while tenant-b fails
+
+        tenantBFailing = false; // tenant-b recovers
+        await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(1));
+        await runtime.stop();
+        deliveryClient.close();
+      });
+    }
+  );
 });

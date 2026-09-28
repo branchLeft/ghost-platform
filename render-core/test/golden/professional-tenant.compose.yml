@@ -48,20 +48,47 @@ services:
       database__connection__database: 'ghost_pro_co'
       database__connection__user: 'ghost_pro_co'
       database__connection__ssl__rejectUnauthorized: false
-      storage__active: 'S3Storage'
-      storage__S3Storage__bucket: 'branchleft-media-pro-co'
-      storage__S3Storage__region: 'eu'
-      storage__S3Storage__endpoint: 'https://s3.endpoint.example'
-      storage__S3Storage__forcePathStyle: true
-      storage__S3Storage__staticFileURLPrefix: 'content/images'
-      storage__S3Storage__cdnUrl: 'https://s3.endpoint.example/branchleft-media-pro-co'
-      storage__S3Storage__multipartUploadThresholdBytes: 10485760
-      storage__S3Storage__multipartChunkSizeBytes: 5242880
+      storage__images__adapter: 'ScanningStorageAdapter'
+      storage__images__wraps: 'S3Storage'
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__images__wrappedConfig__bucket: 'branchleft-media-pro-co'
+      storage__images__wrappedConfig__region: 'eu'
+      storage__images__wrappedConfig__endpoint: 'https://s3.endpoint.example'
+      storage__images__wrappedConfig__forcePathStyle: true
+      storage__images__wrappedConfig__staticFileURLPrefix: 'content/images'
+      storage__images__wrappedConfig__cdnUrl: 'https://s3.endpoint.example/branchleft-media-pro-co'
+      storage__images__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__images__wrappedConfig__multipartChunkSizeBytes: 5242880
+      storage__media__adapter: 'ScanningStorageAdapter'
+      storage__media__wraps: 'S3Storage'
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__wrappedConfig__bucket: 'branchleft-media-pro-co'
+      storage__media__wrappedConfig__region: 'eu'
+      storage__media__wrappedConfig__endpoint: 'https://s3.endpoint.example'
+      storage__media__wrappedConfig__forcePathStyle: true
+      storage__media__wrappedConfig__staticFileURLPrefix: 'content/media'
+      storage__media__wrappedConfig__cdnUrl: 'https://s3.endpoint.example/branchleft-media-pro-co'
+      storage__media__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__media__wrappedConfig__multipartChunkSizeBytes: 5242880
+      storage__files__adapter: 'ScanningStorageAdapter'
+      storage__files__wraps: 'S3Storage'
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__wrappedConfig__bucket: 'branchleft-media-pro-co'
+      storage__files__wrappedConfig__region: 'eu'
+      storage__files__wrappedConfig__endpoint: 'https://s3.endpoint.example'
+      storage__files__wrappedConfig__forcePathStyle: true
+      storage__files__wrappedConfig__staticFileURLPrefix: 'content/files'
+      storage__files__wrappedConfig__cdnUrl: 'https://s3.endpoint.example/branchleft-media-pro-co'
+      storage__files__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__files__wrappedConfig__multipartChunkSizeBytes: 5242880
       mail__transport: 'SMTP'
       mail__options__host: 'mx.internal'
       mail__options__port: 587
       mail__options__secure: false
       mail__options__auth__user: 'pro-co'
+      mail__from: 'hello@news.pro-co.example'
+      bulkEmail__mailgun__baseUrl: 'http://mail-spool.internal.example.test:8080'
+      bulkEmail__mailgun__domain: 'news.pro-co.example'
       security__allowWebhookInternalIPs: false
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
@@ -69,9 +96,14 @@ services:
       privacy__useUpdateCheck: false
       logging__transports: '["stdout"]'
       database__connection__password: '${GHOST_DB_PASSWORD:?set GHOST_DB_PASSWORD in /etc/branchleft/pro-co.env}'
-      storage__S3Storage__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/pro-co.env}'
-      storage__S3Storage__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/pro-co.env}'
+      storage__images__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/pro-co.env}'
+      storage__images__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/pro-co.env}'
+      storage__media__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/pro-co.env}'
+      storage__media__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/pro-co.env}'
+      storage__files__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/pro-co.env}'
+      storage__files__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/pro-co.env}'
       mail__options__auth__pass: '${GHOST_MAIL_PASSWORD:?set GHOST_MAIL_PASSWORD in /etc/branchleft/pro-co.env}'
+      bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/pro-co.env}'
     volumes:
       - 'ghost-pro-co-content:/var/lib/ghost/content'
       - 'ghost-pro-co-adapters:/var/lib/ghost/content/adapters:ro'
@@ -125,20 +157,47 @@ services:
       database__connection__database: 'ghost_pro_co'
       database__connection__user: 'ghost_pro_co'
       database__connection__ssl__rejectUnauthorized: false
-      storage__active: 'S3Storage'
-      storage__S3Storage__bucket: 'branchleft-media-pro-co'
-      storage__S3Storage__region: 'eu'
-      storage__S3Storage__endpoint: 'https://s3.endpoint.example'
-      storage__S3Storage__forcePathStyle: true
-      storage__S3Storage__staticFileURLPrefix: 'content/images'
-      storage__S3Storage__cdnUrl: 'https://s3.endpoint.example/branchleft-media-pro-co'
-      storage__S3Storage__multipartUploadThresholdBytes: 10485760
-      storage__S3Storage__multipartChunkSizeBytes: 5242880
+      storage__images__adapter: 'ScanningStorageAdapter'
+      storage__images__wraps: 'S3Storage'
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__images__wrappedConfig__bucket: 'branchleft-media-pro-co'
+      storage__images__wrappedConfig__region: 'eu'
+      storage__images__wrappedConfig__endpoint: 'https://s3.endpoint.example'
+      storage__images__wrappedConfig__forcePathStyle: true
+      storage__images__wrappedConfig__staticFileURLPrefix: 'content/images'
+      storage__images__wrappedConfig__cdnUrl: 'https://s3.endpoint.example/branchleft-media-pro-co'
+      storage__images__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__images__wrappedConfig__multipartChunkSizeBytes: 5242880
+      storage__media__adapter: 'ScanningStorageAdapter'
+      storage__media__wraps: 'S3Storage'
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__wrappedConfig__bucket: 'branchleft-media-pro-co'
+      storage__media__wrappedConfig__region: 'eu'
+      storage__media__wrappedConfig__endpoint: 'https://s3.endpoint.example'
+      storage__media__wrappedConfig__forcePathStyle: true
+      storage__media__wrappedConfig__staticFileURLPrefix: 'content/media'
+      storage__media__wrappedConfig__cdnUrl: 'https://s3.endpoint.example/branchleft-media-pro-co'
+      storage__media__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__media__wrappedConfig__multipartChunkSizeBytes: 5242880
+      storage__files__adapter: 'ScanningStorageAdapter'
+      storage__files__wraps: 'S3Storage'
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__wrappedConfig__bucket: 'branchleft-media-pro-co'
+      storage__files__wrappedConfig__region: 'eu'
+      storage__files__wrappedConfig__endpoint: 'https://s3.endpoint.example'
+      storage__files__wrappedConfig__forcePathStyle: true
+      storage__files__wrappedConfig__staticFileURLPrefix: 'content/files'
+      storage__files__wrappedConfig__cdnUrl: 'https://s3.endpoint.example/branchleft-media-pro-co'
+      storage__files__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__files__wrappedConfig__multipartChunkSizeBytes: 5242880
       mail__transport: 'SMTP'
       mail__options__host: 'mx.internal'
       mail__options__port: 587
       mail__options__secure: false
       mail__options__auth__user: 'pro-co'
+      mail__from: 'hello@news.pro-co.example'
+      bulkEmail__mailgun__baseUrl: 'http://mail-spool.internal.example.test:8080'
+      bulkEmail__mailgun__domain: 'news.pro-co.example'
       security__allowWebhookInternalIPs: false
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
@@ -146,9 +205,14 @@ services:
       privacy__useUpdateCheck: false
       logging__transports: '["stdout"]'
       database__connection__password: '${GHOST_DB_PASSWORD:?set GHOST_DB_PASSWORD in /etc/branchleft/pro-co.env}'
-      storage__S3Storage__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/pro-co.env}'
-      storage__S3Storage__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/pro-co.env}'
+      storage__images__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/pro-co.env}'
+      storage__images__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/pro-co.env}'
+      storage__media__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/pro-co.env}'
+      storage__media__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/pro-co.env}'
+      storage__files__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/pro-co.env}'
+      storage__files__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/pro-co.env}'
       mail__options__auth__pass: '${GHOST_MAIL_PASSWORD:?set GHOST_MAIL_PASSWORD in /etc/branchleft/pro-co.env}'
+      bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/pro-co.env}'
     volumes:
       - 'ghost-pro-co-content:/var/lib/ghost/content'
       - 'ghost-pro-co-adapters:/var/lib/ghost/content/adapters:ro'

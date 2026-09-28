@@ -41,6 +41,8 @@ export interface BrokerConfig {
   /** How long `GET /drain` holds an open request with nothing to hand over. */
   readonly drainPollTimeoutMs: number;
   readonly healthCheckTimeoutMs: number;
+  /** How long a colour swap waits for the freshly started colour to answer 200 before giving up on it. */
+  readonly ghostReadyPollTimeoutMs: number;
   /**
    * `healthPortBase + Number(slot)` is this slot's sidecar health port --
    * incidental (LLD-2 §01's figcaption: "the uid base and the port base are
@@ -88,8 +90,9 @@ function positiveInteger(env: BrokerEnv, name: string, fallback: number, max: nu
 }
 
 /**
- * The one place `BROKER_DEMO_ZONE`/`BROKER_PLATFORM_ZONE`/`BROKER_OWNED_DOMAINS`
- * are read. Exported so a plugin loaded by `loadPlugin` (which only ever
+ * The one place `BROKER_DEMO_ZONE`/`BROKER_PLATFORM_ZONE`/`BROKER_OWNED_DOMAINS`/
+ * `BROKER_DEMO_MAIL_DOMAIN`/`BROKER_MAIL_SPOOL_BASE_URL` are read. Exported so
+ * a plugin loaded by `loadPlugin` (which only ever
  * `import()`s a module path and reads its default export -- it has no
  * channel to receive `BrokerConfig.zones` directly) can call the exact
  * same parsing this module uses, rather than keeping its own copy that
@@ -103,6 +106,8 @@ export function zonesFromEnv(env: BrokerEnv): ZoneConfig {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    demoMailDomain: requireEnv(env, 'BROKER_DEMO_MAIL_DOMAIN'),
+    mailSpoolBaseUrl: requireEnv(env, 'BROKER_MAIL_SPOOL_BASE_URL'),
   };
 }
 
@@ -172,6 +177,7 @@ export function loadConfig(
       .filter(Boolean),
     drainPollTimeoutMs: positiveInteger(env, 'BROKER_DRAIN_POLL_TIMEOUT_MS', 30_000, 120_000),
     healthCheckTimeoutMs: positiveInteger(env, 'BROKER_HEALTH_TIMEOUT_MS', 2_000, 30_000),
+    ghostReadyPollTimeoutMs: positiveInteger(env, 'BROKER_GHOST_READY_TIMEOUT_MS', 30_000, 300_000),
     healthPortBase: positiveInteger(env, 'BROKER_HEALTH_PORT_BASE', 9100, 65000),
     appPortBase: positiveInteger(env, 'BROKER_APP_PORT_BASE', 9300, 65000),
     uidBase: positiveInteger(env, 'BROKER_UID_BASE', 30001, 65000),

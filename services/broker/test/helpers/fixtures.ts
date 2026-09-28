@@ -31,6 +31,8 @@ export const TEST_ZONES: ZoneConfig = {
   demoZone: 'demo-domain.example.test',
   platformZone: 'platform-domain.example.test',
   ownedDomains: ['demo-domain.example.test', 'platform-domain.example.test'],
+  demoMailDomain: 'demo-mail.example.test',
+  mailSpoolBaseUrl: 'http://mail-spool.internal.example.test:8080',
 };
 
 export function demoDescriptor(overrides: Partial<TenantDescriptor> = {}): TenantDescriptor {
@@ -50,10 +52,17 @@ export function demoDescriptor(overrides: Partial<TenantDescriptor> = {}): Tenan
     database: { kind: 'sqlite', path: '/data/demo-1/ghost.db' },
     media: { kind: 'local', path: '/data/demo-1/content', resize: false, srcsets: false },
     transport: { kind: 'queue', path: '/var/spool/demo-1' },
+    mail: {
+      enabled: true,
+      ceiling: 20,
+      estateCeiling: 500,
+      identity: { kind: 'demo', localPart: 'demo-1' },
+    },
     hostname: { kind: 'ours', sub: 'k7m-vale-bright', gated: true },
     gate: { kind: 'passphrase', argon2idHash: '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA' },
     backup: { kind: 'none' },
     codeInjection: { kind: 'blocked' },
+    breakGlass: { kind: 'disabled' },
     limits: { membersCap: 50, staffCap: 1 },
     caps: { cpus: '1.0', cpuShares: 512, pidsLimit: 256, nofile: 4096 },
     safety: { near: true, exact: true },
@@ -119,6 +128,12 @@ export function tenantDescriptorFixture(
       srcsets: true,
     },
     transport: { kind: 'queue', path: '/var/spool/acme' },
+    mail: {
+      enabled: true,
+      ceiling: 10000,
+      estateCeiling: 10000,
+      identity: { kind: 'tenant', domain: 'blog.acme.example', dkimSelector: 'bl' },
+    },
     hostname: {
       kind: 'theirs',
       fqdn: 'blog.acme.example',
@@ -127,6 +142,7 @@ export function tenantDescriptorFixture(
     gate: { kind: 'none' },
     backup: { kind: 'bucket-native', encryptionRecipient: 'age1qtenantacmeexamplerecipient' },
     codeInjection: { kind: 'blocked' },
+    breakGlass: { kind: 'disabled' },
     limits: { membersCap: null, staffCap: null },
     caps: { cpus: '1.0', cpuShares: 512, pidsLimit: 256, nofile: 4096 },
     safety: { near: true, exact: true },

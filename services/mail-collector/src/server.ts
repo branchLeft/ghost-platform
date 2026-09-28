@@ -6,7 +6,7 @@ import { DescriptorTargetStore } from './descriptorTargets.js';
 import { createDrainClient } from './drainClient.js';
 import { createDeliveryClient } from './deliveryClient.js';
 import { createHealthState } from './health.js';
-import { startHeartbeat } from './heartbeat.js';
+import { createDeadMansSwitch } from './heartbeat.js';
 import { createLogger } from './log.js';
 import { createThrottle } from './throttle.js';
 
@@ -38,6 +38,22 @@ const dedupe = createSubmittedTracker(config.dedupeTtlMs);
 
 const health = createHealthState();
 
+// Ping only once every host the descriptor currently names has reported a
+// completed cycle -- never on a timer of this module's own, which would
+// keep firing while one host's loop is wedged. `getExpectedTargetIds`
+// reads the store's own live target list, never a snapshot, so a
+// descriptor change takes effect on the very next reconcile. `shouldPing`
+// gates the ping on the SAME health signal a submission failure feeds (see
+// health.ts and heartbeat.ts's own header comments): a loop that keeps
+// completing cycles but cannot submit anything must go silent too, not
+// just one that stops looping outright.
+const heartbeat = createDeadMansSwitch({
+  url: config.heartbeatUrl,
+  log,
+  shouldPing: () => health.isHealthy(config.heartbeatFailureThreshold),
+  getExpectedTargetIds: () => store.targets.map((t) => t.id),
+});
+
 const runtime = createCollectorRuntime({
   store,
   drainClient,
@@ -45,17 +61,11 @@ const runtime = createCollectorRuntime({
   throttle,
   dedupe,
   health,
+  heartbeat,
   log,
   descriptorRefreshMs: config.descriptorRefreshMs,
   drainRetryBackoffMs: config.drainRetryBackoffMs,
   emptyPollBackoffMs: config.emptyPollBackoffMs,
-});
-
-const heartbeat = startHeartbeat({
-  url: config.heartbeatUrl,
-  intervalMs: config.heartbeatIntervalMs,
-  log,
-  shouldPing: () => health.isHealthy(config.heartbeatFailureThreshold),
 });
 
 // The initial descriptor read happens before the first drain attempt, so
@@ -71,7 +81,9 @@ const server = app.listen(config.port, () => {
 
 function shutdown(signal: string): void {
   log.info('worker_lifecycle', { event: 'shutdown_start', signal });
-  heartbeat.stop();
+  // Nothing to stop here -- createDeadMansSwitch runs no timer of its own;
+  // it simply stops being called once runtime.stop() below retires every
+  // target loop.
   server.close(() => {
     void runtime.stop().then(() => {
       deliveryClient.close();
