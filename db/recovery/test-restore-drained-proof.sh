@@ -1,56 +1,12 @@
 #!/bin/sh
-# Live proof, real containers: a tenant's dump restored onto a drained
-# colour, undrained only after a named post's own body renders -- and the
-# empty-database control design 09 (R4) names, run for real rather than
-# asserted: a Ghost pointed at a schema with no data answers HTTP 200 too,
-# so a restore of nothing must fail the content check while Ghost itself
-# looks healthy, and the colour it came up on must stay drained.
+# Live proof, real containers: proves the restore-onto-a-drained-colour
+# chain (see restore_drained.py) against real MySQL 8.0 servers, this
+# repo's own recovery and platform images, and services/drain-sidecar built
+# from source, including the empty-dump and live-database-collision
+# controls run for real rather than asserted.
 #
-# Five containers, two real MySQL 8.0 servers standing in for the tenant
-# database host and two fresh recovery targets, this repo's own recovery
-# image (ghcr.io/branchleft/db-recovery, by digest -- never `latest`, same
-# rule the runbook itself follows) doing the dump and the import, this
-# repo's own platform image serving each colour, and the real
-# services/drain-sidecar code (built from source, not a mock) answering
-# each colour's health port.
-#
-# GREEN: a real Ghost creates a real owner and a real, named post against a
-# SOURCE database; that tenant's dump is taken with the same mysqldump flags
-# dump_tenant.py itself uses; restore_drained.py restores it onto a fresh
-# target that a second Ghost then boots against, already drained; the named
-# post's body is read back from the rendered homepage; only then is the
-# flag cleared, and the sidecar is checked before and after.
-#
-# CONTROL: the same chain, with an empty file in place of a real dump. The
-# target Ghost boots its own migrations against nothing and answers 200 --
-# and restore_drained.py's content check must refuse that, leaving the
-# colour drained.
-#
-# LIVE-COLLISION: a fourth MySQL server that already holds a live
-# `ghost_tenant1` with known rows, seeded before restore_drained.py ever runs.
-# --mode restore-only must refuse before importing anything, and the live
-# database's own row count and CHECKSUM TABLE value must be provably
-# unchanged afterwards -- the owner ruling this section exists to hold:
-# restoring a per-tenant dump (its own CREATE DATABASE IF NOT EXISTS/USE)
-# onto a host that already has that database restores INTO it, not beside
-# it, so a target that already holds one must never be imported into at all.
-#
-# Local-sandbox simplifications, stated rather than left implicit: mysqldump
-# runs over TCP as root here, standing in for dump_tenant.py's own unix
-# socket + dedicated `backup`@`localhost` account (proven separately, and
-# unit-tested, by db/provision/test_dump_tenant.py) -- this proof's job is
-# the restore-onto-a-drained-colour chain, not a second proof of the dump
-# script's own connection boundary.
-#
-# Usage (run from the repo root, or let this script cd there itself):
-#   ./db/recovery/test-restore-drained-proof.sh <ghost-platform-image> <drain-sidecar-dist-dir>
-# <drain-sidecar-dist-dir> is services/drain-sidecar's own directory, built
-# first (`npm run build` there) -- this script mounts its dist/,
-# node_modules/ and package.json into a plain node:26.5.0-bookworm-slim
-# container rather than building services/drain-sidecar/Dockerfile itself,
-# because that Dockerfile's own `npm ci` needs a GitHub Packages read token
-# this proof does not assume is available; the sidecar CODE under test is
-# identical either way.
+# See README.md#running-the-real-container-proof for the GREEN/CONTROL/
+# LIVE-COLLISION scenarios, usage, and the local-sandbox simplifications.
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -1,0 +1,40 @@
+name: Demo host container egress CI
+
+# Runs demo-host/provision/branchleft_demo_egress.sh against a real dockerd
+# in a privileged Docker-in-Docker stand-in for demo1. Its unit tests run in
+# repo-tooling-ci.yml with the other demo-host/provision suites.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - demo-host/provision/branchleft_demo_egress.sh
+      - scripts/test-demo-container-egress.sh
+      - .github/workflows/demo-host-egress-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - demo-host/provision/branchleft_demo_egress.sh
+      - scripts/test-demo-container-egress.sh
+      - .github/workflows/demo-host-egress-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  egress-proof:
+    name: container egress proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shellcheck
+        run: shellcheck demo-host/provision/branchleft_demo_egress.sh scripts/test-demo-container-egress.sh
+
+      - name: Run the egress proof
+        run: ./scripts/test-demo-container-egress.sh

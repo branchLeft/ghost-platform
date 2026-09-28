@@ -16,17 +16,10 @@ export interface DescriptorStoreOptions {
 }
 
 /**
- * A minimal, local shape check -- not render-core's `validate()`. `validate`
- * enforces cross-field invariants (siteUrl-vs-hostname, code-injection
- * preconditions, safety flags...) that are the harness's job to have
- * already run before a descriptor reaches this directory (LLD-5 §07
- * handoff: "LLD-3, the harness, gains a further gate"). Re-running the full
- * check here would duplicate that gate and give this service an opinion on
- * fields it never reads. What this service needs is narrower and load-
- * bearing on its own: is the descriptor shaped enough for render-core's
- * `servedHostnameOf` to read `kind` and `hostname` at all, so a corrupt or
- * half-written file is excluded from the served set rather than crashing
- * the refresh or being read as some other variant's fields.
+ * A minimal, local shape check -- not render-core's `validate()`, which
+ * duplicates a gate already run upstream (LLD-5 §07). Just enough shape
+ * for `servedHostnameOf` to read `kind`/`hostname` safely.
+ * See ../README.md#descriptorstore-hasvalidshapeforserving.
  */
 function hasValidShapeForServing(
   value: unknown
@@ -58,16 +51,10 @@ function hasValidShapeForServing(
 }
 
 /**
- * The in-memory served-hostname set an ask asks against, refreshed from a
- * directory of one JSON descriptor file per tenant. A negative answer costs
- * no read of anything (LLD-5 E3): `has()` only ever touches the `Set`
- * `refresh()` last built, never the filesystem or a per-request query.
- *
- * Which hostname a descriptor derives to -- and which descriptors must
- * never be served at all (a demo's `ours` hostname; a `theirs` fqdn that is
- * itself one of the platform's own owned domains; a multi-label `ours`
- * sub) -- is render-core's `servedHostnameOf`, not a copy of it: a second
- * implementation of that logic is exactly how it diverged the first time.
+ * The in-memory served-hostname set an ask asks against. A negative
+ * answer costs no read of anything (LLD-5 E3). Which hostname a
+ * descriptor derives to is render-core's `servedHostnameOf`, not a copy.
+ * See ../README.md#descriptorstore-descriptorstore.
  */
 export class DescriptorStore {
   private served: ReadonlySet<string> = new Set();
@@ -123,21 +110,11 @@ export class DescriptorStore {
   }
 
   /**
-   * Rebuilds the served set from the directory, atomically from a caller's
-   * point of view: `has()` keeps answering from the previous set until this
-   * completes, and a directory read failure leaves the previous set intact
-   * rather than clearing it -- up to `maxStalenessMs`, past which `has()`
-   * fails closed on its own regardless of what `served` still holds. A
-   * per-file parse or shape failure is narrower: that one file is excluded
-   * (fails closed on its own hostname only) and the refresh continues.
-   *
-   * A second call while one is already running joins the first rather than
-   * starting a competing read.
+   * Rebuilds the served set atomically from a caller's point of view; a
+   * per-file parse/shape failure excludes only that file. Not `async`
+   * so two overlapping callers join the same Promise rather than racing.
+   * See ../README.md#descriptorstore-refresh.
    */
-  // Not `async`, deliberately: an `async` function always wraps its return
-  // value in a *new* Promise, even when the body returns an existing one --
-  // which would make two overlapping callers each hold a different Promise
-  // object for the same underlying read, defeating the point of joining.
   refresh(): Promise<void> {
     if (this.inFlight) {
       return this.inFlight;

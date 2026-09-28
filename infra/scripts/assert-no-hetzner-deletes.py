@@ -6,25 +6,8 @@ Usage:
     assert-no-hetzner-deletes.py --self-test
     assert-no-hetzner-deletes.py --verify-coverage <program-dir>
 
-Exit 0 when the plan destroys nothing protected, 1 on any finding (or when
-any input could not be read or understood), 2 on usage error.
-
-Ported from shared-infra's guard of the same name so the hosts stack's CI
-apply path carries the same gate as the estate stacks it builds on; the
-coverage map below is this repository's own. Consolidating the two copies
-rides with the shared guard packaging tracked on the board.
-
-What this cannot prove, both limits real:
-
-1. `pulumi preview` compares the program to Pulumi *state*, never to live
-   Hetzner. A resource already deleted out of band still reads as unchanged.
-   This gate answers "will this apply destroy something", not "is the estate
-   intact".
-
-2. A resource that migrates out of a program dir leaves the plan check
-   intact but makes the coverage map here stale. `--verify-coverage` fails
-   until the map is updated consciously, so the move is a reviewed edit
-   rather than a silent erosion.
+Exit 0/1/2 for clean/finding/usage-error.
+See assert-no-hetzner-deletes.md#module-overview for what this cannot prove.
 """
 
 import contextlib
@@ -61,6 +44,8 @@ PROTECTED_TYPES = {
 COVERAGE_BY_DIR = {
     # infra/hosts/index.ts declares app1 and db1 through the Host component.
     "hosts": {"Host"},
+    # infra/demo-host/index.ts declares demo1 from bare hcloud resources.
+    "demo-host": {"hcloud.Server", "hcloud.Firewall", "hcloud.PrimaryIp"},
 }
 
 # Any Pulumi step op containing either word destroys, or schedules the

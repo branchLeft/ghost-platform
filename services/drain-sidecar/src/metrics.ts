@@ -2,17 +2,8 @@ import type { VersionState } from './versionState.js';
 
 /**
  * Hand-rolled Prometheus text exposition, matching the shape
- * `mailgun-shim/src/metrics.ts` already established for this estate: a
- * couple of gauges don't earn a client-library dependency.
- *
- * The scrape is the transport this reading uses to reach `ops1` (LLD-8
- * §09's open question) -- Prometheus already scrapes this estate, so a
- * second, per-tenant `/metrics` endpoint on an existing sidecar process
- * is the same transport again, not a third one. It is also not a held
- * connection, so it carries no producer-side age metric of its own
- * (§03b's rule binds held connections; a scrape is the estate pulling a
- * fresh reading each time, never something that can go silently stale
- * between polls the way a held socket can).
+ * `mailgun-shim/src/metrics.ts` already established for this estate.
+ * See ../README.md#get-metrics--per-tenant-health-and-version.
  */
 export function renderMetrics(drained: boolean, versionState: VersionState): string {
   const lines = [

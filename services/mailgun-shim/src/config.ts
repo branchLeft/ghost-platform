@@ -55,18 +55,9 @@ const DEFAULT_MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 // this one could.
 const DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS = 100;
 
-// Bounds one source address's own share of the unauthenticated pool that is
-// admitted WITHOUT waiting, checked before the global backstop above. A
-// credential-less peer holding (or churning — replacing each connection the
-// instant it's refused or evicted) idle connections can never occupy more
-// than this many instantly, however many it opens: churn defeats a purely
-// time-based deadline (reconnect faster than it expires) and a purely
-// global count-based cap doesn't need many addresses to exhaust. A single
-// legitimate Ghost source is not always at 0 or 1 concurrent connections —
-// several members signing in at once each open their own connection, and
-// scrypt's own per-AUTH cost means more than a few can be simultaneously
-// unauthenticated for real — so a burst past this cap waits rather than
-// being refused; see the two settings below.
+// One source's share of the unauthenticated pool admitted without waiting;
+// a burst past it waits rather than being refused.
+// See config.md#unauthenticated-connections-per-source.
 const DEFAULT_MAX_UNAUTHENTICATED_CONNECTIONS_PER_SOURCE = 5;
 
 // How many connections from one source can be queued at once waiting for a
@@ -106,17 +97,9 @@ const DEFAULT_MAX_CONCURRENT_DATA_PHASES_PER_SUBMITTER = 5;
 
 const DEFAULT_SUBMITTER_MESSAGES_PER_MINUTE = 120;
 
-// Ghost's SMTP transactional sender always addresses exactly one recipient
-// per message (LLD-6 §03) — 50 is generous headroom above that, not a fit
-// to any real send this listener should ever see, and bounds one
-// credential's envelope fan-out per message. smtp-server rescans its whole
-// rcptTo array on every RCPT, so an unbounded envelope costs quadratic CPU
-// on this connection and starves every other submitter sharing the process
-// while it runs. A message over the cap is refused mid-envelope with a
-// temporary failure (RFC 5321), never trimmed and accepted: trimming would
-// return a false success for the recipients silently dropped. This is the
-// SMTP front door's own cap — the HTTP Mailgun-shaped route carries
-// Ghost's bulk newsletter sends and has no recipient cap of its own.
+// Caps one SMTP message's envelope: an unbounded one costs quadratic CPU.
+// Over the cap is a temporary failure, never a silent trim.
+// See config.md#recipients-per-message.
 const DEFAULT_MAX_RECIPIENTS_PER_MESSAGE = 50;
 
 // Structurally identical to NodeJS.ProcessEnv, spelled out instead of named

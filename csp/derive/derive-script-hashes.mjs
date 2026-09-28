@@ -1,24 +1,9 @@
 #!/usr/bin/env node
-// Derives the CSP script-hash set for one theme, at one Ghost version:
-// fetches a theme's rendered home, post, tag and author pages from a real,
-// running Ghost and hashes every inline <script> block it finds. The set
-// this produces is carried into render-core's `renderEdgeSiteBlock` as an
-// explicit `ThemeCsp`
-// value (`{ kind: 'computed', hashes: [...] }`); render-core never computes
-// one itself and this tool has no dependency on render-core at all -- LLD-5's
-// own "the render core stays pure" mark, and the reason `node:crypto` lives
-// here rather than under render-core/src, which its dependency-closure test
-// bans from importing anything outside itself.
-//
-// Hashing matches CSP's own hash-source semantics exactly: base64(SHA-256(
-// the raw bytes between a <script ...> tag with no `src` attribute and its
-// closing `</script>`)), taken from the page as served over HTTP -- not from
-// a browser's parsed DOM, which can normalise whitespace a byte-exact CSP
-// hash would not forgive; LLD-5's own spike confirmed this is byte-stable
-// across repeated fetches of the same page (05-gate-and-edge.html §04,
-// "fetch1=a436ff7b3934 fetch2=a436ff7b3934"). Deduplicated and sorted, so
-// the result of hashing four pages does not depend on the order they were
-// fetched in.
+// Derives the CSP script-hash set for one theme's rendered pages, hashed
+// exactly as CSP evaluates a hash-source: raw bytes as served over HTTP, not
+// browser-normalised text.
+// See derive-script-hashes.md#overview for the render-core boundary, hash
+// semantics and determinism.
 import { createHash } from 'node:crypto';
 
 // The closing delimiter follows the HTML spec's own "script data end tag

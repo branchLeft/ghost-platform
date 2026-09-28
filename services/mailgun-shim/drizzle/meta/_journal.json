@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1790605978608,
+      "tag": "0000_pre_drain_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1790605986849,
+      "tag": "0001_drain_handover",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790606023943,
+      "tag": "0002_sender_domain",
+      "breakpoints": true
+    }
+  ]
+}

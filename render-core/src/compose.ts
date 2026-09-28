@@ -1,38 +1,8 @@
 /**
  * The Compose stack one tenant runs on a shared app host — ported and
- * extended from `infra/tenant/compose.ts`.
- *
- * **Load-bearing change from the ported module: two services, not one.**
- * LLD-1 §03b records the ruling behind `TenantDescriptor.ports` becoming a
- * `PortTriple` rather than a single port: "LLD-4 measured two Ghosts over
- * one SQLite file with no contention and ruled blue/green everywhere,
- * demos included." Every kind gets a colour pair (`ports.a`, `ports.b`) so
- * a reconciler can start the new colour, verify it and only then retire the
- * old one — this module renders both services from one descriptor rather
- * than one service per render call, so a single `render()` output is a
- * complete, swappable stack.
- *
- * `ports.health` is not a Compose port at all: the drain-flag health
- * sidecar is a separate, already-shipped process the edge probes directly,
- * not a service this file defines.
- *
- * **Load-bearing: a demo binds to loopback, never `appHostIp`.** LLD-2 §01b
- * (load-bearing): "Publishing the slots on a non-loopback address instead
- * would put every demo's Ghost on demo1's network, around the gate." A
- * paying tenant keeps publishing on `appHostIp` — infra/tenant's existing,
- * unchanged posture, needed because a tenant's app host and edge host are
- * different machines reached over the private network. A demo's broker,
- * edge and Ghost all run on the same host, so loopback is both sufficient
- * and the thing that keeps every demo's Ghost from being reachable at all
- * except through the gate (and the broker's own `adminApi.configure` call,
- * `services/broker/src/app.ts`, which is itself a loopback call for
- * exactly this reason).
- *
- * See the module's own note in `render.ts` on why this makes render's
- * output for a "tenant zero"-equivalent descriptor structurally different
- * from what `infra/tenant/compose.ts` renders today (one service, one
- * port) — that Done-criterion conflict is called out there rather than
- * silently resolved here.
+ * extended from `infra/tenant/compose.ts`. Renders both blue/green services
+ * from one descriptor, and demo slots bind to loopback rather than `appHostIp`.
+ * See compose.md.
  */
 
 import { validatePrivateIpV4 } from './brand.js';

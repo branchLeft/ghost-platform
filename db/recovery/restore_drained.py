@@ -1,44 +1,13 @@
 #!/usr/bin/env python3
 """Restore a tenant's dump onto a drained colour, and undrain it last.
 
-Implements the one ordered chain design 09's own measurement names: MySQL
-readiness on the recovery target, the dump import, a content assertion
-against the colour that just came up, and only then clearing the drain
-flag. The chain never runs in any other order -- see `run_drained_restore`'s
-own doc comment for why a failure at any stage must leave the flag alone.
-
-**The control this module exists to make impossible to skip:** a Ghost
-pointed at a schema with no data still boots its own migrations and serves
-`200`. `verify_tenant_content` never treats a `200` as success by itself;
-it polls for a named, tenant-specific string in the rendered page, and an
-empty restore fails that check for as long as it is asked -- loudly,
-because "the colour came up" was never the assertion.
-
-**Where this restores to, and where it must never restore to.** The dump
-this reads is exactly what `dump_tenant.py` writes: one tenant's
-`--databases` dump, carrying its own `CREATE DATABASE IF NOT EXISTS` and
-`USE`. Imported onto a target that already holds a database of that name,
-those two statements restore INTO it rather than beside it -- the same
-collision `db/RUNBOOK-db.md`'s own restore-drill note describes for the
-estate-wide dump. `host`/`port` here are never `db1` (or whatever host
-currently serves this tenant); they name the drained colour's own,
-otherwise-empty database target -- and `restore_only` now checks that
-itself before importing anything: it refuses, without touching the
-target, if it already holds any non-system database at all. A recovery
-target is expected to be a fresh host with nothing on it yet, not merely
-a different one, so "empty" is the whole bar rather than a name match
-against the tenant being restored.
-
-**Why this never touches the flag itself, except to clear it.** LLD-2's
-broker owns the drain flag (`services/broker/src/drainFlag.ts`) and is what
-brings a colour up already drained, before this module's `host`/`port` ever
-answer a query. This module only ever removes the flag file, as its last
-successful step -- `services/drain-sidecar`'s own contract is mere presence
-via `lstat`, so clearing is exactly the file removal
-`services/broker/src/drainFlag.ts`'s `removeFileIfPresent` performs, done
-here in Python because this process has no Node runtime to call into. It
-never sets the flag: setting it is the bring-up step that must already have
-happened before restore starts, not this module's job.
+Runs MySQL readiness, the dump import, a tenant-specific content assertion
+against the colour that just came up, and only then clears the drain flag,
+always in that order — a failure at any stage leaves the flag alone rather
+than undoing an undrain that already happened. See
+README.md#restoring-a-tenant-onto-a-drained-colour for the full design:
+the empty-database control, where this must and must never restore to, and
+why this only ever clears the drain flag, never sets it.
 """
 
 from __future__ import annotations
@@ -277,18 +246,10 @@ def restore_only(
     sleep=time.sleep,
     now=time.monotonic,
 ) -> None:
-    """The first half of the chain, for a caller that must start the colour's
-    own Ghost process in between restoring the dump and verifying it --
-    Ghost has to exist against a populated (or, in the control case,
-    deliberately empty) database before anything can be asked of it over
-    HTTP. Touches the flag not at all.
-
-    Refuses -- via `assert_target_has_no_live_database`, unconditionally,
-    with no flag to bypass it -- before importing anything, if the target
-    already holds a non-system database. That call sits between readiness
-    and the import on purpose: it needs a live connection to list what is
-    already there, and it must run before `restore_dump` gets anywhere
-    near the target, not merely before this function returns."""
+    """The first half of the chain: MySQL readiness, then the live-database
+    refusal, then the dump import. Touches the flag not at all. See
+    README.md#restoring-a-tenant-onto-a-drained-colour for why the two
+    halves exist and why the refusal must run before `restore_dump`."""
     wait_for_mysql_ready(
         host=host, port=port, user=user, password=password,
         timeout_s=mysql_ready_timeout_s, run=run, sleep=sleep, now=now,
@@ -334,19 +295,12 @@ def run_drained_restore(
     sleep=time.sleep,
     now=time.monotonic,
 ) -> None:
-    """The ordered chain design 09 07c names, and the only thing this
-    function promises: readiness, restore, verify tenant-specific content,
-    and only then clear the flag. `flag_path` must already be set -- by
-    whatever brought the colour up drained -- before this runs; this
-    function never sets it, only ever clears it, and only as the last thing
-    it does on success. A failure at any earlier stage propagates without
-    touching the flag, so a restore that turns out wrong is discarded by
-    leaving the colour drained, never by undoing an undrain that already
-    happened. Composed from `restore_only` and `verify_and_undrain` rather
-    than repeating their bodies -- a caller whose colour's Ghost process
-    must start in between the two (the ordinary case) calls those directly;
-    this exists for a caller whose target already has a running Ghost
-    process to verify against."""
+    """Composes `restore_only` and `verify_and_undrain` for a caller whose
+    target already has a running Ghost process to verify against.
+    `flag_path` must already be set before this runs; it only ever clears
+    it, and only as the last step on success. See
+    README.md#restoring-a-tenant-onto-a-drained-colour for the ordering
+    guarantee and why a failure never touches the flag."""
     restore_only(
         dump_path=dump_path,
         host=host,

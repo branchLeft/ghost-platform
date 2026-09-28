@@ -120,6 +120,7 @@ class TenantSourceTests(unittest.TestCase):
                             file_path,
                             "--run-lock-path",
                             os.path.join(tmp, "run.lock"),
+                            "--local-test-transport",
                         ]
                     )
         # blog named twice (once directly, once via the file) collapses to one.

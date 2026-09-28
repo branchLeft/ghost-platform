@@ -4,16 +4,8 @@ import { assertAgeRecipient } from './ageEncryption.js';
 /**
  * Everything that decides whose data is exported, as whom, and to which
  * key comes from the tenant's own rendered configuration, never from a
- * value the operator types:
- *
- * - the Ghost environment, image, user and volumes from the tenant's
- *   rendered `compose.yml`, resolved by `docker compose config` against its
- *   secrets and image env files, so the export colour boots exactly as the
- *   tenant's own colours do;
- * - the support identity from that same environment -- the one the
- *   tenant's break-glass adapter is configured with;
- * - the `age` recipient from the tenant descriptor's
- *   `backup.encryptionRecipient`, the one recipient its backups use.
+ * value the operator types.
+ * See ../README.md#whose-data-as-whom-to-which-key-the-tenants-own-config.
  */
 
 export class TenantConfigError extends Error {

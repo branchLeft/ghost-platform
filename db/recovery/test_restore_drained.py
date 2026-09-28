@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for restore_drained.py.
 
-Every external effect is faked -- no real mysql client, no real HTTP call,
-no real sleep -- so these cover the ordering the module promises (readiness,
-restore, verify, undrain-last) and, deterministically, the exact control
-design 09 names: a `200` with no expected content must never be read as
-success, and must be reported differently from "never answered at all".
-`run_drained_restore`'s own ordering guarantee -- the flag is only ever
-cleared after every earlier stage has passed -- is proven for each stage by
-sabotaging that one stage's fake and checking the flag-clear fake was never
-called.
+Every external effect is faked. See README.md#what-the-drained-restore-unit-tests-prove for the ordering
+guarantee and control case these tests cover, and what they deliberately
+leave to test-restore-drained-proof.sh instead.
 """
 
 from __future__ import annotations

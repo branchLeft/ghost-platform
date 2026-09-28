@@ -6,17 +6,9 @@ import { deriveVersionState } from './versionState.js';
 import type { GhostVersionProbe } from './versionProbe.js';
 
 /**
- * The one route this service exists to serve. A slot's health is the drain
- * flag, not Ghost, so the flag is checked first and short-circuits to 503
- * without ever asking Ghost -- a sidecar that asked Ghost first and used the
- * flag as a tie-breaker would still leak Ghost's opinion into the drained
- * case on a slow or flaky probe. 200 only when the flag is clear AND
- * Ghost's own probe answers 200.
- *
- * `/metrics` is scraped, not held, so it carries the drain flag's own
- * state plus Ghost's reported version and, only for the undrained colour,
- * whether that matches what `intendedVersion` says the descriptor wants.
- * See `versionState.ts` for why that gating lives there and nowhere else.
+ * The one route this service exists to serve: `200` only when the drain
+ * flag is clear AND Ghost's own probe answers `200`. See
+ * ../README.md#the-health-check and ../README.md#get-metrics--per-tenant-health-and-version.
  */
 export function createApp(
   drainFlag: DrainFlag,

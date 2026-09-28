@@ -1,16 +1,9 @@
 #!/usr/bin/env node
-// Resolves the six CDN script bundles and the one CDN stylesheet the pinned
-// Ghost image loads by default (`ghost/core/core/shared/config/defaults.json`
-// in `forks/Ghost` at `v6.55.0`, lines 294-318), downloads the exact bytes
-// jsdelivr currently resolves each floating `~` range to, and writes them
-// into `widgets/dist/` alongside a content-digest manifest in
-// `widgets/pins.json`.
-//
-// Re-running this is how a future upgrade re-pins: it always re-resolves
-// against the live CDN, so the diff in `pins.json` and `dist/` is the whole
-// review surface for "did the third party change what these bytes are".
-// It never runs at deploy or build time — only here, by hand, to produce a
-// new commit.
+// Resolves the pinned CDN bundles the pinned Ghost image loads by default,
+// downloads the exact bytes jsdelivr currently resolves each floating `~`
+// range to, and writes them into widgets/dist/ and widgets/pins.json.
+// Re-run by hand only, to produce a reviewed commit -- never at build or
+// deploy time. See ../README.md#fetch-pinsmjs.
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';

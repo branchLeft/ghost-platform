@@ -1,43 +1,8 @@
-// A committed runbook must not carry either half of the same defect: an
-// unsubstituted placeholder in a copy-pasteable command, or a concrete
-// operational value (a fixed host's address) committed as a literal. Both
-// break the runbook the same way for a reader who pastes the command as
-// written -- one form cannot resolve at all, the other silently drifts once
-// the value it copied stops being current. The fix in both directions is
-// threading the value through a shell variable a lookup command populates,
-// never a hardcoded string and never an unresolved placeholder.
-//
-// Two checks, not three, over the same fenced blocks:
-//
-// - `addressPlaceholders` matches any unresolved, address-shaped placeholder
-//   token anywhere in a command fence -- an assignment's whole value,
-//   `export`ed, `local`, quoted, split across a line continuation, or an
-//   argument inside a larger command. Hostname and position are not the
-//   property that makes one of these wrong: it reads as an address (its
-//   trailing word is ip/ipv4/address/addr) and nothing has substituted it,
-//   independent of which host it names, whether it names one at all, or
-//   where in the line it sits. A host-name scope and an assignment-shaped
-//   scope were both tried and each left a gap the other didn't cover.
-// - `fixedHostLiterals` is a genuinely different property and stays
-//   separate: it matches only the bare, exact literal value of a specific,
-//   known fixed host, never a `/32` or a CIDR, and never a threaded
-//   `$VARIABLE` reference.
-//
-// Deliberately narrower than "no `<...>` anywhere in a fenced block" or "no
-// IPv4-shaped token anywhere in a fenced block":
-//
-// - Only `bash` and `sql` fences count as command blocks in this repo's
-//   runbooks -- `text`/`yaml`/`json` fences here hold illustrative sample
-//   output, never something pasted and run.
-// - The address word must be *trailing*, not merely present, so a
-//   per-invocation credential id such as `<db1 backup key id>` is left
-//   alone: it is not an address, and this scanner does not track resource
-//   ids at all -- a resource looked up fresh by id (rather than hardcoded)
-//   is a different, already-correct pattern this scanner has no opinion on.
-// - A token that legitimately varies per invocation (`<slug>`, `<tenant>`,
-//   `<digest>`, `<run-id>`, `<host>`) is not address-shaped and never
-//   matches, whether it is an assignment's whole value or an argument
-//   inside a larger command.
+// Two checks over the same fenced runbook blocks: an unresolved,
+// address-shaped placeholder, and a committed literal for a specific known
+// fixed host. See runbook-literal-placeholders.md for what each matches and
+// why, and why both are deliberately narrower than a blanket `<...>` or
+// IPv4-shaped scan.
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -51,6 +16,7 @@ const RUNBOOK_PATHS = [
   'RUNBOOK-media-backup-lifecycle.md',
   'RUNBOOK-tenant-onboarding.md',
   'db/RUNBOOK-db.md',
+  'services/broker/RUNBOOK-broker-deploy.md',
 ];
 
 const COMMAND_FENCE_LANGS = new Set(['bash', 'sql']);
@@ -104,14 +70,7 @@ function commandBlocks(text) {
   return blocks.filter((b) => COMMAND_FENCE_LANGS.has(b.lang));
 }
 
-/**
- * Every unresolved, address-shaped placeholder token in `blockText`,
- * wherever it sits -- an assignment's entire value, `export`ed, `local`,
- * quoted, split across a line continuation, or an argument inside a larger
- * command. Hostname and position are not the property that makes one of
- * these wrong: it reads as an address (its trailing word is
- * ip/ipv4/address/addr) and nothing has substituted it.
- */
+/** See runbook-literal-placeholders.md ("`addressPlaceholders`"). */
 function addressPlaceholders(blockText) {
   const found = [];
   let match;
@@ -126,11 +85,7 @@ function addressPlaceholders(blockText) {
   return found;
 }
 
-/**
- * Bare IPv4 literals in `blockText` equal to a specific, known address this
- * file pins in `FIXED_HOST_LITERALS` -- the anti-pattern the placeholder
- * check above exists to catch, committed instead of left unresolved.
- */
+/** See runbook-literal-placeholders.md ("`fixedHostLiterals`"). */
 function fixedHostLiterals(blockText) {
   const found = [];
   let match;
@@ -138,6 +93,103 @@ function fixedHostLiterals(blockText) {
   while ((match = BARE_IPV4_RE.exec(blockText)) !== null) {
     if (FIXED_HOST_LITERAL_VALUES.has(match[0])) {
       found.push(match[0]);
+    }
+  }
+  return found;
+}
+
+// A secret-shaped variable name -- PWD, PASSWORD, SECRET or TOKEN as a
+// whole word component, matching this repo's own runbook naming
+// (DB_DUMP_MYSQL_PWD, MYSQL_ROOT_PASSWORD, ...). Case-insensitive, like
+// ADDRESS_WORD_RE above, for the same reason: a runbook author's casing is
+// not the property this check exists to verify.
+const SECRET_VAR_NAME_RE = /(?:^|_)(PWD|PASSWORD|SECRET|TOKEN)(?:_|$)/i;
+// echo/printf/cat as a standalone shell word -- the three commands whose
+// whole job is writing their argument straight back out, so any of them
+// touching a secret expansion is a terminal echo, a redirect notwithstanding
+// (a redirect is easy to add later and easy to miss on review; the safe
+// shape uses a different command entirely -- `install -m 600 /dev/stdin
+// <path>` is what this repo's own runbook now does instead).
+const SECRET_COMMAND_RE = /(?:^|[;&|]|\s)(?:echo|printf|cat)(?:\s|$)/;
+const VAR_EXPANSION_RE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
+
+/**
+ * Shell line-continuation (`\` at end of line) joined back into one
+ * logical line first -- the exact shape a wrapped `printf '...' \` +
+ * `"$SECRET"` splits a command and its secret argument across two
+ * physical lines, which a naive per-line scan would miss entirely.
+ */
+function joinContinuations(lines) {
+  const joined = [];
+  let buffer = '';
+  for (const raw of lines) {
+    const combined = buffer + raw;
+    if (combined.endsWith('\\')) {
+      buffer = combined.slice(0, -1);
+    } else {
+      joined.push(combined);
+      buffer = '';
+    }
+  }
+  if (buffer) joined.push(buffer);
+  return joined;
+}
+
+/**
+ * Splits one logical line into command segments at `&&`, `||`, `;` and
+ * `|`, outside quotes -- so a secret expansion in one command (an env-var
+ * assignment feeding `aws`, say) is never blamed on an unrelated `cat` of
+ * a different, non-secret file later in the same compound line. Quote
+ * tracking is deliberately simple (no backslash-escape handling beyond a
+ * literal `\"`/`\'` immediately before the matching quote) -- enough for
+ * this repo's own runbook style, not a general shell parser.
+ */
+function splitCommandSegments(line) {
+  const segments = [];
+  let current = '';
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote && line[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if ((ch === '&' || ch === '|') && line[i + 1] === ch) {
+      segments.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    if (ch === ';' || ch === '|') {
+      segments.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments;
+}
+
+/** See runbook-literal-placeholders.md ("`secretEchoes`"). */
+function secretEchoes(blockText) {
+  const found = [];
+  for (const line of joinContinuations(blockText.split('\n'))) {
+    for (const segment of splitCommandSegments(line)) {
+      if (!SECRET_COMMAND_RE.test(segment)) continue;
+      let match;
+      VAR_EXPANSION_RE.lastIndex = 0;
+      while ((match = VAR_EXPANSION_RE.exec(segment)) !== null) {
+        if (SECRET_VAR_NAME_RE.test(match[1])) {
+          found.push(segment.trim());
+        }
+      }
     }
   }
   return found;
@@ -166,6 +218,26 @@ test('no RUNBOOK-*.md fenced command block contains an unresolved address placeh
   );
 });
 
+test('no RUNBOOK-*.md fenced command block echoes, printfs or cats a secret-shaped variable', () => {
+  const violations = [];
+  for (const relPath of RUNBOOK_PATHS) {
+    const text = readFileSync(path.join(ROOT, relPath), 'utf8');
+    for (const block of commandBlocks(text)) {
+      const blockText = block.lines.join('\n');
+      for (const line of secretEchoes(blockText)) {
+        violations.push(`${relPath}: ${line}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    violations,
+    [],
+    'found echo/printf/cat expanding a PWD/PASSWORD/SECRET/TOKEN-named variable in a ' +
+      "fenced command block -- write it to a file instead, e.g. 'install -m 600 " +
+      `/dev/stdin <path> <<EOF ... EOF':\n${violations.join('\n')}`
+  );
+});
+
 test('every RUNBOOK-*.md this repo ships is covered by the scan above', () => {
   // A hardcoded file list is exactly the kind of thing that silently stops
   // covering what it once did -- this proves the list still matches the
@@ -187,17 +259,8 @@ test('every RUNBOOK-*.md this repo ships is covered by the scan above', () => {
   assert.deepEqual(found.sort(), [...RUNBOOK_PATHS].sort());
 });
 
-// The Teardown section must not delete the directory that holds a tenant's
-// Compose file before anything stops the containers that file describes --
-// the unit that starts them carries no ExecStop, so nothing else in the
-// section can stop them once that file is gone. This check pins the fix at
-// the text level: a label-filtered `docker stop` (never a `docker compose
-// ... down`, which re-parses the Compose file and fails on every real
-// tenant's mandatory `${VAR:?...}` secrets -- see the comment beside step 2
-// in the runbook itself) has to appear, and it has to appear before the
-// line that removes the tenant's directory and before the line that
-// removes its named volumes, wherever those sit across the section's
-// fenced blocks.
+// See runbook-literal-placeholders.md ("The RUNBOOK-tenant-onboarding.md
+// Teardown order check").
 const TEARDOWN_HEADING_RE = /^##\s+Teardown\s*$/m;
 const NEXT_HEADING_RE = /^##\s+\S/m;
 // The one correct stop step: `docker ps -q --filter
@@ -240,14 +303,7 @@ function teardownSectionText(fullText) {
   return nextHeadingOffset === -1 ? afterHeading : afterHeading.slice(0, nextHeadingOffset);
 }
 
-/**
- * Violations of the teardown order above, found in `sectionText`'s fenced
- * bash/sql blocks. Order is judged across the whole section, concatenating
- * every command block's lines in document order -- a stop step in one
- * fenced block still has to precede a removal step in a later one. A
- * `docker compose ... down` is a violation outright, regardless of where it
- * sits, because it cannot succeed against a real tenant stack at all.
- */
+/** See runbook-literal-placeholders.md ("The RUNBOOK-tenant-onboarding.md Teardown order check"). */
 function teardownOrderViolations(sectionText) {
   // Comment lines (explanatory prose, including the one right beside step 2
   // that names the banned form to explain why it's banned) are not commands
@@ -609,4 +665,73 @@ test('self-test: the scanner leaves the verification slash-32 form alone', () =>
   ].join('\n');
   const blocks = commandBlocks(sample);
   assert.deepEqual(fixedHostLiterals(blocks[0].lines.join('\n')), []);
+});
+
+// Self-tests: secretEchoes, against synthetic input rather than today's
+// tree, for the same reason every other matcher above is.
+
+test('self-test: the secret-echo scanner catches a printf expanding a PWD variable', () => {
+  const sample = ['```bash', 'printf \'DB_DUMP_MYSQL_PWD=%s\\n\' "$DB_DUMP_MYSQL_PWD"', '```'].join(
+    '\n'
+  );
+  const blocks = commandBlocks(sample);
+  assert.equal(secretEchoes(blocks[0].lines.join('\n')).length, 1);
+});
+
+test('self-test: the secret-echo scanner catches the exact split-across-lines regression', () => {
+  // The real defect this check exists to catch: printf and its secret
+  // argument on two physical lines, joined by a trailing backslash.
+  const sample = [
+    '```bash',
+    "printf 'DB_DUMP_MYSQL_PWD=%s\\n' \\",
+    '  "$DB_DUMP_MYSQL_PWD"',
+    '```',
+  ].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.equal(secretEchoes(blocks[0].lines.join('\n')).length, 1);
+});
+
+test('self-test: the secret-echo scanner catches echo and cat too, and other secret names', () => {
+  const samples = [
+    'echo "$MYSQL_ROOT_PASSWORD"',
+    'cat "$TOKEN_FILE_CONTENTS"',
+    'echo "token=$BEARER_SECRET"',
+  ];
+  for (const line of samples) {
+    const sample = ['```bash', line, '```'].join('\n');
+    const blocks = commandBlocks(sample);
+    assert.equal(secretEchoes(blocks[0].lines.join('\n')).length, 1, line);
+  }
+});
+
+test('self-test: the secret-echo scanner leaves a non-secret variable alone', () => {
+  const sample = ['```bash', 'printf \'%s\\n\' "$OPS1_ADDR"', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.deepEqual(secretEchoes(blocks[0].lines.join('\n')), []);
+});
+
+test('self-test: the secret-echo scanner leaves a secret variable alone outside echo/printf/cat', () => {
+  const sample = [
+    '```bash',
+    'install -m 600 /dev/stdin /etc/branchleft/backup-worker.env <<EOF',
+    'DB_DUMP_MYSQL_PWD=$DB_DUMP_MYSQL_PWD',
+    'EOF',
+    '```',
+  ].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.deepEqual(secretEchoes(blocks[0].lines.join('\n')), []);
+});
+
+test('self-test: the secret-echo scanner leaves a bare read/export of a secret alone', () => {
+  const sample = ['```bash', 'read -rs DB_DUMP_MYSQL_PWD; export DB_DUMP_MYSQL_PWD', '```'].join(
+    '\n'
+  );
+  const blocks = commandBlocks(sample);
+  assert.deepEqual(secretEchoes(blocks[0].lines.join('\n')), []);
+});
+
+test('self-test: the secret-echo scanner does not false-positive on echo used for something else entirely', () => {
+  const sample = ['```bash', 'echo "no secret on this line at all"', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.deepEqual(secretEchoes(blocks[0].lines.join('\n')), []);
 });

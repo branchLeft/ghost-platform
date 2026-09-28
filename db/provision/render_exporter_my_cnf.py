@@ -2,19 +2,7 @@
 """Writes the mysqld-exporter's `.my.cnf` from `EXPORTER_MYSQL_PWD` in
 `/etc/branchleft/db.env`.
 
-The exporter has no way to take a password that is not either a file it reads
-or an environment variable. An environment variable is visible in `docker
-inspect` to every account that can reach the Docker socket, so this renders a
-file instead, mode 0400 and owned by the uid the container runs as.
-
-The output lives under /etc/branchleft rather than in the stack directory,
-because it has to exist before `docker compose up` runs and /opt/branchleft/db
-is a deploy target that is re-copied wholesale. /etc/branchleft is where every
-other stack secret on this estate already lives, and nothing sweeps it.
-
-Run again after a password rotation, then restart `branchleft-compose@db` to
-pick it up. The stack's systemd drop-in also runs this once before every
-start, so a fresh boot never serves a stale render.
+See render_exporter_my_cnf.md#module-overview.
 """
 
 from __future__ import annotations
@@ -42,19 +30,9 @@ def output_path(env: dict[str, str]) -> pathlib.Path:
     it is testing."""
     return pathlib.Path(env.get("EXPORTER_MY_CNF_PATH") or DEFAULT_OUTPUT_PATH)
 
-# The exporter runs `os.ExpandEnv` over every value it parses out of this file
-# (config.go's `cfg.ValueMapper`), so a password containing `$` is silently
-# rewritten before it is used: `pw$with$dollars` authenticates as `pw`, the
-# container stays up and serving, and only `mysql_up 0` says otherwise. The
-# same parser strips a leading and trailing `"` and treats `#`, `;` and `\`
-# as syntax.
-#
-# Allow-listed rather than escaped, because none of those has an escape that
-# survives both the ini parser and the variable expansion -- `$$` expands to
-# the empty string, it does not quote. A generated password has no reason to
-# leave this alphabet, so the constraint costs nothing and cannot be got
-# subtly wrong. 20 characters is the floor for an account reachable only over
-# a host-local socket.
+# Allow-listed, not escaped: no escape for these characters survives both
+# the exporter's ini parser and its variable expansion. See
+# render_exporter_my_cnf.md#safe_password.
 SAFE_PASSWORD = re.compile(r"\A[A-Za-z0-9._~-]{20,}\Z")
 
 GENERATOR_HINT = (
@@ -98,14 +76,8 @@ def render(env: dict[str, str]) -> str:
 def clear_bind_mount_stub(path: pathlib.Path) -> None:
     """Removes a directory or symlink sitting where the rendered file goes.
 
-    Docker creates an empty *directory* at a bind-mount source it cannot find.
-    So a single `docker compose up` run before this renderer was installed --
-    or on a host where the drop-in did not land -- leaves a directory at the
-    output path, and `os.replace` then fails with IsADirectoryError on every
-    subsequent start, MySQL's included, permanently and across reboots.
-
-    An empty directory is that stub and is removed. A non-empty one is
-    somebody's data and `os.rmdir` refuses it, which is the right way round.
+    See render_exporter_my_cnf.md#clear_bind_mount_stub for why Docker can
+    leave a directory there and why only an empty one is removed.
     """
     if path.is_symlink():
         path.unlink()

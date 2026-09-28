@@ -8,40 +8,13 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
- * The load-bearing control (LLD-5 E2, and the story's own done-means:
- * "bind it to all interfaces and the reachability test goes red"). This
- * spawns the actual built entrypoint (`dist/server.js`, built by this
- * package's `pretest:unit`/`precoverage` hooks) with real environment
- * variables -- not `createApp(...).listen(...)` called directly from the
- * test process -- because the property under test is what the shipped
- * process does with `config.bindHost`, and a local listen helper cannot
- * see a bug in server.ts's own wiring between the two.
- *
- * A non-loopback IPv4 address is what a multi-homed edge host has beyond
- * its private interface: something with a route to it that is not the
- * interface odask is supposed to be reachable on. `127.0.0.2` was tried
- * first and rejected -- unlike Linux, macOS does not route the rest of
- * 127.0.0.0/8 to loopback without an explicit interface alias, so a
- * connection to it hangs (ETIMEDOUT) rather than proving anything. The
- * machine's real, already-configured interface has no such platform gap.
- *
- * How to reproduce the review's sabotage against this test (not committed,
- * recorded verbatim in the PR body instead): in src/server.ts, change
- *   app.listen(config.port, config.bindHost, () => { ... })
- * to
- *   app.listen(config.port, config.bindHost && '::', () => { ... })
- * then `npm run build` and re-run this file. `config.bindHost` is always a
- * non-empty string (config.ts throws otherwise), so the `&&` is a no-op in
- * disguise -- every request still reads as "bound to config.bindHost" in
- * a log line or a config dump, while the process actually binds every
- * interface.
- *
- * A second sabotage the second describe block below guards, the same way:
- * delete the post-listen `isEveryInterfaceAddress` check in server.ts
- * entirely. `BIND_HOST=0.0.0.0` is still refused (config.ts's own string
- * check), but `BIND_HOST=0` -- and `::0`, `0::`, `::ffff:0.0.0.0` -- are
- * not spellings that check lists, so with the post-listen guard gone all
- * four start, bind every interface, and this suite is what notices.
+ * The load-bearing control (LLD-5 E2): spawns the actual built entrypoint
+ * with real environment variables, not `createApp(...).listen(...)`
+ * called directly, because the property under test is what the shipped
+ * process does with `config.bindHost`. `127.0.0.2` was tried and
+ * rejected as the non-loopback probe address -- see sabotage
+ * reproduction steps and platform notes.
+ * See ../../README.md#reachability-test-load-bearing-control.
  */
 const otherInterfaceAddress = (): string | undefined => {
   for (const addrs of Object.values(networkInterfaces())) {

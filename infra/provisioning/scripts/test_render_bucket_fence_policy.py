@@ -1,15 +1,8 @@
-"""Tests for the operational-bucket fence, weighted towards its two failures.
-
-The first failure is a fence that does not fence: every pipeline keeps working,
-nothing looks wrong, and every other credential in the project still reaches
-the estate's backups. That is the state this repository is in today, and
-nothing about it is visible from the outside.
-
-The second is a fence that locks the bucket. It is rarer and far worse: the
-statement that would have to be edited is the statement doing the denying, no
-other key in the project is exempt, and `DeleteBucket` is denied too. There is
-no undo inside the account. Both directions have to be asserted here, because
-neither is observable from a successful `put-bucket-policy`.
+"""Tests for the operational-bucket fence, weighted towards its two failures:
+a fence that does not fence (invisible from the outside), and a fence that
+locks the bucket permanently (no undo inside the account). Neither is
+observable from a successful `put-bucket-policy`, so both are asserted here.
+See test_render_bucket_fence_policy.md#module-overview.
 """
 
 from __future__ import annotations

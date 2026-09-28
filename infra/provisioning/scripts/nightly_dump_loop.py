@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 
 import backup_worker as bw
-from dial_in_transport import DialInTransport, LocalProcessTransport, UnwiredCollectorChannelTransport
+from dial_in_transport import DialInTransport, LocalProcessTransport, RemoteMysqldumpTransport
 
 
 class NightlyLoopAlreadyRunning(Exception):
@@ -205,7 +205,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--local-test-transport",
         action="store_true",
-        help="use LocalProcessTransport instead of the real dial-in channel -- local proof only",
+        help=(
+            "use LocalProcessTransport instead of running mysqldump for real, over "
+            "dial_in_transport.py's RemoteMysqldumpTransport -- local proof only"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -222,7 +225,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.local_test_transport:
         transport = LocalProcessTransport()
     else:
-        transport = UnwiredCollectorChannelTransport()
+        transport = RemoteMysqldumpTransport(
+            host=bw._require_env("BACKUP_WORKER_DB_HOST"),
+            user=bw._require_env("BACKUP_WORKER_MYSQL_USER"),
+            ssl_ca=bw._require_env("BACKUP_WORKER_MYSQL_SSL_CA"),
+            port=int(os.environ.get("BACKUP_WORKER_DB_PORT", "3306")),
+        )
 
     mysql_pwd = bw._require_env("DB_DUMP_MYSQL_PWD")
     age_recipient = bw._require_env("AGE_RECIPIENT_PUBLIC_KEY")

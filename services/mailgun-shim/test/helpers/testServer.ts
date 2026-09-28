@@ -86,8 +86,7 @@ export async function startTestShim(options: StartTestShimOptions = {}): Promise
       maxConcurrentDataPhasesPerSubmitter: 5,
       submitterMessagesPerMinute: 120,
     });
-    smtpPort = 20000 + Math.floor(Math.random() * 20000);
-    await smtpFrontDoor.listen(smtpPort, '127.0.0.1');
+    smtpPort = await smtpFrontDoor.listen(0, '127.0.0.1');
   }
 
   return {

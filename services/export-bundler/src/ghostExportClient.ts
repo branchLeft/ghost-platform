@@ -55,15 +55,8 @@ function filenameFromDisposition(header: string | null, fallback: string): strin
 const FORWARDED_PROTO_HEADERS = { 'X-Forwarded-Proto': 'https' };
 
 /**
- * Ghost's own permission model refuses both export routes to a custom
- * integration's Admin API key (verified against a real container: both
- * answer 403 `NoPermissionError`, because "Export database" is not among
- * the "Admin Integration" role's permissions -- only Administrator/Owner
- * carries it). So this authenticates the way `adapters/sso/README.md`'s
- * break-glass adapter does: spend an operator-minted token on `/ghost/`
- * to open the support account's Administrator session, then carry that
- * session's cookie on both export requests. The adapter opens it only
- * while the account is active, which is only inside a grant.
+ * Authenticates as `adapters/sso/README.md`'s break-glass adapter does.
+ * See ../README.md#why-a-break-glass-session-not-an-admin-api-key.
  */
 async function openBreakGlassSession(
   baseUrl: string,

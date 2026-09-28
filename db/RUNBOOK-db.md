@@ -457,6 +457,12 @@ is nothing to prune yet, and running it against a brand-new bucket is a no-op
 at best. See "Backup retention" below for how to bring it onto an
 already-running `db1`.
 
+## Backup worker account (`route=b`)
+
+Runbooks live in `ghost-platform-docs` only:
+[`backup-worker-account-handover-runbook.md`](https://github.com/branchLeft/ghost-platform-docs/blob/main/backup-worker-account-handover-runbook.md)
+carries the account, TLS-CA and `ops1`-side handover commands.
+
 ## Backup retention
 
 Nothing before this pruned a *current* object: dumps and shipped binlogs

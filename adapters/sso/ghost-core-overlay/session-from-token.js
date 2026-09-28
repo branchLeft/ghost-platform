@@ -13,19 +13,8 @@ module.exports = SessionFromToken;
  */
 
 /**
- * Returns a connect middleware function which exchanges a token for a session
- *
- * @template Token
- * @template Lookup
- *
- * @param { object } deps
- * @param { (req: Req) => Promise<Token> } deps.getTokenFromRequest
- * @param { (token: Token) => Promise<Lookup> } deps.getLookupFromToken
- * @param { (lookup: Lookup) => Promise<User> } deps.findUserByLookup
- * @param { (req: Req, res: Res, user: User) => Promise<void> } deps.createSession
- * @param { boolean } deps.callNextWithError - Whether next should be call with an error or just pass through
- *
- * @returns {RequestHandler}
+ * Returns a connect middleware function which exchanges a token for a session.
+ * See session-from-token.md#sessionfromtoken for the parameter and return shapes.
  */
 function SessionFromToken({
     getTokenFromRequest,
@@ -64,19 +53,10 @@ function SessionFromToken({
             return;
         }
 
-        // branchLeft: express-session's own `res.end` override flushes response
-        // headers -- including `Set-Cookie` -- synchronously, then writes the
-        // session to its store asynchronously in the background (see
-        // express-session's index.js). A client that acts on the headers
-        // before that write lands (any redirect- or page-follower, not just a
-        // test) can be refused on its very next request, because the session
-        // row it is authenticating against does not exist yet. Awaiting the
-        // save here, before `next()` hands off to the response, closes that
-        // window: by the time headers can reach a client, the session is
-        // already durable. A failed save must not hand off to a response that
-        // looks like a normal, if unauthenticated, page -- the caller already
-        // holds an accepted token for a real user, so silence here would read
-        // as a working login that silently is not one.
+        // The session save is awaited before next(): express-session flushes
+        // Set-Cookie before its async store write lands, so a client acting on
+        // the cookie first would be refused. See
+        // session-from-token.md#session-save-is-awaited-before-next.
         try {
             await new Promise((resolve, reject) => {
                 req.session.save((err) => {

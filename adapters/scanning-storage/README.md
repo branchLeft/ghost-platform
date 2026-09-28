@@ -76,8 +76,9 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__resolvePath` | A directory the fake verdict client polls for `<digest>.json` files, letting an image-test driver in a separate process "deliver" a verdict for a held digest by writing one. Never used outside the image-test harness. |
 | `storage__images__holdRetryMs` | How often a held digest is first re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 | `storage__images__holdMaxRetryMs` | The ceiling that interval backs off to on repeated non-answers -- a bound on the polling *rate* during a prolonged outage, never on how long a hold lives. Defaults to 60 seconds. |
+| `storage__images__holdMaxFailures` | How many consecutive retries may *fail* (a throw from the filesystem or the wrapped adapter, not a verdict that is still pending) before the hold is stuck. Defaults to 8. |
 
-The same eight keys apply under `storage__media__*` and `storage__files__*`.
+The same nine keys apply under `storage__media__*` and `storage__files__*`.
 Wrapping `media`/`files` today only makes sense once a `Check` exists for
 that content type; until then it is configuration with no effect.
 
@@ -158,6 +159,87 @@ into its own tree and only the last to release the digest removes the
 bytes. A sidecar with no `owners` map is left held and unresumed, and
 logged, rather than guessed at.
 
+**A refusal by any feature is final for every feature.** A refusal --
+synchronous, or a held digest's later match -- writes the bytes, then a
+`<digest>.refused.json` record beside them. That record is the sealed
+record's marker: every feature checks it before asking for a verdict on an
+upload, and before each promotion of a held digest, so bytes one feature
+refused are never served by another, whatever its own verdict says
+(positive verdicts never expire). Bytes a refusal record names are never
+deleted by this decorator; retention and release are the reporting
+runbook's, not this code's. An upload is checked against the record both
+before its verdict is asked for and again after a clean one, so a refusal
+sealed by another feature while the verdict was in flight still wins.
+
+**Sealing order, across processes.** More than one process shares a
+quarantine directory: during a blue/green swap both colours mount the same
+content volume, and the new colour resumes the old one's holds under the
+same owner key. So the protocol relies only on atomic operations on one
+filesystem (`rename`, and a record that appears by `rename`), never on the
+event loop.
+
+- `sealRefusal` has two steps. _Write record_: the record is renamed into
+  place. _Ensure bytes_: only then are the bytes made present, kept if they
+  match, else a `<digest>.releasing.*` copy is moved back, else they are
+  rewritten from the buffer in hand.
+- `releaseBytes`, the only code that removes quarantined bytes (a hold's
+  last-owner promotion), has three. _Move aside_: rename `<digest>` to a
+  unique `<digest>.releasing.<pid>.<random>`. _Check_: look for the record.
+  _Finish_: if there is one, rename the copy back, otherwise unlink the
+  copy. Only the aside name is ever unlinked.
+
+If write record lands before check, the releaser sees the record and puts
+the bytes back (if ensure bytes already restored or rewrote them, the
+rename-back finds nothing or replaces them with identical bytes). If check
+comes first, then move aside came before write record, which comes before
+ensure bytes, so ensure bytes finds `<digest>` gone and restores or
+rewrites it; finish unlinks only the aside name. Every interleaving ends
+with the record and the bytes. A crash between write record and ensure
+bytes leaves the digest refused, and its next refusal rewrites the bytes.
+A refusal cannot leave bytes with no record. A crash between move aside
+and finish leaves an aside copy. Each adapter sweeps them at start-up:
+restored if the digest is refused, deleted otherwise. That is safe against
+a live releaser for the same reason finish is. A record that cannot be read
+for any reason but absence counts as present: a promotion fails (and is
+retried, then stuck), a release puts the bytes back, and a sweep leaves the
+copy. `test/unit/cross-process.test.mjs` runs a sealer and a releaser as
+two real processes, pausing each between its steps, in all six orders.
+
+The hold sidecar's read-modify-write is still single-process, which is a
+safety-neutral but real availability gap: a held digest is never served
+and never loses sealed bytes, but during a swap both colours re-arm the
+same holds, so a hold one colour promotes can fail its retries in the
+other and raise a false "hold stuck" alert, and two processes updating
+one sidecar at once can drop an owner's entry, leaving a hold that is
+never resumed and never marked stuck, with nothing logged.
+
+**Why the registry is shaped as it is.** There is no real verdict channel
+yet, so "a later verdict arrives" means the same in-process `VerdictClient`
+answering differently on a later call, and `HoldRegistry` polls for it at
+its own cost rather than the upload's. It never keeps a held buffer
+resident: every retry re-reads the bytes from quarantine. Resumption after
+a restart is synchronous, from the adapter's constructor, and only
+re-derives which digests are pending; the bytes are read on the first
+retry.
+
+**Quarantine reads are verified.** Every quarantine write (bytes, sidecar,
+refusal record) goes to a temp file, is fsynced, then renamed into place, so
+no reader ever sees a partial file. Every retry hashes the bytes it reads
+back and compares them with the digest they are filed under before any
+verdict is asked for; bytes that do not match are never judged or promoted.
+A later upload of the real bytes replaces a copy that does not match.
+
+**Stuck holds.** A hold whose quarantined bytes do not match their digest,
+or whose retries fail `holdMaxFailures` times in a row (backing off
+exponentially up to `holdMaxRetryMs` between failures), is *stuck*: its
+retry loop stops, it is never promoted, and its bytes and targets stay on
+disk. It is logged once with the fixed prefix
+`ScanningStorageAdapter: hold stuck` and recorded in its sidecar as
+`"stuck": {"<owner>": {"reason": "..."}}`; a restart that finds it logs the
+same line again rather than resuming it. To retry a stuck hold once its
+cause is fixed, remove that owner's `stuck` entry from the sidecar and
+restart Ghost.
+
 ## What Ghost's extension point does, and the traps in it
 
 Ghost 6.55.0's `handle-image-sizes.js` (`frontend/web/middleware`) reads,
@@ -228,3 +310,17 @@ the upload is still withheld immediately afterward and that both the
 quarantine bytes and the `.holds.json` sidecar survived, then deliver a
 clean verdict only after the restart and assert it still promotes and
 serves.
+
+**A refusal in one feature is proven against a real Ghost too:** the files
+feature refuses the bytes the images feature is holding, the images
+verdict then comes back clean, and the image must stay unserved with the
+sealed bytes and `.refused.json` still in quarantine.
+
+**Bind-mount ownership.** The base image's entrypoint chowns everything
+under the content directory to `node` on every boot, including the
+`resolvePath` mount the hold tests write verdicts into. A `mkdtemp`
+directory (mode 0700) would then deny the test runner both its mid-test
+verdict writes and its teardown. So the test chmods the directory 0777
+before the container starts, and `reclaimHostOwnership` chowns it back
+from a throwaway root container before teardown as a second line of
+defence.

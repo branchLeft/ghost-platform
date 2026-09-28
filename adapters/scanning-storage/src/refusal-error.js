@@ -1,16 +1,9 @@
 'use strict';
 
-// A plain Error is wrapped by Ghost as a 500 that tells a paying customer the
-// platform is broken. A typed @tryghost/errors error is wrapped as a 415
-// that tells them the truth, so the adapter must throw the typed error,
-// never a plain one.
-//
-// The wording then splits by classification: generic for csam -- the
-// specific reason is operational intelligence handed to whoever is holding
-// the account, which may not be the tenant -- and specific, naming the
-// classification, for everything else, because an upload is always made by
-// authenticated staff who get an accurate answer rather than being treated
-// as adversaries.
+// Ghost wraps a typed @tryghost/errors error as a 415 that tells the
+// customer the truth; a plain Error becomes an opaque 500. See
+// refusal-error.md#refusal-wording for why the wording then splits by
+// classification.
 const GENERIC_CONTEXT =
   'This image could not be accepted. It did not pass the platform safety check.';
 
