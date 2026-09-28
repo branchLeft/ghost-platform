@@ -149,3 +149,50 @@ failed run — the backup itself is good whether or not this exporter can
 report it, and a metric that stops advancing because this call itself
 keeps failing is caught by the same growing-age alert as a worker that has
 stopped running at all.
+
+## _LockWaitTimer
+
+Times the gap from construction — just before `pull_encrypt_and_store`
+is called, so before `RemoteMysqldumpTransport.run` spawns anything — to
+the producer's first byte of stdout, as a PROXY for how long
+`mysqldump --source-data=2` waited to acquire its `FLUSH TABLES WITH READ
+LOCK`. Nothing on this side holds a SQL connection of its own to ask
+MySQL directly; `--source-data=2` writes its binlog-position comment only
+once the lock is granted and released, so the elapsed time is dominated
+by that wait, not by the dump itself.
+
+**What the gap includes, now that `RemoteMysqldumpTransport` is real
+(previously this section described an unwired channel and called the
+non-lock portion unverified — that channel is gone)**: `mysqldump` is a
+local subprocess on whichever host runs this worker, connecting directly
+over TLS to db1's existing port. There is no separate dial-in/RPC layer
+any more, so the non-lock portion of the gap is exactly `Popen`'s own
+fork/exec (sub-millisecond) plus `mysqldump`'s own TCP connect, TLS
+handshake and MySQL auth to db1 — a single, ordinary database client
+connection, not a multi-hop remote-execution channel. That portion is
+still not measured directly and this is still a proxy, not a lock-wait
+read — but it is now a known, bounded shape (one client's own connection
+setup) rather than an unverified, open-ended one, and nothing about it
+scales with how many OTHER tenants are queued behind db1's write traffic
+the way the lock wait itself does.
+
+`first_byte` stays `None` if the producer never wrote anything at all —
+"no wait was measured", not "the wait was zero"; callers must tell the
+two apart rather than recording a false 0.
+
+## Lock-wait metric file
+
+A SEPARATE file and lock from the backup-age metric (`record_backup_age_metric`),
+deliberately: the two are written at different points in the same run,
+and merging them into one file would let either write's failure corrupt
+the other's already-good value.
+
+The gate differs from the backup-age gauge's on purpose.
+`record_lock_wait_metric` is called whenever `DumpResult.lock_wait_seconds`
+is not `None`, regardless of `result.ok` — the lock is taken, or waited
+for, before the floor check or the storage write ever runs, so a tenant
+whose dump goes on to fail for an unrelated reason can still be the one
+whose wait needs to be seen. `record_backup_age_metric` is the opposite:
+called only on a floor-verified success, so a stopped tenant's gauge
+simply stops advancing rather than being overwritten with a misleadingly
+healthy timestamp.
