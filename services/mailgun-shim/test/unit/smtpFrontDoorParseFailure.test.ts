@@ -79,8 +79,7 @@ async function startHarness(): Promise<Harness> {
     maxConcurrentDataPhasesPerSubmitter: 5,
     submitterMessagesPerMinute: 120,
   });
-  const port = 25000 + Math.floor(Math.random() * 10000);
-  await frontDoor.listen(port, '127.0.0.1');
+  const port = await frontDoor.listen(0, '127.0.0.1');
 
   return { store, notify, frontDoor, port, logs: lines };
 }
