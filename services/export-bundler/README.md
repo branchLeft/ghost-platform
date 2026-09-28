@@ -70,12 +70,15 @@ SIGINT and SIGTERM -- never as `-e` values, which `ps` shows.
 ### Why a break-glass session, not an Admin API key
 
 Ghost's own permission model refuses both `db.exportContent` and
-`posts.exportCSV` to a custom integration's Admin API key -- both answer
-403 `NoPermissionError`, because "Export database" is not among the
-permissions the "Admin Integration" role carries. Only an Administrator or
-Owner session can call either route. The support account is that
-Administrator, reached through `adapters/sso/README.md`'s break-glass
-adapter, and only while a grant has it active.
+`posts.exportCSV` to a custom integration's Admin API key -- verified
+against a real container: both answer 403 `NoPermissionError`, because
+"Export database" is not among the permissions the "Admin Integration"
+role carries. Only an Administrator or Owner session can call either
+route. The support account is that Administrator, reached through
+`adapters/sso/README.md`'s break-glass adapter, and only while a grant has
+it active: `ghostExportClient.ts` spends an operator-minted token on
+`/ghost/` to open the support account's Administrator session, then
+carries that session's cookie on both export requests.
 
 ### The token comes from the operator
 
@@ -104,11 +107,14 @@ SHA-256 of the ciphertext file, binding the record to one archive.
 
 ## The export colour runs against a copy, never the live database
 
-Owner ruling, 2026-09-27: "the copy". Ghost acts on its database as it
-boots. It runs the member welcome-email poll, resumes any newsletter it
-finds mid-send, and does clean-up work. None of that has a setting to stop
-it. So the export colour never runs against the tenant's live database.
-`scratchDatabase.ts` gives each run its own copy:
+Ghost acts on its database as it boots. It runs the member welcome-email
+poll, resumes any newsletter it finds mid-send, and does clean-up work.
+None of that has a setting to stop it. So the export colour never runs
+against the tenant's live database. `scratchDatabase.ts` gives each run
+its own copy: a consistent snapshot of the one tenant's database into a
+throwaway target that exists only for the run, removed on every exit
+path. Nothing is created on the tenant's database server; the snapshot is
+a read.
 
 - **MySQL tier.**
   - A fresh MySQL 8.0 container, the server image `db/RUNBOOK-db.md` pins
@@ -122,10 +128,13 @@ it. So the export colour never runs against the tenant's live database.
     No dump file exists anywhere. The dump container is named
     `<run>-dump` and registered for cleanup, so a signal mid-dump removes
     it and ends its read of db1.
-  - The flags are `db/provision/dump_tenant.py`'s, with two changes. The
-    dump runs over TCP as the tenant's own account, because db1's `backup`
-    account is socket-only. `--source-data=2` is dropped and
-    `--no-tablespaces` added, since that account holds no global privilege.
+  - The flags are `db/provision/dump_tenant.py`'s, with two changes, both
+    because the tenant's own account (used over TCP, since db1's `backup`
+    account is socket-only and unreachable from the app host) holds no
+    global privilege: `--source-data=2` (a binlog position, which only
+    point-in-time recovery reads and which needs `RELOAD` and
+    `REPLICATION CLIENT`) is dropped, and `--no-tablespaces` (which
+    otherwise needs `PROCESS`) is added.
   - Nothing is created on db1; the dump is a read.
   - The readiness wait (a real `SELECT 1` over TCP) and the
     refuse-a-non-empty-target check mirror `db/recovery/restore_drained.py`.
@@ -188,7 +197,9 @@ far as Ghost 6.55's own settings allow, the colour acts on nothing:
   adapter, and the welcome-email step it drives is recorded as sent against
   the stub transport. That is why the copy, not this layer, is the control.
   An image without the adapter fails to boot the colour, so the export fails
-  closed.
+  closed. Ghost only accepts an instance of its own `SchedulingBase`, so
+  `ghost-adapter/scheduling-disabled.js` builds its class from the base the
+  caller hands in rather than importing Ghost's own.
 - **Recurring jobs:** `backgroundJobs__emailAnalytics` and
   `backgroundJobs__clickTrackingLastSeenAtUpdater` are false, and the update
   check is off.
@@ -216,13 +227,34 @@ One JSON line per export, written in a single append and fsynced. If it
 cannot be written, the archive and its manifest are removed and the run
 fails with `AuditWriteError`: an archive never outlives its audit record.
 
+## The drain flag check
+
+`drainFlag.ts` is duplicated from `services/drain-sidecar/src/drainFlag.ts`
+rather than imported: neither package is published, so cross-package reuse
+here would mean a private path import outside this package's own tree
+(`services/broker/src/healthCheck.ts` already sets the precedent for this
+repo -- mirror the contract, keep the copy small).
+
+The contract is identical: mere presence (an `lstat` that does not
+`ENOENT`) is "set", a dangling symlink still reads as set, and anything
+other than a clean `ENOENT` against a directory this process can itself
+read is treated as set -- a bundler that cannot confirm a colour is safe
+must not run an administrator-level bulk export against it on a guess.
+
 ## The drained-colour control
 
 `drainGate.ts`'s `assertDrained` refuses to proceed unless the colour's
 drain flag reads as set -- LLD-4 §U3b/§U7's invariant: an offline task
-never runs against a routed colour. The bundler sets its own flag before
-starting its own transient colour, then re-reads it rather than trusting
-the write.
+never runs against a routed colour, because it can neither be reached by a
+reader nor compete with one for the same process. The bundler sets its own
+flag before starting its own transient colour, then re-reads it rather
+than trusting the write.
+
+`assertDrained` throws rather than returning a boolean, so a caller cannot
+accidentally ignore the verdict -- `exportRunner.ts`'s own sabotage test
+(removing the call, not just the check inside it) is what proves this
+function is actually on the path a real export takes, not merely correct
+in isolation.
 
 ## Running it
 

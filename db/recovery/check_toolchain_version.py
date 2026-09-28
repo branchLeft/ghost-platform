@@ -3,45 +3,10 @@
 not report the same major.minor line as the MySQL server the tenant estate
 actually runs.
 
-A recovery image built against the wrong line is worse than an obviously
-missing one: `mysqldump --source-data=2` from an 8.4 client issues `SHOW
-BINARY LOG STATUS` unconditionally, which an 8.0 server rejects outright
-(install_host_prereqs.py's own module docstring records this, found live
-during the first db1 bootstrap) -- so the failure shows up only when the
-image is actually needed, under incident conditions, against a server that
-cannot be changed to suit it. This check exists so that failure happens at
-build time instead.
-
-The server's pin is read out of db/RUNBOOK-db.md rather than carried as a
-second constant here: `branchleft-deploy db mysql:...@sha256:...` is the one
-command that actually re-pins db1, and a copy of that digest living in this
-file too is exactly the kind of drift the rest of this design keeps
-warning about -- two things that are supposed to agree, checked against each
-other only by both having been edited correctly. --server-image overrides
-this for the control case: proving the check fails on a genuine mismatch
-without needing a second real MySQL line to build a server image from.
-
-The runbook carries that command twice (the first, always-fails bootstrap
-run in step 3, and the re-pin that follows it) and both are meant to name
-the same image -- so this reads every occurrence with `findall`, not just
-the first, and refuses to pick a winner when they disagree. A regex that
-stopped at the first match would stay green while the second line alone
-drifted, which is worse than not checking at all: it reports a match that
-was never actually re-verified against what `branchleft-deploy` would
-really pin.
-
-This check compares against the runbook's pin, not against what `db1`
-itself currently reports running -- there is no way to read
-`/etc/branchleft/db.image.env` back from CI (no SSH, no host reachable from
-a GitHub Actions runner). `db/RUNBOOK-db.md` now carries a step for the
-platform owner to read that file back by hand and record the date; until
-that record exists, a green run here is evidence the runbook is internally
-consistent, not evidence it matches what db1 is currently running.
-
-Major.minor, not the full patch version: the same standard
-install_host_prereqs.py's own verify() uses, and design 09's own R5/§05
-language -- "exact-matched to the server's 8.0 line, not merely compatible
-with it" -- means the line, not the patch digit.
+See README.md#verify-the-toolchain-still-matches-the-server for why a
+mismatch is worse than an obviously missing image, why the server pin is
+read from db/RUNBOOK-db.md rather than duplicated here, and why the
+comparison is major.minor rather than the full patch version.
 """
 
 from __future__ import annotations

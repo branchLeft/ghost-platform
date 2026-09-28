@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Refuse a Pulumi plan that destroys a protected Hetzner resource; see assert-no-hetzner-deletes.md.
-Usage: assert-no-hetzner-deletes.py <preview.json> | --self-test | --verify-coverage <program-dir>
+"""Refuse a Pulumi plan that destroys a protected Hetzner resource.
+
+Usage:
+    assert-no-hetzner-deletes.py <preview.json>
+    assert-no-hetzner-deletes.py --self-test
+    assert-no-hetzner-deletes.py --verify-coverage <program-dir>
+
+Exit 0/1/2 for clean/finding/usage-error.
+See assert-no-hetzner-deletes.md#module-overview for what this cannot prove.
 """
 
 import contextlib

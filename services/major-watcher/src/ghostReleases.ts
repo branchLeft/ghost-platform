@@ -1,18 +1,5 @@
-// The signal: github.com/TryGhost/Ghost's own Releases API.
-//
-// Chosen over the two other signals considered:
-//  - npm's `ghost` package dist-tags carry no `prerelease` boolean and no
-//    publish timestamp per version without a second round trip, and Ghost's
-//    npm publishes lag its GitHub releases.
-//  - The Ghost blog/changelog is prose meant for humans; turning "a new
-//    major is here" into a reliable machine signal means parsing sentences,
-//    not a status code.
-//  - GitHub Releases give a structured, versioned, timestamped record of
-//    the exact moment TryGhost calls a build ready to announce, including
-//    prereleases (alphas/betas/rcs) -- which is what "public preview" means
-//    in practice: TryGhost tags and publishes one before every major GA.
-//    See semver.ts for why the tag string, not the API's own `prerelease`
-//    flag, is what this reads.
+// The signal: github.com/TryGhost/Ghost's own Releases API, chosen over
+// npm dist-tags and the blog/changelog. See ../README.md#signal.
 
 export interface GhostRelease {
   readonly tagName: string;

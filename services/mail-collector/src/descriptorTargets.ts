@@ -108,18 +108,10 @@ function isLive(expiresAt: string | null, nowMs: number): boolean {
 }
 
 /**
- * The drain list this collector's whole design turns on (LLD-6 §09,
- * load-bearing: "a host that is not in it is a host whose mail is never
- * collected"). Built by reading a directory of tenant/demo descriptor JSON
- * files -- the same descriptor every reconciler renders from -- never from
- * a separately maintained host list. A descriptor that expired, that fails
- * the shape check, or that simply is not on disk here contributes no
- * target, however reachable its host still is on the network.
- *
- * Mirrors odask's DescriptorStore: `targets` keeps answering from the last
- * good read while a refresh is in flight or fails, but only up to
- * `maxStalenessMs` -- past that, `targets` returns empty rather than
- * keep-draining a snapshot this service can no longer vouch for.
+ * The drain list this collector's whole design turns on (LLD-6 §09): a
+ * host absent, expired or malformed on disk contributes no target,
+ * however reachable it still is on the network.
+ * See ../README.md#descriptortargets-descriptortargetstore.
  */
 export class DescriptorTargetStore implements TargetStore {
   private current: readonly DrainTarget[] = [];
@@ -201,17 +193,10 @@ export class DescriptorTargetStore implements TargetStore {
       }
       const firstFile = seenSlugs.get(raw.slug);
       if (firstFile !== undefined) {
-        // Refuse the WHOLE batch rather than pick a winner: which of two
-        // descriptors naming the same slug is "right" is not this store's
-        // call, and adopting either one silently would look identical to
-        // the healthy case from every caller's point of view. THROWN, not
-        // just logged -- "refuse... at load": server.ts's un-caught
-        // startup `await store.refresh()` fails closed on this rather than
-        // booting with an ambiguous host list, while collectorLoop.ts's
-        // periodic refresh already `.catch()`es a rejected refresh() and
-        // keeps its last good target list, the same fallback a directory-
-        // read failure above gets -- a pre-existing, unambiguous set keeps
-        // draining while this is fixed upstream.
+        // Refuses the WHOLE batch rather than pick a winner, and throws
+        // rather than logs, so a duplicate fails closed at load instead of
+        // silently adopting one of two ambiguous descriptors.
+        // See ../README.md#descriptortargets-duplicate-slug-handling.
         const err = new DuplicateDescriptorSlugError(raw.slug, firstFile, file);
         this.log.warn('duplicate_descriptor_slug', {
           slug: err.slug,

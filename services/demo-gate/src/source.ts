@@ -2,14 +2,7 @@ import { BlockList, isIP } from 'node:net';
 
 /**
  * Who is asking, for the purpose of the attempt ceiling.
- *
- * The socket peer is the only fact about a request nobody on the far side
- * can choose. X-Forwarded-For is read only when that peer is a configured
- * trusted proxy -- the edge -- and then only its rightmost entry, which is
- * the address the edge itself saw; anything to its left was written by the
- * client. A trusted peer that sends no usable header yields no source at
- * all, and the caller refuses rather than falling back to the proxy's own
- * address, which would pool every visitor into one bucket.
+ * See ../README.md#resolving-the-request-source.
  */
 export interface SourceResolver {
   resolve(peer: string | undefined, forwardedFor: string | string[] | undefined): string | null;

@@ -1,23 +1,8 @@
 #!/bin/sh
-# Live proof that zero widget bytes load from a third-party origin: a real
-# pinned Ghost container, taken out of its compiled-default "Coming Soon"
-# state by capture-network.mjs's own setup phase (owner setup, an
-# announcement, a published post), fronted by the origin built in
-# widgets/origin/, exercised by a real headless browser through the home
-# page (with the admin-toolbar marker cookie set), Portal's sign-in
-# overlay, search, the real published post (comments), and a signup-form
-# embed built from Ghost's own live config.
-#
-# One GREEN baseline, then one RED pass per pinned override -- each removes
-# exactly one env-var override, proving that specific bundle's pin is what
-# closes it, not merely that the mechanism works for whichever one happens
-# to get sabotaged -- then a final GREEN restores everything:
-#   GREEN-1        -- every widget config key pointed at our origin
-#   RED-<override>  -- one override removed, so Ghost (or, for signupForm,
-#                      the config Ghost reports) falls back to its compiled
-#                      default (the jsdelivr CDN) -- proves the assertion
-#                      actually fails when that one control is absent
-#   GREEN-2        -- every override restored, proving the fix is what closed it
+# Live proof that zero widget bytes load from a third-party origin: GREEN
+# baseline, then one RED (sabotage) pass per pinned override, then a final
+# GREEN -- proving each bundle's pin, not just the mechanism, closes it.
+# See ../README.md#run-proofsh.
 #
 # Usage: ./widgets/proof/run-proof.sh
 # Run from the repo root (needs widgets/, the root Dockerfile, and Node with

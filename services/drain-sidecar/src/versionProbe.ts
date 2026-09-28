@@ -5,18 +5,9 @@ export interface GhostVersionProbe {
 }
 
 /**
- * Ghost's admin "site" endpoint answers with no authentication at all
- * and includes the running instance's own version --
- * `{"site":{"version":"6.55.0", ...}}`. That is the whole point of probing
- * it rather than reading a version out of the descriptor: LLD-4's mark is
- * load-bearing that the reported version comes from the instance, never
- * from our own records.
- *
- * Same never-rejects contract as `GhostProbe`: a non-200 status, a
- * malformed body and a connection failure are all folded into the same
- * `null`, because the one caller (this service's `/metrics` route) has
- * nothing useful to do with a distinction between "Ghost said no" and
- * "Ghost didn't say".
+ * Reads Ghost's own reported version, never a value from this platform's
+ * records. Same never-rejects contract as `GhostProbe`.
+ * See ../README.md#reading-ghosts-own-version.
  */
 export function createHttpGhostVersionProbe(url: string, timeoutMs: number): GhostVersionProbe {
   return {

@@ -1,20 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import type { WatcherState } from './detect.js';
 
-// Dedupe state lives in one JSON file, read and written as plain files --
-// the workflow around this CLI is what makes that file survive a runner
-// restart (see README.md "State"): it lives on a dedicated, unprotected
-// git branch, fetched before this runs and pushed back only when the
-// content actually changed. Nothing in this module knows about git; it
-// only ever sees a local path, which is what keeps it unit-testable with
-// no network and no repository.
-//
-// A missing or malformed state file is a hard error, never a default.
-// Defaulting `lastNotifiedMajor` to e.g. 0 would make the very first run
-// against a real, already-mid-major-6 estate fire a page for a major that
-// was announced over a year ago -- see test/unit/state.test.ts's sabotage
-// case. Bootstrapping a new deployment is a deliberate, one-time write of
-// this file to the *current* major line, never something the code infers.
+// This module only ever sees a local path -- the workflow around it is
+// what makes the file survive a runner restart. A missing or malformed
+// state file is a hard error, never a default: defaulting would risk a
+// page for a major announced long ago. See ../README.md#state.
 
 export async function readState(path: string): Promise<WatcherState> {
   let raw: string;

@@ -21,20 +21,10 @@ interface HeldRow extends QueuedMessage {
 }
 
 /**
- * A real local HTTP server implementing the SAME wire contract as
- * services/mailgun-shim/src/routes/drain.ts (GET /drain, POST /drain/ack,
- * the WireMessage shape, drainCount-gated acks) -- exercised over a real
- * socket by the tests in this directory, never imported from the shim
- * itself (each service here is an independent package; see drainClient.ts's
- * own comment on why this collector is proven against the contract by
- * running something real, not by sharing code with the shim).
- *
- * `enqueue()` and `simulateLostAck()` give tests direct control over the
- * two cases this story's Done criteria name explicitly: a message that
- * should never be offered at all (never enqueued here), and a message
- * whose ack the collector never gets a chance to send (lease lapses via
- * `simulateLostAck()`, which re-offers it under a new drainCount exactly
- * as the real shim's `claimForDrain`/lease-lapse path does).
+ * A real local HTTP server implementing the same wire contract as
+ * `services/mailgun-shim/src/routes/drain.ts`, exercised over a real
+ * socket rather than imported from the shim itself.
+ * See ../../README.md#fakeshimserver-fakeshimserver.
  */
 export class FakeShimServer {
   private rows = new Map<string, HeldRow>();

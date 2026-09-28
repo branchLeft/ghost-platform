@@ -23,17 +23,8 @@ function directoryIsReadable(dir: string): boolean {
 }
 
 /**
- * Duplicated from services/drain-sidecar/src/drainFlag.ts rather than
- * imported: neither package is published, so cross-package reuse here
- * would mean a private path import outside this package's own tree.
- * services/broker/src/healthCheck.ts already sets the precedent for this
- * repo -- mirror the contract, keep the copy small.
- *
- * The contract is identical: mere presence (an lstat that does not ENOENT)
- * is "set", a dangling symlink still reads as set, and anything other than
- * a clean ENOENT against a directory this process can itself read is
- * treated as set -- a bundler that cannot confirm a colour is safe must
- * not run an administrator-level bulk export against it on a guess.
+ * A stat-and-forget presence check, deliberately duplicated rather than
+ * imported. See ../README.md#the-drain-flag-check.
  */
 export function createFileDrainFlag(path: string): DrainFlag {
   const dir = dirname(path);

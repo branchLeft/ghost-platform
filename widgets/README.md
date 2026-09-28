@@ -78,3 +78,72 @@ Run it from the repo root: `./widgets/proof/run-proof.sh` (needs Docker and
 package.json and out of CI deliberately; see `proof/package.json`). Nine
 container boots (one GREEN, seven RED, one GREEN), so it takes several
 minutes.
+
+## run-proof.sh
+
+One GREEN baseline, then one RED pass per pinned override -- each removes
+exactly one env-var override, proving that specific bundle's pin is what
+closes it, not merely that the mechanism works for whichever one happens
+to get sabotaged -- then a final GREEN restores everything:
+
+- `GREEN-1` -- every widget config key pointed at our origin
+- `RED-<override>` -- one override removed, so Ghost (or, for
+  `signupForm`, the config Ghost reports) falls back to its compiled
+  default (the jsdelivr CDN) -- proves the assertion actually fails when
+  that one control is absent
+- `GREEN-2` -- every override restored, proving the fix is what closed it
+
+## capture-network setup and signal
+
+Runs Ghost's own owner-setup wizard against a fresh container (an
+announcement, a published post of our own), then drives a real headless
+Chromium against the origin container (Caddy in front of the pinned Ghost
+image), recording every network request the browser makes while exercising
+the home page with the admin-toolbar marker cookie set, Portal's sign-in
+overlay, search, the published post (comments), and a signup-form embed
+built from Ghost's own live config. Portal and sodoSearch render
+unconditionally, in `ghost_head.js`, on any install; the other four do not
+-- `announcementBar` needs a configured announcement, `comments` needs a
+post whose `comment_id` context the theme's helper receives,
+`adminToolbar` needs the marker cookie, and `signupForm` is never
+requested by a Ghost-rendered page at all (it is meant to be pasted onto
+an external page, so this proof builds that page itself). A proof that
+skipped setup could never have caught a broken override for any of the
+first three.
+
+Fails (exit 1) if any pinned bundle is never requested at all -- the
+primary signal, independent of where a fallback lands -- or if any
+script/stylesheet request's origin is not the origin under test, the
+resource types CSP's script-src/style-src govern and the only ones a
+Ghost config-key override can redirect. Every third-party request of any
+type is still recorded in the output, scored or not. A setup step that
+fails (Admin API rejects the request, no session cookie, no post slug) is
+fatal (exit 2) -- swallowing it here would silently narrow the proof to
+whichever bundles happen to render without any content at all.
+
+## capture-network CSP scope
+
+The CSP directive this closes is script-src (LLD-5 C2), so the pass/fail
+signal is scoped to the resource types that directive governs: script and
+stylesheet, exactly the two Ghost config keys `pins.json` overrides.
+img-src is a different, much more permissive directive that a fixed set of
+config-key URLs cannot address -- see above for what it actually covers.
+Every third-party request is still recorded in `allThirdParty` regardless
+of type, so nothing is hidden -- only the exit code is scoped to what
+pinning can actually fix. Bundle *absence* (`missingBundles`) is a
+separate, type-independent signal and is not scoped at all.
+
+## fetch-pins.mjs
+
+Resolves the six CDN script bundles and the one CDN stylesheet the pinned
+Ghost image loads by default (`ghost/core/core/shared/config/defaults.json`
+in `forks/Ghost` at `v6.55.0`, lines 294-318), downloads the exact bytes
+jsdelivr currently resolves each floating `~` range to, and writes them
+into `widgets/dist/` alongside a content-digest manifest in
+`widgets/pins.json`.
+
+Re-running this is how a future upgrade re-pins: it always re-resolves
+against the live CDN, so the diff in `pins.json` and `dist/` is the whole
+review surface for "did the third party change what these bytes are". It
+never runs at deploy or build time -- only here, by hand, to produce a new
+commit.

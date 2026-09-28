@@ -21,3 +21,38 @@ infra/provisioning/scripts/*pull_encrypt_store.py
 # The export bundler's scratch-copy database: mysqldump/SQLite-backup into
 # a throwaway target, never the tenant's live database.
 services/export-bundler/*scratchDatabase*
+
+# The individual declarations below overlap the globs above; each was checked
+# against DB-1's definition on its own and names the operation it performs.
+
+# Backup: logical dumps and binary-log shipping, taken on db1.
+db/provision/dump_nightly.py
+db/provision/dump_tenant.py
+db/provision/test_dump_tenant.py
+db/provision/ship_binlogs.py
+db/provision/test_ship_binlogs.py
+
+# Restore: scoping a point-in-time replay to one tenant, and restoring a dump.
+db/provision/extract_tenant_binlog.py
+db/provision/test_extract_tenant_binlog.py
+db/recovery/*
+
+# Backup: the control-side worker that pulls, encrypts and stores a dump.
+infra/provisioning/scripts/backup_worker.py
+infra/provisioning/scripts/test_backup_worker.py
+infra/provisioning/scripts/test_pull_encrypt_store.py
+
+# Restore: the export colour runs against a dump restored into a scratch server.
+services/export-bundler/src/scratchDatabase.ts
+services/export-bundler/test/unit/scratchDatabase.test.ts
+
+# Provisioning: creating a tenant's database, user and grants.
+db/provision/provision_tenant_db.py
+
+# Operational check: whether a demo slot's Ghost still has an email batch
+# submitting, read before a colour may be stopped.
+demo-host/provision/branchleft_slot.py
+demo-host/provision/test_branchleft_slot.py
+
+# Test-harness probe: readiness of a test MySQL container.
+adapters/sso/test/image/provision-support-account-mysql.image.test.mjs

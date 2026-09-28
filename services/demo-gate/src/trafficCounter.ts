@@ -3,26 +3,9 @@ import { dirname, join } from 'node:path';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
 
 /**
- * A per-slot count of real reader requests: incremented once for every
- * `verify()` call that ends up admitting the request (a 200, meaning
- * Caddy's `forward_auth` will proxy it on to the slot's own colour pair --
- * LLD-5 §03's placement). This is the one place in the estate that sees
- * every real request to a gated host before it reaches Ghost, which is
- * exactly why `services/broker`'s pre-stop check reads this file rather
- * than anything Ghost or the drain sidecar can report: a sidecar answers
- * for a colour's own health, never for whether a *reader* has actually
- * been admitted, and the falsification clause (LLD-4 §04) is explicit that
- * "reported healthy" must never stand in for that.
- *
- * Colour-blind by construction: this file never learns which colour
- * ultimately serves an admitted request (`$SLOT_UPSTREAM` in the proof
- * Caddyfile is the slot's whole colour pair; Caddy's own `lb_policy first`
- * decides after this check already ran). That is sufficient for
- * `services/broker`'s use of it, not a gap -- at every instant only the
- * slot's one preferred, undrained colour can actually be selected
- * (LLD-4 §U3b: "exactly one flag change moves the traffic"), so a count
- * taken *after* a swap has finished moving traffic is, by that invariant, a
- * count of requests the new colour alone received.
+ * A per-slot count of real reader requests, incremented once for every
+ * `verify()` call that admits the request. Colour-blind by construction.
+ * See ../README.md#the-traffic-counter.
  */
 export interface TrafficCounterStore {
   increment(slot: SlotName): Promise<void>;

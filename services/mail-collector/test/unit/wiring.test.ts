@@ -17,15 +17,11 @@ import { startSmtpSink, type SmtpSink } from '../helpers/smtpSink.js';
 const DRAIN_TOKEN = 'estate-drain-token';
 
 /**
- * Everything else in this directory either proves the real
- * DescriptorTargetStore reads only the descriptor (descriptorTargets.test.ts)
- * or proves the loop only ever drains what a TargetStore names
- * (collectorLoop.test.ts, against a plain test double). This file is the
- * one place both halves run together through the real construction path
- * server.ts uses -- a real DescriptorTargetStore reading real descriptor
- * files on disk, feeding the real collector loop -- so a break in the
- * WIRING between them (not just in either module's own logic) has
- * somewhere to show up.
+ * The one place both halves (a real DescriptorTargetStore reading real
+ * descriptor files, feeding the real collector loop) run together through
+ * server.ts's own construction path, so a break in the wiring between
+ * them has somewhere to show up.
+ * See ../../README.md#wiring-test-end-to-end-wiring.
  */
 describe('end-to-end wiring: a real DescriptorTargetStore feeding the real collector loop', () => {
   let dir: string;

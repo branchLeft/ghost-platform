@@ -1,14 +1,8 @@
-// The mysql2 half of `provision-support-account.mjs`'s own proof: cycle 1's
-// review found the fix "portable across both database backends" was proven
-// only against sqlite, the one backend `render-core/src/descriptor.ts`'s
-// own doc comment calls demo-only -- and demo tenants never carry
-// break-glass at all (`breakGlass.kind` is forced to `disabled` for a
-// demo). This drives the same script against a real MySQL 8 server and a
-// real Ghost 6.55.0 booted with `database__client: 'mysql'`, the backend
-// every paying tenant actually runs.
-//
-// Usage:
-//   IMAGE=ghost-platform:ci npm --prefix adapters/sso run test:image
+// The mysql2 half of `provision-support-account.mjs`'s own proof: sqlite
+// alone does not prove the fix portable across both database backends, so
+// this drives the same script against a real MySQL 8 server and a real
+// Ghost 6.55.0 booted with `database__client: 'mysql'`. See
+// provision-support-account-mysql.image.test.md.
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';

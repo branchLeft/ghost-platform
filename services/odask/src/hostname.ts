@@ -38,22 +38,11 @@ export function normalizeHostname(value: string): string {
 /**
  * Whether `address` is what Node's `net` module actually binds an "every
  * interface" request to, once `listen()` has succeeded -- not what an
- * operator typed. `0`, `0.0.0.0`, `::0` and `0::` normalise to exactly
- * `0.0.0.0` or `::` in `server.address().address` on every platform
- * measured (macOS, Linux). `::ffff:0.0.0.0` (an IPv4-mapped IPv6 address)
- * does the same on macOS, but on Linux it reports back as the literal
- * string `::ffff:0.0.0.0` rather than collapsing to `::` -- measured
- * directly against `node:26.5.0-bookworm-slim`, the base image this
- * service ships on, after CI (Ubuntu) caught the gap a macOS-only
- * measurement missed. All equivalent IPv4-mapped spellings
- * (`::ffff:0:0`, the fully-expanded form, mixed case) collapse to that
- * same one string on Linux, so three literals are the complete set, not
- * the start of an enumeration -- see the reasoning above. The set of
- * spellings an operator could type is unbounded; the kernel's own answer,
- * platform-normalised, is not -- config.ts's string check on `BIND_HOST`
- * itself is only ever a fast, friendly early error for the spellings it
- * happens to list, never the real guard. server.ts checks this
- * function's answer against the real bound address after `listen()`.
+ * operator typed. Three literals cover every platform-normalised form
+ * measured on macOS and Linux; the operator-typed spelling space is
+ * unbounded, which is why `config.ts`'s string check is only a friendly
+ * early error, never the real guard.
+ * See ../README.md#hostname-iseveryinterfaceaddress.
  */
 export function isEveryInterfaceAddress(address: string): boolean {
   return address === '0.0.0.0' || address === '::' || address === '::ffff:0.0.0.0';

@@ -11,16 +11,8 @@ export interface GhostProbe {
 export const FORWARDED_PROTO_HEADERS = { 'X-Forwarded-Proto': 'https' };
 
 /**
- * Ghost carries no readiness route of its own, so "healthy" here is nothing
- * more than the ordinary front page answering exactly 200 -- never any other
- * 2xx, and never a 3xx read on trust, because a redirect can point anywhere,
- * including at a host this process was never asked to trust. `redirect:
- * 'manual'` stops fetch from ever leaving this origin on our behalf; a
- * redirect then just fails the `=== 200` check like any other wrong status,
- * rather than being followed. A non-200 status, a connection failure and a
- * timeout are all folded into the same false -- this probe never rejects,
- * because its one caller has nothing useful to do with a distinction
- * between "Ghost said no" and "Ghost didn't say".
+ * "Healthy" is the ordinary front page answering exactly 200; never rejects.
+ * See ../README.md#what-healthy-means-to-the-ghost-probe.
  */
 export function createHttpGhostProbe(url: string, timeoutMs: number): GhostProbe {
   return {

@@ -3,15 +3,9 @@ import { isSyntacticallyValidHostname } from './hostname.js';
 export interface AskConfig {
   readonly port: number;
   /**
-   * The interface this process binds to. No default: an unset value would
-   * leave the process free to fall back to every interface, which is
-   * exactly the failure this config exists to make impossible to reach by
-   * accident (LLD-5 E2 -- "the ask endpoint is therefore only as safe as
-   * its network position"). A wildcard value (`0.0.0.0`, `::`, `[::]`) is
-   * refused for the same reason: it is not an unset value, but it produces
-   * the identical failure -- reachable from every interface -- so refusing
-   * it here is the load-bearing half of the story's own done-means control
-   * case: "bind it to all interfaces and the reachability test goes red".
+   * No default -- an unset value would fall back to every interface
+   * (LLD-5 E2). A wildcard value is refused for the same reason.
+   * See ../README.md#config-bindhost.
    */
   readonly bindHost: string;
   /** Directory of one JSON tenant descriptor per file, refreshed on a timer. */

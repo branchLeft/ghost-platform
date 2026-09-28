@@ -1,0 +1,1 @@
+adapters/sso/ghost-core-overlay/*.upstream.js	CMT-3	# CMT-3: byte-for-byte pinned upstream copy, guarded by a SHA-256; must not be edited
