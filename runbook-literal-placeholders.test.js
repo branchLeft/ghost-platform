@@ -1,43 +1,8 @@
-// A committed runbook must not carry either half of the same defect: an
-// unsubstituted placeholder in a copy-pasteable command, or a concrete
-// operational value (a fixed host's address) committed as a literal. Both
-// break the runbook the same way for a reader who pastes the command as
-// written -- one form cannot resolve at all, the other silently drifts once
-// the value it copied stops being current. The fix in both directions is
-// threading the value through a shell variable a lookup command populates,
-// never a hardcoded string and never an unresolved placeholder.
-//
-// Two checks, not three, over the same fenced blocks:
-//
-// - `addressPlaceholders` matches any unresolved, address-shaped placeholder
-//   token anywhere in a command fence -- an assignment's whole value,
-//   `export`ed, `local`, quoted, split across a line continuation, or an
-//   argument inside a larger command. Hostname and position are not the
-//   property that makes one of these wrong: it reads as an address (its
-//   trailing word is ip/ipv4/address/addr) and nothing has substituted it,
-//   independent of which host it names, whether it names one at all, or
-//   where in the line it sits. A host-name scope and an assignment-shaped
-//   scope were both tried and each left a gap the other didn't cover.
-// - `fixedHostLiterals` is a genuinely different property and stays
-//   separate: it matches only the bare, exact literal value of a specific,
-//   known fixed host, never a `/32` or a CIDR, and never a threaded
-//   `$VARIABLE` reference.
-//
-// Deliberately narrower than "no `<...>` anywhere in a fenced block" or "no
-// IPv4-shaped token anywhere in a fenced block":
-//
-// - Only `bash` and `sql` fences count as command blocks in this repo's
-//   runbooks -- `text`/`yaml`/`json` fences here hold illustrative sample
-//   output, never something pasted and run.
-// - The address word must be *trailing*, not merely present, so a
-//   per-invocation credential id such as `<db1 backup key id>` is left
-//   alone: it is not an address, and this scanner does not track resource
-//   ids at all -- a resource looked up fresh by id (rather than hardcoded)
-//   is a different, already-correct pattern this scanner has no opinion on.
-// - A token that legitimately varies per invocation (`<slug>`, `<tenant>`,
-//   `<digest>`, `<run-id>`, `<host>`) is not address-shaped and never
-//   matches, whether it is an assignment's whole value or an argument
-//   inside a larger command.
+// Two checks over the same fenced runbook blocks: an unresolved,
+// address-shaped placeholder, and a committed literal for a specific known
+// fixed host. See runbook-literal-placeholders.md for what each matches and
+// why, and why both are deliberately narrower than a blanket `<...>` or
+// IPv4-shaped scan.
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -51,6 +16,7 @@ const RUNBOOK_PATHS = [
   'RUNBOOK-media-backup-lifecycle.md',
   'RUNBOOK-tenant-onboarding.md',
   'db/RUNBOOK-db.md',
+  'services/broker/RUNBOOK-broker-deploy.md',
 ];
 
 const COMMAND_FENCE_LANGS = new Set(['bash', 'sql']);
@@ -104,14 +70,7 @@ function commandBlocks(text) {
   return blocks.filter((b) => COMMAND_FENCE_LANGS.has(b.lang));
 }
 
-/**
- * Every unresolved, address-shaped placeholder token in `blockText`,
- * wherever it sits -- an assignment's entire value, `export`ed, `local`,
- * quoted, split across a line continuation, or an argument inside a larger
- * command. Hostname and position are not the property that makes one of
- * these wrong: it reads as an address (its trailing word is
- * ip/ipv4/address/addr) and nothing has substituted it.
- */
+/** See runbook-literal-placeholders.md ("`addressPlaceholders`"). */
 function addressPlaceholders(blockText) {
   const found = [];
   let match;
@@ -126,11 +85,7 @@ function addressPlaceholders(blockText) {
   return found;
 }
 
-/**
- * Bare IPv4 literals in `blockText` equal to a specific, known address this
- * file pins in `FIXED_HOST_LITERALS` -- the anti-pattern the placeholder
- * check above exists to catch, committed instead of left unresolved.
- */
+/** See runbook-literal-placeholders.md ("`fixedHostLiterals`"). */
 function fixedHostLiterals(blockText) {
   const found = [];
   let match;
@@ -187,17 +142,8 @@ test('every RUNBOOK-*.md this repo ships is covered by the scan above', () => {
   assert.deepEqual(found.sort(), [...RUNBOOK_PATHS].sort());
 });
 
-// The Teardown section must not delete the directory that holds a tenant's
-// Compose file before anything stops the containers that file describes --
-// the unit that starts them carries no ExecStop, so nothing else in the
-// section can stop them once that file is gone. This check pins the fix at
-// the text level: a label-filtered `docker stop` (never a `docker compose
-// ... down`, which re-parses the Compose file and fails on every real
-// tenant's mandatory `${VAR:?...}` secrets -- see the comment beside step 2
-// in the runbook itself) has to appear, and it has to appear before the
-// line that removes the tenant's directory and before the line that
-// removes its named volumes, wherever those sit across the section's
-// fenced blocks.
+// See runbook-literal-placeholders.md ("The RUNBOOK-tenant-onboarding.md
+// Teardown order check").
 const TEARDOWN_HEADING_RE = /^##\s+Teardown\s*$/m;
 const NEXT_HEADING_RE = /^##\s+\S/m;
 // The one correct stop step: `docker ps -q --filter
@@ -240,14 +186,7 @@ function teardownSectionText(fullText) {
   return nextHeadingOffset === -1 ? afterHeading : afterHeading.slice(0, nextHeadingOffset);
 }
 
-/**
- * Violations of the teardown order above, found in `sectionText`'s fenced
- * bash/sql blocks. Order is judged across the whole section, concatenating
- * every command block's lines in document order -- a stop step in one
- * fenced block still has to precede a removal step in a later one. A
- * `docker compose ... down` is a violation outright, regardless of where it
- * sits, because it cannot succeed against a real tenant stack at all.
- */
+/** See runbook-literal-placeholders.md ("The RUNBOOK-tenant-onboarding.md Teardown order check"). */
 function teardownOrderViolations(sectionText) {
   // Comment lines (explanatory prose, including the one right beside step 2
   // that names the banned form to explain why it's banned) are not commands
