@@ -48,6 +48,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 const RUNBOOK_PATHS = [
   'RUNBOOK-bucket-fencing.md',
+  'RUNBOOK-media-backup-lifecycle.md',
   'RUNBOOK-tenant-onboarding.md',
   'db/RUNBOOK-db.md',
 ];
