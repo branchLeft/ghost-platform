@@ -88,7 +88,7 @@ LOAD-BEARING shape LLD-6 §03 sets out.
 nothing here awaits a network hop, which is the whole property this component
 exists to hold.
 
-### Slot release on connection close
+### Slot release on close
 
 The DATA concurrency slot must also be released if the underlying connection
 closes before the stream reaches `'end'` or `'error'` — smtp-server detaches
@@ -103,7 +103,7 @@ once fired; the two other call sites remove it on the other two paths
 instead, so a connection sending many messages in one session doesn't
 accumulate one listener per message.
 
-### Stream error — unreachable
+### Stream error unreachable
 
 The data stream's own `'error'` handler is marked unreachable (`v8 ignore`)
 having been checked exhaustively against smtp-server's own source rather than
