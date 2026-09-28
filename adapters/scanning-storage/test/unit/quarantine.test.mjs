@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -12,6 +13,8 @@ const {
   isRefused,
   readRefusal,
   sealRefusal,
+  releaseBytes,
+  sweepReleasing,
 } = require('../../src/quarantine.js');
 const { digestBytes } = require('../../src/pdq.js');
 
@@ -201,5 +204,156 @@ describe('isRefused', () => {
     const quarantinePath = path.join(tmpDir, 'quarantine');
     await fs.mkdir(quarantinePath);
     expect(isRefused(quarantinePath, 'abc')).toBe(false);
+  });
+});
+
+describe('releaseBytes', () => {
+  const bytes = Buffer.from('held-bytes');
+  const digest = digestBytes(bytes);
+  let quarantinePath;
+  const listing = () => fs.readdir(quarantinePath);
+
+  beforeEach(async () => {
+    quarantinePath = path.join(tmpDir, 'quarantine');
+    await quarantineBytes(quarantinePath, digest, bytes);
+  });
+
+  it('removes unrefused bytes and leaves no aside copy', async () => {
+    expect(releaseBytes(quarantinePath, digest)).toBe(true);
+    expect(await listing()).toEqual([]);
+  });
+
+  it('is a no-op for bytes already gone', async () => {
+    await fs.rm(path.join(quarantinePath, digest));
+    expect(releaseBytes(quarantinePath, digest)).toBe(false);
+  });
+
+  it('puts the bytes back when a record lands after they were moved aside', async () => {
+    const released = releaseBytes(quarantinePath, digest, {
+      onMovedAside: () => {
+        writeFileAtomicSync(path.join(quarantinePath, `${digest}.refused.json`), '{}');
+      },
+    });
+    expect(released).toBe(false);
+    expect((await listing()).sort()).toEqual([digest, `${digest}.refused.json`].sort());
+  });
+
+  it('puts the bytes back and rethrows when the record cannot be checked', async () => {
+    const record = path.join(quarantinePath, `${digest}.refused.json`);
+    expect(() =>
+      releaseBytes(quarantinePath, digest, {
+        onMovedAside: () => fsSync.symlinkSync(record, record),
+      })
+    ).toThrow(/ELOOP/);
+    await expect(fs.readFile(path.join(quarantinePath, digest))).resolves.toEqual(bytes);
+  });
+
+  it('throws, leaving the aside copy for the sweep, when putting the bytes back fails', async () => {
+    expect(() =>
+      releaseBytes(quarantinePath, digest, {
+        onMovedAside: () => {
+          writeFileAtomicSync(path.join(quarantinePath, `${digest}.refused.json`), '{}');
+          fsSync.mkdirSync(path.join(quarantinePath, digest, 'in-the-way'), { recursive: true });
+        },
+      })
+    ).toThrow();
+    expect((await listing()).some((n) => n.startsWith(`${digest}.releasing.`))).toBe(true);
+  });
+
+  it('rethrows a move-aside failure that is not a missing file', async () => {
+    const notADirectory = path.join(tmpDir, 'plain-file');
+    await fs.writeFile(notADirectory, '');
+    expect(() => releaseBytes(notADirectory, digest)).toThrow(/ENOTDIR/);
+  });
+});
+
+describe('sweepReleasing', () => {
+  const bytes = Buffer.from('left-aside');
+  const digest = digestBytes(bytes);
+  const logger = {
+    lines: [],
+    error(...args) {
+      this.lines.push(args.map(String).join(' '));
+    },
+  };
+  let quarantinePath;
+
+  beforeEach(async () => {
+    quarantinePath = path.join(tmpDir, 'quarantine');
+    await fs.mkdir(quarantinePath, { recursive: true });
+    await fs.writeFile(path.join(quarantinePath, `${digest}.releasing.1.abc`), bytes);
+    logger.lines = [];
+  });
+
+  it('deletes an aside copy of an unrefused digest', async () => {
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    expect(await fs.readdir(quarantinePath)).toEqual([]);
+  });
+
+  it('restores an aside copy of a refused digest whose bytes are missing', async () => {
+    await fs.writeFile(path.join(quarantinePath, `${digest}.refused.json`), '{}');
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    await expect(fs.readFile(path.join(quarantinePath, digest))).resolves.toEqual(bytes);
+    expect((await fs.readdir(quarantinePath)).sort()).toEqual(
+      [digest, `${digest}.refused.json`].sort()
+    );
+  });
+
+  it('drops an aside copy of a refused digest whose bytes are already in place', async () => {
+    await fs.writeFile(path.join(quarantinePath, `${digest}.refused.json`), '{}');
+    await fs.writeFile(path.join(quarantinePath, digest), bytes);
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    expect((await fs.readdir(quarantinePath)).sort()).toEqual(
+      [digest, `${digest}.refused.json`].sort()
+    );
+  });
+
+  it('replaces mismatched bytes of a refused digest with the aside copy', async () => {
+    await fs.writeFile(path.join(quarantinePath, `${digest}.refused.json`), '{}');
+    await fs.writeFile(path.join(quarantinePath, digest), 'trunc');
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    await expect(fs.readFile(path.join(quarantinePath, digest))).resolves.toEqual(bytes);
+  });
+
+  it('leaves an aside copy it cannot check, and logs it', async () => {
+    const record = path.join(quarantinePath, `${digest}.refused.json`);
+    await fs.symlink(record, record);
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    expect(await fs.readdir(quarantinePath)).toContain(`${digest}.releasing.1.abc`);
+    expect(logger.lines.some((l) => l.includes('could not sweep'))).toBe(true);
+  });
+
+  it('does nothing when there is no quarantine directory', () => {
+    expect(() => sweepReleasing(path.join(tmpDir, 'absent'), digestBytes, logger)).not.toThrow();
+  });
+});
+
+describe('sealRefusal restoring an aside copy', () => {
+  it('moves a releaser’s aside copy back rather than rewriting', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const bytes = Buffer.from('aside-bytes');
+    const digest = digestBytes(bytes);
+    await fs.mkdir(quarantinePath);
+    const aside = path.join(quarantinePath, `${digest}.releasing.9.def`);
+    await fs.writeFile(aside, bytes);
+    const reader = path.join(tmpDir, 'reader');
+    await fs.link(aside, reader);
+
+    await sealRefusal(quarantinePath, digest, bytes, { classification: 'csam' }, digestBytes);
+
+    const [a, b] = await Promise.all([fs.stat(reader), fs.stat(path.join(quarantinePath, digest))]);
+    expect(a.ino).toBe(b.ino);
+  });
+
+  it('falls back to the buffer when every aside copy is wrong', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    const bytes = Buffer.from('real-bytes');
+    const digest = digestBytes(bytes);
+    await fs.mkdir(quarantinePath);
+    await fs.writeFile(path.join(quarantinePath, `${digest}.releasing.9.def`), 'wrong');
+
+    await sealRefusal(quarantinePath, digest, bytes, { classification: 'csam' }, digestBytes);
+
+    await expect(fs.readFile(path.join(quarantinePath, digest))).resolves.toEqual(bytes);
   });
 });

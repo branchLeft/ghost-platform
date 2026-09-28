@@ -10,6 +10,8 @@ const {
   writeFileAtomicSync,
   isRefused,
   sealRefusal,
+  releaseBytes,
+  sweepReleasing,
 } = require('./quarantine');
 
 // Incidental, like the verdict budget in checks.js: how often a held digest
@@ -202,6 +204,7 @@ class HoldRegistry {
   // a request. `buildCallbacks(targetPath)` returns what hold()'s caller
   // passes. Bytes are not read here; #retry reads them on its first tick.
   resumeFromQuarantine(buildCallbacks) {
+    sweepReleasing(this.quarantinePath, this.computeDigest, this.logger);
     let names;
     try {
       names = fsSync.readdirSync(this.quarantinePath);
@@ -402,10 +405,8 @@ class HoldRegistry {
   // is still waiting on the digest are the sidecar and (for a promotion)
   // the bytes removed -- another feature's registry re-reads those bytes
   // on its own next retry. Bytes a refusal record names are never removed,
-  // whoever releases last: the record is read in the same synchronous tick
-  // as the unlink, and a read error keeps the bytes. Otherwise best-effort: promotion makes the
-  // object backup-eligible from its real served location, so a leftover
-  // file here is untidy, never unsafe.
+  // even by another process (releaseBytes). Otherwise best-effort: a
+  // leftover file here is untidy, never unsafe.
   #release(digest, { keepBytes }) {
     const file = sidecarPath(this.quarantinePath, digest);
     try {
@@ -416,9 +417,7 @@ class HoldRegistry {
         writeFileAtomicSync(file, JSON.stringify(sidecar));
         return;
       }
-      if (!keepBytes && !isRefused(this.quarantinePath, digest)) {
-        fsSync.rmSync(path.join(this.quarantinePath, digest), { force: true });
-      }
+      if (!keepBytes) releaseBytes(this.quarantinePath, digest);
       fsSync.rmSync(file, { force: true });
     } catch (err) {
       this.logger.error(`ScanningStorageAdapter: quarantine cleanup failed for ${digest}`, err);

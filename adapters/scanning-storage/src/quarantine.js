@@ -142,9 +142,16 @@ function readRefusal(quarantinePath, digest) {
   return { classification: 'csam', evidence: digest };
 }
 
-// Record first, bytes second: see the README's "Sealing order". Matching
-// bytes are left alone, since another feature may be reading them.
-async function sealRefusal(quarantinePath, digest, buffer, verdict, computeDigest) {
+// Record first, bytes second: see the README's "Sealing order", which also
+// covers releaseBytes. `onRecordWritten` is a test seam between the steps.
+async function sealRefusal(
+  quarantinePath,
+  digest,
+  buffer,
+  verdict,
+  computeDigest,
+  { onRecordWritten } = {}
+) {
   if (!isRefused(quarantinePath, digest)) {
     await fs.mkdir(quarantinePath, { recursive: true });
     await writeFileAtomic(
@@ -156,8 +163,100 @@ async function sealRefusal(quarantinePath, digest, buffer, verdict, computeDiges
       })
     );
   }
-  if (!(await quarantinedBytesMatch(quarantinePath, digest, computeDigest))) {
-    await quarantineBytes(quarantinePath, digest, buffer);
+  if (onRecordWritten) await onRecordWritten();
+  if (await quarantinedBytesMatch(quarantinePath, digest, computeDigest)) return;
+  for (const aside of asideCopiesOf(quarantinePath, digest)) {
+    restoreAside(aside, path.join(quarantinePath, digest));
+    if (await quarantinedBytesMatch(quarantinePath, digest, computeDigest)) return;
+  }
+  await quarantineBytes(quarantinePath, digest, buffer);
+}
+
+const RELEASING_INFIX = '.releasing.';
+
+// Only called once the record is in place, so the directory exists.
+function asideCopiesOf(quarantinePath, digest) {
+  const prefix = `${digest}${RELEASING_INFIX}`;
+  return fsSync
+    .readdirSync(quarantinePath)
+    .filter((n) => n.startsWith(prefix))
+    .map((n) => path.join(quarantinePath, n));
+}
+
+// Someone else (a sealer, the sweep, another releaser) may already have
+// moved it back.
+function restoreAside(aside, target) {
+  try {
+    fsSync.renameSync(aside, target);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+}
+
+// Removes unrefused bytes, safely against a sealer in another process:
+// move them aside under a unique name, THEN check for a refusal record, and
+// put them back if there is one. Only the aside name is ever unlinked.
+// Returns true when the bytes were removed. `onMovedAside` is a test seam.
+function releaseBytes(quarantinePath, digest, { onMovedAside } = {}) {
+  const target = path.join(quarantinePath, digest);
+  const aside = `${target}${RELEASING_INFIX}${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    fsSync.renameSync(target, aside);
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+  if (onMovedAside) onMovedAside();
+  let refused;
+  try {
+    refused = isRefused(quarantinePath, digest);
+  } catch (err) {
+    restoreAside(aside, target);
+    throw err;
+  }
+  if (refused) {
+    restoreAside(aside, target);
+    return false;
+  }
+  fsSync.rmSync(aside, { force: true });
+  return true;
+}
+
+// Aside copies left by a releaser that died mid-release: kept (as the
+// digest's bytes) when the digest is refused, deleted otherwise. A copy
+// whose digest cannot be checked is left for the next sweep.
+function sweepReleasing(quarantinePath, computeDigest, logger) {
+  let names;
+  try {
+    names = fsSync.readdirSync(quarantinePath);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const at = name.indexOf(RELEASING_INFIX);
+    if (at <= 0) continue;
+    const digest = name.slice(0, at);
+    const aside = path.join(quarantinePath, name);
+    const target = path.join(quarantinePath, digest);
+    try {
+      if (!isRefused(quarantinePath, digest)) {
+        fsSync.rmSync(aside, { force: true });
+        continue;
+      }
+      let current = null;
+      try {
+        current = fsSync.readFileSync(target);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
+      if (current && computeDigest(current) === digest) {
+        fsSync.rmSync(aside, { force: true });
+      } else {
+        restoreAside(aside, target);
+      }
+    } catch (err) {
+      logger.error(`ScanningStorageAdapter: could not sweep ${name}; left in place`, err);
+    }
   }
 }
 
@@ -170,4 +269,7 @@ module.exports = {
   isRefused,
   readRefusal,
   sealRefusal,
+  releaseBytes,
+  sweepReleasing,
+  RELEASING_INFIX,
 };

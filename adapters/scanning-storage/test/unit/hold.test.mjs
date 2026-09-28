@@ -303,7 +303,7 @@ describe('HoldRegistry', () => {
     });
 
     check.resolveTo({ classification: 'no-known-match' });
-    await settle();
+    await vi.waitFor(() => expect(registry.isPending('digest')).toBe(false), WAIT);
 
     expect(onAllow).toHaveBeenCalledTimes(1);
     expect(onAllow).toHaveBeenCalledWith(Buffer.from('bytes'));
@@ -321,7 +321,7 @@ describe('HoldRegistry', () => {
     });
 
     check.resolveTo({ classification: 'harmful-abusive-material', matchType: 'exact' });
-    await settle();
+    await vi.waitFor(() => expect(registry.isPending('digest')).toBe(false), WAIT);
 
     expect(onRefuse).toHaveBeenCalledTimes(1);
     expect(registry.isPending('digest')).toBe(false);
@@ -340,7 +340,7 @@ describe('HoldRegistry', () => {
     });
 
     check.resolveTo({ classification: 'no-known-match' });
-    await settle();
+    await vi.waitFor(() => expect(registry.isPending('digest')).toBe(false), WAIT);
 
     await expect(fs.readFile(path.join(quarantinePath, 'digest'))).rejects.toThrow();
     await expect(fs.readFile(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
@@ -372,7 +372,7 @@ describe('HoldRegistry', () => {
     expect(sidecar).toEqual({ owners: { [OWNER]: ['a.png', 'b.png'] } });
 
     check.resolveTo({ classification: 'no-known-match' });
-    await settle();
+    await vi.waitFor(() => expect(registry.isPending('digest')).toBe(false), WAIT);
 
     expect(firstOnAllow).toHaveBeenCalledTimes(1);
     expect(secondOnAllow).toHaveBeenCalledTimes(1);
@@ -455,7 +455,7 @@ describe('HoldRegistry', () => {
       expect(registry.isPending('digest')).toBe(true);
 
       check.resolveTo({ classification: 'no-known-match' });
-      await settle();
+      await vi.waitFor(() => expect(registry.isPending('digest')).toBe(false), WAIT);
 
       expect(onAllow).toHaveBeenCalledTimes(1);
       expect(onAllow).toHaveBeenCalledWith(Buffer.from('bytes'));
@@ -527,7 +527,7 @@ describe('HoldRegistry', () => {
       // would still receive 'first-bytes' below.
       await fs.writeFile(path.join(quarantinePath, 'digest'), 'second-bytes');
       check.resolveTo({ classification: 'no-known-match' });
-      await settle();
+      await vi.waitFor(() => expect(registry.isPending('digest')).toBe(false), WAIT);
 
       expect(onAllow).toHaveBeenCalledWith(Buffer.from('second-bytes'));
     });
@@ -849,7 +849,8 @@ describe('HoldRegistry with real digests', () => {
       await registry.hold(DIGEST, BYTES, { targetPath: 'a.png', onAllow, onRefuse: vi.fn() });
       check.resolveTo({ classification: 'no-known-match' });
 
-      await settle(600);
+      await vi.waitFor(() => expect(registry.isStuck(DIGEST)).toBe(true), STUCK_WAIT);
+      await settle(200);
 
       expect(onAllow).toHaveBeenCalledTimes(4);
       expect(registry.isPending(DIGEST)).toBe(false);

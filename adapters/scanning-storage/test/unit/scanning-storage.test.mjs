@@ -43,6 +43,8 @@ const settle = (ms = RETRY_MS * 4) => new Promise((resolve) => setTimeout(resolv
 
 const SILENT_LOGGER = { error: () => {} };
 const WAIT = { timeout: 5000, interval: 10 };
+// Inside the test's own timeout, so a wait that never succeeds fails its assertion.
+const SHORT_WAIT = { timeout: 2000, interval: 10 };
 
 function buildAdapter({
   refuse = new Map(),
@@ -384,7 +386,7 @@ describe('the hold branch', () => {
       await adapter.save(file);
 
       verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
+      await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
 
       expect(adapter.wrapped.savedRaw).toHaveLength(1);
       expect(adapter.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
@@ -416,7 +418,7 @@ describe('the hold branch', () => {
         classification: 'harmful-abusive-material',
         matchType: 'exact',
       });
-      await settle();
+      await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
 
       expect(adapter.wrapped.saved).toHaveLength(0);
       expect(adapter.wrapped.savedRaw).toHaveLength(0);
@@ -440,7 +442,7 @@ describe('the hold branch', () => {
       expect(adapter.wrapped.savedRaw).toHaveLength(0);
 
       verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
+      await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
 
       // One promotion per place the bytes were ever promised, from one shared retry loop.
       expect(adapter.wrapped.savedRaw).toHaveLength(2);
@@ -490,7 +492,7 @@ describe('the hold branch', () => {
       // And it is not just present but genuinely live: a clean verdict
       // delivered to the SECOND instance's own verdict client promotes it.
       secondVerdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-      await settle();
+      await vi.waitFor(() => expect(secondAdapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
 
       expect(secondAdapter.wrapped.savedRaw).toHaveLength(1);
       expect(secondAdapter.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
@@ -763,6 +765,24 @@ describe('a refusal by any feature', () => {
   });
 });
 
+describe('stale aside copies at start-up', () => {
+  it('the adapter restores one whose digest is refused and deletes one whose digest is not', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    await fs.mkdir(quarantinePath);
+    await fs.writeFile(path.join(quarantinePath, `${BAD_DIGEST}.releasing.1.aaa`), BAD_BYTES);
+    await fs.writeFile(path.join(quarantinePath, `${BAD_DIGEST}.refused.json`), '{}');
+    const cleanDigest = digestBytes(CLEAN_BYTES);
+    await fs.writeFile(path.join(quarantinePath, `${cleanDigest}.releasing.1.bbb`), CLEAN_BYTES);
+
+    buildAdapter({ quarantinePath });
+
+    expect((await fs.readdir(quarantinePath)).sort()).toEqual(
+      [BAD_DIGEST, `${BAD_DIGEST}.refused.json`].sort()
+    );
+    await expect(fs.readFile(path.join(quarantinePath, BAD_DIGEST))).resolves.toEqual(BAD_BYTES);
+  });
+});
+
 describe('a refusal sealed while an upload waits for its verdict', () => {
   it('still refuses the upload after a clean verdict', async () => {
     const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
@@ -831,7 +851,8 @@ describe('verified, bounded hold retries through the adapter', () => {
     await instance.save(await writeTempFile(BAD_BYTES, 'held.png'));
 
     verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
-    await settle(400);
+    await vi.waitFor(() => expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true), SHORT_WAIT);
+    await settle();
     expect(attempts).toBe(3);
     expect(instance.hold.isStuck(BAD_DIGEST)).toBe(true);
     expect(instance.hold.isPending(BAD_DIGEST)).toBe(false);
