@@ -2,16 +2,8 @@
 
 ## Module overview
 
-The estate's own design record is explicit that the direction is fixed: the
-tenant host "never initiates outward" and the worker "dials in over the
-collector's channel — one transport [reused]". The channel already has one
-concrete shape today — `services/mailgun-shim`'s bearer-token-authenticated
-`GET /drain`, dialled by the mail collector — but that collector's own
-production implementation is still being built elsewhere in this estate,
-and this repository has no equivalent dial-in server standing in front of
-`db/provision/dump_tenant.py` yet either. Guessing either shape here would
-be exactly the mistake this file exists to avoid, so this module holds
-only:
+The tenant database host "never initiates outward"; the worker on `ops1`
+dials in. This module holds:
 
   - `DialInTransport`, the interface a caller like `pull_encrypt_store.py`
     depends on, so it never has to know which concrete channel it is
@@ -20,17 +12,11 @@ only:
     ordinary local subprocess. It stands in for a real dial-in call so the
     pipeline's floor-check, single-recipient and never-put-before-exit-0
     properties can be proven against a real local database and a real
-    producer without any remote channel existing yet;
-  - `UnwiredCollectorChannelTransport`, the loud placeholder a real caller
-    gets until the actual channel lands.
-
-Open item, flagged rather than guessed at: the real transport — the one
-`services/mailgun-shim`'s `GET /drain` calls "the collector's channel" —
-does not exist in this repository yet. It is being built elsewhere, in a
-sibling stream of work, and the collector's own shape is that stream's to
-decide, not this module's to invent. Wiring a real `DialInTransport`
-implementation on top of whatever that stream lands is a follow-up, not
-part of this change.
+    producer without a remote channel;
+  - `RemoteMysqldumpTransport`, the real channel: `mysqldump`, run locally
+    on the worker's own host, connecting to the tenant database host's
+    existing MySQL port over TLS through a host-restricted backup account.
+    No new listener anywhere, and the database host gains no new service.
 
 ## FORBIDDEN_ENV_PREFIXES
 
@@ -52,9 +38,8 @@ Runs the producer as an ordinary local subprocess.
 
 This is a TEST DOUBLE, not the production channel — see the module
 overview above. It exists so the pipeline's controls can be proven end to
-end today, against a real producer talking to a real local database,
-without depending on a remote dial-in channel that does not exist in
-this repository yet.
+end against a real producer talking to a real local database, without a
+network hop to the tenant database host.
 
 Streams line-by-line, mirroring `db/provision/dump_tenant.py`'s own
 `run_mysqldump`: a caller watching for a floor-table `INSERT` pattern

@@ -98,6 +98,103 @@ function fixedHostLiterals(blockText) {
   return found;
 }
 
+// A secret-shaped variable name -- PWD, PASSWORD, SECRET or TOKEN as a
+// whole word component, matching this repo's own runbook naming
+// (DB_DUMP_MYSQL_PWD, MYSQL_ROOT_PASSWORD, ...). Case-insensitive, like
+// ADDRESS_WORD_RE above, for the same reason: a runbook author's casing is
+// not the property this check exists to verify.
+const SECRET_VAR_NAME_RE = /(?:^|_)(PWD|PASSWORD|SECRET|TOKEN)(?:_|$)/i;
+// echo/printf/cat as a standalone shell word -- the three commands whose
+// whole job is writing their argument straight back out, so any of them
+// touching a secret expansion is a terminal echo, a redirect notwithstanding
+// (a redirect is easy to add later and easy to miss on review; the safe
+// shape uses a different command entirely -- `install -m 600 /dev/stdin
+// <path>` is what this repo's own runbook now does instead).
+const SECRET_COMMAND_RE = /(?:^|[;&|]|\s)(?:echo|printf|cat)(?:\s|$)/;
+const VAR_EXPANSION_RE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
+
+/**
+ * Shell line-continuation (`\` at end of line) joined back into one
+ * logical line first -- the exact shape a wrapped `printf '...' \` +
+ * `"$SECRET"` splits a command and its secret argument across two
+ * physical lines, which a naive per-line scan would miss entirely.
+ */
+function joinContinuations(lines) {
+  const joined = [];
+  let buffer = '';
+  for (const raw of lines) {
+    const combined = buffer + raw;
+    if (combined.endsWith('\\')) {
+      buffer = combined.slice(0, -1);
+    } else {
+      joined.push(combined);
+      buffer = '';
+    }
+  }
+  if (buffer) joined.push(buffer);
+  return joined;
+}
+
+/**
+ * Splits one logical line into command segments at `&&`, `||`, `;` and
+ * `|`, outside quotes -- so a secret expansion in one command (an env-var
+ * assignment feeding `aws`, say) is never blamed on an unrelated `cat` of
+ * a different, non-secret file later in the same compound line. Quote
+ * tracking is deliberately simple (no backslash-escape handling beyond a
+ * literal `\"`/`\'` immediately before the matching quote) -- enough for
+ * this repo's own runbook style, not a general shell parser.
+ */
+function splitCommandSegments(line) {
+  const segments = [];
+  let current = '';
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote && line[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if ((ch === '&' || ch === '|') && line[i + 1] === ch) {
+      segments.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    if (ch === ';' || ch === '|') {
+      segments.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments;
+}
+
+/** See runbook-literal-placeholders.md ("`secretEchoes`"). */
+function secretEchoes(blockText) {
+  const found = [];
+  for (const line of joinContinuations(blockText.split('\n'))) {
+    for (const segment of splitCommandSegments(line)) {
+      if (!SECRET_COMMAND_RE.test(segment)) continue;
+      let match;
+      VAR_EXPANSION_RE.lastIndex = 0;
+      while ((match = VAR_EXPANSION_RE.exec(segment)) !== null) {
+        if (SECRET_VAR_NAME_RE.test(match[1])) {
+          found.push(segment.trim());
+        }
+      }
+    }
+  }
+  return found;
+}
+
 test('no RUNBOOK-*.md fenced command block contains an unresolved address placeholder or a committed fixed-host literal', () => {
   const violations = [];
   for (const relPath of RUNBOOK_PATHS) {
@@ -118,6 +215,26 @@ test('no RUNBOOK-*.md fenced command block contains an unresolved address placeh
     'found an unresolved address placeholder or a committed fixed-host literal ' +
       'in a fenced command block -- thread the value through a $VARIABLE ' +
       `populated by a lookup instead:\n${violations.join('\n')}`
+  );
+});
+
+test('no RUNBOOK-*.md fenced command block echoes, printfs or cats a secret-shaped variable', () => {
+  const violations = [];
+  for (const relPath of RUNBOOK_PATHS) {
+    const text = readFileSync(path.join(ROOT, relPath), 'utf8');
+    for (const block of commandBlocks(text)) {
+      const blockText = block.lines.join('\n');
+      for (const line of secretEchoes(blockText)) {
+        violations.push(`${relPath}: ${line}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    violations,
+    [],
+    'found echo/printf/cat expanding a PWD/PASSWORD/SECRET/TOKEN-named variable in a ' +
+      "fenced command block -- write it to a file instead, e.g. 'install -m 600 " +
+      `/dev/stdin <path> <<EOF ... EOF':\n${violations.join('\n')}`
   );
 });
 
@@ -548,4 +665,73 @@ test('self-test: the scanner leaves the verification slash-32 form alone', () =>
   ].join('\n');
   const blocks = commandBlocks(sample);
   assert.deepEqual(fixedHostLiterals(blocks[0].lines.join('\n')), []);
+});
+
+// Self-tests: secretEchoes, against synthetic input rather than today's
+// tree, for the same reason every other matcher above is.
+
+test('self-test: the secret-echo scanner catches a printf expanding a PWD variable', () => {
+  const sample = ['```bash', 'printf \'DB_DUMP_MYSQL_PWD=%s\\n\' "$DB_DUMP_MYSQL_PWD"', '```'].join(
+    '\n'
+  );
+  const blocks = commandBlocks(sample);
+  assert.equal(secretEchoes(blocks[0].lines.join('\n')).length, 1);
+});
+
+test('self-test: the secret-echo scanner catches the exact split-across-lines regression', () => {
+  // The real defect this check exists to catch: printf and its secret
+  // argument on two physical lines, joined by a trailing backslash.
+  const sample = [
+    '```bash',
+    "printf 'DB_DUMP_MYSQL_PWD=%s\\n' \\",
+    '  "$DB_DUMP_MYSQL_PWD"',
+    '```',
+  ].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.equal(secretEchoes(blocks[0].lines.join('\n')).length, 1);
+});
+
+test('self-test: the secret-echo scanner catches echo and cat too, and other secret names', () => {
+  const samples = [
+    'echo "$MYSQL_ROOT_PASSWORD"',
+    'cat "$TOKEN_FILE_CONTENTS"',
+    'echo "token=$BEARER_SECRET"',
+  ];
+  for (const line of samples) {
+    const sample = ['```bash', line, '```'].join('\n');
+    const blocks = commandBlocks(sample);
+    assert.equal(secretEchoes(blocks[0].lines.join('\n')).length, 1, line);
+  }
+});
+
+test('self-test: the secret-echo scanner leaves a non-secret variable alone', () => {
+  const sample = ['```bash', 'printf \'%s\\n\' "$OPS1_ADDR"', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.deepEqual(secretEchoes(blocks[0].lines.join('\n')), []);
+});
+
+test('self-test: the secret-echo scanner leaves a secret variable alone outside echo/printf/cat', () => {
+  const sample = [
+    '```bash',
+    'install -m 600 /dev/stdin /etc/branchleft/backup-worker.env <<EOF',
+    'DB_DUMP_MYSQL_PWD=$DB_DUMP_MYSQL_PWD',
+    'EOF',
+    '```',
+  ].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.deepEqual(secretEchoes(blocks[0].lines.join('\n')), []);
+});
+
+test('self-test: the secret-echo scanner leaves a bare read/export of a secret alone', () => {
+  const sample = ['```bash', 'read -rs DB_DUMP_MYSQL_PWD; export DB_DUMP_MYSQL_PWD', '```'].join(
+    '\n'
+  );
+  const blocks = commandBlocks(sample);
+  assert.deepEqual(secretEchoes(blocks[0].lines.join('\n')), []);
+});
+
+test('self-test: the secret-echo scanner does not false-positive on echo used for something else entirely', () => {
+  const sample = ['```bash', 'echo "no secret on this line at all"', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.deepEqual(secretEchoes(blocks[0].lines.join('\n')), []);
 });

@@ -22,7 +22,12 @@ import time
 from collections.abc import Callable
 
 import shared_objectstorage
-from dial_in_transport import DialInTransport, LocalProcessTransport, UnwiredCollectorChannelTransport
+from dial_in_transport import (
+    DialInTransport,
+    DialInTransportError,
+    LocalProcessTransport,
+    RemoteMysqldumpTransport,
+)
 from pull_encrypt_store import CopyTarget, PullEncryptStoreError, pull_encrypt_and_store
 
 # infra/provisioning/scripts/ -> infra/provisioning/ -> infra/ -> repo root.
@@ -422,8 +427,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "use LocalProcessTransport instead of the real dial-in channel -- for proof "
             "against local containers only, never for a real tenant. Without this flag, "
-            "main() uses UnwiredCollectorChannelTransport and refuses to run at all, because "
-            "no production channel is wired yet (see dial_in_transport.py's open item)"
+            "main() runs mysqldump for real, over dial_in_transport.py's "
+            "RemoteMysqldumpTransport"
         ),
     )
     args = parser.parse_args(argv)
@@ -432,7 +437,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.local_test_transport:
         transport = LocalProcessTransport()
     else:
-        transport = UnwiredCollectorChannelTransport()
+        transport = RemoteMysqldumpTransport(
+            host=_require_env("BACKUP_WORKER_DB_HOST"),
+            user=_require_env("BACKUP_WORKER_MYSQL_USER"),
+            ssl_ca=_require_env("BACKUP_WORKER_MYSQL_SSL_CA"),
+            port=int(os.environ.get("BACKUP_WORKER_DB_PORT", "3306")),
+        )
 
     mysql_pwd = _require_env("DB_DUMP_MYSQL_PWD")
     age_recipient = _require_env("AGE_RECIPIENT_PUBLIC_KEY")
@@ -448,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
             dump_tenant_path=args.dump_tenant_path,
             socket_path=args.socket_path,
         )
-    except (InvalidTenantName, NotImplementedError) as exc:
+    except (InvalidTenantName, NotImplementedError, DialInTransportError) as exc:
         print(f"backup_worker: {exc}", file=sys.stderr)
         return 1
 

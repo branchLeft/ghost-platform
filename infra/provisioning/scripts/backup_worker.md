@@ -48,12 +48,11 @@ design: db/RUNBOOK-db.md copies that whole directory to the host with
 
 ## run_tenant_dump
 
-The single-tenant, on-demand call. `dump_tenant_path` is the path
-`command` invokes `dump_tenant.py` from on whatever host the transport
-reaches — for `dial_in_transport.LocalProcessTransport` (local proof)
-that is a real filesystem path; a real remote transport, once one is
-wired (see dial_in_transport.py's open item), resolves it in whatever
-way that channel's own remote environment does.
+The single-tenant, on-demand call. `dump_tenant_path` and `socket_path`
+are real filesystem paths for `dial_in_transport.LocalProcessTransport`
+only — `RemoteMysqldumpTransport` reads the tenant slug out of `command`
+and ignores the rest, since it runs `mysqldump` itself rather than that
+argv.
 
 `env` carries exactly one entry, `DB_DUMP_MYSQL_PWD` — never
 `AWS_*`/`DB_BACKUP_*`/`AGE_*`, per the per-tenant dump producer's own

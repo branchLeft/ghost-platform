@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Unit tests for backup_worker.py, through its real entry points --
-`run_tenant_dump` AND `main()` -- against the REAL
-`db/provision/dump_tenant.py`, never a fake standing in for the producer
-itself. Only `mysql` and `mysqldump` are faked, and in `MainCopyWiringTests`,
-`shared_objectstorage.put_object`. See test_backup_worker.md#module-overview.
-"""
+"""Unit tests for backup_worker.py, through its real entry points, against
+the REAL `dump_tenant.py`. `mysql`/`mysqldump` are faked as tiny shell
+scripts on `PATH`. `RunTenantDumpAgainstTheRealMysqldumpTransportTests`
+runs a real `mysqldump` through the real `RemoteMysqldumpTransport`
+(`route=b`); `RemoteMysqldumpAgainstARealMysqlContainerTests` runs that
+against a real MySQL server, skipping cleanly without Docker. `age` is
+real throughout; only the storage credential path is faked.
+See test_backup_worker.md#module-overview."""
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import pathlib
+import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -19,34 +23,30 @@ import unittest
 from unittest import mock
 
 import backup_worker as bw
-from dial_in_transport import LocalProcessTransport
+from dial_in_transport import LocalProcessTransport, RemoteMysqldumpTransport
 from pull_encrypt_store import CopyTarget
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _DUMP_TENANT_PATH = str(_REPO_ROOT / "db" / "provision" / "dump_tenant.py")
 
-_FAKE_MYSQL = """#!/bin/sh
-# Stands in for the real `mysql` client: db/provision/dump_tenant.py's
-# check_floor() calls this twice (once per floor table) with a `SELECT
-# COUNT(*)` and expects a bare row count on stdout. This fake ignores the
-# query entirely and always reports a nonzero count, so the pre-check
-# always passes -- the property these tests exercise is the worker's OWN
+# Stands in for the real `mysql` client: dump_tenant.py's check_floor()
+# calls this twice (once per floor table) with a `SELECT COUNT(*)` and
+# expects a bare row count on stdout. Always reports a nonzero count, so
+# the pre-check always passes -- these tests exercise the worker's own
 # plumbing, not MySQL's counting.
-echo 5
-"""
+_FAKE_MYSQL = """#!/bin/sh
+echo 5"""
 
 _FAKE_MYSQLDUMP_HAPPY = """#!/bin/sh
 echo "-- MySQL dump 10.13"
 echo "INSERT INTO \\`users\\` VALUES ('u1','Owner');"
 echo "INSERT INTO \\`settings\\` VALUES ('s1','title','Blog');"
-exit 0
-"""
+exit 0"""
 
 _FAKE_MYSQLDUMP_MISSING_SETTINGS = """#!/bin/sh
 echo "-- MySQL dump 10.13 (--no-data)"
 echo "INSERT INTO \\`users\\` VALUES ('u1','Owner');"
-exit 0
-"""
+exit 0"""
 
 
 def _write_fake_bin(directory: str, name: str, contents: str) -> None:
@@ -178,6 +178,298 @@ class RunTenantDumpAgainstTheRealProducerTests(unittest.TestCase):
         with self.assertRaises(bw.InvalidTenantName):
             self._run(tenant="Not Valid!")
         self.assertFalse(os.path.exists(self.primary.path))
+
+
+class RunTenantDumpAgainstTheRealMysqldumpTransportTests(unittest.TestCase):
+    """`backup_worker.py` against the real transport (`route=b`): a real
+    `mysqldump` subprocess run by `RemoteMysqldumpTransport`, faked here
+    only as a tiny shell script on `PATH` (the same technique
+    `RunTenantDumpAgainstTheRealProducerTests` uses for `LocalProcessTransport`)
+    -- everything else (the transport's own argv construction, the
+    process boundary, streaming, the worker's floor watch, encryption and
+    storage) is real, unmocked code."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bin_dir = os.path.join(self.tmp.name, "bin")
+        os.makedirs(self.bin_dir)
+
+        self.identity_a, self.recipient_a = _generate_age_identity()
+        self.copies_dir = os.path.join(self.tmp.name, "copies")
+        os.makedirs(self.copies_dir)
+        self.primary = _FileCopy("primary", self.copies_dir)
+
+        self._path_patch = mock.patch.dict(
+            os.environ, {"PATH": self.bin_dir + os.pathsep + os.environ.get("PATH", "")}
+        )
+        self._path_patch.start()
+        self.addCleanup(self._path_patch.stop)
+
+    def _run(self, tenant: str = "blog") -> bw.DumpResult:
+        transport = RemoteMysqldumpTransport(
+            host="10.20.1.20", user="backup_ops1", ssl_ca="/etc/branchleft/mysql-ca.pem"
+        )
+        return bw.run_tenant_dump(
+            tenant=tenant,
+            transport=transport,
+            mysql_pwd="irrelevant-fake-password",
+            age_recipient=self.recipient_a,
+            copies=[self.primary.as_target()],
+            dump_tenant_path=_DUMP_TENANT_PATH,  # ignored by the real transport; kept for the call shape
+        )
+
+    def test_happy_path_through_a_real_mysqldump_subprocess(self) -> None:
+        _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_HAPPY)
+        result = self._run()
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.floor_tables_seen, frozenset({"users", "settings"}))
+        self.assertEqual(result.copies_written, ("primary",))
+        with open(self.primary.path, "rb") as handle:
+            ciphertext = handle.read()
+        decrypted = subprocess.run(
+            ["age", "--decrypt", "-i", self.identity_a], input=ciphertext, capture_output=True, check=True
+        )
+        self.assertIn(b"INSERT INTO `users`", decrypted.stdout)
+
+    def test_a_dump_missing_the_settings_floor_writes_to_no_copy(self) -> None:
+        """The same missing-floor defect `RunTenantDumpAgainstTheRealProducerTests`
+        proves for `LocalProcessTransport`, proven again here through the
+        real transport: the worker's own `_FloorWatcher` observes
+        `mysqldump`'s stream directly as it arrives (there is no server
+        side to buffer it away this time), sees only `users`, and refuses
+        to store."""
+        _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_MISSING_SETTINGS)
+        result = self._run()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.missing_floor_tables, frozenset({"settings"}))
+        self.assertEqual(result.copies_written, ())
+        self.assertFalse(os.path.exists(self.primary.path))
+
+    def test_a_nonzero_exit_writes_to_no_copy(self) -> None:
+        _write_fake_bin(self.bin_dir, "mysqldump", "#!/bin/sh\necho partial\nexit 1")
+        result = self._run()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.copies_written, ())
+
+
+def _docker_answers_within(seconds: float) -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        subprocess.run(["docker", "info"], capture_output=True, timeout=seconds, check=True)
+        return True
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
+        return False
+
+
+_MYSQL_CONTAINER_NAME = "backup-worker-remote-mysqldump-tls-proof"
+
+
+class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
+    """The other half of the two-process harness `route=b` asks for: a
+    real MySQL 8 server, in a local Docker container, `mysqldump`
+    negotiating real TLS against that server's own auto-generated
+    certificate, through a TLS-required, grant-limited account -- nothing
+    faked but the container's throwaway data. Skips (never fails) when
+    Docker itself doesn't answer within 20s, since it is shared
+    infrastructure another session may be restarting."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _docker_answers_within(20):
+            raise unittest.SkipTest("docker did not answer within 20s")
+        cls.root_pwd = "throwaway-root-pwd"
+        cls.worker_pwd = "throwaway-worker-pwd"
+        subprocess.run(["docker", "rm", "-f", _MYSQL_CONTAINER_NAME], capture_output=True, check=False)
+        run = subprocess.run(
+            [
+                "docker", "run", "-d", "--name", _MYSQL_CONTAINER_NAME,
+                "-e", f"MYSQL_ROOT_PASSWORD={cls.root_pwd}",
+                "-p", "127.0.0.1::3306",
+                "mysql:8.0",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if run.returncode != 0:
+            raise unittest.SkipTest(f"docker run failed: {run.stderr.strip()}")
+        cls.addClassCleanup(
+            lambda: subprocess.run(["docker", "rm", "-f", _MYSQL_CONTAINER_NAME], capture_output=True, check=False)
+        )
+        cls._wait_for_mysqld_ready()
+        port_out = subprocess.run(
+            ["docker", "port", _MYSQL_CONTAINER_NAME, "3306"], capture_output=True, text=True, check=True
+        )
+        cls.port = int(port_out.stdout.strip().rsplit(":", 1)[-1])
+        cls._provision_database_and_account()
+        cls.ssl_ca_dir = tempfile.mkdtemp()
+        cls.addClassCleanup(lambda: shutil.rmtree(cls.ssl_ca_dir, ignore_errors=True))
+        cls.ssl_ca_path = os.path.join(cls.ssl_ca_dir, "ca.pem")
+        subprocess.run(
+            ["docker", "cp", f"{_MYSQL_CONTAINER_NAME}:/var/lib/mysql/ca.pem", cls.ssl_ca_path],
+            check=True,
+        )
+
+    @classmethod
+    def _wait_for_mysqld_ready(cls, *, deadline_s: float = 90.0) -> None:
+        """`mysqladmin ping` returns 0 even against MySQL's own transient,
+        socket-only init server (and even on access-denied) -- it cannot
+        tell "the real server is up" from "something answered". This polls
+        with the same real, authenticated, TLS-required query
+        `RemoteMysqldumpTransport` itself makes -- over TCP, inside the
+        container -- so a pass here means the real server, with real TLS
+        materials and the real root password, is actually ready. Once the
+        container is running at all, a timeout here is a genuine CI
+        failure, never a silent skip -- this is the one live proof of
+        VERIFY_CA and the grant set."""
+        start = time.monotonic()
+        last_stderr = b""
+        while time.monotonic() - start < deadline_s:
+            probe = subprocess.run(
+                [
+                    "docker", "exec", _MYSQL_CONTAINER_NAME,
+                    "mysql", "--protocol=TCP", "--host=127.0.0.1", "--ssl-mode=REQUIRED",
+                    "-uroot", f"-p{cls.root_pwd}", "-e", "SELECT 1",
+                ],
+                capture_output=True,
+            )
+            if probe.returncode == 0:
+                return
+            last_stderr = probe.stderr
+            time.sleep(1)
+        raise AssertionError(
+            f"mysqld in the container never answered an authenticated TLS query within "
+            f"{deadline_s}s: {last_stderr.decode(errors='replace')}"
+        )
+
+    @classmethod
+    def _provision_database_and_account(cls) -> None:
+        # One row per floor table, real GRANTs, real REQUIRE SSL, matching
+        # ghost-platform-docs/backup-worker-account-handover-runbook.md's
+        # grant set (LOCK TABLES and EVENT dropped; this test confirms
+        # mysqldump still runs without them). `backup_ops1` stays host-'%'
+        # -- this test's client reaches the container through Docker's NAT,
+        # whose source address inside the container isn't reliably
+        # 127.0.0.1. Host restriction is proven instead by
+        # `backup_right_host`/`backup_wrong_host`, a control pair tested
+        # container-internally.
+        sql_template = (
+            "CREATE DATABASE ghost_blog;"
+            "CREATE TABLE ghost_blog.users (id INT PRIMARY KEY, name VARCHAR(64));"
+            "INSERT INTO ghost_blog.users VALUES (1, 'Owner');"
+            "CREATE TABLE ghost_blog.settings (id INT PRIMARY KEY, value VARCHAR(64));"
+            "INSERT INTO ghost_blog.settings VALUES (1, 'title');"
+            "CREATE USER 'backup_ops1'@'%' IDENTIFIED BY '{worker_pwd}' REQUIRE SSL;"
+            "GRANT SELECT, SHOW VIEW, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT "
+            "ON *.* TO 'backup_ops1'@'%';"
+            "CREATE USER 'backup_right_host'@'127.0.0.1' IDENTIFIED BY '{right_host_pwd}' REQUIRE SSL;"
+            "GRANT SELECT ON *.* TO 'backup_right_host'@'127.0.0.1';"
+            "CREATE USER 'backup_wrong_host'@'10.99.99.99' IDENTIFIED BY '{wrong_host_pwd}' REQUIRE SSL;"
+            "GRANT SELECT ON *.* TO 'backup_wrong_host'@'10.99.99.99';"
+            "FLUSH PRIVILEGES;"
+        )
+        cls.right_host_pwd = "throwaway-right-host-pwd"
+        cls.wrong_host_pwd = "throwaway-wrong-host-pwd"
+        sql = sql_template.format(
+            worker_pwd=cls.worker_pwd, right_host_pwd=cls.right_host_pwd, wrong_host_pwd=cls.wrong_host_pwd
+        )
+        subprocess.run(
+            ["docker", "exec", "-i", _MYSQL_CONTAINER_NAME, "mysql", "-uroot", f"-p{cls.root_pwd}"],
+            input=sql,
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+
+    def _mysql_probe(self, *, user: str, password: str) -> subprocess.CompletedProcess:
+        # Run inside the container, over the same TCP loopback the
+        # readiness probe uses -- never assumes a `mysql` client exists on
+        # the CI runner itself, only inside the image already pulled.
+        return subprocess.run(
+            [
+                "docker", "exec", _MYSQL_CONTAINER_NAME,
+                "mysql", "--protocol=TCP", "--host=127.0.0.1", "--ssl-mode=REQUIRED",
+                "-u", user, f"-p{password}", "-e", "SELECT 1",
+            ],
+            capture_output=True,
+        )
+
+    def test_the_host_restriction_actually_refuses_a_non_matching_address(self) -> None:
+        """Proves account-host matching with a control case, not a refusal
+        alone: `backup_right_host`/`backup_wrong_host` are identical
+        (`REQUIRE SSL`, same connection path) except the granted address --
+        `@'127.0.0.1'` (how this container reaches itself) vs
+        `@'10.99.99.99'` (nothing here has it). Without the matching case
+        too, a server refusing every connection would pass identically."""
+        matching = self._mysql_probe(user="backup_right_host", password=self.right_host_pwd)
+        self.assertEqual(matching.returncode, 0, matching.stderr.decode(errors="replace"))
+
+        non_matching = self._mysql_probe(user="backup_wrong_host", password=self.wrong_host_pwd)
+        self.assertNotEqual(non_matching.returncode, 0)
+        self.assertIn(b"Access denied", non_matching.stderr)
+
+    def test_mysqldump_over_real_tls_against_the_grant_limited_account(self) -> None:
+        transport = RemoteMysqldumpTransport(
+            host="127.0.0.1", port=self.port, user="backup_ops1", ssl_ca=self.ssl_ca_path
+        )
+        sink = _CollectingSinkForContainerTest()
+        exit_code = transport.run(
+            command=["python3", "/x/dump_tenant.py", "blog", "--socket", "/x.sock"],
+            env={"DB_DUMP_MYSQL_PWD": self.worker_pwd},
+            stdout=sink,
+        )
+        output = b"".join(sink.chunks)
+        self.assertEqual(exit_code, 0, output.decode(errors="replace"))
+        self.assertIn(b"INSERT INTO `users`", output)
+        self.assertIn(b"INSERT INTO `settings`", output)
+
+    def test_verify_ca_rejects_a_wrong_certificate_authority(self) -> None:
+        """Proves `--ssl-mode=VERIFY_CA` actually verifies the server's
+        certificate, not merely that the connection is encrypted: a
+        throwaway, unrelated CA must fail the handshake itself -- nonzero
+        exit, nothing streamed, a named certificate reason. Degrading to
+        `--ssl-mode=REQUIRED` would let this connection through; sabotage
+        proof in the PR body."""
+        wrong_ca_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(wrong_ca_dir, ignore_errors=True))
+        wrong_ca_path = os.path.join(wrong_ca_dir, "wrong-ca.pem")
+        wrong_key_path = os.path.join(wrong_ca_dir, "wrong-ca-key.pem")
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", wrong_key_path, "-out", wrong_ca_path,
+                "-days", "1", "-subj", "/CN=throwaway-unrelated-ca",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        transport = RemoteMysqldumpTransport(
+            host="127.0.0.1", port=self.port, user="backup_ops1", ssl_ca=wrong_ca_path
+        )
+        sink = _CollectingSinkForContainerTest()
+        captured_stderr = io.StringIO()
+        with contextlib.redirect_stderr(captured_stderr):
+            exit_code = transport.run(
+                command=["python3", "/x/dump_tenant.py", "blog", "--socket", "/x.sock"],
+                env={"DB_DUMP_MYSQL_PWD": self.worker_pwd},
+                stdout=sink,
+            )
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(b"".join(sink.chunks), b"")
+        self.assertIn("certificate", captured_stderr.getvalue().lower())
+
+
+class _CollectingSinkForContainerTest:
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+
+    def write(self, chunk: bytes) -> int:
+        self.chunks.append(chunk)
+        return len(chunk)
 
 
 # Dummy values only -- never a real credential. These exist purely to give
