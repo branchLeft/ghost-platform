@@ -5,7 +5,11 @@
  * `gate`, `backup` -- plus `mail`'s own sending identity (LLD-6 §09's own
  * handoff of a sixth attributable field to this schema: a demo's
  * local-part identity becomes the tenant's own signed domain, the same
- * re-point every other union gets, never a value this schema invents) and
+ * re-point every other union gets, never a value this schema invents),
+ * `codeInjection` (a seventh attributable field, and tier-differentiated
+ * the same way `limits` is -- this repo's own fixtures already model it
+ * that way, and carrying the demo's posture forward silently is the same
+ * defect class the mail identity and ceiling fix already closed once), and
  * the three per-kind scalars that are not unions but still differ by kind:
  * `limits`, `caps`, `expiresAt`. Everything else on the descriptor, `slug`
  * above all, survives unchanged: promotion is a re-point of the
@@ -65,7 +69,12 @@
 
 import type { AbsoluteUrl, Port } from './brand.js';
 import { FieldValidationError } from './brand.js';
-import type { LimitsSpec, SendingIdentitySpec, TenantDescriptor } from './descriptor.js';
+import type {
+  CodeInjectionSpec,
+  LimitsSpec,
+  SendingIdentitySpec,
+  TenantDescriptor,
+} from './descriptor.js';
 import { databaseAndUserName } from './naming.js';
 import { mediaBucketName } from './media.js';
 import type { ZoneConfig } from './validate.js';
@@ -97,12 +106,20 @@ export interface PromotionTargets {
   readonly mailEnabled: boolean;
   readonly mailCeiling: number;
   readonly mailEstateCeiling: number;
+  /** The promoted tenant's own code-injection posture -- never the demo's.
+   * This repo's own fixtures already model it as tier-differentiated
+   * (`entryTenantDescriptor()`: `blocked`; `professionalTenantDescriptor()`:
+   * `managed`), the same reason `limits` and the mail ceilings have no
+   * tier-neutral default: even `blocked` is one tier's own answer, not an
+   * absence of one. */
+  readonly codeInjection: CodeInjectionSpec;
 }
 
 /**
  * The top-level `TenantDescriptor` fields a promotion may legitimately
  * change: the five unions LLD-1 §06 names, plus `mail`'s sending identity
- * (LLD-6 §09) and the three per-kind scalars. `kind` and `siteUrl` are
+ * (LLD-6 §09), `codeInjection` (tier-differentiated the same way `limits`
+ * is) and the three per-kind scalars. `kind` and `siteUrl` are
  * folded in here too rather than tracked as a
  * separate bucket -- `kind` is the discriminant the whole transform exists
  * to flip, and `siteUrl` is `validate()`'s own single-cause consequence of
@@ -117,6 +134,7 @@ export const ATTRIBUTABLE_PROMOTION_FIELDS: ReadonlySet<keyof TenantDescriptor> 
   'gate',
   'backup',
   'mail',
+  'codeInjection',
   'siteUrl',
   'limits',
   'caps',
@@ -129,8 +147,8 @@ export const ATTRIBUTABLE_PROMOTION_FIELDS: ReadonlySet<keyof TenantDescriptor> 
 export class UnattributedPromotionDiffError extends Error {
   constructor(public readonly fields: readonly string[]) {
     super(
-      `promotion diff touches field(s) outside the five unions, mail's sending identity, and ` +
-        `limits/caps/expiresAt: ` +
+      `promotion diff touches field(s) outside the five unions, mail's sending identity, ` +
+        `codeInjection, and limits/caps/expiresAt: ` +
         `${fields.join(', ')}. A difference in a name, a slug-derived path or a volume identity ` +
         `rebuilds the tenancy and must never pass unnoticed.`
     );
@@ -251,6 +269,14 @@ export function transform(
         `tier-neutral default, and the demo's own ceiling is never a promoted tenant's.`
     );
   }
+  if (!targets.codeInjection) {
+    throw new FieldValidationError(
+      'codeInjection',
+      `transform() requires targets.codeInjection (the promoted tenant's own code-injection ` +
+        `posture) -- there is no tier-neutral default, and the demo's own posture is never a ` +
+        `promoted tenant's.`
+    );
+  }
 
   const slug = demo.slug;
   const sqlIdentity = databaseAndUserName(slug);
@@ -287,6 +313,7 @@ export function transform(
         dkimSelector: targets.mailIdentity.dkimSelector,
       },
     },
+    codeInjection: targets.codeInjection,
     limits: targets.limits,
     expiresAt: null,
   };

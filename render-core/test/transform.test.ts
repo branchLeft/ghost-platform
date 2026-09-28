@@ -65,6 +65,19 @@ function s3MediaOf(
  * this repo's own pre-existing, unmodified fixtures, so a future change to
  * what "entry" or "professional" means updates this test for free rather
  * than silently drifting from it.
+ *
+ * `codeInjection` is the one exception: both tiers get `{ kind: 'blocked' }`
+ * here, NOT `professionalTenantDescriptor()`'s own `managed` value.
+ * `validate()`'s `checkCodeInjectionHostnamePrecondition` requires
+ * `hostname.kind: "theirs"` for `managed`/`granted`, and `transform()`
+ * always writes `hostname.kind: "ours"` (LLD-1 §06's own default outcome --
+ * a verified-domain promotion is "a real, separate path this function does
+ * not build"), so `managed` is not a value ANY promotion can legitimately
+ * carry today, whichever tier it targets. The professional tier's own
+ * `managed` value is real and IS a legitimate `PromotionTargets.codeInjection`
+ * input in general (a future verified-domain promotion path would use it) --
+ * it is exercised directly, bypassing `validate()`, in the dedicated
+ * "carries the demo's codeInjection forward" sabotage test below.
  */
 const PROMOTION_TARGETS_BY_TIER = {
   entry: (() => {
@@ -82,6 +95,7 @@ const PROMOTION_TARGETS_BY_TIER = {
       mailEnabled: fixture.mail.enabled,
       mailCeiling: fixture.mail.ceiling,
       mailEstateCeiling: fixture.mail.estateCeiling,
+      codeInjection: fixture.codeInjection,
     };
   })(),
   professional: (() => {
@@ -99,6 +113,10 @@ const PROMOTION_TARGETS_BY_TIER = {
       mailEnabled: fixture.mail.enabled,
       mailCeiling: fixture.mail.ceiling,
       mailEstateCeiling: fixture.mail.estateCeiling,
+      // NOT fixture.codeInjection ('managed') -- see this const's own doc
+      // comment: that value fails validate() against transform()'s fixed
+      // "ours" hostname output, for any tier.
+      codeInjection: { kind: 'blocked' },
     };
   })(),
 } satisfies Record<'entry' | 'professional', PromotionTargets>;
@@ -200,15 +218,22 @@ describe.each([
       expect(tenant.media.resize).toBe(targets.mediaResize);
       expect(tenant.media.srcsets).toBe(targets.mediaSrcsets);
 
-      // TransportSpec and codeInjection are the design's own examples of
-      // fields that must NOT move (LLD-1 §06's figure caption: "TransportSpec
-      // is identical across all three kinds, so it never moves"; "now both
-      // are Blocked and it does not [move]"). `caps` likewise never moves --
+      // TransportSpec is the design's own example of a field that must NOT
+      // move (LLD-1 §06's figure caption: "TransportSpec is identical across
+      // all three kinds, so it never moves"). `caps` likewise never moves --
       // unlike `limits`, it is not tier-differentiated (`runtime.ts`: "applies
       // identically to all three kinds").
       expect(tenant.transport).toEqual(demo.transport);
-      expect(tenant.codeInjection).toEqual(demo.codeInjection);
       expect(tenant.caps).toEqual(demo.caps);
+
+      // codeInjection now IS attributable (the cycle-4 review finding this
+      // sabotage's own const doc comment explains): it is sourced from
+      // `targets.codeInjection`, never carried over from the demo. Both
+      // tiers' targets happen to equal the demo's own `blocked` value here
+      // (the only value `validate()` accepts for "ours" hostname, which is
+      // every promotion's own output) -- the dedicated CONTROL CASE sabotage
+      // test below proves the field is actually wired, not merely coincident.
+      expect(tenant.codeInjection).toEqual(targets.codeInjection);
       expect(tenant.ownerEmail).toBe(demo.ownerEmail);
       expect(tenant.image).toBe(demo.image);
     });
@@ -225,10 +250,13 @@ describe.each([
 
       // ghost-settings.json (settings.ts): `codeinjection_head`/
       // `codeinjection_foot`/`codeInjectionExplainer` are a pure function of
-      // `codeInjection` alone, which transform() never touches -- those
-      // three stay byte-identical. `members_support_address` is sourced
-      // from `mail.identity` (`settings.ts#renderSettings`), which IS
-      // attributable now -- it must change alongside it.
+      // `codeInjection` alone (settings.ts#codeInjectionSettings). `codeInjection`
+      // IS attributable now, sourced from `targets.codeInjection` -- these
+      // three stay byte-identical here only because this suite's own target
+      // (`{ kind: 'blocked' }`, both tiers) equals the demo's own value; a
+      // target that actually differed would change them too, exactly the way
+      // `members_support_address` (sourced from `mail.identity`, also
+      // attributable) already does below.
       const demoSettings = JSON.parse(demoArtefacts.get('ghost-settings.json')!) as Record<
         string,
         unknown
@@ -389,6 +417,19 @@ describe('transform() itself', () => {
       /mailCeiling/
     );
   });
+
+  it('refuses a promotion with no codeInjection target, naming the field', () => {
+    const demo = validate(demoDescriptor(), TEST_ZONES);
+    // Same omission exercise as `mailIdentity`/`mailCeiling` above, for the
+    // field workspace#1532 found missing entirely: a caller that skips
+    // `codeInjection` gets a named refusal, never a silent carry-over of
+    // the demo's own posture.
+    const { codeInjection: _codeInjection, ...withoutCodeInjection } =
+      PROMOTION_TARGETS_BY_TIER.professional;
+    expect(() => transform(demo, TEST_ZONES, withoutCodeInjection as PromotionTargets)).toThrow(
+      /codeInjection/
+    );
+  });
 });
 
 describe('CONTROL CASE — sabotage: real regressions the falsifying test must catch', () => {
@@ -472,13 +513,16 @@ describe('CONTROL CASE — sabotage: real regressions the falsifying test must c
           "      estateCeiling: targets.mailEstateCeiling,\n      identity: {\n        kind: 'tenant',\n" +
           '        domain: targets.mailIdentity.domain,\n' +
           '        dkimSelector: targets.mailIdentity.dkimSelector,\n' +
-          '      },\n    },\n    limits: targets.limits,';
+          '      },\n    },\n    codeInjection: targets.codeInjection,\n    limits: targets.limits,';
         if (!source.includes(target)) {
           throw new Error(
             'sabotage target string not found in transform.ts -- update the mutation to match the current source'
           );
         }
-        return source.replace(target, '    limits: targets.limits,');
+        return source.replace(
+          target,
+          '    codeInjection: targets.codeInjection,\n    limits: targets.limits,'
+        );
       }
     );
     const sabotagedTenant = sabotaged.transform(
@@ -551,6 +595,49 @@ describe('CONTROL CASE — sabotage: real regressions the falsifying test must c
     expect(realTenant.mail.estateCeiling).toBe(
       PROMOTION_TARGETS_BY_TIER.professional.mailEstateCeiling
     );
+  });
+
+  it("a transform() mutated to carry the demo's codeInjection forward ships the demo's blocked posture to every promotion; the real one uses the target's own value (workspace#1532)", async () => {
+    const demo = validate(demoDescriptor(), TEST_ZONES);
+    // The professional tier's own `codeInjection` (`professionalTenantDescriptor()`'s
+    // `managed` value) is used directly here -- not through
+    // `PROMOTION_TARGETS_BY_TIER.professional`, whose own `codeInjection` is
+    // deliberately `blocked` (see that const's doc comment: `managed` fails
+    // `validate()` against transform()'s fixed "ours" hostname output). This
+    // test calls neither `transform()`'s own refusal checks nor `validate()`
+    // -- it exercises the one line under test, `codeInjection:
+    // targets.codeInjection`, directly, the same way the media.resize
+    // sabotage above does for its own field.
+    const targets: PromotionTargets = {
+      ...PROMOTION_TARGETS_BY_TIER.professional,
+      codeInjection: professionalTenantDescriptor().codeInjection,
+    };
+
+    // RED: mutate transform.ts's real codeInjection write to carry the
+    // demo's own posture forward instead of the target's -- exactly the
+    // defect workspace#1532 found: `codeInjection` was in neither
+    // `PromotionTargets` nor `ATTRIBUTABLE_PROMOTION_FIELDS`, so a promoted
+    // tenant silently kept the demo's `blocked` value regardless of tier.
+    const sabotaged = await importSabotaged<{ transform: typeof TransformFn }>(
+      'transform.ts',
+      (source) => {
+        const target = 'codeInjection: targets.codeInjection,';
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in transform.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, 'codeInjection: demo.codeInjection,');
+      }
+    );
+    const sabotagedTenant = sabotaged.transform(demo, TEST_ZONES, targets);
+    expect(sabotagedTenant.codeInjection).toEqual(demo.codeInjection);
+    expect(sabotagedTenant.codeInjection).not.toEqual(targets.codeInjection);
+
+    // GREEN: the real, unmutated module ships the target's own value.
+    const realTenant = transform(demo, TEST_ZONES, targets);
+    expect(realTenant.codeInjection).toEqual(targets.codeInjection);
+    expect(realTenant.codeInjection).not.toEqual(demo.codeInjection);
   });
 
   it('an edge.ts mutated to never admit a hostname hides the demo-to-tenant certificate transition; the real module flips it', async () => {
