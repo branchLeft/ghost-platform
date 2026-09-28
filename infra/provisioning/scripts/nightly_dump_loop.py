@@ -1,47 +1,11 @@
 #!/usr/bin/env python3
-"""The nightly loop `backup_worker.py`'s own module docstring leaves open:
-"this module owns nothing about *how* the worker reaches every tenant on a
-schedule -- that is the nightly loop's job, built from the same
-`run_tenant_dump` call, one invocation per tenant". This is that loop.
-
-branchLeft/workspace#1158's ruling ("lock=a"): every tenant's dump takes a
-brief, server-wide `FLUSH TABLES WITH READ LOCK` (see
-`backup_worker._LockWaitTimer`'s docstring), so running two dumps at once
-would queue two of those locks against each other on top of whatever
-ordinary write traffic is already waiting -- worse than the one-at-a-time
-cost the risk was already recorded against. This loop enforces two
-separate things, deliberately kept separate:
-
-  1. Tenants are dumped ONE AT A TIME, in a plain sequential `for` loop --
-     nothing here spawns a thread, a process pool or an async task per
-     tenant, so there is no code path that could run two `run_tenant_dump`
-     calls concurrently within a single invocation of this script.
-  2. A SECOND invocation of this whole script (the scheduler firing again
-     while the previous night's run is still going, e.g. after a slow
-     tenant or a stuck transport) is refused outright rather than allowed
-     to interleave with the first -- `--run-lock-path`, held with a
-     non-blocking `flock` for the duration of the run. Refusing beats
-     blocking here: a second run queued up behind a stuck first one would
-     itself run into the same stuck condition, and a growing queue of
-     blocked nightly loops is a worse failure than one skipped night that
-     the next scheduled run corrects.
-
-No per-tenant identity or registry lives in this repository (see this
-repo's own CLAUDE.md) -- so unlike `db/provision/dump_nightly.py`'s old
-`--all-databases` shape, this script is never told to "dump everything";
-its caller (the scheduler, wherever the tenant registry actually lives)
-must name every tenant explicitly, via `--tenant` (repeatable) and/or
-`--tenants-file` (one slug per line, blank lines and `#`-comments
-ignored). The two are additive, and the resulting list is de-duplicated,
-order preserved, so a caller can combine a small fixed set with a
-generated file without double-dumping a tenant present in both.
-
-One tenant's failure -- a floor miss, a transport error, an unexpected
-exception `run_tenant_dump` itself does not catch -- must never stop the
-rest of the run: `_dump_one_tenant` catches broadly, on purpose, and the
-loop always continues to the next tenant. `main()`'s exit code reports
-whether every tenant succeeded, but only after every tenant has been
-attempted.
+"""The nightly loop `backup_worker.py`'s own module docstring leaves
+open: this is that loop, one `run_tenant_dump` call per tenant, dumped
+strictly serially and refusing (never queuing) a second, overlapping
+invocation of itself. See README.md in this directory for why both of
+those are separate, deliberate guarantees, how tenants are named (no
+registry lives in this repository), and how one tenant's failure is kept
+from stopping the rest of the run.
 """
 
 from __future__ import annotations

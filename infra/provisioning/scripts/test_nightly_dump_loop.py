@@ -26,9 +26,7 @@ from pull_encrypt_store import CopyTarget
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _DUMP_TENANT_PATH = str(_REPO_ROOT / "db" / "provision" / "dump_tenant.py")
 
-_FAKE_MYSQL = """#!/bin/sh
-echo 5
-"""
+_FAKE_MYSQL = "#!/bin/sh\necho 5\n"
 
 
 def _write_fake_bin(directory: str, name: str, contents: str) -> None:
@@ -39,19 +37,21 @@ def _write_fake_bin(directory: str, name: str, contents: str) -> None:
 
 
 def _happy_mysqldump(tenant: str) -> str:
-    return f"""#!/bin/sh
-echo "-- MySQL dump 10.13"
-echo "INSERT INTO \\`users\\` VALUES ('u-{tenant}','Owner');"
-echo "INSERT INTO \\`settings\\` VALUES ('s-{tenant}','title','{tenant}');"
-exit 0
-"""
+    return (
+        "#!/bin/sh\n"
+        'echo "-- MySQL dump 10.13"\n'
+        f'echo "INSERT INTO \\`users\\` VALUES (\'u-{tenant}\',\'Owner\');"\n'
+        f'echo "INSERT INTO \\`settings\\` VALUES (\'s-{tenant}\',\'title\',\'{tenant}\');"\n'
+        "exit 0\n"
+    )
 
 
-_FAILING_MYSQLDUMP = """#!/bin/sh
-echo "-- MySQL dump 10.13 (--no-data)"
-echo "INSERT INTO \\`users\\` VALUES ('u1','Owner');"
-exit 0
-"""
+_FAILING_MYSQLDUMP = (
+    "#!/bin/sh\n"
+    'echo "-- MySQL dump 10.13 (--no-data)"\n'
+    'echo "INSERT INTO \\`users\\` VALUES (\'u1\',\'Owner\');"\n'
+    "exit 0\n"
+)
 
 
 def _generate_age_identity() -> tuple[str, str]:
@@ -184,21 +184,23 @@ class SerialExecutionProofTests(_RealProducerLoopTestCase):
         # would produce) can still be paired up correctly by the reader --
         # pairing by LINE POSITION alone would silently mismatch exactly
         # that interleave.
-        return f"""#!/bin/sh
-python3 -c "
-import os, time
-pid = os.getpid()
-with open('{marker_path}', 'a') as f:
-    f.write('start %s %s\\n' % (pid, time.monotonic()))
-time.sleep(0.15)
-with open('{marker_path}', 'a') as f:
-    f.write('end %s %s\\n' % (pid, time.monotonic()))
-"
-echo "-- MySQL dump 10.13"
-echo "INSERT INTO \\`users\\` VALUES ('u1','Owner');"
-echo "INSERT INTO \\`settings\\` VALUES ('s1','title','x');"
-exit 0
-"""
+        python_snippet = (
+            "import os, time\n"
+            "pid = os.getpid()\n"
+            f"with open('{marker_path}', 'a') as f:\n"
+            "    f.write('start %s %s\\n' % (pid, time.monotonic()))\n"
+            "time.sleep(0.15)\n"
+            f"with open('{marker_path}', 'a') as f:\n"
+            "    f.write('end %s %s\\n' % (pid, time.monotonic()))\n"
+        )
+        return (
+            "#!/bin/sh\n"
+            f'python3 -c "\n{python_snippet}"\n'
+            'echo "-- MySQL dump 10.13"\n'
+            'echo "INSERT INTO \\`users\\` VALUES (\'u1\',\'Owner\');"\n'
+            'echo "INSERT INTO \\`settings\\` VALUES (\'s1\',\'title\',\'x\');"\n'
+            "exit 0\n"
+        )
 
     @staticmethod
     def _read_intervals(marker_path: str) -> list[tuple[float, float]]:
@@ -377,27 +379,28 @@ class ResilienceTests(_RealProducerLoopTestCase):
         self.assertEqual(attempted, ["blog", "shop"])  # cafe never reached
 
 
-_DISPATCHING_MYSQLDUMP = """#!/bin/sh
 # Reads --databases from its own argv and decides happy vs. floor-failing
 # by tenant, so a single fake binary serves every tenant in one
 # run_nightly_loop call without needing to rewrite the file on PATH
 # mid-run (dump_tenant.py runs as its own subprocess, so a rewrite timed
 # from the test process would be racing that subprocess's own startup).
-db=""
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "--databases" ]; then
-    db="$a"
-  fi
-  prev="$a"
-done
-echo "-- MySQL dump 10.13"
-echo "INSERT INTO \\`users\\` VALUES ('u1','Owner');"
-if [ "$db" != "ghost_shop" ]; then
-  echo "INSERT INTO \\`settings\\` VALUES ('s1','title','x');"
-fi
-exit 0
-"""
+_DISPATCHING_MYSQLDUMP = (
+    "#!/bin/sh\n"
+    'db=""\n'
+    'prev=""\n'
+    'for a in "$@"; do\n'
+    '  if [ "$prev" = "--databases" ]; then\n'
+    '    db="$a"\n'
+    "  fi\n"
+    '  prev="$a"\n'
+    "done\n"
+    'echo "-- MySQL dump 10.13"\n'
+    'echo "INSERT INTO \\`users\\` VALUES (\'u1\',\'Owner\');"\n'
+    'if [ "$db" != "ghost_shop" ]; then\n'
+    '  echo "INSERT INTO \\`settings\\` VALUES (\'s1\',\'title\',\'x\');"\n'
+    "fi\n"
+    "exit 0\n"
+)
 
 
 class MetricsWiringThroughLoopTests(_RealProducerLoopTestCase):
