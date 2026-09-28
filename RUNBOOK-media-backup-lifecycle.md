@@ -14,23 +14,19 @@ this runbook.
 
 ---
 
-## Open question for Rob — not settled anywhere on `main` or on an issue
+## Owner ruling — the media-backup credential
 
-**Which Console credential will media backups (ghost-platform#249,
-`media_backup_restore.py`) authenticate as?** The code reads
-`MEDIA_BACKUP_ACCESS_KEY_ID` / `MEDIA_BACKUP_SECRET_ACCESS_KEY`, but nothing
-on `main` — no runbook, no Pulumi config, no issue — says which real Hetzner
-credential that is. `media-backup-restore-proof.sh` only ever sets it to a
-local MinIO test credential.
+**Rob, 2026-09-28, on branchLeft/workspace#1325:** *"Same as the db-backups
+key."* Media backups (ghost-platform#249, `media_backup_restore.py`)
+authenticate with the same Object Storage key as db-backups —
+`MEDIA_BACKUP_ACCESS_KEY_ID` / `MEDIA_BACKUP_SECRET_ACCESS_KEY` must be set
+to that same credential's id and secret, not a separate one.
 
-The fence this runbook applies names exactly one workload key,
-`db-backups`. **If media backups are meant to share that key, say so and
-this runbook will add nothing further — the existing `--workload-access-key
-db-backups` already covers it. If media backups get their own key, it has
-to be added as a second `--workload-access-key` before step 6 renders the
-policy, or media backup runs will be denied `s3:*` outright the first time
-they try to write.** Until this is answered, this runbook does **not** claim
-to unblock ghost-platform#249 — see "After it succeeds" below.
+This settles what was an open question through review round 2: the fence
+this runbook applies names exactly one workload key,
+`--workload-access-key db-backups` (step 4), and that already covers media
+backups. **No second key, no second `--workload-access-key`, and no fence
+change beyond what this runbook already does.**
 
 ---
 
@@ -67,8 +63,9 @@ to unblock ghost-platform#249 — see "After it succeeds" below.
 
 Priority is High: media end-to-end is explicitly in MVP scope (Rob's ruling,
 2026-09-23 13:40 UTC), and no media backup run may be scheduled
-(ghost-platform#249, C-refresh) until the lifecycle document lands — separately
-from the open credential question above.
+(ghost-platform#249, C-refresh) until the lifecycle document lands. The
+credential question that used to be a second, separate blocker is now
+settled — see the owner ruling above.
 
 ---
 
@@ -156,7 +153,9 @@ anything runnable from this terminal:
   - **`fence-operator`** — this write must run as the operator throughout.
   - **`db-backups`** — id and secret. The id names the workload in the
     rendered policy; the secret is needed for step 7a's verify, which logs
-    in as the workload to prove it can still read/write/list/delete.
+    in as the workload to prove it can still read/write/list/delete. This is
+    also the credential media backups authenticate as — Rob's 2026-09-28
+    ruling on workspace#1325 — so nothing extra is needed for them here.
   - **`tenant-state`** — id and secret, needed only for step 7a, as the
     foreign key whose *denial* proves the fence discriminates.
 - The AWS CLI, reachable as `aws`, for every read-back and the rollback.
@@ -292,6 +291,15 @@ python3 infra/provisioning/scripts/render-bucket-fence-policy.py \
 ```
 
 Expected: no output, exit code 0.
+
+**`--workload-access-key "$FENCE_WORKLOAD_ACCESS_KEY_ID"` is the one
+principal this document names as the workload, and it is the db-backups
+key — the same key Rob's 2026-09-28 ruling above says media backups
+authenticate as too. One key, one `NotPrincipal` exemption in the rendered
+policy, covering both db1's pipeline and `media_backup_restore.py`. Nothing
+in this step needs to change for media backups; confirm this by reading
+`$POLICY_FILE` and checking it names exactly one workload access key id —
+the one you read into `$FENCE_WORKLOAD_ACCESS_KEY_ID` in step 2 — not two.**
 
 ```bash
 diff <(python3 -m json.tool "$SAVED_POLICY_FILE") <(python3 -m json.tool "$POLICY_FILE")
@@ -666,12 +674,12 @@ close workspace#320's operational half and this runbook's share of
 branchLeft/workspace#1325. The probe bucket's deletion is #1325's other
 remaining action item, proven by step 9e.
 
-**Media backup runs (ghost-platform#249) are not unblocked by this alone.**
-The open question at the top of this file — which credential
-`MEDIA_BACKUP_ACCESS_KEY_ID` actually is, and whether it needs adding to the
-fence's `--workload-access-key` list — is still open. If it turns out to be
-a new key, re-run steps 4–8 with both `--workload-access-key` values before
-scheduling anything.
+**Media backup runs (ghost-platform#249) are unblocked once step 8
+passes.** The credential question is settled (Rob's 2026-09-28 ruling,
+above): `MEDIA_BACKUP_ACCESS_KEY_ID`/`SECRET` is the db-backups key, already
+the sole workload named in the fence this runbook applies, and the lifecycle
+document already carries `media/`'s own rule. Nothing else in this runbook,
+or named anywhere on workspace#1325, still blocks scheduling a run.
 
 Close branchLeft/workspace#1325 through the `board` skill's decision-only-issue
 path (no PR carries a `Closes` trailer here — this is a live console/CLI
