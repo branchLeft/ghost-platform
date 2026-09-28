@@ -1,12 +1,15 @@
 import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createServer } from 'node:net';
-import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
+import Database from 'better-sqlite3';
+import { count, eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { queueBatches } from '../src/schema.js';
 import { createSqliteStore } from '../src/store.js';
 
 /**
@@ -89,16 +92,16 @@ function seedCompletedBatch(
 }
 
 function countBatchRows(dbPath: string, batchId: string): number {
-  const db = new DatabaseSync(dbPath);
+  const client = new Database(dbPath);
   try {
-    const row = db
-      .prepare('SELECT COUNT(*) AS c FROM queue_batches WHERE batch_id = ?')
-      .get(batchId) as {
-      c: number;
-    };
-    return row.c;
+    const row = drizzle(client)
+      .select({ c: count() })
+      .from(queueBatches)
+      .where(eq(queueBatches.batchId, batchId))
+      .get();
+    return row?.c ?? 0;
   } finally {
-    db.close();
+    client.close();
   }
 }
 

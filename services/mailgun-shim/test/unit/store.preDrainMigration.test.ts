@@ -3,12 +3,26 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { eq } from 'drizzle-orm';
+import { readMigrationFiles } from 'drizzle-orm/migrator';
+import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { MIGRATIONS_FOLDER, migrationsLedger } from '../../src/migrate.js';
 import { createDrainRouter } from '../../src/routes/drain.js';
 import { createDrainWake } from '../../src/drainWake.js';
+import { queueRecipients } from '../../src/schema.js';
 import { createSqliteStore, type ShimStore } from '../../src/store.js';
+import * as preDrain from '../helpers/preDrainSchema.js';
+import {
+  columnNames,
+  createTables,
+  ledgerHashes,
+  openFixture,
+  queueRecipientRows,
+  tableNames,
+  withFixture,
+} from '../helpers/sqliteFixtures.js';
 import { createTestLogger, type TestLogger } from '../helpers/testLogger.js';
 import { createUnlimitedThrottle } from '../helpers/testThrottle.js';
 import { startRouter, type StartedRouter } from './helpers/startRouter.js';
@@ -17,81 +31,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..', '..');
 const serverJsPath = join(projectRoot, 'dist', 'server.js');
 const storeJsPath = join(projectRoot, 'dist', 'store.js');
+const holdMigrationOpenPath = join(__dirname, '..', 'helpers', 'holdMigrationOpen.mjs');
 
 const DOMAIN = 'tenant1.example.com';
 const DRAIN_TOKEN = 'pre-drain-migration-test-token';
-
-/**
- * Every column and index literally as they exist at commit a273acb1da1c0900afae8bb2ee73dd3343819392
- * — mx1's live shape today, from before #238's drain handover. Kept
- * independent of anything in src/store.ts on purpose: if a future edit
- * changes the *current* schema again, this fixture must still describe the
- * *old* one, otherwise the migration it exercises stops meaning anything.
- */
-function createPreDrainSchema(db: DatabaseSync): void {
-  // The pre-#238 store (a273acb) already switches every database it opens
-  // to WAL — mx1's real file has been in WAL mode since the old worker
-  // first ran against it, never DELETE mode. Matching that here (rather
-  // than leaving this fixture in sqlite's DELETE default) is what makes
-  // the two-real-processes test below a genuine reproduction of the
-  // production race — the queue_recipients migration's own lock
-  // contention — instead of a first-time WAL-mode-switch race neither
-  // process would actually hit against mx1's real file.
-  db.exec('PRAGMA busy_timeout = 5000');
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS tenants (
-      domain TEXT PRIMARY KEY,
-      api_key_salt TEXT NOT NULL,
-      api_key_hash TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS events (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      id TEXT NOT NULL,
-      domain TEXT NOT NULL,
-      type TEXT NOT NULL,
-      severity TEXT,
-      recipient TEXT NOT NULL,
-      email_id TEXT,
-      provider_message_id TEXT,
-      timestamp REAL NOT NULL,
-      error_code INTEGER,
-      error_message TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_events_domain_seq ON events (domain, seq);
-
-    CREATE TABLE IF NOT EXISTS suppressions (
-      domain TEXT NOT NULL,
-      type TEXT NOT NULL,
-      email TEXT NOT NULL,
-      PRIMARY KEY (domain, type, email)
-    );
-
-    CREATE TABLE IF NOT EXISTS queue_batches (
-      batch_id TEXT PRIMARY KEY,
-      domain TEXT NOT NULL,
-      email_id TEXT,
-      payload TEXT NOT NULL,
-      created_at REAL NOT NULL,
-      completed_at REAL
-    );
-
-    CREATE TABLE IF NOT EXISTS queue_recipients (
-      batch_id TEXT NOT NULL,
-      recipient TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0,
-      next_attempt_at REAL NOT NULL,
-      last_error TEXT,
-      PRIMARY KEY (batch_id, recipient)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_queue_recipients_status_next
-      ON queue_recipients (status, next_attempt_at);
-  `);
-}
+const MIGRATIONS = readMigrationFiles({ migrationsFolder: MIGRATIONS_FOLDER });
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function preDrainPayload(): string {
   return JSON.stringify({
@@ -104,81 +49,100 @@ function preDrainPayload(): string {
   });
 }
 
+type PreDrainRecipient = typeof preDrain.queueRecipients.$inferInsert;
+
+// Two states no release ever wrote, so no migration can account for them.
+const halfRenamedQueue = sqliteTable('queue_recipients', {
+  batchId: text('batch_id').notNull(),
+  recipient: text('recipient').notNull(),
+  status: text('status').notNull().default('pending'),
+  drainCount: integer('drain_count').notNull().default(0),
+  nextAttemptAt: real('next_attempt_at').notNull(),
+  lastError: text('last_error'),
+});
+const doubledCounterQueue = sqliteTable('queue_recipients', {
+  batchId: text('batch_id').notNull(),
+  recipient: text('recipient').notNull(),
+  status: text('status').notNull().default('pending'),
+  attempts: integer('attempts').notNull().default(0),
+  drainCount: integer('drain_count'),
+  nextAttemptAt: real('next_attempt_at').notNull(),
+  lastError: text('last_error'),
+});
+
 /**
- * A database with the exact a273acb schema, one tenant, and one batch
- * carrying a recipient in each of the old model's four states — the fixed
- * point every assertion in this file starts from.
+ * A pre-drain database with one tenant and one batch holding a recipient in
+ * each of the old model's four states: the point every assertion here starts from.
  */
-function seedPreDrainDatabase(dbPath: string): void {
-  const db = new DatabaseSync(dbPath);
+async function seedPreDrainDatabase(
+  dbPath: string,
+  extraRecipients: PreDrainRecipient[] = []
+): Promise<void> {
+  const { client, db } = openFixture(dbPath);
   try {
-    createPreDrainSchema(db);
-    db.prepare('INSERT INTO tenants (domain, api_key_salt, api_key_hash) VALUES (?, ?, ?)').run(
-      DOMAIN,
-      'pre-drain-salt',
-      'pre-drain-hash'
-    );
-
-    db.prepare(
-      'INSERT INTO queue_batches (batch_id, domain, email_id, payload, created_at, completed_at) VALUES (?, ?, ?, ?, ?, NULL)'
-    ).run('batch-mixed', DOMAIN, null, preDrainPayload(), 0);
-
-    const insertRecipient = db.prepare(
-      'INSERT INTO queue_recipients (batch_id, recipient, status, attempts, next_attempt_at, last_error) VALUES (?, ?, ?, ?, ?, ?)'
-    );
-    // Never claimed under the old worker — the row this migration must
-    // make drainable.
-    insertRecipient.run('batch-mixed', 'pending@example.com', 'pending', 0, 0, null);
-    // Already delivered under the old worker — must never be re-offered.
-    insertRecipient.run('batch-mixed', 'sent@example.com', 'sent', 1, 0, null);
-    // Exhausted its retries under the old worker — terminal, must never be
-    // re-offered.
-    insertRecipient.run('batch-mixed', 'failed@example.com', 'failed', 6, 0, 'mailbox unavailable');
-    // Suppressed before the old worker ever sent it — terminal, must never
-    // be re-offered.
-    insertRecipient.run('batch-mixed', 'suppressed@example.com', 'suppressed', 0, 0, null);
+    await createTables(db, preDrain);
+    db.insert(preDrain.tenants)
+      .values({ domain: DOMAIN, apiKeySalt: 'pre-drain-salt', apiKeyHash: 'pre-drain-hash' })
+      .run();
+    db.insert(preDrain.queueBatches)
+      .values({
+        batchId: 'batch-mixed',
+        domain: DOMAIN,
+        emailId: null,
+        payload: preDrainPayload(),
+        createdAt: 0,
+      })
+      .run();
+    const row = (
+      recipient: string,
+      status: string,
+      attempts: number,
+      lastError: string | null
+    ) => ({
+      batchId: 'batch-mixed',
+      recipient,
+      status,
+      attempts,
+      nextAttemptAt: 0,
+      lastError,
+    });
+    for (const recipient of [
+      // Never claimed under the old worker: the row the migration must make drainable.
+      row('pending@example.com', 'pending', 0, null),
+      // Delivered, exhausted and suppressed: terminal, never to be re-offered.
+      row('sent@example.com', 'sent', 1, null),
+      row('failed@example.com', 'failed', 6, 'mailbox unavailable'),
+      row('suppressed@example.com', 'suppressed', 0, null),
+      ...extraRecipients,
+    ]) {
+      db.insert(preDrain.queueRecipients).values(recipient).run();
+    }
   } finally {
-    db.close();
+    client.close();
   }
 }
 
-function tableInfo(dbPath: string, table: string): Array<{ name: string }> {
-  const db = new DatabaseSync(dbPath);
-  try {
-    return db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  } finally {
-    db.close();
-  }
-}
-
-function queueRecipientRows(
-  dbPath: string
-): Array<{ id: string | null; recipient: string; status: string }> {
-  const db = new DatabaseSync(dbPath);
-  try {
-    return db
-      .prepare('SELECT id, recipient, status FROM queue_recipients ORDER BY recipient')
-      .all() as Array<{ id: string | null; recipient: string; status: string }>;
-  } finally {
-    db.close();
-  }
-}
-
-describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () => {
+describe('createSqliteStore — migrating a pre-drain database', () => {
   let dir: string;
   let dbPath: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-pre-drain-migration-'));
     dbPath = join(dir, 'shim.sqlite');
-    seedPreDrainDatabase(dbPath);
+    await seedPreDrainDatabase(dbPath);
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('opens the pre-#238 database without throwing', () => {
+  function freshFile(): void {
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-pre-drain-migration-'));
+    dbPath = join(dir, 'shim.sqlite');
+  }
+
+  it('opens the pre-drain database without throwing', () => {
     let store: ShimStore | undefined;
     expect(() => {
       store = createSqliteStore(dbPath);
@@ -190,7 +154,7 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
     const store = createSqliteStore(dbPath);
     store.close();
 
-    const columns = tableInfo(dbPath, 'queue_recipients').map((c) => c.name);
+    const columns = columnNames(dbPath, 'queue_recipients');
     expect(columns).toEqual(
       expect.arrayContaining([
         'id',
@@ -213,16 +177,75 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
     expect(new Set(ids).size).toBe(4); // every id unique
   });
 
-  it('the tenant survives the migration intact', async () => {
+  it('backfills ids in the same shape a freshly enqueued row gets', () => {
+    createSqliteStore(dbPath).close();
+    for (const { id } of queueRecipientRows(dbPath)) {
+      expect(id).toMatch(UUID_V4);
+    }
+  });
+
+  it('records the baseline as already applied, then applies every later migration, in order', () => {
+    createSqliteStore(dbPath).close();
+    expect(ledgerHashes(dbPath)).toEqual(MIGRATIONS.map((m) => m.hash));
+    expect(columnNames(dbPath, 'tenants')).toContain('sender_domain');
+  });
+
+  it('carries each old counter over under its new name, and keeps last_error', async () => {
+    freshFile();
+    await seedPreDrainDatabase(dbPath, [
+      {
+        batchId: 'batch-mixed',
+        recipient: 'retried@example.com',
+        status: 'pending',
+        attempts: 3,
+        nextAttemptAt: 5000,
+        lastError: '421 try later',
+      },
+    ]);
+    const store = createSqliteStore(dbPath);
+    try {
+      expect(store.claimForDrain(100, 30, 10).map((r) => r.recipient)).toEqual([
+        'pending@example.com',
+      ]);
+      const retried = store
+        .claimForDrain(6000, 30, 10)
+        .find((r) => r.recipient === 'retried@example.com');
+      expect(retried?.drainCount).toBe(4);
+    } finally {
+      store.close();
+    }
+    const lastError = withFixture(dbPath, ({ db }) =>
+      db
+        .select({ lastError: queueRecipients.lastError })
+        .from(queueRecipients)
+        .where(eq(queueRecipients.recipient, 'retried@example.com'))
+        .get()
+    );
+    expect(lastError).toEqual({ lastError: '421 try later' });
+  });
+
+  it('keeps enqueue order within a batch across the table rebuild', async () => {
+    freshFile();
+    await seedPreDrainDatabase(dbPath, [
+      { batchId: 'batch-mixed', recipient: 'zz@example.com', status: 'pending', nextAttemptAt: 0 },
+      { batchId: 'batch-mixed', recipient: 'aa@example.com', status: 'pending', nextAttemptAt: 0 },
+    ]);
+    const store = createSqliteStore(dbPath);
+    try {
+      expect(store.claimForDrain(1, 30, 10).map((r) => r.recipient)).toEqual([
+        'pending@example.com',
+        'zz@example.com',
+        'aa@example.com',
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('the tenant survives the migration intact', () => {
     const store = createSqliteStore(dbPath);
     expect(store.tenantExists(DOMAIN)).toBe(true);
-    // Shape-agnostic on purpose: listTenants() returns bare domain strings
-    // on this branch, but a sibling in-flight change returns
-    // { domain, senderDomain } objects instead — whichever of the two
-    // lands second on main, this assertion must not need editing.
-    const entries = store.listTenants() as Array<string | { domain: string }>;
-    const domains = entries.map((entry) => (typeof entry === 'string' ? entry : entry.domain));
-    expect(domains).toEqual([DOMAIN]);
+    expect(store.listTenants().map((entry) => entry.domain)).toEqual([DOMAIN]);
     store.close();
   });
 
@@ -233,9 +256,7 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
     const drained = store.claimForDrain(1_000_000, 30, 10);
     expect(drained).toHaveLength(1);
     expect(drained[0]!.recipient).toBe('pending@example.com');
-    // attempts=0 in the old row -> drain_count=0 inherited -> this claim's
-    // own increment takes it to 1, same as a freshly-enqueued row's first
-    // claim.
+    // attempts=0 carries over as drain_count=0, so this first claim makes it 1.
     expect(drained[0]!.drainCount).toBe(1);
 
     const ackResult = store.ackDrain(
@@ -244,8 +265,6 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
     );
     expect(ackResult.acked).toEqual([drained[0]!.id]);
 
-    // Nothing left to claim: the newly-acked row and the three
-    // already-terminal migrated rows are all resolved.
     expect(store.claimForDrain(2_000_000, 30, 10)).toHaveLength(0);
     expect(store.countUndrainedRecipients()).toBe(0);
 
@@ -309,10 +328,9 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
   it('idempotence: opening an already-migrated database a second time is a no-op', () => {
     const first = createSqliteStore(dbPath);
     first.close();
-    const beforeColumns = tableInfo(dbPath, 'queue_recipients')
-      .map((c) => c.name)
-      .sort();
+    const beforeColumns = columnNames(dbPath, 'queue_recipients').sort();
     const beforeRows = queueRecipientRows(dbPath);
+    const beforeLedger = ledgerHashes(dbPath);
 
     let second: ShimStore | undefined;
     expect(() => {
@@ -320,16 +338,13 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
     }).not.toThrow();
     second?.close();
 
-    const afterColumns = tableInfo(dbPath, 'queue_recipients')
-      .map((c) => c.name)
-      .sort();
-    const afterRows = queueRecipientRows(dbPath);
-    expect(afterColumns).toEqual(beforeColumns);
+    expect(columnNames(dbPath, 'queue_recipients').sort()).toEqual(beforeColumns);
     // Ids are stable across the no-op second open, not re-minted.
-    expect(afterRows).toEqual(beforeRows);
+    expect(queueRecipientRows(dbPath)).toEqual(beforeRows);
+    expect(ledgerHashes(dbPath)).toEqual(beforeLedger);
   });
 
-  it('a fresh (never pre-#238) database is unaffected: it just gets the drain-shaped table directly', () => {
+  it('a fresh database is unaffected: it runs every migration and gets the drain-shaped table', () => {
     const freshDir = mkdtempSync(join(tmpdir(), 'mailgun-shim-fresh-'));
     const freshDbPath = join(freshDir, 'shim.sqlite');
     try {
@@ -354,78 +369,104 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
       expect(drained[0]!.id).toBeTruthy();
       store.close();
 
-      const columns = tableInfo(freshDbPath, 'queue_recipients').map((c) => c.name);
+      const columns = columnNames(freshDbPath, 'queue_recipients');
       expect(columns).toContain('id');
       expect(columns).not.toContain('attempts');
+      expect(ledgerHashes(freshDbPath)).toEqual(MIGRATIONS.map((m) => m.hash));
     } finally {
       rmSync(freshDir, { recursive: true, force: true });
     }
   });
 
-  it('a genuine, non-race RENAME failure still propagates rather than being swallowed forever (the fail-closed guard)', () => {
-    // Doctors the file into a state ensureDrainShapedQueueRecipients would
-    // never produce itself: `attempts` already renamed to `drain_count`,
-    // but none of the rest of the migration (available_at, held_until,
-    // id) has happened. This is NOT what a genuine concurrent winner
-    // leaves behind (that migration is one transaction — it is either
-    // entirely absent or entirely done, see the two-real-processes test
-    // below) — it is deliberately engineered so that createSqliteStore's
-    // own RENAME statement fails with exactly the race's error message
-    // ("no such column: attempts") while the table still is NOT actually
-    // migrated. That proves the catch's re-check is load-bearing, not
-    // just an error-message string match: even after seeing the exact
-    // expected message, it verifies the table really did land in the new
-    // shape before swallowing anything, and re-throws when it hasn't.
-    const doctored = new DatabaseSync(dbPath);
-    try {
-      doctored.exec('PRAGMA busy_timeout = 5000');
-      doctored.exec('ALTER TABLE queue_recipients RENAME COLUMN attempts TO drain_count');
-    } finally {
-      doctored.close();
-    }
+  it.each([
+    ['attempts already renamed to drain_count, nothing else converted', halfRenamedQueue],
+    ['drain_count added alongside a still-present attempts', doubledCounterQueue],
+  ])(
+    'refuses a shape the history cannot account for, changing nothing: %s',
+    async (_name, queue) => {
+      freshFile();
+      const { client, db } = openFixture(dbPath);
+      try {
+        await createTables(db, { ...preDrain, queueRecipients: queue });
+      } finally {
+        client.close();
+      }
+      const before = columnNames(dbPath, 'queue_recipients');
 
-    expect(() => createSqliteStore(dbPath)).toThrow(/no such column/);
+      expect(() => createSqliteStore(dbPath)).toThrow(/Unrecognised schema/);
+      expect(columnNames(dbPath, 'queue_recipients')).toEqual(before);
+      expect(tableNames(dbPath)).not.toContain('__drizzle_migrations');
+    }
+  );
+
+  it('a migration that fails part-way rolls the whole open back: nothing recorded, nothing changed', () => {
+    // The ledger claims the baseline, but the table no longer has the column
+    // the conversion reads, so the conversion's copy fails mid-transaction.
+    createSqliteStore(dbPath).close();
+    withFixture(dbPath, ({ db }) => {
+      db.delete(migrationsLedger).where(eq(migrationsLedger.hash, MIGRATIONS[1]!.hash)).run();
+      db.delete(migrationsLedger).where(eq(migrationsLedger.hash, MIGRATIONS[2]!.hash)).run();
+    });
+    const rowsBefore = queueRecipientRows(dbPath);
+
+    expect(() => createSqliteStore(dbPath)).toThrow(/^Migration 1 failed: no such column/);
+    expect(ledgerHashes(dbPath)).toEqual([MIGRATIONS[0]!.hash]);
+    expect(queueRecipientRows(dbPath)).toEqual(rowsBefore);
+    expect(tableNames(dbPath)).not.toContain('__new_queue_recipients');
   });
 
-  it('an unrelated schema error during migration propagates as-is — never mistaken for the race', () => {
-    // Doctors in a genuinely different failure: `drain_count` already
-    // exists alongside the still-present `attempts`, so the real RENAME
-    // fails with "duplicate column name", not "no such column" — proving
-    // the message check only ever swallows the one specific, harmless
-    // race outcome, not schema errors in general.
-    const doctored = new DatabaseSync(dbPath);
+  it('a write lock held past the busy timeout still propagates', () => {
+    // A second connection holds an uncommitted write for the whole open: the
+    // one wait the store does not swallow.
+    const holder = openFixture(dbPath);
+    const HOLD = new Error('rolled back on purpose');
     try {
-      doctored.exec('PRAGMA busy_timeout = 5000');
-      doctored.exec('ALTER TABLE queue_recipients ADD COLUMN drain_count INTEGER');
+      expect(() =>
+        holder.db.transaction(
+          (tx) => {
+            tx.update(preDrain.queueRecipients)
+              .set({ lastError: 'held' })
+              .where(eq(preDrain.queueRecipients.recipient, 'pending@example.com'))
+              .run();
+            expect(() => createSqliteStore(dbPath)).toThrow(/database is locked|SQLITE_BUSY/i);
+            throw HOLD;
+          },
+          { behavior: 'immediate' }
+        )
+      ).toThrow(HOLD);
     } finally {
-      doctored.close();
+      holder.client.close();
     }
+  }, 20_000);
 
-    expect(() => createSqliteStore(dbPath)).toThrow(/duplicate column name/);
-  });
+  it('a second opener caught mid-migration waits for it, then finds nothing left to do', async () => {
+    execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
+    const child = spawn(process.execPath, [holdMigrationOpenPath, dbPath, '1500'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (chunk.toString('utf8').includes('migrated-uncommitted')) resolve();
+      });
+      child.on('exit', (code) => reject(new Error(`holder exited ${code}: ${stderr}`)));
+    });
 
-  it('BEGIN IMMEDIATE genuinely timing out under sustained lock contention still propagates', () => {
-    // A second connection holds an open write transaction on the
-    // pre-migration file for the whole test (never committed) — standing
-    // in for a writer that does not release its lock within the busy
-    // timeout at all, the one case ensureDrainShapedQueueRecipients does
-    // NOT swallow (see its own doc comment: "a wait that outlasts the
-    // busy timeout still propagates").
-    const holder = new DatabaseSync(dbPath);
-    holder.exec('PRAGMA busy_timeout = 5000');
-    holder.exec('BEGIN IMMEDIATE');
-    holder.exec(
-      "UPDATE queue_recipients SET last_error = 'held' WHERE recipient = 'pending@example.com'"
-    );
-    try {
-      expect(() => createSqliteStore(dbPath)).toThrow(/database is locked|SQLITE_BUSY/i);
-    } finally {
-      holder.exec('ROLLBACK');
-      holder.close();
-    }
-  });
+    const store = createSqliteStore(dbPath);
+    store.close();
+    expect(await exited).toBe(0);
 
-  it('concurrency: two real processes opening the same pre-#238 database at once both succeed, and the result is a single, correctly migrated table', async () => {
+    expect(ledgerHashes(dbPath)).toEqual(MIGRATIONS.map((m) => m.hash));
+    const rows = queueRecipientRows(dbPath);
+    expect(rows).toHaveLength(4);
+    expect(new Set(rows.map((r) => r.id)).size).toBe(4);
+  }, 20_000);
+
+  it('concurrency: two real processes opening the same pre-drain database at once both succeed, and the result is a single, correctly migrated table', async () => {
     execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
 
     const openScript = `
@@ -460,16 +501,15 @@ describe('createSqliteStore — migrating a pre-#238 (pre-drain) database', () =
 
     expect(results).toEqual([0, 0]);
 
-    const columns = tableInfo(dbPath, 'queue_recipients').map((c) => c.name);
-    expect(columns).toContain('id');
+    expect(columnNames(dbPath, 'queue_recipients')).toContain('id');
     const rows = queueRecipientRows(dbPath);
     expect(rows).toHaveLength(4);
-    const ids = rows.map((r) => r.id);
-    expect(new Set(ids).size).toBe(4);
+    expect(new Set(rows.map((r) => r.id)).size).toBe(4);
+    expect(ledgerHashes(dbPath)).toEqual(MIGRATIONS.map((m) => m.hash));
   }, 20_000);
 });
 
-describe('src/server.ts — starts against a pre-#238 database and serves /metrics', () => {
+describe('src/server.ts — starts against a pre-drain database and serves /metrics', () => {
   let dir: string;
 
   beforeAll(() => {
@@ -498,10 +538,10 @@ describe('src/server.ts — starts against a pre-#238 database and serves /metri
     });
   }
 
-  it('boots against a pre-drain-handover database and serves /metrics', async () => {
+  it('boots against a pre-drain database and serves /metrics', async () => {
     dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-pre-drain-server-'));
     const dbPath = join(dir, 'shim.sqlite');
-    seedPreDrainDatabase(dbPath);
+    await seedPreDrainDatabase(dbPath);
 
     const port = await findFreePort();
     const smtpPort = await findFreePort();
