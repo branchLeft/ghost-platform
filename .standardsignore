@@ -6,3 +6,4 @@ infra/provisioning/scripts/test_pull_encrypt_store.py	DB-1	# DB-1: an operation 
 services/export-bundler/src/scratchDatabase.ts	DB-1	# DB-1: an operation no ORM can express lives in tooling: dump-and-restore into a scratch server and probing its readiness via the mysql CLI
 services/export-bundler/test/unit/scratchDatabase.test.ts	DB-1	# DB-1: an operation no ORM can express lives in tooling: mysqldump output and CLI calls as test fixtures for the scratch copy
 adapters/sso/test/image/provision-support-account-mysql.image.test.mjs	DB-1	# DB-1: an operation no ORM can express lives in tooling: probing a test MySQL container's readiness via the mysql CLI
+adapters/sso/ghost-core-overlay/*.upstream.js	CMT-3	# CMT-3: byte-for-byte pinned upstream copy, guarded by a SHA-256; must not be edited
