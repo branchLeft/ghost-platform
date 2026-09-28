@@ -284,6 +284,6 @@ jobs:
           # one `git push` process only -- it never touches a file on disk,
           # and no later step (or a lifecycle script, had one run earlier)
           # can read it back out of the working tree's git config.
-          AUTH_HEADER="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64)"
+          AUTH_HEADER="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_HEADER" \
             push origin "HEAD:refs/heads/$BRANCH"
