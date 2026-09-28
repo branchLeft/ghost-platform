@@ -28,6 +28,7 @@
 
 import type { Slug } from './brand.js';
 import type {
+  BreakGlassSpec,
   DatabaseSpec,
   LimitsSpec,
   MailSpec,
@@ -229,6 +230,29 @@ function transportEnvironment(transport: TransportSpec): Record<string, string |
 }
 
 /**
+ * The three `adapters__sso__BreakGlassSSO__*` keys `adapters/sso/README.md`
+ * documents, plus `adapters__sso__active` itself — rendered only when
+ * `validate()` has already accepted `breakGlass.kind = "enabled"` (which is
+ * what proves the triple is complete and the image pin carries the
+ * adapter; see `validate.ts#checkBreakGlassImageOrdering`). `disabled`
+ * renders no key at all: an unset `adapters__sso__active` is exactly what
+ * makes Ghost fall back to its own no-op adapter, never the empty string or
+ * a literal "false" — either of those is itself one of the JSON-scalar
+ * traps `assertNotJsonScalar` exists to catch on the other three keys.
+ */
+function breakGlassEnvironment(breakGlass: BreakGlassSpec): Record<string, string> {
+  if (breakGlass.kind !== 'enabled') {
+    return {};
+  }
+  return {
+    adapters__sso__active: 'BreakGlassSSO',
+    adapters__sso__BreakGlassSSO__publicKey: breakGlass.publicKey,
+    adapters__sso__BreakGlassSSO__tenant: breakGlass.tenant,
+    adapters__sso__BreakGlassSSO__supportIdentity: breakGlass.supportIdentity,
+  };
+}
+
+/**
  * The sending-identity keys `transport` cannot carry (closes the gap
  * `test/parity.test.ts` used to name): `mail__from` — the env var that
  * looks like the address Ghost sends member mail from and is not, kept
@@ -286,7 +310,15 @@ function hostLimitsEnvironment(limits: LimitsSpec): Record<string, string | numb
 export function tenantEnvironment(
   descriptor: Pick<
     TenantDescriptor,
-    'slug' | 'siteUrl' | 'database' | 'media' | 'transport' | 'mail' | 'safety' | 'limits'
+    | 'slug'
+    | 'siteUrl'
+    | 'database'
+    | 'media'
+    | 'transport'
+    | 'mail'
+    | 'safety'
+    | 'limits'
+    | 'breakGlass'
   >,
   limits: UploadLimits,
   secretsFilePath: string,
@@ -299,6 +331,7 @@ export function tenantEnvironment(
     ...transportEnvironment(descriptor.transport),
     ...bulkMailEnvironment(descriptor.mail, zones),
     ...hostLimitsEnvironment(descriptor.limits),
+    ...breakGlassEnvironment(descriptor.breakGlass),
 
     security__allowWebhookInternalIPs: false,
 

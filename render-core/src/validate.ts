@@ -105,6 +105,7 @@ const SENDING_IDENTITY_KIND_VALUES = ['demo', 'tenant'] as const;
 const HOSTNAME_KIND_VALUES = ['ours', 'theirs'] as const;
 const GATE_KIND_VALUES = ['none', 'passphrase'] as const;
 const BACKUP_KIND_VALUES = ['none', 'bucket-native'] as const;
+const BREAK_GLASS_KIND_VALUES = ['disabled', 'enabled'] as const;
 
 /**
  * The schema versions this build of the package knows how to render. A
@@ -188,6 +189,7 @@ const DESCRIPTOR_KEYS = [
   'limits',
   'caps',
   'safety',
+  'breakGlass',
   'expiresAt',
 ] as const;
 const PORTS_KEYS = ['a', 'b', 'health'] as const;
@@ -212,6 +214,8 @@ const CODE_INJECTION_MANAGED_KEYS = ['kind', 'head', 'foot'] as const;
 const LIMITS_KEYS = ['membersCap', 'staffCap'] as const;
 const CAPS_KEYS = ['cpus', 'cpuShares', 'pidsLimit', 'nofile'] as const;
 const SAFETY_KEYS = ['near', 'exact'] as const;
+const BREAK_GLASS_DISABLED_KEYS = ['kind'] as const;
+const BREAK_GLASS_ENABLED_KEYS = ['kind', 'publicKey', 'tenant', 'supportIdentity'] as const;
 
 function assertNullableNumber(value: unknown, field: string): void {
   if (value !== null && (typeof value !== 'number' || Number.isNaN(value))) {
@@ -436,6 +440,21 @@ function assertShape(descriptor: TenantDescriptor): void {
   assertBoolean(descriptor.safety.near, 'safety.near');
   assertBoolean(descriptor.safety.exact, 'safety.exact');
 
+  // Presence of all three, not just their type: a `breakGlass.kind` of
+  // "enabled" missing `tenant` (say) fails here with a named error, before
+  // any renderer reads `undefined` into an env var — the runtime half of
+  // "a descriptor with one or two of the three is refused, not
+  // half-rendered" (assertDiscriminant, above in validate(), is the other
+  // half: it already refuses a `kind` outside the two declared literals).
+  if (descriptor.breakGlass.kind === 'enabled') {
+    assertNoUnknownKeys(descriptor.breakGlass, BREAK_GLASS_ENABLED_KEYS, 'breakGlass');
+    assertString(descriptor.breakGlass.publicKey, 'breakGlass.publicKey');
+    assertString(descriptor.breakGlass.tenant, 'breakGlass.tenant');
+    assertString(descriptor.breakGlass.supportIdentity, 'breakGlass.supportIdentity');
+  } else {
+    assertNoUnknownKeys(descriptor.breakGlass, BREAK_GLASS_DISABLED_KEYS, 'breakGlass');
+  }
+
   if (descriptor.expiresAt !== null) {
     assertString(descriptor.expiresAt, 'expiresAt');
   }
@@ -616,7 +635,11 @@ function validateTransport(transport: TenantDescriptor['transport']): void {
     assertNonEmptyPath(transport.path, 'transport.path');
     return;
   }
-  assertNonEmptyString(transport.host, 'transport.host');
+  // The same host-character check database.host already gets (assertValidHost,
+  // above) -- transport.host reaches a Compose `environment:` value exactly
+  // the way database.host does, so the same "nothing a shell or a connection
+  // string reads specially" reasoning applies unchanged.
+  assertValidHost(transport.host, 'transport.host');
   validatePort(transport.port, 'transport.port');
 }
 
@@ -707,6 +730,90 @@ function validateGate(gate: TenantDescriptor['gate']): void {
 }
 
 /**
+ * Ghost parses environment values as JSON where it can, so a value that
+ * happens to *look* like a JSON number, boolean or `null` (a tenant name of
+ * `2024`, say) arrives as that type rather than the string the adapter's
+ * own config schema expects, and the adapter disables itself, fail-safe
+ * (`adapters/sso/README.md`). Refused here, on every break-glass value that
+ * reaches an env var, rather than left for a real tenant to trip over.
+ * `JSON.parse` throwing means the value is not valid JSON at all — safely a
+ * string as far as Ghost's own parser is concerned — so only a *successful*
+ * parse into one of the three scalar kinds is refused.
+ */
+function assertNotJsonScalar(value: string, field: string): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return;
+  }
+  if (typeof parsed === 'number' || typeof parsed === 'boolean' || parsed === null) {
+    throw new FieldValidationError(
+      field,
+      `${field} "${value}" must not be a value Ghost's own env parser reads as JSON (a number, ` +
+        `boolean or null) — it must stay a string on every path.`
+    );
+  }
+}
+
+function validateBreakGlass(breakGlass: TenantDescriptor['breakGlass']): void {
+  if (breakGlass.kind !== 'enabled') {
+    return;
+  }
+  assertNonEmptyString(breakGlass.publicKey, 'breakGlass.publicKey');
+  assertNonEmptyString(breakGlass.tenant, 'breakGlass.tenant');
+  validateEmailAddress(breakGlass.supportIdentity, 'breakGlass.supportIdentity');
+  assertNotJsonScalar(breakGlass.publicKey, 'breakGlass.publicKey');
+  assertNotJsonScalar(breakGlass.tenant, 'breakGlass.tenant');
+  assertNotJsonScalar(breakGlass.supportIdentity, 'breakGlass.supportIdentity');
+}
+
+/**
+ * `breakGlass.tenant` is the value the adapter checks a token's `aud`
+ * against, so it must name *this* tenant and no other — the same isolation
+ * control `validateDatabaseIdentity`/`validateMediaBucket` already apply to
+ * the database and the bucket, applied here to the audience a signed token
+ * is checked against. Re-deriving it from `slug` rather than accepting a
+ * caller-chosen value is what makes a copy-paste mistake between two
+ * tenants' descriptors a refusal rather than an audience mix-up.
+ */
+function checkBreakGlassIdentity(descriptor: TenantDescriptor): void {
+  if (descriptor.breakGlass.kind !== 'enabled') {
+    return;
+  }
+  if (descriptor.breakGlass.tenant !== descriptor.slug) {
+    throw new FieldValidationError(
+      'breakGlass.tenant',
+      `breakGlass.tenant "${descriptor.breakGlass.tenant}" must equal this descriptor's own slug ` +
+        `"${descriptor.slug}" — a mismatch would let a token minted for this tenant's audience be ` +
+        `accepted under a different tenant's rendered config, or vice versa.`
+    );
+  }
+}
+
+/**
+ * The ordering rule: never select the adapter for an image pin that
+ * predates it landing in the image. A `DigestPinnedRef` carries no
+ * ordering to check this against directly, so `zones.imagesWithBreakGlassAdapter`
+ * (an exact-match allowlist the caller maintains from its own build/rollout
+ * history) is what this checks against instead — see that field's own doc
+ * comment for why the check has to live there.
+ */
+function checkBreakGlassImageOrdering(descriptor: TenantDescriptor, zones: ZoneConfig): void {
+  if (descriptor.breakGlass.kind !== 'enabled') {
+    return;
+  }
+  if (!(zones.imagesWithBreakGlassAdapter ?? []).includes(descriptor.image)) {
+    throw new FieldValidationError(
+      'breakGlass',
+      `breakGlass.kind "enabled" requires descriptor.image ("${descriptor.image}") to be one of ` +
+        `zones.imagesWithBreakGlassAdapter — selecting the adapter on an image pin that predates it ` +
+        `stops Ghost booting at all. Bump and deploy the image pin first, then enable break-glass.`
+    );
+  }
+}
+
+/**
  * The zones `validate()` checks `ours`/`theirs` hostnames against. Deliberately
  * a parameter with no default: this package ships to a public repo, and the
  * platform's real domain names are not this document's to hard-code — a
@@ -724,6 +831,29 @@ export interface ZoneConfig {
    * name, not merely under a different-looking label of it.
    */
   readonly ownedDomains: readonly string[];
+  /**
+   * Digest-pinned image refs known to carry the break-glass SSO adapter —
+   * an exact-match allowlist, not a version comparison: a `DigestPinnedRef`
+   * carries no ordering a renderer could compare (two builds of the same
+   * Ghost version tag can differ only in whether the adapter is baked in),
+   * so "does this pin carry the adapter" is a fact only the caller who
+   * tracks what has actually been built and rolled out can supply — the
+   * same reasoning as `ownedDomains` above, applied to image history
+   * instead of DNS. Selecting the adapter (`breakGlass.kind = "enabled"`)
+   * for an `image` outside this list is refused by `validate()`: on such an
+   * image Ghost cannot find the adapter and does not boot at all — measured
+   * against the real image; see `adapters/sso/README.md`'s "Turning it on
+   * for a tenant" section. **Optional, and absent means empty** — the
+   * existing callers of this interface (the broker, today) predate
+   * break-glass entirely, and requiring every one of them to be edited in
+   * the same change that adds this field would make an additive schema
+   * change look like a breaking one. Absent or `[]` are both the same safe
+   * posture — "no image has been confirmed to carry it yet" — which is not
+   * a caller error the way an empty `ownedDomains` is, since a demo/platform
+   * zone must always resolve inside `ownedDomains` and no equivalent
+   * "must resolve" rule holds here.
+   */
+  readonly imagesWithBreakGlassAdapter?: readonly string[];
   /**
    * The one domain every demo's sending address shares (HLD §07, LLD-6 §05:
    * "a local part per demo, not a subdomain per demo" — every demo slot
@@ -827,6 +957,31 @@ function validateZoneConfig(zones: ZoneConfig): void {
       throw new FieldValidationError(
         'zones.ownedDomains',
         `zones.ownedDomains[${index}] ${JSON.stringify(domain)} must be a well-formed domain name.`
+      );
+    }
+  });
+  // Unlike ownedDomains, an absent or empty value is legitimate here (see
+  // this field's own doc comment) — `undefined` is accepted outright, and
+  // anything else is checked for shape: an array of non-empty strings, so a
+  // caller's unset env var arriving as a single empty string (from
+  // splitting "") fails loudly here rather than comparing every image
+  // against a silently-empty-looking entry.
+  if (
+    zones.imagesWithBreakGlassAdapter !== undefined &&
+    !Array.isArray(zones.imagesWithBreakGlassAdapter)
+  ) {
+    throw new FieldValidationError(
+      'zones.imagesWithBreakGlassAdapter',
+      `zones.imagesWithBreakGlassAdapter must be an array of image refs or undefined, got ` +
+        `${describeType(zones.imagesWithBreakGlassAdapter)}.`
+    );
+  }
+  (zones.imagesWithBreakGlassAdapter ?? []).forEach((ref, index) => {
+    if (typeof ref !== 'string' || ref.trim() === '') {
+      throw new FieldValidationError(
+        'zones.imagesWithBreakGlassAdapter',
+        `zones.imagesWithBreakGlassAdapter[${index}] ${JSON.stringify(ref)} must be a non-empty ` +
+          `image ref.`
       );
     }
   });
@@ -1116,6 +1271,16 @@ function checkTierVariants(descriptor: TenantDescriptor): void {
   if (descriptor.expiresAt === null) {
     throw new TierMismatchError('kind "demo" requires a non-null expiresAt.');
   }
+  // Incidental, decided by the implementing agent: a demo visitor already
+  // holds admin on their own disposable slot, so
+  // there is nothing left for a support identity to reach that the visitor
+  // cannot already reach — the break-glass mechanism exists for a *paying*
+  // tenant's own admin, which a demo has no separate one of.
+  if (descriptor.breakGlass.kind !== 'disabled') {
+    throw new TierMismatchError(
+      `kind "demo" requires breakGlass.kind "disabled", got "${descriptor.breakGlass.kind}".`
+    );
+  }
 }
 
 /**
@@ -1145,8 +1310,9 @@ function checkHostnameGateConsistency(descriptor: TenantDescriptor): void {
  * wrong `kind` would not have, or trusts a key nothing declared), then the
  * schema version, then every field's own format and range, then the three
  * named invariants, the code-injection hostname precondition, the per-tier
- * variant rules, and the hostname/gate and siteUrl/hostname consistency
- * checks. Returns the same descriptor on success so a caller can chain it
+ * variant rules, the hostname/gate and siteUrl/hostname consistency checks,
+ * and finally the break-glass identity and image-ordering checks. Returns
+ * the same descriptor on success so a caller can chain it
  * into `render()`; throws on the first violation found rather than
  * collecting every one, because both callers reject before any side effect
  * regardless of how many things are wrong.
@@ -1165,6 +1331,7 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   assertDiscriminant(descriptor.hostname, 'hostname', HOSTNAME_KIND_VALUES);
   assertDiscriminant(descriptor.gate, 'gate', GATE_KIND_VALUES);
   assertDiscriminant(descriptor.backup, 'backup', BACKUP_KIND_VALUES);
+  assertDiscriminant(descriptor.breakGlass, 'breakGlass', BREAK_GLASS_KIND_VALUES);
   // codeInjection's discriminant gate is checkInv1, called here rather than
   // with the other invariants below: every per-field validator after this
   // point assumes codeInjection is already a valid object with one of its
@@ -1195,6 +1362,7 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   validateHostname(descriptor.hostname, zones);
   validateGate(descriptor.gate);
   validateCodeInjection(descriptor.codeInjection);
+  validateBreakGlass(descriptor.breakGlass);
   if (descriptor.expiresAt !== null) {
     validateInstant(descriptor.expiresAt, 'expiresAt');
   }
@@ -1206,6 +1374,8 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   checkCodeInjectionHostnamePrecondition(descriptor);
   checkTierVariants(descriptor);
   checkHostnameGateConsistency(descriptor);
+  checkBreakGlassIdentity(descriptor);
+  checkBreakGlassImageOrdering(descriptor, zones);
 
   return descriptor;
 }

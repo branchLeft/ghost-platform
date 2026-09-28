@@ -138,6 +138,7 @@ function renderCoreTenantZeroDescriptor(): TenantDescriptor {
     limits: { membersCap: null, staffCap: null },
     caps: { cpus: '1.0', cpuShares: 512, pidsLimit: 256, nofile: 4096 },
     safety: { near: true, exact: true },
+    breakGlass: { kind: 'disabled' },
     expiresAt: null,
   };
 }
