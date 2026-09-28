@@ -17,3 +17,18 @@ db/recovery/*
 infra/provisioning/scripts/backup_worker.py
 infra/provisioning/scripts/test_backup_worker.py
 infra/provisioning/scripts/test_pull_encrypt_store.py
+
+# Restore: the export colour runs against a dump restored into a scratch server.
+services/export-bundler/src/scratchDatabase.ts
+services/export-bundler/test/unit/scratchDatabase.test.ts
+
+# Provisioning: creating a tenant's database, user and grants.
+db/provision/provision_tenant_db.py
+
+# Operational check: whether a demo slot's Ghost still has an email batch
+# submitting, read before a colour may be stopped.
+demo-host/provision/branchleft_slot.py
+demo-host/provision/test_branchleft_slot.py
+
+# Test-harness probe: readiness of a test MySQL container.
+adapters/sso/test/image/provision-support-account-mysql.image.test.mjs
