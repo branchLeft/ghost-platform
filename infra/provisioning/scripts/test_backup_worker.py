@@ -10,6 +10,8 @@ real throughout; only the storage credential path is faked.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import pathlib
 import shutil
@@ -345,15 +347,13 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
     @classmethod
     def _provision_database_and_account(cls) -> None:
         # One row per floor table, real GRANTs, real REQUIRE SSL, matching
-        # db/RUNBOOK-db.md's "Backup worker account" grant set -- LOCK
-        # TABLES and EVENT dropped; this test is what confirms mysqldump
-        # still runs without them. `backup_ops1` stays host-'%': this
-        # test's client runs on the CI runner, reaching the container
-        # through Docker's published-port NAT, whose source address inside
-        # the container isn't reliably 127.0.0.1. Host restriction is
-        # proven for real by `backup_wrong_host` below instead: an address
-        # nothing here has, refused from a connection this test controls fully
-        # (container-internal, genuinely 127.0.0.1 on both ends).
+        # db/RUNBOOK-db.md's "Backup worker account" grant set (LOCK
+        # TABLES and EVENT dropped; this test confirms mysqldump still
+        # runs without them). `backup_ops1` stays host-'%' -- this test's
+        # client reaches the container through Docker's NAT, whose source
+        # address inside the container isn't reliably 127.0.0.1. Host
+        # restriction is proven instead by `backup_right_host`/
+        # `backup_wrong_host`, a control pair tested container-internally.
         sql_template = (
             "CREATE DATABASE ghost_blog;"
             "CREATE TABLE ghost_blog.users (id INT PRIMARY KEY, name VARCHAR(64));"
@@ -363,12 +363,17 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
             "CREATE USER 'backup_ops1'@'%' IDENTIFIED BY '{worker_pwd}' REQUIRE SSL;"
             "GRANT SELECT, SHOW VIEW, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT "
             "ON *.* TO 'backup_ops1'@'%';"
+            "CREATE USER 'backup_right_host'@'127.0.0.1' IDENTIFIED BY '{right_host_pwd}' REQUIRE SSL;"
+            "GRANT SELECT ON *.* TO 'backup_right_host'@'127.0.0.1';"
             "CREATE USER 'backup_wrong_host'@'10.99.99.99' IDENTIFIED BY '{wrong_host_pwd}' REQUIRE SSL;"
             "GRANT SELECT ON *.* TO 'backup_wrong_host'@'10.99.99.99';"
             "FLUSH PRIVILEGES;"
         )
+        cls.right_host_pwd = "throwaway-right-host-pwd"
         cls.wrong_host_pwd = "throwaway-wrong-host-pwd"
-        sql = sql_template.format(worker_pwd=cls.worker_pwd, wrong_host_pwd=cls.wrong_host_pwd)
+        sql = sql_template.format(
+            worker_pwd=cls.worker_pwd, right_host_pwd=cls.right_host_pwd, wrong_host_pwd=cls.wrong_host_pwd
+        )
         subprocess.run(
             ["docker", "exec", "-i", _MYSQL_CONTAINER_NAME, "mysql", "-uroot", f"-p{cls.root_pwd}"],
             input=sql,
@@ -377,27 +382,32 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def test_the_host_restriction_actually_refuses_a_non_matching_address(self) -> None:
-        """Proves MySQL's own account matching genuinely enforces a
-        `CREATE USER ...@'<address>'` clause, the same mechanism the real
-        `backup_ops1`@`<ops1's address>` account relies on --
-        `backup_wrong_host` is granted only at `@'10.99.99.99'`, an
-        address nothing here has, so connecting to it from this
-        container's own `127.0.0.1`, using its real password, must still
-        be refused: no grant row matches the connecting host."""
+    def _mysql_probe(self, *, user: str, password: str) -> subprocess.CompletedProcess:
         # Run inside the container, over the same TCP loopback the
         # readiness probe uses -- never assumes a `mysql` client exists on
         # the CI runner itself, only inside the image already pulled.
-        probe = subprocess.run(
+        return subprocess.run(
             [
                 "docker", "exec", _MYSQL_CONTAINER_NAME,
                 "mysql", "--protocol=TCP", "--host=127.0.0.1", "--ssl-mode=REQUIRED",
-                "-u", "backup_wrong_host", f"-p{self.wrong_host_pwd}", "-e", "SELECT 1",
+                "-u", user, f"-p{password}", "-e", "SELECT 1",
             ],
             capture_output=True,
         )
-        self.assertNotEqual(probe.returncode, 0)
-        self.assertIn(b"Access denied", probe.stderr)
+
+    def test_the_host_restriction_actually_refuses_a_non_matching_address(self) -> None:
+        """Proves account-host matching with a control case, not a refusal
+        alone: `backup_right_host`/`backup_wrong_host` are identical
+        (`REQUIRE SSL`, same connection path) except the granted address --
+        `@'127.0.0.1'` (how this container reaches itself) vs
+        `@'10.99.99.99'` (nothing here has it). Without the matching case
+        too, a server refusing every connection would pass identically."""
+        matching = self._mysql_probe(user="backup_right_host", password=self.right_host_pwd)
+        self.assertEqual(matching.returncode, 0, matching.stderr.decode(errors="replace"))
+
+        non_matching = self._mysql_probe(user="backup_wrong_host", password=self.wrong_host_pwd)
+        self.assertNotEqual(non_matching.returncode, 0)
+        self.assertIn(b"Access denied", non_matching.stderr)
 
     def test_mysqldump_over_real_tls_against_the_grant_limited_account(self) -> None:
         transport = RemoteMysqldumpTransport(
@@ -413,6 +423,43 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
         self.assertEqual(exit_code, 0, output.decode(errors="replace"))
         self.assertIn(b"INSERT INTO `users`", output)
         self.assertIn(b"INSERT INTO `settings`", output)
+
+    def test_verify_ca_rejects_a_wrong_certificate_authority(self) -> None:
+        """Proves `--ssl-mode=VERIFY_CA` actually verifies the server's
+        certificate, not merely that the connection is encrypted: a
+        throwaway, unrelated CA must fail the handshake itself -- nonzero
+        exit, nothing streamed, a named certificate reason. Degrading to
+        `--ssl-mode=REQUIRED` would let this connection through; sabotage
+        proof in the PR body."""
+        wrong_ca_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(wrong_ca_dir, ignore_errors=True))
+        wrong_ca_path = os.path.join(wrong_ca_dir, "wrong-ca.pem")
+        wrong_key_path = os.path.join(wrong_ca_dir, "wrong-ca-key.pem")
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", wrong_key_path, "-out", wrong_ca_path,
+                "-days", "1", "-subj", "/CN=throwaway-unrelated-ca",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        transport = RemoteMysqldumpTransport(
+            host="127.0.0.1", port=self.port, user="backup_ops1", ssl_ca=wrong_ca_path
+        )
+        sink = _CollectingSinkForContainerTest()
+        captured_stderr = io.StringIO()
+        with contextlib.redirect_stderr(captured_stderr):
+            exit_code = transport.run(
+                command=["python3", "/x/dump_tenant.py", "blog", "--socket", "/x.sock"],
+                env={"DB_DUMP_MYSQL_PWD": self.worker_pwd},
+                stdout=sink,
+            )
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertEqual(b"".join(sink.chunks), b"")
+        self.assertIn("certificate", captured_stderr.getvalue().lower())
 
 
 class _CollectingSinkForContainerTest:

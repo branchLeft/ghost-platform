@@ -485,22 +485,33 @@ Confirm `ops1`'s current private address first -- shared-infra's live
 `hetzner-host/addressPlan.ts` names `10.20.1.50` as of this writing, but
 the `@branchleft/hetzner-host` version this repo pins (`0.3.0`) predates
 that address landing in the package's own `HOST_IPS`, so it is not a
-value to trust from a constant. Then, on `db1` (from `/opt/branchleft/db`)
--- generate the password the same way the exporter-rotation steps above do
-(`LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 40`), alnum-only so
-it can never break out of the single-quoted SQL literal below:
+value to trust from a constant. Generate the account's password the same
+way the exporter-rotation steps above do (`LC_ALL=C tr -dc 'A-Za-z0-9' <
+/dev/urandom | head -c 40`), alnum-only so it can never break out of the
+single-quoted SQL literal below, and put it in the password manager --
+this is the one value both blocks below need, entered fresh from there in
+each host's own shell, never passed between them. Then, on `db1` (from
+`/opt/branchleft/db`):
 
 ```bash
 read -r OPS1_ADDR; export OPS1_ADDR
 read -rs DB_DUMP_MYSQL_PWD; export DB_DUMP_MYSQL_PWD
-docker compose exec -T -e MYSQL_PWD="$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' /etc/branchleft/db.env)" \
-  mysql mysql -uroot <<SQL
+export MYSQL_PWD="$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' /etc/branchleft/db.env)"
+docker compose exec -T -e MYSQL_PWD mysql mysql -uroot <<SQL
 CREATE USER 'backup_ops1'@'$OPS1_ADDR' IDENTIFIED BY '$DB_DUMP_MYSQL_PWD' REQUIRE SSL;
 GRANT SELECT, SHOW VIEW, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT
     ON *.* TO 'backup_ops1'@'$OPS1_ADDR';
 FLUSH PRIVILEGES;
 SQL
+unset MYSQL_PWD
 ```
+
+(`-e MYSQL_PWD` with no `=value` tells `docker compose exec` to forward this
+shell's own exported variable into the exec session -- the root password
+never appears in `docker compose`'s own argv, where `ps` could see it for
+the life of the command. `$DB_DUMP_MYSQL_PWD` in the heredoc is a plain
+shell expansion, gone once this block finishes; it is never echoed,
+printed or written to a file here.)
 
 (the unquoted heredoc delimiter, `<<SQL`, is deliberate -- it is what lets
 `$OPS1_ADDR` and `$DB_DUMP_MYSQL_PWD` expand to the values just read,
@@ -539,18 +550,31 @@ docker compose exec mysql cat /var/lib/mysql/ca.pem
 ```
 
 Copy that output to `ops1` out-of-band (scp, not this runbook's own
-delivery path), to a path of your choosing, then on `ops1` set:
+delivery path), to a path of your choosing. Then, **on `ops1`, in its own
+shell** -- the password is entered fresh here, from the password manager,
+not carried over from the `db1` session above, which this account's own
+value never left:
 
 ```bash
 read -r DB1_ADDR; export DB1_ADDR
 read -r CA_PATH; export CA_PATH
-printf 'BACKUP_WORKER_DB_HOST=%s\nBACKUP_WORKER_MYSQL_USER=backup_ops1\nBACKUP_WORKER_MYSQL_SSL_CA=%s\nDB_DUMP_MYSQL_PWD=%s\n' \
-  "$DB1_ADDR" "$CA_PATH" "$DB_DUMP_MYSQL_PWD"
+read -rs DB_DUMP_MYSQL_PWD; export DB_DUMP_MYSQL_PWD
+install -m 600 /dev/stdin /etc/branchleft/backup-worker.env <<EOF
+BACKUP_WORKER_DB_HOST=$DB1_ADDR
+BACKUP_WORKER_MYSQL_USER=backup_ops1
+BACKUP_WORKER_MYSQL_SSL_CA=$CA_PATH
+DB_DUMP_MYSQL_PWD=$DB_DUMP_MYSQL_PWD
+EOF
+unset DB_DUMP_MYSQL_PWD
 ```
 
-wherever `backup_worker.py` runs -- the password manager entry this goes
-in is `ops1`'s own, not this host's. `$DB_DUMP_MYSQL_PWD` is the same
-value read above, for the same account.
+(`install -m 600 /dev/stdin <path>` writes the heredoc straight to a
+root-owned, 0600 file with the right mode set atomically -- nothing here
+is `echo`d, `printf`ed or `cat`ed to a terminal, and nothing prints the
+password back for confirmation. Adjust the path and the way
+`backup_worker.py` reads its environment to match wherever it actually
+runs; the password manager entry this becomes is `ops1`'s own, never
+`db1`'s.)
 
 **Firewall: there currently is none to update.** `db1` has no public
 interface (`infra/hosts/index.ts`: `publicNetworking: false`), and
