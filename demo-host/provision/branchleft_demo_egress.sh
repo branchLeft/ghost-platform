@@ -24,10 +24,10 @@ ruleset() {
     printf '%s\n' '*filter' ":$FORWARD_CHAIN - [0:0]" ":$INPUT_CHAIN - [0:0]"
     echo "-A $FORWARD_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN"
     for bridge in $BRIDGES; do
-        echo "-A $FORWARD_CHAIN -i $bridge ! -o $bridge -j DROP"
+        echo "-A $FORWARD_CHAIN -i $bridge ! -o $bridge -j REJECT"
     done
     echo "-A $INPUT_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN"
-    echo "-A $INPUT_CHAIN -j DROP"
+    echo "-A $INPUT_CHAIN -j REJECT"
     echo "COMMIT"
 }
 

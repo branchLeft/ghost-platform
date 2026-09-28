@@ -1,6 +1,4 @@
-"""Unit tests for branchleft_demo_egress.sh, against fakes for netfilter and
-the hostname. scripts/test-demo-container-egress.sh proves the same script
-against a real dockerd."""
+"""Unit tests for branchleft_demo_egress.sh against fakes; see branchleft_demo_egress.md, "Proof"."""
 
 import os
 import stat
@@ -12,40 +10,46 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "branchleft_demo_egress.sh")
 UNIT = os.path.join(HERE, "branchleft-demo-egress.service")
 
-FAKE_HOSTNAME = """#!/bin/sh
-echo "$FAKE_HOSTNAME"
-"""
+
+def lines(*parts):
+    return "\n".join(parts) + "\n"
+
+
+FAKE_HOSTNAME = lines("#!/bin/sh", 'echo "$FAKE_HOSTNAME"')
 
 # One fake serves iptables and ip6tables; it logs under the name it was run as.
-FAKE_TABLES = """#!/bin/sh
-tool="$(basename "$0")"
-echo "$tool $*" >> "$FAKE_LOG"
-case "$*" in
-    *"-S DOCKER-USER"*)
-        [ "$tool" = iptables ] && exit "$FAKE_V4_DOCKER_USER_EXIT"
-        exit "$FAKE_V6_DOCKER_USER_EXIT" ;;
-    *" -C "*) exit "$FAKE_CHECK_EXIT" ;;
-esac
-exit 0
-"""
+FAKE_TABLES = lines(
+    "#!/bin/sh",
+    'tool="$(basename "$0")"',
+    'echo "$tool $*" >> "$FAKE_LOG"',
+    'case "$*" in',
+    '    *"-S DOCKER-USER"*)',
+    '        [ "$tool" = iptables ] && exit "$FAKE_V4_DOCKER_USER_EXIT"',
+    '        exit "$FAKE_V6_DOCKER_USER_EXIT" ;;',
+    '    *" -C "*) exit "$FAKE_CHECK_EXIT" ;;',
+    "esac",
+    "exit 0",
+)
 
-FAKE_RESTORE = """#!/bin/sh
-tool="$(basename "$0")"
-echo "$tool $*" >> "$FAKE_LOG"
-cat > "$FAKE_DIR/$tool.stdin"
-exit "$FAKE_RESTORE_EXIT"
-"""
+FAKE_RESTORE = lines(
+    "#!/bin/sh",
+    'tool="$(basename "$0")"',
+    'echo "$tool $*" >> "$FAKE_LOG"',
+    'cat > "$FAKE_DIR/$tool.stdin"',
+    'exit "$FAKE_RESTORE_EXIT"',
+)
 
-EXPECTED_RULESET = """*filter
-:BRANCHLEFT-DEMO-EGRESS - [0:0]
-:BRANCHLEFT-DEMO-INPUT - [0:0]
--A BRANCHLEFT-DEMO-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
--A BRANCHLEFT-DEMO-EGRESS -i docker0 ! -o docker0 -j DROP
--A BRANCHLEFT-DEMO-EGRESS -i br-+ ! -o br-+ -j DROP
--A BRANCHLEFT-DEMO-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
--A BRANCHLEFT-DEMO-INPUT -j DROP
-COMMIT
-"""
+EXPECTED_RULESET = lines(
+    "*filter",
+    ":BRANCHLEFT-DEMO-EGRESS - [0:0]",
+    ":BRANCHLEFT-DEMO-INPUT - [0:0]",
+    "-A BRANCHLEFT-DEMO-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
+    "-A BRANCHLEFT-DEMO-EGRESS -i docker0 ! -o docker0 -j REJECT",
+    "-A BRANCHLEFT-DEMO-EGRESS -i br-+ ! -o br-+ -j REJECT",
+    "-A BRANCHLEFT-DEMO-INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
+    "-A BRANCHLEFT-DEMO-INPUT -j REJECT",
+    "COMMIT",
+)
 
 JUMP_INSERTS = [
     "-t filter -I DOCKER-USER 1 -j BRANCHLEFT-DEMO-EGRESS",

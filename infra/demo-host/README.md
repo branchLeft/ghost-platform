@@ -44,9 +44,12 @@ and its security updates. Container egress is denied on the host instead, by
 `demo-host/provision/branchleft_demo_egress.sh`.
 
 edge1's address is read from the estate stack's applied `edge1PublicIpv4`
-output rather than configured. A hand-copied value goes stale the next time
-edge1 is rebuilt, and a stale source is a clean preview that locks the owner
-and ops1 out. `edge1SshSource` accepts one public dotted-quad IPv4 address
+output rather than configured. A hand-copied value would go stale unnoticed.
+The output is read only when this stack runs, and CI runs it only when
+`infra/demo-host/**` changes. So if edge1's address ever changed, demo1's rule
+would stay stale, and the owner and ops1 would be locked out, until the next
+apply of this stack corrects it. edge1's primary IP survives a server rebuild,
+which keeps this unlikely. `edge1SshSource` accepts one public dotted-quad IPv4 address
 only. It refuses a CIDR, IPv6, private, loopback, link-local, CGNAT,
 documentation and multicast addresses, each of which is a plausible wrong
 value to wire here.
@@ -81,7 +84,9 @@ the document under a quarter of the limit.
 ## Operating it
 
 State is in the same Hetzner Object Storage bucket as every other Hetzner
-stack. The stack config carries no salt and no token (PUL-12). The first
-apply is the owner's and is done by hand. Pull requests run typecheck and unit
+stack. The stack config carries no salt and no token (PUL-12). The owner sets
+up the token, the passphrase and `stack init` by hand. The first apply then
+runs from CI after merge, held for approval by the `production` environment.
+Pull requests run typecheck and unit
 tests only (`.github/workflows/infra-demo-host-ci.yml`), and no cloud
 credential touches PR code.

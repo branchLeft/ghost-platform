@@ -6,7 +6,10 @@ security updates.
 
 ## What it denies
 
-Every connection a bridged container on demo1 opens itself is dropped:
+Every connection a bridged container on demo1 opens itself is refused. It
+gets `REJECT`, not `DROP`, so a blocked attempt fails at once instead of
+waiting out a connect timeout. That matters because Ghost awaits transactional
+mail inside the request. The connections refused are:
 
 - off the host, which covers the internet, the Hetzner metadata service and
   DNS;
@@ -35,6 +38,18 @@ address range. A network created with a subnet of its own is still covered.
 A host service that a container must reach, such as a mail spool bound on a
 bridge gateway, needs an explicit accept in `BRANCHLEFT-DEMO-INPUT`. None
 exists today.
+
+## Known limits
+
+- **A window at every boot.** The unit runs after `docker.service`, and
+  containers with a restart policy start with dockerd. For those few seconds
+  at each boot, slots have unrestricted egress.
+- **A failed unit is quiet.** A failure shows only in the journal, and nothing
+  alerts on it.
+- **The proof has no systemd.** It runs in Docker-in-Docker, so neither a
+  reboot nor a dockerd restart is exercised.
+- **IPv6 is checked by rule presence only.** Both families get the same
+  ruleset text, but no IPv6 traffic is sent.
 
 ## How it applies
 

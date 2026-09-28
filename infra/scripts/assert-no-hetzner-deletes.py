@@ -1,30 +1,6 @@
 #!/usr/bin/env python3
-"""Refuse a Pulumi plan that destroys a protected Hetzner resource.
-
-Usage:
-    assert-no-hetzner-deletes.py <preview.json>
-    assert-no-hetzner-deletes.py --self-test
-    assert-no-hetzner-deletes.py --verify-coverage <program-dir>
-
-Exit 0 when the plan destroys nothing protected, 1 on any finding (or when
-any input could not be read or understood), 2 on usage error.
-
-Ported from shared-infra's guard of the same name so the hosts stack's CI
-apply path carries the same gate as the estate stacks it builds on; the
-coverage map below is this repository's own. Consolidating the two copies
-rides with the shared guard packaging tracked on the board.
-
-What this cannot prove, both limits real:
-
-1. `pulumi preview` compares the program to Pulumi *state*, never to live
-   Hetzner. A resource already deleted out of band still reads as unchanged.
-   This gate answers "will this apply destroy something", not "is the estate
-   intact".
-
-2. A resource that migrates out of a program dir leaves the plan check
-   intact but makes the coverage map here stale. `--verify-coverage` fails
-   until the map is updated consciously, so the move is a reviewed edit
-   rather than a silent erosion.
+"""Refuse a Pulumi plan that destroys a protected Hetzner resource; see assert-no-hetzner-deletes.md.
+Usage: assert-no-hetzner-deletes.py <preview.json> | --self-test | --verify-coverage <program-dir>
 """
 
 import contextlib

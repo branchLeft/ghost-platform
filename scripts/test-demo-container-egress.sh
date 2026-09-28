@@ -127,8 +127,8 @@ expect_reach "the host still reaches a slot on its published port" \
     "on_host \"wget -q -T 3 -O /dev/null http://127.0.0.1:18080/\""
 expect_reach "a container still reaches another on its own network" \
     "probe demo \"wget -q -T 3 -O /dev/null http://slot:8080/\""
-expect_reach "the IPv6 family carries the same policy" \
-    "on_host \"ip6tables -S BRANCHLEFT-DEMO-EGRESS | grep -q -- '-i br-+ ! -o br-+ -j DROP'\""
+expect_reach "the IPv6 family carries the same rules (rule presence only; no IPv6 traffic is sent)" \
+    "on_host \"ip6tables -S BRANCHLEFT-DEMO-EGRESS | grep -q -- '-i br-+ ! -o br-+ -j REJECT'\""
 
 echo
 echo "$PASSES passed, $FAILURES failed"

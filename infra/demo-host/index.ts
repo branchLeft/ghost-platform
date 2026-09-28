@@ -17,9 +17,9 @@ export const demosProjectVerified = verifyDemosProject();
 
 const config = new pulumi.Config();
 
-/** edge1's address as applied, not configured: a stale copy is a clean
- * preview that locks the owner and ops1 out. A DIY backend fixes the
- * organisation segment to the literal `organization`. */
+/** edge1's address as applied, not configured; a change is picked up on this
+ * stack's next apply (README.md). A DIY backend fixes the organisation
+ * segment to the literal `organization`. */
 const estateStack = new pulumi.StackReference('organization/branchleft-hetzner-estate/production');
 const edge1PublicIpv4 = estateStack.requireOutput('edge1PublicIpv4').apply(String);
 
