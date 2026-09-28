@@ -26,15 +26,17 @@ import render_slot_sudoers as rss
 # Matches one rule line's shape and captures the invocation. Used with
 # `fullmatch` against a single line at a time -- `finditer` against the whole
 # multi-line file would need `re.M` for `\A`/`\Z` to anchor per line, and
-# without it silently matches nothing.
+# without it silently matches nothing. Carries `/` and `.` too, unlike the
+# slot verbs' own characters, because the `load` rule's invocation is a
+# filesystem path.
 RULE_LINE_PATTERN = re.compile(
     re.escape(f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} ")
-    + r"(?P<invocation>[a-zA-Z0-9 -]+)"
+    + r"(?P<invocation>[a-zA-Z0-9 /.\-]+)"
 )
 
 
 def _expected_rule_lines() -> list[str]:
-    """The 49 rule lines, reconstructed independently of render()'s own
+    """The 50 rule lines, reconstructed independently of render()'s own
     loop -- from the slot table and the fixed line shape only, so a bug in
     render()'s assembly (an appended line, a dropped slot, a duplicate)
     shows up as a mismatch rather than being reproduced on both sides.
@@ -48,6 +50,9 @@ def _expected_rule_lines() -> list[str]:
                     f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} "
                     f"{slot} {colour} {verb}"
                 )
+    lines.append(
+        f"{rss.BROKER_USER} ALL=(root) NOPASSWD: {rss.WRAPPER_PATH} {rss.IMAGE_LOAD_INVOCATION}"
+    )
     return lines
 
 
@@ -148,6 +153,17 @@ class RenderPinnedLiteralsTests(unittest.TestCase):
             content,
         )
 
+    def test_rendered_output_pins_the_literal_load_rule(self):
+        # Not derived from `rss.IMAGE_LOAD_INVOCATION` -- a test built from
+        # the same constant the generator reads moves with it, exactly the
+        # reason this class's own docstring gives for the two lines above.
+        content = rss.render()
+        self.assertIn(
+            "broker ALL=(root) NOPASSWD: /usr/local/sbin/branchleft-slot load "
+            "/var/lib/branchleft-broker/image-tmp/image.tar",
+            content,
+        )
+
 
 class RenderExactnessTests(unittest.TestCase):
     def test_render_output_equals_the_independently_built_expected_text(self):
@@ -164,9 +180,9 @@ class RenderExactnessTests(unittest.TestCase):
                 f"nor a '# ' comment: {line!r}",
             )
 
-    def test_exactly_forty_nine_rule_lines(self):
+    def test_exactly_fifty_rule_lines(self):
         matched = sum(1 for line in rss.render().splitlines() if line in set(_expected_rule_lines()))
-        self.assertEqual(matched, 49)
+        self.assertEqual(matched, 50)
 
 
 class ReadVerbTests(unittest.TestCase):
@@ -201,7 +217,7 @@ class RenderTests(unittest.TestCase):
                 continue
             matched += 1
             self.assertNotIn("ALL", match.group("invocation"))
-        self.assertEqual(matched, 49, "the matcher itself matched nothing -- see test docstring")
+        self.assertEqual(matched, 50, "the matcher itself matched nothing -- see test docstring")
 
     def test_render_is_deterministic(self):
         self.assertEqual(rss.render(), rss.render())

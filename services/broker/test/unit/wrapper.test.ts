@@ -54,6 +54,20 @@ describe('createSlotWrapper', () => {
     expect(await readLoggedInvocations(logPath)).toEqual([['6', 'reset']]);
   });
 
+  it('invokes load with exactly two argv elements -- the literal verb and the path, never joined', async () => {
+    await wrapper.load('/var/lib/branchleft-broker/image-tmp/image.tar');
+    expect(await readLoggedInvocations(logPath)).toEqual([
+      ['load', '/var/lib/branchleft-broker/image-tmp/image.tar'],
+    ]);
+  });
+
+  it("resolves load with the wrapper process's own stdout, unlike start/stop/reset", async () => {
+    process.env.FAKE_WRAPPER_LOAD_OUTPUT = `Loaded image ID: sha256:${'1'.repeat(64)}\n`;
+    const stdout = await wrapper.load('/var/lib/branchleft-broker/image-tmp/image.tar');
+    expect(stdout).toBe(`Loaded image ID: sha256:${'1'.repeat(64)}\n`);
+    delete process.env.FAKE_WRAPPER_LOAD_OUTPUT;
+  });
+
   it('rejects with a WrapperError, carrying stdout/stderr, when the wrapper exits non-zero', async () => {
     process.env.FAKE_WRAPPER_FAIL = '1';
     await expect(wrapper.reset('0' as SlotName)).rejects.toBeInstanceOf(WrapperError);

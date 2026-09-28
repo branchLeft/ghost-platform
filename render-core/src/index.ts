@@ -116,4 +116,12 @@ export {
   mediaPublicBaseUrl,
   validateMediaBucket,
 } from './media.js';
+
+export type { PromotionTargets } from './transform.js';
+export {
+  ATTRIBUTABLE_PROMOTION_FIELDS,
+  UnattributedPromotionDiffError,
+  assertAttributablePromotionDiff,
+  transform,
+} from './transform.js';
 export { intendedGhostVersion } from './version.js';

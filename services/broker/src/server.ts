@@ -10,6 +10,7 @@ import type { DrainSource } from './drainSource.js';
 import { createSudoEmailBatchChecker, type EmailBatchChecker } from './emailBatchChecker.js';
 import { createHttpGhostReadinessChecker } from './ghostReadiness.js';
 import { createHttpHealthChecker } from './healthCheck.js';
+import type { ImageLoader } from './imagePush.js';
 import { createFileRealTrafficChecker, createZeroRealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { createSlotLock } from './slotLock.js';
@@ -31,16 +32,21 @@ function isAdminApiClient(candidate: unknown): candidate is AdminApiClient {
 function isDrainSource(candidate: unknown): candidate is DrainSource {
   return typeof (candidate as Partial<DrainSource> | undefined)?.poll === 'function';
 }
+function isImageLoader(candidate: unknown): candidate is ImageLoader {
+  return typeof (candidate as Partial<ImageLoader> | undefined)?.load === 'function';
+}
 
 /**
- * `Renderer`, `AdminApiClient` and `DrainSource` are all loaded as plugin
- * modules rather than built into this entrypoint, for the same reason in
- * each case: a fake implementation would silently pass its own tests while
- * doing nothing real in production. `Renderer` is filled for real today
- * (`plugins/renderCorePlugin.ts`, adapting `render-core`'s own `render()`).
- * The Admin API call's content is unspecified by any design document; the
- * drain source depends on LLD-6's unbuilt mail spool and an unbuilt
- * "reaper" -- both still seams. This entrypoint loads each from a module
+ * `Renderer`, `AdminApiClient`, `DrainSource` and `ImageLoader` are all
+ * loaded as plugin modules rather than built into this entrypoint, for the
+ * same reason in each case: a fake implementation would silently pass its
+ * own tests while doing nothing real in production. `Renderer` is filled
+ * for real today (`plugins/renderCorePlugin.ts`, adapting `render-core`'s
+ * own `render()`), and so is `ImageLoader` (`plugins/dockerImageLoader.ts`,
+ * `docker load` and nothing else). The Admin API call's content is
+ * unspecified by any design document; the drain source depends on LLD-6's
+ * unbuilt mail spool and an unbuilt "reaper" -- both still seams. This
+ * entrypoint loads each from a module
  * path named by its own environment variable and refuses to start if one
  * is missing *or if its default export does not have the seam's required
  * function*: a module that loads cleanly but exports nothing usable must
@@ -69,7 +75,7 @@ export async function loadPlugin<T>(
 }
 
 /**
- * The whole of how a loaded config and the three plugin seams become the
+ * The whole of how a loaded config and the four plugin seams become the
  * deps `createBrokerHandler` runs against -- extracted so a test can build
  * the exact same wiring `main()` uses (see server.test.ts) rather than
  * reconstructing an approximation of it (`test/helpers/testBroker.ts`
@@ -80,7 +86,8 @@ export function buildDeps(
   config: BrokerConfig,
   renderer: Renderer,
   adminApi: AdminApiClient,
-  drainSource: DrainSource
+  drainSource: DrainSource,
+  imageLoader: ImageLoader
 ): BrokerDeps {
   return {
     auth: {
@@ -106,6 +113,13 @@ export function buildDeps(
       nowMs: config.nowMs,
     },
     drainFlags: createDrainFlagStore(config.drainFlagDir),
+    imagePush: {
+      loader: imageLoader,
+      tmpDir: config.imageTmpDir,
+      maxBytes: config.imageMaxBytes,
+      nowMs: config.nowMs,
+      log: (line) => console.error(line),
+    },
     healthChecker: createHttpHealthChecker('127.0.0.1', config.healthCheckTimeoutMs),
     ghostReadiness: createHttpGhostReadinessChecker('127.0.0.1', config.healthCheckTimeoutMs),
     // `realTraffic` defaults to the fail-closed side of the stop-old-colour
@@ -145,6 +159,7 @@ export async function main(): Promise<Server> {
   await mkdir(config.stateDir, { recursive: true });
   await mkdir(config.drainFlagDir, { recursive: true });
   await mkdir(config.leaseDir, { recursive: true });
+  await mkdir(config.imageTmpDir, { recursive: true });
   if (config.trafficCounterDir) {
     await mkdir(config.trafficCounterDir, { recursive: true });
   }
@@ -182,11 +197,12 @@ export async function main(): Promise<Server> {
   const renderer = await loadPlugin('BROKER_RENDERER_MODULE', process.env, isRenderer);
   const adminApi = await loadPlugin('BROKER_ADMIN_API_MODULE', process.env, isAdminApiClient);
   const drainSource = await loadPlugin('BROKER_DRAIN_SOURCE_MODULE', process.env, isDrainSource);
+  const imageLoader = await loadPlugin('BROKER_IMAGE_LOADER_MODULE', process.env, isImageLoader);
 
-  let deps = buildDeps(config, renderer, adminApi, drainSource);
+  let deps = buildDeps(config, renderer, adminApi, drainSource, imageLoader);
 
-  // Optional fourth seam, deliberately not required at start-up the way
-  // the three above are: `buildDeps` already wires `createSudoEmailBatchChecker`
+  // Optional fifth seam, deliberately not required at start-up the way
+  // the four above are: `buildDeps` already wires `createSudoEmailBatchChecker`
   // as the real default (`emailBatchChecker.ts`'s own doc comment), and this
   // override exists only for a deploy that wants something else entirely --
   // never for "no real implementation exists yet", which is no longer true.

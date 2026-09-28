@@ -27,12 +27,13 @@ What this process does, and only this, per LLD-2 §02: validate that argv is
 exactly the enumerated shape, take an exclusive lock on the named slot so
 two reconciles cannot interleave, then start or stop the one systemd unit
 that shape names -- or for `reset`, stop both of a slot's colour units and
-wipe the slot's own state. It never touches the Docker socket (systemctl
-is the only privileged primitive it uses -- a docker command is root with
-no gradation, which is the exact erosion enumeration exists to avoid), never
-accepts a path as an argument, never writes `/etc/branchleft/<slot>-<colour>.env`
-(the broker writes that, unprivileged, before ever asking for a start), and
-never reads or touches anything outside the one slot its argv names.
+wipe the slot's own state. For every slot/colour/reset invocation it never
+touches the Docker socket (systemctl is the only privileged primitive it
+uses there -- a docker command is root with no gradation, which is the exact
+erosion enumeration exists to avoid), never accepts a path as an argument,
+never writes `/etc/branchleft/<slot>-<colour>.env` (the broker writes that,
+unprivileged, before ever asking for a start), and never reads or touches
+anything outside the one slot its argv names.
 
 One verb, `email-batches`, is read-only rather than privileged: it takes no
 lock and never calls `systemctl`, only a single fixed `COUNT` query
@@ -41,12 +42,46 @@ file, printing the bare count to stdout. Enumerated the same way as
 `start`/`stop` (see `READ_VERBS`) because sudoers' own boundary has no
 notion of "read-only" -- only "on the list" -- so it gets the identical
 argv-shape scrutiny `parse_invocation` already gives every other verb.
+
+**The one exception: `load`.** A fourth verb so the broker can hand a
+control-plane-pushed image to the local Docker daemon without ever holding
+the socket itself. It is a
+narrow exception, not a hole in the boundary above, for three reasons taken
+together: the argument is not a caller-chosen path but one single literal
+string (`IMAGE_LOAD_PATH`, matching `render_slot_sudoers.IMAGE_LOAD_INVOCATION`
+exactly) -- anything else is refused by `parse_invocation` before this
+process does anything at all; the sudoers grant itself only ever offers
+this one process that one literal invocation to begin with; and what this
+process does with it does not trust the path's name a second time --
+`RealSlotOps.load_image` opens that exact path with `O_NOFOLLOW` and
+`O_NONBLOCK` (a symlink at the leaf is refused by the kernel rather than
+followed; a FIFO returns at once rather than blocking this process, which
+runs as root, until some writer chooses to appear), `fstat`s the open
+descriptor (never a second `stat()` on the path, which would reopen the
+TOCTOU window `O_NOFOLLOW` exists to close) to require a regular file,
+under `IMAGE_LOAD_MAX_BYTES`, owned by the broker account, and only then
+streams that already-open descriptor into `docker load`'s stdin, under
+`IMAGE_LOAD_TIMEOUT_SECONDS`.
+
+**What this actually pins, precisely.** `IMAGE_STAGING_DIR` is provisioned
+broker-owned (host build, and `services/broker/src/server.ts`'s own
+`mkdir`), so nothing here rules out the broker renaming that directory and
+putting a symlink where it was, or simply writing whatever bytes it likes
+at the literal path in the first place -- `O_NOFOLLOW` refuses a symlink at
+the exact leaf, not a swapped parent. The check that actually holds the
+boundary is `st_uid == broker`: a root-owned file is never reachable this
+way no matter what the broker does to the directory, and a broker-owned
+file is exactly the power the broker already had before `load` existed.
+"Loads nothing else" means precisely that -- never a file the broker does
+not itself own -- not that the literal path names one unchanging file on
+disk.
 """
 
 from __future__ import annotations
 
 import fcntl
 import os
+import pwd
 import select
 import shutil
 import signal
@@ -83,6 +118,28 @@ RESET = "reset"
 # separate from `VERBS`, never merged into it, so `main` can tell a
 # privileged verb from a read-only one without inspecting strings.
 READ_VERBS: tuple[str, ...] = ("email-batches",)
+
+# Mirrors `render_slot_sudoers.BROKER_USER`/`IMAGE_STAGING_DIR`/
+# `IMAGE_STAGING_FILENAME` -- duplicated for the same reason `SLOT_NAMES`
+# above is: this file runs alone on the host, with nothing else from this
+# repo present. `SlotNamesDriftGuardTests` in `test_branchleft_slot.py`
+# guards this pair the same way it guards the slot table.
+BROKER_USER = "broker"
+LOAD = "load"
+IMAGE_STAGING_DIR = "/var/lib/branchleft-broker/image-tmp"
+IMAGE_STAGING_FILENAME = "image.tar"
+IMAGE_LOAD_PATH = f"{IMAGE_STAGING_DIR}/{IMAGE_STAGING_FILENAME}"
+
+# Root-side bounds `RealSlotOps.load_image` enforces on its own, regardless
+# of whatever the broker's own `BROKER_IMAGE_MAX_BYTES`/wrapper-timeout did
+# or did not catch -- a compromised broker skips its own checks, so this
+# process cannot rely on them either. The byte figure matches that
+# setting's own default in `services/broker/src/config.ts` (duplicated,
+# not imported, for the same reason every other literal here is); the
+# timeout is generous for a real multi-hundred-MB image load, not tuned to
+# any one measured run.
+IMAGE_LOAD_MAX_BYTES = 4 * 1024 * 1024 * 1024
+IMAGE_LOAD_TIMEOUT_SECONDS = 300
 
 # Where a slot's own management state lives, and the systemd unit name
 # shape LLD-2 §02 names directly ("systemctl start|stop the corresponding
@@ -391,6 +448,16 @@ class InvalidInvocation(ValueError):
     """
 
 
+class RefusedImage(ValueError):
+    """Raised by `RealSlotOps.load_image` when the file at `IMAGE_LOAD_PATH`
+    fails its root-side verification at the moment this process opens it --
+    a distinct failure from `InvalidInvocation`, which is about argv shape
+    and never looks at the filesystem. `parse_invocation` accepting `load`
+    says only that the *argument* was the one legal literal; this is what
+    says the *file* behind it, right now, was not what `load` may load.
+    """
+
+
 @dataclass(frozen=True)
 class ResetInvocation:
     slot: str
@@ -403,7 +470,15 @@ class ColourInvocation:
     verb: str
 
 
-Invocation = Union[ResetInvocation, ColourInvocation]
+@dataclass(frozen=True)
+class LoadInvocation:
+    """No fields: unlike every other invocation, `load`'s one legal argument
+    is a single unchanging literal (`IMAGE_LOAD_PATH`), not a value that
+    varies across calls -- there is nothing here for a field to carry.
+    """
+
+
+Invocation = Union[ResetInvocation, ColourInvocation, LoadInvocation]
 
 
 def parse_invocation(argv: Sequence[str]) -> Invocation:
@@ -418,14 +493,30 @@ def parse_invocation(argv: Sequence[str]) -> Invocation:
     reduces argv to a string at any point before this function returns
     reproduces sudo's own defect on the second layer, in the one place that
     exists to not have it.
+
+    `load`'s argument is checked by the same discipline as everything else
+    here: membership in a closed set, just one of size one
+    (`{IMAGE_LOAD_PATH}`) rather than seven or two. A single shell-quoted
+    argument `"load /var/.../image.tar"` -- sudo's own `'0 reset'` defect,
+    reproduced for this verb -- has `len(argv) == 1` and falls straight
+    through to the final `raise` below, exactly like a bare `"0 reset"`
+    does; there is no separate branch for it to slip past.
     """
     if len(argv) == 2:
-        slot, verb = argv
-        if slot in SLOT_NAMES and verb == RESET:
-            return ResetInvocation(slot=slot)
+        first, second = argv
+        if first == LOAD:
+            if second == IMAGE_LOAD_PATH:
+                return LoadInvocation()
+            raise InvalidInvocation(
+                f"refused: {list(argv)!r} is not the exact two-argument load form "
+                f"({LOAD!r} {IMAGE_LOAD_PATH!r})"
+            )
+        if first in SLOT_NAMES and second == RESET:
+            return ResetInvocation(slot=first)
         raise InvalidInvocation(
             f"refused: {list(argv)!r} is not the exact two-argument reset form "
-            f"(<enumerated slot> {RESET!r})"
+            f"(<enumerated slot> {RESET!r}) or the exact two-argument load form "
+            f"({LOAD!r} {IMAGE_LOAD_PATH!r})"
         )
     if len(argv) == 3:
         slot, colour, verb = argv
@@ -447,6 +538,7 @@ class SlotOps(Protocol):
     def remove_dir_contents(self, path: str) -> None: ...
     def remove_file_if_present(self, path: str) -> None: ...
     def recreate_empty_dir(self, path: str) -> None: ...
+    def load_image(self, path: str) -> None: ...
 
 
 class RealSlotOps:
@@ -459,6 +551,60 @@ class RealSlotOps:
 
     def systemctl(self, action: str, unit: str) -> None:
         subprocess.run(["systemctl", action, unit], check=True)
+
+    def load_image(self, path: str) -> None:
+        """Opens `path` (always `IMAGE_LOAD_PATH` -- `parse_invocation`
+        accepts no other value) with `O_NOFOLLOW` and `O_NONBLOCK`: a
+        symlink planted at that exact leaf is refused by the kernel's own
+        open(2) rather than followed, and a FIFO planted there returns at
+        once instead of blocking this process -- which runs as root --
+        until some writer chooses to appear (a compromised broker can
+        `mkfifo` at this path exactly as easily as it can write a regular
+        file). `fstat`s the resulting descriptor -- never a second
+        `os.stat(path)`, which would re-resolve the name and reopen exactly
+        the race `O_NOFOLLOW` closes -- and requires a regular file, no
+        larger than `IMAGE_LOAD_MAX_BYTES`, owned by the broker account.
+        `O_NONBLOCK` is cleared again before `docker load` ever reads the
+        descriptor (a regular file's reads are never actually blocking
+        regardless of the flag, but clearing it leaves nothing for a future
+        reader of this code to wonder about), and the load itself runs
+        under `IMAGE_LOAD_TIMEOUT_SECONDS` -- `subprocess.run` kills the
+        child on expiry rather than leaving a hung `docker load` behind.
+        Only the verified, already-open descriptor is ever handed to
+        `docker load`, on its stdin, so docker itself never resolves `path`
+        a second time either.
+        """
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as exc:
+            raise RefusedImage(f"refused: cannot open {path!r}: {exc}") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise RefusedImage(f"refused: {path!r} is not a regular file")
+            if info.st_size > IMAGE_LOAD_MAX_BYTES:
+                raise RefusedImage(
+                    f"refused: {path!r} is {info.st_size} bytes, over the "
+                    f"{IMAGE_LOAD_MAX_BYTES}-byte limit this wrapper enforces on its own"
+                )
+            try:
+                broker_uid = pwd.getpwnam(BROKER_USER).pw_uid
+            except KeyError as exc:
+                raise RefusedImage(
+                    f"refused: broker account {BROKER_USER!r} does not exist on this host"
+                ) from exc
+            if info.st_uid != broker_uid:
+                raise RefusedImage(
+                    f"refused: {path!r} is owned by uid {info.st_uid}, not the "
+                    f"{BROKER_USER!r} account (uid {broker_uid})"
+                )
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+            subprocess.run(
+                ["docker", "load"], stdin=fd, check=True, timeout=IMAGE_LOAD_TIMEOUT_SECONDS
+            )
+        finally:
+            os.close(fd)
 
     def remove_dir_contents(self, path: str) -> None:
         if not os.path.isdir(path):
@@ -498,6 +644,13 @@ def _acquire_slot_lock(slot: str):
 
 
 def perform(invocation: Invocation, ops: SlotOps) -> None:
+    if isinstance(invocation, LoadInvocation):
+        # Not slot-scoped, so it never takes `_acquire_slot_lock` -- there is
+        # no slot name to lock on, and the image being loaded is shared
+        # across every slot, not owned by one of them.
+        ops.load_image(IMAGE_LOAD_PATH)
+        return
+
     lock = _acquire_slot_lock(invocation.slot)
     try:
         if isinstance(invocation, ColourInvocation):

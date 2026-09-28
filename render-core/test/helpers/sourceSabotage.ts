@@ -6,7 +6,7 @@
  * only mutates a string inside the test, never the source, is not evidence
  * the source itself would be caught if it regressed.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -50,7 +50,27 @@ export async function importSabotaged<T>(
   }
 }
 
-/** Removes `test/.sabotage-tmp/` entirely — call once, e.g. in an `afterAll`. */
+/**
+ * Removes `test/.sabotage-tmp/` -- but only if it is already empty. Every
+ * `importSabotaged` call above removes its own throwaway file in its own
+ * `finally`, so by the time one test file's tests finish, this shared
+ * directory is normally empty already; a non-recursive `rmdirSync` only
+ * ever succeeds in that case. Vitest runs test files concurrently by
+ * default, and every file that sabotages a source module shares this one
+ * directory (it is not namespaced per file) -- a recursive, forced removal
+ * here would delete a sibling file's still-in-flight sabotage copy out
+ * from under it the moment two files' sabotage calls overlapped, which is
+ * exactly the failure this non-recursive form cannot cause: it either
+ * finds the directory empty and removes it, or finds it non-empty (another
+ * file mid-write) and leaves it alone.
+ */
 export function cleanupSabotageTmp(): void {
-  rmSync(tmpDir, { recursive: true, force: true });
+  try {
+    rmdirSync(tmpDir);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== 'ENOENT' && code !== 'ENOTEMPTY') {
+      throw error;
+    }
+  }
 }
