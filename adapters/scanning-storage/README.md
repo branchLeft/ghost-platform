@@ -143,6 +143,21 @@ resumed. Polling backs off (`holdMaxRetryMs` caps the interval) on repeated
 non-answers -- bounding the resource cost of a prolonged outage without
 ever bounding how long a hold itself is allowed to live.
 
+**One quarantine, three features.** Ghost constructs one decorator per
+storage feature (`images`, `media`, `files`) and never tells it which
+feature it serves, while a deployment gives all three the same
+`quarantinePath`. The sidecar is therefore keyed by owner --
+`{"owners": {"<wraps>:<storagePath>": [targetPaths]}}`, the wrapped
+adapter's `storagePath` being what differs between features on both
+backends -- and a restarted decorator resumes only its own owner's
+targets. Without that, whichever feature's decorator polled first would
+promote another feature's hold into its own served tree and delete the
+bytes the owning feature was still waiting on, so the upload would never
+be served. When the same bytes are held by two features, each promotes
+into its own tree and only the last to release the digest removes the
+bytes. A sidecar with no `owners` map is left held and unresumed, and
+logged, rather than guessed at.
+
 ## What Ghost's extension point does, and the traps in it
 
 Ghost 6.55.0's `handle-image-sizes.js` (`frontend/web/middleware`) reads,

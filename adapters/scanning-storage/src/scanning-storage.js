@@ -74,6 +74,13 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         checks: this.checks,
         policy: this.policy,
         quarantinePath: this.quarantinePath,
+        // Ghost never tells an adapter which feature it serves, and every
+        // feature's decorator shares one quarantinePath. The wrapped
+        // adapter's storagePath is what differs between features, on both
+        // backends (a directory for the local adapters, the
+        // staticFileURLPrefix for S3Storage), and it is where a promotion
+        // lands -- so it is what a resumed hold must match.
+        owner: `${wraps}:${this.storagePath ?? ''}`,
         retryIntervalMs: config.holdRetryMs,
         maxRetryIntervalMs: config.holdMaxRetryMs,
         logger: config.holdLogger,
