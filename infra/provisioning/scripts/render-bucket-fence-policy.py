@@ -1,90 +1,7 @@
 #!/usr/bin/env python3
 """Render the fencing policy for one operational bucket, and the commands for it.
 
-An operational bucket is one the estate itself uses -- the database backups,
-the tenant Pulumi state -- as opposed to a tenant's media bucket, which
-`render-media-bucket-policy.py` handles and which has an anonymous-read
-requirement this one deliberately does not. Everything else about the problem
-is the same, and the two generators share `bucketpolicy.py` rather than each
-carrying a copy of the principal syntax and the evaluation model.
-
-WHY A POLICY IS THE WHOLE BOUNDARY. Hetzner has no IAM, and each key pair is
-valid for every bucket in the same project by default. An `Allow` therefore
-narrows nothing, and an unfenced operational bucket is reachable by every
-credential in its project -- including one minted for something else entirely
-and held by CI, or by a tenant's own container.
-
-WHAT THIS POLICY HAS TO ACHIEVE.
-
-  1. The named workload keys keep exactly the access their job needs: object
-     reads and writes, plus the bucket reads that make listing work. They get
-     no bucket-CONFIGURATION action at all. A key that can call
-     `PutLifecycleConfiguration` can expire every object without ever issuing a
-     delete; one that can call `PutBucketPolicy` can replace this fence; one
-     that can call `PutBucketVersioning` can suspend the versioning that makes
-     an overwrite recoverable. Withholding `DeleteObject` while leaving those
-     available buys nothing. They also lose the object actions that defeat
-     versioning and object-lock from below -- see
-     `OPERATOR_ONLY_OBJECT_ACTIONS`.
-
-     THE WORKLOAD KEY LIST HAS TO BE COMPLETE. A key that legitimately uses the
-     bucket and is not named here is denied by the same statements as a
-     stranger, and nothing detects it: `verify-bucket-fence.py` proves the keys
-     it is given still work, never that no other key was fenced out. When a
-     bucket gains a second legitimate consumer -- per-tenant state credentials
-     are the live example -- the policy is re-rendered with the full list and
-     re-applied, before the new key is used.
-
-  2. Every other principal is denied outright -- other keys in the project, and
-     anonymous callers. Expressed as `Deny`, never as an absent `Allow`: an
-     absent Allow is overcome by Hetzner's project-wide default, an explicit
-     Deny is not.
-
-  3. The bucket stays administrable BY THE OPERATOR, and this is the property
-     that can destroy the estate if it is wrong. A `NotPrincipal` deny covering
-     `PutBucketPolicy` locks the bucket permanently when it does not exempt the
-     operator, because the statement that would have to be edited is the
-     statement doing the denying. There is then no second credential to fall
-     back on -- every key in the project is denied by the same statement -- and
-     no `DeleteBucket` either. Recovery is a Hetzner support request against
-     the storage cluster, and until it completes the bucket's contents are
-     unreachable. `assert_recoverable()` below therefore re-evaluates every
-     rendered policy and refuses to emit one that does not leave the operator
-     `PutBucketPolicy` and `DeleteBucketPolicy`.
-
-  4. `NotAction` on the bucket-configuration deny, so a bucket sub-resource
-     nobody thought of falls closed rather than open. The object-level deny
-     uses `Action: s3:*` instead, because there is nothing to exempt there and
-     an empty `NotAction` has a plausible reading -- "no action is excluded
-     from the exclusion" -- under which the statement denies nothing at all.
-
-  5. Allow statements alongside the denies, naming the same keys. They are
-     redundant under Hetzner's documented default, where the denies alone
-     produce the intended outcome. They are not redundant if that default is
-     ever narrowed, or if the engine treats the presence of a policy as
-     switching the bucket to deny-by-default, as S3 proper does for a
-     non-owner. Explicit `Deny` still beats them, so they cannot widen
-     anything; they only stop a correct fence from also being an outage.
-
-WHAT THIS FILE CANNOT ESTABLISH. Hetzner documents `NotPrincipal` verbatim but
-publishes no list of supported Actions, Principal formats or Conditions, and
-says nothing about `NotAction`. No policy of this shape has been observed
-working against a live Hetzner bucket. A successful `put-bucket-policy` is not
-evidence: an engine that ignores an unsupported element leaves the bucket open
-while reporting success, and one that reads a `NotPrincipal` deny as naming
-everybody locks it. Both directions are settled only by
-`verify-bucket-fence.py` against the live bucket, run before the operator
-walks away -- see RUNBOOK-bucket-fencing.md.
-
-Nor can it establish that `--project-id` is the right project. Every principal
-here is built from that one value, so `assert_recoverable()` below compares a
-fabricated ARN against itself and passes for any project id at all -- while
-live, an ARN carrying the right access key under the wrong account names a
-principal that does not exist, and the operator's `NotPrincipal` exemption
-exempts nobody. That is the one lockout no offline check can see. It is caught
-by resolving the account from the credential itself, which
-`verify-bucket-fence.py --preflight` and `configure_backup_bucket.py` both do
-before anything is written.
+See render-bucket-fence-policy.md.
 """
 
 from __future__ import annotations
@@ -95,7 +12,15 @@ import sys
 
 from bucketpolicy import (
     BUCKET_CONFIGURATION_ACTIONS,
+    BUCKET_READ_ACTIONS,
+    PUT_ONLY,
+    READ_ONLY,
+    READ_WRITE,
     RECOVERY_ACTIONS,
+    ROLE_BUCKET_ACTIONS,
+    ROLE_DENIED_BUCKET_ACTIONS,
+    ROLE_DENIED_OBJECT_ACTIONS,
+    ROLE_OBJECT_ACTIONS,
     PolicyInputError,
     assert_enforceable,
     decide,
@@ -103,30 +28,14 @@ from bucketpolicy import (
     validate_bucket_name,
 )
 
-# Every bucket-resource action a workload key keeps. All reads, none of them a
-# disclosure of the fence itself: `GetBucketPolicy` is deliberately absent, so
-# a compromised workload key cannot read back which other keys are named here.
-WORKLOAD_BUCKET_READ_ACTIONS = [
-    "s3:ListBucket",
-    "s3:ListBucketVersions",
-    "s3:ListBucketMultipartUploads",
-    "s3:GetBucketLocation",
-]
+# Every bucket-resource action a read-write or read-only key keeps. All reads,
+# none of them a disclosure of the fence itself: `GetBucketPolicy` is
+# deliberately absent, so a compromised workload key cannot read back which
+# other keys are named here.
+WORKLOAD_BUCKET_READ_ACTIONS = BUCKET_READ_ACTIONS
 
-# Object actions withheld from the workload keys, operator only. Each one
-# defeats a layer that exists specifically to survive a compromise of the host
-# holding the workload credential: `DeleteObjectVersion` destroys a version
-# outright, where a plain `DeleteObject` on a versioned bucket only writes a
-# delete marker the operator can remove; the retention trio disarms any
-# object-lock policy; and `PutObjectAcl` publishes a single object without
-# touching the bucket ACL this policy guards. None of them is used by the
-# pipelines -- `prune_backups.py` issues a plain delete and relies on the
-# lifecycle rule for versions -- so withholding them costs nothing.
-#
-# Enumerated rather than expressed as a `NotAction` catch-all, deliberately:
-# this statement NARROWS a fence that is already closed to everyone but the
-# named keys, so an action missing from the list falls back to that fence
-# rather than to Hetzner's project-wide default.
+# Withheld from every key but the operator's. See render-bucket-fence-policy.md,
+# "Operator-only object actions".
 OPERATOR_ONLY_OBJECT_ACTIONS = [
     "s3:DeleteObjectVersion",
     "s3:PutObjectAcl",
@@ -137,27 +46,159 @@ OPERATOR_ONLY_OBJECT_ACTIONS = [
 ]
 
 
+def _narrow_role_allows(
+    writers: list[str], readers: list[str], bucket_arn: str, objects_arn: str
+) -> list[dict]:
+    """Exactly each narrow role's own actions, and no `s3:*`.
+
+    Redundant under Hetzner's project default, as the read-write Allows are,
+    and kept for the same reason: if that default is ever narrowed, the fence
+    must still be what grants the worker its put. An explicit allow of exactly
+    the put action, never a deny-everything-except, is the load-bearing shape.
+    """
+    statements = []
+    if writers:
+        statements.append({
+            "Sid": "AllowPutOnlyKeysPut",
+            "Effect": "Allow",
+            "Principal": {"AWS": writers},
+            "Action": ROLE_OBJECT_ACTIONS[PUT_ONLY],
+            "Resource": objects_arn,
+        })
+    if readers:
+        statements.append({
+            "Sid": "AllowReadOnlyKeysObjectReads",
+            "Effect": "Allow",
+            "Principal": {"AWS": readers},
+            "Action": ROLE_OBJECT_ACTIONS[READ_ONLY],
+            "Resource": objects_arn,
+        })
+        statements.append({
+            "Sid": "AllowReadOnlyKeysBucketReads",
+            "Effect": "Allow",
+            "Principal": {"AWS": readers},
+            "Action": WORKLOAD_BUCKET_READ_ACTIONS,
+            "Resource": bucket_arn,
+        })
+    return statements
+
+
+def _narrow_role_denies(
+    writers: list[str], readers: list[str], bucket_arn: str, objects_arn: str
+) -> list[dict]:
+    """Every object action a narrow role does not hold, denied by name.
+
+    `Principal`, not `NotPrincipal`, so each statement's reach is the role's
+    own keys and nothing else. The put-only keys' bucket listing is also denied
+    by the bucket catch-all they are left under; it is stated here as well so
+    the denial does not rest on `NotPrincipal` alone.
+    """
+    statements = []
+    if writers:
+        statements.append({
+            "Sid": "DenyPutOnlyKeysReadsAndRemovals",
+            "Effect": "Deny",
+            "Principal": {"AWS": writers},
+            "Action": ROLE_DENIED_OBJECT_ACTIONS[PUT_ONLY],
+            "Resource": objects_arn,
+        })
+        statements.append({
+            "Sid": "DenyPutOnlyKeysListing",
+            "Effect": "Deny",
+            "Principal": {"AWS": writers},
+            "Action": ROLE_DENIED_BUCKET_ACTIONS[PUT_ONLY],
+            "Resource": bucket_arn,
+        })
+    if readers:
+        statements.append({
+            "Sid": "DenyReadOnlyKeysMutations",
+            "Effect": "Deny",
+            "Principal": {"AWS": readers},
+            "Action": ROLE_DENIED_OBJECT_ACTIONS[READ_ONLY],
+            "Resource": objects_arn,
+        })
+    return statements
+
+
+def assert_roles_hold(
+    policy: dict, principals: dict[str, list[str]], bucket_arn: str, objects_arn: str
+) -> None:
+    """Refuse a policy under which any key cannot do its job, or can do more.
+
+    Evaluated, like `assert_recoverable`, on the way out of every render: a
+    put-only key that can read, or a drill key that cannot list, is a fence
+    that reads correctly and is wrong.
+    """
+    an_object = objects_arn[:-1] + "dumps/any-object"
+    for role, role_principals in principals.items():
+        expectations = [
+            *((a, an_object, "allow") for a in ROLE_OBJECT_ACTIONS[role]),
+            *((a, bucket_arn, "allow") for a in ROLE_BUCKET_ACTIONS[role]),
+            *((a, an_object, "deny") for a in ROLE_DENIED_OBJECT_ACTIONS.get(role, [])),
+            *((a, bucket_arn, "deny") for a in ROLE_DENIED_BUCKET_ACTIONS.get(role, [])),
+        ]
+        for principal in role_principals:
+            for action, resource, expected in expectations:
+                got = decide(policy, principal, action, resource)
+                if got != expected:
+                    raise PolicyInputError(
+                        f"refusing to emit a policy under which the {role} key {principal} "
+                        f"gets {got} for {action} on {resource}; that role must get {expected}."
+                    )
+
+
 def render_policy(
-    bucket: str, project_id: str, workload_access_keys: list[str], admin_access_key: str
+    bucket: str,
+    project_id: str,
+    workload_access_keys: list[str],
+    admin_access_key: str,
+    *,
+    writer_access_keys: list[str] = (),
+    reader_access_keys: list[str] = (),
 ) -> dict:
-    """The whole fence for one operational bucket, as one policy."""
+    """The whole fence for one operational bucket, as one policy.
+
+    `workload_access_keys` are read-write, `writer_access_keys` put-only and
+    `reader_access_keys` read-only -- see `bucketpolicy.ROLES`. With no writer
+    or reader keys the document is exactly the read-write fence it always was,
+    so re-rendering an existing bucket's policy changes nothing on it.
+    """
     validate_bucket_name(bucket)
-    if not workload_access_keys:
+    given = {
+        READ_WRITE: list(workload_access_keys),
+        PUT_ONLY: list(writer_access_keys),
+        READ_ONLY: list(reader_access_keys),
+    }
+    if not any(given.values()):
         raise PolicyInputError(
             "no workload key given. A fence naming only the operator denies the bucket to "
             "the pipeline that uses it, which is an outage rather than a boundary -- and "
             "on the backup bucket it is a silent one until the next restore."
         )
 
-    seen: list[str] = []
-    for access_key in workload_access_keys:
-        if access_key in seen:
-            raise PolicyInputError(f"workload key {access_key!r} was given twice")
-        seen.append(access_key)
+    # One key, one role. A key named twice would be granted by one role's Allow
+    # and denied by the other's Deny, and the Deny wins -- so a put-only key
+    # also listed as read-write silently loses its writes, and the reverse
+    # listing would read as a narrowing it is not.
+    seen: dict[str, str] = {}
+    for role, access_keys in given.items():
+        for access_key in access_keys:
+            if access_key in seen:
+                raise PolicyInputError(
+                    f"workload key {access_key!r} was given twice"
+                    + ("" if seen[access_key] == role else f", as {seen[access_key]} and {role}")
+                )
+            seen[access_key] = role
 
-    workloads = [key_principal(project_id, access_key) for access_key in workload_access_keys]
+    principals = {
+        role: [key_principal(project_id, access_key) for access_key in access_keys]
+        for role, access_keys in given.items()
+    }
+    workloads = principals[READ_WRITE]
+    writers = principals[PUT_ONLY]
+    readers = principals[READ_ONLY]
     admin = key_principal(project_id, admin_access_key)
-    if admin in workloads:
+    if admin in workloads + writers + readers:
         raise PolicyInputError(
             "the operator key and a workload key are the same credential. The fence would "
             "then leave the workload able to rewrite the policy that constrains it, which "
@@ -166,6 +207,12 @@ def render_policy(
         )
 
     named = workloads + [admin]
+    # Exempt from the object catch-all: every role touches objects. Exempt from
+    # the bucket catch-all: everyone but the put-only keys, which need no
+    # bucket-resource action at all -- leaving them under it denies every
+    # bucket action, listing included, without depending on an enumeration.
+    named_objects = workloads + writers + readers + [admin]
+    named_bucket = workloads + readers + [admin]
 
     # `arn:aws:s3:::<bucket>` and `arn:aws:s3:::<bucket>/*` are two different
     # resources: object actions match the second, bucket actions the first.
@@ -200,19 +247,10 @@ def render_policy(
                 "Action": WORKLOAD_BUCKET_READ_ACTIONS,
                 "Resource": bucket_arn,
             },
+            *_narrow_role_allows(writers, readers, bucket_arn, objects_arn),
             {
-                # The operator alone keeps every bucket-configuration action.
-                # An enumerated `Action` list. This statement used to carry a
-                # `NotAction` catch-all, which this engine stores and does not
-                # enforce: with it in place the workload key keeps the ability
-                # to read this policy, rewrite it and change versioning, on a
-                # bucket that reads as fenced. The catch-all property is lost;
-                # `BUCKET_CONFIGURATION_ACTIONS` is kept wider than Hetzner's
-                # supported set to buy some of it back.
-                #
-                # Minus the workload's own bucket reads, so this narrows
-                # nothing the pipelines already rely on: `ListBucketVersions`
-                # is in both lists and stays with the workload.
+                # An enumerated Action list, never NotAction, which is stored and not
+                # enforced. See render-bucket-fence-policy.md, "The bucket-configuration deny".
                 "Sid": "DenyBucketConfigurationExceptOperator",
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": [admin]},
@@ -234,7 +272,7 @@ def render_policy(
                 # THEY may do to the bucket is narrowed by the statement above.
                 "Sid": "DenyBucketAccessExceptNamedKeys",
                 "Effect": "Deny",
-                "NotPrincipal": {"AWS": named},
+                "NotPrincipal": {"AWS": named_bucket},
                 "Action": "s3:*",
                 "Resource": bucket_arn,
             },
@@ -243,7 +281,7 @@ def render_policy(
                 # every object action and needs no `NotAction` exemption.
                 "Sid": "DenyObjectAccessExceptNamedKeys",
                 "Effect": "Deny",
-                "NotPrincipal": {"AWS": named},
+                "NotPrincipal": {"AWS": named_objects},
                 "Action": "s3:*",
                 "Resource": objects_arn,
             },
@@ -254,10 +292,12 @@ def render_policy(
                 "Action": OPERATOR_ONLY_OBJECT_ACTIONS,
                 "Resource": objects_arn,
             },
+            *_narrow_role_denies(writers, readers, bucket_arn, objects_arn),
         ],
     }
 
     assert_recoverable(policy, admin, bucket_arn)
+    assert_roles_hold(policy, principals, bucket_arn, objects_arn)
     # After assert_recoverable, not before: recoverability is evaluated with
     # `decide()`, which now SKIPS a NotAction statement rather than evaluating
     # its complement. A policy that only stays administrable because of a
@@ -294,10 +334,21 @@ def render_commands(
     endpoint: str,
     region: str,
     bucket_exists: bool,
+    *,
+    writer_access_keys: list[str] = (),
+    reader_access_keys: list[str] = (),
 ) -> str:
     """The operator sequence, with every value filled in."""
     policy = json.dumps(
-        render_policy(bucket, project_id, workload_access_keys, admin_access_key), indent=2
+        render_policy(
+            bucket,
+            project_id,
+            workload_access_keys,
+            admin_access_key,
+            writer_access_keys=writer_access_keys,
+            reader_access_keys=reader_access_keys,
+        ),
+        indent=2,
     )
     create = (
         ""
@@ -315,9 +366,7 @@ s3 create-bucket --bucket {bucket} --acl private \\
 #    every key but the operator's and there is no reason to depend on that
 #    exemption holding.
 s3 put-bucket-versioning --bucket {bucket} \\
-  --versioning-configuration Status=Enabled
-
-"""
+  --versioning-configuration Status=Enabled\n\n"""
     )
     step = 2 if bucket_exists else 4
     return f"""\
@@ -371,8 +420,7 @@ s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 #    environment variables, not from the exported operator key above -- run it
 #    exactly as RUNBOOK-bucket-fencing.md states.
 
-rm /tmp/{bucket}-policy.json /tmp/{bucket}-policy.previous.json
-"""
+rm /tmp/{bucket}-policy.json /tmp/{bucket}-policy.previous.json\n"""
 
 
 def _self_test() -> None:
@@ -452,6 +500,33 @@ def _self_test() -> None:
     else:
         raise AssertionError("fence self-test: operator key accepted as its own workload key")
 
+    writer = "D" * 20
+    reader = "E" * 20
+    roles = render_policy(
+        "branchleft-backups", project, [], admin,
+        writer_access_keys=[writer], reader_access_keys=[reader],
+    )
+    writer_arn = key_principal(project, writer)
+    reader_arn = key_principal(project, reader)
+    objects = "arn:aws:s3:::branchleft-backups/dumps/x.sql.age"
+    role_bucket = "arn:aws:s3:::branchleft-backups"
+    for principal, action, resource, expected in [
+        (writer_arn, "s3:PutObject", objects, "allow"),
+        (writer_arn, "s3:GetObject", objects, "deny"),
+        (writer_arn, "s3:DeleteObject", objects, "deny"),
+        (writer_arn, "s3:DeleteObjectVersion", objects, "deny"),
+        (writer_arn, "s3:ListBucket", role_bucket, "deny"),
+        (reader_arn, "s3:GetObject", objects, "allow"),
+        (reader_arn, "s3:ListBucket", role_bucket, "allow"),
+        (reader_arn, "s3:PutObject", objects, "deny"),
+        (reader_arn, "s3:DeleteObject", objects, "deny"),
+    ]:
+        got = decide(roles, principal, action, resource)
+        if got != expected:
+            raise AssertionError(
+                f"fence self-test: {principal} {action} on {resource} -> {got}, expected {expected}"
+            )
+
     print("render-bucket-fence-policy self-test: ok", file=sys.stderr)
 
 
@@ -464,7 +539,21 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="ACCESS_KEY_ID",
-        help="an access key id that legitimately uses this bucket; repeatable",
+        help="a READ-WRITE key (put, get, list, delete) that uses this bucket; repeatable",
+    )
+    parser.add_argument(
+        "--writer-access-key",
+        action="append",
+        default=[],
+        metavar="ACCESS_KEY_ID",
+        help="a PUT-ONLY key: may add objects, never read, list or delete them; repeatable",
+    )
+    parser.add_argument(
+        "--reader-access-key",
+        action="append",
+        default=[],
+        metavar="ACCESS_KEY_ID",
+        help="a READ-ONLY key: get and list, nothing else; repeatable",
     )
     parser.add_argument("--admin-access-key", help="the operator's Object Storage access key id")
     parser.add_argument(
@@ -486,13 +575,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     missing = [name for name in ("bucket", "project_id", "admin_access_key") if not getattr(args, name)]
-    if not args.workload_access_key:
+    if not (args.workload_access_key or args.writer_access_key or args.reader_access_key):
         missing.append("workload_access_key")
     if missing:
         parser.error(
             "missing required arguments: " + ", ".join("--" + m.replace("_", "-") for m in missing)
         )
 
+    roles = {
+        "writer_access_keys": args.writer_access_key,
+        "reader_access_keys": args.reader_access_key,
+    }
     try:
         if args.commands:
             print(
@@ -504,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.endpoint,
                     args.region,
                     bucket_exists=args.commands == "existing-bucket",
+                    **roles,
                 ),
                 end="",
             )
@@ -515,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.project_id,
                         args.workload_access_key,
                         args.admin_access_key,
+                        **roles,
                     ),
                     indent=2,
                 )
