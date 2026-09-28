@@ -9,7 +9,8 @@ Usage:
 input and later uses it to build a filesystem path and a `git add` argument
 in a job that holds `contents: write`. This is the one gate between that
 free text and the filesystem: it accepts only `services/<name>` or
-`adapters/<name>`, lowercase alphanumerics and single hyphens, no path
+`adapters/<name>`, where `<name>` is lowercase alphanumeric groups joined
+by single hyphens -- no leading, trailing or doubled hyphen, no path
 separator inside `<name>` and no way to spell `..`. A value this rejects
 never reaches `npm install`, `git add` or a shell string.
 
@@ -30,8 +31,12 @@ import sys
 # Anchored both ends. `[a-z0-9-]+` alone would admit a trailing slash, an
 # empty second segment, or a second `/` -- any of which would either point
 # outside `services/` and `adapters/` or make the later `git add` argument
-# ambiguous about which path it names.
-PACKAGE_DIR_PATTERN = re.compile(r"\A(services|adapters)/[a-z0-9-]+\Z")
+# ambiguous about which path it names. The name itself is alphanumeric
+# groups joined by single hyphens (`[a-z0-9]+(-[a-z0-9]+)*`), not the looser
+# `[a-z0-9-]+` this used to be: that admitted a leading or doubled hyphen,
+# which a value starting with `-` can turn into an option flag for whatever
+# reads it next.
+PACKAGE_DIR_PATTERN = re.compile(r"\A(services|adapters)/[a-z0-9]+(-[a-z0-9]+)*\Z")
 
 
 def is_allowed_package_dir(value: str) -> bool:
@@ -65,6 +70,10 @@ CASES: list[tuple[str, bool]] = [
     # that didn't strip it)
     ("/services/ring-controller", False),  # leading slash
     ("services/ring-controller; rm -rf /", False),  # shell metacharacters
+    ("services/-rf", False),  # leading hyphen -- could read as an option flag
+    ("services/--x", False),  # doubled leading hyphen, same reason
+    ("services/ring-", False),  # trailing hyphen
+    ("services/ring--controller", False),  # doubled interior hyphen
 ]
 
 

@@ -80,3 +80,5 @@ gh workflow run generate-lockfile.yml --repo branchLeft/ghost-platform \
 - `package_dir` must be `services/<name>` or `adapters/<name>`, and that directory must already exist on `branch` with a `package.json` and a `.nvmrc`.
 
 It pushes a commit only if `package-lock.json` actually changed, authored as `github-actions[bot]`. **That commit needs the normal review round like any push to the branch** — the ruleset's require-last-push-approval rule means a reviewer has to approve again after it lands, the same as after any other push.
+
+**A push authenticated with `GITHUB_TOKEN` does not trigger `pull_request`/`synchronize` workflows.** After this workflow pushes the lockfile commit, the PR's required status checks (build, type check, format/lint, docs-lint, standards gates) stay stuck on "Expected — waiting for status to be reported": nothing will ever report them from that push alone. To get them running again, either push an ordinary commit to the branch yourself (from your own account), or close and reopen the PR. Do this before asking anyone to look at the PR — a merge attempt will otherwise just sit blocked on checks that were never going to run.
