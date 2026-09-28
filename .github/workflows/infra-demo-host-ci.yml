@@ -1,0 +1,260 @@
+name: Demo host stack CI
+
+# infra-hosts-ci.yml's merge-is-deploy path, for infra/demo-host/ and the
+# demos project's own token. Pull requests: typecheck and unit tests, no
+# cloud credential. main: plan, then an apply held by the `production`
+# environment's required reviewer. See infra-hosts-ci.yml for each step.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/demo-host/**'
+      - 'infra/scripts/assert-no-hetzner-deletes.py'
+      - '.github/workflows/infra-demo-host-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/demo-host/**'
+      - 'infra/scripts/assert-no-hetzner-deletes.py'
+      - '.github/workflows/infra-demo-host-ci.yml'
+
+# `packages: read` because @branchleft/hetzner-host and
+# @branchleft/tsconfig are both hosted on GitHub Packages, which answers 401
+# to an anonymous request even for a public package.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  typecheck:
+    name: Demo host stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra/demo-host
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/demo-host/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: infra/demo-host/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test:unit
+
+  plan:
+    name: Plan (demo host, pulumi preview)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [typecheck]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    defaults:
+      run:
+        working-directory: infra/demo-host
+
+    env:
+      PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_PASSPHRASE_DEMO_HOST }}
+      PULUMI_SALT_DEMO_HOST: ${{ secrets.PULUMI_SALT_DEMO_HOST }}
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN_DEMOS }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
+      AWS_REGION: hel1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/demo-host/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/demo-host/package-lock.json
+          registry-url: https://npm.pkg.github.com
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      - name: Verify the deploy secrets are present
+        run: |
+          fail=0
+          [ -n "$PULUMI_CONFIG_PASSPHRASE" ] || { echo "::error::PULUMI_PASSPHRASE_DEMO_HOST is empty or unset" ; fail=1; }
+          [ -n "$HCLOUD_TOKEN" ] || { echo "::error::HCLOUD_TOKEN_DEMOS is empty or unset" ; fail=1; }
+          [ -n "$AWS_ACCESS_KEY_ID" ] || { echo "::error::HETZNER_S3_ACCESS_KEY_ID is empty or unset" ; fail=1; }
+          [ -n "$AWS_SECRET_ACCESS_KEY" ] || { echo "::error::HETZNER_S3_SECRET_ACCESS_KEY is empty or unset" ; fail=1; }
+          case "$PULUMI_SALT_DEMO_HOST" in
+            v1:*) ;;
+            *) echo "::error::PULUMI_SALT_DEMO_HOST is empty or does not start with 'v1:'" ; fail=1;;
+          esac
+          exit "$fail"
+
+      - name: Restore the stack's encryption salt
+        run: |
+          printf '\nencryptionsalt: %s\n' "$PULUMI_SALT_DEMO_HOST" >> Pulumi.production.yaml
+
+      - name: Preview the plan
+        run: pulumi preview --stack production --json > preview.json
+
+      - name: Refuse a plan that destroys the demo host
+        run: |
+          python3 ../scripts/assert-no-hetzner-deletes.py --self-test
+          python3 ../scripts/assert-no-hetzner-deletes.py --verify-coverage .
+
+          if ! python3 ../scripts/assert-no-hetzner-deletes.py preview.json; then
+            echo "--- full plan follows ---"
+            python3 -m json.tool preview.json
+            exit 1
+          fi
+
+      - name: Write the plan to the job summary
+        if: always()
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo '## Demo host stack plan — read before approving the apply'
+            echo
+            echo "Commit: \`${COMMIT_SHA}\`"
+            echo
+            echo '```json'
+            python3 -m json.tool preview.json 2>/dev/null \
+              || echo '(no plan captured — the run failed before preview)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: Apply (demo host, pulumi up)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [plan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    environment: production
+
+    concurrency:
+      group: pulumi-demo-host-deploy
+      cancel-in-progress: false
+
+    defaults:
+      run:
+        working-directory: infra/demo-host
+
+    env:
+      PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_PASSPHRASE_DEMO_HOST }}
+      PULUMI_SALT_DEMO_HOST: ${{ secrets.PULUMI_SALT_DEMO_HOST }}
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN_DEMOS }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
+      AWS_REGION: hel1
+
+    steps:
+      - name: Refuse to apply through an ungated environment
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          reviewers=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production" \
+            --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')
+          if [ "${reviewers:-0}" -eq 0 ]; then
+            echo "::error::the production environment has no required-reviewer rule -- the plan-approval gate is not real. Configure it in repo settings before any CI apply." >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: infra/demo-host/.nvmrc
+          cache: npm
+          cache-dependency-path: infra/demo-host/package-lock.json
+          registry-url: https://npm.pkg.github.com
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      - name: Verify the deploy secrets are present
+        run: |
+          fail=0
+          [ -n "$PULUMI_CONFIG_PASSPHRASE" ] || { echo "::error::PULUMI_PASSPHRASE_DEMO_HOST is empty or unset" ; fail=1; }
+          [ -n "$HCLOUD_TOKEN" ] || { echo "::error::HCLOUD_TOKEN_DEMOS is empty or unset" ; fail=1; }
+          [ -n "$AWS_ACCESS_KEY_ID" ] || { echo "::error::HETZNER_S3_ACCESS_KEY_ID is empty or unset" ; fail=1; }
+          [ -n "$AWS_SECRET_ACCESS_KEY" ] || { echo "::error::HETZNER_S3_SECRET_ACCESS_KEY is empty or unset" ; fail=1; }
+          case "$PULUMI_SALT_DEMO_HOST" in
+            v1:*) ;;
+            *) echo "::error::PULUMI_SALT_DEMO_HOST is empty or does not start with 'v1:'" ; fail=1;;
+          esac
+          exit "$fail"
+
+      - name: Restore the stack's encryption salt
+        run: |
+          printf '\nencryptionsalt: %s\n' "$PULUMI_SALT_DEMO_HOST" >> Pulumi.production.yaml
+
+      - name: Preview the plan
+        run: pulumi preview --stack production --json > preview.json
+
+      - name: Refuse to apply a plan that destroys the demo host
+        run: |
+          python3 ../scripts/assert-no-hetzner-deletes.py --self-test
+          python3 ../scripts/assert-no-hetzner-deletes.py --verify-coverage .
+
+          if ! python3 ../scripts/assert-no-hetzner-deletes.py preview.json; then
+            echo "--- full plan follows ---"
+            python3 -m json.tool preview.json
+            exit 1
+          fi
+
+      - name: Apply
+        run: pulumi up --stack production --yes
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo '## Demo host stack deploy'
+            echo
+            echo "Commit: \`${COMMIT_SHA}\`"
+            echo
+            echo '### Plan this run applied'
+            echo
+            echo '```json'
+            python3 -m json.tool preview.json 2>/dev/null \
+              || echo '(no plan captured — the run failed before preview)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

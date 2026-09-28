@@ -1,0 +1,19 @@
+# Reasserts the demo container egress policy at every boot and every Docker
+# restart. No iptables-persistent: a saved ruleset would also save Docker's
+# own chains and restore a stale copy before dockerd is up to own them.
+[Unit]
+Description=branchLeft demo host: deny container egress
+After=network-online.target docker.service
+Wants=network-online.target
+# PartOf, not Requires: an unattended docker-ce upgrade restarts dockerd,
+# which rebuilds its chains, and this re-runs against them. PartOf never
+# pulls docker.service in as a start dependency.
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/branchleft-demo-egress
+
+[Install]
+WantedBy=multi-user.target docker.service

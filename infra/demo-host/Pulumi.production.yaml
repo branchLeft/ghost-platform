@@ -1,0 +1,30 @@
+# Stack configuration for the demo host.
+#
+# `encryptionsalt` and the `hcloud:token` ciphertext never belong in this
+# file, for the reasons ../hosts/Pulumi.production.yaml gives. The token must
+# be the **demos** project's (Hetzner console `branchLeft demos`), which
+# `projectGuard.ts` proves by requiring that project's own marker firewall
+# rather than assuming it.
+#
+# edge1's address is not configured here. It is read from the estate stack's
+# applied `edge1PublicIpv4` output, because a hand-copied address goes stale
+# silently the next time edge1 is rebuilt, and a stale SSH source locks the
+# owner and ops1 out of this host with a clean preview.
+#
+# Pulumi rewrites this file in place on every `stack init` and `config set`,
+# and a comment survives only while the file carries at least one populated
+# config entry.
+config:
+  # Ignored by the program after creation, as on the estate hosts: Hetzner
+  # reuses an image name across point releases.
+  branchleft-ghost-platform-demo-host:image: debian-13
+  # HLD §02: demo1 is a cx23, ceiling cx53. Check `Available:` rather than
+  # `Recommended:` immediately before an apply.
+  branchleft-ghost-platform-demo-host:serverType: cx23
+  # The *name* the key is registered under in the demos project, not key
+  # material. Names are per project, so this key has to be registered in
+  # `branchLeft demos` before the first apply: `sshKeys` is create-time-only.
+  # The key behind it is `id_ed25519_hetzner`,
+  # SHA256:UZLm2m1fvggsRn3wQ7Y/oJ66dqiAhexsgkKkvTshRzk.
+  branchleft-ghost-platform-demo-host:ownerSshKeyNames:
+    - rob@branchleft.co.uk
