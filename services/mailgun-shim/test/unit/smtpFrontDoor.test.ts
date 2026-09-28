@@ -162,9 +162,9 @@ describe('createConcurrencyGuard', () => {
 });
 
 describe('createUnauthenticatedPoolGuard', () => {
-  // The guard counts only what it admitted, so a burst of raw sockets
-  // never inflates its counts.
-  // See smtpFrontDoor.test.md#the-guards-own-counters.
+  // Proves the guard's own counters, not a filter over smtp-server's
+  // `connections` Set, drive admission. See
+  // docs/smtp-front-door.md#test-pool-guard-counters.
   it('admits up to the per-source cap, then refuses further acquisitions from that source with a distinct reason', () => {
     const guard = createUnauthenticatedPoolGuard(100, 2);
     expect(guard.tryAcquire('1.1.1.1').admitted).toBe(true);
@@ -403,9 +403,8 @@ describe('createUnauthenticatedAdmissionQueue', () => {
   });
 
   it('if the guard itself refuses the immediate re-acquire a freed slot should have won (the global cap filled in between), the waiter keeps its place instead of being dropped', () => {
-    // A scripted guard (admit, refuse per-source, refuse global) proves the
-    // queue survives a lost re-acquire without dropping the waiter.
-    // See smtpFrontDoor.test.md#a-scripted-guard.
+    // A hand-rolled guard, not the real one, scripted to prove the queue's
+    // own reentrancy defence. See docs/smtp-front-door.md#test-queue-reentrancy.
     let calls = 0;
     const scriptedGuard: UnauthenticatedPoolGuard = {
       tryAcquire(remoteAddress): UnauthenticatedPoolAdmission {
@@ -505,8 +504,7 @@ async function startHarness(
     submitterMessagesPerMinute: overrides.submitterMessagesPerMinute ?? 120,
   });
 
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  await frontDoor.listen(port, overrides.host ?? '127.0.0.1');
+  const port = await frontDoor.listen(0, overrides.host ?? '127.0.0.1');
 
   return {
     store,
@@ -576,6 +574,15 @@ describe('SMTP front door — acceptance into the durable queue', () => {
 
   afterEach(async () => {
     await harness?.close();
+  });
+
+  it('listens on an OS-chosen port when given 0, and reports and logs that port rather than 0', async () => {
+    harness = await startHarness();
+    expect(harness.port).toBeGreaterThan(0);
+    const listening = harness.logs.find(
+      (line) => line.event === 'worker_lifecycle' && line.fields.event === 'smtp_listening'
+    );
+    expect(listening?.fields.port).toBe(harness.port);
   });
 
   it('accepts an authenticated submission, enqueues it durably and kicks the worker', async () => {
@@ -1502,9 +1509,9 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     });
 
     it('a genuine concurrent burst from one source — not a sequence awaited one at a time — still never blocks a different source', async () => {
-      // Fires many connects at once, which is what exercises smtp-server's
-      // early-talker window the sequential test cannot.
-      // See smtpFrontDoor.test.md#concurrent-churn.
+      // The sequential test above proves the cap logic; this proves the
+      // WIRING survives real concurrency. See
+      // docs/smtp-front-door.md#test-concurrent-churn.
       harness = await startHarness({
         maxUnauthenticatedConnectionsPerSource: 3,
         maxUnauthenticatedConnections: 10,
@@ -1561,9 +1568,9 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     });
 
     it('a legitimate concurrent burst from ONE source, well past its own per-source cap, is never refused — every send completes', async () => {
-      // Twenty concurrent sends from one source, cap 5, must all complete; the
-      // wait limit is raised because the property is completion, not speed.
-      // See smtpFrontDoor.test.md#a-legitimate-burst.
+      // The exact shape ordinary traffic produces, not an attack; the
+      // explicit wait avoids a scrypt-scaled flake. See
+      // docs/smtp-front-door.md#test-legitimate-burst.
       harness = await startHarness({
         maxUnauthenticatedConnectionsPerSource: 5,
         maxUnauthenticatedConnections: 100,
@@ -1788,9 +1795,8 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     });
 
     it('an authenticated submission succeeds once idle, never-authenticating connections holding the pool have been evicted by their deadline', async () => {
-      // An idle unauthenticated peer must not hold the pool: the deadline evicts
-      // it well within a real client's retry window.
-      // See smtpFrontDoor.test.md#the-auth-deadline.
+      // Deadline sized to evict attacker slots well within a real client's
+      // retry window. See docs/smtp-front-door.md#test-eviction-deadline.
       harness = await startHarness({ maxUnauthenticatedConnections: 2, authDeadlineMs: 500 });
 
       const attacker1 = await connectAndWaitBanner();

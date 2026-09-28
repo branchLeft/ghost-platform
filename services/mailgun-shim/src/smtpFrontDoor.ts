@@ -1,4 +1,4 @@
-import { BlockList, isIPv4, isIPv6 } from 'node:net';
+import { BlockList, isIPv4, isIPv6, type AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import {
   SMTPServer,
@@ -173,9 +173,9 @@ export interface UnauthenticatedPoolGuard {
 }
 
 /**
- * Counts only connections this guard admitted, never smtp-server's own
- * connections Set, which includes sockets still in the early-talker delay.
- * See smtpFrontDoor.md#createunauthenticatedpoolguard.
+ * Own admission counters, not a filter over smtp-server's `connections` Set
+ * — avoids an "early talker" dwell-window race. See
+ * docs/smtp-front-door.md#pool-guard-counters.
  */
 export function createUnauthenticatedPoolGuard(
   maxGlobal: number,
@@ -245,9 +245,9 @@ export interface UnauthenticatedAdmissionQueue {
 }
 
 /**
- * A burst past the per-source cap waits, bounded in count and time, instead
- * of being refused. The global cap is never queued behind.
- * See smtpFrontDoor.md#createunauthenticatedadmissionqueue.
+ * Queues a burst past the per-source cap rather than refusing it outright,
+ * bounded in depth and wait; the global cap is never queued behind. See
+ * docs/smtp-front-door.md#queueing-past-the-per-source-cap.
  */
 export function createUnauthenticatedAdmissionQueue(
   guard: UnauthenticatedPoolGuard,
@@ -397,7 +397,8 @@ export interface SmtpFrontDoorOptions {
 }
 
 export interface SmtpFrontDoor {
-  listen(port: number, host: string): Promise<void>;
+  /** Resolves with the bound port, so a caller passing 0 learns which one the OS chose. */
+  listen(port: number, host: string): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -421,9 +422,9 @@ declare module 'smtp-server' {
 }
 
 /**
- * smtp-server's connection objects, narrowed to what the guards need;
- * _socket is the only place a mid-transfer disconnect is observable.
- * See smtpFrontDoor.md#rawsmtpconnection.
+ * A narrowed view of `smtp-server`'s own connection objects (`SMTPServer.
+ * connections`, typed `Set<any>` upstream). See
+ * docs/smtp-front-door.md#rawsmtpconnection.
  */
 interface RawSmtpConnection {
   session?: { user?: string; remoteAddress?: string };
@@ -436,8 +437,8 @@ interface RawSmtpConnection {
 
 /**
  * The listener Ghost's transactional sender connects to: a durable local
- * write answered at once, sharing the queue with the HTTP route.
- * See smtpFrontDoor.md#createsmtpfrontdoor.
+ * write, answered at once, sharing the message queue with the Mailgun-shaped
+ * HTTP route. See docs/smtp-front-door.md#listener-overview.
  */
 export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
   const { store, wake, log } = opts;
@@ -488,9 +489,9 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         return;
       }
 
-      // Per-source is checked before global: one churning source never takes
-      // more than its share; the global cap is only the backstop.
-      // See smtpFrontDoor.md#per-source-before-global.
+      // Per-source is checked before global inside the guard itself, so one
+      // source can never occupy more than its own share of the pool. See
+      // docs/smtp-front-door.md#per-source-before-global.
       const remoteAddress = session.remoteAddress ?? '';
       const connections = server.connections as unknown as Set<RawSmtpConnection>;
       let rawConnection: RawSmtpConnection | undefined;
@@ -580,9 +581,8 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       session: SMTPServerSession,
       callback: (err: Error | null | undefined, response?: SMTPServerAuthenticationResponse) => void
     ): Promise<void> {
-      // The username is the submitter's identity. verifyTenant is awaited so a
-      // store or crypto error reaches smtp-server as a credential failure.
-      // See smtpFrontDoor.md#authentication.
+      // The username is the submitter's identity, verified off the event
+      // loop via verifyTenant. See docs/smtp-front-door.md#auth-identity.
       let tenant;
       try {
         tenant = await store.verifyTenant(auth.username ?? '', auth.password ?? '');
@@ -684,9 +684,10 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         callback(err);
         return;
       }
-      // onRcptTo runs before the address is pushed, so this is the count already
-      // accepted for this message; the cap refuses only later recipients.
-      // See smtpFrontDoor.md#recipient-cap.
+      // Per-message recipient count: smtp-server calls onRcptTo before
+      // pushing onto session.envelope.rcptTo, so this length is always the
+      // count already accepted for THIS message. See
+      // docs/smtp-front-door.md#recipient-count.
       if (session.envelope.rcptTo.length >= opts.maxRecipientsPerMessage) {
         log.warn('smtp_too_many_recipients', {
           submitter: session.user ?? null,
@@ -734,9 +735,10 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       }
       const releaseConcurrencySlot = (): void => slot?.release();
 
-      // Release the slot on socket close too: smtp-server detaches the data
-      // stream without emitting when a connection drops mid-DATA.
-      // See smtpFrontDoor.md#releasing-the-data-slot-on-close.
+      // The slot must also be released if the underlying connection closes
+      // before the stream reaches 'end' or 'error' — smtp-server does not
+      // emit on the stream when the socket closes mid-DATA. See
+      // docs/smtp-front-door.md#slot-release-on-close.
       const connections = server.connections as unknown as Set<RawSmtpConnection>;
       let rawConnection: RawSmtpConnection | undefined;
       for (const c of connections) {
@@ -776,8 +778,9 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
         retainedBytes += chunk.length;
         chunks.push(chunk);
       });
-      /* v8 ignore start -- unreachable today: smtp-server never emits on the data
-       * stream. Kept fail-closed. See smtpFrontDoor.md#the-data-stream-never-errors. */
+      /* v8 ignore start -- proven unreachable against smtp-server's own
+       * source; fail-closed guard against a future version starting to
+       * emit here. See docs/smtp-front-door.md#stream-error-unreachable. */
       stream.on('error', (err: Error) => {
         releaseConcurrencySlot();
         detachCloseRelease();
@@ -818,9 +821,9 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
 
         void simpleParser(Buffer.concat(chunks))
           .then((parsed) => {
-            // The header half of the sender binding, enforced only when a From is
-            // present; refused before enqueue, never a 250 then a drop.
-            // See smtpFrontDoor.md#header-from-and-sender.
+            // The header half of the sender-binding control — checked here
+            // since parsing the header From/Sender needs the buffered body.
+            // See docs/smtp-front-door.md#header-sender-binding-control.
             const senderDomain = session.tenantSenderDomain;
             /* v8 ignore start -- proven unreachable: onMailFrom's own
              * resolveSenderDomain gate refuses every message for a tenant
@@ -860,9 +863,9 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
                * defends a state the protocol never lets this handler see. */
               (session.envelope.mailFrom ? session.envelope.mailFrom.address : '');
 
-            // Refuses CR/LF/NUL in decoded headers, as the HTTP route does, so an
-            // encoded-word decoding to a CRLF cannot inject a header.
-            // See smtpFrontDoor.md#refuse-never-strip.
+            // Refuses on header injection chars rather than stripping,
+            // matching the HTTP route's outcome. See
+            // docs/smtp-front-door.md#header-injection-refusal.
             for (const [label, value] of [
               ['From', from],
               ['Subject', subject],
@@ -878,9 +881,8 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
                 return;
               }
             }
-            // A submitted Sender is never copied into the stored headers, so there is
-            // nothing to validate, and no second parser difference to exploit.
-            // See smtpFrontDoor.md#sender-is-stripped-not-validated.
+            // Sender header is stripped, never validated then refused — see
+            // docs/smtp-front-door.md#sender-is-never-taken-from-the-tenant.
 
             const headers: Record<string, string> = {};
             if (replyTo) {
@@ -948,13 +950,14 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
   });
 
   return {
-    listen(port: number, host: string): Promise<void> {
+    listen(port: number, host: string): Promise<number> {
       return new Promise((resolve, reject) => {
         server.once('error', reject);
         server.listen(port, host, () => {
           server.removeListener('error', reject);
-          log.info('worker_lifecycle', { event: 'smtp_listening', port, host });
-          resolve();
+          const bound = (server.server.address() as AddressInfo).port;
+          log.info('worker_lifecycle', { event: 'smtp_listening', port: bound, host });
+          resolve(bound);
         });
       });
     },
