@@ -44,6 +44,8 @@ PROTECTED_TYPES = {
 COVERAGE_BY_DIR = {
     # infra/hosts/index.ts declares app1 and db1 through the Host component.
     "hosts": {"Host"},
+    # infra/demo-host/index.ts declares demo1 from bare hcloud resources.
+    "demo-host": {"hcloud.Server", "hcloud.Firewall", "hcloud.PrimaryIp"},
 }
 
 # Any Pulumi step op containing either word destroys, or schedules the
