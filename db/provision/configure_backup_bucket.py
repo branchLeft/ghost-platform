@@ -257,6 +257,45 @@ def _withheld(actions: list[str], required: list[str]) -> set[str]:
     return {action for action in required if any(_action_covers(p, action) for p in actions)}
 
 
+def _denied_to(statements: list, arn: str, resource: str, *, objects: bool) -> set:
+    """The Action patterns some Deny withholds from `arn` on one resource class.
+
+    An exempted action is accounted for when another Deny withholds it from
+    that principal: the concern is an action reaching the bucket through the
+    project default unseen, and an explicit Deny is the opposite of that. A
+    put-only key is exempted from the object catch-all and granted only
+    `PutObject`; its `GetObject` and `DeleteObject` are accounted for by the
+    Deny that names it, not by an Allow it must not have. Likewise the
+    bucket-configuration actions a read-write key is exempted from the bucket
+    catch-all for are withheld by the operator-only configuration Deny.
+
+    The statement under check cannot vouch for itself: it exempts `arn`, so it
+    lists `arn` in its `NotPrincipal` and is skipped below.
+    """
+    withheld: set = set()
+    for statement in statements:
+        if statement.get("Effect") != "Deny" or "NotAction" in statement:
+            continue
+        resources = _string_list(statement.get("Resource"))
+        if objects:
+            reaches = any(r.startswith(resource) for r in resources)
+        else:
+            reaches = resource in resources
+        if not reaches:
+            continue
+        principals = _principals(statement, "Principal")
+        not_principals = _principals(statement, "NotPrincipal")
+        if principals is not _MISSING:
+            applies = arn in principals or "*" in principals
+        elif not_principals is not _MISSING:
+            applies = arn not in not_principals
+        else:
+            applies = False
+        if applies:
+            withheld.update(_string_list(statement.get("Action")))
+    return withheld
+
+
 def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_principal: str) -> None:
     """Refuse a policy that names another bucket, locks out the caller, fences
     nothing, or fences something other than what matters.
@@ -391,8 +430,10 @@ def assert_policy_fences_this_bucket(policy: dict, bucket: str, operator_princip
                 granted: set = set()
                 if covers_bucket:
                     granted |= allowed_bucket_principals.get(arn, set())
+                    granted |= _denied_to(statements, arn, bucket_arn, objects=False)
                 if covers_objects:
                     granted |= allowed_object_principals.get(arn, set())
+                    granted |= _denied_to(statements, arn, objects_prefix, objects=True)
                 unaccounted = {
                     action
                     for action in required_here

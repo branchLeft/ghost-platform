@@ -295,9 +295,67 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
         """
         for name in ("BUCKET_CONFIGURATION_ACTIONS", "NON_PUBLIC_OBJECT_ACTIONS",
                      "MEDIA_PUBLIC_OBJECT_ACTIONS", "WORKLOAD_BUCKET_ACTIONS",
-                     "WORKLOAD_OBJECT_ACTIONS", "RECOVERY_ACTIONS"):
+                     "WORKLOAD_OBJECT_ACTIONS", "RECOVERY_ACTIONS", "BUCKET_READ_ACTIONS",
+                     "OBJECT_ACTION_VOCABULARY"):
             overlap = set(getattr(bucketpolicy, name)) & bucketpolicy.PARSER_REJECTS
             self.assertEqual(overlap, set(), f"{name} names actions the parser refuses: {overlap}")
+        for name in ("ROLE_OBJECT_ACTIONS", "ROLE_BUCKET_ACTIONS",
+                     "ROLE_DENIED_OBJECT_ACTIONS", "ROLE_DENIED_BUCKET_ACTIONS"):
+            for role, actions in getattr(bucketpolicy, name).items():
+                overlap = set(actions) & bucketpolicy.PARSER_REJECTS
+                self.assertEqual(overlap, set(), f"{name}[{role}] names refused actions: {overlap}")
+
+
+class TestRoleTables(unittest.TestCase):
+    """The role tables are the fence's specification; the renderer only spells them."""
+
+    def test_every_role_has_both_tables(self):
+        for role in bucketpolicy.ROLES:
+            self.assertIn(role, bucketpolicy.ROLE_OBJECT_ACTIONS)
+            self.assertIn(role, bucketpolicy.ROLE_BUCKET_ACTIONS)
+
+    def test_the_put_only_role_holds_exactly_the_put(self):
+        self.assertEqual(bucketpolicy.ROLE_OBJECT_ACTIONS[bucketpolicy.PUT_ONLY], ["s3:PutObject"])
+        self.assertEqual(bucketpolicy.ROLE_BUCKET_ACTIONS[bucketpolicy.PUT_ONLY], [])
+
+    def test_the_put_only_role_is_denied_every_read_and_removal_by_name(self):
+        denied = set(bucketpolicy.ROLE_DENIED_OBJECT_ACTIONS[bucketpolicy.PUT_ONLY])
+        for action in ("s3:GetObject", "s3:GetObjectVersion", "s3:DeleteObject",
+                       "s3:DeleteObjectVersion", "s3:AbortMultipartUpload",
+                       "s3:ListMultipartUploadParts", "s3:RestoreObject"):
+            self.assertIn(action, denied)
+        self.assertNotIn("s3:PutObject", denied)
+        bucket_denied = set(bucketpolicy.ROLE_DENIED_BUCKET_ACTIONS[bucketpolicy.PUT_ONLY])
+        for action in ("s3:ListBucket", "s3:ListBucketVersions", "s3:ListBucketMultipartUploads"):
+            self.assertIn(action, bucket_denied)
+
+    def test_the_read_only_role_holds_get_and_list_and_is_denied_every_mutation(self):
+        self.assertEqual(
+            set(bucketpolicy.ROLE_OBJECT_ACTIONS[bucketpolicy.READ_ONLY]),
+            {"s3:GetObject", "s3:GetObjectVersion"},
+        )
+        self.assertIn("s3:ListBucket", bucketpolicy.ROLE_BUCKET_ACTIONS[bucketpolicy.READ_ONLY])
+        denied = set(bucketpolicy.ROLE_DENIED_OBJECT_ACTIONS[bucketpolicy.READ_ONLY])
+        for action in ("s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
+                       "s3:AbortMultipartUpload", "s3:PutObjectTagging"):
+            self.assertIn(action, denied)
+        self.assertNotIn("s3:GetObject", denied)
+
+    def test_a_narrow_role_is_granted_or_denied_every_object_action_in_the_vocabulary(self):
+        # Nothing in the vocabulary is left to the project default, which allows.
+        for role in (bucketpolicy.PUT_ONLY, bucketpolicy.READ_ONLY):
+            granted = set(bucketpolicy.ROLE_OBJECT_ACTIONS[role])
+            denied = set(bucketpolicy.ROLE_DENIED_OBJECT_ACTIONS[role])
+            self.assertEqual(granted & denied, set(), role)
+            self.assertEqual(granted | denied, set(bucketpolicy.OBJECT_ACTION_VOCABULARY), role)
+
+    def test_the_read_write_role_is_what_the_verifier_preflight_imports(self):
+        self.assertIs(bucketpolicy.WORKLOAD_OBJECT_ACTIONS,
+                      bucketpolicy.ROLE_OBJECT_ACTIONS[bucketpolicy.READ_WRITE])
+        self.assertIs(bucketpolicy.WORKLOAD_BUCKET_ACTIONS,
+                      bucketpolicy.ROLE_BUCKET_ACTIONS[bucketpolicy.READ_WRITE])
+        self.assertEqual(set(bucketpolicy.WORKLOAD_OBJECT_ACTIONS),
+                         {"s3:PutObject", "s3:GetObject", "s3:DeleteObject"})
 
     def test_assert_enforceable_refuses_a_parser_rejected_action(self):
         with self.assertRaises(PolicyInputError) as caught:

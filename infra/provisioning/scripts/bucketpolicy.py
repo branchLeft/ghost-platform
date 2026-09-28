@@ -55,12 +55,38 @@ BUCKET_NAME_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\Z")
 # what a working fence looks like, not a lockout.
 RECOVERY_ACTIONS = ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]
 
-# The whole of what a workload key does with its bucket: the two backup
-# pipelines write, `prune_backups.py` lists and deletes, a restore reads, and
-# Pulumi's S3 backend on the state bucket does the same four. Nothing here
-# includes an action the fence withholds by design.
-WORKLOAD_BUCKET_ACTIONS = ["s3:ListBucket"]
-WORKLOAD_OBJECT_ACTIONS = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+# What each non-operator role must be able to do, and nothing more. A role is
+# a key's job, not its identity: the fence names every key under exactly one.
+#
+#   read-write  db1's push pipeline (the dumps and binlogs write, the pruner
+#               lists and deletes), the media backup's generations, and
+#               Pulumi's S3 backend on the state bucket.
+#   put-only    the pulling backup worker. It can add a backup and do nothing
+#               else to one: a compromised worker must not be able to read,
+#               enumerate or remove what it wrote.
+#   read-only   the restore drill. Get and List; it changes nothing.
+#
+# `ROLE_BUCKET_ACTIONS` / `ROLE_OBJECT_ACTIONS` are what each role MUST keep;
+# the renderer and the verifier's preflight both ask `decide()` about them.
+READ_WRITE = "read-write"
+PUT_ONLY = "put-only"
+READ_ONLY = "read-only"
+ROLES = (READ_WRITE, PUT_ONLY, READ_ONLY)
+
+ROLE_BUCKET_ACTIONS = {
+    READ_WRITE: ["s3:ListBucket"],
+    PUT_ONLY: [],
+    READ_ONLY: ["s3:ListBucket", "s3:ListBucketVersions"],
+}
+ROLE_OBJECT_ACTIONS = {
+    READ_WRITE: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+    PUT_ONLY: ["s3:PutObject"],
+    READ_ONLY: ["s3:GetObject", "s3:GetObjectVersion"],
+}
+
+# The read-write role under the name the verifier's preflight imports.
+WORKLOAD_BUCKET_ACTIONS = ROLE_BUCKET_ACTIONS[READ_WRITE]
+WORKLOAD_OBJECT_ACTIONS = ROLE_OBJECT_ACTIONS[READ_WRITE]
 
 
 # Every bucket-resource action that reads or rewrites the fence itself, plus
@@ -201,6 +227,41 @@ NON_PUBLIC_OBJECT_ACTIONS = [
     # by BUCKET_CONFIGURATION_ACTIONS -- is not established; they are listed
     # because an unlisted action falls open and the cost of listing is a line.
 ]
+
+# Every object action this engine's parser is known to accept. The narrow
+# roles are fenced by denying them everything in it except their own actions,
+# rather than by listing what each must not do: that way an action is either
+# granted to the role on purpose or explicitly denied, and the only thing
+# that can fall open is a name outside the parser's vocabulary -- which no
+# policy here can mention anyway.
+OBJECT_ACTION_VOCABULARY = MEDIA_PUBLIC_OBJECT_ACTIONS + NON_PUBLIC_OBJECT_ACTIONS
+
+# The bucket reads. `ListBucketMultipartUploads` and the version listing
+# enumerate object keys as surely as `ListBucket` does, so a key that must not
+# list is denied all of them.
+BUCKET_READ_ACTIONS = [
+    "s3:ListBucket",
+    "s3:ListBucketVersions",
+    "s3:ListBucketMultipartUploads",
+    "s3:GetBucketLocation",
+]
+
+# What each narrow role is EXPLICITLY denied. An absent Allow is not a fence on
+# this engine: Hetzner's project default grants every key everything, so
+# without these statements a put-only key could still read and delete.
+#
+# `AbortMultipartUpload` and `ListMultipartUploadParts` are denied to the
+# put-only role too: aborting removes an upload in flight, and the parts list
+# reads one. The worker uploads with a single PUT after its producer exits,
+# so it needs neither.
+ROLE_DENIED_OBJECT_ACTIONS = {
+    role: [a for a in OBJECT_ACTION_VOCABULARY if a not in ROLE_OBJECT_ACTIONS[role]]
+    for role in (PUT_ONLY, READ_ONLY)
+}
+ROLE_DENIED_BUCKET_ACTIONS = {
+    PUT_ONLY: list(BUCKET_READ_ACTIONS),
+    READ_ONLY: [],
+}
 
 
 class PolicyInputError(ValueError):
