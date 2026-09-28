@@ -63,6 +63,52 @@ describe('NO-SECRET-IN-OUTPUT — source-mutation sabotage', () => {
   });
 });
 
+describe('DECORATOR-PER-FEATURE — source-mutation sabotage', () => {
+  it('dropping one storage feature from STORAGE_FEATURES silently leaves it unwrapped; the real module wraps all three', async () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+
+    // RED: mutate environment.ts's actual STORAGE_FEATURES list so `files`
+    // is dropped -- exactly the failure mode this control exists to catch: a
+    // mechanism that renders the decorator for some storage features and
+    // not others, silently, with every test for the ones it does cover
+    // green.
+    const sabotaged = await importSabotaged<{ tenantEnvironment: typeof TenantEnvironmentFn }>(
+      'environment.ts',
+      (source) => {
+        const target = "const STORAGE_FEATURES = ['images', 'media', 'files'] as const;";
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in environment.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, "const STORAGE_FEATURES = ['images', 'media'] as const;");
+      }
+    );
+    const sabotagedEnv = sabotaged.tenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(sabotagedEnv).not.toHaveProperty('storage__files__adapter');
+    expect(sabotagedEnv).not.toHaveProperty('storage__files__wraps');
+
+    // GREEN: the real, unmutated module wraps every one of the three
+    // storage features, `files` included.
+    const { tenantEnvironment: realTenantEnvironment } = await import('../src/environment.js');
+    const realEnv = realTenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(realEnv.storage__files__adapter).toBe('ScanningStorageAdapter');
+    expect(realEnv.storage__files__wraps).toBe('S3Storage');
+    expect(realEnv.storage__images__adapter).toBe('ScanningStorageAdapter');
+    expect(realEnv.storage__media__adapter).toBe('ScanningStorageAdapter');
+  });
+});
+
 describe('DETERMINISM — source-mutation sabotage', () => {
   it('an IMAGE line seeded from Math.random() is non-deterministic; the real module is not', async () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);

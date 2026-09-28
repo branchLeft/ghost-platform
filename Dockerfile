@@ -23,12 +23,14 @@ FROM ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984
 
 # Cloud Run entrypoint wrapper: translates the platform's $PORT into Ghost's
 # server__port / server__host config, and refuses to start (fail closed)
-# if storage__active is unset or points at a local-disk adapter — Ghost's
-# own compiled default is local storage, which is silently lost on every
-# Cloud Run instance recycle. See docker-entrypoint.branchleft.sh for the
-# full guard and its explicit local-dev escape hatch, and
-# scripts/test-storage-guard.sh for the regression test proving both the
-# blocked and permitted paths actually behave as intended.
+# unless storage__images__adapter is the scanning decorator (below) wrapping
+# a durable adapter with its required config present — Ghost's own compiled
+# default is a bare local adapter, which is both silently lost on every
+# Cloud Run instance recycle and silently unscanned. See
+# docker-entrypoint.branchleft.sh for the full guard and its explicit
+# local-dev escape hatch, and scripts/test-storage-guard.sh for the
+# regression test proving both the blocked and permitted paths actually
+# behave as intended.
 # The break-glass SSO adapter (adapters/sso/README.md). It goes into Ghost's
 # own internal adapters directory, never the bind-mounted content directory: a
 # tenant can write to content, and Ghost would load an adapter from there.

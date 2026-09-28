@@ -145,3 +145,10 @@ jobs:
         run: |
           python3 scripts/assert-slug-pattern-consistency.py --self-test
           python3 scripts/assert-slug-pattern-consistency.py
+
+      # generate-lockfile.yml trusts this gate to keep its `workflow_dispatch`
+      # input from reaching the filesystem or a shell as anything other than
+      # `services/<name>` or `adapters/<name>` -- self-tested here, on every
+      # push, rather than only when someone remembers to run it by hand.
+      - name: Lockfile package_dir allow-list self-test
+        run: python3 scripts/assert-lockfile-package-dir.py --self-test

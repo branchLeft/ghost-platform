@@ -1,0 +1,289 @@
+name: Generate lockfile in CI
+
+# Owner ruling: a package that takes a dependency on a private
+# `@branchleft/*` GitHub Packages package (for example `@branchleft/tsconfig`)
+# cannot get a `package-lock.json` on a workstation whose GitHub Packages
+# read token belongs to a suspended machine account -- there is no live
+# token to authenticate the registry read `npm install` needs. This workflow
+# generates the lockfile in CI instead, using the run's own `GITHUB_TOKEN`
+# (scoped `packages: read` for exactly this), and pushes the result back to
+# the branch that asked for it. Nobody has to mint a new long-lived token to
+# unblock a branch.
+#
+# `workflow_dispatch` only, never `push` or `pull_request`, and certainly
+# never `pull_request_target`: this workflow's job holds `contents: write`
+# and ends by pushing a commit, and a repository write is not something any
+# push or PR event should trigger on someone else's say-so. Dispatching it
+# is itself the authorisation -- a person with write access, acting in the
+# Actions tab (or `gh workflow run`) on this repository. `workflow_dispatch`
+# also only ever targets a ref that already lives in this repository; there
+# is no dispatch path that reaches a fork.
+#
+# Refuses `main` outright, and refuses any other branch a ruleset currently
+# protects, checked live rather than against a name hardcoded here -- so a
+# branch that becomes protected later is covered from the moment the
+# ruleset exists, not only once someone remembers to add it to a list in
+# this file.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch (in this repository) to check out, generate the lockfile on, and push the commit to'
+        required: true
+      package_dir:
+        description: 'Package directory to lock, e.g. services/ring-controller or adapters/sso -- must exist on that branch and contain a package.json'
+        required: true
+
+# Deny by default; each job below states exactly what it needs.
+permissions: {}
+
+# One dispatch at a time per (branch, package_dir): two overlapping runs
+# racing to commit and push the same file would leave the loser's push
+# rejected as non-fast-forward, and there is no reason to allow the race in
+# the first place.
+concurrency:
+  group: generate-lockfile-${{ inputs.branch }}-${{ inputs.package_dir }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate inputs and refuse a protected branch
+    runs-on: ubuntu-latest
+    # Observed: not yet run. This is the first run of a new workflow, so
+    # there is no p95 to size against; 5 minutes is generous for a checkout
+    # and two read-only checks with no install and no build.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      branch: ${{ steps.shape.outputs.branch }}
+      package_dir: ${{ steps.shape.outputs.package_dir }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Runs before the branch-protection check, cheaply: a malformed
+      # package_dir is refused before this job ever spends an API call
+      # finding out whether the branch is one it could otherwise act on.
+      - name: Validate package_dir shape
+        env:
+          PACKAGE_DIR: ${{ inputs.package_dir }}
+        run: python3 scripts/assert-lockfile-package-dir.py "$PACKAGE_DIR"
+
+      - name: Validate branch shape and refuse main
+        id: shape
+        env:
+          BRANCH: ${{ inputs.branch }}
+          PACKAGE_DIR: ${{ inputs.package_dir }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          [ -n "$BRANCH" ] || fail "branch is empty"
+
+          # A qualified ref (e.g. `refs/heads/main`) passes the name check
+          # below (it's a valid ref-name string) and the live ruleset check
+          # below (that endpoint takes a short branch name, so a qualified
+          # form checks a ref that doesn't exist and comes back unprotected)
+          # -- but `actions/checkout` treats an already-qualified ref as
+          # literal, so `refs/heads/main` would check out `main` while this
+          # job believes it validated something else, and the later push
+          # would then write a new branch called `refs/heads/main` rather
+          # than touching `main` at all. Refused outright: every input here
+          # is a short branch name, never a qualified ref.
+          case "$BRANCH" in
+            refs/*)
+              fail "branch '$BRANCH' must be a short branch name, not a qualified ref -- pass 'main' style names, not 'refs/heads/...'"
+              ;;
+          esac
+
+          # A fixed refusal, ahead of and independent of the live ruleset
+          # check below: this workflow exists to unblock a feature branch's
+          # own lockfile, never to write to the branch every ruleset here
+          # protects, and that holds even if the ruleset check itself is
+          # ever misconfigured, rate-limited, or returns something this
+          # workflow doesn't recognise.
+          case "$BRANCH" in
+            main | master)
+              fail "branch '$BRANCH' is refused outright: this workflow pushes a commit, and main/master are never a target."
+              ;;
+          esac
+
+          # A conservative allow-list for a git ref name, not an attempt at
+          # the full git ref-name grammar: reject rather than guess at
+          # anything this doesn't recognise, since this value is about to be
+          # used as a checkout ref and a push refspec.
+          [[ "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] \
+            || fail "branch '$BRANCH' contains characters outside A-Za-z0-9._/- , or does not start with one of those -- refusing rather than passing it to git"
+          [[ "$BRANCH" != *..* ]] \
+            || fail "branch '$BRANCH' contains '..' -- not a well-formed ref name"
+          [[ "$BRANCH" != */ && "$BRANCH" != *.lock ]] \
+            || fail "branch '$BRANCH' is not a well-formed ref name"
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "package_dir=$PACKAGE_DIR" >> "$GITHUB_OUTPUT"
+
+      # `rules/branches/{branch}` is the live ruleset-evaluation endpoint --
+      # it answers with the rules that would apply to a push on that branch
+      # right now, for a branch name whether or not it currently exists, and
+      # (this repo is public) needs no elevated token permission to read.
+      # Any non-200 is treated the same as "protected": this job would rather
+      # block a legitimate branch than push to one it failed to prove is
+      # unprotected.
+      - name: Refuse a branch a ruleset currently protects
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.shape.outputs.branch }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! RULES_JSON="$(gh api "repos/$REPO/rules/branches/$BRANCH" 2>/tmp/rules-error.txt)"; then
+            echo "::error::could not read the ruleset rules that apply to '$BRANCH' ($(cat /tmp/rules-error.txt)); refusing rather than guessing whether it is protected"
+            exit 1
+          fi
+          RULE_COUNT="$(printf '%s' "$RULES_JSON" | jq 'length')"
+          if [ "$RULE_COUNT" -gt 0 ]; then
+            echo "::error::refusing '$BRANCH': $RULE_COUNT ruleset rule(s) currently apply to it. This workflow pushes a commit directly and never targets a branch a ruleset protects."
+            exit 1
+          fi
+          echo "OK: no ruleset rule currently applies to '$BRANCH'"
+
+  generate:
+    name: Generate and push the lockfile
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+      # Checks out the target branch directly -- not the ref this workflow
+      # was dispatched from. Everything this job does from here on (the
+      # .nvmrc it reads, the package.json it locks, the file it commits)
+      # is that branch's own content, which is the point: the branch gets a
+      # lockfile for the dependencies IT declares, not for whatever main
+      # happens to declare today.
+      # `ref:` is the qualified form, not the bare branch name the earlier
+      # job validated: `actions/checkout` treats an already-qualified ref as
+      # literal and a bare name as ambiguous (it could resolve to a tag),
+      # and `validate` already refused any input starting with `refs/`
+      # itself, so qualifying it here is the only place this ref is
+      # assembled, and it always means the one thing it says.
+      #
+      # `persist-credentials: false`: this job's token is `contents: write`,
+      # and `npm install` runs before the one step that needs to push. The
+      # token is never in this job's git config while an install (reading a
+      # package.json and a branch-supplied .npmrc) runs -- it is added back,
+      # scoped to a single command, only in the push step below.
+      - name: Checkout target branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/${{ needs.validate.outputs.branch }}
+          persist-credentials: false
+
+      - name: Confirm package_dir exists on this branch
+        env:
+          PACKAGE_DIR: ${{ needs.validate.outputs.package_dir }}
+          BRANCH: ${{ needs.validate.outputs.branch }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PACKAGE_DIR/package.json" ]; then
+            echo "::error::'$PACKAGE_DIR/package.json' does not exist on branch '$BRANCH'"
+            exit 1
+          fi
+          if [ ! -f "$PACKAGE_DIR/.nvmrc" ]; then
+            echo "::error::'$PACKAGE_DIR/.nvmrc' does not exist -- every package here pins its own Node version and this job needs it to install correctly"
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ${{ needs.validate.outputs.package_dir }}/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+
+      # Installs from a copy in $RUNNER_TEMP, never from $PACKAGE_DIR itself
+      # or the repo root -- both carry a committed `.npmrc` (every
+      # `services/*` and `adapters/*` package does, and so does the repo
+      # root), and npm's project-level config outranks the user-level config
+      # `setup-node` just wrote, in npm's own precedence order. A branch
+      # author's `.npmrc` could point `@branchleft:registry` at a foreign
+      # host paired with `_authToken=${NODE_AUTH_TOKEN}` and read this run's
+      # token straight out of the environment. An isolated directory holding
+      # only `package.json` (and any existing lockfile, so npm can reuse it
+      # as a hint) has no project `.npmrc` to take effect at all.
+      #
+      # `--ignore-scripts`: defence in depth alongside the isolation above,
+      # not a substitute for it -- registry metadata alone can't run code,
+      # but nothing here forces that to stay true forever. `--package-lock-
+      # only`: this job's one output is the lockfile, never node_modules on
+      # disk or a build.
+      - name: Generate package-lock.json in an isolated directory
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_DIR: ${{ needs.validate.outputs.package_dir }}
+        run: |
+          set -euo pipefail
+          WORKDIR="$RUNNER_TEMP/lockfile-install"
+          mkdir -p "$WORKDIR"
+          cp "$PACKAGE_DIR/package.json" "$WORKDIR/package.json"
+          if [ -f "$PACKAGE_DIR/package-lock.json" ]; then
+            cp "$PACKAGE_DIR/package-lock.json" "$WORKDIR/package-lock.json"
+          fi
+          (cd "$WORKDIR" && npm install --package-lock-only --ignore-scripts)
+          cp "$WORKDIR/package-lock.json" "$PACKAGE_DIR/package-lock.json"
+
+      # `npm install` above only ever touched the isolated directory, so
+      # this checkout should show exactly one line of change: the lockfile
+      # this step just copied back in, either modified or newly created.
+      # An exact match against both porcelain forms, not a substring test --
+      # a substring would also pass `services/x/package-lock.json.bak` or a
+      # rename whose destination happens to contain this path.
+      - name: Refuse any change outside package-lock.json
+        env:
+          PACKAGE_DIR: ${{ needs.validate.outputs.package_dir }}
+        run: |
+          set -euo pipefail
+          CHANGED="$(git status --porcelain)"
+          if [ -n "$CHANGED" ]; then
+            OTHER="$(printf '%s\n' "$CHANGED" | grep -v -x -F \
+              -e " M $PACKAGE_DIR/package-lock.json" \
+              -e "?? $PACKAGE_DIR/package-lock.json" || true)"
+            if [ -n "$OTHER" ]; then
+              echo "::error::npm install changed something other than $PACKAGE_DIR/package-lock.json; refusing to commit any of it:"
+              echo "$OTHER"
+              exit 1
+            fi
+          fi
+
+      - name: Commit and push the lockfile, if it changed
+        env:
+          PACKAGE_DIR: ${{ needs.validate.outputs.package_dir }}
+          BRANCH: ${{ needs.validate.outputs.branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          CHANGE="$(git status --porcelain -- "$PACKAGE_DIR/package-lock.json")"
+          if [ -z "$CHANGE" ]; then
+            echo "no change to $PACKAGE_DIR/package-lock.json; nothing to push"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$PACKAGE_DIR/package-lock.json"
+          git commit -m "ci: generate $PACKAGE_DIR/package-lock.json"
+
+          # Checkout ran with persist-credentials: false, so nothing has
+          # written this token to .git/config yet. `-c` scopes it to this
+          # one `git push` process only -- it never touches a file on disk,
+          # and no later step (or a lifecycle script, had one run earlier)
+          # can read it back out of the working tree's git config.
+          AUTH_HEADER="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_HEADER" \
+            push origin "HEAD:refs/heads/$BRANCH"

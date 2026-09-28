@@ -23,8 +23,8 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_DEDUPE_TTL_MS` | no (default `3600000`) | How long a delivered message id is remembered, to recognise a re-offer caused by a lost ack. |
 | `COLLECTOR_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` | yes / no (`587`) / yes / yes | mx1's authenticated SMTP submission endpoint. |
 | `COLLECTOR_SMTP_SECURE` | no (default `false`) | `true` for implicit TLS. |
-| `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL, pinged on its own timer regardless of drain activity. |
-| `COLLECTOR_HEARTBEAT_INTERVAL_MS` | no (default `60000`) | Heartbeat ping interval. |
+| `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
+| `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
 
 ## Design
 
@@ -33,3 +33,8 @@ estate-wide-throttle design decisions; this file states only the mechanics
 env vars need, not the reasoning, which is load-bearing enough to live
 where it can't drift from the code that implements it (inline, in
 `src/descriptorTargets.ts` and `src/throttle.ts`).
+
+`docker-proof/deadmans-switch/run-deadmans-switch-proof.sh` proves
+`src/heartbeat.ts` against a real local Healthchecks instance rather than
+a mock — see its own header comment and the delivering PR's body for a
+recorded run.
