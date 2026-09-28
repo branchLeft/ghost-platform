@@ -8,21 +8,10 @@ function errorCode(err: unknown): unknown {
 }
 
 /**
- * The single-process assumption (Rob's ruling on this issue) makes the
- * in-process `ApplyLock` sufficient -- but only for as long as exactly one
- * controller process exists. This is the structural half of that
- * invariant, held by a single kernel primitive rather than by a lock file
- * and a reclaim protocol layered on top of it: a bound Unix domain socket.
- *
- * Two file-based designs were tried and both grew a second version of the
- * same defect one layer down (an empty-content window between creating a
- * marker and writing its content, and a stale-reclaim race between two
- * starters both deciding to clear the same dead marker). A bound socket
- * has neither failure mode: `bind` is one atomic kernel call -- there is
- * no intermediate state where the name exists but is unclaimed -- and the
- * kernel itself frees the name the instant the binding process exits, for
- * any reason including a crash, with no marker left behind to go stale,
- * no pid to record and so no pid-reuse case either.
+ * Structural half of the single-process invariant, held by a bound Unix
+ * domain socket rather than a lock file and reclaim protocol. See
+ * README.md in this directory for the design rationale and the
+ * file-based designs it replaces.
  */
 export class ProcessLockHeldError extends Error {
   constructor(path: string) {

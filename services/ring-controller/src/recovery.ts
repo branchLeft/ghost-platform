@@ -28,20 +28,9 @@ export interface RecoverySweepResult {
 const NO_ACTION_STATES: ReadonlySet<BumpState> = new Set(['closed', 'backup-failed', 'cancelled']);
 
 /**
- * Runs once at controller startup, before any new bump is admitted, for
- * every tenant a crash left with a persisted record still owing
- * something. A crash is treated as an abort request the process never
- * got to record -- every action below matches a live `abort()`'s own
- * table -- except `applying`, whose rule ("WAIT... then treat as
- * verifying") is followed literally: `apply()` is never called again for
- * a tenant recovered here, and recovery waits for the migration to
- * actually settle before doing anything else with the colour.
- *
- * `done` is deliberately NOT settled: the bake window is still open, and
- * with no machine rehydrated for it, neither a later `closeBakeWindow()`
- * nor a later `abortAfterDone()` would have anything to act on. It is
- * rehydrated with no recovery action of its own -- the state is already
- * correct, only the in-memory object was lost.
+ * Runs once at controller startup for every tenant a crash left with a
+ * persisted record still owing something. See README.md in this
+ * directory for the recovery table this follows.
  */
 export async function recoverPersistedTenants(
   store: TenantStateStore,
