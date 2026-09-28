@@ -15,3 +15,11 @@
 # add to this file and may never drop a shared line, and rewriting that line in
 # place is dropping it.
 * @reviewer-agent-branchLeft @branchLeft/branchleft-admin
+
+# The shared escape hatches, from branchLeft/standards templates/codeowners. They
+# stay last: GitHub applies the last matching pattern.
+/.standardsignore        @branchLeft/branchleft-admin
+/.standards.mode         @branchLeft/branchleft-admin
+/.docs-lint*             @branchLeft/branchleft-admin
+/tools/floors.tsv        @branchLeft/branchleft-admin
+/.github/                @branchLeft/branchleft-admin
