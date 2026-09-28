@@ -1,0 +1,8 @@
+db/provision/*	DB-1	# DB-1: an operation no ORM can express lives in tooling: mysqldump, binary-log extraction and shipping, server variables and database users, via the mysql CLI
+db/recovery/*	DB-1	# DB-1: an operation no ORM can express lives in tooling: restoring a dump and probing server readiness via the mysql CLI
+infra/provisioning/scripts/backup_worker.py	DB-1	# DB-1: an operation no ORM can express lives in tooling: recognising table rows in a mysqldump stream
+infra/provisioning/scripts/test_backup_worker.py	DB-1	# DB-1: an operation no ORM can express lives in tooling: mysqldump output as test fixtures for the backup worker
+infra/provisioning/scripts/test_pull_encrypt_store.py	DB-1	# DB-1: an operation no ORM can express lives in tooling: mysqldump output as test fixtures for the dump pipeline
+services/export-bundler/src/scratchDatabase.ts	DB-1	# DB-1: an operation no ORM can express lives in tooling: dump-and-restore into a scratch server and probing its readiness via the mysql CLI
+services/export-bundler/test/unit/scratchDatabase.test.ts	DB-1	# DB-1: an operation no ORM can express lives in tooling: mysqldump output and CLI calls as test fixtures for the scratch copy
+adapters/sso/test/image/provision-support-account-mysql.image.test.mjs	DB-1	# DB-1: an operation no ORM can express lives in tooling: probing a test MySQL container's readiness via the mysql CLI
