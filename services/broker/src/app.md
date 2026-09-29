@@ -1,5 +1,21 @@
 # app.ts
 
+## route tables
+
+`createBrokerHandler` builds its dispatch table from two exported constants
+rather than a run of independent `if` checks with nothing tying them
+together: `LITERAL_ROUTES` (every exact `(method, path)` pair except
+`GET /status/{slot}`) and `STATUS_ROUTE` (that one parameterised route, kept
+separate because a path parameter cannot be expressed as a plain literal
+match). `test/unit/openapiConformance.test.ts` reads both constants and
+checks them, in both directions, against `openapi.yaml`'s own paths and
+methods — a route this handler serves with no matching spec entry, or a spec
+entry with no matching route, fails that test rather than silently drifting
+apart. The handler itself still dispatches by building a
+`literalHandlers` lookup from `LITERAL_ROUTES` at call time and matching
+`GET /status/{slot}` against the same regex as before; the refactor changes
+only how the table is expressed, not which request reaches which handler.
+
 ## attemptColourSwap
 
 Deploys a new descriptor into a slot already `running` one colour, into the
