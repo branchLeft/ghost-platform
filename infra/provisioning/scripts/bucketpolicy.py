@@ -92,8 +92,6 @@ BUCKET_CONFIGURATION_ACTIONS = [
     "s3:PutAccelerateConfiguration",
     "s3:GetBucketRequestPayment",
     "s3:PutBucketRequestPayment",
-    "s3:GetBucketOwnershipControls",
-    "s3:PutBucketOwnershipControls",
 ]
 
 # Names this engine's parser refused, measured live; kept so none is re-added.
@@ -103,6 +101,8 @@ PARSER_REJECTS = frozenset({
     "s3:PutEncryptionConfiguration",
     "s3:DeleteBucketTagging",
     "s3:DeleteBucketOwnershipControls",
+    "s3:GetBucketOwnershipControls",
+    "s3:PutBucketOwnershipControls",
     "s3:GetAnalyticsConfiguration",
     "s3:PutAnalyticsConfiguration",
     "s3:GetInventoryConfiguration",
