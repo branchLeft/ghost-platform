@@ -244,8 +244,6 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
                 "s3:PutAccelerateConfiguration",
                 "s3:GetBucketRequestPayment",
                 "s3:PutBucketRequestPayment",
-                "s3:GetBucketOwnershipControls",
-                "s3:PutBucketOwnershipControls",
             },
         )
 
@@ -255,7 +253,7 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
         Emptying PARSER_REJECTS passed every other test in this file: the
         disjointness check below is vacuous against an empty set, and the guard
         in assert_enforceable then refuses nothing. A constant table that only
-        asserts itself is not a control. This is the measurement -- 19 names,
+        asserts itself is not a control. This is the measurement -- 21 names,
         rejected one at a time against a live bucket -- so it is pinned like
         one.
         """
@@ -266,6 +264,8 @@ class TestTheEnumeratedListsCoverWhatTheyMustCover(unittest.TestCase):
                 "s3:PutEncryptionConfiguration",
                 "s3:DeleteBucketTagging",
                 "s3:DeleteBucketOwnershipControls",
+                "s3:GetBucketOwnershipControls",
+                "s3:PutBucketOwnershipControls",
                 "s3:GetAnalyticsConfiguration",
                 "s3:PutAnalyticsConfiguration",
                 "s3:GetInventoryConfiguration",

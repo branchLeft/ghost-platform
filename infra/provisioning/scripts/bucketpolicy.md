@@ -75,13 +75,27 @@ and adding a name to them is a live question, not a judgement call.
 Action names this engine's policy parser REFUSES. Measured against a live
 bucket, one name at a time, each in an otherwise known-good document: 19 of
 81 rejected, every one a name added speculatively rather than because
-something needed it.
+something needed it. Two more were added from a second location (below).
 
 Kept as data rather than deleted, for two reasons. It is the only record
 that these were tried, so nobody re-adds them on the same "costs nothing"
 reasoning; and `test_no_emitted_action_is_one_the_parser_refuses` asserts
 the emitted lists stay disjoint from it, which turns a re-add into a red
 test instead of a 503 in the middle of an operator's live apply.
+
+**Engines differ by location.** On 2026-09-29 the backup bucket, in fsn1,
+refused `s3:GetBucketOwnershipControls` and `s3:PutBucketOwnershipControls`.
+The engine measured first had accepted both. Each was refused alone, in a
+one-statement document, with every other configuration action in the same
+statement accepted one at a time. So the set is the union across locations:
+a name any location refuses stays out, because a document is only
+acceptable if it parses wherever the bucket lives.
+
+Dropping the two ownership-controls names narrows the configuration lock.
+The put-only key loses nothing, because the bucket-wide `s3:*` deny already
+covers it. The read-only key falls back to the project default for these two
+calls. It has not been measured whether fsn1 serves the ownership-controls
+API at all.
 
 This is a measurement of one engine at one time, not a specification. If
 Hetzner ships support for any of these, the way to find out is to probe the
