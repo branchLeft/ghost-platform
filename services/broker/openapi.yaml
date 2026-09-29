@@ -1,0 +1,1058 @@
+# The published version is computed from this spec's diff against the last
+# published version (standards CTR-7) -- info.version below is a fixed
+# placeholder Speckify ignores, not a version anyone bumps by hand.
+openapi: 3.1.0
+info:
+  title: branchLeft demo-host broker
+  version: '0.0.0'
+  description: >-
+    The demo host's own signed HTTP API: reconciling a tenant descriptor onto
+    a slot, resetting or stopping a slot, reading a slot's status, long-polling
+    queued mail and media hashes for hand-over, and receiving a pushed
+    container image. Every endpoint except GET /status/{slot} requires the
+    broker's own Ed25519 request-signing scheme. This spec describes the API
+    exactly as implemented in services/broker/src today, including its
+    inconsistencies (see the per-response notes below) -- it is not a
+    proposal for what the API should become.
+  license:
+    name: PolyForm-Shield-1.0.0
+    url: https://polyformproject.org/licenses/shield/1.0.0
+servers:
+  - url: http://127.0.0.1:8090
+    description: >-
+      The broker's own default loopback bind (PORT, LISTEN_HOST) -- it never
+      listens on a public interface; whatever reaches this API arrives over
+      an operator-owned inbound link, never a hostname this spec could name.
+paths:
+  /reconcile:
+    post:
+      operationId: reconcileSlot
+      summary: Reconcile a tenant descriptor onto a slot
+      description: >-
+        Deploys `descriptor` onto `slot`. If the slot is `free`, this renders
+        and starts a fresh colour ("a"). If the slot is already `running` a
+        *different* descriptor, this deploys the new one into the slot's
+        *other* colour, live, while the first colour keeps serving throughout
+        (a colour swap), then moves traffic across; the old colour is left
+        running, drained, until a later POST /stop retires it. Replaying the
+        identical (slot, descriptor) pair is idempotent and does not repeat
+        any side effect. Requires the broker's signature scheme (see
+        components/securitySchemes and the X-Broker-* headers below); the
+        signed bytes are the raw JSON request body.
+      security:
+        - brokerSignature: []
+      parameters:
+        - $ref: '#/components/parameters/BrokerTimestampHeader'
+        - $ref: '#/components/parameters/BrokerNonceHeader'
+        - $ref: '#/components/parameters/BrokerSignatureHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconcileRequest'
+      responses:
+        '200':
+          description: >-
+            The slot is now `running`. `colour` is the colour now serving:
+            the freshly started one for a fresh deploy, or the swap target
+            once traffic has moved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlotColourPhase'
+        '400':
+          description: >-
+            The request body is not valid JSON, `descriptor` fails render-core's
+            own validation, `descriptor.kind` is not `"demo"` (the broker
+            reconciles demo descriptors only), or `descriptor.uid`/`descriptor.ports`
+            disagree with this slot's own fixed allocation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
+        '409':
+          description: >-
+            The slot is locked by a concurrent request; occupied in a phase
+            with no colour a swap could deploy alongside (`preparing`,
+            `resetting`, `detaching`, `error`); its lease hash has not yet
+            rotated past a previous descriptor (see `assertHashRotated`); the
+            descriptor's host is already held by a different slot; or (colour
+            swap only) the slot is running a different tenancy's host, which
+            only POST /reset (destructive) may replace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: The request body exceeded the broker's fixed 256 KiB limit. Carries no body.
+        '422':
+          description: "`slot` is missing, not a string, not shaped like a slot name, or not one of the host's enumerated slot literals."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: >-
+            A validated demo descriptor had no passphrase gate. Render-core's
+            own invariant already refuses this combination inside `validate()`
+            before this branch is ever reached; the broker's own tests treat
+            this as unreachable defensive code, not a real response path -- it
+            is documented here for completeness, against the code as written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: >-
+            Either shape can occur: a fresh deploy that failed its one
+            automatic reset-and-retry (no old colour existed to preserve,
+            so the slot is left `error`), or a colour swap that failed and
+            was rolled back (the slot is left exactly as it was before the
+            attempt, still `running` its original colour).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SlotErrorPhase'
+                  - $ref: '#/components/schemas/SlotColourPhaseError'
+  /reset:
+    post:
+      operationId: resetSlot
+      summary: Tear down a slot back to free
+      description: >-
+        Revokes the slot's lease and gate hash, then tears down both colours
+        via the sudoers-wrapped `reset` verb, and marks both colours drained.
+        Always ends the slot `free` on success, whatever it held before.
+        Requires the broker's signature scheme; the signed bytes are the raw
+        JSON request body.
+      security:
+        - brokerSignature: []
+      parameters:
+        - $ref: '#/components/parameters/BrokerTimestampHeader'
+        - $ref: '#/components/parameters/BrokerNonceHeader'
+        - $ref: '#/components/parameters/BrokerSignatureHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlotRequest'
+      responses:
+        '200':
+          description: The slot is now free.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResetSuccess'
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
+        '409':
+          description: The slot is locked by a concurrent request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: The request body exceeded the broker's fixed 256 KiB limit. Carries no body.
+        '422':
+          description: "`slot` is missing, not a string, not shaped like a slot name, or not one of the host's enumerated slot literals."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: The sudoers-wrapped teardown itself failed; the slot is left in the `error` phase.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlotErrorPhase'
+  /stop:
+    post:
+      operationId: stopSlot
+      summary: Stop a slot's old colour once its swap has baked
+      description: >-
+        Stops the colour a completed colour swap left running, drained, once
+        three independent checks all pass: the new colour has served real
+        (admitted) traffic since the swap, no email or batch is mid-send for
+        this slot, and the surviving colour is confirmed live right now.
+        Only meaningful for a slot that arrived at its current tenancy by a
+        colour swap (`GET /reconcile`'s swap path) -- a slot deployed fresh
+        has no old colour to stop. Requires the broker's signature scheme;
+        the signed bytes are the raw JSON request body.
+      security:
+        - brokerSignature: []
+      parameters:
+        - $ref: '#/components/parameters/BrokerTimestampHeader'
+        - $ref: '#/components/parameters/BrokerNonceHeader'
+        - $ref: '#/components/parameters/BrokerSignatureHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlotRequest'
+      responses:
+        '200':
+          description: The old colour is stopped (or already had been -- idempotent replay).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlotColourPhase'
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
+        '409':
+          description: >-
+            The slot is locked by a concurrent request; the slot is not in a
+            `running` phase; or the slot has no old colour to stop (its
+            current tenancy was not reached by a colour swap).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: The request body exceeded the broker's fixed 256 KiB limit. Carries no body.
+        '422':
+          description: "`slot` is missing, not a string, not shaped like a slot name, or not one of the host's enumerated slot literals."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: One of the three pre-stop checks (real traffic served, no mid-send batch, survivor still live) refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlotColourPhaseError'
+  /drain:
+    get:
+      operationId: pollDrainQueue
+      summary: Long-poll queued mail and media hashes for hand-over
+      description: >-
+        Host-wide, not per-slot: takes no slot argument, and each returned
+        item carries its own `slot` so a caller sweeping the whole host in
+        one poll can still attribute what it received. Holds the request
+        open until the underlying drain source has something to hand over,
+        or until the broker's own poll deadline, whichever comes first --
+        the deadline is a normal empty response, not an error. What feeds
+        this endpoint (the mail spool, and whatever produces a media-hash
+        record) is a seam this broker does not itself implement yet.
+        Requires the broker's signature scheme even though the request has
+        no body; the signed bytes are the (empty) raw request body.
+      security:
+        - brokerSignature: []
+      parameters:
+        - $ref: '#/components/parameters/BrokerTimestampHeader'
+        - $ref: '#/components/parameters/BrokerNonceHeader'
+        - $ref: '#/components/parameters/BrokerSignatureHeader'
+      responses:
+        '200':
+          description: >-
+            Either real queued items, or an empty payload if nothing arrived
+            before the poll's own deadline.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DrainPayload'
+        '401':
+          description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
+        '413':
+          description: The request body exceeded the broker's fixed 256 KiB limit. Carries no body.
+        '502':
+          description: The underlying drain source genuinely failed (not merely timed out).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /status/{slot}:
+    get:
+      operationId: getSlotStatus
+      summary: Read a slot's current phase and sidecar health
+      description: >-
+        Deliberately unauthenticated -- no signature headers are required or
+        checked. `healthy` reflects the shared per-slot sidecar health port
+        (it cannot distinguish which colour its answer describes) and is
+        only ever checked while the slot is `running` with a colour set;
+        otherwise it is reported `false` without a health check being made.
+      security: []
+      parameters:
+        - name: slot
+          in: path
+          required: true
+          description: >-
+            Must be one of the host's enumerated slot literals (by default
+            "0".."6", configured via BROKER_SLOT_LITERALS); any other value,
+            including one that is merely shaped like a slot name, answers 404.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The slot's current phase and sidecar health.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          description: >-
+            `slot` is not one of the host's enumerated slot literals, the path
+            does not match `/status/{slot}` at all (e.g. an extra path
+            segment), or the path segment is not a valid percent-escape.
+            Never a 500: a malformed request must never look like a server
+            fault. Carries no body.
+  /image:
+    post:
+      operationId: pushImage
+      summary: Push a pre-built, digest-verified container image tar
+      description: >-
+        The control-plane side of the image-push design (`controlPlanePush.ts`'s
+        `pushImage`): the control plane dials into this host's already-open
+        inbound link and streams a tar it already holds locally, rather than
+        the host ever pulling from a registry or touching a credential store.
+        Every push is staged at the same single fixed path on the host, so at
+        most one push is ever in flight; a concurrent second push is refused.
+        The request body is streamed straight to disk while being hashed;
+        the loader is only ever invoked once the freshly computed SHA-256 of
+        every byte received equals the digest declared (and signed for) in
+        X-Image-Digest.
+
+        The broker's signature scheme is applied differently here than on
+        every other signed endpoint: the signed bytes are **not** the request
+        body (the image itself, arbitrarily large and not yet trusted) but a
+        short manifest built from the two X-Image-* header values --
+        `"{digest}\n{size}\n"` -- so authentication is O(1) in the size of the
+        image and completes before a single body byte is read.
+      security:
+        - brokerSignature: []
+      parameters:
+        - $ref: '#/components/parameters/BrokerTimestampHeader'
+        - $ref: '#/components/parameters/BrokerNonceHeader'
+        - $ref: '#/components/parameters/BrokerSignatureHeader'
+        - name: X-Image-Digest
+          in: header
+          required: true
+          description: >-
+            The pushed tar's own SHA-256 digest, `sha256:` followed by 64
+            lowercase hex characters. Part of the signed manifest; checked
+            against what is actually received once the whole stream has
+            arrived.
+          schema:
+            type: string
+            pattern: '^sha256:[0-9a-f]{64}$'
+        - name: X-Image-Size
+          in: header
+          required: true
+          description: >-
+            The pushed tar's declared size in bytes, as a decimal string.
+            Part of the signed manifest; refused before a single byte is read
+            if it exceeds the host's configured maximum, and checked against
+            the number of bytes actually received once the stream ends.
+          schema:
+            type: string
+            pattern: '^[0-9]{1,20}$'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              contentEncoding: binary
+              description: The raw bytes of a container image tar (e.g. produced by `docker save`), streamed, never buffered whole by the sender.
+      responses:
+        '200':
+          description: The image was received, its digest matched, and it was loaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImagePushResult'
+        '400':
+          description: >-
+            X-Image-Digest or X-Image-Size is missing or malformed, or the
+            number of bytes actually received does not equal the declared
+            X-Image-Size.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: >-
+            The signature does not verify, is missing, or its nonce/timestamp
+            fail the replay checks. Unlike every other signed endpoint's 401,
+            this one's body carries the refusal reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: >-
+            Either another push is already in progress on this host (the
+            single fixed staging path admits only one at a time), or the
+            freshly computed digest of the bytes received does not match
+            X-Image-Digest.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorBody'
+                  - $ref: '#/components/schemas/ImageDigestMismatch'
+        '413':
+          description: >-
+            X-Image-Size exceeds the host's configured maximum (refused
+            before any byte is read), or the stream itself exceeded that
+            declared size while still arriving. Unlike every other signed
+            endpoint's 413, this one's body carries an error message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '502':
+          description: The digest-verified tar failed to load.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+components:
+  securitySchemes:
+    brokerSignature:
+      type: apiKey
+      in: header
+      name: X-Broker-Signature
+      description: >-
+        The broker's Ed25519 request-signing scheme. A valid request also
+        requires the two headers this scheme cannot itself name --
+        X-Broker-Timestamp and X-Broker-Nonce -- both declared explicitly as
+        required parameters on every operation that carries this scheme. The
+        signature is the base64 encoding of a raw (not PKCS#1/PSS) Ed25519
+        signature over `"{METHOD}\n{PATH}\n{TIMESTAMP}\n{NONCE}\n"` followed
+        by the exact bytes being authenticated for that request (the raw
+        JSON body for every endpoint except POST /image, which signs a short
+        manifest of its two X-Image-* headers instead of the pushed image
+        bytes -- see that operation's own description). Verified against a
+        single Ed25519 public key the host holds; the broker itself never
+        holds or transmits a private key. A timestamp older than the host's
+        configured replay window, more than 5 seconds ahead of the host's own
+        clock, or at-or-before the broker process's own start time is refused
+        regardless of the signature; a (nonce, signature) pair may be used
+        exactly once per process lifetime.
+  parameters:
+    BrokerTimestampHeader:
+      name: X-Broker-Timestamp
+      in: header
+      required: true
+      description: >-
+        The signing time, whole seconds since the Unix epoch, as a decimal
+        string -- never an ISO-8601 timestamp. Part of the signed bytes;
+        checked against the host's own clock for staleness and forward skew,
+        and against the process's own start time to refuse a request
+        replayed after a restart.
+      schema:
+        type: string
+        pattern: '^[0-9]{1,20}$'
+    BrokerNonceHeader:
+      name: X-Broker-Nonce
+      in: header
+      required: true
+      description: >-
+        A caller-chosen, per-request value, 16-128 characters from
+        `[A-Za-z0-9._-]`. Part of the signed bytes; claimed exactly once
+        against the host's in-memory nonce store, only after the signature
+        has verified.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._-]{16,128}$'
+    BrokerSignatureHeader:
+      name: X-Broker-Signature
+      in: header
+      required: true
+      description: >-
+        Base64-encoded, 64-byte raw Ed25519 signature. See the
+        `brokerSignature` security scheme for exactly which bytes it covers.
+      schema:
+        type: string
+  schemas:
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+      additionalProperties: false
+    SlotName:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+      description: >-
+        General slot-name shape (1-63 lowercase letters, digits and inner
+        hyphens). The host additionally enforces a closed-set membership
+        check against its own configured slot literals (by default "0"
+        through "6", set via BROKER_SLOT_LITERALS) -- a value that is
+        shaped like a slot name but is not one of these literals is still
+        refused, with 422 in a request body or 404 in the /status path.
+    Colour:
+      type: string
+      enum: [a, b]
+      description: One half of a slot's blue/green colour pair.
+    Phase:
+      type: string
+      enum: [free, preparing, running, swapping, stopping, resetting, detaching, error]
+      description: The slot's own coarse lifecycle phase, persisted between requests.
+    SlotRequest:
+      type: object
+      required: [slot]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+      additionalProperties: false
+    ReconcileRequest:
+      type: object
+      required: [slot, descriptor]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        descriptor:
+          $ref: '#/components/schemas/TenantDescriptor'
+      additionalProperties: false
+    SlotColourPhase:
+      type: object
+      required: [slot, phase, colour]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        phase:
+          type: string
+          enum: [running]
+        colour:
+          $ref: '#/components/schemas/Colour'
+      additionalProperties: false
+    SlotColourPhaseError:
+      type: object
+      required: [slot, phase, colour, error]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        phase:
+          type: string
+          enum: [running]
+        colour:
+          $ref: '#/components/schemas/Colour'
+        error:
+          type: string
+      additionalProperties: false
+    SlotErrorPhase:
+      type: object
+      required: [slot, phase]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        phase:
+          type: string
+          enum: [error]
+      additionalProperties: false
+    ResetSuccess:
+      type: object
+      required: [slot, phase]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        phase:
+          type: string
+          enum: [free]
+      additionalProperties: false
+    StatusResponse:
+      type: object
+      required: [slot, phase, healthy]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        phase:
+          $ref: '#/components/schemas/Phase'
+        healthy:
+          type: boolean
+      additionalProperties: false
+    QueuedMailItem:
+      type: object
+      required: [id, slot, envelope]
+      properties:
+        id:
+          type: string
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        envelope:
+          type: string
+      additionalProperties: false
+    MediaHashItem:
+      type: object
+      required: [slot, path, sha256]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        path:
+          type: string
+        sha256:
+          type: string
+      additionalProperties: false
+    DrainPayload:
+      type: object
+      required: [mail, mediaHashes]
+      properties:
+        mail:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueuedMailItem'
+        mediaHashes:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaHashItem'
+      additionalProperties: false
+    ImagePushResult:
+      type: object
+      required: [digest, imageId, bytes, durationMs]
+      properties:
+        digest:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+        imageId:
+          type: string
+        bytes:
+          type: integer
+          minimum: 0
+        durationMs:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    ImageDigestMismatch:
+      type: object
+      required: [error, declared, received]
+      properties:
+        error:
+          type: string
+        declared:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+        received:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+      additionalProperties: false
+    Port:
+      type: integer
+      minimum: 1
+      maximum: 65535
+    PortTriple:
+      type: object
+      required: [a, b, health]
+      description: "Slot colours' own ports, plus the shared sidecar health port the edge probes (never Ghost's own port)."
+      properties:
+        a:
+          $ref: '#/components/schemas/Port'
+        b:
+          $ref: '#/components/schemas/Port'
+        health:
+          $ref: '#/components/schemas/Port'
+      additionalProperties: false
+    DatabaseSpec:
+      description: "Where Ghost's data lives. `sqlite` is demo-only; a paying tenant is `mysql`."
+      oneOf:
+        - type: object
+          required: [kind, path]
+          properties:
+            kind:
+              type: string
+              enum: [sqlite]
+            path:
+              type: string
+          additionalProperties: false
+        - type: object
+          required: [kind, host, port, name, user]
+          properties:
+            kind:
+              type: string
+              enum: [mysql]
+            host:
+              type: string
+            port:
+              $ref: '#/components/schemas/Port'
+            name:
+              type: string
+            user:
+              type: string
+          additionalProperties: false
+    MediaSpec:
+      description: >-
+        Where uploaded media lives, and Ghost's own image-optimisation
+        behaviour for it. `local` is demo-only; a paying tenant is `s3`.
+      oneOf:
+        - type: object
+          required: [kind, path, resize, srcsets]
+          properties:
+            kind:
+              type: string
+              enum: [local]
+            path:
+              type: string
+            resize:
+              type: boolean
+            srcsets:
+              type: boolean
+          additionalProperties: false
+        - type: object
+          required: [kind, endpoint, region, bucket, resize, srcsets]
+          properties:
+            kind:
+              type: string
+              enum: [s3]
+            endpoint:
+              type: string
+            region:
+              type: string
+            bucket:
+              type: string
+            resize:
+              type: boolean
+            srcsets:
+              type: boolean
+          additionalProperties: false
+    TransportSpec:
+      description: "Ghost's mail-sending path. Identical across every tenant kind."
+      oneOf:
+        - type: object
+          required: [kind, path]
+          properties:
+            kind:
+              type: string
+              enum: [queue]
+            path:
+              type: string
+          additionalProperties: false
+        - type: object
+          required: [kind, host, port, user]
+          properties:
+            kind:
+              type: string
+              enum: [smtp]
+            host:
+              type: string
+            port:
+              $ref: '#/components/schemas/Port'
+            user:
+              type: string
+          additionalProperties: false
+    SendingIdentitySpec:
+      description: "The descriptor's sending identity: a demo carries only a local part, a tenant signs its own domain."
+      oneOf:
+        - type: object
+          required: [kind, localPart]
+          properties:
+            kind:
+              type: string
+              enum: [demo]
+            localPart:
+              type: string
+          additionalProperties: false
+        - type: object
+          required: [kind, domain, dkimSelector]
+          properties:
+            kind:
+              type: string
+              enum: [tenant]
+            domain:
+              type: string
+            dkimSelector:
+              type: string
+          additionalProperties: false
+    MailSpec:
+      type: object
+      required: [enabled, ceiling, estateCeiling, identity]
+      description: >-
+        Whether mail is enabled, and the two ceilings (per-slot, per-estate)
+        this schema carries but never itself enforces -- counting sent mail
+        against them is the mail spool's job.
+      properties:
+        enabled:
+          type: boolean
+        ceiling:
+          type: integer
+        estateCeiling:
+          type: integer
+        identity:
+          $ref: '#/components/schemas/SendingIdentitySpec'
+      additionalProperties: false
+    HostnameSpec:
+      description: >-
+        The hostname a tenant is reached on. `theirs` (a verified custom
+        domain) is a precondition a code-injection grant checks, never a
+        grant on its own. `ours.gated` must agree with the descriptor's own
+        `gate`.
+      oneOf:
+        - type: object
+          required: [kind, sub, gated]
+          properties:
+            kind:
+              type: string
+              enum: [ours]
+            sub:
+              type: string
+            gated:
+              type: boolean
+          additionalProperties: false
+        - type: object
+          required: [kind, fqdn, verifiedAt]
+          properties:
+            kind:
+              type: string
+              enum: [theirs]
+            fqdn:
+              type: string
+            verifiedAt:
+              type: string
+              format: date-time
+          additionalProperties: false
+    GateSpec:
+      description: >-
+        The edge-level gate in front of a site. Tied to `hostname.kind` --
+        the broker only ever reconciles a `demo` descriptor, and render-core's
+        own invariant requires a `demo` descriptor's gate to be `passphrase`
+        (see POST /reconcile's 500 response, which documents the unreachable
+        branch this invariant leaves behind).
+      oneOf:
+        - type: object
+          required: [kind]
+          properties:
+            kind:
+              type: string
+              enum: [none]
+          additionalProperties: false
+        - type: object
+          required: [kind, argon2idHash]
+          properties:
+            kind:
+              type: string
+              enum: [passphrase]
+            argon2idHash:
+              type: string
+              description: Never logged or echoed back by the broker; carried straight through to the rendered stack and the shared slots file.
+          additionalProperties: false
+    BackupSpec:
+      description: "How a tenant's data is backed up. `none` is for a demo, which is not backed up at all."
+      oneOf:
+        - type: object
+          required: [kind]
+          properties:
+            kind:
+              type: string
+              enum: [none]
+          additionalProperties: false
+        - type: object
+          required: [kind, encryptionRecipient]
+          properties:
+            kind:
+              type: string
+              enum: [bucket-native]
+            encryptionRecipient:
+              type: string
+          additionalProperties: false
+    CodeInjectionSpec:
+      description: >-
+        Whether a tenant may inject arbitrary script into its own site.
+        `blocked` for every kind, demos included.
+      oneOf:
+        - type: object
+          required: [kind]
+          properties:
+            kind:
+              type: string
+              enum: [blocked]
+          additionalProperties: false
+        - type: object
+          required: [kind, by, reason, until]
+          properties:
+            kind:
+              type: string
+              enum: [granted]
+            by:
+              type: string
+            reason:
+              type: string
+            until:
+              type: ['string', 'null']
+              format: date-time
+              description: 'A permanent grant with a review date tracked elsewhere is `null`, not a gap.'
+          additionalProperties: false
+        - type: object
+          required: [kind, head, foot]
+          properties:
+            kind:
+              type: string
+              enum: [managed]
+            head:
+              type: string
+            foot:
+              type: string
+          additionalProperties: false
+    LimitsSpec:
+      type: object
+      required: [membersCap, staffCap]
+      description: "Ghost's host-limits framework. Not yet exhaustive."
+      properties:
+        membersCap:
+          type: ['integer', 'null']
+        staffCap:
+          type: ['integer', 'null']
+      additionalProperties: false
+    ResourceCaps:
+      type: object
+      required: [cpus, cpuShares, pidsLimit, nofile]
+      description: The container resource ceiling applied identically to every tenant kind.
+      properties:
+        cpus:
+          type: string
+        cpuShares:
+          type: integer
+        pidsLimit:
+          type: integer
+        nofile:
+          type: integer
+      additionalProperties: false
+    SafetySpec:
+      type: object
+      required: [near, exact]
+      description: The perceptual-hash safety axis. Both flags are on for every tenant today.
+      properties:
+        near:
+          type: boolean
+        exact:
+          type: boolean
+      additionalProperties: false
+    BreakGlassSpec:
+      description: "The break-glass triple: the broker's Ed25519 public key, the tenant name a token's audience must equal, and the identity the adapter may produce a session for."
+      oneOf:
+        - type: object
+          required: [kind]
+          properties:
+            kind:
+              type: string
+              enum: [disabled]
+          additionalProperties: false
+        - type: object
+          required: [kind, publicKey, tenant, supportIdentity]
+          properties:
+            kind:
+              type: string
+              enum: [enabled]
+            publicKey:
+              type: string
+              description: Ed25519 public key, base64 SPKI DER. Only the public half is ever on a tenant.
+            tenant:
+              type: string
+              description: Must equal this descriptor's own `slug` -- render-core's own identity check refuses a mismatch.
+            supportIdentity:
+              type: string
+              format: email
+          additionalProperties: false
+    TenantDescriptor:
+      type: object
+      description: >-
+        The tenant descriptor: the one schema both reconcilers (the Pulumi
+        component for paying tenants, this broker for demos) render from.
+        The broker itself accepts the general shape below from any caller,
+        then refuses (400) any descriptor whose `kind` is not `"demo"` --
+        the union below is not narrowed to demo-only fields at the schema
+        level because render-core's own validator, not this wire shape, is
+        the source of truth for which fields a given `kind` requires.
+      required:
+        - version
+        - kind
+        - slug
+        - siteUrl
+        - image
+        - ownerEmail
+        - uid
+        - ports
+        - appHostIp
+        - database
+        - media
+        - transport
+        - mail
+        - hostname
+        - gate
+        - backup
+        - codeInjection
+        - limits
+        - caps
+        - safety
+        - breakGlass
+        - expiresAt
+      properties:
+        version:
+          type: integer
+          description: The schema version this descriptor was built against. A reconciler that does not recognise the value must refuse it.
+        kind:
+          type: string
+          enum: [demo, tenant]
+        slug:
+          type: string
+          pattern: '^[a-z]([a-z0-9-]*[a-z0-9])?$'
+          maxLength: 63
+        siteUrl:
+          type: string
+          format: uri
+          description: Must be an absolute http or https URL.
+        image:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._/-]*(:[\w.-]+)?@sha256:[0-9a-f]{64}$'
+          description: 'A digest-pinned container reference: `<name>[:<tag>]@sha256:<64 hex>`. A floating tag with no digest is refused.'
+        ownerEmail:
+          type: string
+          format: email
+          maxLength: 254
+          description: The one piece of prospect data this schema carries -- the address Ghost creates the owner account with.
+        uid:
+          type: integer
+          minimum: 30000
+          maximum: 30999
+          description: Must fall in the reserved tenant UID range; for a demo, must also equal this slot's own derived allocation.
+        ports:
+          $ref: '#/components/schemas/PortTriple'
+        appHostIp:
+          type: string
+          format: ipv4
+          description: Must be a dotted-quad address in a private IPv4 range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+        database:
+          $ref: '#/components/schemas/DatabaseSpec'
+        media:
+          $ref: '#/components/schemas/MediaSpec'
+        transport:
+          $ref: '#/components/schemas/TransportSpec'
+        mail:
+          $ref: '#/components/schemas/MailSpec'
+        hostname:
+          $ref: '#/components/schemas/HostnameSpec'
+        gate:
+          $ref: '#/components/schemas/GateSpec'
+        backup:
+          $ref: '#/components/schemas/BackupSpec'
+        codeInjection:
+          $ref: '#/components/schemas/CodeInjectionSpec'
+        limits:
+          $ref: '#/components/schemas/LimitsSpec'
+        caps:
+          $ref: '#/components/schemas/ResourceCaps'
+        safety:
+          $ref: '#/components/schemas/SafetySpec'
+        breakGlass:
+          $ref: '#/components/schemas/BreakGlassSpec'
+        expiresAt:
+          type: ['string', 'null']
+          format: date-time
+      additionalProperties: false

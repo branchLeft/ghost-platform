@@ -737,22 +737,42 @@ async function handleDrain(
   }
 }
 
+interface RouteEntry {
+  readonly method: string;
+  readonly path: string;
+}
+
+/** Every literal-path route this handler serves. See app.md#route-tables. */
+export const LITERAL_ROUTES: readonly RouteEntry[] = [
+  { method: 'POST', path: '/reconcile' },
+  { method: 'POST', path: '/reset' },
+  { method: 'POST', path: '/stop' },
+  { method: 'GET', path: '/drain' },
+  { method: 'POST', path: '/image' },
+];
+
+/** The one parameterised route this handler serves. See app.md#route-tables. */
+export const STATUS_ROUTE: RouteEntry = { method: 'GET', path: '/status/{slot}' };
+
 /**
  * Every failure path answers with a non-2xx status and an unexpected throw
  * becomes a 500, matching `services/demo-gate`'s own posture: a caller of
  * this endpoint has nothing useful to do with a response that never came.
  */
 export function createBrokerHandler(deps: BrokerDeps): Handler {
+  // Keyed by `${method} ${path}` -- see app.md#route-tables.
+  const literalHandlers: Partial<Record<string, Handler>> = {
+    'POST /reconcile': (req, res) => handleReconcile(deps, req, res),
+    'POST /reset': (req, res) => handleReset(deps, req, res),
+    'POST /stop': (req, res) => handleStop(deps, req, res),
+    'GET /drain': (req, res) => handleDrain(deps, req, res),
+    'POST /image': (req, res) => handleImagePush(deps.auth, deps.imagePush, req, res),
+  };
   return async (req, res) => {
     try {
       const path = (req.url ?? '').split('?')[0] ?? '';
-      if (path === '/reconcile' && req.method === 'POST')
-        return await handleReconcile(deps, req, res);
-      if (path === '/reset' && req.method === 'POST') return await handleReset(deps, req, res);
-      if (path === '/stop' && req.method === 'POST') return await handleStop(deps, req, res);
-      if (path === '/drain' && req.method === 'GET') return await handleDrain(deps, req, res);
-      if (path === '/image' && req.method === 'POST')
-        return await handleImagePush(deps.auth, deps.imagePush, req, res);
+      const literal = literalHandlers[`${req.method} ${path}`];
+      if (literal) return await literal(req, res);
       const statusMatch = /^\/status\/([^/]+)$/.exec(path);
       if (statusMatch && req.method === 'GET') {
         let slotParam: string;
