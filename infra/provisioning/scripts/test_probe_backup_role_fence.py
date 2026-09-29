@@ -557,6 +557,13 @@ class TestTheConfigurationDenies(unittest.TestCase):
         ]:
             self.assertRegex(text, rf"PASS\s+{role}\s+expect {expect}\s+{re.escape(name)}")
 
+    def test_every_put_carries_a_body_so_curl_sends_a_content_length(self):
+        """A bodyless PUT goes out with no Content-Length, which fsn1 refuses as
+        MissingContentLength before the policy is consulted: not evidence either way."""
+        checks = probe.build_checks("p/", "seed", "v1", "upload", "u1", b"{}")
+        bodyless = [check.name for check in checks if check.method == "PUT" and check.payload is None]
+        self.assertEqual(bodyless, [])
+
     def test_every_write_is_a_no_op_if_it_lands(self):
         endpoint = FakeEndpoint(rendered_fence())
         run_probe(endpoint)
