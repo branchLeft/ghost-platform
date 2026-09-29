@@ -91,11 +91,14 @@ statement accepted one at a time. So the set is the union across locations:
 a name any location refuses stays out, because a document is only
 acceptable if it parses wherever the bucket lives.
 
-Dropping the two ownership-controls names narrows the configuration lock.
-The put-only key loses nothing, because the bucket-wide `s3:*` deny already
-covers it. The read-only key falls back to the project default for these two
-calls. It has not been measured whether fsn1 serves the ownership-controls
-API at all.
+Dropping the two ownership-controls names narrows the configuration lock,
+in every fence this module builds. The put-only key loses nothing, because
+the bucket-wide `s3:*` deny already covers it. The read-write and read-only
+keys are both exempt from that deny, so they fall back to the project
+default for these two calls. Nothing else can close that gap: the engine
+refuses any statement that names either action, Allow or Deny, and it
+ignores `NotAction`. It has not been measured whether fsn1 serves the
+ownership-controls API at all.
 
 This is a measurement of one engine at one time, not a specification. If
 Hetzner ships support for any of these, the way to find out is to probe the
