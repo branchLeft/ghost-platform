@@ -57,21 +57,27 @@ none of which is a secret.
 
 `verifyClaims` in `src/tokens.ts` runs after the JWT library has checked the
 signature. It requires the sign-in service as issuer, the application's own
-client id in the audience (and not its sibling's), a live expiry, the
+client id in the audience **and as the `client_id` claim**, a live expiry, the
 application's role granted to the user's own organisation, and, for the
 console, the owner organisation. Anything missing or mistyped is a refusal.
 
+Read from a live instance: Zitadel lists *every* application of the project in
+`aud`, so the audience alone cannot tell the portal's token from the console's;
+`client_id` is what does. Each application must request the scopes
+`openid`, `urn:zitadel:iam:org:projects:roles` and
+`urn:zitadel:iam:user:resourceowner`, so the roles and the organisation claim are
+present.
+
 ## Proof against real containers
 
-`local/prove.sh` starts a throwaway Zitadel and PostgreSQL in Docker, reconciles
-a two-tenant list twice, asserts the second run changed nothing and that each
-tenant holds `tenant-admin` only, then removes the containers and volumes. It
-needs Docker and creates nothing in any cloud.
-
-**Not yet proven live:** that a user in one organisation cannot obtain a token
-carrying another, and that a Zitadel-issued console token is refused by the
-portal. Those are asserted here against modelled claims (`test/tokens.test.ts`),
-not against tokens Zitadel issued.
+`local/prove.sh` starts a throwaway Zitadel and PostgreSQL in Docker, then:
+reconciles a two-tenant list and asserts the second run changed nothing and each
+tenant holds `tenant-admin` only; signs real users in through the code-and-PKCE
+flow; checks that Zitadel refuses organisation A's user a token for organisation
+B; and checks that a real console token is refused by the portal check and the
+reverse. Tokens are signature-verified against the instance's published keys.
+It then removes the containers and volumes. It needs Docker and creates nothing
+in any cloud.
 
 ## Tests
 

@@ -22,6 +22,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A volume left by an interrupted run holds the previous run's database
+# password, so start from nothing.
+"${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+
 "${compose[@]}" up --detach
 
 # The image has no shell or curl, and its own `ready` subcommand probes over

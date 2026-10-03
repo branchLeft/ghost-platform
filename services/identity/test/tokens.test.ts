@@ -9,14 +9,17 @@ import { FakeZitadel, HOSTNAMES, TWO_TENANTS } from './fakes.js';
 
 const ISSUER = `https://${HOSTNAMES.identity}`;
 const NOW = 1_800_000_000;
+let projectClients: string[] = ['sibling-1'];
 
-/** What Zitadel puts in a token issued to `clientId` for a user of `orgId`
- * holding `role`: the audience is the requesting client, and the role is
- * keyed by the organisation it was granted to. */
+/** The shape Zitadel really issues, read from a live instance: `aud` lists
+ * every application of the project plus the project id, `client_id` names the
+ * application the token was issued to, and the role is keyed by the
+ * organisation it was granted to. */
 function mint(clientId: string, orgId: string, role: string, extra: Claims = {}): Claims {
   return {
     iss: ISSUER,
-    aud: [clientId, 'project-1'],
+    aud: [...projectClients, 'project-1'],
+    client_id: clientId,
     sub: 'user-1',
     exp: NOW + 600,
     [CLAIM_RESOURCE_OWNER]: orgId,
@@ -34,12 +37,12 @@ async function setup(): Promise<{
     new FakeZitadel(),
     desiredState(validateConfig({ hostnames: HOSTNAMES, tenants: TWO_TENANTS }))
   );
+  projectClients = [outputs.clientIds.console, outputs.clientIds.portal];
   return {
     outputs,
     consoleVerifier: {
       issuer: ISSUER,
       clientId: outputs.clientIds.console,
-      peerClientId: outputs.clientIds.portal,
       requiredRole: ROLE_OWNER,
       requiredOrgId: outputs.ownerOrgId,
       now: NOW,
@@ -47,7 +50,6 @@ async function setup(): Promise<{
     portalVerifier: {
       issuer: ISSUER,
       clientId: outputs.clientIds.portal,
-      peerClientId: outputs.clientIds.console,
       requiredRole: ROLE_TENANT_ADMIN,
       now: NOW,
     },
@@ -74,28 +76,32 @@ describe('the two applications refuse each other’s tokens', () => {
   it('refuses a console token at the portal, and a portal token at the console', async () => {
     const { outputs, consoleVerifier, portalVerifier } = await setup();
     const alpha = outputs.tenantOrgIds['alpha']!;
-    // Same user, same role, same organisation: only the audience differs.
+    // Same user, same role, same organisation, and an audience that lists both
+    // applications as Zitadel's does: only `client_id` differs.
     const forPortal = verifyClaims(
       mint(outputs.clientIds.console, alpha, ROLE_TENANT_ADMIN),
       portalVerifier
     );
-    expect(forPortal).toEqual({ ok: false, reason: 'token was not issued to this application' });
+    expect(forPortal).toEqual({ ok: false, reason: 'token was issued to a different application' });
     const forConsole = verifyClaims(
       mint(outputs.clientIds.portal, outputs.ownerOrgId, ROLE_OWNER),
       consoleVerifier
     );
-    expect(forConsole).toEqual({ ok: false, reason: 'token was not issued to this application' });
+    expect(forConsole).toEqual({
+      ok: false,
+      reason: 'token was issued to a different application',
+    });
   });
 
-  it('refuses a token that names both applications', async () => {
+  it('refuses a token whose audience omits the application, whatever its client_id says', async () => {
     const { outputs, portalVerifier } = await setup();
     const alpha = outputs.tenantOrgIds['alpha']!;
-    const both = mint(outputs.clientIds.portal, alpha, ROLE_TENANT_ADMIN, {
-      aud: [outputs.clientIds.portal, outputs.clientIds.console],
+    const forged = mint(outputs.clientIds.portal, alpha, ROLE_TENANT_ADMIN, {
+      aud: [outputs.clientIds.console],
     });
-    expect(verifyClaims(both, portalVerifier)).toEqual({
+    expect(verifyClaims(forged, portalVerifier)).toEqual({
       ok: false,
-      reason: 'token names both applications',
+      reason: 'token was not issued to this application',
     });
   });
 
@@ -145,11 +151,13 @@ describe('verifyClaims fails closed', () => {
   const opts: VerifierOptions = {
     issuer: ISSUER,
     clientId: 'me',
-    peerClientId: 'peer',
     requiredRole: ROLE_TENANT_ADMIN,
     now: NOW,
   };
-  const good = (): Record<string, unknown> => ({ ...mint('me', 'org-a', ROLE_TENANT_ADMIN) });
+  const good = (): Record<string, unknown> => {
+    projectClients = ['me', 'peer'];
+    return { ...mint('me', 'org-a', ROLE_TENANT_ADMIN) };
+  };
 
   it('accepts the baseline', () => {
     expect(verifyClaims(good(), opts).ok).toBe(true);
@@ -166,6 +174,8 @@ describe('verifyClaims fails closed', () => {
     ['numeric audience', { aud: 5 }, 'audience is missing or malformed'],
     ['mixed audience list', { aud: ['me', 5] }, 'audience is missing or malformed'],
     ['foreign audience', { aud: ['other'] }, 'token was not issued to this application'],
+    ['no client_id', { client_id: undefined }, 'token was issued to a different application'],
+    ['other client_id', { client_id: 'peer' }, 'token was issued to a different application'],
     ['no expiry', { exp: undefined }, 'expiry is missing'],
     ['string expiry', { exp: '9999999999' }, 'expiry is missing'],
     ['infinite expiry', { exp: Infinity }, 'expiry is missing'],

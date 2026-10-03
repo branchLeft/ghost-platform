@@ -5,7 +5,8 @@
  * The signature, `kid` and algorithm are the JWT library's job and must be
  * checked first; nothing here reads an unverified token. What this adds is the
  * part a signature cannot say: that the token was issued to *this* application
- * rather than its sibling, that its issuer is the sign-in service, and that
+ * rather than its sibling (by the `client_id` claim, since the audience lists
+ * the whole project), that its issuer is the sign-in service, and that
  * the organisation it carries is the only source of a tenant.
  */
 
@@ -18,9 +19,6 @@ export interface VerifierOptions {
   readonly issuer: string;
   /** The client id this application was issued. */
   readonly clientId: string;
-  /** The sibling application's client id. A token naming both audiences was
-   * issued to neither, so it is refused. */
-  readonly peerClientId: string;
   readonly requiredRole: string;
   /** Set for the owner console: the one organisation whose users may use it. */
   readonly requiredOrgId?: string;
@@ -58,7 +56,11 @@ export function verifyClaims(claims: Claims, options: VerifierOptions): Verdict 
   const aud = audiences(claims['aud']);
   if (aud === null) return deny('audience is missing or malformed');
   if (!aud.includes(options.clientId)) return deny('token was not issued to this application');
-  if (aud.includes(options.peerClientId)) return deny('token names both applications');
+  // Zitadel lists every application of the project in `aud`, so the audience
+  // cannot tell the two applications apart. The client the token was issued to
+  // is the `client_id` claim.
+  if (claims['client_id'] !== options.clientId)
+    return deny('token was issued to a different application');
 
   const exp = claims['exp'];
   if (typeof exp !== 'number' || !Number.isFinite(exp)) return deny('expiry is missing');

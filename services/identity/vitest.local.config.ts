@@ -5,6 +5,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['test-local/**/*.test.ts'],
+    // Both files reconcile the same instance; run together they would race to create the same organisation.
+    fileParallelism: false,
     testTimeout: 60000,
     hookTimeout: 60000,
   },
