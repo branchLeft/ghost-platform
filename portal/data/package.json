@@ -15,7 +15,8 @@
     "build": "tsc -p tsconfig.build.json",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
-    "generate": "drizzle-kit generate"
+    "generate": "drizzle-kit generate",
+    "check:isolation": "node dist/checkIsolation.js"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.3",

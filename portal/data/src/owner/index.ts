@@ -1,6 +1,6 @@
 import { asc } from 'drizzle-orm';
 import type { Pool } from 'pg';
-import { connect, enterRole, type PortalDb } from '../db.js';
+import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { tenantRegister } from '../schema.js';
 import { parseTenantId } from '../tenantId.js';
 import type { TenantRegistration } from '../tenant/session.js';
@@ -18,17 +18,23 @@ export class OwnerDb {
     this.db = connect(pool);
   }
 
+  /** One unit of work as the `portal_owner` role. */
+  run<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
+    return this.db.transaction(async (tx) => {
+      await enterRole(tx, 'portal_owner');
+      return work(tx);
+    });
+  }
+
   async registerTenant(registration: TenantRegistration): Promise<void> {
     const tenantId = parseTenantId(registration.tenantId);
-    await this.db.transaction(async (tx) => {
-      await enterRole(tx, 'portal_owner');
+    await this.run(async (tx) => {
       await tx.insert(tenantRegister).values({ tenantId, zitadelOrgId: registration.zitadelOrgId });
     });
   }
 
   async listTenants(): Promise<TenantRegistration[]> {
-    return this.db.transaction(async (tx) => {
-      await enterRole(tx, 'portal_owner');
+    return this.run(async (tx) => {
       const rows = await tx
         .select()
         .from(tenantRegister)

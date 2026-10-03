@@ -63,7 +63,12 @@ export async function grantRole(
   await admin.query(`GRANT ${role} TO ${ident(login)}`);
 }
 
-export async function createLogin(admin: Pool, login: string, password: string): Promise<void> {
+export async function createLogin(
+  admin: Pool,
+  login: string,
+  password: string,
+  options: { bypassRls?: boolean } = {}
+): Promise<void> {
   if (password.includes("'")) throw new Error('password may not contain a quote');
   await admin.query(`
     DO $$ BEGIN
@@ -71,6 +76,10 @@ export async function createLogin(admin: Pool, login: string, password: string):
         CREATE ROLE ${ident(login)} LOGIN PASSWORD '${password}';
       END IF;
     END $$`);
+  // Always applied, so a login left over from an earlier run has these attributes.
+  await admin.query(
+    `ALTER ROLE ${ident(login)} ${options.bypassRls ? 'BYPASSRLS' : 'NOBYPASSRLS'}`
+  );
 }
 
 export async function createDatabase(admin: Pool, name: string): Promise<void> {

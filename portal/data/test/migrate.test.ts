@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { migrateSchema } from '../src/migrate.js';
 import { UnisolatedTableError, assertTenantTablesIsolated } from '../src/isolation.js';
 import * as schema from '../src/schema.js';
 import * as fixtureSchema from './fixtureSchema.js';
@@ -25,5 +26,11 @@ describe('assertTenantTablesIsolated', () => {
 
   it('ignores a table with no tenant column', () => {
     expect(() => assertTenantTablesIsolated({ other: fixtureSchema.fixture })).not.toThrow();
+  });
+
+  it('refuses to migrate a schema holding an unisolated tenant table', async () => {
+    await expect(
+      migrateSchema(null as never, { schemaExports: fixtureSchema })
+    ).rejects.toBeInstanceOf(UnisolatedTableError);
   });
 });

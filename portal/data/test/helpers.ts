@@ -17,6 +17,7 @@ const ADMIN_URL = process.env['PORTAL_TEST_DATABASE_URL'];
 
 const TENANT_LOGIN = 'portal_test_tenant_login';
 const OWNER_LOGIN = 'portal_test_owner_login';
+const DUAL_LOGIN = 'portal_test_dual_login';
 const LOGIN_PASSWORD = 'test-only-not-a-secret';
 
 export const TENANT_A = '11111111-1111-4111-8111-111111111111';
@@ -33,6 +34,8 @@ export interface Fixture {
   tenant: pg.Pool;
   /** Connected as a login that is a member of `portal_owner` alone. */
   owner: pg.Pool;
+  /** A login that holds both roles and can itself bypass row security. */
+  dual: pg.Pool;
   close(): Promise<void>;
 }
 
@@ -68,6 +71,7 @@ export async function createFixture(): Promise<Fixture> {
   await createDatabase(bootstrap, database);
   await createLogin(bootstrap, TENANT_LOGIN, LOGIN_PASSWORD);
   await createLogin(bootstrap, OWNER_LOGIN, LOGIN_PASSWORD);
+  await createLogin(bootstrap, DUAL_LOGIN, LOGIN_PASSWORD, { bypassRls: true });
 
   const admin = quiet(new pg.Pool({ connectionString: urlFor(ADMIN_URL, database) }));
   await createRoles(admin);
@@ -96,6 +100,8 @@ export async function createFixture(): Promise<Fixture> {
   });
   await grantRole(admin, 'portal_tenant', TENANT_LOGIN);
   await grantRole(admin, 'portal_owner', OWNER_LOGIN);
+  await grantRole(admin, 'portal_tenant', DUAL_LOGIN);
+  await grantRole(admin, 'portal_owner', DUAL_LOGIN);
 
   const adminDb = connect(admin);
   await adminDb.insert(tenantRegister).values([
@@ -107,13 +113,17 @@ export async function createFixture(): Promise<Fixture> {
     new pg.Pool({ connectionString: urlFor(ADMIN_URL, database, TENANT_LOGIN), max: 1 })
   );
   const owner = quiet(new pg.Pool({ connectionString: urlFor(ADMIN_URL, database, OWNER_LOGIN) }));
+  const dual = quiet(
+    new pg.Pool({ connectionString: urlFor(ADMIN_URL, database, DUAL_LOGIN), max: 1 })
+  );
   return {
     admin,
     adminDb,
     tenant,
     owner,
+    dual,
     async close() {
-      await Promise.all([tenant.end(), owner.end(), admin.end()]);
+      await Promise.all([tenant.end(), owner.end(), dual.end(), admin.end()]);
       await dropDatabase(bootstrap, database);
       await bootstrap.end();
     },

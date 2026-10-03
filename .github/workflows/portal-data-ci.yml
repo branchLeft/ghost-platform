@@ -83,5 +83,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      # A tenant table with no row security or policy fails here, outside the
+      # test suite, as well as when migrations are applied.
+      - name: Every tenant table is isolated
+        run: npm run check:isolation
+
       - name: Test
         run: npm run coverage
