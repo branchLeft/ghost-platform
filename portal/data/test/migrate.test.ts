@@ -13,13 +13,12 @@ describe('assertTenantTablesIsolated', () => {
   });
 
   it('names a tenant table left without row security and its policy', () => {
-    const error = (() => {
-      try {
-        assertTenantTablesIsolated(fixtureSchema);
-      } catch (e) {
-        return e;
-      }
-    })();
+    let error: unknown;
+    try {
+      assertTenantTablesIsolated(fixtureSchema);
+    } catch (e) {
+      error = e;
+    }
     expect(error).toBeInstanceOf(UnisolatedTableError);
     expect((error as UnisolatedTableError).tables).toEqual(['leaky']);
   });

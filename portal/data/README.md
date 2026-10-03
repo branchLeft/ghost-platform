@@ -23,6 +23,14 @@ bound returns only A's rows.
   second policy lets that binding read the one register row for that
   organisation, nothing else.
 
+### Policies
+
+`public.bound_tenant()` raises when neither a tenant nor an organisation is
+bound, so an unbound statement fails instead of returning nothing or
+everything. When only an organisation is bound it returns null: no tenant row
+matches, and the `organisation_lookup` policy exposes just that organisation's
+register row, which is how a session's organisation becomes a bound tenant.
+
 ### Raw SQL
 
 Exactly three things are not expressed through Drizzle (`DB-2` approval, owner

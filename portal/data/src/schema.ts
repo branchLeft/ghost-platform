@@ -12,15 +12,8 @@ export const portal = pgSchema('portal');
 
 /**
  * The tenant register: the platform's tenant id against its Zitadel
- * organisation id. A tenant sees its own row; the owner role has no policy
- * because provisioning creates it with the attribute that bypasses row
- * security.
- *
- * `public.bound_tenant()` raises when no tenant (and no organisation) is
- * bound to the transaction, so an unbound statement fails rather than
- * returning nothing or everything. The second policy lets a session whose
- * organisation is known, and nothing else, read that organisation's row, which
- * is how the session's organisation becomes a bound tenant.
+ * organisation id. A tenant reads its own row; the owner role bypasses row
+ * security by attribute. The policies are explained in the package README.
  */
 export const tenantRegister = portal
   .table(
