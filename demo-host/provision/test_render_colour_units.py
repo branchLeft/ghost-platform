@@ -45,6 +45,23 @@ def effective(dropin: str) -> dict[tuple[str, str], list[str]]:
     return result
 
 
+def run_commands(dropin: str, *, start_ok: bool, then_stop: bool) -> list[str]:
+    """The commands systemd executes for a unit, per systemd.service(5):
+    ExecStop runs only after a successful start, ExecStopPost runs after
+    the main command ends whatever its outcome (a failed or timed-out
+    start included), and `systemctl stop` on a unit already failed is a
+    no-op."""
+    eff = effective(dropin)
+    ran = list(eff[("Service", "ExecStart")])
+    if start_ok:
+        if then_stop:
+            ran += eff.get(("Service", "ExecStop"), [])
+            ran += eff.get(("Service", "ExecStopPost"), [])
+    else:
+        ran += eff.get(("Service", "ExecStopPost"), [])
+    return ran
+
+
 class InstanceTests(unittest.TestCase):
     def test_instance_names_are_the_ones_sudoers_enumerates(self):
         sudoers = rss.render()
@@ -103,6 +120,22 @@ class EffectiveUnitTests(unittest.TestCase):
 
     def test_every_instance_is_distinct(self):
         self.assertEqual(len(set(rcu.render_all().values())), 14)
+
+
+class UnitStateTests(unittest.TestCase):
+    STOP = "/usr/bin/docker compose stop ghost-a"
+
+    def test_failed_start_still_stops_the_container(self):
+        ran = run_commands(rcu.render("1", "a"), start_ok=False, then_stop=False)
+        self.assertIn(self.STOP, ran)
+
+    def test_failed_start_stops_only_this_colour(self):
+        ran = run_commands(rcu.render("1", "a"), start_ok=False, then_stop=False)
+        self.assertNotIn("ghost-b", " ".join(ran))
+
+    def test_started_then_stopped_stops_the_container(self):
+        ran = run_commands(rcu.render("1", "a"), start_ok=True, then_stop=True)
+        self.assertIn(self.STOP, ran)
 
 
 class RefusalTests(unittest.TestCase):

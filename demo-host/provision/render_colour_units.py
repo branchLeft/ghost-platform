@@ -62,6 +62,7 @@ ExecStartPre=
 ExecStart=
 ExecStart=/usr/bin/docker compose up -d --wait {service}
 ExecStop=/usr/bin/docker compose stop {service}
+ExecStopPost=/usr/bin/docker compose stop {service}
 """
 
 
