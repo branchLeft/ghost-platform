@@ -34,7 +34,8 @@ export function clearStaleSocket(path: string): void {
  * Listens on a unix socket instead of a TCP port. The socket is created
  * under a 0177 umask so it is 0600 from the instant it exists: the only
  * process that may connect is the one running as this process's own uid.
- * Closing the server removes the socket.
+ * Closing the server removes the socket (Node unlinks a unix socket it
+ * created when the listener closes).
  */
 export function listenOnUnixSocket(app: Express, path: string): Promise<Server> {
   clearStaleSocket(path);
@@ -45,13 +46,6 @@ export function listenOnUnixSocket(app: Express, path: string): Promise<Server> 
     server.once('error', reject);
     server.once('listening', () => {
       server.removeListener('error', reject);
-      server.once('close', () => {
-        try {
-          unlinkSync(path);
-        } catch {
-          // Already gone; the next start clears whatever remains.
-        }
-      });
       resolve(server);
     });
   });
