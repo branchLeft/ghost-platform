@@ -24,6 +24,7 @@ from unittest import mock
 
 import branchleft_slot as bs
 import demo_uid_claims as duc
+import health_router as hr
 import render_slot_sudoers as rss
 
 _TENANT_MODULE = Path(__file__).resolve().parents[2] / "app" / "provision" / "provision_tenant_volume.py"
@@ -62,9 +63,10 @@ class _Case(unittest.TestCase):
 
 
 class RecordTests(_Case):
-    def test_claims_all_seven_slots_with_the_slot_uid(self):
+    def test_claims_all_seven_slots_and_the_router(self):
         created = self.record()
-        self.assertEqual(created, [f"demo-{n}" for n in range(7)])
+        self.assertEqual(created, [f"demo-{n}" for n in range(7)] + ["demo-router"])
+        self.assertEqual(Path(self.dir, "demo-router").read_text(), "slug=demo-router\nuid=30008\n")
         for n in range(7):
             text = Path(self.dir, f"demo-{n}").read_text()
             self.assertEqual(text, f"slug=demo-{n}\nuid={30001 + n}\n")
@@ -89,9 +91,32 @@ class RecordTests(_Case):
         self.assertEqual(duc.UID_BASE, bs.UID_BASE)
         self.assertEqual([duc.slot_uid(s) for s in rss.SLOT_NAMES], list(range(30001, 30008)))
 
+    def test_router_uid_is_the_health_routers(self):
+        self.assertEqual((duc.ROUTER_SLUG, duc.ROUTER_UID), (hr.ROUTER_USER, hr.ROUTER_UID))
+
+    def test_router_uid_is_inside_the_register_range_and_clear_of_the_slots(self):
+        self.assertTrue(duc.TENANT_UID_MIN <= duc.ROUTER_UID <= duc.TENANT_UID_MAX)
+        self.assertNotIn(duc.ROUTER_UID, [duc.slot_uid(s) for s in duc.SLOT_NAMES])
+
+    def test_refuses_a_router_uid_held_by_a_tenant(self):
+        self.make_dir()
+        self.put("tenant-x", "slug=tenant-x\nuid=30008\n")
+        with self.assertRaisesRegex(duc.ClaimError, "uid 30008 is already claimed by 'tenant-x'"):
+            self.record()
+
+    def test_refuses_a_router_claimed_at_another_uid(self):
+        self.make_dir()
+        self.put("demo-router", "slug=demo-router\nuid=30500\n")
+        with self.assertRaisesRegex(duc.ClaimError, "demo-router is already claimed at uid 30500"):
+            self.record()
+
+    def test_refuses_a_new_router_claim_when_an_account_already_has_the_uid(self):
+        with self.assertRaisesRegex(duc.ClaimError, "uid 30008 for demo-router already belongs"):
+            self.record(passwd_uids=lambda: {30008})
+
     def test_no_temp_file_left_behind(self):
         self.record()
-        self.assertEqual(sorted(os.listdir(self.dir)), [f"demo-{n}" for n in range(7)])
+        self.assertEqual(sorted(os.listdir(self.dir)), [f"demo-{n}" for n in range(7)] + ["demo-router"])
 
 
 class RefusalTests(_Case):
@@ -209,7 +234,8 @@ class DurabilityTests(_Case):
             duc.os, "replace", side_effect=replace
         ):
             self.record(slots=["0"])
-        self.assertEqual(events, ["fsync-file", "replace", "fsync-dir"])
+        # One slot plus the router's own claim, each synced file, rename, directory.
+        self.assertEqual(events, ["fsync-file", "replace", "fsync-dir"] * 2)
 
 
 class LockTests(_Case):
@@ -287,7 +313,7 @@ class LockTests(_Case):
         with self.assertRaisesRegex(duc.ClaimError, "another run holds the lock"):
             self.record()
         self.assertEqual(first.wait(timeout=30), 0)
-        self.assertEqual(len(os.listdir(self.dir)), 7)
+        self.assertEqual(len(os.listdir(self.dir)), 8)
 
 
 class StaleTempTests(_Case):
@@ -296,8 +322,8 @@ class StaleTempTests(_Case):
         self.put("demo-3.tmp", "slug=demo-3\nuid=3000")
         messages = []
         created = self.record(log=messages.append)
-        self.assertEqual(created, [f"demo-{n}" for n in range(7)])
-        self.assertEqual(sorted(os.listdir(self.dir)), [f"demo-{n}" for n in range(7)])
+        self.assertEqual(created, [f"demo-{n}" for n in range(7)] + ["demo-router"])
+        self.assertEqual(sorted(os.listdir(self.dir)), [f"demo-{n}" for n in range(7)] + ["demo-router"])
         self.assertEqual(messages, ["removed stale demo-3.tmp left by an interrupted run"])
 
     def test_refuses_a_symlinked_temp_and_leaves_its_target(self):
@@ -335,11 +361,11 @@ class PasswdTests(_Case):
         self.assertEqual(os.listdir(self.dir), [])
 
     def test_an_unrelated_uid_does_not_refuse(self):
-        self.assertEqual(len(self.record(passwd_uids=lambda: {0, 1000, 65534})), 7)
+        self.assertEqual(len(self.record(passwd_uids=lambda: {0, 1000, 65534})), 8)
 
     def test_an_already_claimed_slug_may_have_its_account(self):
         self.record()
-        self.assertEqual(self.record(passwd_uids=lambda: set(range(30001, 30008))), [])
+        self.assertEqual(self.record(passwd_uids=lambda: set(range(30001, 30009))), [])
 
     def test_a_missing_claim_is_still_checked_on_rerun(self):
         self.record()
@@ -428,7 +454,7 @@ class TenantSideAgreementTests(_Case):
     def test_tenant_register_sees_the_demo_uids_as_taken(self):
         self.record()
         claims = ptv.existing_claims(run=no_volumes, claim_dir=self.dir)
-        self.assertEqual({v for k, v in claims.items() if k.startswith("demo-")}, set(range(30001, 30008)))
+        self.assertEqual({v for k, v in claims.items() if k.startswith("demo-")}, set(range(30001, 30009)))
 
 
 class MainTests(_Case):

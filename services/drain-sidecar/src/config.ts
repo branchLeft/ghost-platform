@@ -1,5 +1,10 @@
 export interface SidecarConfig {
   port: number;
+  /**
+   * When set, the service listens on this unix socket and never opens a TCP
+   * port. See ../README.md#listening-on-a-unix-socket.
+   */
+  socketPath: string | null;
   drainFlagPath: string;
   ghostHealthUrl: string;
   ghostProbeTimeoutMs: number;
@@ -37,6 +42,7 @@ export function loadConfig(env: SidecarEnv = process.env): SidecarConfig {
 
   return {
     port: Number.isFinite(portRaw) && portRaw > 0 ? portRaw : 8080,
+    socketPath: env.SOCKET_PATH?.trim() || null,
     drainFlagPath: requireEnv(env, 'DRAIN_FLAG_PATH'),
     ghostHealthUrl,
     ghostProbeTimeoutMs: Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 2000,

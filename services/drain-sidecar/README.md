@@ -142,3 +142,22 @@ endpoint is `GHOST_ADMIN_SITE_URL`, defaulting to `/ghost/api/admin/site/`
 on `GHOST_HEALTH_URL`'s own origin — the same loopback call `GET
 /healthz` already makes to the same Ghost, per this sidecar sharing
 Ghost's network namespace rather than reaching it any other way.
+
+## Listening on a unix socket
+
+With `SOCKET_PATH` set, the service listens on that unix socket and opens no
+TCP port at all; `PORT` is then ignored. This is how a demo slot's colour
+answers the slot's health router: the sidecar shares its Ghost's network
+namespace, so a TCP port in it would be reachable by anything else sharing
+that namespace, where a socket in a bind-mounted directory is reachable only
+by whoever can enter the directory.
+
+- The socket is created under a `0177` umask, so it is `0600` from the
+  instant it exists, and the umask is restored straight after.
+- A socket already at the path (the residue of a killed container) is
+  replaced. Anything else at the path, a file or a directory, is refused
+  rather than removed.
+- Closing the server removes the socket.
+
+The directory the socket sits in, who owns it and who may enter it are host
+decisions made where the container is started, not here.

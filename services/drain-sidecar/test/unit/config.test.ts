@@ -11,6 +11,15 @@ describe('loadConfig', () => {
     expect(config.port).toBe(8080);
     expect(config.ghostHealthUrl).toBe('http://127.0.0.1:2368/');
     expect(config.ghostProbeTimeoutMs).toBe(2000);
+    expect(config.socketPath).toBeNull();
+  });
+
+  it('takes a unix socket path from SOCKET_PATH, and treats blank as unset', () => {
+    const env = { DRAIN_FLAG_PATH: '/f' };
+    expect(loadConfig({ ...env, SOCKET_PATH: '/run/sidecar/health.sock' }).socketPath).toBe(
+      '/run/sidecar/health.sock'
+    );
+    expect(loadConfig({ ...env, SOCKET_PATH: '  ' }).socketPath).toBeNull();
   });
 
   it('honours overrides', () => {

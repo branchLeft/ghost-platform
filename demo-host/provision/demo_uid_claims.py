@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Records the demo host's seven fixed slot uids in the tenant uid register.
+"""Records the demo host's slot uids and the health router's in the tenant uid register.
 
 Run by hand at demo-host build, as root, before any slot account or unit is
 created. Runs alone: it imports nothing from this repository, so one file
@@ -24,6 +24,12 @@ from typing import Callable, Iterable, Sequence
 # `test_demo_uid_claims.py` imports both and fails if either copy drifts.
 UID_BASE = 30001
 SLOT_NAMES: tuple[str, ...] = tuple(str(n) for n in range(7))
+
+# The slot health routers' one shared account, claimed in the same register
+# as the slot uids so no tenant allocation can be handed it. Duplicated from
+# `health_router.py`; `test_demo_uid_claims.py` fails if either copy drifts.
+ROUTER_SLUG = "demo-router"
+ROUTER_UID = 30008
 
 PASSWD_PATH = "/etc/passwd"
 
@@ -208,6 +214,7 @@ def record_demo_claims(
     left by a crashed run, for one of this script's own slugs, is removed
     and reported through `log`."""
     wanted = {claim_slug(slot): slot_uid(slot) for slot in slots}
+    wanted[ROUTER_SLUG] = ROUTER_UID
     for slug, uid in wanted.items():
         if not TENANT_UID_MIN <= uid <= TENANT_UID_MAX:
             raise ClaimError(
