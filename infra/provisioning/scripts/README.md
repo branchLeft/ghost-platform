@@ -55,8 +55,9 @@ can never drift into writing a metric two different ways. See
 including the lock-wait gauge's proxy nature under
 `RemoteMysqldumpTransport`, the real transport both callers now share.
 
-## Scrape target — still open
+## Where it runs
 
-Which host in org/control actually runs this worker, and how
-node_exporter's textfile-collector scrape target reaches it, is not
-decided in this repository. Nothing here assumes a name for it.
+The loop runs on the control host, under `branchleft-backup-worker.timer`,
+from a staged release. `control/provision/install_backup_worker.md`
+describes the install. That host's native node_exporter reads the metrics
+directory as its textfile-collector directory.
