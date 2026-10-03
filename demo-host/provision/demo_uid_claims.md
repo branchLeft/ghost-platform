@@ -73,3 +73,11 @@ The register path, modes and uid range are duplicated from the tenant-side
 script, as are the slot table and uid base. `test_demo_uid_claims.py`
 imports each source and fails if a copy drifts, and runs the tenant-side
 register reader over what this one writes.
+
+## The router's claim
+
+Alongside the seven slots it records `demo-router` = 30008, the account the
+slot health routers and the sidecars run as. Claiming it here, in the same
+register, is what keeps a tenant allocation from being handed it. The same
+refusals apply: another slug already at 30008, `demo-router` already at
+another uid, or an account on the host that already has 30008.

@@ -1,6 +1,8 @@
+import type { Server } from 'node:http';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createFileDrainFlag } from './drainFlag.js';
+import { listenOnUnixSocket } from './unixSocket.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
 import { createHttpGhostVersionProbe } from './versionProbe.js';
 
@@ -13,11 +15,14 @@ const ghostVersion = createHttpGhostVersionProbe(
 );
 const app = createApp(drainFlag, ghost, ghostVersion, config.intendedGhostVersion);
 
-const server = app.listen(config.port, () => {
-  console.log(
-    `drain-sidecar listening on ${config.port}, flag=${config.drainFlagPath}, ghost=${config.ghostHealthUrl}`
-  );
-});
+const server = await (config.socketPath === null
+  ? new Promise<Server>((resolve) => {
+      const listening = app.listen(config.port, () => resolve(listening));
+    })
+  : listenOnUnixSocket(app, config.socketPath));
+console.log(
+  `drain-sidecar listening on ${config.socketPath ?? config.port}, flag=${config.drainFlagPath}, ghost=${config.ghostHealthUrl}`
+);
 
 function shutdown(): void {
   // A hung keep-alive connection would otherwise stall close() forever;

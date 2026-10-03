@@ -27,6 +27,8 @@ TEMPLATE = {
     ("Service", "ExecStart"): ["/usr/bin/docker compose up -d --remove-orphans --wait"],
 }
 
+SIDECAR = "/usr/bin/python3 /usr/local/lib/branchleft/demo_sidecar.py"
+
 
 def effective(dropin: str) -> dict[tuple[str, str], list[str]]:
     result = {key: list(values) for key, values in TEMPLATE.items()}
@@ -45,20 +47,23 @@ def effective(dropin: str) -> dict[tuple[str, str], list[str]]:
     return result
 
 
-def run_commands(dropin: str, *, start_ok: bool, then_stop: bool) -> list[str]:
+def run_commands(
+    dropin: str, *, start_ok: bool, then_stop: bool, post_ok: bool = True
+) -> list[str]:
     """The commands systemd executes for a unit, per systemd.service(5):
-    ExecStop runs only after a successful start, ExecStopPost runs after
-    the main command ends whatever its outcome (a failed or timed-out
-    start included), and `systemctl stop` on a unit already failed is a
-    no-op."""
+    ExecStartPost runs only after a successful ExecStart, ExecStop runs only
+    after a start that succeeded all the way through (a failed ExecStartPost
+    included, conservatively), ExecStopPost runs whatever the start's
+    outcome, and `systemctl stop` on a unit already failed is a no-op."""
     eff = effective(dropin)
     ran = list(eff[("Service", "ExecStart")])
+    stopped = False
     if start_ok:
-        if then_stop:
-            ran += eff.get(("Service", "ExecStop"), [])
-            ran += eff.get(("Service", "ExecStopPost"), [])
-    else:
-        ran += eff.get(("Service", "ExecStopPost"), [])
+        ran += eff.get(("Service", "ExecStartPost"), [])
+        stopped = post_ok and then_stop
+    if stopped:
+        ran += eff.get(("Service", "ExecStop"), [])
+    ran += eff.get(("Service", "ExecStopPost"), []) if (stopped or not start_ok or not post_ok) else []
     return ran
 
 
@@ -95,7 +100,10 @@ class EffectiveUnitTests(unittest.TestCase):
 
     def test_stop_stops_only_that_colour(self):
         eff = effective(rcu.render("4", "b"))
-        self.assertEqual(eff[("Service", "ExecStop")], ["/usr/bin/docker compose stop ghost-b"])
+        self.assertEqual(
+            eff[("Service", "ExecStop")],
+            [f"{SIDECAR} stop 4 b", "/usr/bin/docker compose stop ghost-b"],
+        )
 
     def test_no_remove_orphans_which_would_remove_the_other_colour(self):
         for text in rcu.render_all().values():
@@ -106,17 +114,53 @@ class EffectiveUnitTests(unittest.TestCase):
         eff = effective(rcu.render("5", "a"))
         self.assertEqual(
             eff[("Service", "EnvironmentFile")],
-            ["/opt/branchleft/demo-5/image.env", "-/etc/branchleft/demo-5-a.env"],
+            [
+                "/opt/branchleft/demo-5/image.env",
+                "/etc/branchleft/demo-sidecar.image.env",
+                "-/etc/branchleft/demo-5-a.env",
+            ],
         )
 
     def test_secrets_file_name_matches_what_reset_removes(self):
         # branchleft_slot.py's reset removes ETC_DIR/demo-<slot>-<colour>.env.
         self.assertEqual(rcu.ETC_DIR, bs.ETC_DIR)
 
-    def test_never_touches_the_docker_socket_beyond_compose_or_names_the_sidecar(self):
+    def test_the_unit_runs_no_container_itself_the_sidecar_script_does(self):
         for text in rcu.render_all().values():
             self.assertNotIn("docker run", text)
-            self.assertNotIn("sidecar", text)
+            self.assertNotIn("network_mode", text)
+            self.assertNotIn("--network", text)
+
+    def test_the_sidecar_digest_file_is_required_and_read_by_the_unit(self):
+        for text in rcu.render_all().values():
+            eff = effective(text)
+            self.assertIn("/etc/branchleft/demo-sidecar.image.env", eff[("Unit", "AssertPathExists")])
+            self.assertIn("/etc/branchleft/demo-sidecar.image.env", eff[("Service", "EnvironmentFile")])
+            self.assertNotIn("-/etc/branchleft/demo-sidecar.image.env", eff[("Service", "EnvironmentFile")])
+
+    def test_the_sidecar_starts_after_its_own_colour_only(self):
+        for slot in rss.SLOT_NAMES:
+            for colour in rss.COLOURS:
+                eff = effective(rcu.render(slot, colour))
+                self.assertEqual(eff[("Service", "ExecStartPost")], [f"{SIDECAR} start {slot} {colour}"])
+
+    def test_the_sidecar_is_stopped_in_both_stop_phases_for_its_own_colour_only(self):
+        for slot in rss.SLOT_NAMES:
+            for colour in rss.COLOURS:
+                eff = effective(rcu.render(slot, colour))
+                for phase in ("ExecStop", "ExecStopPost"):
+                    self.assertIn(f"{SIDECAR} stop {slot} {colour}", eff[("Service", phase)])
+                    other = "b" if colour == "a" else "a"
+                    self.assertNotIn(f"stop {slot} {other}", " ".join(eff[("Service", phase)]))
+
+    def test_template_start_post_is_cleared(self):
+        template = dict(TEMPLATE)
+        self.assertNotIn(("Service", "ExecStartPost"), template)
+        self.assertIn("ExecStartPost=\n", rcu.render("0", "a"))
+        self.assertIn("ExecStop=\n", rcu.render("0", "a"))
+
+    def test_script_path_is_the_one_the_sidecar_doc_installs(self):
+        self.assertEqual(rcu.SIDECAR_SCRIPT, "/usr/local/lib/branchleft/demo_sidecar.py")
 
     def test_every_instance_is_distinct(self):
         self.assertEqual(len(set(rcu.render_all().values())), 14)
@@ -124,6 +168,7 @@ class EffectiveUnitTests(unittest.TestCase):
 
 class UnitStateTests(unittest.TestCase):
     STOP = "/usr/bin/docker compose stop ghost-a"
+    SIDECAR_STOP = f"{SIDECAR} stop 1 a"
 
     def test_failed_start_still_stops_the_container(self):
         ran = run_commands(rcu.render("1", "a"), start_ok=False, then_stop=False)
@@ -136,6 +181,30 @@ class UnitStateTests(unittest.TestCase):
     def test_started_then_stopped_stops_the_container(self):
         ran = run_commands(rcu.render("1", "a"), start_ok=True, then_stop=True)
         self.assertIn(self.STOP, ran)
+
+    def test_a_failed_sidecar_start_removes_the_sidecar_and_stops_ghost(self):
+        ran = run_commands(rcu.render("1", "a"), start_ok=True, then_stop=False, post_ok=False)
+        self.assertEqual(ran[0], "/usr/bin/docker compose up -d --wait ghost-a")
+        self.assertIn(f"{SIDECAR} start 1 a", ran)
+        self.assertIn(self.SIDECAR_STOP, ran)
+        self.assertIn(self.STOP, ran)
+
+    def test_a_failed_ghost_start_never_starts_the_sidecar_and_still_removes_it(self):
+        ran = run_commands(rcu.render("1", "a"), start_ok=False, then_stop=False)
+        self.assertNotIn(f"{SIDECAR} start 1 a", ran)
+        self.assertIn(self.SIDECAR_STOP, ran)
+
+    def test_a_clean_stop_removes_the_sidecar_in_both_phases(self):
+        ran = run_commands(rcu.render("1", "a"), start_ok=True, then_stop=True)
+        self.assertEqual(ran.count(self.SIDECAR_STOP), 2)
+
+    def test_the_sidecar_is_stopped_before_ghost(self):
+        eff = effective(rcu.render("1", "a"))
+        for phase in ("ExecStop", "ExecStopPost"):
+            self.assertLess(
+                eff[("Service", phase)].index(self.SIDECAR_STOP),
+                eff[("Service", phase)].index(self.STOP),
+            )
 
 
 class RefusalTests(unittest.TestCase):

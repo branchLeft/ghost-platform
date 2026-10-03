@@ -22,6 +22,8 @@ from branchleft_slot import COLOURS, SLOT_DIR, UNIT_TEMPLATE
 from render_slot_sudoers import SLOT_NAMES
 
 ETC_DIR = "/etc/branchleft"
+SIDECAR_IMAGE_ENV = f"{ETC_DIR}/demo-sidecar.image.env"
+SIDECAR_SCRIPT = "/usr/local/lib/branchleft/demo_sidecar.py"
 DROPIN_NAME = "colour.conf"
 DROPIN_MODE = 0o644
 
@@ -51,17 +53,25 @@ def render(slot: str, colour: str) -> str:
 AssertPathExists=
 AssertPathExists={slot_dir}/compose.yml
 AssertPathExists={slot_dir}/image.env
+AssertPathExists={SIDECAR_IMAGE_ENV}
 
 [Service]
 WorkingDirectory=
 WorkingDirectory={slot_dir}
 EnvironmentFile=
 EnvironmentFile={slot_dir}/image.env
+EnvironmentFile={SIDECAR_IMAGE_ENV}
 EnvironmentFile=-{ETC_DIR}/demo-{slot}-{colour}.env
 ExecStartPre=
 ExecStart=
 ExecStart=/usr/bin/docker compose up -d --wait {service}
+ExecStartPost=
+ExecStartPost=/usr/bin/python3 {SIDECAR_SCRIPT} start {slot} {colour}
+ExecStop=
+ExecStop=/usr/bin/python3 {SIDECAR_SCRIPT} stop {slot} {colour}
 ExecStop=/usr/bin/docker compose stop {service}
+ExecStopPost=
+ExecStopPost=/usr/bin/python3 {SIDECAR_SCRIPT} stop {slot} {colour}
 ExecStopPost=/usr/bin/docker compose stop {service}
 """
 
