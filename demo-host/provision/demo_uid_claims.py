@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Records the demo host's seven fixed slot uids in the tenant uid register.
 
-Run once at demo-host build, as root, before any slot account or unit is
-created. See demo_uid_claims.md for why the demo host writes into the same
-register a tenant's volume provisioning reads, and what each refusal means.
+Run by hand at demo-host build, as root, before any slot account or unit is
+created. Runs alone: it imports nothing from this repository, so one file
+copied to the host is the whole install. See demo_uid_claims.md for why the
+demo host writes into the same register a tenant's volume provisioning
+reads, and what each refusal means.
 
 Exit 0 on success, 1 on any refusal or failure.
 """
@@ -11,18 +13,24 @@ Exit 0 on success, 1 on any refusal or failure.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import stat
 import sys
-from typing import Sequence
+from typing import Callable, Iterable, Sequence
 
-from branchleft_slot import UID_BASE
-from render_slot_sudoers import SLOT_NAMES
+# The slot table and uid base, duplicated from `render_slot_sudoers.py` and
+# `branchleft_slot.py` so this file needs nothing beside it on the host.
+# `test_demo_uid_claims.py` imports both and fails if either copy drifts.
+UID_BASE = 30001
+SLOT_NAMES: tuple[str, ...] = tuple(str(n) for n in range(7))
+
+PASSWD_PATH = "/etc/passwd"
 
 # Mirrors `app/provision/provision_tenant_volume.py`'s register. Duplicated
-# rather than imported: this file is run alone on the demo host, with nothing
-# else from this repository present. `test_demo_uid_claims.py` imports the
-# tenant-side module and fails if either copy drifts from the other.
+# rather than imported, for the same reason as the slot table above.
+# `test_demo_uid_claims.py` imports the tenant-side module and fails if either
+# copy drifts from the other.
 CLAIM_DIR = "/etc/branchleft/tenant-uids"
 CLAIM_DIR_MODE = 0o700
 CLAIM_MODE = 0o600
@@ -86,6 +94,66 @@ def ensure_claim_dir(path: str, *, owner_uid: int) -> None:
         )
 
 
+def read_passwd_uids(path: str = PASSWD_PATH) -> set[int]:
+    """Every uid the host's passwd file already assigns. Read from the file,
+    not through NSS, so the answer is the local account database and nothing
+    a network directory could change underneath the run. A line that cannot
+    be read as an entry aborts: an unparsed account is an unchecked uid."""
+    uids: set[int] = set()
+    with open(path, encoding="utf-8") as handle:
+        for number, line in enumerate(handle, start=1):
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            fields = line.rstrip("\n").split(":")
+            if len(fields) < 3:
+                raise ClaimError(f"{path} line {number} is not a passwd entry")
+            try:
+                uids.add(int(fields[2]))
+            except ValueError as exc:
+                raise ClaimError(f"{path} line {number} has a non-numeric uid") from exc
+    return uids
+
+
+def clear_stale_temp(path: str, slug: str, *, owner_uid: int) -> bool:
+    """Removes the temporary file a crashed run left for one of this
+    script's own slugs. Only called under the register lock, so nothing else
+    of ours is writing it. Anything that is not a plain file owned by the
+    register's owner is refused instead: a symlink or foreign file under a
+    name only this script writes is evidence of something else at work."""
+    tmp = os.path.join(path, f"{slug}.tmp")
+    try:
+        st = os.lstat(tmp)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != owner_uid:
+        raise ClaimError(f"{tmp} is not a regular file owned by uid {owner_uid}; remove it by hand")
+    os.unlink(tmp)
+    return True
+
+
+def lock_register(path: str) -> int:
+    """Takes an exclusive, non-blocking lock on the register directory and
+    returns the descriptor that holds it; closing that descriptor releases
+    it. The lock sits on the directory itself because any file added to the
+    register would be read as a claim. A second concurrent run is refused
+    rather than queued: the check-then-write below is only sound serially."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        raise ClaimError(f"another run holds the lock on {path}; refusing to run alongside it") from exc
+    return fd
+
+
+def _fsync_dir(path: str) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def read_register(path: str) -> dict[str, int]:
     """Every claim in the register, keyed by slug. Any entry that cannot be
     read, or whose filename disagrees with its own slug, aborts the run."""
@@ -121,6 +189,7 @@ def _write_new(path: str, content: str) -> None:
     finally:
         os.close(fd)
     os.replace(tmp, path)
+    _fsync_dir(os.path.dirname(path))
 
 
 def record_demo_claims(
@@ -128,10 +197,16 @@ def record_demo_claims(
     slots: Sequence[str] = SLOT_NAMES,
     *,
     owner_uid: int = 0,
+    passwd_uids: Callable[[], Iterable[int]] = read_passwd_uids,
+    log: Callable[[str], None] = lambda message: None,
 ) -> list[str]:
     """Idempotent. Returns the slugs newly claimed. Refuses, writing
     nothing, when any wanted uid is outside the tenant range, claimed by a
-    different slug, or when a demo slug is already claimed at another uid."""
+    different slug, or when a demo slug is already claimed at another uid;
+    when a slug it would newly claim has a uid the host's passwd already
+    assigns; or when another run holds the register lock. A temporary file
+    left by a crashed run, for one of this script's own slugs, is removed
+    and reported through `log`."""
     wanted = {claim_slug(slot): slot_uid(slot) for slot in slots}
     for slug, uid in wanted.items():
         if not TENANT_UID_MIN <= uid <= TENANT_UID_MAX:
@@ -141,26 +216,43 @@ def record_demo_claims(
             )
 
     ensure_claim_dir(claim_dir, owner_uid=owner_uid)
-    existing = read_register(claim_dir)
+    lock_fd = lock_register(claim_dir)
+    try:
+        for slug in wanted:
+            if clear_stale_temp(claim_dir, slug, owner_uid=owner_uid):
+                log(f"removed stale {slug}.tmp left by an interrupted run")
+        existing = read_register(claim_dir)
 
-    holders = {uid: slug for slug, uid in existing.items()}
-    for slug, uid in wanted.items():
-        if slug in existing and existing[slug] != uid:
-            raise ClaimError(
-                f"{slug} is already claimed at uid {existing[slug]}, not {uid}; "
-                "changing a uid on a provisioned slot is a migration, not an update"
-            )
-        holder = holders.get(uid)
-        if holder is not None and holder != slug:
-            raise ClaimError(f"uid {uid} is already claimed by {holder!r}")
+        holders = {uid: slug for slug, uid in existing.items()}
+        for slug, uid in wanted.items():
+            if slug in existing and existing[slug] != uid:
+                raise ClaimError(
+                    f"{slug} is already claimed at uid {existing[slug]}, not {uid}; "
+                    "changing a uid on a provisioned slot is a migration, not an update"
+                )
+            holder = holders.get(uid)
+            if holder is not None and holder != slug:
+                raise ClaimError(f"uid {uid} is already claimed by {holder!r}")
 
-    created: list[str] = []
-    for slug, uid in wanted.items():
-        if slug in existing:
-            continue
-        _write_new(os.path.join(claim_dir, slug), render_claim(slug, uid))
-        created.append(slug)
-    return created
+        # A slug already in the register is not re-checked: its slot account
+        # is expected to exist by then. A new claim over a uid some other
+        # account already has would make that account the slot's owner.
+        taken = set(passwd_uids())
+        for slug, uid in wanted.items():
+            if slug not in existing and uid in taken:
+                raise ClaimError(
+                    f"uid {uid} for {slug} already belongs to an account on this host"
+                )
+
+        created: list[str] = []
+        for slug, uid in wanted.items():
+            if slug in existing:
+                continue
+            _write_new(os.path.join(claim_dir, slug), render_claim(slug, uid))
+            created.append(slug)
+        return created
+    finally:
+        os.close(lock_fd)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,7 +260,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--claim-dir", default=CLAIM_DIR)
     args = parser.parse_args(argv)
     try:
-        created = record_demo_claims(args.claim_dir)
+        created = record_demo_claims(
+            args.claim_dir, log=lambda message: print(message, file=sys.stderr)
+        )
     except (ClaimError, OSError) as exc:
         print(f"demo_uid_claims: {exc}", file=sys.stderr)
         return 1
