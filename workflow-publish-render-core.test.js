@@ -21,11 +21,12 @@ function tagPatterns(text) {
   return [...block[1].matchAll(/- '([^']+)'/g)].map((m) => m[1]);
 }
 
-// GitHub's tag filter is a glob over the whole ref name; the only operators
-// used in these two workflows are `[0-9]+` runs, which this turns into a
-// regex anchored at both ends.
+// GitHub's tag filter is a glob over the whole ref name; the only operator
+// used in these two workflows is a `[0-9]+` run. Everything between runs is
+// escaped as a literal, backslash included, then the runs become a regex.
 function globToRegex(glob) {
-  return new RegExp(`^${glob.replace(/\./g, '\\.')}$`);
+  const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${glob.split('[0-9]+').map(literal).join('[0-9]+')}$`);
 }
 
 const render = uncommented('publish-render-core.yml');
