@@ -13,8 +13,8 @@ It compares positions and thread states. **It never reads
 `Seconds_Behind_Source`.** A replica whose IO thread is `Connecting` receives
 nothing, so its SQL thread is never behind anything it has received, and it
 reports zero lag. Promoting on lag alone would lose every write made during
-the outage. LLD-10 measured exactly that in its spike. On `db1`'s pinned
-8.0.46, the live proof below sees `Seconds_Behind_Source` as `NULL` rather
+the outage. LLD-10 measured exactly that in its spike. On 8.0.46, stock MySQL
+and Percona Server alike, the live proof below sees `Seconds_Behind_Source` as `NULL` rather
 than 0 for a replica whose IO thread was restarted into `Connecting`. A
 lag check that reads `NULL` as "no lag" fails the same way. The value
 depends on version and on how the connection was lost, which is one more
@@ -82,17 +82,22 @@ The gate reads the column names MySQL 8.0.22 introduced. An older server's
 frozen coordinates need `performance_schema.log_status`, which is 8.0.14 or
 later. `db1`'s pinned image is 8.0.46.
 
-**Percona Server for MySQL 8.0** uses the same `SHOW REPLICA STATUS` columns
-and the same `log_status` table, so the gate runs unchanged against it. The
-gate uses no Percona-only feature. Percona's `Binlog_snapshot_file` and
+The tenant database host runs **Percona Server for MySQL 8.0**, so the
+replica side is Percona and the source side, `db1`, is stock MySQL. Percona
+prints the same `SHOW REPLICA STATUS` columns and has the same `log_status`
+table, so the gate parses and decides identically against either. The live
+proof below runs with a Percona 8.0.46-37 replica, and passed with a stock
+MySQL 8.0.46 replica too. The gate uses no Percona-only feature. Percona's `Binlog_snapshot_file` and
 `Binlog_snapshot_position` status variables give a dump coordinates
 consistent with its snapshot without a lock. They do not apply here: the
 cutover freezes writes anyway, and the gate compares against that freeze.
 
 ## Live proof
 
-`prove-promotion-gate.sh` builds a source and a replica from `db1`'s pinned
-image digest, each with `db/stack/conf.d/branchleft.cnf`. It sets up TLS
+`prove-promotion-gate.sh` builds the source from `db1`'s pinned stock MySQL
+image and the replica from a pinned Percona Server 8.0 image, each with
+`db/stack/conf.d/branchleft.cnf`. Set `REPLICA_IMAGE` to run the replica on
+another image, such as `db1`'s own. It sets up TLS
 replication filtered to the blog's schema, as the migration design
 specifies. Every scenario holds `LOCK TABLES … READ` on the blog's table in
 one session, reads the frozen coordinates inside that lock, and runs the

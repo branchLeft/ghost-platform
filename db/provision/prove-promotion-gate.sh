@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Live proof of promotion_gate.py against a real source/replica pair built
-# from db1's pinned MySQL image and its own branchleft.cnf. Every scenario
-# freezes the blog's table the way the cutover does, reads the frozen
-# coordinates from performance_schema.log_status inside that lock, and runs
-# the gate exactly as a cutover script would. Containers and the network are
-# removed on exit, pass or fail. Needs Docker and about 3 GB of memory.
+# Live proof of promotion_gate.py against a real source/replica pair: the
+# source is db1's pinned stock MySQL image, the replica the Percona Server
+# image the tenant database host runs (REPLICA_IMAGE overrides it), both
+# with branchleft.cnf. Every scenario freezes the blog's table the way the
+# cutover does, reads the frozen coordinates from log_status inside that
+# lock, and runs the gate as a cutover script would. Containers and the
+# network are removed on exit. Needs Docker and about 3 GB of memory.
 # Scenarios and expected output: promotion_gate.md#live-proof.
 set -euo pipefail
 
@@ -12,7 +13,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 # Must match db/RUNBOOK-db.md's pinned db1 image.
-IMAGE="mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+SOURCE_IMAGE="mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+# Percona Server for MySQL 8.0.46-37, its linux/amd64 manifest: the hosts are amd64.
+REPLICA_IMAGE="${REPLICA_IMAGE:-percona/percona-server:8.0@sha256:2fb8f1c992bc86f0bf4fa0aa174bbb1946f8867a7518278beec801a0bd2bf9e3}"
 PW="proofRootPw123!"
 REPL_PW="proofReplPw123!"
 RUN=$$
@@ -39,10 +42,11 @@ src_sql() { docker exec -i -e MYSQL_PWD="$PW" "$SRC" mysql -uroot -N -B "$@"; }
 rep_sql() { docker exec -i -e MYSQL_PWD="$PW" "$REP" mysql -uroot -N -B "$@"; }
 rep_field() { docker exec -e MYSQL_PWD="$PW" "$REP" mysql -uroot --vertical -e 'SHOW REPLICA STATUS' | awk -v k="$1:" '$1 == k { print $2 }'; }
 
+# Name, image, the image's option-file include directory, then mysqld flags.
 start_server() {
     docker run -d --platform linux/amd64 --name "$1" --network "$NET" -e MYSQL_ROOT_PASSWORD="$PW" \
-        -v "$REPO_ROOT/db/stack/conf.d/branchleft.cnf:/etc/mysql/conf.d/branchleft.cnf:ro" \
-        "$IMAGE" --bind-address=0.0.0.0 "${@:2}" >/dev/null
+        -v "$REPO_ROOT/db/stack/conf.d/branchleft.cnf:$3/branchleft.cnf:ro" \
+        "$2" --bind-address=0.0.0.0 "${@:4}" >/dev/null
 }
 
 # Readiness is a real query on the final server, never a ping: the image's
@@ -108,11 +112,12 @@ replica_has() { [ "$(rep_sql -e "SELECT COUNT(*) FROM blog.posts WHERE title = '
 
 echo "== setup"
 docker network create "$NET" >/dev/null
-start_server "$SRC"
-start_server "$REP" --server-id=2 --replicate-wild-do-table='blog.%'
+start_server "$SRC" "$SOURCE_IMAGE" /etc/mysql/conf.d
+start_server "$REP" "$REPLICA_IMAGE" /etc/my.cnf.d --server-id=2 --replicate-wild-do-table='blog.%'
 wait_ready "$SRC"
 wait_ready "$REP"
-echo "  $(docker exec "$SRC" mysqld --version)"
+echo "  source:  $(docker exec "$SRC" mysqld --version)"
+echo "  replica: $(docker exec "$REP" mysqld --version)"
 SCHEMA="CREATE DATABASE blog; CREATE TABLE blog.posts (id INT AUTO_INCREMENT PRIMARY KEY, title VARCHAR(191) NOT NULL);"
 src_sql -e "$SCHEMA CREATE USER 'repl'@'%' IDENTIFIED BY '$REPL_PW' REQUIRE SSL; GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';"
 rep_sql -e "$SCHEMA"
