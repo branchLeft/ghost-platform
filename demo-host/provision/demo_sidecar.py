@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """Starts and stops one demo colour's drain sidecar, from that colour's unit.
 
-Installed at /usr/local/lib/branchleft/demo_sidecar.py and run as root by
-the colour unit's ExecStartPost (`start`) and by both its ExecStop and
-ExecStopPost (`stop`). Runs alone: it imports nothing from this repository.
-See demo_sidecar.md for what start refuses, what it mounts, and why a failed
-start removes the container it may have created.
-
-Exit 0 on success, 1 on any refusal or failure.
+Run as root by ExecStartPost (`start`) and by ExecStop and ExecStopPost
+(`stop`); runs alone. See demo_sidecar.md. Exit 0 on success, 1 on failure.
 """
 
 from __future__ import annotations

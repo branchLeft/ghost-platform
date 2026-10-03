@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """Creates the demo host's sidecar socket directories, once, at host build.
 
-Run by hand as root after demo_uid_claims.py and after the `demo-router`
-account exists. Runs alone. Creates, router-owned 0700:
-
-    <root>/<slot>/        one per slot
-    <root>/<slot>/a/      mounted only into colour a's sidecar
-    <root>/<slot>/b/      mounted only into colour b's sidecar
-
-See provision_socket_dirs.md for what each refusal means.
-
-Exit 0 on success, 1 on any refusal or failure.
+Router-owned 0700 directories per slot and per colour, under the socket root.
+See provision_socket_dirs.md for the order to run it in and what it refuses.
 """
 
 from __future__ import annotations
