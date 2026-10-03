@@ -1,9 +1,5 @@
 export { bindTenant, TenantScope } from './scope.js';
-export { TenantDb } from './session.js';
-export {
-  bindTenantFromOrganisation,
-  ownRegistration,
-  type TenantRegistration,
-} from './register.js';
+export { TenantDb, type TenantRegistration } from './session.js';
 export { InvalidTenantIdError, type TenantId } from '../tenantId.js';
-export type { Connectable, Queryable } from '../db.js';
+export { assertTenantTablesIsolated, UnisolatedTableError } from '../isolation.js';
+export type { Tx } from '../db.js';

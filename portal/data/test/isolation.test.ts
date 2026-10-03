@@ -1,83 +1,94 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { assertTenantTablesIsolated } from '../src/migrate.js';
+import { bind, connect, enterRole, type PortalDb } from '../src/db.js';
 import { OwnerDb } from '../src/owner/index.js';
-import {
-  TenantDb,
-  bindTenant,
-  bindTenantFromOrganisation,
-  ownRegistration,
-} from '../src/tenant/index.js';
+import { tenantRegister } from '../src/schema.js';
+import { TenantDb, bindTenant } from '../src/tenant/index.js';
+import { leaky, note } from './fixtureSchema.js';
 import { ORG_A, ORG_B, TENANT_A, TENANT_B, createFixture, type Fixture } from './helpers.js';
 
 let fx: Fixture;
 let db: TenantDb;
+let raw: PortalDb;
 
 beforeAll(async () => {
   fx = await createFixture();
   db = new TenantDb(fx.tenant);
-  await fx.admin.query(`
-    CREATE TABLE portal.note (id serial PRIMARY KEY, tenant_id uuid NOT NULL, body text NOT NULL);
-    SELECT portal.isolate_table('portal.note');
-    GRANT SELECT, INSERT ON portal.note TO portal_tenant;
-    GRANT USAGE ON SEQUENCE portal.note_id_seq TO portal_tenant;
-  `);
-  await fx.admin.query(
-    'INSERT INTO portal.note (tenant_id, body) VALUES ($1, $2), ($1, $3), ($4, $5)',
-    [TENANT_A, 'a1', 'a2', TENANT_B, 'b1']
-  );
+  raw = connect(fx.tenant);
+  await fx.adminDb.insert(note).values([
+    { tenantId: TENANT_A, body: 'a1' },
+    { tenantId: TENANT_A, body: 'a2' },
+    { tenantId: TENANT_B, body: 'b1' },
+  ]);
+  await fx.adminDb.insert(leaky).values([
+    { tenantId: TENANT_A, body: 'a' },
+    { tenantId: TENANT_B, body: 'b' },
+  ]);
 });
 
 afterAll(async () => {
   await fx.close();
 });
 
-/** A statement as the tenant role with no tenant bound: what a missing binding looks like. */
-async function unbound<T>(sql: string): Promise<T[]> {
-  const client = await fx.tenant.connect();
+/** The database's own message: drizzle wraps it as the cause of "Failed query". */
+async function dbMessage(attempt: Promise<unknown>): Promise<string> {
   try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE portal_tenant');
-    const { rows } = await client.query(sql);
-    return rows as T[];
-  } finally {
-    await client.query('ROLLBACK').catch(() => undefined);
-    client.release();
+    await attempt;
+  } catch (error) {
+    const cause = (error as { cause?: { message?: string } }).cause;
+    return cause?.message ?? (error as Error).message;
   }
+  return 'did not fail';
+}
+
+/** The tenant role with no tenant bound: what a missing binding looks like. */
+function unbound<T>(
+  work: Parameters<PortalDb['transaction']>[0] extends (tx: infer Tx) => unknown
+    ? (tx: Tx) => Promise<T>
+    : never
+): Promise<T> {
+  return raw.transaction(async (tx) => {
+    await enterRole(tx, 'portal_tenant');
+    return work(tx);
+  });
 }
 
 describe('a query with no tenant bound', () => {
   it('fails at run time on the register', async () => {
-    await expect(unbound('SELECT * FROM portal.tenant_register')).rejects.toThrow(
-      'no tenant bound to the session'
+    expect(await dbMessage(unbound((tx) => tx.select().from(tenantRegister)))).toMatch(
+      /no tenant bound to the session/
     );
   });
 
-  it('fails at run time on a table isolated with the helper', async () => {
-    await expect(unbound('SELECT * FROM portal.note')).rejects.toThrow(
-      'no tenant bound to the session'
+  it('fails at run time on an isolated table', async () => {
+    expect(await dbMessage(unbound((tx) => tx.select().from(note)))).toMatch(
+      /no tenant bound to the session/
     );
   });
 
   it('is not rescued by an empty binding', async () => {
-    await expect(
-      unbound("SELECT set_config('portal.tenant_id', '', true), * FROM portal.note")
-    ).rejects.toThrow('no tenant bound to the session');
+    const message = await dbMessage(
+      unbound(async (tx) => {
+        await bind(tx, 'portal.tenant_id', '');
+        return tx.select().from(note);
+      })
+    );
+    expect(message).toMatch(/no tenant bound to the session/);
   });
 
   it('cannot be written either', async () => {
-    await expect(
-      unbound("INSERT INTO portal.note (tenant_id, body) VALUES ('" + TENANT_B + "', 'x')")
-    ).rejects.toThrow('no tenant bound to the session');
+    expect(
+      await dbMessage(unbound((tx) => tx.insert(note).values({ tenantId: TENANT_B, body: 'x' })))
+    ).toMatch(/no tenant bound to the session/);
   });
 });
 
 describe('a query with a tenant bound', () => {
   it('returns only that tenant on the register', async () => {
-    expect(await ownRegistration(db, bindTenant(TENANT_A))).toEqual({
+    expect(await db.ownRegistration(bindTenant(TENANT_A))).toEqual({
       tenantId: TENANT_A,
       zitadelOrgId: ORG_A,
     });
-    expect(await ownRegistration(db, bindTenant(TENANT_B))).toEqual({
+    expect(await db.ownRegistration(bindTenant(TENANT_B))).toEqual({
       tenantId: TENANT_B,
       zitadelOrgId: ORG_B,
     });
@@ -85,88 +96,107 @@ describe('a query with a tenant bound', () => {
 
   it('returns nothing for a tenant that is not in the register', async () => {
     const stranger = bindTenant('33333333-3333-4333-8333-333333333333');
-    expect(await ownRegistration(db, stranger)).toBeNull();
+    expect(await db.ownRegistration(stranger)).toBeNull();
   });
 
   it('returns only that tenant on an isolated table, whatever the statement asks for', async () => {
-    const a = await db.run(
-      bindTenant(TENANT_A),
-      async (c) =>
-        (await c.query<{ body: string }>('SELECT body FROM portal.note ORDER BY body')).rows
-    );
-    expect(a.map((r) => r.body)).toEqual(['a1', 'a2']);
-    const asked = await db.run(
-      bindTenant(TENANT_A),
-      async (c) =>
-        (await c.query('SELECT body FROM portal.note WHERE tenant_id = $1', [TENANT_B])).rows
-    );
+    const a = await db.run(bindTenant(TENANT_A), (tx) => tx.select().from(note));
+    expect(a.map((r) => r.body).sort()).toEqual(['a1', 'a2']);
+    const asked = await db.run(bindTenant(TENANT_A), async (tx) => {
+      const rows = await tx.select().from(note);
+      return rows.filter((r) => r.tenantId === TENANT_B);
+    });
     expect(asked).toEqual([]);
   });
 
   it('refuses a write that names another tenant', async () => {
-    await expect(
-      db.run(bindTenant(TENANT_A), async (c) => {
-        await c.query("INSERT INTO portal.note (tenant_id, body) VALUES ($1, 'planted')", [
-          TENANT_B,
-        ]);
-      })
-    ).rejects.toThrow(/row-level security/);
+    const message = await dbMessage(
+      db.run(bindTenant(TENANT_A), (tx) =>
+        tx.insert(note).values({ tenantId: TENANT_B, body: 'planted' })
+      )
+    );
+    expect(message).toMatch(/row-level security/);
   });
 
   it('accepts a write for the bound tenant, visible to that tenant only', async () => {
-    await db.run(bindTenant(TENANT_B), async (c) => {
-      await c.query("INSERT INTO portal.note (tenant_id, body) VALUES ($1, 'b2')", [TENANT_B]);
-    });
-    const seenByA = await db.run(
-      bindTenant(TENANT_A),
-      async (c) => (await c.query('SELECT body FROM portal.note')).rows.length
+    await db.run(bindTenant(TENANT_B), (tx) =>
+      tx.insert(note).values({ tenantId: TENANT_B, body: 'b2' })
     );
-    expect(seenByA).toBe(2);
+    const seenByA = await db.run(bindTenant(TENANT_A), (tx) => tx.select().from(note));
+    expect(seenByA).toHaveLength(2);
+    const seenByB = await db.run(bindTenant(TENANT_B), (tx) => tx.select().from(note));
+    expect(seenByB.map((r) => r.body).sort()).toEqual(['b1', 'b2']);
+  });
+
+  it('rolls back a failed unit of work whole', async () => {
+    await expect(
+      db.run(bindTenant(TENANT_B), async (tx) => {
+        await tx.insert(note).values({ tenantId: TENANT_B, body: 'never' });
+        throw new Error('abandon');
+      })
+    ).rejects.toThrow('abandon');
+    const rows = await db.run(bindTenant(TENANT_B), (tx) => tx.select().from(note));
+    expect(rows.map((r) => r.body)).not.toContain('never');
   });
 
   it('cannot change the register, even for its own row', async () => {
-    await expect(
-      db.run(bindTenant(TENANT_A), async (c) => {
-        await c.query("UPDATE portal.tenant_register SET zitadel_org_id = 'taken'");
-      })
-    ).rejects.toThrow(/permission denied/);
+    const message = await dbMessage(
+      db.run(bindTenant(TENANT_A), (tx) => tx.update(tenantRegister).set({ zitadelOrgId: 'taken' }))
+    );
+    expect(message).toMatch(/permission denied/);
+    expect(await db.ownRegistration(bindTenant(TENANT_A))).toMatchObject({ zitadelOrgId: ORG_A });
   });
 
   it('does not carry the binding to the next caller of a pooled connection', async () => {
-    await ownRegistration(db, bindTenant(TENANT_A));
-    await expect(unbound('SELECT * FROM portal.tenant_register')).rejects.toThrow(
-      'no tenant bound to the session'
+    await db.ownRegistration(bindTenant(TENANT_A));
+    expect(await dbMessage(unbound((tx) => tx.select().from(tenantRegister)))).toMatch(
+      /no tenant bound to the session/
     );
   });
 
   it('cannot reach the owner role with raw statements', async () => {
-    await expect(
-      db.run(bindTenant(TENANT_A), async (c) => {
-        await c.query('SET LOCAL ROLE portal_owner');
-      })
-    ).rejects.toThrow(/permission denied to set role/);
+    expect(
+      await dbMessage(db.run(bindTenant(TENANT_A), (tx) => enterRole(tx, 'portal_owner')))
+    ).toMatch(/permission denied to set role/);
   });
 });
 
 describe('resolving the session organisation', () => {
   it('binds the tenant that owns the organisation', async () => {
-    const scope = await bindTenantFromOrganisation(fx.tenant, ORG_B);
+    const scope = await db.scopeForOrganisation(ORG_B);
     expect(scope?.tenantId).toBe(TENANT_B);
   });
 
   it('binds nothing for an unknown organisation', async () => {
-    expect(await bindTenantFromOrganisation(fx.tenant, 'org-unknown')).toBeNull();
+    expect(await db.scopeForOrganisation('org-unknown')).toBeNull();
   });
 
   it('passes the organisation as data, never as SQL', async () => {
-    expect(await bindTenantFromOrganisation(fx.tenant, "' OR true --")).toBeNull();
+    expect(await db.scopeForOrganisation("' OR true --")).toBeNull();
+  });
+
+  it('reads one row at most, never the whole register', async () => {
+    const rows = await raw.transaction(async (tx) => {
+      await enterRole(tx, 'portal_tenant');
+      await bind(tx, 'portal.organisation_id', ORG_A);
+      return tx.select().from(tenantRegister);
+    });
+    expect(rows.map((r) => r.tenantId)).toEqual([TENANT_A]);
+  });
+
+  it('opens nothing else: an organisation binding reads no tenant table', async () => {
+    const rows = await raw.transaction(async (tx) => {
+      await enterRole(tx, 'portal_tenant');
+      await bind(tx, 'portal.organisation_id', ORG_A);
+      return tx.select().from(note);
+    });
+    expect(rows).toEqual([]);
   });
 });
 
 describe('the owner path', () => {
   it('lists every tenant', async () => {
-    const owner = new OwnerDb(fx.owner);
-    const tenants = await owner.listTenants();
+    const tenants = await new OwnerDb(fx.owner).listTenants();
     expect(tenants.map((t) => t.tenantId).sort()).toEqual([TENANT_A, TENANT_B]);
   });
 
@@ -175,19 +205,20 @@ describe('the owner path', () => {
     const id = '44444444-4444-4444-8444-444444444444';
     await owner.registerTenant({ tenantId: id, zitadelOrgId: 'org-c' });
     expect((await owner.listTenants()).map((t) => t.tenantId)).toContain(id);
-    await expect(
+    const duplicate = await dbMessage(
       owner.registerTenant({
         tenantId: '55555555-5555-4555-8555-555555555555',
         zitadelOrgId: 'org-c',
       })
-    ).rejects.toThrow(/duplicate key/);
+    );
+    expect(duplicate).toMatch(/duplicate key/);
     await expect(owner.registerTenant({ tenantId: 'nope', zitadelOrgId: 'org-d' })).rejects.toThrow(
       'tenant id is not a UUID'
     );
   });
 
   it('is not reachable from the tenant-facing connection', async () => {
-    await expect(new OwnerDb(fx.tenant).listTenants()).rejects.toThrow(
+    expect(await dbMessage(new OwnerDb(fx.tenant).listTenants())).toMatch(
       /permission denied to set role/
     );
   });
@@ -195,18 +226,7 @@ describe('the owner path', () => {
 
 describe('the control case', () => {
   it('a table left without the isolation leaks every tenant to an unbound query', async () => {
-    await fx.admin.query(`
-      CREATE TABLE portal.leaky (tenant_id uuid NOT NULL, body text NOT NULL);
-      GRANT SELECT ON portal.leaky TO portal_tenant;
-      INSERT INTO portal.leaky VALUES ('${TENANT_A}', 'a'), ('${TENANT_B}', 'b');
-    `);
-    try {
-      const rows = await unbound<{ body: string }>('SELECT body FROM portal.leaky');
-      expect(rows.map((r) => r.body).sort()).toEqual(['a', 'b']);
-      await expect(assertTenantTablesIsolated(fx.admin)).rejects.toThrow(/portal\.|leaky/);
-    } finally {
-      await fx.admin.query('DROP TABLE portal.leaky');
-    }
-    await expect(assertTenantTablesIsolated(fx.admin)).resolves.toBeUndefined();
+    const rows = await unbound((tx) => tx.select().from(leaky));
+    expect(rows.map((r) => r.body).sort()).toEqual(['a', 'b']);
   });
 });

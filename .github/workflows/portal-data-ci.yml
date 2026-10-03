@@ -5,7 +5,8 @@ name: Portal data layer CI
 # the database's row-level security together with the code that binds the
 # tenant, so a mock proves nothing about it: the suite creates a database per
 # test file, applies the migrations as the schema owner, and connects as
-# logins that are members of one portal role each. A missing
+# logins that are members of one portal role each; roles and grants come from
+# provision/, the ORM's own migrations from drizzle/. A missing
 # PORTAL_TEST_DATABASE_URL fails the suite rather than skipping it.
 # See ghost-platform-docs/19-try-it-now-design/08-portal.html sections 01 and
 # 10b.
@@ -69,6 +70,15 @@ jobs:
 
       - name: Type check
         run: npm run typecheck
+
+      # The committed migrations must be what the schema generates: a schema
+      # edit with no migration, or a migration edited by hand, leaves a diff.
+      - name: Migrations match the schema
+        run: |
+          npx drizzle-kit generate
+          npx drizzle-kit generate --config drizzle.test.config.ts
+          git diff --exit-code -- . ':(exclude)package-lock.json'
+          test -z "$(git ls-files --others --exclude-standard -- .)"
 
       - name: Build
         run: npm run build

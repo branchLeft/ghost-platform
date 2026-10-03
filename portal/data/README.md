@@ -11,15 +11,26 @@ bound returns only A's rows.
 - `TenantDb.run(scope, work)` takes a `TenantScope`. The only way to make one is
   `bindTenant(id)` with the id from the signed-in session, so a call without a
   binding does not compile.
-- Every statement then runs as the `portal_tenant` role with the tenant bound in
-  the transaction (`portal.tenant_id`). Row-level security on every tenant table
-  filters by `portal.bound_tenant()`, which raises when nothing is bound.
-- A new tenant-facing table has a `tenant_id uuid` column and one call to
-  `portal.isolate_table(...)` in its migration. `migrate()` refuses a schema
-  where a table has the column and lacks the policy.
-- `bindTenantFromOrganisation` resolves a Zitadel organisation to a scope. It is
-  the one statement that runs before a tenant is bound, through a function that
-  answers only for the organisation it is given.
+- Every statement then runs in a transaction as the `portal_tenant` role with
+  the tenant bound (`portal.tenant_id`). Row-level security on every tenant
+  table filters by `public.bound_tenant()`, which raises when nothing is bound.
+- All access is Drizzle. The schema (`src/schema.ts`) declares the policies and
+  `drizzle/` holds the generated migrations. A schema module is checked by
+  `assertTenantTablesIsolated`: a table with a `tenant_id` column and no row
+  security or no `tenant_isolation` policy is refused.
+- `TenantDb.scopeForOrganisation` resolves a Zitadel organisation to a scope. It
+  binds the organisation (`portal.organisation_id`) instead of a tenant, and a
+  second policy lets that binding read the one register row for that
+  organisation, nothing else.
+
+### Raw SQL
+
+Exactly three things are not expressed through Drizzle (`DB-2` approval, owner
+ruling): the role switch (`SET LOCAL ROLE`, `enterRole` in `src/db.ts`), the
+binding call (`set_config`, `bind` in `src/db.ts`), and the binding functions
+(`drizzle/0000_binding_functions.sql`, called from the policy predicates in
+`src/schema.ts`). `provision/` holds the operator's role and grant statements,
+which Drizzle cannot model.
 
 ## The owner path
 
@@ -36,9 +47,11 @@ PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres npm run cov
 ```
 
 The URL must be a superuser on a throwaway cluster (CI uses a service
-container). The suite creates and drops its own databases.
+container). The suite creates and drops its own databases. After a schema edit,
+`npm run generate` writes the migration; CI fails if the committed one differs.
 
-## Roles
+## Provisioning a database
 
-The migration creates `portal_tenant` and `portal_owner` as `NOLOGIN` roles. The
-deployment grants each to its own login role; no credential lives here.
+In order: `createRoles`, the ORM's migrations (`migrateSchema`), then
+`grantAccess` for each table and `grantRole` for each login (`provision/`). The
+roles are `NOLOGIN`; no credential lives here.

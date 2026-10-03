@@ -1,6 +1,17 @@
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { migrate } from '../src/migrate.js';
+import { connect, type PortalDb } from '../src/db.js';
+import { migrateSchema } from '../src/migrate.js';
+import { tenantRegister } from '../src/schema.js';
+import {
+  createDatabase,
+  createLogin,
+  createRoles,
+  dropDatabase,
+  grantAccess,
+  grantRole,
+} from '../provision/provision.js';
 
 const ADMIN_URL = process.env['PORTAL_TEST_DATABASE_URL'];
 
@@ -16,6 +27,8 @@ export const ORG_B = 'org-b';
 export interface Fixture {
   /** Connected as the database's owner; applies migrations and fixtures. */
   admin: pg.Pool;
+  /** The same connection through the ORM, for seeding rows. */
+  adminDb: PortalDb;
   /** Connected as a login that is a member of `portal_tenant` alone. */
   tenant: pg.Pool;
   /** Connected as a login that is a member of `portal_owner` alone. */
@@ -39,18 +52,7 @@ function quiet(pool: pg.Pool): pg.Pool {
   return pool;
 }
 
-/** `end()` resolves before the server has seen every socket close. */
-async function dropWhenIdle(pool: pg.Pool, database: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await pool.query(`DROP DATABASE ${database}`);
-      return;
-    } catch (error) {
-      if (attempt >= 20) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-}
+const FIXTURE_MIGRATIONS = fileURLToPath(new URL('./drizzle/', import.meta.url));
 
 /**
  * A fresh database on the cluster named by PORTAL_TEST_DATABASE_URL, migrated,
@@ -63,38 +65,56 @@ export async function createFixture(): Promise<Fixture> {
   }
   const database = `portal_test_${randomBytes(6).toString('hex')}`;
   const bootstrap = quiet(new pg.Pool({ connectionString: ADMIN_URL, max: 1 }));
-  await bootstrap.query(`CREATE DATABASE ${database}`);
-  await bootstrap.query(`
-    DO $$ BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${TENANT_LOGIN}') THEN
-        CREATE ROLE ${TENANT_LOGIN} LOGIN PASSWORD '${LOGIN_PASSWORD}';
-      END IF;
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${OWNER_LOGIN}') THEN
-        CREATE ROLE ${OWNER_LOGIN} LOGIN PASSWORD '${LOGIN_PASSWORD}';
-      END IF;
-    END $$`);
+  await createDatabase(bootstrap, database);
+  await createLogin(bootstrap, TENANT_LOGIN, LOGIN_PASSWORD);
+  await createLogin(bootstrap, OWNER_LOGIN, LOGIN_PASSWORD);
 
   const admin = quiet(new pg.Pool({ connectionString: urlFor(ADMIN_URL, database) }));
-  await migrate(admin);
-  await admin.query(`GRANT portal_tenant TO ${TENANT_LOGIN}`);
-  await admin.query(`GRANT portal_owner TO ${OWNER_LOGIN}`);
-  await admin.query(
-    'INSERT INTO portal.tenant_register (tenant_id, zitadel_org_id) VALUES ($1, $2), ($3, $4)',
-    [TENANT_A, ORG_A, TENANT_B, ORG_B]
-  );
-
-  const tenant = new pg.Pool({
-    connectionString: urlFor(ADMIN_URL, database, TENANT_LOGIN),
-    max: 1,
+  await createRoles(admin);
+  await migrateSchema(admin);
+  await migrateSchema(admin, {
+    migrationsFolder: FIXTURE_MIGRATIONS,
+    migrationsTable: '__fixture_migrations',
   });
+  await grantAccess(admin, {
+    schema: 'portal',
+    table: 'tenant_register',
+    tenant: 'SELECT',
+    owner: 'SELECT, INSERT, UPDATE, DELETE',
+  });
+  await grantAccess(admin, {
+    schema: 'portal_test',
+    table: 'note',
+    tenant: 'SELECT, INSERT',
+    owner: 'SELECT',
+  });
+  await grantAccess(admin, {
+    schema: 'portal_test',
+    table: 'leaky',
+    tenant: 'SELECT',
+    owner: 'SELECT',
+  });
+  await grantRole(admin, 'portal_tenant', TENANT_LOGIN);
+  await grantRole(admin, 'portal_owner', OWNER_LOGIN);
+
+  const adminDb = connect(admin);
+  await adminDb.insert(tenantRegister).values([
+    { tenantId: TENANT_A, zitadelOrgId: ORG_A },
+    { tenantId: TENANT_B, zitadelOrgId: ORG_B },
+  ]);
+
+  const tenant = quiet(
+    new pg.Pool({ connectionString: urlFor(ADMIN_URL, database, TENANT_LOGIN), max: 1 })
+  );
   const owner = quiet(new pg.Pool({ connectionString: urlFor(ADMIN_URL, database, OWNER_LOGIN) }));
   return {
     admin,
+    adminDb,
     tenant,
     owner,
     async close() {
       await Promise.all([tenant.end(), owner.end(), admin.end()]);
-      await dropWhenIdle(bootstrap, database);
+      await dropDatabase(bootstrap, database);
       await bootstrap.end();
     },
   };

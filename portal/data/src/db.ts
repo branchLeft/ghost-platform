@@ -1,43 +1,31 @@
-import type { PoolClient, QueryResult, QueryResultRow } from 'pg';
+import { sql } from 'drizzle-orm';
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type { Pool } from 'pg';
+import * as schema from './schema.js';
 
-/** The slice of `pg.Pool` this layer needs; a pool satisfies it. */
-export interface Connectable {
-  connect(): Promise<PoolClient>;
+export type PortalDb = NodePgDatabase<typeof schema>;
+export type Tx = Parameters<Parameters<PortalDb['transaction']>[0]>[0];
+
+export function connect(pool: Pool): PortalDb {
+  return drizzle(pool, { schema });
 }
 
-export type Queryable = {
-  query<R extends QueryResultRow = QueryResultRow>(
-    sql: string,
-    params?: readonly unknown[]
-  ): Promise<QueryResult<R>>;
-};
+export type PortalRole = 'portal_tenant' | 'portal_owner';
 
 /**
- * Runs `work` inside one transaction on one connection. `prepare` runs first
- * in that transaction, so whatever it sets (a role, a bound tenant) holds for
- * exactly the statements of `work` and is gone at commit or rollback; a
- * pooled connection never carries it to the next caller.
+ * Drops the transaction to one of the two portal roles. The role is local to
+ * the transaction, so a pooled connection never carries it to the next caller.
  */
-export async function inTransaction<T>(
-  pool: Connectable,
-  prepare: (client: PoolClient) => Promise<void>,
-  work: (client: Queryable) => Promise<T>
-): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    try {
-      await prepare(client);
-      const result = await work({
-        query: (sql, params) => client.query(sql, params as unknown[]),
-      });
-      await client.query('COMMIT');
-      return result;
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw error;
-    }
-  } finally {
-    client.release();
-  }
+export async function enterRole(tx: Tx, role: PortalRole): Promise<void> {
+  await tx.execute(sql`SET LOCAL ROLE ${sql.identifier(role)}`);
+}
+
+export type BindingKey = 'portal.tenant_id' | 'portal.organisation_id';
+
+/**
+ * Binds a value to the transaction for the policies to read. Local, so it
+ * dies at commit or rollback with the role.
+ */
+export async function bind(tx: Tx, key: BindingKey, value: string): Promise<void> {
+  await tx.execute(sql`SELECT set_config(${key}, ${value}, true)`);
 }

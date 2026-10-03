@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { TenantDb, bindTenant, type Queryable } from '../src/tenant/index.js';
+import { TenantDb, bindTenant, type Tx } from '../src/tenant/index.js';
 
 const TENANT_DIR = join(import.meta.dirname, '../src/tenant');
 
@@ -25,8 +25,8 @@ describe('the compile-time guarantee', () => {
   // These lines are checked by `tsc --noEmit`, not by vitest: each directive
   // fails the type check if the call it covers ever starts to compile.
   it('cannot express a tenant-facing run without a scope', () => {
-    const db = new TenantDb({ connect: () => Promise.reject(new Error('unused')) });
-    const work = async (_client: Queryable) => 1;
+    const db = new TenantDb(null as never);
+    const work = async (_tx: Tx) => 1;
     // @ts-expect-error a scope is a required argument
     void db.run(work).catch(() => undefined);
     // @ts-expect-error a bare string is not a scope

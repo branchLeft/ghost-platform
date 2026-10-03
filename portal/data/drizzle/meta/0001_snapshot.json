@@ -1,0 +1,75 @@
+{
+  "id": "7fd7d764-0908-483a-9dac-625682aaa620",
+  "prevId": "3a63ed02-f120-4c2a-a429-9b95008bed9c",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "portal.tenant_register": {
+      "name": "tenant_register",
+      "schema": "portal",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "zitadel_org_id": {
+          "name": "zitadel_org_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "tenant_register_zitadel_org_id_unique": {
+          "name": "tenant_register_zitadel_org_id_unique",
+          "nullsNotDistinct": false,
+          "columns": ["zitadel_org_id"]
+        }
+      },
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"tenant_register\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"tenant_register\".\"tenant_id\" = public.bound_tenant()"
+        },
+        "organisation_lookup": {
+          "name": "organisation_lookup",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"tenant_register\".\"zitadel_org_id\" = public.bound_organisation()"
+        }
+      },
+      "checkConstraints": {},
+      "isRLSEnabled": true
+    }
+  },
+  "enums": {},
+  "schemas": {
+    "portal": "portal"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

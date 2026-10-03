@@ -10,5 +10,12 @@
     "noUncheckedIndexedAccess": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "provision/**/*.ts",
+    "vitest.config.ts",
+    "drizzle.config.ts",
+    "drizzle.test.config.ts"
+  ]
 }
