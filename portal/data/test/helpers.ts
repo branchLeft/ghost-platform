@@ -33,6 +33,25 @@ function urlFor(base: string, database: string, user?: string): string {
   return url.toString();
 }
 
+/** A closing socket can still report an error after `end()` resolves. */
+function quiet(pool: pg.Pool): pg.Pool {
+  pool.on('error', () => undefined);
+  return pool;
+}
+
+/** `end()` resolves before the server has seen every socket close. */
+async function dropWhenIdle(pool: pg.Pool, database: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await pool.query(`DROP DATABASE ${database}`);
+      return;
+    } catch (error) {
+      if (attempt >= 20) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
+
 /**
  * A fresh database on the cluster named by PORTAL_TEST_DATABASE_URL, migrated,
  * holding two tenants in the register. A missing URL fails the suite rather
@@ -43,7 +62,7 @@ export async function createFixture(): Promise<Fixture> {
     throw new Error('PORTAL_TEST_DATABASE_URL must name a PostgreSQL superuser connection');
   }
   const database = `portal_test_${randomBytes(6).toString('hex')}`;
-  const bootstrap = new pg.Pool({ connectionString: ADMIN_URL, max: 1 });
+  const bootstrap = quiet(new pg.Pool({ connectionString: ADMIN_URL, max: 1 }));
   await bootstrap.query(`CREATE DATABASE ${database}`);
   await bootstrap.query(`
     DO $$ BEGIN
@@ -55,7 +74,7 @@ export async function createFixture(): Promise<Fixture> {
       END IF;
     END $$`);
 
-  const admin = new pg.Pool({ connectionString: urlFor(ADMIN_URL, database) });
+  const admin = quiet(new pg.Pool({ connectionString: urlFor(ADMIN_URL, database) }));
   await migrate(admin);
   await admin.query(`GRANT portal_tenant TO ${TENANT_LOGIN}`);
   await admin.query(`GRANT portal_owner TO ${OWNER_LOGIN}`);
@@ -68,14 +87,14 @@ export async function createFixture(): Promise<Fixture> {
     connectionString: urlFor(ADMIN_URL, database, TENANT_LOGIN),
     max: 1,
   });
-  const owner = new pg.Pool({ connectionString: urlFor(ADMIN_URL, database, OWNER_LOGIN) });
+  const owner = quiet(new pg.Pool({ connectionString: urlFor(ADMIN_URL, database, OWNER_LOGIN) }));
   return {
     admin,
     tenant,
     owner,
     async close() {
       await Promise.all([tenant.end(), owner.end(), admin.end()]);
-      await bootstrap.query(`DROP DATABASE ${database} WITH (FORCE)`);
+      await dropWhenIdle(bootstrap, database);
       await bootstrap.end();
     },
   };
