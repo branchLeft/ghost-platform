@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly trigger for branchleft-backup-worker.service
+
+[Timer]
+# Ahead of db1's own 03:10 UTC all-databases dump, so the two never take
+# their read locks on db1 at the same time.
+OnCalendar=*-*-* 01:40:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

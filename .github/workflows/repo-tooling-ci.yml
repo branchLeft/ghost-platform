@@ -136,6 +136,12 @@ jobs:
       - name: Demo host provisioning script tests
         run: python3 -m unittest discover -s demo-host/provision -p 'test_*.py'
 
+      # The control host's backup-worker installer. Its tests also tie the
+      # units and the required environment to the scripts they run, so a
+      # change on either side fails here rather than on the host.
+      - name: Control host provisioning script tests
+        run: python3 -m unittest discover -s control/provision -p 'test_*.py'
+
       # The same tenant-slug rule is written four times here, each read on a
       # different host with no shared import (see the script's docstring), so
       # one copy can drift loose without any other test going red. This is
