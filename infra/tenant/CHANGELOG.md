@@ -2,6 +2,24 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## 5.0.0
+
+**`nextcloud1` is now a reserved stack name, so no tenant can take the slug
+of the platform's file-sharing host.**
+
+- **Breaking: `validateTenantSlug` refuses `nextcloud1`**, which it previously
+  accepted. Called breaking on the same precedent as 4.0.0 — a check that
+  refuses input it used to accept — although the blast radius is nil: no
+  tenant uses that slug, and tenant zero's slug, `blog`, stays deliberately
+  unreserved (see `naming.md`).
+- **Licence changed from MIT to PolyForm Shield 1.0.0.** The package's
+  `LICENSE` and `license` field now carry the new terms; 4.0.0 and earlier
+  remain under MIT as published.
+- `@pulumi/pulumi` floor raised from `^3.259.0` to `^3.262.0`.
+- No change to anything the component renders for an existing tenant: every
+  other source change since 4.0.0 moved explanatory comments into sibling
+  `.md` files, and the compiled output is otherwise identical.
+
 ## 4.0.0
 
 **Every tenant's healthcheck followed Ghost's HTTPS redirect and could never
