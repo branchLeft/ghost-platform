@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Live proof of promotion_gate.py against a real source/replica pair built
+# from db1's pinned MySQL image and its own branchleft.cnf. Every scenario
+# freezes the blog's table the way the cutover does, reads the frozen
+# coordinates from performance_schema.log_status inside that lock, and runs
+# the gate exactly as a cutover script would. Containers and the network are
+# removed on exit, pass or fail. Needs Docker and about 3 GB of memory.
+# Scenarios and expected output: promotion_gate.md#live-proof.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+# Must match db/RUNBOOK-db.md's pinned db1 image.
+IMAGE="mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+PW="proofRootPw123!"
+REPL_PW="proofReplPw123!"
+RUN=$$
+NET="promotion-gate-proof-net-$RUN"
+SRC="promotion-gate-proof-source-$RUN"
+REP="promotion-gate-proof-replica-$RUN"
+WORK="$(mktemp -d)"
+WRITER_FLAG="$WORK/writer-on"
+
+teardown() {
+    rm -f "$WRITER_FLAG"
+    docker rm -f "$SRC" "$REP" >/dev/null 2>&1 || true
+    docker network rm "$NET" >/dev/null 2>&1 || true
+    rm -rf "$WORK"
+}
+trap teardown EXIT
+
+fail() {
+    echo "FAILED: $*" >&2
+    exit 1
+}
+
+src_sql() { docker exec -i -e MYSQL_PWD="$PW" "$SRC" mysql -uroot -N -B "$@"; }
+rep_sql() { docker exec -i -e MYSQL_PWD="$PW" "$REP" mysql -uroot -N -B "$@"; }
+rep_field() { docker exec -e MYSQL_PWD="$PW" "$REP" mysql -uroot --vertical -e 'SHOW REPLICA STATUS' | awk -v k="$1:" '$1 == k { print $2 }'; }
+
+start_server() {
+    docker run -d --platform linux/amd64 --name "$1" --network "$NET" -e MYSQL_ROOT_PASSWORD="$PW" \
+        -v "$REPO_ROOT/db/stack/conf.d/branchleft.cnf:/etc/mysql/conf.d/branchleft.cnf:ro" \
+        "$IMAGE" --bind-address=0.0.0.0 "${@:2}" >/dev/null
+}
+
+# Readiness is a real query on the final server, never a ping: the image's
+# entrypoint runs a socket-only bootstrap server first, then restarts.
+wait_ready() {
+    for _ in $(seq 1 180); do
+        if docker logs "$1" 2>&1 | grep -q 'ready for connections.*port: 3306' &&
+            [ "$(docker exec -e MYSQL_PWD="$PW" "$1" mysql -uroot -N -B -e 'SELECT @@port' 2>/dev/null)" = "3306" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    fail "$1 never answered a real query"
+}
+
+# Holds READ on the blog's table for $1 seconds in one session, and inside
+# that lock prints the frozen coordinates and row count to $WORK/frozen.
+freeze() {
+    rm -f "$WORK/frozen"
+    docker exec -i -e MYSQL_PWD="$PW" "$SRC" mysql -uroot -N -B -n >"$WORK/frozen" <<SQL &
+SET SESSION lock_wait_timeout = 2;
+LOCK TABLES blog.posts READ;
+SELECT SERVER_UUID, LOCAL->>'\$.binary_log_file', LOCAL->>'\$.binary_log_position', (SELECT COUNT(*) FROM blog.posts) FROM performance_schema.log_status;
+DO SLEEP($1);
+UNLOCK TABLES;
+SQL
+    FREEZE_PID=$!
+    for _ in $(seq 1 30); do
+        if [ -s "$WORK/frozen" ]; then
+            read -r F_UUID F_FILE F_POS F_COUNT <"$WORK/frozen"
+            echo "  frozen at $F_FILE:$F_POS with $F_COUNT posts"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "the freeze never printed its coordinates"
+}
+
+thaw() { wait "$FREEZE_PID" || fail "the freeze session failed"; }
+
+# Runs the gate against the frozen coordinates; extra args override them.
+gate() {
+    local timeout="$1"
+    shift
+    python3 db/provision/promotion_gate.py --source-uuid "$F_UUID" --source-log-file "$F_FILE" \
+        --source-log-position "$F_POS" --timeout "$timeout" --poll 1 "$@" \
+        -- docker exec -e MYSQL_PWD="$PW" "$REP" mysql -uroot --vertical -e 'SHOW REPLICA STATUS'
+}
+
+expect_refusal() {
+    local label="$1" pattern="$2"
+    shift 2
+    local out
+    if out="$("$@")"; then
+        fail "$label: the gate promoted ($out)"
+    fi
+    echo "  $out"
+    echo "$out" | grep -q "^DO NOT PROMOTE: .*$pattern" || fail "$label: refused for the wrong reason"
+    echo "PASS $label"
+}
+
+replica_has() { [ "$(rep_sql -e "SELECT COUNT(*) FROM blog.posts WHERE title = '$1'")" = "1" ]; }
+
+echo "== setup"
+docker network create "$NET" >/dev/null
+start_server "$SRC"
+start_server "$REP" --server-id=2 --replicate-wild-do-table='blog.%'
+wait_ready "$SRC"
+wait_ready "$REP"
+echo "  $(docker exec "$SRC" mysqld --version)"
+SCHEMA="CREATE DATABASE blog; CREATE TABLE blog.posts (id INT AUTO_INCREMENT PRIMARY KEY, title VARCHAR(191) NOT NULL);"
+src_sql -e "$SCHEMA CREATE USER 'repl'@'%' IDENTIFIED BY '$REPL_PW' REQUIRE SSL; GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';"
+rep_sql -e "$SCHEMA"
+read -r START_FILE START_POS < <(src_sql -e "SELECT LOCAL->>'\$.binary_log_file', LOCAL->>'\$.binary_log_position' FROM performance_schema.log_status")
+rep_sql -e "CHANGE REPLICATION SOURCE TO SOURCE_HOST='$SRC', SOURCE_USER='repl', SOURCE_PASSWORD='$REPL_PW', SOURCE_LOG_FILE='$START_FILE', SOURCE_LOG_POS=$START_POS, SOURCE_SSL=1, SOURCE_CONNECT_RETRY=2; START REPLICA;"
+src_sql -e "INSERT INTO blog.posts (title) VALUES ('before the move')"
+for _ in $(seq 1 60); do replica_has 'before the move' && break; sleep 1; done
+replica_has 'before the move' || fail "replication never started"
+
+echo "== 1. healthy replica under continuous writes: PROMOTE"
+touch "$WRITER_FLAG"
+(while [ -f "$WRITER_FLAG" ]; do src_sql -e "INSERT INTO blog.posts (title) VALUES ('writer')"; done) &
+WRITER_PID=$!
+sleep 5
+freeze 40
+out="$(gate 30)" || fail "healthy replica refused: $out"
+echo "  $out"
+[ "$(rep_sql -e 'SELECT COUNT(*) FROM blog.posts')" = "$F_COUNT" ] || fail "promoted with a row count differing from the frozen source"
+echo "PASS promote at the frozen coordinates, replica count $F_COUNT equals frozen count"
+rm -f "$WRITER_FLAG"
+wait "$WRITER_PID" || true
+thaw
+
+echo "== 2. coordinates mismatch: refused"
+freeze 30
+expect_refusal "different source" "coordinates mismatch" gate 5 --source-uuid "00000000-0000-0000-0000-000000000000"
+expect_refusal "different binary log name" "coordinates mismatch" gate 5 --source-log-file "binlog.${F_FILE##*.}"
+expect_refusal "replica past the frozen position" "past the frozen coordinates" gate 5 --source-log-position "$((F_POS - 1))"
+thaw
+
+echo "== 3. disconnected replica, post written during the outage: DO NOT PROMOTE"
+rep_sql -e "STOP REPLICA IO_THREAD"
+docker network disconnect "$NET" "$REP"
+rep_sql -e "START REPLICA IO_THREAD"
+src_sql -e "INSERT INTO blog.posts (title) VALUES ('published during the outage')"
+freeze 40
+sleep 4
+echo "  replica reports IO=$(rep_field Replica_IO_Running) SQL=$(rep_field Replica_SQL_Running) Seconds_Behind_Source=$(rep_field Seconds_Behind_Source)"
+expect_refusal "disconnected replica" "timed out.*behind" gate 8
+replica_has 'published during the outage' && fail "the outage post reached a disconnected replica"
+echo "PASS the post written during the outage is absent on the replica the gate refused"
+thaw
+docker network connect "$NET" "$REP"
+for _ in $(seq 1 60); do replica_has 'published during the outage' && break; sleep 1; done
+freeze 30
+out="$(gate 30)" || fail "reconnected replica refused: $out"
+echo "  $out"
+replica_has 'published during the outage' || fail "promoted without the outage post"
+echo "PASS reconnected replica promotes with the outage post present"
+thaw
+
+echo "== 4. replica behind with both threads running: refused at the timeout"
+rep_sql -e "STOP REPLICA SQL_THREAD; CHANGE REPLICATION SOURCE TO SOURCE_DELAY=3600; START REPLICA SQL_THREAD;"
+src_sql -e "INSERT INTO blog.posts (title) VALUES ('delayed')"
+freeze 30
+sleep 2
+expect_refusal "replica behind" "timed out.*behind" gate 6
+thaw
+rep_sql -e "STOP REPLICA SQL_THREAD; CHANGE REPLICATION SOURCE TO SOURCE_DELAY=0; START REPLICA SQL_THREAD;"
+for _ in $(seq 1 60); do replica_has 'delayed' && break; sleep 1; done
+
+echo "== 5. SQL thread error: ABANDON at once, without waiting for the timeout"
+rep_sql -e "INSERT INTO blog.posts (id, title) VALUES (999999, 'replica-only row')"
+src_sql -e "INSERT INTO blog.posts (id, title) VALUES (999999, 'conflicting source row')"
+for _ in $(seq 1 60); do [ "$(rep_field Last_SQL_Errno)" != "0" ] && break; sleep 1; done
+freeze 30
+started=$(date +%s)
+expect_refusal "SQL thread error" "SQL thread error 1062" gate 25
+[ $(($(date +%s) - started)) -lt 15 ] || fail "the SQL-error refusal waited for the timeout"
+echo "PASS the SQL-thread error abandoned without waiting"
+thaw
+
+echo "ALL PASSED"
