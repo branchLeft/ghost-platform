@@ -12,6 +12,8 @@ render-core/coverage
 render-core/*.tgz
 __pycache__/
 *.pyc
+.coverage
+.coverage.*
 
 graphify-out/
 

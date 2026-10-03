@@ -293,7 +293,9 @@ def install(
     which: Callable[[str], str | None] = shutil.which,
 ) -> list[str]:
     """Every non-secret step, then the timer only if nothing is missing.
-    Returns what is still missing; empty means the timer is enabled."""
+    Returns what is still missing; empty means the timer is enabled. While
+    anything is missing the timer is disabled, even if an earlier run had
+    enabled it."""
     check_release(release_root, paths, owner_uid=owner_uid)
     ensure_service_user(run)
     moved = point_current_at(release_root, paths.current_link)
@@ -301,11 +303,21 @@ def install(
         run(["systemctl", "daemon-reload"], check=True)
     problems = readiness_problems(paths, run, group_gid=group_gid(), owner_uid=owner_uid, which=which)
     if problems:
+        run(["systemctl", "disable", "--now", TIMER_UNIT], check=True)
         return problems
     run(["systemctl", "enable", "--now", TIMER_UNIT], check=True)
     if moved:
         print(f"install_backup_worker: current -> {release_root}")
     return []
+
+
+def preflight_problems(paths: Paths, *, owner_uid: int = 0, group_gid: int | None = None) -> list[str]:
+    """The unit's ExecStartPre: re-checks the tenants file at every run,
+    as the service account, so a tenant added after install cannot be
+    dumped under another tenant's recipient."""
+    return tenants_file_problems(
+        paths.tenants_file, owner_uid=owner_uid, group_gid=os.getgid() if group_gid is None else group_gid
+    )
 
 
 def main(argv: Sequence[str] | None = None, *, run: Runner = subprocess.run, paths: Paths | None = None) -> int:
@@ -315,9 +327,19 @@ def main(argv: Sequence[str] | None = None, *, run: Runner = subprocess.run, pat
         action="store_true",
         help="report what is still missing before the timer can be enabled; change nothing",
     )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="the unit's pre-start check of the tenants file; exits 1 to refuse the run",
+    )
     args = parser.parse_args(argv)
     paths = paths or Paths()
 
+    if args.preflight:
+        problems = preflight_problems(paths)
+        for problem in problems:
+            print(f"install_backup_worker: refusing to run: {problem}", file=sys.stderr)
+        return 1 if problems else 0
     if args.check:
         problems = readiness_problems(paths, run, group_gid=_service_gid())
     else:
@@ -333,7 +355,7 @@ def main(argv: Sequence[str] | None = None, *, run: Runner = subprocess.run, pat
     if problems:
         for problem in problems:
             print(f"install_backup_worker: missing: {problem}", file=sys.stderr)
-        print(f"install_backup_worker: {TIMER_UNIT} NOT enabled", file=sys.stderr)
+        print(f"install_backup_worker: {TIMER_UNIT} NOT enabled (disabled if it was)", file=sys.stderr)
         return 2
     print("install_backup_worker: ready" + ("" if args.check else f"; {TIMER_UNIT} enabled"))
     return 0

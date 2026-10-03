@@ -167,6 +167,22 @@ class UnitsMatchTheInstallLayout(unittest.TestCase):
         for rel in ibw.REQUIRED_RELEASE_FILES:
             self.assertTrue((REPO_ROOT / rel).is_file(), rel)
 
+    def test_every_run_is_preceded_by_the_tenants_preflight(self) -> None:
+        self.assertEqual(
+            self.service["ExecStartPre"].split(),
+            ["/usr/bin/python3", str(self.paths.current_link / "control/provision/install_backup_worker.py"), "--preflight"],
+        )
+
+    def test_hardening_is_pinned(self) -> None:
+        self.assertEqual(self.service["ProtectSystem"], "strict")
+        self.assertEqual(self.service["CapabilityBoundingSet"], "")
+        self.assertEqual(self.service["NoNewPrivileges"], "yes")
+        self.assertEqual(self.service["PrivateTmp"], "yes")
+        self.assertEqual(self.service["MemoryMax"], "1G")
+        raw = (HERE / ibw.SERVICE_UNIT).read_text()
+        self.assertEqual(len(re.findall(r"^CapabilityBoundingSet=", raw, re.M)), 1)
+        self.assertEqual(len(re.findall(r"^ProtectSystem=", raw, re.M)), 1)
+
     def test_timer_is_nightly_persistent_and_installable(self) -> None:
         timer = _unit(ibw.TIMER_UNIT)
         self.assertRegex(timer["Timer"]["OnCalendar"], r"^\*-\*-\* \d\d:\d\d:\d\d$")
@@ -369,6 +385,18 @@ class Install(SandboxCase):
         problems = self._install(run)
         self.assertTrue(problems)
         self.assertFalse(any(call[:2] == ["systemctl", "enable"] for call in run.calls))
+        self.assertEqual(run.calls[-1], ["systemctl", "disable", "--now", ibw.TIMER_UNIT])
+
+    def test_a_second_tenant_added_after_enable_turns_the_timer_off_on_reinstall(self) -> None:
+        self.box.write_config()
+        self.assertEqual(self._install(FakeRun()), [])
+        self.box.write_config(tenants="blog\nshop\n")
+        run = FakeRun()
+        problems = self._install(run)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("names 2 tenants", problems[0])
+        self.assertIn(["systemctl", "disable", "--now", ibw.TIMER_UNIT], run.calls)
+        self.assertFalse(any(call[:2] == ["systemctl", "enable"] for call in run.calls))
         self.assertTrue((self.box.paths.unit_dir / ibw.SERVICE_UNIT).is_file())
         self.assertTrue(self.box.paths.current_link.is_symlink())
 
@@ -422,6 +450,32 @@ class MainModes(SandboxCase):
                 ibw, "install", return_value=problems
             ):
                 self.assertEqual(ibw.main([], run=FakeRun(), paths=self.box.paths), expected)
+
+
+class Preflight(SandboxCase):
+    def _preflight(self, tenants: str) -> list[str]:
+        self.box.write_config(tenants=tenants)
+        return ibw.preflight_problems(self.box.paths, owner_uid=self.uid)
+
+    def test_one_tenant_runs(self) -> None:
+        self.assertEqual(self._preflight("blog\n"), [])
+
+    def test_a_second_tenant_refuses_the_run(self) -> None:
+        problems = self._preflight("blog\nshop\n")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("names 2 tenants", problems[0])
+
+    def test_a_missing_or_empty_tenants_file_refuses_the_run(self) -> None:
+        self.assertIn("names no tenant", self._preflight("# none\n")[0])
+        self.box.paths.tenants_file.unlink()
+        self.assertIn("does not exist", ibw.preflight_problems(self.box.paths, owner_uid=self.uid)[0])
+
+    def test_main_preflight_exits_1_on_any_problem_and_0_otherwise(self) -> None:
+        for problems, expected in ((["x"], 1), ([], 0)):
+            with mock.patch.object(ibw, "preflight_problems", return_value=problems):
+                run = FakeRun()
+                self.assertEqual(ibw.main(["--preflight"], run=run, paths=self.box.paths), expected)
+                self.assertEqual(run.calls, [])
 
 
 class ServiceGroupLookup(unittest.TestCase):

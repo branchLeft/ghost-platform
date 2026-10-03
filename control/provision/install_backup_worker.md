@@ -56,10 +56,21 @@ name (never by value), and exits 2.
   client line. A newer client breaks `--source-data` against an 8.0 server.
   `db/provision/install_host_prereqs.py` installs both.
 
-The timer is never turned **off** here. If an input breaks after the timer
-is on, the nightly run fails loudly: the unit fails, and
-`TenantBackupAgeHigh` fires once a tenant's last success is older than 36
-hours. Quietly disabling the timer would hide that failure.
+When the installer refuses, it also **disables** the timer, so a timer
+that an earlier install enabled cannot keep running against inputs the
+installer now rejects.
+
+The tenants check also runs at **every run**, not only at install. The
+unit's `ExecStartPre` calls this script with `--preflight` as the service
+account. It re-checks the tenants file (owner, mode, at least one tenant,
+no more than one), and a failure refuses the run before the loop starts.
+A second tenant added by hand, with no re-install, therefore stops the
+backups rather than encrypting two tenants to one key. The refused run
+fails the unit, and `TenantBackupAgeHigh` fires once the last success is
+older than 36 hours.
+
+If any other input breaks after the timer is on (a rotated password, a
+moved CA), the nightly run itself fails loudly in the same way.
 
 The script never starts the service itself. The first run is a deliberate
 operator step, so its output is read rather than assumed.
@@ -83,6 +94,15 @@ depend on a minimal `/dev` keeping that path.
 
 `TimeoutStartSec=6h` bounds the whole serial loop. The transport already
 bounds each tenant's dump at 30 minutes.
+
+`MemoryMax=1G` protects the shared host. The worker holds each dump's
+ciphertext in memory before uploading it, so a tenant whose dump outgrows
+the limit fails its run loudly rather than pressing on Nextcloud's memory.
+Raise the limit only with the host's headroom in view.
+
+The tests pin `ProtectSystem=strict`, the empty `CapabilityBoundingSet=`,
+`NoNewPrivileges`, `PrivateTmp`, `MemoryMax` and the `ExecStartPre`, so
+loosening any of them fails a test.
 
 ## Timer
 
