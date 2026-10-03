@@ -238,6 +238,11 @@ def tenants_file_problems(path: pathlib.Path, *, owner_uid: int = 0, group_gid: 
     ]
     if not names:
         problems.append(f"{path} names no tenant")
+    if len(set(names)) > 1:
+        problems.append(
+            f"{path} names {len(set(names))} tenants, but the loop encrypts every tenant to one "
+            "AGE_RECIPIENT_PUBLIC_KEY; each tenant needs its own recipient first"
+        )
     return problems
 
 

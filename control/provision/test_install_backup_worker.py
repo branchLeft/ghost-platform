@@ -325,6 +325,12 @@ class TenantsFile(SandboxCase):
         problems = self._problems(tenants_mode=0o600)
         self.assertTrue(any("must be readable by the backup-worker group" in p for p in problems), problems)
 
+    def test_more_than_one_tenant_is_refused_while_one_recipient_covers_them_all(self) -> None:
+        problems = self._problems(tenants="blog\nshop\n")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("names 2 tenants", problems[0])
+        self.assertEqual(self._problems(tenants="blog\nblog\n"), [])
+
     def test_naming_no_tenant_is_refused(self) -> None:
         self.assertIn(f"{self.box.paths.tenants_file} names no tenant", self._problems(tenants="# none\n\n"))
 

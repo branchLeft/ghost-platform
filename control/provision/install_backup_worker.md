@@ -47,6 +47,11 @@ name (never by value), and exits 2.
 - The tenants file is root-owned, writable only by root, readable by the
   service account, and names at least one tenant. It decides whose data is
   dumped, so the account that runs the dump must not be able to edit it.
+- The tenants file names exactly one tenant. The loop encrypts every tenant
+  it dumps to the single `AGE_RECIPIENT_PUBLIC_KEY`, and LLD-9 requires one
+  recipient per tenant, so that no tenant's key can decrypt another tenant's
+  dump. A second tenant has to wait until the loop takes a recipient per
+  tenant.
 - `age` and `mysqldump` are installed, and `mysqldump` reports the `8.0`
   client line. A newer client breaks `--source-data` against an 8.0 server.
   `db/provision/install_host_prereqs.py` installs both.
