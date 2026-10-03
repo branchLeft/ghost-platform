@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""One demo slot's health router, installed at
-/usr/local/lib/branchleft/health_router.py and run by the static
-`branchleft-health-router@<slot>` unit.
+"""One demo slot's health router, run by the static `branchleft-health-router@<slot>` unit.
 
-Listens on the slot's one loopback health port. Each edge check names its
-colour in the X-Colour-Upstream header; the router forwards it to that
-colour's drain sidecar over a unix socket and answers 200 only when the
-sidecar did. Everything else is 503. See health_router.md for what each
-refusal means and why the router holds no state, reaches nothing but the sockets
-and knows nothing of either colour's lifecycle.
+Answers the edge's colour-named check on the slot's one loopback health port
+from that colour's drain sidecar, over a unix socket. See health_router.md.
 """
 
 from __future__ import annotations
