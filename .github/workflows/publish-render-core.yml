@@ -1,0 +1,83 @@
+name: Publish render-core package
+
+# Builds and publishes render-core/ as @branchleft/ghost-platform-render-core
+# to GitHub Packages whenever a render-core release tag is pushed. Mirrors
+# publish-tenant-package.yml: npm, a plain `tsc` build, a tag that must agree
+# with package.json, `GITHUB_TOKEN` for both the install and the publish.
+#
+# The tag prefix is the one difference. The tenant package owns the bare
+# `vX.Y.Z` tags, so this package takes `render-core-vX.Y.Z`; neither tag
+# pattern matches the other's ref, so one push never starts both workflows.
+#
+# render-core-ci.yml type-checks and tests every push and pull request and
+# never publishes; this workflow only runs on a release tag. The type check
+# and tests are repeated here, before the publish, because a tag can be cut
+# from a commit whose own CI run was skipped or has not finished.
+
+# `workflow_dispatch` is the escape hatch for a tag push that produced no run
+# at all. GitHub honours `[skip ci]` in the head commit's message for tag
+# pushes as well as branch pushes, so a tag cut from a commit that happens to
+# carry that marker is silently skipped. There is no failed run to notice:
+# the only symptom is the version never appearing in the registry.
+on:
+  push:
+    tags:
+      - 'render-core-v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Build & Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: render-core
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: render-core/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: render-core/package-lock.json
+
+      # `npm publish` takes the version from package.json and ignores the tag,
+      # so the two can disagree. A tag behind package.json fails closed on the
+      # duplicate-version check, but a tag *ahead* of it would quietly publish
+      # something other than what the tag names.
+      - name: Refuse a tag that disagrees with package.json
+        if: github.event_name == 'push'
+        run: |
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_NAME}" != "render-core-v${PACKAGE_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} names a different version than package.json (${PACKAGE_VERSION}). Nothing published."
+            exit 1
+          fi
+
+      # The install needs the token as much as the publish does: this package
+      # takes a dev dependency on `@branchleft/tsconfig`, from the same
+      # registry, and GitHub Packages answers 401 to an anonymous read.
+      - name: Install dependencies
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test:unit
+
+      - name: Publish
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
