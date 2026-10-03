@@ -60,3 +60,7 @@ demo-host/provision/test_branchleft_slot.py
 
 # Test-harness probe: readiness of a test MySQL container.
 adapters/sso/test/image/provision-support-account-mysql.image.test.mjs
+
+# Provisioning: the portal's database roles, grants and logins, and the test
+# suite's throwaway databases -- operator-run, never the portal at run time.
+portal/data/provision/*

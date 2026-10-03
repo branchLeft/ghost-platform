@@ -21,3 +21,5 @@ graphify-out/
 # pnpm install here is a mistake, and its lockfile must not get committed.
 pnpm-lock.yaml
 pnpm-workspace.yaml
+portal/*/dist
+portal/*/coverage

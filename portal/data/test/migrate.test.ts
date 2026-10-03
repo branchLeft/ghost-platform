@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'vitest';
+import { migrateSchema } from '../src/migrate.js';
+import { UnisolatedTableError, assertTenantTablesIsolated } from '../src/isolation.js';
+import * as schema from '../src/schema.js';
+import * as fixtureSchema from './fixtureSchema.js';
+
+describe('assertTenantTablesIsolated', () => {
+  it('accepts the shipped schema', () => {
+    expect(() => assertTenantTablesIsolated(schema)).not.toThrow();
+  });
+
+  it('accepts a table that is isolated', () => {
+    expect(() => assertTenantTablesIsolated({ note: fixtureSchema.note })).not.toThrow();
+  });
+
+  it('names a tenant table left without row security and its policy', () => {
+    let error: unknown;
+    try {
+      assertTenantTablesIsolated(fixtureSchema);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(UnisolatedTableError);
+    expect((error as UnisolatedTableError).tables).toEqual(['leaky']);
+  });
+
+  it('ignores a table with no tenant column', () => {
+    expect(() => assertTenantTablesIsolated({ other: fixtureSchema.fixture })).not.toThrow();
+  });
+
+  it('refuses to migrate a schema holding an unisolated tenant table', async () => {
+    await expect(
+      migrateSchema(null as never, { schemaExports: fixtureSchema })
+    ).rejects.toBeInstanceOf(UnisolatedTableError);
+  });
+});
