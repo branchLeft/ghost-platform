@@ -1,0 +1,6 @@
+{
+  // The proof that runs against real containers: kept out of the unit
+  // build, but still compiled and type-checked so it cannot rot unseen.
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*.ts", "test-local/**/*.ts", "vitest.local.config.ts"]
+}

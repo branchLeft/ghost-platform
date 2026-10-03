@@ -1,21 +1,17 @@
 {
-  // Self-contained strict settings: the service has no runtime dependency,
-  // and the shared tsconfig package sits on a registry that only CI can read,
-  // so depending on it would make a local install impossible.
+  // strict-1 alone, same reasoning as services/mailgun-shim: no stack preset
+  // fits a plain Node service with no Pulumi resources and no browser target.
+  "extends": "@branchleft/tsconfig/strict-1.json",
   "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "noEmit": true,
     "target": "ES2023",
     "lib": ["ES2023"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "types": ["node"],
-    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
     "outDir": "dist"
   },
+  // vitest.config.ts is listed explicitly because it sits at the project
+  // root, outside both source trees. tsconfig.build.json narrows `include`
+  // back to src, so naming it here cannot leak it into the published build.
   "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

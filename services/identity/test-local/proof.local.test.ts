@@ -11,8 +11,8 @@ import {
 import { managementClient } from '../src/management.js';
 import { reconcile } from '../src/reconcile.js';
 import type { Outputs } from '../src/reconcile.js';
-import { CLAIM_RESOURCE_OWNER, verifyClaims } from '../src/tokens.js';
-import type { VerifierOptions } from '../src/tokens.js';
+import { CLAIM_RESOURCE_OWNER } from '../src/tokens.js';
+import { createTokenVerifier } from '../src/verifier.js';
 import { createUser, instanceUrl, projectGrantId, signIn } from './signin.js';
 import type { TestUser } from './signin.js';
 
@@ -33,29 +33,31 @@ let outputs: Outputs;
 let alpha: TestUser;
 let beta: TestUser;
 let owner: TestUser;
+let ownerWithTenantRole: TestUser;
 
 const consoleRedirect = 'https://console.proof.test/auth/callback';
 const portalRedirect = 'https://portal.proof.test/auth/callback';
 
-function portalVerifier(): VerifierOptions {
-  return {
+/** Verifiers as an application builds them: the real key set, the pinned
+ * algorithm, and an explicit list of the organisations each admits. */
+function portalVerifier() {
+  return createTokenVerifier({
     issuer: instanceUrl,
     clientId: outputs.clientIds.portal,
     requiredRole: ROLE_TENANT_ADMIN,
-    now: Math.floor(Date.now() / 1000),
+    allowedOrgIds: new Set(Object.values(outputs.tenantOrgIds)),
     leewaySeconds: 30,
-  };
+  });
 }
 
-function consoleVerifier(): VerifierOptions {
-  return {
+function consoleVerifier() {
+  return createTokenVerifier({
     issuer: instanceUrl,
     clientId: outputs.clientIds.console,
     requiredRole: ROLE_OWNER,
-    requiredOrgId: outputs.ownerOrgId,
-    now: Math.floor(Date.now() / 1000),
+    allowedOrgIds: new Set([outputs.ownerOrgId]),
     leewaySeconds: 30,
-  };
+  });
 }
 
 const client = managementClient({
@@ -77,6 +79,11 @@ const setup = async (): Promise<void> => {
   };
   alpha = await tenant('alpha');
   beta = await tenant('beta');
+  ownerWithTenantRole = await createUser({
+    orgId: outputs.ownerOrgId,
+    projectId: outputs.projectId,
+    roleKey: ROLE_TENANT_ADMIN,
+  });
   owner = await createUser({
     orgId: outputs.ownerOrgId,
     projectId: outputs.projectId,
@@ -138,7 +145,7 @@ describe('with tokens Zitadel really signed', () => {
         user,
       });
       expect(out.refusal).toBeUndefined();
-      const verdict = verifyClaims(out.claims!, portalVerifier());
+      const verdict = await portalVerifier().verify(out.token!);
       expect(verdict).toMatchObject({ ok: true, orgId: outputs.tenantOrgIds[slug] });
     }
   });
@@ -155,7 +162,7 @@ describe('with tokens Zitadel really signed', () => {
     if (out.claims) {
       expect(out.claims[CLAIM_RESOURCE_OWNER]).toBe(outputs.tenantOrgIds['alpha']);
       expect(JSON.stringify(out.claims)).not.toContain(betaOrg);
-      expect(verifyClaims(out.claims, portalVerifier())).toMatchObject({
+      expect(await portalVerifier().verify(out.token!)).toMatchObject({
         ok: true,
         orgId: outputs.tenantOrgIds['alpha'],
       });
@@ -172,8 +179,8 @@ describe('with tokens Zitadel really signed', () => {
       user: owner,
     });
     expect(consoleToken.refusal).toBeUndefined();
-    expect(verifyClaims(consoleToken.claims!, consoleVerifier()).ok).toBe(true);
-    expect(verifyClaims(consoleToken.claims!, portalVerifier())).toEqual({
+    expect((await consoleVerifier().verify(consoleToken.token!)).ok).toBe(true);
+    expect(await portalVerifier().verify(consoleToken.token!)).toEqual({
       ok: false,
       reason: 'token was issued to a different application',
     });
@@ -184,7 +191,7 @@ describe('with tokens Zitadel really signed', () => {
       projectId: outputs.projectId,
       user: alpha,
     });
-    expect(verifyClaims(portalToken.claims!, consoleVerifier()).ok).toBe(false);
+    expect((await consoleVerifier().verify(portalToken.token!)).ok).toBe(false);
   });
 
   it('refuses a tenant administrator at the console even when Zitadel signs them in to it', async () => {
@@ -195,9 +202,47 @@ describe('with tokens Zitadel really signed', () => {
       user: alpha,
     });
     if (out.claims) {
-      expect(verifyClaims(out.claims, consoleVerifier()).ok).toBe(false);
+      expect((await consoleVerifier().verify(out.token!)).ok).toBe(false);
     } else {
       expect(out.refusal).toBeDefined();
     }
+  });
+
+  it('refuses, at the portal, an owner-organisation user who holds the tenant role', async () => {
+    const out = await signIn({
+      clientId: outputs.clientIds.portal,
+      redirectUri: portalRedirect,
+      projectId: outputs.projectId,
+      user: ownerWithTenantRole,
+    });
+    expect(out.refusal).toBeUndefined();
+    expect(out.claims?.[CLAIM_RESOURCE_OWNER]).toBe(outputs.ownerOrgId);
+    expect(await portalVerifier().verify(out.token!)).toEqual({
+      ok: false,
+      reason: 'organisation is not permitted here',
+    });
+  });
+
+  it('refuses a real token whose payload was altered, and one with the signature removed', async () => {
+    const out = await signIn({
+      clientId: outputs.clientIds.portal,
+      redirectUri: portalRedirect,
+      projectId: outputs.projectId,
+      user: alpha,
+    });
+    const [header, payload, signature] = out.token!.split('.') as [string, string, string];
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    const forged = Buffer.from(
+      JSON.stringify({ ...claims, [CLAIM_RESOURCE_OWNER]: outputs.tenantOrgIds['beta'] })
+    ).toString('base64url');
+    expect(await portalVerifier().verify(`${header}.${forged}.${signature}`)).toEqual({
+      ok: false,
+      reason: 'token signature is invalid',
+    });
+    const none = Buffer.from(JSON.stringify({ alg: 'none', kid: 'x' })).toString('base64url');
+    expect((await portalVerifier().verify(`${none}.${payload}.`)).ok).toBe(false);
   });
 });

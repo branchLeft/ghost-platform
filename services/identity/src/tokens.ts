@@ -1,14 +1,4 @@
-/**
- * Decides whether an already signature-verified token's claims belong to the
- * application presenting them, and names the tenant they bind it to.
- *
- * The signature, `kid` and algorithm are the JWT library's job and must be
- * checked first; nothing here reads an unverified token. What this adds is the
- * part a signature cannot say: that the token was issued to *this* application
- * rather than its sibling (by the `client_id` claim, since the audience lists
- * the whole project), that its issuer is the sign-in service, and that
- * the organisation it carries is the only source of a tenant.
- */
+/** Claim rules for an already signature-verified token; see tokens.md. */
 
 export const CLAIM_RESOURCE_OWNER = 'urn:zitadel:iam:user:resourceowner:id';
 export const CLAIM_PROJECT_ROLES = 'urn:zitadel:iam:org:project:roles';
@@ -20,8 +10,10 @@ export interface VerifierOptions {
   /** The client id this application was issued. */
   readonly clientId: string;
   readonly requiredRole: string;
-  /** Set for the owner console: the one organisation whose users may use it. */
-  readonly requiredOrgId?: string;
+  /** The organisations whose users may use this application: the owner's for
+   * the console, the reconciled tenant organisations for the portal. Required,
+   * and an empty set admits no one, so a caller cannot forget it. */
+  readonly allowedOrgIds: ReadonlySet<string>;
   /** Seconds since the epoch; injected so expiry is testable. */
   readonly now: number;
   /** Tolerated clock skew in seconds. */
@@ -75,9 +67,7 @@ export function verifyClaims(claims: Claims, options: VerifierOptions): Verdict 
 
   const orgId = claims[CLAIM_RESOURCE_OWNER];
   if (typeof orgId !== 'string' || orgId.length === 0) return deny('organisation is missing');
-  if (options.requiredOrgId !== undefined && orgId !== options.requiredOrgId) {
-    return deny('organisation is not permitted here');
-  }
+  if (!options.allowedOrgIds.has(orgId)) return deny('organisation is not permitted here');
 
   const roles = claims[CLAIM_PROJECT_ROLES];
   if (typeof roles !== 'object' || roles === null || Array.isArray(roles)) {

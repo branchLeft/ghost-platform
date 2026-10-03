@@ -44,13 +44,14 @@ async function setup(): Promise<{
       issuer: ISSUER,
       clientId: outputs.clientIds.console,
       requiredRole: ROLE_OWNER,
-      requiredOrgId: outputs.ownerOrgId,
+      allowedOrgIds: new Set([outputs.ownerOrgId]),
       now: NOW,
     },
     portalVerifier: {
       issuer: ISSUER,
       clientId: outputs.clientIds.portal,
       requiredRole: ROLE_TENANT_ADMIN,
+      allowedOrgIds: new Set(Object.values(outputs.tenantOrgIds)),
       now: NOW,
     },
   };
@@ -121,6 +122,15 @@ describe('the two applications refuse each other’s tokens', () => {
 });
 
 describe('a tenant’s organisation is the only source of its tenant', () => {
+  it('refuses an owner-organisation user who holds the tenant role at the portal', async () => {
+    const { outputs, portalVerifier } = await setup();
+    const claims = mint(outputs.clientIds.portal, outputs.ownerOrgId, ROLE_TENANT_ADMIN);
+    expect(verifyClaims(claims, portalVerifier)).toEqual({
+      ok: false,
+      reason: 'organisation is not permitted here',
+    });
+  });
+
   it('binds the token to the organisation it carries', async () => {
     const { outputs, portalVerifier } = await setup();
     for (const slug of ['alpha', 'beta-two']) {
@@ -152,6 +162,7 @@ describe('verifyClaims fails closed', () => {
     issuer: ISSUER,
     clientId: 'me',
     requiredRole: ROLE_TENANT_ADMIN,
+    allowedOrgIds: new Set(['org-a']),
     now: NOW,
   };
   const good = (): Record<string, unknown> => {
@@ -221,9 +232,12 @@ describe('verifyClaims fails closed', () => {
     );
   });
 
-  it('pins an organisation when one is required', () => {
-    expect(verifyClaims(good(), { ...opts, requiredOrgId: 'org-a' }).ok).toBe(true);
-    expect(verifyClaims(good(), { ...opts, requiredOrgId: 'org-b' }).ok).toBe(false);
+  it('admits only the organisations it is given, and an empty set admits no one', () => {
+    expect(verifyClaims(good(), { ...opts, allowedOrgIds: new Set(['org-a', 'org-b']) }).ok).toBe(
+      true
+    );
+    expect(verifyClaims(good(), { ...opts, allowedOrgIds: new Set(['org-b']) }).ok).toBe(false);
+    expect(verifyClaims(good(), { ...opts, allowedOrgIds: new Set() }).ok).toBe(false);
   });
 
   it('does not treat inherited object keys as a role grant', () => {

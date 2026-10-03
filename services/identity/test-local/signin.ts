@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Claims } from '../src/tokens.js';
 
@@ -98,6 +98,7 @@ async function loginClientToken(): Promise<string> {
 }
 
 export interface SignInOutcome {
+  readonly token?: string;
   readonly claims?: Claims;
   readonly refusal?: string;
 }
@@ -105,25 +106,6 @@ export interface SignInOutcome {
 function decode(jwt: string): Claims {
   const [, payload] = jwt.split('.');
   return JSON.parse(Buffer.from(payload ?? '', 'base64url').toString('utf8')) as Claims;
-}
-
-/** Checks the RS256 signature against the instance's published keys, so the
- * claims under test come from a token Zitadel really signed. */
-async function assertSigned(jwt: string): Promise<void> {
-  const [header, payload, signature] = jwt.split('.');
-  const kid = (JSON.parse(Buffer.from(header ?? '', 'base64url').toString('utf8')) as Json)['kid'];
-  const keys = (await (await fetch(`${url}/oauth/v2/keys`)).json()) as {
-    keys: Array<Json & { kid: string }>;
-  };
-  const jwk = keys.keys.find((key) => key.kid === kid);
-  if (!jwk) throw new Error('signing key not published');
-  const ok = verify(
-    'RSA-SHA256',
-    Buffer.from(`${header}.${payload}`),
-    createPublicKey({ key: jwk as never, format: 'jwk' }),
-    Buffer.from(signature ?? '', 'base64url')
-  );
-  if (!ok) throw new Error('token signature did not verify');
 }
 
 /** Signs a user in to one client through the real code-and-PKCE flow: an
@@ -213,6 +195,5 @@ export async function signIn(options: {
   const tokens = (await exchange.json()) as Json;
   if (!exchange.ok) return { refusal: String(tokens['error'] ?? exchange.status) };
   const access = tokens['access_token'] as string;
-  await assertSigned(access);
-  return { claims: decode(access) };
+  return { token: access, claims: decode(access) };
 }

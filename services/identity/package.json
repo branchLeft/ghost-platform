@@ -7,13 +7,14 @@
   "type": "module",
   "main": "dist/cli.js",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.local.json",
     "build": "tsc -p tsconfig.build.json",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "reconcile": "node dist/cli.js"
   },
   "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "4.1.11",
     "typescript": "^5.9.0",

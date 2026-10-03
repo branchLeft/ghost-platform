@@ -55,11 +55,24 @@ none of which is a secret.
 
 ## Verifying a token
 
-`verifyClaims` in `src/tokens.ts` runs after the JWT library has checked the
-signature. It requires the sign-in service as issuer, the application's own
+An application calls `createTokenVerifier(...).verify(rawBearerToken)` (the only
+verdict-producing export of `src/index.ts`). It checks, in order: shape and size;
+a **pinned signing algorithm** (RS256 only unless widened on purpose; `none`, any
+HMAC and any elliptic curve have no verifier at all); a published key for the
+token's `kid`, fetched from the issuer's `/oauth/v2/keys` (an unknown `kid`
+triggers at most one refetch per interval; an unreachable key set is a refusal);
+the signature; then the claims (`src/tokens.md`). Any failure returns a fixed
+reason carrying nothing from the token.
+
+The claims check requires the sign-in service as issuer, the application's own
 client id in the audience **and as the `client_id` claim**, a live expiry, the
-application's role granted to the user's own organisation, and, for the
-console, the owner organisation. Anything missing or mistyped is a refusal.
+application's role granted to the user's own organisation, and an organisation
+the application admits: `allowedOrgIds` is required, the owner's organisation for
+the console and the reconciled tenant organisation ids (`outputs.json`) for the
+portal. A role alone never admits, so an owner-organisation user holding
+`tenant-admin` is refused by the portal. A tenant added after the portal started
+is admitted only once the portal is given the refreshed list; an empty list
+admits no one.
 
 Read from a live instance: Zitadel lists *every* application of the project in
 `aud`, so the audience alone cannot tell the portal's token from the console's;
@@ -78,6 +91,16 @@ B; and checks that a real console token is refused by the portal check and the
 reverse. Tokens are signature-verified against the instance's published keys.
 It then removes the containers and volumes. It needs Docker and creates nothing
 in any cloud.
+
+## Known limits
+
+- **Drift detection is partial.** The reconciler reads back, and reports drift
+  on, only each application's redirect and post-logout URIs and each tenant
+  grant's role set. A changed application type, authentication method, grant
+  type, token type, role assertion or project check setting on something that
+  already exists is not noticed. Creation sets them correctly; a later edit made
+  by hand would pass unseen.
+- Nothing is deleted: a tenant removed from the list keeps its organisation.
 
 ## Tests
 
