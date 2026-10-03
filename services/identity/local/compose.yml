@@ -1,0 +1,48 @@
+# A throwaway Zitadel and PostgreSQL for proving the reconciler, on a
+# developer machine only. Nothing here is a deployment: every credential is
+# generated per run by prove.sh and held in that run's environment, and the
+# compose project is removed with its volumes afterwards.
+name: identity-proof
+
+services:
+  db:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PROOF_DB_PASSWORD:?set by prove.sh}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d postgres']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  zitadel:
+    image: ghcr.io/zitadel/zitadel@sha256:90a3045b80a2b5b395e1e770302076906af3a5911225af7c464b4f3bd00d0a1b
+    command: start-from-init --masterkeyFromEnv --tlsMode disabled
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:${PROOF_ZITADEL_PORT:-18080}:${PROOF_ZITADEL_PORT:-18080}'
+    volumes:
+      - ${PROOF_STATE_DIR:?set by prove.sh}:/state
+    environment:
+      ZITADEL_MASTERKEY: ${PROOF_MASTERKEY:?set by prove.sh}
+      ZITADEL_DATABASE_POSTGRES_HOST: db
+      ZITADEL_DATABASE_POSTGRES_PORT: 5432
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${PROOF_ZITADEL_DB_PASSWORD:?set by prove.sh}
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${PROOF_DB_PASSWORD:?set by prove.sh}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      ZITADEL_EXTERNALSECURE: 'false'
+      ZITADEL_EXTERNALDOMAIN: localhost
+      ZITADEL_EXTERNALPORT: ${PROOF_ZITADEL_PORT:-18080}
+      ZITADEL_PORT: ${PROOF_ZITADEL_PORT:-18080}
+      ZITADEL_FIRSTINSTANCE_PATPATH: /state/reconciler.pat
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: reconciler
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: reconciler
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: '2030-01-01T00:00:00Z'
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: 'false'
