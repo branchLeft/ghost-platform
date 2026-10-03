@@ -78,7 +78,7 @@ const NAME_EQUALS = (name: string) => ({
 });
 
 export function managementClient(options: ManagementOptions): ZitadelClient {
-  const base = options.baseUrl.replace(/\/+$/, '');
+  const base = options.baseUrl.endsWith('/') ? options.baseUrl.slice(0, -1) : options.baseUrl;
 
   async function call(path: string, body: unknown, orgId?: string): Promise<Json> {
     const headers: Record<string, string> = {

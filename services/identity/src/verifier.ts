@@ -44,6 +44,8 @@ export interface TokenVerifier {
   verify(token: string): Promise<Verdict>;
 }
 
+const trimSlash = (url: string): string => (url.endsWith('/') ? url.slice(0, -1) : url);
+
 const deny = (reason: string): Verdict => ({ ok: false, reason });
 
 function decodeSegment(segment: string): Json | null {
@@ -84,7 +86,7 @@ export function createTokenVerifier(options: TokenVerifierOptions): TokenVerifie
   const fetchKeys =
     options.fetchKeys ??
     (async (): Promise<readonly Jwk[]> => {
-      const response = await fetch(`${options.issuer.replace(/\/+$/, '')}/oauth/v2/keys`);
+      const response = await fetch(`${trimSlash(options.issuer)}/oauth/v2/keys`);
       if (!response.ok) throw new Error('key set unavailable');
       const body = (await response.json()) as { keys?: unknown };
       return Array.isArray(body.keys) ? (body.keys as Jwk[]) : [];
