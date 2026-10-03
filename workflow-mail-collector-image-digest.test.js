@@ -55,6 +55,26 @@ function problems(text) {
   if (!/\bnpm run typecheck\b/.test(body) || !/\bnpm run test:unit\b/.test(body)) {
     found.push('test job does not type check and run the unit tests');
   }
+  const guard = (push.match(/^ {4}if: \|\n((?: {6}.*\n?)+)/m) ?? [])[1] ?? '';
+  const flat = guard.replace(/\s+/g, ' ').trim();
+  if (
+    flat !==
+    "github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')"
+  ) {
+    found.push('push job does not run only on main for every trigger');
+  }
+  for (const [name, block] of Object.entries({
+    test: jobBlock(text, 'test'),
+    build: jobBlock(text, 'build'),
+    push,
+  })) {
+    const checkouts = block
+      ? [...block.matchAll(/actions\/checkout@[^\n]*\n((?: {8}.*\n?)*)/g)]
+      : [];
+    if (checkouts.length === 0 || checkouts.some((c) => !/persist-credentials: false/.test(c[1]))) {
+      found.push(`${name} job checkout keeps credentials`);
+    }
+  }
   if (/--tag\s+"?\$IMAGE:latest/.test(push)) found.push('push job tags latest');
   if (
     !/--tag "\$IMAGE:\$IMAGE_TAG"/.test(push) ||
@@ -94,9 +114,9 @@ test('the checker flags each regression, so a passing run means something', () =
   };
 
   assert.ok(
-    problems(sabotage('    needs: test\n    if: |', '    if: |')).includes(
-      'push job is not gated on tests'
-    )
+    problems(
+      sabotage('    needs: test\n    # `main` for every', '    # `main` for every')
+    ).includes('push job is not gated on tests')
   );
   assert.ok(
     problems(
@@ -126,5 +146,30 @@ test('the checker flags each regression, so a passing run means something', () =
   );
   assert.ok(
     problems(sabotage('RepoDigests', 'Id')).includes('digest is not read back from the image store')
+  );
+
+  assert.ok(
+    problems(
+      sabotage(
+        "github.ref == 'refs/heads/main' &&\n      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')",
+        "github.event_name == 'workflow_dispatch' || github.event_name == 'push'"
+      )
+    ).includes('push job does not run only on main for every trigger')
+  );
+  assert.ok(
+    problems(
+      sabotage(
+        "(github.event_name == 'workflow_dispatch' || github.event_name == 'push')",
+        "(github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event_name == 'pull_request')"
+      )
+    ).includes('push job does not run only on main for every trigger')
+  );
+  assert.ok(
+    problems(
+      sabotage(
+        '        with:\n          persist-credentials: false\n\n      - name: Log in',
+        '\n      - name: Log in'
+      )
+    ).includes('push job checkout keeps credentials')
   );
 });

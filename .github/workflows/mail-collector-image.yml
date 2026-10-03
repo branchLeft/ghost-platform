@@ -79,8 +79,8 @@ jobs:
     name: docker build (mail-collector)
     runs-on: ubuntu-latest
     needs: test
-    # workflow_dispatch has no path filter to gate on; it always means "push
-    # the current main", so it goes straight to the push job below.
+    # workflow_dispatch has no path filter to gate on; it means "push the
+    # current main", so it goes straight to the push job below.
     if: github.event_name != 'workflow_dispatch'
     timeout-minutes: 10
     defaults:
@@ -108,9 +108,11 @@ jobs:
     name: Build and push mail-collector image
     runs-on: ubuntu-latest
     needs: test
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     timeout-minutes: 15
 
     permissions:
