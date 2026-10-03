@@ -1,0 +1,41 @@
+# The nightly per-tenant dump loop, run on the control host. Triggered by
+# branchleft-backup-worker.timer; installed by install_backup_worker.py.
+# See install_backup_worker.md for the hardening choices and paths.
+[Unit]
+Description=branchLeft per-tenant backup worker (nightly loop)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=backup-worker
+Group=backup-worker
+EnvironmentFile=/etc/branchleft/backup-worker.env
+Environment=NIGHTLY_DUMP_LOOP_RUN_LOCK_PATH=/run/branchleft-backup-worker/nightly-dump-loop.lock
+Environment=BACKUP_WORKER_METRICS_DIR=/var/lib/branchleft/backup-worker-exporter
+# Re-checks the tenants file at every run; refuses the run, not just the install.
+ExecStartPre=/usr/bin/python3 /opt/branchleft/backup-worker/current/control/provision/install_backup_worker.py --preflight
+ExecStart=/usr/bin/python3 /opt/branchleft/backup-worker/current/infra/provisioning/scripts/nightly_dump_loop.py --tenants-file /etc/branchleft/backup-worker-tenants
+RuntimeDirectory=branchleft-backup-worker
+StateDirectory=branchleft/backup-worker-exporter
+StateDirectoryMode=0755
+UMask=0077
+
+# One tenant's dump is bounded at 30 minutes by the transport itself; this
+# bounds the whole serial loop.
+TimeoutStartSec=6h
+# Each dump's ciphertext is held in memory before upload; a dump that
+# outgrows this fails the run loudly instead of squeezing the shared host.
+MemoryMax=1G
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
