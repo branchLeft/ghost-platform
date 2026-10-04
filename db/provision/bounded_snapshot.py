@@ -25,11 +25,11 @@ from collections.abc import Callable, Mapping, Sequence
 
 # The server's own bound on every lock wait the coordinator makes, in whole
 # seconds (the variable's unit). See bounded_snapshot.md#the-bounds.
-LOCK_WAIT_TIMEOUT_SECONDS = 1
+LOCK_WAIT_TIMEOUT_SECONDS = 31536000
 
 # The client's own bound on the same wait, for the case the server's
 # per-table timeout cannot cover: several tables each waiting just under it.
-WAIT_DEADLINE_SECONDS = 1.2
+WAIT_DEADLINE_SECONDS = 3600.0
 
 # How long the lock may be held, from grant to the server confirming the
 # unlock. The wait and the hold together stay under two seconds.
@@ -426,6 +426,9 @@ def _attempt(
         try:
             if _parse_tables(coordinator.ask(list_tables_sql(schemas), hold_deadline)) != tables:
                 raise _Abort("the set of tables changed while the lock was requested")
+            log_file, position = parse_log_status(
+                coordinator.ask("SELECT LOCAL FROM performance_schema.log_status;", hold_deadline)
+            )
             process = factory.spawn(
                 "mysqldump", ["-v", *dump_args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
             )
@@ -435,9 +438,6 @@ def _attempt(
                     raise _Abort(f"mysqldump ended before opening its snapshot: {dump.stderr.text()!r}")
                 raise _Abort(f"mysqldump did not open its snapshot within the {limits.hold_bound_seconds}s hold bound")
             coordinator.ask("UNLOCK TABLES;", hold_deadline)
-            log_file, position = parse_log_status(
-                coordinator.ask("SELECT LOCAL FROM performance_schema.log_status;", clock() + 5)
-            )
         except _DeadlinePassed:
             raise _Abort(f"lock held past the {limits.hold_bound_seconds}s hold bound") from None
         released = clock()
