@@ -22,30 +22,30 @@ RESULT="$(docker run --rm -v "$PWD/demo-host/provision":/repo:ro -w /tmp debian:
     useradd -u 1000 -M -s /bin/sh sidecar-uid
     useradd -u 30001 -M -s /bin/sh slot-uid
 
-    python3 /repo/drain_flag_dir.py --path /var/run/branchleft/drain-flags --broker-user broker
+    python3 /repo/drain_flag_dir.py --path /var/lib/branchleft-broker/drain-flags --broker-user broker
 
-    echo "OWNER=$(stat -c "%U:%G" /var/run/branchleft/drain-flags)"
-    echo "MODE=$(stat -c "%a" /var/run/branchleft/drain-flags)"
+    echo "OWNER=$(stat -c "%U:%G" /var/lib/branchleft-broker/drain-flags)"
+    echo "MODE=$(stat -c "%a" /var/lib/branchleft-broker/drain-flags)"
 
-    if su sidecar-uid -c "cat /var/run/branchleft/drain-flags/0-a.drain" >/dev/null 2>&1; then
+    if su sidecar-uid -c "cat /var/lib/branchleft-broker/drain-flags/0-a.drain" >/dev/null 2>&1; then
       echo "SIDECAR_READ=ok"
     else
       echo "SIDECAR_READ=denied"
     fi
 
-    if su sidecar-uid -c "touch /var/run/branchleft/drain-flags/sidecar-write-attempt" >/dev/null 2>&1; then
+    if su sidecar-uid -c "touch /var/lib/branchleft-broker/drain-flags/sidecar-write-attempt" >/dev/null 2>&1; then
       echo "SIDECAR_WRITE=allowed"
     else
       echo "SIDECAR_WRITE=denied"
     fi
 
-    if su slot-uid -c "touch /var/run/branchleft/drain-flags/slot-write-attempt" >/dev/null 2>&1; then
+    if su slot-uid -c "touch /var/lib/branchleft-broker/drain-flags/slot-write-attempt" >/dev/null 2>&1; then
       echo "SLOT_WRITE=allowed"
     else
       echo "SLOT_WRITE=denied"
     fi
 
-    if su broker -c "touch /var/run/branchleft/drain-flags/broker-write-attempt" >/dev/null 2>&1; then
+    if su broker -c "touch /var/lib/branchleft-broker/drain-flags/broker-write-attempt" >/dev/null 2>&1; then
       echo "BROKER_WRITE=ok"
     else
       echo "BROKER_WRITE=denied"
