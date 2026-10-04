@@ -48,26 +48,26 @@ generation-based media backups, under `media/<tenant>/generations/<run id>/`,
 sharing the bucket with `dump_nightly.py`'s `dumps/<server_uuid>/`,
 `ship_binlogs.py`'s `binlogs/<server_uuid>/` objects, and
 `verify-bucket-fence.py`'s own `fence-probe/` control objects. Every backup
-run deletes older generations on completion, so `media/` needs its own SHORT
-noncurrent-version expiry -- the whole point of a short-lived undo window,
-not a 35-day one that would leave many generations' worth of every tenant's
-media billable at once, indefinitely; `fence-probe/` gets the same short
-window, since its objects are throwaway verification writes with no
-retention argument of their own. The four rules are scoped by `Filter/Prefix`
+run adds a new dated generation and deletes nothing (the key is put-only), so
+`media/` is bounded by the bucket itself: a current-version expiry
+(`--media-expiration-days`, no default figure ruled yet, 0 omits it) ages
+out old generations, and its own SHORT noncurrent-version expiry (`--media-noncurrent-days`,
+default 1) then removes the version the expiry leaves behind. Not a 35-day
+window, which would keep every expired generation of every tenant's media
+billable for five more weeks; `fence-probe/` gets the same short window,
+since its objects are throwaway verification writes with no retention
+argument of their own. The four rules are scoped by `Filter/Prefix`
 so they never overlap: `dumps/` and `binlogs/` keep the original
-`NoncurrentDays=35`, and `media/` and `fence-probe/` each get their own
-short expiry (`--media-noncurrent-days`, default 1, shared by both).
-Hetzner's behaviour with OVERLAPPING lifecycle rules is unproven -- see
-`infra/provisioning/scripts/probe-media-lifecycle-expiration.py`'s
+`NoncurrentDays=35`. Hetzner's behaviour with OVERLAPPING lifecycle rules is
+unproven -- see `infra/provisioning/scripts/probe-media-lifecycle-expiration.py`'s
 prefix-split mode -- so this is deliberately four prefix-scoped rules, never
-one broad rule plus a narrower one layered on top of the same keys.
-`media/`'s own rule also carries `ExpiredObjectDeleteMarker`: every deletion
-a backup run performs leaves a delete marker behind (a plain `DeleteObject`
-on a versioned bucket, never a `DeleteObjectVersion` -- see that module's
-own docstring), and Hetzner's lifecycle how-to documents this element as
-supported (ghost-platform-docs/14 §16 item 3), so nothing here relies on
-`NoncurrentVersionExpiration` alone to eventually clear a key with no
-current version left.
+one broad rule plus a narrower one layered on top of the same keys, and
+`media/` has ONE rule carrying both its Days expiry and its noncurrent
+expiry. No rule carries `ExpiredObjectDeleteMarker`: it cannot share an
+`Expiration` element with `Days`, and a second `media/` rule to carry it would
+be an overlap this engine has not been shown to handle. The cost is that the
+delete marker each expired media object leaves stays as clutter, as it does
+on `dumps/` and `binlogs/`.
 
 ## The fence dwell
 
@@ -98,17 +98,17 @@ though they share a value today); `media_noncurrent_days` governs
 since neither has its own retention argument). `Filter/Prefix` values
 that share no common leading substring by construction (`dumps/`,
 `binlogs/`, `media/`, `fence-probe/`), so no two of these four rules can
-ever apply to the same key. Only `media/`'s rule carries
+ever apply to the same key. No rule carries
 `ExpiredObjectDeleteMarker` -- see the module docstring for why.
 
 `db_expiration_days` adds a current-version `Expiration/Days` to the `dumps/`
-and `binlogs/` rules only. The backup worker's key is put-only, so nothing
-else can prune them. `ExpiredObjectDeleteMarker` cannot share an `Expiration`
-element with `Days`, which is why `media/` does not get one. A rule cannot
+and `binlogs/` rules, and `media_expiration_days` adds one to `media/`'s
+rule, for the same reason: the backup worker's key is put-only, so nothing
+else can prune them. A rule cannot
 keep the newest object, but the bucket is versioned, so an expired current
 object stays as a noncurrent version for the noncurrent window and is
 restorable. The dump freshness alert is the real protection. Delete markers
-left by the expiry are not cleaned up on these two prefixes.
+left by the expiry are not cleaned up on these three prefixes.
 
 ## Accounting for an exemption by a Deny
 

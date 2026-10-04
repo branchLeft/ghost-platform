@@ -6,20 +6,20 @@ See test_media_backup_restore.md#module-overview.
 
 from __future__ import annotations
 
+import inspect
+import io
 import json
 import os
 import shutil
 import subprocess
 import unittest
+import urllib.error
+import urllib.parse
 from unittest import mock
 
 from media_backup_restore import (
-    MediaBackupClockSkewError,
-    MediaBackupConfirmedEmptyConflictError,
     MediaBackupError,
     MediaBackupFloorError,
-    MediaBackupManifestVerificationError,
-    MediaBackupObjectVerificationError,
     MediaBackupRecipientError,
     MediaRestoreVerificationError,
     _generation_key_pattern,
@@ -36,6 +36,7 @@ from media_backup_restore import (
     restore_tenant_media,
     sha256_hex,
 )
+import media_backup_restore
 from shared_objectstorage import ObjectStorageError
 
 ENDPOINT = "sandbox.example.test"
@@ -213,8 +214,7 @@ class TenantSlugValidationTests(unittest.TestCase):
             backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object, put_object=self.store.put_object,
-            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
+            put_object=self.store.put_object, encrypt=_fake_encrypt,
         )
         kwargs.update(overrides)
         return backup_tenant_media(**kwargs)
@@ -310,9 +310,7 @@ class BackupTenantMediaTests(unittest.TestCase):
             recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object,
             put_object=self.store.put_object,
-            delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
         kwargs.update(overrides)
@@ -451,593 +449,6 @@ class BackupTenantMediaTests(unittest.TestCase):
         self.assertNotEqual(a_backup_id, b_backup_id)
 
 
-class RecordingObjectStore(FakeObjectStore):
-    """Same in-memory store, plus a shared `calls` log of
-    `(operation, bucket, key)` for every put/get/delete -- what the
-    ordering-sabotage tests below need to prove *when* the delete step ran
-    relative to the manifest write and its read-back, not only that it ran
-    at all."""
-
-    def __init__(self):
-        super().__init__()
-        self.calls: list[tuple[str, str, str]] = []
-
-    def put_object(self, *, bucket, key, data, content_type="application/octet-stream", **kw):
-        self.calls.append(("put", bucket, key))
-        super().put_object(bucket=bucket, key=key, data=data, content_type=content_type, **kw)
-
-    def get_object(self, *, bucket, key, **kw):
-        self.calls.append(("get", bucket, key))
-        return super().get_object(bucket=bucket, key=key, **kw)
-
-    def delete_object(self, *, bucket, key, **kw):
-        self.calls.append(("delete", bucket, key))
-        super().delete_object(bucket=bucket, key=key, **kw)
-
-
-class GenerationRefreshTests(unittest.TestCase):
-    """Each run uploads a fresh complete set under a new generation prefix
-    and writes that generation's own manifest; only once that manifest is
-    written AND read back, AND every object this run wrote is proven
-    present in a fresh listing, does an older generation get deleted, with a
-    plain DeleteObject that a versioned bucket turns into a delete marker,
-    never DeleteObjectVersion. See media_backup_restore.py's module
-    docstring for the mechanism and its reasons."""
-
-    def setUp(self):
-        self.store = RecordingObjectStore()
-        self.store.put(
-            "live-a", "content/images/photo.jpg", b"first generation bytes", content_type="image/jpeg",
-        )
-
-    def _backup(self, **overrides):
-        kwargs = dict(
-            tenant="tenant-a",
-            live_bucket="live-a",
-            backup_bucket="backup",
-            endpoint=ENDPOINT,
-            region=REGION,
-            live_access_key="live-ak",
-            live_secret_key="live-sk",
-            backup_access_key="backup-ak",
-            backup_secret_key="backup-sk",
-            recipient=TENANT_A_RECIPIENT,
-            list_objects=self.store.list_objects,
-            get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object,
-            put_object=self.store.put_object,
-            delete_object=self.store.delete_object,
-            encrypt=_fake_encrypt,
-        )
-        kwargs.update(overrides)
-        return backup_tenant_media(**kwargs)
-
-    def _objects_for(self, tenant="tenant-a", run_id=None):
-        prefix = _tenant_generations_prefix(tenant)
-        keys = {
-            key for key in self.store.buckets.get("backup", {})
-            if key.startswith(prefix) and "/objects/" in key
-        }
-        if run_id is not None:
-            keys = {key for key in keys if f"/{run_id}/" in key}
-        return keys
-
-    def test_second_run_deletes_the_first_runs_objects(self):
-        first = self._backup()
-        first_keys = self._objects_for(run_id=first.run_id)
-        self.assertEqual(len(first_keys), 1)
-
-        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
-        second = self._backup()
-        second_keys = self._objects_for(run_id=second.run_id)
-
-        self.assertEqual(len(second_keys), 1)
-        self.assertNotEqual(first_keys, second_keys, "the second run must use a FRESH generation")
-        # The whole first generation is deleted -- its object AND its
-        # manifest, since a generation is now its own disjoint prefix.
-        self.assertEqual(len(second.deleted_previous_keys), 2)
-        self.assertTrue(first_keys.issubset(set(second.deleted_previous_keys)))
-        self.assertIn(_manifest_key("tenant-a", first.run_id), second.deleted_previous_keys)
-        # The first generation's ciphertext is genuinely gone from the fake
-        # store -- not merely absent from the new manifest.
-        self.assertFalse(first_keys & second_keys)
-        for key in first_keys:
-            self.assertNotIn(key, self.store.buckets["backup"])
-
-    def test_storage_is_never_unbounded_across_many_runs(self):
-        # Storage claim: about 2x mid-run, never N x.
-        for generation in range(5):
-            self.store.buckets["live-a"]["content/images/photo.jpg"] = f"gen {generation}".encode()
-            report = self._backup()
-        self.assertEqual(len(self._objects_for(run_id=report.run_id)), 1)
-        self.assertEqual(len(self._objects_for()), 1)
-
-    def test_restore_still_verifies_after_a_second_run(self):
-        self._backup()
-        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
-        self._backup()
-        del self.store.buckets["live-a"]["content/images/photo.jpg"]
-        report = restore_tenant_media(
-            tenant="tenant-a",
-            backup_bucket="backup",
-            endpoint=ENDPOINT,
-            region=REGION,
-            backup_access_key="backup-ak",
-            backup_secret_key="backup-sk",
-            identity_path=TENANT_A_IDENTITY,
-            list_objects=self.store.list_objects,
-            get_object=self.store.get_object,
-            put_object=self.store.put_object,
-            decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
-        )
-        self.assertEqual(report.verified_keys, ["content/images/photo.jpg"])
-        self.assertEqual(report.bytes_recovered, len(b"second generation bytes"))
-
-    def test_sabotage_an_upload_failure_mid_run_leaves_the_previous_set_intact(self):
-        # RED: break the second object's upload partway through a run that
-        # would otherwise supersede the first generation.
-        first = self._backup()
-        first_keys = self._objects_for(run_id=first.run_id)
-        self.store.buckets["live-a"]["content/images/second.jpg"] = b"a second live object"
-        self.store.content_types.setdefault("live-a", {})["content/images/second.jpg"] = "image/jpeg"
-
-        real_put = self.store.put_object
-        calls = {"n": 0}
-
-        def flaky_put(**kw):
-            calls["n"] += 1
-            if calls["n"] == 2:
-                raise ObjectStorageError("simulated upload failure mid-run")
-            return real_put(**kw)
-
-        with self.assertRaises(ObjectStorageError):
-            self._backup(put_object=flaky_put)
-        # RED: the old generation must still be exactly what it was -- a
-        # failed run must never remove or alter anything from the previous
-        # generation. This run's own best-effort clean-up deletes only its
-        # OWN pre-manifest uploads (the object that landed before the
-        # second one failed), never anything under the previous run's own
-        # prefix.
-        self.assertTrue(first_keys.issubset(self._objects_for()))
-        for key in first_keys:
-            self.assertIn(key, self.store.buckets["backup"])
-        self.assertFalse(
-            any(op == "delete" and key in first_keys for op, bucket, key in self.store.calls),
-            "the previous generation must never be touched by this run's own clean-up",
-        )
-        # And nothing new is left behind either: the failed run's own
-        # partial upload is cleaned up, not left as a fresh orphan every
-        # time this recurs -- only the previous generation remains.
-        all_keys_now = {
-            key for key in self.store.buckets["backup"]
-            if key.startswith(_tenant_generations_prefix("tenant-a"))
-        }
-        self.assertEqual(all_keys_now, first_keys | {_manifest_key("tenant-a", first.run_id)})
-        # GREEN: revert (no sabotage) and confirm a clean run still succeeds
-        # and still supersedes the original generation.
-        second = self._backup()
-        self.assertNotEqual(set(second.deleted_previous_keys), set())
-
-    def test_sabotage_a_manifest_readback_mismatch_prevents_deletion(self):
-        # RED: the manifest PUT "succeeds" (2xx) but what is actually stored
-        # differs from what was sent -- exactly the failure mode a 2xx alone
-        # cannot rule out. Deletion must not run.
-        first = self._backup()
-        first_keys = self._objects_for(run_id=first.run_id)
-        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
-
-        real_put = self.store.put_object
-
-        def corrupting_put(**kw):
-            if kw["key"].endswith("manifest.json.age"):
-                kw = dict(kw)
-                kw["data"] = kw["data"] + b"\x00tampered-in-flight"
-            return real_put(**kw)
-
-        with self.assertRaises(MediaBackupManifestVerificationError):
-            self._backup(put_object=corrupting_put)
-        self.assertTrue(
-            first_keys.issubset(self._objects_for()), "deletion must not run on an unverified manifest"
-        )
-        self.assertFalse(any(op == "delete" for op, _, _ in self.store.calls))
-        # GREEN: a clean run (no sabotage) still supersedes the first
-        # generation normally -- and also cleans up the orphan the
-        # sabotaged run's own partial upload left behind, since that orphan
-        # is, by the same "older generation" rule, superseded too.
-        second = self._backup()
-        self.assertTrue(first_keys.issubset(set(second.deleted_previous_keys)))
-        self.assertEqual(len(self._objects_for()), 1, "only the latest generation should remain")
-
-    def test_delete_never_precedes_the_manifest_write_and_its_readback(self):
-        # The CLI's own ordering guarantee, proven through the real function
-        # rather than asserted from the source: every "delete" call in the
-        # recorded order must come after BOTH the manifest "put" and the
-        # manifest "get" (the read-back) that verifies it.
-        first = self._backup()
-        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
-        self.store.calls.clear()
-        second = self._backup()
-
-        manifest_key = _manifest_key("tenant-a", second.run_id)
-        put_index = next(
-            i for i, (op, bucket, key) in enumerate(self.store.calls)
-            if op == "put" and bucket == "backup" and key == manifest_key
-        )
-        get_index = next(
-            i for i, (op, bucket, key) in enumerate(self.store.calls)
-            if op == "get" and bucket == "backup" and key == manifest_key
-        )
-        delete_indices = [i for i, (op, *_r) in enumerate(self.store.calls) if op == "delete"]
-        self.assertTrue(delete_indices, "this run should have deleted the previous generation")
-        self.assertTrue(
-            all(i > put_index and i > get_index for i in delete_indices),
-            f"a delete ran before the manifest write/read-back: calls={self.store.calls}",
-        )
-        del first  # only used to seed the first generation
-
-    def test_a_truncated_live_listing_never_reaches_deletion(self):
-        first = self._backup()
-        first_keys = self._objects_for(run_id=first.run_id)
-
-        def truncated_listing(**_kw):
-            raise ObjectStorageError(
-                "GET live-a?list-type=2: IsTruncated=true but no NextContinuationToken"
-            )
-
-        with self.assertRaises(ObjectStorageError):
-            self._backup(list_objects=truncated_listing)
-        self.assertEqual(self._objects_for(), first_keys)
-        self.assertFalse(any(op == "delete" for op, _, _ in self.store.calls))
-
-    def test_tenant_isolation_a_prefix_sharing_tenant_name_is_never_touched(self):
-        # tenant-a and tenant-ab: "tenant-a" is a string-prefix of
-        # "tenant-ab", but "media/tenant-a/generations/" is not a
-        # string-prefix of "media/tenant-ab/generations/..." because
-        # "generations/" immediately follows the tenant name in every key
-        # this module writes.
-        self._backup()  # tenant-a, generation 1
-        self.store.put("live-ab", "content/images/only-ab.jpg", b"tenant-ab's own bytes")
-        ab = self._backup(tenant="tenant-ab", live_bucket="live-ab", recipient=TENANT_B_RECIPIENT)
-        ab_keys = self._objects_for("tenant-ab", run_id=ab.run_id)
-        self.assertEqual(len(ab_keys), 1)
-
-        # A second run for tenant-a alone must delete only tenant-a's first
-        # generation, never anything under tenant-ab's prefix.
-        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"tenant-a generation 2"
-        second = self._backup()
-        self.assertEqual(set(second.deleted_previous_keys) & ab_keys, set())
-        self.assertEqual(self._objects_for("tenant-ab"), ab_keys)
-        for key in ab_keys:
-            self.assertIn(key, self.store.buckets["backup"])
-
-    def test_deletion_uses_plain_delete_never_a_version_scoped_one(self):
-        # The workload credential is fenced from DeleteObjectVersion (see
-        # db/provision/configure_backup_bucket.py's fence and this module's
-        # module docstring) -- `delete_object` is called with no
-        # version-identifying argument at all, so it cannot even express
-        # one. Assert that directly (no delete call carries a
-        # `version_id`), not merely that some delete happened.
-        self._backup()
-        self.store.buckets["live-a"]["content/images/photo.jpg"] = b"second generation bytes"
-        self.store.calls.clear()
-
-        captured_kwargs: list[dict] = []
-        real_delete = self.store.delete_object
-
-        def recording_delete(**kw):
-            captured_kwargs.append(kw)
-            return real_delete(**kw)
-
-        self._backup(delete_object=recording_delete)
-        self.assertTrue(captured_kwargs, "this run should have deleted the previous generation")
-        for kw in captured_kwargs:
-            self.assertNotIn("version_id", kw)
-            self.assertNotIn("versionId", kw)
-
-
-class ConfirmedEmptyConflictTests(unittest.TestCase):
-    """`--confirm-tenant-has-no-media` must never be able to delete a
-    previous generation that actually holds objects -- it exists for a
-    brand-new tenant with no previous generation, never to empty one that
-    exists."""
-
-    def setUp(self):
-        self.store = RecordingObjectStore()
-
-    def _backup(self, **overrides):
-        kwargs = dict(
-            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
-            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
-            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
-            list_objects=self.store.list_objects,
-            get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object, put_object=self.store.put_object,
-            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
-        )
-        kwargs.update(overrides)
-        return backup_tenant_media(**kwargs)
-
-    def test_sabotage_confirmed_empty_against_a_populated_previous_generation_is_refused(self):
-        # RED: a populated first
-        # generation exists; a confirmed-empty run must not be able to
-        # delete it.
-        self.store.put("live-a", "a.jpg", b"a bytes")
-        first = self._backup()
-        self.store.buckets["live-a"].clear()
-        self.store.calls.clear()
-        with self.assertRaises(MediaBackupConfirmedEmptyConflictError):
-            self._backup(confirm_tenant_has_no_media=True)
-        # GREEN: nothing was deleted, and the previous generation's objects
-        # are exactly as they were.
-        self.assertFalse(any(op == "delete" for op, _, _ in self.store.calls))
-        self.assertEqual(len(first.objects), 1)
-        for key in self.store.buckets["backup"]:
-            if "/objects/" in key:
-                self.assertIn(f"/{first.run_id}/", key)
-
-    def test_confirm_empty_is_allowed_with_no_previous_generation_at_all(self):
-        # A brand-new tenant: the flag's actual intended use.
-        report = self._backup(confirm_tenant_has_no_media=True)
-        self.assertTrue(report.deliberately_empty)
-        self.assertEqual(report.object_count, 0)
-
-    def test_confirm_empty_is_allowed_when_the_previous_generation_was_itself_empty(self):
-        # Superseding one deliberately-empty generation with another must
-        # stay possible -- only a POPULATED previous generation is refused.
-        self._backup(confirm_tenant_has_no_media=True)
-        second = self._backup(confirm_tenant_has_no_media=True)
-        self.assertTrue(second.deliberately_empty)
-
-
-class ObjectLandedVerificationTests(unittest.TestCase):
-    """An object PUT that answers 2xx without actually persisting must
-    not reach the delete step -- caught by a fresh listing, taken right
-    before any delete, that every object this run itself wrote is present
-    in."""
-
-    def setUp(self):
-        self.store = RecordingObjectStore()
-        self.store.put("live-a", "a.jpg", b"a bytes")
-        self.store.put("live-a", "b.jpg", b"b bytes")
-
-    def _backup(self, **overrides):
-        kwargs = dict(
-            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
-            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
-            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
-            list_objects=self.store.list_objects,
-            get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object, put_object=self.store.put_object,
-            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
-        )
-        kwargs.update(overrides)
-        return backup_tenant_media(**kwargs)
-
-    def test_sabotage_a_2xx_put_that_never_actually_stored_the_object_is_caught(self):
-        # RED: a `put_object` that
-        # drops the SECOND object's ciphertext silently (no exception, no
-        # non-2xx status -- exactly the failure the module's own real 2xx
-        # cannot rule out) while succeeding for everything else, including
-        # the manifest.
-        first = self._backup()
-        first_object_keys = {
-            key for key in self.store.buckets["backup"]
-            if f"/{first.run_id}/" in key and "/objects/" in key
-        }
-        self.assertEqual(len(first_object_keys), 2)
-        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
-        self.store.buckets["live-a"]["b.jpg"] = b"b bytes v2"
-
-        real_put = self.store.put_object
-        dropped = {"done": False}
-
-        def lossy_put(**kw):
-            if not dropped["done"] and "/objects/" in kw["key"] and kw["key"].endswith(".age"):
-                dropped["done"] = True
-                return  # 2xx in spirit -- no exception -- but never stored
-            return real_put(**kw)
-
-        self.store.calls.clear()
-        with self.assertRaises(MediaBackupObjectVerificationError) as ctx:
-            self._backup(put_object=lossy_put)
-        self.assertIn("not present", str(ctx.exception))
-        # GREEN (still within the RED case): the previous generation is
-        # completely untouched -- every one of its object keys is still
-        # exactly where it was. This run's own clean-up only ever deletes
-        # ITS OWN keys, never the previous generation's.
-        self.assertFalse(
-            any(op == "delete" and key in first_object_keys for op, bucket, key in self.store.calls),
-            "the previous generation must never be touched by this run's own clean-up",
-        )
-        self.assertTrue(first_object_keys.issubset(self.store.buckets["backup"].keys()))
-        # And the one object this failed run DID manage to land is cleaned
-        # up too, not left behind as a fresh orphan -- only the previous
-        # generation remains.
-        all_keys_now = {
-            key for key in self.store.buckets["backup"]
-            if key.startswith(_tenant_generations_prefix("tenant-a"))
-        }
-        self.assertEqual(all_keys_now, first_object_keys | {_manifest_key("tenant-a", first.run_id)})
-
-        # GREEN: revert (no sabotage) -- a clean run succeeds and supersedes
-        # the first generation as normal.
-        second = self._backup()
-        self.assertEqual(second.object_count, 2)
-        self.assertTrue(set(second.deleted_previous_keys))
-
-
-class ConcurrentRunSafetyTests(unittest.TestCase):
-    """Two runs of the same tenant overlapping in time must never leave
-    the tenant's current (highest-run-id) generation unrestorable, and must
-    never delete a still-current generation out from under it. See the
-    module docstring's "GENERATIONS, THE ORDERING GUARANTEE" section --
-    these tests prove both orderings it describes, deterministically, by
-    injecting explicit run ids rather than relying on wall-clock timing."""
-
-    def setUp(self):
-        self.store = FakeObjectStore()
-        for key in ("a.jpg", "b.jpg", "c.jpg"):
-            self.store.put("live-a", key, key.encode())
-
-    def _backup(self, run_id, **overrides):
-        kwargs = dict(
-            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
-            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
-            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
-            list_objects=self.store.list_objects,
-            get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object, put_object=self.store.put_object,
-            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
-            make_run_id=lambda: run_id,
-        )
-        kwargs.update(overrides)
-        return backup_tenant_media(**kwargs)
-
-    def _restore(self):
-        return restore_tenant_media(
-            tenant="tenant-a", backup_bucket="backup", endpoint=ENDPOINT, region=REGION,
-            backup_access_key="x", backup_secret_key="x", identity_path=TENANT_A_IDENTITY,
-            list_objects=self.store.list_objects, get_object=self.store.get_object,
-            put_object=self.store.put_object, decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
-        )
-
-    # Two fixed, validly-shaped run ids -- SMALL sorts before LARGE.
-    SMALL_RUN_ID = "20260101T000000000000Z-0000000000000001"
-    LARGE_RUN_ID = "20260101T000000000000Z-ffffffffffffffff"
-
-    def test_sequential_smaller_id_then_larger_id_supersedes_in_id_order(self):
-        # Not an interleaving -- both runs complete fully, one after the
-        # other, with no overlap in time. Proves the ordinary case: a run
-        # can only ever delete generations older than ITSELF, so id order
-        # alone determines what a later run supersedes, whichever order the
-        # runs actually started in. See the two tests below for the cases
-        # where the runs' UPLOADS genuinely overlap.
-        # A gen0 exists first.
-        self._backup("20260101T000000000000Z-0000000000000000")
-
-        # The run with the SMALLER of the two new ids (started "earlier")
-        # runs to completion first, entirely, while the LARGER-id run has
-        # not started yet. This is the ordinary case: the smaller id can
-        # only ever delete generations older than ITSELF, so it never
-        # touches the larger-id run either way.
-        small = self._backup(self.SMALL_RUN_ID)
-        # gen0's 3 objects PLUS its manifest -- a whole generation, not just
-        # the objects/ half of it, since a generation is now its own prefix.
-        self.assertEqual(len(small.deleted_previous_keys), 4, "gen0 should be superseded")
-
-        # The LARGER-id run now finishes too, later. It supersedes the
-        # smaller-id run's now-complete generation.
-        large = self._backup(self.LARGE_RUN_ID)
-        self.assertEqual(len(large.deleted_previous_keys), 4, "the smaller-id generation should be superseded")
-
-        report = self._restore()
-        self.assertEqual(len(report.verified_keys), 3)
-
-    def test_interleaving_2_the_larger_id_run_finishes_first_while_the_smaller_id_run_is_mid_upload(self):
-        # RED (the dangerous case): a run with the LARGER
-        # id runs to completion -- including its own delete step -- WHILE a
-        # run with the SMALLER id is still mid-upload, having already
-        # written some of its own objects under its own (smaller, "older")
-        # generation prefix. Those objects are fair game for the
-        # larger-id run's cleanup (its id sorts after them), so they are
-        # deleted out from under the smaller-id run before it finishes.
-        state = {"fired": False}
-        real_put = self.store.put_object
-
-        def small_run_put_hook(**kw):
-            real_put(**kw)
-            if not state["fired"] and "/objects/" in kw["key"] and f"/{self.SMALL_RUN_ID}/" in kw["key"]:
-                state["fired"] = True
-                # The larger-id run starts and finishes ENTIRELY while the
-                # smaller-id run is paused here, mid-upload.
-                large_report = self._backup(self.LARGE_RUN_ID)
-                state["large_report"] = large_report
-
-        with self.assertRaises(MediaBackupObjectVerificationError):
-            self._backup(self.SMALL_RUN_ID, put_object=small_run_put_hook)
-
-        # GREEN: the larger-id (finished-first) run is intact and fully
-        # restorable -- restore succeeds and recovers every object.
-        report = self._restore()
-        self.assertEqual(len(report.verified_keys), 3)
-        # The smaller-id (slower) run raised before it reached its own
-        # delete step -- it deleted nothing. It also never reached its own
-        # manifest write: the presence check that catches its missing
-        # object runs BEFORE that run's manifest is written, so a run
-        # whose own objects got superseded out from under it leaves no
-        # manifest of its own behind either -- only the winner's.
-        remaining_manifests = [
-            key for key in self.store.buckets["backup"] if key.endswith("manifest.json.age")
-        ]
-        self.assertEqual(len(remaining_manifests), 1, "only the winning (larger-id) run's manifest should exist")
-
-    def test_true_interleaving_the_smaller_id_run_never_deletes_the_larger_id_runs_in_progress_objects(self):
-        # Proven by TRUE interleaving, not sequential completion. See
-        # test_media_backup_restore.md#test_true_interleaving_the_smaller_id_run_never_deletes_the_larger_id_runs_in_progress_objects.
-        state = {"fired": False, "large_object_key": None}
-        real_put = self.store.put_object
-
-        def large_run_put_hook(**kw):
-            real_put(**kw)
-            if not state["fired"] and "/objects/" in kw["key"] and f"/{self.LARGE_RUN_ID}/" in kw["key"]:
-                state["fired"] = True
-                state["large_object_key"] = kw["key"]
-                # The SMALLER-id run starts and finishes ENTIRELY -- upload,
-                # presence checks, manifest, delete step -- while the
-                # LARGER-id run is paused right here, mid-upload.
-                self._backup(self.SMALL_RUN_ID)
-
-        try:
-            large = self._backup(self.LARGE_RUN_ID, put_object=large_run_put_hook)
-        except MediaBackupObjectVerificationError:
-            # Under a broken guard, the larger run's OWN presence check can
-            # itself be the thing that catches the corruption (its own
-            # object missing) -- that is still a symptom of the same bug,
-            # not a separate outcome, so this is caught here rather than
-            # asserted against directly: the assertion below is the one
-            # that actually distinguishes correct code from broken code.
-            large = None
-
-        self.assertIn(
-            state["large_object_key"],
-            self.store.buckets["backup"],
-            "the smaller-id run's cleanup deleted a still-in-progress larger-id run's own "
-            "object -- a same-or-later id must never be treated as \"older\"",
-        )
-        if large is not None:
-            self.assertEqual(large.object_count, 3)
-            report = self._restore()
-            self.assertEqual(len(report.verified_keys), 3)
-
-    def test_nested_run_completes_entirely_during_the_outer_runs_upload(self):
-        # Uses the real (wall-clock) generate_run_id rather than injected
-        # ids: an outer run ("B") starts uploading; the first time it
-        # writes an object, a second, nested run ("A") is triggered and
-        # runs to completion -- entirely -- before the outer run resumes.
-        # Whatever the two runs' real ids end up being, the invariant this
-        # proves is order-agnostic: after both finish (or the slower one
-        # safely aborts), restore succeeds and recovers every object the
-        # winning generation's manifest names.
-        state = {"fired": False}
-        real_put = self.store.put_object
-
-        def outer_put_hook(**kw):
-            real_put(**kw)
-            if not state["fired"] and "/objects/" in kw["key"]:
-                state["fired"] = True
-                self._backup(None, make_run_id=generate_run_id)
-
-        outer_ok = True
-        try:
-            self._backup(None, put_object=outer_put_hook, make_run_id=generate_run_id)
-        except MediaBackupObjectVerificationError:
-            outer_ok = False  # the slower run safely lost the race -- expected, not a bug
-
-        report = self._restore()
-        self.assertEqual(len(report.verified_keys), 3)
-        del outer_ok  # documents the branch; the restore assertion above is what matters
-
-
 class RestoreTenantMediaTests(unittest.TestCase):
     def setUp(self):
         self.store = FakeObjectStore()
@@ -1058,9 +469,7 @@ class RestoreTenantMediaTests(unittest.TestCase):
             recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object,
             put_object=self.store.put_object,
-            delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
         # The genuine destroy: the object-storage round trip has to run
@@ -1188,9 +597,7 @@ class RestoreTenantMediaTests(unittest.TestCase):
             confirm_tenant_has_no_media=True,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object,
             put_object=self.store.put_object,
-            delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
         report = self._restore()
@@ -1230,9 +637,7 @@ class RestoreTenantMediaTests(unittest.TestCase):
             recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object,
             put_object=self.store.put_object,
-            delete_object=self.store.delete_object,
             encrypt=_fake_encrypt,
         )
         self.report = fresh  # this test's own fresh run, not setUp's single-object one
@@ -1270,8 +675,7 @@ class RestoreFallbackTests(unittest.TestCase):
             backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object, put_object=self.store.put_object,
-            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
+            put_object=self.store.put_object, encrypt=_fake_encrypt,
         )
         kwargs.update(overrides)
         return backup_tenant_media(**kwargs)
@@ -1285,81 +689,6 @@ class RestoreFallbackTests(unittest.TestCase):
         )
         kwargs.update(overrides)
         return restore_tenant_media(**kwargs)
-
-    def test_a_lossy_put_run_leaves_the_previous_generation_as_the_default_restore_target(self):
-        good = self._backup()
-        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
-
-        real_put = self.store.put_object
-        dropped = {"done": False}
-
-        def lossy_put(**kw):
-            if not dropped["done"] and "/objects/" in kw["key"] and kw["key"].endswith(".age"):
-                dropped["done"] = True
-                return  # 2xx in spirit -- no exception -- but never stored
-            return real_put(**kw)
-
-        with self.assertRaises(MediaBackupObjectVerificationError):
-            self._backup(put_object=lossy_put)
-
-        # No manifest was ever written for the lossy run -- a manifest
-        # means a complete generation, so a failure caught before it is
-        # written leaves none behind for the failed run.
-        manifests = [k for k in self.store.buckets["backup"] if k.endswith("manifest.json.age")]
-        self.assertEqual(manifests, [_manifest_key("tenant-a", good.run_id)])
-
-        report = self._restore()
-        self.assertEqual(report.run_id, good.run_id)
-        self.assertEqual(report.verified_keys, ["a.jpg"])
-
-    def test_a_manifest_readback_mismatch_names_the_older_generation_and_the_run_id_command(self):
-        good = self._backup()
-        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
-
-        real_put = self.store.put_object
-
-        def corrupting_put(**kw):
-            if kw["key"].endswith("manifest.json.age"):
-                kw = dict(kw)
-                kw["data"] = kw["data"][:-5]  # the PUT "succeeds"; the stored bytes differ
-            return real_put(**kw)
-
-        with self.assertRaises(MediaBackupManifestVerificationError):
-            self._backup(put_object=corrupting_put)
-
-        # Despite the raise, the corrupted manifest key DOES now exist and
-        # sorts newest -- this is the one failure the reordering alone
-        # cannot prevent (see the module docstring).
-        manifests = {k for k in self.store.buckets["backup"] if k.endswith("manifest.json.age")}
-        self.assertEqual(len(manifests), 2)
-
-        with self.assertRaises(MediaRestoreVerificationError) as ctx:
-            self._restore()
-        message = str(ctx.exception)
-        self.assertIn(good.run_id, message)
-        self.assertIn(f"--run-id {good.run_id}", message)
-
-        # The explicit --run-id recovery this message names actually works
-        # -- never chosen automatically, only on request.
-        recovered = self._restore(run_id=good.run_id)
-        self.assertEqual(recovered.run_id, good.run_id)
-        self.assertEqual(recovered.verified_keys, ["a.jpg"])
-
-    def test_no_older_generation_says_so_rather_than_inventing_a_run_id(self):
-        real_put = self.store.put_object
-
-        def corrupting_put(**kw):
-            if kw["key"].endswith("manifest.json.age"):
-                kw = dict(kw)
-                kw["data"] = kw["data"][:-5]
-            return real_put(**kw)
-
-        with self.assertRaises(MediaBackupManifestVerificationError):
-            self._backup(put_object=corrupting_put)
-
-        with self.assertRaises(MediaRestoreVerificationError) as ctx:
-            self._restore()
-        self.assertIn("No older generation", str(ctx.exception))
 
     def test_an_explicit_run_id_that_has_no_manifest_is_refused_by_name(self):
         self._backup()
@@ -1509,47 +838,256 @@ class RestoreFallbackTests(unittest.TestCase):
         self.assertEqual(recovered.verified_keys, ["a.jpg"])
 
 
-class KeyShapeDeletionGuardTests(unittest.TestCase):
-    """Every key a listing returns under a tenant's
-    `generations/` prefix is checked against this module's own exact key
-    shape before it is trusted for either the presence check or the delete
-    decision -- so a listing that returned something outside that shape
-    (a bug elsewhere, a forged object, a `prefix` argument silently ignored)
-    aborts the run rather than being silently included or excluded."""
+class _FakeResponse:
+    def __init__(self, status: int, body: bytes, headers: dict[str, str]):
+        self.status = status
+        self._body = body
+        self.headers = headers
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class PutOnlyHttp:
+    """A fake S3 endpoint patched in for `urllib.request.urlopen`, so the REAL
+    signing and request code in `shared_objectstorage` runs and every request
+    this module could make is observed, however it is routed. A bucket in
+    `put_only` answers 403 to anything but a PUT, the way the backup bucket's
+    fence does for the writer key; any other bucket allows everything."""
+
+    def __init__(self, put_only: set[str]):
+        self.put_only = put_only
+        self.buckets: dict[str, dict[str, bytes]] = {}
+        self.requests: list[tuple[str, str, str]] = []
+        self.fail_put_after: int | None = None
+        self._puts = 0
+
+    def seed(self, bucket: str, key: str, data: bytes):
+        self.buckets.setdefault(bucket, {})[key] = data
+
+    def __call__(self, request, timeout=None):
+        del timeout
+        parsed = urllib.parse.urlparse(request.full_url)
+        bucket, _, key = urllib.parse.unquote(parsed.path.lstrip("/")).partition("/")
+        method = request.get_method()
+        self.requests.append((method, bucket, key))
+        if bucket in self.put_only and method != "PUT":
+            raise urllib.error.HTTPError(
+                request.full_url, 403, "Forbidden", {},
+                io.BytesIO(b"<Error><Code>AccessDenied</Code></Error>"),
+            )
+        store = self.buckets.setdefault(bucket, {})
+        if method == "PUT":
+            self._puts += 1
+            if self.fail_put_after is not None and self._puts > self.fail_put_after:
+                raise OSError("connection reset")
+            store[key] = request.data
+            return _FakeResponse(200, b"", {})
+        if method == "DELETE":
+            store.pop(key, None)
+            return _FakeResponse(204, b"", {})
+        if key:
+            if key not in store:
+                raise urllib.error.HTTPError(
+                    request.full_url, 404, "Not Found", {},
+                    io.BytesIO(b"<Error><Code>NoSuchKey</Code></Error>"),
+                )
+            return _FakeResponse(200, store[key], {"Content-Type": "image/jpeg"})
+        prefix = urllib.parse.parse_qs(parsed.query).get("prefix", [""])[0]
+        contents = "".join(
+            f"<Contents><Key>{k}</Key></Contents>" for k in sorted(store) if k.startswith(prefix)
+        )
+        body = f"<ListBucketResult><IsTruncated>false</IsTruncated>{contents}</ListBucketResult>"
+        return _FakeResponse(200, body.encode(), {})
+
+
+class PutOnlyBackupTests(unittest.TestCase):
+    """Backup against a bucket whose key may only PUT: the job writes a new
+    dated generation and issues no delete, list or read there."""
+
+    def setUp(self):
+        self.http = PutOnlyHttp(put_only={"backup"})
+        self.http.seed("live-a", "content/images/a.jpg", b"a bytes")
+        self.http.seed("live-a", "content/images/b.jpg", b"b bytes")
+        patcher = mock.patch("urllib.request.urlopen", self.http)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _backup(self, **overrides):
+        kwargs = dict(
+            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+            region=REGION, live_access_key="live-ak", live_secret_key="live-sk",
+            backup_access_key="backup-ak", backup_secret_key="backup-sk",
+            recipient=TENANT_A_RECIPIENT, encrypt=_fake_encrypt,
+        )
+        kwargs.update(overrides)
+        return backup_tenant_media(**kwargs)
+
+    def _backup_requests(self):
+        return [(m, k) for m, b, k in self.http.requests if b == "backup"]
+
+    def test_a_run_succeeds_with_a_key_that_can_only_put(self):
+        report = self._backup()
+        self.assertEqual(report.object_count, 2)
+        self.assertTrue(self._backup_requests())
+
+    def test_no_delete_is_issued_to_any_bucket(self):
+        self._backup()
+        self.assertEqual([r for r in self.http.requests if r[0] == "DELETE"], [])
+
+    def test_the_backup_bucket_only_ever_sees_puts(self):
+        self._backup()
+        self.assertEqual({m for m, _ in self._backup_requests()}, {"PUT"})
+
+    def test_the_manifest_is_the_last_write_of_the_run(self):
+        report = self._backup()
+        keys = [k for m, k in self._backup_requests() if m == "PUT"]
+        self.assertEqual(keys[-1], _manifest_key("tenant-a", report.run_id))
+        self.assertEqual(len([k for k in keys if k.endswith("manifest.json.age")]), 1)
+        self.assertEqual(len(keys), 3)
+
+    def test_a_second_run_adds_a_dated_generation_and_removes_nothing(self):
+        first = self._backup()
+        before = set(self.http.buckets["backup"])
+        second = self._backup()
+        after = set(self.http.buckets["backup"])
+        self.assertNotEqual(first.run_id, second.run_id)
+        self.assertTrue(before < after)
+        self.assertEqual(len(after), 6)
+        self.assertTrue(all(k.startswith("media/tenant-a/generations/") for k in after))
+
+    def test_every_object_lives_under_its_runs_dated_generation_prefix(self):
+        report = self._backup()
+        expected = f"media/tenant-a/generations/{report.run_id}/"
+        self.assertTrue(all(k.startswith(expected) for k in self.http.buckets["backup"]))
+
+    def test_a_confirmed_empty_tenant_needs_no_read_of_the_backup_bucket(self):
+        self.http.buckets["live-a"] = {}
+        report = self._backup(confirm_tenant_has_no_media=True)
+        self.assertTrue(report.deliberately_empty)
+        self.assertEqual({m for m, _ in self._backup_requests()}, {"PUT"})
+
+    def test_a_failed_upload_writes_no_manifest_and_deletes_nothing(self):
+        self.http.fail_put_after = 1
+        with self.assertRaises(ObjectStorageError):
+            self._backup()
+        self.assertEqual(
+            [k for k in self.http.buckets["backup"] if k.endswith("manifest.json.age")], []
+        )
+        self.assertEqual([r for r in self.http.requests if r[0] == "DELETE"], [])
+
+    def test_the_module_has_no_delete_path(self):
+        source = inspect.getsource(media_backup_restore)
+        self.assertNotIn("delete_object", source)
+        self.assertNotIn("DELETE", source)
+
+    def test_the_put_only_simulation_would_refuse_a_delete(self):
+        # Control for the tests above: the fake really does answer 403 to a
+        # delete on the backup bucket, so a delete reintroduced into the job
+        # would fail here rather than pass unnoticed.
+        from shared_objectstorage import delete_object
+
+        with self.assertRaises(ObjectStorageError):
+            delete_object(
+                bucket="backup", endpoint=ENDPOINT, region=REGION, access_key="x",
+                secret_key="x", key="media/tenant-a/generations/x",
+            )
+
+
+class NewestCompleteCopyRestoreTests(unittest.TestCase):
+    """Restore reads the newest dated copy that has its completion marker
+    (the manifest) and ignores any copy without one."""
 
     def setUp(self):
         self.store = FakeObjectStore()
-        self.store.put("live-a", "a.jpg", b"a bytes")
+        self.store.put("live-a", "a.jpg", b"a v1")
 
-    def _backup(self, **overrides):
+    def _backup(self, run_id: str, **overrides):
         kwargs = dict(
             tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
             region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
             backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
             list_objects=self.store.list_objects,
             get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object, put_object=self.store.put_object,
-            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
+            put_object=self.store.put_object, encrypt=_fake_encrypt,
+            make_run_id=lambda: run_id,
         )
         kwargs.update(overrides)
         return backup_tenant_media(**kwargs)
 
-    def test_sabotage_an_unexpected_key_under_the_tenant_prefix_aborts_rather_than_being_silently_handled(self):
-        # RED: simulate a listing bug (or a stray write from elsewhere)
-        # that returns a key under this tenant's own generations/ prefix
-        # but NOT matching this module's exact per-run shape.
-        self._backup()
-        self.store.buckets["backup"]["media/tenant-a/generations/not-a-real-run-id/objects/junk"] = b"x"
-        with self.assertRaises(MediaBackupError) as ctx:
-            self._backup()
-        self.assertIn("does not match this module's own key shape", str(ctx.exception))
-        # GREEN: revert (remove the injected stray key) -- a clean run
-        # succeeds normally again.
-        del self.store.buckets["backup"]["media/tenant-a/generations/not-a-real-run-id/objects/junk"]
-        report = self._backup()
-        self.assertEqual(report.object_count, 1)
+    def _restore(self, **overrides):
+        kwargs = dict(
+            tenant="tenant-a", backup_bucket="backup", endpoint=ENDPOINT, region=REGION,
+            backup_access_key="x", backup_secret_key="x", identity_path=TENANT_A_IDENTITY,
+            list_objects=self.store.list_objects, get_object=self.store.get_object,
+            put_object=self.store.put_object, decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
+        )
+        kwargs.update(overrides)
+        return restore_tenant_media(**kwargs)
 
-    def test_generation_key_pattern_matches_only_this_tenants_own_shape(self):
+    RUN_1 = "20261001T000000000000Z-aaaaaaaaaaaaaaaa"
+    RUN_2 = "20261002T000000000000Z-bbbbbbbbbbbbbbbb"
+    RUN_3 = "20261003T000000000000Z-cccccccccccccccc"
+
+    def _drop_manifest(self, run_id: str):
+        del self.store.buckets["backup"][_manifest_key("tenant-a", run_id)]
+
+    def test_picks_the_newest_of_several_complete_copies(self):
+        self._backup(self.RUN_1)
+        self._backup(self.RUN_3)
+        self._backup(self.RUN_2)
+        self.assertEqual(self._restore().run_id, self.RUN_3)
+
+    def test_a_newer_copy_without_its_marker_is_ignored(self):
+        self._backup(self.RUN_1)
+        self._backup(self.RUN_2)
+        self._drop_manifest(self.RUN_2)
+        report = self._restore()
+        self.assertEqual(report.run_id, self.RUN_1)
+        self.assertEqual(report.verified_keys, ["a.jpg"])
+
+    def test_a_copy_that_died_after_its_first_object_is_ignored(self):
+        self._backup(self.RUN_1)
+        self.store.put("backup", _object_key_for_backup("tenant-a", self.RUN_2, "f" * 64), b"partial")
+        self.assertEqual(self._restore().run_id, self.RUN_1)
+
+    def test_only_incomplete_copies_means_nothing_to_restore(self):
+        self._backup(self.RUN_1)
+        self._drop_manifest(self.RUN_1)
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn("no generation with a manifest", str(ctx.exception))
+
+    def test_an_explicit_run_id_for_an_incomplete_copy_is_refused(self):
+        self._backup(self.RUN_1)
+        self._backup(self.RUN_2)
+        self._drop_manifest(self.RUN_2)
+        with self.assertRaises(MediaRestoreVerificationError):
+            self._restore(run_id=self.RUN_2)
+
+    def test_a_complete_but_unreadable_newest_copy_names_the_older_one(self):
+        self._backup(self.RUN_1)
+        self._backup(self.RUN_2)
+        self.store.put("backup", _manifest_key("tenant-a", self.RUN_2), b"not a manifest")
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn(f"--run-id {self.RUN_1}", str(ctx.exception))
+        self.assertEqual(self._restore(run_id=self.RUN_1).run_id, self.RUN_1)
+
+    def test_no_older_copy_says_so(self):
+        self._backup(self.RUN_1)
+        self.store.put("backup", _manifest_key("tenant-a", self.RUN_1), b"not a manifest")
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn("No older generation", str(ctx.exception))
+
+    def test_the_generation_key_pattern_matches_only_this_tenants_own_shape(self):
         pattern = _generation_key_pattern("tenant-a")
         self.assertIsNotNone(pattern.match(
             "media/tenant-a/generations/20260101T000000000000Z-0000000000000000/objects/"
@@ -1560,251 +1098,6 @@ class KeyShapeDeletionGuardTests(unittest.TestCase):
         ))
         self.assertIsNone(pattern.match("media/tenant-ab/generations/x/manifest.json.age"))
         self.assertIsNone(pattern.match("media/tenant-a/objects/" + "a" * 64 + ".age"))
-
-    def test_a_persistent_bad_key_fails_before_any_object_is_re_uploaded(self):
-        # The shape check that would abort this run anyway (see the
-        # sabotage test above) now runs BEFORE any object is re-uploaded --
-        # a persistent version of this failure must cost one listing per
-        # run, never a full new copy of the tenant's media every time it
-        # recurs.
-        self._backup()
-        self.store.buckets["backup"]["media/tenant-a/generations/not-a-real-run-id/objects/junk"] = b"x"
-        before = {key for key in self.store.buckets["backup"] if "/objects/" in key}
-        with self.assertRaises(MediaBackupError):
-            self._backup()
-        after = {key for key in self.store.buckets["backup"] if "/objects/" in key}
-        self.assertEqual(
-            before, after, "a persistent shape defect must not upload a full new copy before failing"
-        )
-
-
-class OrphanGenerationCleanupTests(unittest.TestCase):
-    """An orphaned generation (objects with no manifest -- an aborted
-    or a superseded-while-still-uploading run) that is strictly older than
-    this run's own id is reclaimed before this run uploads anything, using
-    the same "never a same-or-later id" rule as every other delete in this
-    module (`_sorts_before`). Reclaiming it here, rather than only as a
-    side effect of a run that itself goes on to succeed, means a run that
-    fails for an unrelated reason still does not leave a previous run's
-    abandoned objects sitting there indefinitely."""
-
-    def setUp(self):
-        self.store = RecordingObjectStore()
-        self.store.put("live-a", "a.jpg", b"a bytes")
-
-    def _backup(self, **overrides):
-        kwargs = dict(
-            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
-            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
-            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
-            list_objects=self.store.list_objects,
-            get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object, put_object=self.store.put_object,
-            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
-        )
-        kwargs.update(overrides)
-        return backup_tenant_media(**kwargs)
-
-    def test_an_orphan_with_no_manifest_anywhere_is_left_alone_by_the_sweep(self):
-        # When this listing has no manifest at all (no prior
-        # generation ever completed), the sweep must reclaim nothing -- the
-        # run that owns an apparent orphan may still write its own manifest
-        # moments after this listing was taken. Proven with no G0 at all,
-        # and with this run itself then failing before it ever reaches its
-        # own end-of-run delete (which is unconditional, not orphan-scoped,
-        # and would otherwise mask what the sweep itself decided), so only
-        # the sweep's own decision is visible in the final state.
-        orphan_run_id = "20260101T000000000000Z-0000000000000000"
-        orphan_key = _object_key_for_backup("tenant-a", orphan_run_id, "a" * 64)
-        self.store.put("backup", orphan_key, b"orphaned ciphertext, no manifest anywhere")
-
-        def flaky_put(**kw):
-            raise ObjectStorageError("simulated upload failure")
-
-        with self.assertRaises(ObjectStorageError):
-            self._backup(put_object=flaky_put, make_run_id=lambda: "20260102T000000000000Z-0000000000000000")
-
-        self.assertIn(orphan_key, self.store.buckets["backup"])
-
-    def test_a_run_that_fails_before_its_manifest_deletes_its_own_uploads_across_repeated_nights(self):
-        # A live object refused every night must not let a persistently
-        # failing run accumulate a fresh, orphaned copy of the tenant's
-        # OTHER objects night after night. The orphan sweep above cannot
-        # reclaim these -- they sort AFTER the newest manifested
-        # generation, not before it -- so the bound has to come from this
-        # run cleaning up its own pre-manifest uploads on its way out.
-        for key, data in (
-            ("a.jpg", b"a bytes"), ("b.jpg", b"b bytes"),
-            ("c.jpg", b"c bytes"), ("d.jpg", b"d bytes"),
-        ):
-            self.store.put("live-a", key, data)
-
-        self._backup(make_run_id=lambda: "20260101T000000000000Z-0000000000000000")
-
-        def generation_key_count():
-            prefix = _tenant_generations_prefix("tenant-a")
-            return len([k for k in self.store.buckets["backup"] if k.startswith(prefix)])
-
-        baseline = generation_key_count()
-        self.assertEqual(baseline, 5)  # 4 objects + 1 manifest
-
-        def refuse_d(**kw):
-            if kw["key"] == "d.jpg":
-                raise ObjectStorageError("GET live-a/d.jpg failed: HTTP 403")
-            return self.store.get_object_with_content_type(**kw)
-
-        for night in range(2, 8):
-            rid = f"202601{night:02d}T000000000000Z-0000000000000000"
-            with self.assertRaises(ObjectStorageError):
-                self._backup(get_object_with_content_type=refuse_d, make_run_id=lambda r=rid: r)
-            self.assertEqual(
-                generation_key_count(), baseline,
-                f"night {night}: a run that fails before its manifest must clean up its "
-                f"own pre-manifest uploads, not accumulate a fresh orphaned copy",
-            )
-
-    def test_a_run_that_completes_before_a_stale_sweeps_deletes_land_must_survive(self):
-        # A stale sweep's deletes are applied late, after the run it
-        # targeted has already completed. See
-        # test_media_backup_restore.md#test_a_run_that_completes_before_a_stale_sweeps_deletes_land_must_survive.
-        g0_run_id = "20260101T000000000000Z-0000000000000000"
-        a_run_id = "20260102T000000000000Z-0000000000000000"
-        b_run_id = "20260103T000000000000Z-0000000000000000"
-
-        self._backup(make_run_id=lambda: g0_run_id)  # G0
-        self.store.buckets["live-a"]["a.jpg"] = b"a bytes v2"
-
-        deferred_b_deletes = []
-        state = {"fired": False}
-        real_put = self.store.put_object
-
-        def b_delete_hook(**kw):
-            deferred_b_deletes.append(kw)
-
-        def b_live_read_fails(**kw):
-            raise ObjectStorageError("live read failed")
-
-        def a_put_hook(**kw):
-            real_put(**kw)
-            if not state["fired"] and "/objects/" in kw["key"] and f"/{a_run_id}/" in kw["key"]:
-                state["fired"] = True
-                # Run B starts here, while A's object is uploaded but A has
-                # written no manifest. B's own sweep runs against exactly
-                # this listing; B then fails before writing anything of
-                # its own.
-                with self.assertRaises(ObjectStorageError):
-                    self._backup(
-                        make_run_id=lambda: b_run_id,
-                        delete_object=b_delete_hook,
-                        get_object_with_content_type=b_live_read_fails,
-                    )
-
-        self._backup(put_object=a_put_hook, make_run_id=lambda: a_run_id)
-
-        # The fix's own proof: B's stale listing must never have queued a
-        # delete for any of A's objects in the first place.
-        self.assertFalse(
-            any(f"/{a_run_id}/" in d["key"] for d in deferred_b_deletes),
-            "B's sweep must never target A's objects from a listing that predates A's manifest",
-        )
-
-        # Apply whatever B's sweep DID queue (nothing, once fixed) now that
-        # A has already completed and deleted G0 -- modelling deletes that
-        # were computed from a stale listing landing on the wire late.
-        for kw in deferred_b_deletes:
-            self.store.delete_object(**kw)
-
-        report = restore_tenant_media(
-            tenant="tenant-a", backup_bucket="backup", endpoint=ENDPOINT, region=REGION,
-            backup_access_key="x", backup_secret_key="x", identity_path=TENANT_A_IDENTITY,
-            list_objects=self.store.list_objects, get_object=self.store.get_object,
-            put_object=self.store.put_object, decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
-        )
-        self.assertEqual(report.verified_keys, ["a.jpg"])
-
-    def test_an_orphan_newer_than_this_run_is_left_alone(self):
-        # A same-or-later id is never "older" -- an orphan from a
-        # still-in-progress concurrent run with a NEWER id must survive
-        # this run's own sweep.
-        newer_orphan_run_id = "29990101T000000000000Z-0000000000000000"
-        orphan_key = _object_key_for_backup("tenant-a", newer_orphan_run_id, "b" * 64)
-        self.store.put("backup", orphan_key, b"in-progress ciphertext")
-
-        self._backup()
-
-        self.assertIn(orphan_key, self.store.buckets["backup"])
-
-    def test_sabotage_the_shared_ordering_predicate_breaks_the_orphan_sweep_too(self):
-        # The orphan sweep shares `_delete_older_generations` /
-        # `_sorts_before` with the end-of-run supersession delete -- the
-        # same `<` -> `!=` sabotage that breaks the end-of-run delete
-        # makes this run reclaim an orphan that is NEWER than itself,
-        # which is exactly the corruption the shared predicate exists to
-        # prevent.
-        import media_backup_restore as m
-
-        newer_orphan_run_id = "29990101T000000000000Z-0000000000000000"
-        orphan_key = _object_key_for_backup("tenant-a", newer_orphan_run_id, "b" * 64)
-        self.store.put("backup", orphan_key, b"in-progress ciphertext")
-
-        original = m._sorts_before
-        m._sorts_before = lambda candidate, run_id: candidate != run_id
-        try:
-            self._backup()
-        finally:
-            m._sorts_before = original
-
-        self.assertNotIn(orphan_key, self.store.buckets["backup"])
-
-
-class ClockSkewGuardTests(unittest.TestCase):
-    """A generation dated in the future must not let restore silently
-    freeze on stale data while every signal stays green. A run whose own
-    delete step leaves a newer-sorting manifest behind (this run's clock is
-    behind that generation's, or that generation's clock ran ahead of real
-    time) must say so loudly -- nothing else in this module ever would.
-    This run's own backup is not lost; it is simply not the one restore
-    will read."""
-
-    def setUp(self):
-        self.store = FakeObjectStore()
-        self.store.put("live-a", "a.jpg", b"v1")
-
-    def _backup(self, run_id, **overrides):
-        kwargs = dict(
-            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
-            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
-            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
-            list_objects=self.store.list_objects,
-            get_object_with_content_type=self.store.get_object_with_content_type,
-            get_object=self.store.get_object, put_object=self.store.put_object,
-            delete_object=self.store.delete_object, encrypt=_fake_encrypt,
-            make_run_id=lambda: run_id,
-        )
-        kwargs.update(overrides)
-        return backup_tenant_media(**kwargs)
-
-    def test_a_future_dated_generation_is_caught_by_a_normal_runs_own_re_list(self):
-        future_run_id = "20990101T000000000000Z-0000000000000000"
-        self._backup(future_run_id)
-        self.store.buckets["live-a"]["a.jpg"] = b"v2"
-
-        normal_run_id = "20260925T000000000000Z-0000000000000000"
-        with self.assertRaises(MediaBackupClockSkewError) as ctx:
-            self._backup(normal_run_id)
-        self.assertIn(future_run_id, str(ctx.exception))
-
-        # GREEN: the normal run's own backup is NOT lost -- only restore's
-        # choice of "newest" is affected until a later-dated run supersedes
-        # the future one too.
-        self.assertTrue(
-            any(f"/{normal_run_id}/" in key for key in self.store.buckets["backup"]),
-            "the normal run's own backup must still exist despite the loud failure",
-        )
-
-    def test_no_future_generation_means_no_raise(self):
-        report = self._backup("20260925T000000000000Z-0000000000000000")
-        self.assertEqual(report.object_count, 1)
 
 
 class MainWiringTests(unittest.TestCase):
@@ -1865,17 +1158,6 @@ class MainWiringTests(unittest.TestCase):
             [
                 "backup", "--tenant", "t", "--live-bucket", "lb", "--backup-bucket", "bb",
                 "--endpoint", ENDPOINT, "--region", REGION,
-            ]
-        )
-        self.assertEqual(rc, 1)
-
-    @mock.patch("media_backup_restore.backup_tenant_media")
-    def test_backup_exits_1_when_confirmed_empty_conflicts_with_a_populated_generation(self, mock_backup):
-        mock_backup.side_effect = MediaBackupConfirmedEmptyConflictError("populated previous generation")
-        rc = main(
-            [
-                "backup", "--tenant", "t", "--live-bucket", "lb", "--backup-bucket", "bb",
-                "--endpoint", ENDPOINT, "--region", REGION, "--confirm-tenant-has-no-media",
             ]
         )
         self.assertEqual(rc, 1)
