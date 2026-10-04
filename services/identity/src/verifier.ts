@@ -14,6 +14,8 @@ const RSA_DIGESTS: Readonly<Record<string, string>> = {
 const MAX_TOKEN_BYTES = 16 * 1024;
 const MIN_RSA_BITS = 2048;
 const DEFAULT_MIN_REFETCH_SECONDS = 10;
+const DEFAULT_MAX_CACHE_SECONDS = 600;
+const DEFAULT_FETCH_TIMEOUT_MS = 5000;
 
 type Json = Record<string, unknown>;
 
@@ -32,17 +34,28 @@ export interface TokenVerifierOptions extends Omit<VerifierOptions, 'now'> {
   readonly algorithms?: readonly string[];
   /** Returns the instance's published keys. Defaults to the issuer's
    * `/oauth/v2/keys`. A failure is a refusal, never a pass. */
-  readonly fetchKeys?: () => Promise<readonly Jwk[]>;
+  readonly fetchKeys?: (signal: AbortSignal) => Promise<readonly Jwk[]>;
   /** Seconds since the epoch. */
   readonly clock?: () => number;
   /** A key id never seen before triggers one refetch, at most this often, so
    * an attacker cannot turn unknown ids into a request flood. */
   readonly minRefetchSeconds?: number;
+  /** The longest a fetched key set is trusted. Past this age every key is
+   * dropped and the set is fetched again, so a key the issuer has withdrawn
+   * stops verifying, and a failed fetch leaves no key at all. Defaults to ten
+   * minutes; a value that is not a positive number falls back to that. */
+  readonly maxCacheSeconds?: number;
+  /** The longest a key-set fetch may take before it is abandoned and the token
+   * refused. Applies to a supplied `fetchKeys` as well as the default. */
+  readonly fetchTimeoutMs?: number;
 }
 
 export interface TokenVerifier {
   verify(token: string): Promise<Verdict>;
 }
+
+const positiveOr = (value: number | undefined, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 
 const trimSlash = (url: string): string => (url.endsWith('/') ? url.slice(0, -1) : url);
 
@@ -83,26 +96,61 @@ export function createTokenVerifier(options: TokenVerifierOptions): TokenVerifie
   const algorithms = options.algorithms ?? ['RS256'];
   const clock = options.clock ?? (() => Math.floor(Date.now() / 1000));
   const minRefetch = options.minRefetchSeconds ?? DEFAULT_MIN_REFETCH_SECONDS;
+  const maxCacheAge = positiveOr(options.maxCacheSeconds, DEFAULT_MAX_CACHE_SECONDS);
+  const fetchTimeout = positiveOr(options.fetchTimeoutMs, DEFAULT_FETCH_TIMEOUT_MS);
   const fetchKeys =
     options.fetchKeys ??
-    (async (): Promise<readonly Jwk[]> => {
-      const response = await fetch(`${trimSlash(options.issuer)}/oauth/v2/keys`);
+    (async (signal: AbortSignal): Promise<readonly Jwk[]> => {
+      const response = await fetch(`${trimSlash(options.issuer)}/oauth/v2/keys`, { signal });
       if (!response.ok) throw new Error('key set unavailable');
       const body = (await response.json()) as { keys?: unknown };
       return Array.isArray(body.keys) ? (body.keys as Jwk[]) : [];
     });
 
   let keys: readonly Jwk[] = [];
-  let fetchedAt = Number.NEGATIVE_INFINITY;
+  let keysAt = Number.NEGATIVE_INFINITY;
+  let attemptedAt = Number.NEGATIVE_INFINITY;
+  let inflight: Promise<void> | null = null;
 
-  async function refresh(): Promise<void> {
-    fetchedAt = clock();
-    keys = await fetchKeys();
+  /** Runs one fetch, abandoned after the timeout whether or not the fetcher
+   * honours the abort signal. */
+  async function fetchBounded(): Promise<readonly Jwk[]> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expiry = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('key set fetch timed out'));
+      }, fetchTimeout);
+    });
+    try {
+      return await Promise.race([fetchKeys(controller.signal), expiry]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function refresh(): Promise<void> {
+    if (inflight) return inflight;
+    attemptedAt = clock();
+    const started = attemptedAt;
+    inflight = fetchBounded()
+      .then((fetched) => {
+        keys = fetched;
+        keysAt = started;
+      })
+      .finally(() => {
+        inflight = null;
+      });
+    return inflight;
   }
 
   async function keyFor(kid: string): Promise<Jwk | null> {
+    const age = clock() - keysAt;
+    if (age < 0 || age >= maxCacheAge) keys = [];
     let found = keys.find((key) => key.kid === kid);
-    if (!found && clock() - fetchedAt >= minRefetch) {
+    const sinceAttempt = clock() - attemptedAt;
+    if (!found && (inflight || sinceAttempt < 0 || sinceAttempt >= minRefetch)) {
       await refresh();
       found = keys.find((key) => key.kid === kid);
     }
