@@ -1,0 +1,293 @@
+#!/bin/sh
+# Live proof, real containers: the backup worker's real nightly loop dumps a
+# synthetic Ghost tenant into a local SigV4-verifying S3 gateway, then
+# restore_drill.py restores it end to end. Runs every control and sabotage
+# listed in restore_drill.md#the-local-proof; exits non-zero on any wrong
+# outcome. Usage: prove-restore-drill.sh (from anywhere; needs Docker).
+set -eu
+
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+SCRIPTS="$REPO_ROOT/infra/provisioning/scripts"
+DRILL="$SCRIPTS/restore_drill.py"
+PYTHON="${PYTHON:-python3}"
+
+RECOVERY_IMAGE="ghcr.io/branchleft/db-recovery@sha256:ceae7d89523d695bf60e98e874ae3430fb8c03566721108c9a21e26171ce2666"
+MYSQL_IMAGE="mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+GHOST_IMAGE="${GHOST_IMAGE:-ghcr.io/branchleft/ghost-tenant@sha256:4b0441a00e96ad63539d43ff0078719a36fae00c2cdec4d966cd368cb15e14b1}"
+SIDECAR_IMAGE="${SIDECAR_IMAGE:-ghcr.io/branchleft/drain-sidecar@sha256:04026b027ba472e319b2b038d4f4db1e873b2d855fad34b42ed8ee8a2a5d5d75}"
+S3_IMAGE="versity/versitygw@sha256:a13b9adbda0ea9d4b1d929e4bed327e4eccc18d13c23f7e5d192d987dde5651d"
+
+TENANT="synthetic"
+SITE_TITLE="SYNTHETIC_TENANT_TITLE"
+KNOWN_POST="SYNTHETIC_TENANT_KNOWN_POST"
+DB_ROOT_PW="proofRootPw123!"
+DUMP_PW="proofDumpPw456!"
+S3_KEY="proofaccesskey"
+S3_SECRET="proofsecretkey123456"
+S3_PORT=7443
+
+RUN=$$
+NET="restore-drill-proof-net-$RUN"
+SOURCE_DB="restore-drill-proof-db-$RUN"
+SOURCE_GHOST="restore-drill-proof-ghost-$RUN"
+S3="restore-drill-proof-s3-$RUN"
+SOURCE_GHOST_PORT=4460
+
+WORK="$(mktemp -d)"
+chmod 0755 "$WORK"
+mkdir -p "$WORK/certs" "$WORK/identities" "$WORK/drill-work" "$WORK/flags" "$WORK/metrics" "$WORK/s3data"
+chmod 0700 "$WORK/identities"
+METRICS="$WORK/metrics/restore_drill.prom"
+
+FAILURES=0
+note() { echo; echo "== $* =="; }
+pass() { echo "PASS: $*"; }
+fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
+
+restore_original() {
+    [ -f "$WORK/restore_drill.py.orig" ] && cp "$WORK/restore_drill.py.orig" "$DRILL"
+    rm -f "$WORK/restore_drill.py.orig"
+}
+cleanup() {
+    restore_original
+    docker rm -f -v "$SOURCE_GHOST" "$SOURCE_DB" "$S3" >/dev/null 2>&1 || true
+    ids="$(docker ps -aq --filter label=branchleft.restore-drill)"
+    [ -n "$ids" ] && docker rm -f -v $ids >/dev/null 2>&1
+    docker network rm "$NET" >/dev/null 2>&1 || true
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+sabotage() {
+    # $1 = sed expression; $2 = what it breaks. The file is restored on exit
+    # whatever happens, and by revert() on the normal path.
+    cp "$DRILL" "$WORK/restore_drill.py.orig"
+    sed -i.bak "$1" "$DRILL" && rm -f "$DRILL.bak"
+    if cmp -s "$DRILL" "$WORK/restore_drill.py.orig"; then
+        echo "FAILED: sabotage ($2) did not change restore_drill.py" >&2
+        exit 1
+    fi
+    echo "sabotage applied: $2"
+}
+revert() {
+    restore_original
+    echo "sabotage reverted"
+}
+
+# Operator-side S3 access for the proof's own setup and control objects,
+# through the same SigV4 module the worker and the drill use.
+s3() {
+    SSL_CERT_FILE="$WORK/certs/s3.crt" "$PYTHON" - "$@" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import shared_objectstorage as s3
+op, endpoint, bucket = sys.argv[2], sys.argv[3], sys.argv[4]
+creds = dict(endpoint=endpoint, region="us-east-1", access_key="proofaccesskey", secret_key="proofsecretkey123456", bucket=bucket)
+if op == "mkbucket":
+    status, body = s3.signed_request(method="PUT", **creds)
+    assert status == 200, (status, body)
+elif op == "put":
+    s3.put_object(key=sys.argv[5], data=open(sys.argv[6], "rb").read(), **creds)
+elif op == "delete":
+    s3.delete_object(key=sys.argv[5], **creds)
+elif op == "list":
+    for entry in s3.list_objects(prefix=sys.argv[5], **creds):
+        print(entry["key"])
+PY
+}
+
+drill() {
+    env -i PATH="$PATH" HOME="$HOME" ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
+        SSL_CERT_FILE="$WORK/certs/s3.crt" \
+        BACKUP_DRILL_COPY_PRIMARY_BUCKET=drill-primary \
+        BACKUP_DRILL_COPY_PRIMARY_ENDPOINT="localhost:$S3_PORT" \
+        BACKUP_DRILL_COPY_PRIMARY_REGION=us-east-1 \
+        BACKUP_DRILL_COPY_PRIMARY_ACCESS_KEY_ID="$S3_KEY" \
+        BACKUP_DRILL_COPY_PRIMARY_SECRET_ACCESS_KEY="$S3_SECRET" \
+        BACKUP_DRILL_COPY_SECONDARY_BUCKET=drill-secondary \
+        BACKUP_DRILL_COPY_SECONDARY_ENDPOINT="localhost:$S3_PORT" \
+        BACKUP_DRILL_COPY_SECONDARY_REGION=us-east-1 \
+        BACKUP_DRILL_COPY_SECONDARY_ACCESS_KEY_ID="$S3_KEY" \
+        BACKUP_DRILL_COPY_SECONDARY_SECRET_ACCESS_KEY="$S3_SECRET" \
+        BACKUP_DRILL_RECOVERY_IMAGE="$RECOVERY_IMAGE" \
+        BACKUP_DRILL_MYSQL_IMAGE="$MYSQL_IMAGE" \
+        BACKUP_DRILL_GHOST_IMAGE="$GHOST_IMAGE" \
+        BACKUP_DRILL_SIDECAR_IMAGE="$SIDECAR_IMAGE" \
+        BACKUP_DRILL_IDENTITY_DIR="$WORK/identities" \
+        BACKUP_DRILL_WORK_DIR="$WORK/drill-work" \
+        BACKUP_DRILL_FLAG_ROOT="$WORK/flags" \
+        BACKUP_DRILL_METRICS_DIR="$WORK/metrics" \
+        "$PYTHON" "$DRILL" --tenants-file "$WORK/tenants" "$@" >"$WORK/drill.out" 2>&1
+}
+drill_expect() {
+    # $1 = pass|fail, $2 = text the output must carry, $3 = label, rest = drill args
+    want="$1"; text="$2"; label="$3"; shift 3
+    if drill "$@"; then got=pass; else got=fail; fi
+    sed 's/^/    /' "$WORK/drill.out"
+    if [ "$got" = "$want" ] && grep -qF -- "$text" "$WORK/drill.out"; then
+        pass "$label"
+    else
+        fail "$label (wanted $want with '$text', got $got)"
+    fi
+}
+metric() { awk -v n="restore_drill_$1" '$1 == n {print $2}' "$METRICS"; }
+no_leftovers() {
+    if [ -z "$(docker ps -aq --filter label=branchleft.restore-drill)" ] \
+        && [ -z "$(ls -A "$WORK/drill-work")" ] && [ -z "$(ls -A "$WORK/flags" | grep -v '^drill.lock$' || true)" ]; then
+        pass "$1: no drill container, decrypted dump or drain flag left behind"
+    else
+        fail "$1: the drill left something behind"
+    fi
+}
+
+note "TLS for the S3 gateway, and the gateway itself (verifies SigV4 against its one root key)"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost,DNS:$S3,IP:127.0.0.1" \
+    -keyout "$WORK/certs/s3.key" -out "$WORK/certs/s3.crt" >/dev/null 2>&1
+chmod 0644 "$WORK/certs/s3.key"
+docker network create "$NET" >/dev/null
+docker run -d --name "$S3" --network "$NET" -p "127.0.0.1:$S3_PORT:7070" \
+    -v "$WORK/certs:/certs:ro" -v "$WORK/s3data:/data" \
+    -e ROOT_ACCESS_KEY_ID="$S3_KEY" -e ROOT_SECRET_ACCESS_KEY="$S3_SECRET" \
+    "$S3_IMAGE" --cert /certs/s3.crt --key /certs/s3.key posix /data >/dev/null
+deadline=$(($(date +%s) + 30))
+until s3 "$SCRIPTS" mkbucket "localhost:$S3_PORT" drill-primary 2>/dev/null; do
+    [ "$(date +%s)" -lt "$deadline" ] || { echo "FAILED: S3 gateway never answered" >&2; docker logs "$S3" | tail; exit 1; }
+    sleep 1
+done
+s3 "$SCRIPTS" mkbucket "localhost:$S3_PORT" drill-secondary
+pass "gateway up over TLS with buckets drill-primary and drill-secondary"
+
+note "The source database: pinned MySQL 8.0, and a TLS-only backup account with the control host's grants"
+docker run -d --name "$SOURCE_DB" --network "$NET" -e MYSQL_ROOT_PASSWORD="$DB_ROOT_PW" \
+    -e MYSQL_DATABASE="ghost_$TENANT" "$MYSQL_IMAGE" >/dev/null
+deadline=$(($(date +%s) + 120))
+until docker exec "$SOURCE_DB" mysqladmin ping -h 127.0.0.1 -uroot -p"$DB_ROOT_PW" --silent >/dev/null 2>&1; do
+    [ "$(date +%s)" -lt "$deadline" ] || { echo "FAILED: source MySQL never ready" >&2; exit 1; }
+    sleep 1
+done
+docker exec "$SOURCE_DB" mysql -uroot -p"$DB_ROOT_PW" -e \
+    "CREATE USER 'backup_drill'@'%' IDENTIFIED BY '$DUMP_PW' REQUIRE SSL; GRANT SELECT, RELOAD, PROCESS, REPLICATION CLIENT, SHOW VIEW, TRIGGER ON *.* TO 'backup_drill'@'%';" 2>/dev/null
+docker cp "$SOURCE_DB:/var/lib/mysql/ca.pem" "$WORK/certs/db-ca.pem" >/dev/null
+chmod 0644 "$WORK/certs/db-ca.pem"
+pass "source MySQL ready; backup_drill has SELECT, RELOAD, PROCESS, REPLICATION CLIENT, SHOW VIEW, TRIGGER, TLS required"
+
+note "A synthetic tenant: a real Ghost, a real owner, a titled site, a named post and a member"
+docker run -d --name "$SOURCE_GHOST" --network "$NET" -p "127.0.0.1:${SOURCE_GHOST_PORT}:2368" \
+    -e url="http://localhost:${SOURCE_GHOST_PORT}" \
+    -e database__client=mysql -e database__connection__host="$SOURCE_DB" -e database__connection__port=3306 \
+    -e database__connection__database="ghost_$TENANT" -e database__connection__user=root \
+    -e database__connection__password="$DB_ROOT_PW" -e privacy__useUpdateCheck=false \
+    -e "logging__transports=[\"stdout\"]" -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+    -e storage__images__adapter=ScanningStorageAdapter -e storage__images__wraps=LocalImagesStorage \
+    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__media__adapter=ScanningStorageAdapter -e storage__media__wraps=LocalMediaStorage \
+    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__files__adapter=ScanningStorageAdapter -e storage__files__wraps=LocalFilesStorage \
+    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
+    "$GHOST_IMAGE" >/dev/null
+ORIGIN="http://localhost:${SOURCE_GHOST_PORT}"
+deadline=$(($(date +%s) + 300))
+until [ "$(curl -s -o /dev/null -w '%{http_code}' "$ORIGIN/")" = "200" ]; do
+    [ "$(date +%s)" -lt "$deadline" ] || { echo "FAILED: source Ghost never answered 200" >&2; docker logs "$SOURCE_GHOST" | tail -30; exit 1; }
+    sleep 2
+done
+COOKIES="$WORK/cookies.txt"
+curl -sf -c "$COOKIES" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+    -d "{\"setup\":[{\"name\":\"Drill Proof Owner\",\"email\":\"drill-owner@example.test\",\"password\":\"DrillProof123!\",\"blogTitle\":\"$SITE_TITLE\"}]}" \
+    "$ORIGIN/ghost/api/admin/authentication/setup/" >/dev/null
+curl -sf -c "$COOKIES" -b "$COOKIES" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+    -d '{"username":"drill-owner@example.test","password":"DrillProof123!"}' \
+    "$ORIGIN/ghost/api/admin/session/" >/dev/null
+curl -sf -b "$COOKIES" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+    -d "{\"posts\":[{\"title\":\"$KNOWN_POST\",\"html\":\"<p>$KNOWN_POST body</p>\",\"status\":\"published\"}]}" \
+    "$ORIGIN/ghost/api/admin/posts/?source=html" >/dev/null
+curl -sf -b "$COOKIES" -H "Origin: $ORIGIN" -H "Content-Type: application/json" \
+    -d '{"members":[{"email":"drill-member@example.test"}]}' \
+    "$ORIGIN/ghost/api/admin/members/" >/dev/null
+pass "source Ghost titled $SITE_TITLE, with $KNOWN_POST published and one member"
+
+note "The tenant's own age key, held where the drill reads identities"
+docker run --rm --network none "$RECOVERY_IMAGE" age-keygen >"$WORK/identities/$TENANT.key" 2>/dev/null
+chmod 0600 "$WORK/identities/$TENANT.key"
+RECIPIENT="$(sed -n 's/^# public key: //p' "$WORK/identities/$TENANT.key")"
+echo "$TENANT" >"$WORK/tenants"
+
+note "The REAL backup worker (nightly_dump_loop.py over RemoteMysqldumpTransport), inside the recovery image's toolchain, writing both copies"
+docker run --rm --network "$NET" -v "$REPO_ROOT:/repo:ro" -v "$WORK/certs:/certs:ro" \
+    -e BACKUP_WORKER_DB_HOST="$SOURCE_DB" -e BACKUP_WORKER_MYSQL_USER=backup_drill \
+    -e BACKUP_WORKER_MYSQL_SSL_CA=/certs/db-ca.pem -e DB_DUMP_MYSQL_PWD="$DUMP_PW" \
+    -e AGE_RECIPIENT_PUBLIC_KEY="$RECIPIENT" -e SSL_CERT_FILE=/certs/s3.crt \
+    -e BACKUP_WORKER_COPY_PRIMARY_BUCKET=drill-primary -e BACKUP_WORKER_COPY_PRIMARY_ENDPOINT="$S3:7070" \
+    -e BACKUP_WORKER_COPY_PRIMARY_REGION=us-east-1 -e BACKUP_WORKER_COPY_PRIMARY_ACCESS_KEY_ID="$S3_KEY" \
+    -e BACKUP_WORKER_COPY_PRIMARY_SECRET_ACCESS_KEY="$S3_SECRET" \
+    -e BACKUP_WORKER_COPY_SECONDARY_BUCKET=drill-secondary -e BACKUP_WORKER_COPY_SECONDARY_ENDPOINT="$S3:7070" \
+    -e BACKUP_WORKER_COPY_SECONDARY_REGION=us-east-1 -e BACKUP_WORKER_COPY_SECONDARY_ACCESS_KEY_ID="$S3_KEY" \
+    -e BACKUP_WORKER_COPY_SECONDARY_SECRET_ACCESS_KEY="$S3_SECRET" \
+    -e BACKUP_WORKER_METRICS_DIR=/tmp/metrics -e NIGHTLY_DUMP_LOOP_RUN_LOCK_PATH=/tmp/loop.lock \
+    "$RECOVERY_IMAGE" python3 /repo/infra/provisioning/scripts/nightly_dump_loop.py --tenant "$TENANT"
+OBJECTS="$(s3 "$SCRIPTS" list "localhost:$S3_PORT" drill-primary "dumps/$TENANT/")"
+[ -n "$OBJECTS" ] || { echo "FAILED: the worker stored nothing" >&2; exit 1; }
+pass "the worker stored $OBJECTS to both copies"
+docker rm -f -v "$SOURCE_GHOST" "$SOURCE_DB" >/dev/null
+pass "the source database and its Ghost are gone: the drill restores from the backup alone"
+
+note "GREEN (primary copy): restore, content on a drained colour, undrain last, erasure refused"
+drill_expect pass "title='$SITE_TITLE'" "GREEN primary: the drill passed and read the tenant's own title" --copy primary
+grep -qF "newest_post='$KNOWN_POST'" "$WORK/drill.out" && grep -qF "members=1" "$WORK/drill.out" \
+    && pass "GREEN primary: the named post and the member came back" || fail "GREEN primary: content missing"
+grep -qF "no identity matched any of the recipients" "$WORK/drill.out" \
+    && pass "GREEN primary: the shredded tenant was refused because no key matched" || fail "GREEN primary: erasure reason missing"
+[ "$(metric last_run_success)" = "1.0" ] && pass "GREEN primary: last_run_success exported as 1" || fail "GREEN primary: metric"
+[ -n "$(metric last_success_timestamp_seconds)" ] && pass "GREEN primary: last_success_timestamp_seconds exported" || fail "GREEN primary: no last success"
+no_leftovers "GREEN primary"
+
+note "GREEN (secondary copy): the other copy restores too"
+drill_expect pass "copy=secondary" "GREEN secondary: the drill passed from the second copy" --copy secondary
+GREEN_SUCCESS="$(metric last_success_timestamp_seconds)"
+no_leftovers "GREEN secondary"
+
+note "CONTROL: an empty backup object, newer than the real one"
+: >"$WORK/empty.sql"
+docker run --rm -i --network none "$RECOVERY_IMAGE" age -r "$RECIPIENT" <"$WORK/empty.sql" >"$WORK/empty.sql.age"
+EMPTY_KEY="dumps/$TENANT/$(date -u -v+1M +%Y%m%dT%H%M%SZ 2>/dev/null || date -u -d '+1 min' +%Y%m%dT%H%M%SZ).sql.age"
+s3 "$SCRIPTS" put "localhost:$S3_PORT" drill-primary "$EMPTY_KEY" "$WORK/empty.sql.age"
+drill_expect fail "ContentFloorError" "CONTROL: the empty restore is refused on content" --copy primary
+[ "$(metric last_run_success)" = "0.0" ] && [ "$(metric last_success_timestamp_seconds)" = "$GREEN_SUCCESS" ] \
+    && pass "CONTROL: last_run_success 0, last success left at the GREEN run's time" || fail "CONTROL: metrics"
+no_leftovers "CONTROL"
+
+note "CONTROL SABOTAGE: remove the content gate; the empty restore must then wrongly pass on Ghost's 200"
+sabotage 's/^        require_tenant_content(report.content)$/        pass  # SABOTAGE: content gate removed/' "content gate"
+drill_expect pass "restore_drill: PASS" "CONTROL SABOTAGE: RED confirmed -- with the gate gone an empty restore passes, Ghost answered 200 and undrained" --copy primary
+revert
+drill_expect fail "ContentFloorError" "CONTROL after revert: the empty restore is refused again" --copy primary
+s3 "$SCRIPTS" delete "localhost:$S3_PORT" drill-primary "$EMPTY_KEY"
+
+note "CONTROL: a real-shaped backup object with a second recipient"
+docker run --rm --network none "$RECOVERY_IMAGE" age-keygen 2>/dev/null | sed -n 's/^# public key: //p' >"$WORK/second.pub"
+echo "SECOND_RECIPIENT_CANARY" | docker run --rm -i --network none "$RECOVERY_IMAGE" \
+    age -r "$RECIPIENT" -r "$(cat "$WORK/second.pub")" >"$WORK/two.sql.age"
+s3 "$SCRIPTS" put "localhost:$S3_PORT" drill-primary "dumps/$TENANT/20000101T000000Z.sql.age" "$WORK/two.sql.age"
+drill_expect fail "names 2 recipients" "CONTROL: an object with two recipients fails the recipient check" --copy primary
+sabotage 's/^    if len(stanzas) != 1:$/    if len(stanzas) < 1:/' "one-recipient check"
+drill_expect pass "restore_drill: PASS" "RECIPIENT SABOTAGE: RED confirmed -- with the check loosened the two-recipient object passes" --copy primary
+revert
+drill_expect fail "names 2 recipients" "RECIPIENT after revert: the two-recipient object fails again" --copy primary
+s3 "$SCRIPTS" delete "localhost:$S3_PORT" drill-primary "dumps/$TENANT/20000101T000000Z.sql.age"
+
+note "ERASURE SABOTAGE: the destroyed key survives where the drill holds keys"
+sabotage 's#^        _destroy_file(key_path)$#        os.replace(key_path, identity_dir / f"leaked{IDENTITY_SUFFIX}")#' "key destruction"
+drill_expect fail "ErasureBrokenError" "ERASURE SABOTAGE: RED confirmed -- a kept key decrypts the shredded tenant and the drill fails" --copy primary
+revert
+rm -f "$WORK/identities/leaked.key"
+drill_expect pass "restore_drill: PASS" "ERASURE after revert: the full drill passes again" --copy primary
+no_leftovers "final"
+
+if [ "$FAILURES" -gt 0 ]; then
+    echo
+    echo "$FAILURES check(s) failed."
+    exit 1
+fi
+echo
+echo "All restore drill checks passed: GREEN on both copies, and every control red for its own reason."

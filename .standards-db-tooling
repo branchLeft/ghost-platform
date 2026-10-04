@@ -64,3 +64,8 @@ adapters/sso/test/image/provision-support-account-mysql.image.test.mjs
 # Provisioning: the portal's database roles, grants and logins, and the test
 # suite's throwaway databases -- operator-run, never the portal at run time.
 portal/data/provision/*
+
+# The weekly restore drill: decrypts a backup, imports it into a throwaway
+# server and reads back what it restored.
+infra/provisioning/scripts/restore_drill.py
+infra/provisioning/scripts/test_restore_drill.py

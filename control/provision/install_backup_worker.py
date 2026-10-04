@@ -115,11 +115,13 @@ def ensure_service_user(run: Runner) -> bool:
     return True
 
 
-def install_units(release_root: pathlib.Path, unit_dir: pathlib.Path) -> bool:
-    """Copies both unit files into place when their bytes differ. True when
-    any changed, so the caller knows to daemon-reload."""
+def install_units(
+    release_root: pathlib.Path, unit_dir: pathlib.Path, names: Sequence[str] = UNIT_FILES
+) -> bool:
+    """Copies the named unit files into place when their bytes differ. True
+    when any changed, so the caller knows to daemon-reload."""
     changed = False
-    for name in UNIT_FILES:
+    for name in names:
         source = (release_root / "control" / "provision" / name).read_bytes()
         target = unit_dir / name
         if target.is_file() and not target.is_symlink() and target.read_bytes() == source:
