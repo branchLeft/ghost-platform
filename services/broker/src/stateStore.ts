@@ -73,6 +73,43 @@ export interface SlotState {
    * without re-running either pre-stop check.
    */
   readonly oldColourStopped?: boolean;
+  /**
+   * The evidence copy's custody, set only by freeze-and-detach. `frozen`
+   * means the copy has been taken but not yet confirmed as sealed, hashed
+   * and moved to the held area; `detached` means that confirmation landed.
+   * Absent means no evidence was ever taken. `/reset` refuses while this
+   * is `frozen`, whatever the phase, and recovery paths carry it forward
+   * rather than dropping it. See stateStore.md#resetrefusal.
+   */
+  readonly evidence?: 'frozen' | 'detached';
+}
+
+/**
+ * Why a slot may not be reset, or `undefined` when it may. The evidence
+ * leaves by `detaching` before the slot resets, so a slot still detaching,
+ * or whose freeze is not yet confirmed detached (including one a crashed
+ * detach left in `error`), keeps its state until a confirmed detach
+ * releases it. Every path that wipes a slot asks this first. See
+ * stateStore.md#resetrefusal.
+ */
+export function resetRefusal(state: SlotState, slot: SlotName): string | undefined {
+  if (state.phase === 'detaching') {
+    return `slot "${slot}" is detaching its held evidence -- refusing to reset it until the detach is confirmed`;
+  }
+  if (state.evidence === 'frozen') {
+    return `slot "${slot}" holds frozen evidence not yet confirmed detached (phase "${state.phase}") -- refusing to reset it`;
+  }
+  return undefined;
+}
+
+/**
+ * The `error` state recovery writes, carrying forward the evidence marker
+ * so a fail-closed recovery can never release a slot's held evidence.
+ */
+export function errorStateOf(state: SlotState): SlotState {
+  return state.evidence === undefined
+    ? { phase: 'error', lastHashId: state.lastHashId }
+    : { phase: 'error', lastHashId: state.lastHashId, evidence: state.evidence };
 }
 
 export class UnrotatedHashError extends Error {
@@ -149,7 +186,7 @@ export async function recoverSwapInFlight(
     log(
       `slot "${slot}" was left "swapping" with no recorded source/target colour -- marking "error"`
     );
-    await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+    await writeSlotState(dir, slot, errorStateOf(state));
     return;
   }
 
@@ -194,7 +231,7 @@ export async function recoverSwapInFlight(
     log(
       `slot "${slot}" recovered from a swap with NEITHER colour "${source}" nor "${target}" confirmed live -- marking "error" rather than guessing`
     );
-    await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+    await writeSlotState(dir, slot, errorStateOf(state));
   }
 
   const targetLive = await isLive(target);
@@ -264,7 +301,7 @@ export async function recoverStoppingSlot(
     // a state file is host-writable data, not a type the runtime can
     // trust.
     log(`slot "${slot}" was left "stopping" with no recorded colour -- marking "error"`);
-    await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+    await writeSlotState(dir, slot, errorStateOf(state));
     return;
   }
   const survivor = state.colour;
@@ -277,7 +314,7 @@ export async function recoverStoppingSlot(
     log(
       `slot "${slot}" was left "stopping" colour "${target}" by a process that died before recording it, but survivor colour "${survivor}" is not confirmed live now -- marking "error" rather than stopping colour "${target}" and leaving the slot with no colour serving`
     );
-    await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+    await writeSlotState(dir, slot, errorStateOf(state));
     return;
   }
 
@@ -358,7 +395,7 @@ export async function recoverCrashedSlots(
         log(
           `slot "${slot}" was left "stopping" with no stop-recovery wrapper configured -- marking "error" rather than guessing the old colour was ever actually stopped`
         );
-        await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+        await writeSlotState(dir, slot, errorStateOf(state));
       }
       continue;
     }
@@ -370,7 +407,7 @@ export async function recoverCrashedSlots(
         log(`slot "${slot}" was mid-reset: revoking its lease and hash before marking it "error"`);
         await clearLeaseAndHash(leaseStoreConfig, slot);
       }
-      await writeSlotState(dir, slot, { phase: 'error', lastHashId: state.lastHashId });
+      await writeSlotState(dir, slot, errorStateOf(state));
     }
   }
 }
