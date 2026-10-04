@@ -307,6 +307,8 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         ]
 
     def _assert_no_writer_stalled(self, writers, window) -> None:
+        """Asserted first in every test, so a stall is what fails, never a
+        later symptom of the same defect."""
         for tenant, writer in writers.items():
             during = [latency for began, latency in writer.samples if window["began"] <= began <= window["ended"]]
             self.assertGreater(len(during), 5, f"{tenant}'s writer barely ran during the backup")
@@ -356,8 +358,8 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
     def test_a_quiet_night_dumps_every_tenant_with_no_global_lock(self) -> None:
         with _writers(self.container) as (writers, window):
             outcomes = self._nightly_run()
-        self.assertEqual([o.error for o in outcomes if not o.ok], [])
         self._assert_no_writer_stalled(writers, window)
+        self.assertEqual([o.error for o in outcomes if not o.ok], [])
         self.assertEqual(self._flushes_by_backup_accounts(), [])
         for tenant in TENANTS:
             plaintext = self._decrypt(tenant)
@@ -379,19 +381,19 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         with _writers(self.container) as (writers, window):
             self._hold_long_query("ghost_alpha")
             outcomes = self._nightly_run()
-        self.assertEqual([o.error for o in outcomes if not o.ok], [])
         self._assert_no_writer_stalled(writers, window)
+        self.assertEqual([o.error for o in outcomes if not o.ok], [])
         self.assertEqual(self._flushes_by_backup_accounts(), [])
 
     def test_an_open_write_transaction_aborts_retries_and_succeeds(self) -> None:
         with _writers(self.container) as (writers, window):
             self._hold_open_transaction("ghost_alpha", 3.5)
             outcomes = self._nightly_run()
+        self._assert_no_writer_stalled(writers, window)
         by_tenant = {o.tenant: o for o in outcomes}
         self.assertTrue(by_tenant["alpha"].ok, by_tenant["alpha"].error)
         self.assertGreaterEqual(by_tenant["alpha"].result.lock_aborts, 1)
         self.assertTrue(by_tenant["bravo"].ok and by_tenant["charlie"].ok)
-        self._assert_no_writer_stalled(writers, window)
         self.assertRegex(self._read_metrics(), r'backup_worker_lock_aborts_total\{tenant="alpha"\} [1-9]')
 
     def _db1_dump(self) -> tuple[bounded_snapshot.SnapshotReport, str]:
@@ -417,8 +419,8 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         with _writers(self.container) as (writers, window):
             self._hold_open_transaction("ghost_charlie", 3.5)
             report, _ = self._db1_dump()
-        self.assertGreaterEqual(report.aborted_attempts, 1)
         self._assert_no_writer_stalled(writers, window)
+        self.assertGreaterEqual(report.aborted_attempts, 1)
 
     @staticmethod
     def _checksums(container: _Container, schema: str) -> dict[str, str]:

@@ -56,10 +56,15 @@ pre-rebuild archive under an identical key.
 ## Metrics
 
 Each run writes `dump_nightly_lock_bound.prom` to `DB_DUMP_METRICS_DIR`
-(default `/var/lib/branchleft/backup-worker-exporter`, the directory the
-estate's native node_exporter reads). It uses the same metric names the
-control host's worker publishes, under `tenant="db1-all-databases"`:
-`backup_worker_lock_wait_seconds`, `backup_worker_lock_hold_seconds` and the
-cumulative `backup_worker_lock_aborts_total`, which a failed run still
-advances. The backup alerts therefore cover db1's dump as well. Writing is
-best-effort: a metrics failure never fails the dump.
+(default `/var/lib/branchleft/backup-worker-exporter`). It uses the same
+metric names the control host's worker publishes, under
+`tenant="db1-all-databases"`: `backup_worker_lock_wait_seconds`,
+`backup_worker_lock_hold_seconds` and the cumulative
+`backup_worker_lock_aborts_total`, which a failed run still advances.
+Writing is best-effort: a metrics failure never fails the dump.
+
+**Nothing reads this file today.** db1 is not monitored for these
+metrics. The only node_exporter that reads that textfile directory runs on
+the control host, and Prometheus's db1 node target is not expected up.
+Until monitoring is extended to db1, no alert fires on db1's lock waits or
+aborts. The run's journal line is the only record.
