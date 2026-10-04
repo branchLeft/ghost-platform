@@ -85,6 +85,15 @@ export interface SlotState {
 }
 
 /**
+ * Fails closed: only an absent marker or the exact confirmed value
+ * `detached` means nothing is held. Any other value, including one this
+ * code does not recognise, counts as held.
+ */
+function holdsUnconfirmedEvidence(evidence: unknown): boolean {
+  return evidence !== undefined && evidence !== 'detached';
+}
+
+/**
  * Why a slot may not be reset, or `undefined` when it may. The evidence
  * leaves by `detaching` before the slot resets, so a slot still detaching,
  * or whose freeze is not yet confirmed detached (including one a crashed
@@ -96,7 +105,7 @@ export function resetRefusal(state: SlotState, slot: SlotName): string | undefin
   if (state.phase === 'detaching') {
     return `slot "${slot}" is detaching its held evidence -- refusing to reset it until the detach is confirmed`;
   }
-  if (state.evidence === 'frozen') {
+  if (holdsUnconfirmedEvidence(state.evidence)) {
     return `slot "${slot}" holds frozen evidence not yet confirmed detached (phase "${state.phase}") -- refusing to reset it`;
   }
   return undefined;
@@ -150,8 +159,21 @@ export async function readSlotState(dir: string, slot: SlotName): Promise<SlotSt
   return JSON.parse(text) as SlotState;
 }
 
+/**
+ * Writes a slot's state. A state that does not name an `evidence` marker
+ * inherits any unconfirmed one already on disk, so no transition (a
+ * reconcile colour swap, a drain, a stop, a recovery) can drop held
+ * evidence by building a fresh object. Only a write that names the marker
+ * itself, such as the confirmed-detach write, changes it. An unreadable
+ * existing file fails the write rather than risking a drop.
+ */
 export async function writeSlotState(dir: string, slot: SlotName, state: SlotState): Promise<void> {
-  await writeFileAtomic(statePath(dir, slot), JSON.stringify(state));
+  const existing = await readSlotState(dir, slot);
+  const carried =
+    'evidence' in state || !holdsUnconfirmedEvidence(existing.evidence)
+      ? state
+      : { ...state, evidence: existing.evidence };
+  await writeFileAtomic(statePath(dir, slot), JSON.stringify(carried));
 }
 
 /** A phase only ever held while `slotLock.ts`'s per-slot lock is claimed, and recovered by

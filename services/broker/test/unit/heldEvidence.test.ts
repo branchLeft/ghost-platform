@@ -1,7 +1,8 @@
-import { readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
+import type { EmailAddress } from '@branchleft/ghost-platform-render-core';
 import { makeTempDir } from '../../src/atomicFile.js';
 import {
   errorStateOf,
@@ -47,6 +48,16 @@ describe('resetRefusal', () => {
       expect(refusal).toContain(`"${phase}"`);
     }
   );
+
+  it.each(['FROZEN', 'true', 'maybe', ''])('refuses an unrecognised marker value %j', (value) => {
+    const state = { phase: 'error', evidence: value } as unknown as SlotState;
+    expect(resetRefusal(state, SLOT)).toContain('frozen evidence');
+  });
+
+  it('refuses a non-string marker value', () => {
+    const state = { phase: 'error', evidence: true } as unknown as SlotState;
+    expect(resetRefusal(state, SLOT)).toContain('frozen evidence');
+  });
 
   it.each(['free', 'running', 'error'] as const)(
     'allows a "%s" slot with no evidence marker or a confirmed detach',
@@ -184,12 +195,94 @@ describe('/reset and held evidence', () => {
     expect(await res.json()).toEqual({ slot: '0', phase: 'free' });
   });
 
+  it('keeps the marker through a /reconcile colour swap, so the next /reset still refuses', async () => {
+    const b = await startTestBroker();
+    broker = b;
+    const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
+    const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
+    expect(
+      (await b.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first })).status
+    ).toBe(200);
+    const running = await readSlotState(b.stateDir, SLOT);
+    expect(running.phase).toBe('running');
+    await writeSlotState(b.stateDir, SLOT, { ...running, evidence: 'frozen' });
+
+    const swap = await b.signedFetch('POST', '/reconcile', { slot: '0', descriptor: second });
+    expect(swap.status).toBeLessThan(500);
+    expect((await readSlotState(b.stateDir, SLOT)).evidence).toBe('frozen');
+
+    const res = await b.signedFetch('POST', '/reset', { slot: '0' });
+    expect(res.status).toBe(409);
+    expect((await readSlotState(b.stateDir, SLOT)).evidence).toBe('frozen');
+  });
+
+  it('refuses /reset on a slot whose marker is an unrecognised value', async () => {
+    const b = await seeded({ phase: 'error', evidence: 'FROZEN' as unknown as 'frozen' });
+    const before = await snapshot(b);
+
+    const res = await b.signedFetch('POST', '/reset', { slot: '0' });
+
+    expect(res.status).toBe(409);
+    expect(await snapshot(b)).toEqual(before);
+  });
+
+  it('fails closed when the state file cannot be read', async () => {
+    const b = await seeded({ phase: 'error' });
+    const path = join(b.stateDir, '0.json');
+    await rm(path);
+    await mkdir(path);
+
+    const res = await b.signedFetch('POST', '/reset', { slot: '0' });
+
+    expect(res.status).not.toBe(200);
+    expect(await wrapperInvocations(b).then((i) => i.some((inv) => inv.includes('reset')))).toBe(
+      false
+    );
+    await rm(path, { recursive: true });
+  });
+
   it('refuses one slot without blocking another', async () => {
     const b = await seeded({ phase: 'detaching', evidence: 'frozen' });
 
     const res = await b.signedFetch('POST', '/reset', { slot: '1' });
 
     expect(res.status).toBe(200);
+  });
+});
+
+describe('writeSlotState and held evidence', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await makeTempDir('held-evidence-write');
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('carries an unconfirmed marker across a write that omits it', async () => {
+    await writeSlotState(dir, SLOT, { phase: 'running', colour: 'a', evidence: 'frozen' });
+    await writeSlotState(dir, SLOT, { phase: 'running', colour: 'b' });
+    expect((await readSlotState(dir, SLOT)).evidence).toBe('frozen');
+  });
+
+  it('carries an unrecognised marker too', async () => {
+    await writeSlotState(dir, SLOT, { phase: 'error', evidence: 'FROZEN' as unknown as 'frozen' });
+    await writeSlotState(dir, SLOT, { phase: 'free' });
+    expect((await readSlotState(dir, SLOT)).evidence).toBe('FROZEN');
+  });
+
+  it('lets a write that names the marker change it', async () => {
+    await writeSlotState(dir, SLOT, { phase: 'detaching', evidence: 'frozen' });
+    await writeSlotState(dir, SLOT, { phase: 'error', evidence: 'detached' });
+    expect((await readSlotState(dir, SLOT)).evidence).toBe('detached');
+  });
+
+  it('does not invent or keep a confirmed marker', async () => {
+    await writeSlotState(dir, SLOT, { phase: 'error', evidence: 'detached' });
+    await writeSlotState(dir, SLOT, { phase: 'free' });
+    expect('evidence' in (await readSlotState(dir, SLOT))).toBe(false);
   });
 });
 
