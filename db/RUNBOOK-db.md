@@ -274,13 +274,25 @@ the `mysql` container (never `-h 10.20.1.20` -- root has no account
 reachable that way, and base provisioning installs no host-side `mysql`
 client for this step to assume):
 
+The stack's variables reach it only through systemd's `EnvironmentFile=`
+(`/etc/branchleft/db.image.env`, `db.env`), so an interactive shell on `db1`
+has none of them: `docker compose ps`, `exec` and `run` there fail with
+`required variable MYSQL_ROOT_PASSWORD is missing`. Reach the running
+container with `docker exec` by its fixed name instead, and pass the root
+password by *name* (`-e MYSQL_PWD`), never as a value, so it never lands in
+`ps` output:
+
 ```bash
-docker exec -it db-mysql-1 mysql --socket=/var/run/mysqld/mysqld.sock -uroot -p"$MYSQL_ROOT_PASSWORD" \
+read -rs MYSQL_PWD; export MYSQL_PWD
+```
+
+```bash
+docker exec -i -e MYSQL_PWD db-mysql-1 mysql --socket=/var/run/mysqld/mysqld.sock -uroot \
   -e "SHOW VARIABLES LIKE 'require_secure_transport'; SHOW VARIABLES LIKE 'have_ssl';"
 ```
 
 Expect `require_secure_transport = ON` and `have_ssl = YES`. The healthcheck
-in `docker compose ps` reaching `healthy` is the same proof from inside the
+in `docker ps --filter name=db-mysql-1` reaching `(healthy)` is the same proof from inside the
 container -- if it never does, `mysqld-exporter`'s `service_healthy`
 dependency will never start it either, and this command is the first thing
 to run to see why.
@@ -371,9 +383,14 @@ Three places must agree, and the account is reachable only over the socket:
 # 1. generate, and set it in MySQL. MYSQL_PWD keeps the root password out of
 #    the host's process list; the new value is typed, never echoed.
 NEW=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 40)
-docker exec -i -e MYSQL_PWD="$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' /etc/branchleft/db.env)" \
-  db-mysql-1 mysql --socket=/var/run/mysqld/mysqld.sock -uroot \
-  -e "ALTER USER 'exporter'@'localhost' IDENTIFIED BY '$NEW'; FLUSH PRIVILEGES;"
+#    The root password is read into the shell and passed by name only; the
+#    statement goes in on stdin, so neither password is on any argv.
+read -rs MYSQL_PWD; export MYSQL_PWD
+docker exec -i -e MYSQL_PWD db-mysql-1 mysql --socket=/var/run/mysqld/mysqld.sock -uroot <<SQL
+ALTER USER 'exporter'@'localhost' IDENTIFIED BY '$NEW';
+FLUSH PRIVILEGES;
+SQL
+unset MYSQL_PWD
 
 # 2. put the same value in db.env, replacing any existing line
 sed -i '/^EXPORTER_MYSQL_PWD=/d' /etc/branchleft/db.env
@@ -389,10 +406,16 @@ proof, because the healthcheck asserts `mysql_up 1` and nothing else does.
 
 ## 4. One-time admin bootstrap: the exporter, dump and binlog-ship accounts
 
-Run once, over the same socket, as root:
+Run once, over the same socket, as root, from inside the `mysql` container
+(`db1` has no host-side `mysql` client, and an interactive shell has no
+`MYSQL_ROOT_PASSWORD`):
 
 ```bash
-mysql --socket=/opt/branchleft/db/run/mysqld/mysqld.sock -uroot -p"$MYSQL_ROOT_PASSWORD"
+read -rs MYSQL_PWD; export MYSQL_PWD
+```
+
+```bash
+docker exec -it -e MYSQL_PWD db-mysql-1 mysql --socket=/var/run/mysqld/mysqld.sock -uroot
 ```
 
 Then, at the `mysql>` prompt -- every account below is scoped to `@'localhost'`
@@ -604,7 +627,11 @@ expected and harmless (its first binlog hasn't shipped yet).
 ## 6. Provision a tenant database
 
 ```bash
-MYSQL_PWD="$MYSQL_ROOT_PASSWORD" python3 /opt/branchleft/db/provision/provision_tenant_db.py --admin-user root <tenant-name>
+read -rs MYSQL_PWD; export MYSQL_PWD
+```
+
+```bash
+python3 /opt/branchleft/db/provision/provision_tenant_db.py --admin-user root <tenant-name>
 ```
 
 Connects over the same socket by default (`--socket` overrides it, though
