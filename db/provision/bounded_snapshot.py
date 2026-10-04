@@ -426,9 +426,6 @@ def _attempt(
         try:
             if _parse_tables(coordinator.ask(list_tables_sql(schemas), hold_deadline)) != tables:
                 raise _Abort("the set of tables changed while the lock was requested")
-            log_file, position = parse_log_status(
-                coordinator.ask("SELECT LOCAL FROM performance_schema.log_status;", hold_deadline)
-            )
             process = factory.spawn(
                 "mysqldump", ["-v", *dump_args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
             )
@@ -438,6 +435,9 @@ def _attempt(
                     raise _Abort(f"mysqldump ended before opening its snapshot: {dump.stderr.text()!r}")
                 raise _Abort(f"mysqldump did not open its snapshot within the {limits.hold_bound_seconds}s hold bound")
             coordinator.ask("UNLOCK TABLES;", hold_deadline)
+            log_file, position = parse_log_status(
+                coordinator.ask("SELECT LOCAL FROM performance_schema.log_status;", clock() + 5)
+            )
         except _DeadlinePassed:
             raise _Abort(f"lock held past the {limits.hold_bound_seconds}s hold bound") from None
         released = clock()
