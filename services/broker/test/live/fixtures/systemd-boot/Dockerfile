@@ -97,12 +97,13 @@ COPY services/broker/test/live/fixtures/systemd-boot/make-verify-key.mjs service
 # `{"slots": []}` shape found by a 500, and the non-empty seed added after a
 # review round found `/reset` on an empty slots file never exercises the
 # real write-rename against the ProtectSystem=strict mount at all).
-RUN mkdir -p /etc/branchleft /var/lib/branchleft \
+RUN mkdir -p /etc/branchleft /var/lib/branchleft/broker-slots \
  && /opt/branchleft/broker/node/bin/node /opt/branchleft/broker/proof/make-verify-key.mjs /etc/branchleft/broker-verify-key.bin /opt/branchleft/broker/proof/signing-key.bin \
  && chown root:broker /etc/branchleft/broker-verify-key.bin \
  && chmod 0640 /etc/branchleft/broker-verify-key.bin \
- && printf '{"slots": [{"host": "proof-leased.demo.trypublicpress.co.uk", "slot": "0", "gate": {"kind": "passphrase", "argon2idHash": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA"}}]}' > /var/lib/branchleft/slots.json \
- && chown -R broker:broker /var/lib/branchleft
+ && printf '{"slots": [{"host": "proof-leased.demo.trypublicpress.co.uk", "slot": "0", "gate": {"kind": "passphrase", "argon2idHash": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA"}}]}' > /var/lib/branchleft/broker-slots/slots.json \
+ && chown root:root /var/lib/branchleft \
+ && chown -R broker:broker /var/lib/branchleft/broker-slots
 
 COPY services/broker/test/live/fixtures/systemd-boot/broker.env /etc/branchleft/broker.env
 RUN chown root:root /etc/branchleft/broker.env && chmod 0600 /etc/branchleft/broker.env
