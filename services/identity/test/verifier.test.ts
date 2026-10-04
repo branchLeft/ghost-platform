@@ -40,7 +40,10 @@ function sign(
   return `${header}.${payload}.${signer.sign(privateKey).toString('base64url')}`;
 }
 
-function verifier(keys: () => Promise<readonly Jwk[]>, extra: Partial<TokenVerifierOptions> = {}) {
+function verifier(
+  keys: (signal: AbortSignal) => Promise<readonly Jwk[]>,
+  extra: Partial<TokenVerifierOptions> = {}
+) {
   return createTokenVerifier({
     issuer: ISSUER,
     clientId: 'app',
