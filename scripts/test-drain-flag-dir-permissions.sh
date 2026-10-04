@@ -26,6 +26,12 @@ RESULT="$(docker run --rm -v "$PWD/demo-host/provision":/repo:ro -w /tmp debian:
 
     echo "OWNER=$(stat -c "%U:%G" /var/lib/branchleft-broker/drain-flags)"
     echo "MODE=$(stat -c "%a" /var/lib/branchleft-broker/drain-flags)"
+    echo "STATE_DIR=$(stat -c "%U:%G %a" /var/lib/branchleft-broker)"
+
+    # A sidecar reaches the flag directory through a bind mount, so the
+    # 0750 state directory above it is not on its way in. Widen it here so
+    # the checks below test the flag directory'"'"'s own bits, not that parent.
+    chmod 0755 /var/lib/branchleft-broker
 
     if su sidecar-uid -c "cat /var/lib/branchleft-broker/drain-flags/0-a.drain" >/dev/null 2>&1; then
       echo "SIDECAR_READ=ok"
@@ -69,6 +75,7 @@ check() {
 
 check "OWNER" "broker:broker"
 check "MODE" "755"
+check "STATE_DIR" "broker:broker 750"
 check "SIDECAR_READ" "ok"
 check "SIDECAR_WRITE" "denied"
 check "SLOT_WRITE" "denied"
