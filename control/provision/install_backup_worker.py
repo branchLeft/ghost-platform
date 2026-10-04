@@ -34,6 +34,7 @@ REQUIRED_RELEASE_FILES = (
     "infra/provisioning/scripts/pull_encrypt_store.py",
     "infra/provisioning/scripts/media_backup_restore.py",
     "infra/provisioning/scripts/shared_objectstorage.py",
+    "db/provision/bounded_snapshot.py",
     "db/provision/dump_tenant.py",
     "db/provision/naming.py",
     "db/provision/objectstorage.py",

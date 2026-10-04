@@ -167,6 +167,43 @@ class ObjectKeyTests(unittest.TestCase):
         self.assertNotEqual(before_rebuild, after_rebuild)
 
 
+class LockMetricTests(_FakeClientsOnPath):
+    def _metrics(self):
+        with open(os.path.join(self.tmp, "m", dn.METRICS_FILENAME), encoding="utf-8") as handle:
+            return handle.read()
+
+    def _dump(self):
+        return dn.run_mysqldump(
+            socket_path="/tmp/mysqld.sock", password="pw", out_path=self.out_path, limits=FAST,
+            sleep=lambda s: None, metrics_dir=os.path.join(self.tmp, "m"),
+        )
+
+    def test_a_dump_publishes_wait_hold_and_a_zero_abort_counter(self):
+        self._dump()
+        text = self._metrics()
+        self.assertIn('backup_worker_lock_wait_seconds{tenant="db1-all-databases"} ', text)
+        self.assertIn('backup_worker_lock_hold_seconds{tenant="db1-all-databases"} ', text)
+        self.assertIn('backup_worker_lock_aborts_total{tenant="db1-all-databases"} 0\n', text)
+
+    def test_the_abort_counter_accumulates_across_runs_and_failures(self):
+        self.fakes.configure(tables=[["ghost_blog", "users"]], lock=["timeout", "ok"])
+        self._dump()
+        self.fakes.configure(tables=[["ghost_blog", "users"]], lock=["timeout"])
+        with self.assertRaises(dn.DumpError):
+            self._dump()
+        self.assertIn('backup_worker_lock_aborts_total{tenant="db1-all-databases"} 4\n', self._metrics())
+
+    def test_no_metrics_dir_writes_nothing(self):
+        dn.run_mysqldump(socket_path="/tmp/mysqld.sock", password="pw", out_path=self.out_path, limits=FAST, sleep=lambda s: None)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "m")))
+
+    def test_a_write_failure_never_fails_the_dump(self):
+        blocker = os.path.join(self.tmp, "file")
+        with open(blocker, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        dn.record_lock_metrics(metrics_dir=blocker, report=None, aborts=1)
+
+
 class RunDumpTests(_FakeClientsOnPath):
     def setUp(self):
         super().setUp()

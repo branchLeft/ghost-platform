@@ -147,9 +147,11 @@ class _Writer(threading.Thread):
     """One tenant's writer: a single session inserting one row at a time and
     timing each insert to its acknowledgement."""
 
-    def __init__(self, container: _Container, schema: str) -> None:
+    def __init__(self, container: _Container, schema: str, *, pause: float = 0.05, update: bool = False) -> None:
         super().__init__(daemon=True)
         self.schema = schema
+        self.pause = pause
+        self.update = update
         self.samples: list[tuple[float, float]] = []
         self.halt = threading.Event()
         self.session = container.root_session()
@@ -160,7 +162,10 @@ class _Writer(threading.Thread):
             sequence += 1
             token = f"w{sequence}"
             began = time.monotonic()
-            self.session.stdin.write(f"INSERT INTO {self.schema}.posts (title) VALUES ('{token}'); SELECT '{token}';\n".encode())
+            update = f"UPDATE {self.schema}.settings SET value = '{token}' WHERE id = 1; " if self.update else ""
+            self.session.stdin.write(
+                f"INSERT INTO {self.schema}.posts (title) VALUES ('{token}'); {update}SELECT '{token}';\n".encode()
+            )
             self.session.stdin.flush()
             while True:
                 line = self.session.stdout.readline()
@@ -169,7 +174,7 @@ class _Writer(threading.Thread):
             if not line:
                 return
             self.samples.append((began, time.monotonic() - began))
-            time.sleep(0.05)
+            time.sleep(self.pause)
 
     def finish(self) -> list[tuple[float, float]]:
         self.halt.set()
@@ -405,6 +410,66 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
             report, _ = self._db1_dump()
         self.assertGreaterEqual(report.aborted_attempts, 1)
         self._assert_no_writer_stalled(writers, window)
+
+    @staticmethod
+    def _checksums(container: _Container, schema: str) -> dict[str, str]:
+        tables = [f"{schema}.{name}" for name in ("users", "settings", "posts")]
+        rows = container.root_ok(f"CHECKSUM TABLE {', '.join(tables)};").splitlines()
+        counts = container.root_ok(
+            " UNION ALL ".join(f"SELECT '{t}', COUNT(*) FROM {t}" for t in tables) + ";"
+        ).splitlines()
+        return {"checksums": sorted(rows), "counts": sorted(counts)}
+
+    def test_the_recorded_position_replays_to_the_source_exactly(self) -> None:
+        """The position is measured, not argued: dump one tenant under heavy
+        concurrent writes, restore it into a fresh server of the same image,
+        replay the binary log from the dump's own comment with the PITR
+        tool's own extract, and compare every table with the source."""
+        schema = "ghost_alpha"
+        writers = [_Writer(self.container, schema, pause=0.0, update=True) for _ in range(3)]
+        for writer in writers:
+            writer.start()
+        time.sleep(1.0)
+        transport = RemoteMysqldumpTransport(
+            host="127.0.0.1", port=3306, user="backup_ops1", ssl_ca=CA_IN_CONTAINER, popen=self.container.popen
+        )
+        sink = io.BytesIO()
+        with contextlib.redirect_stderr(io.StringIO()):
+            exit_code = transport.run(
+                command=["python3", "/unused", "alpha"], env={"DB_DUMP_MYSQL_PWD": WORKER_PASSWORD}, stdout=sink
+            )
+        time.sleep(1.5)
+        for writer in writers:
+            writer.finish()
+        self.assertEqual(exit_code, 0)
+        dump = sink.getvalue()
+        log_file, position = extract_tenant_binlog.find_resume_point(io.StringIO(dump.decode()), tenant_database=schema)
+        source = self._checksums(self.container, schema)
+
+        binlogs = [row.split()[0] for row in self.container.root_ok("SHOW BINARY LOGS;").splitlines()]
+        paths = [f"/var/lib/mysql/{name}" for name in binlogs if name >= log_file]
+
+        def in_source_container(argv, **kwargs):
+            kwargs.pop("env", None)
+            return subprocess.run(["docker", "exec", "-e", "TZ=UTC", self.container.name, *argv], **kwargs)
+
+        stream = extract_tenant_binlog.extract_tenant_stream(
+            paths, database=schema, start_position=position, run=in_source_container
+        )
+        self.assertIn(f"Table_map: `{schema}`.`posts`".encode(), stream, "no write landed after the snapshot")
+
+        fresh = _Container(self.container.image)
+        self.addCleanup(fresh.stop)
+        fresh.start()
+        for sql in (dump, stream):
+            loaded = subprocess.run(
+                ["docker", "exec", "-i", "-e", f"MYSQL_PWD={ROOT_PASSWORD}", fresh.name, "mysql", "-uroot"],
+                input=sql,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(loaded.returncode, 0, loaded.stderr.decode(errors="replace"))
+        self.assertEqual(self._checksums(fresh, schema), source)
 
     def test_the_proof_ran_on_db1s_server_line(self) -> None:
         self.assertTrue(self.server_version.startswith("8.0."), self.server_version)

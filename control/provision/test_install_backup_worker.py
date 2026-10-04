@@ -167,6 +167,9 @@ class UnitsMatchTheInstallLayout(unittest.TestCase):
         for rel in ibw.REQUIRED_RELEASE_FILES:
             self.assertTrue((REPO_ROOT / rel).is_file(), rel)
 
+    def test_the_lock_bound_module_the_transport_loads_is_required(self) -> None:
+        self.assertIn("db/provision/bounded_snapshot.py", ibw.REQUIRED_RELEASE_FILES)
+
     def test_every_run_is_preceded_by_the_tenants_preflight(self) -> None:
         self.assertEqual(
             self.service["ExecStartPre"].split(),

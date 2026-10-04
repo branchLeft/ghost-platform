@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import datetime
 import os
+import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -64,6 +66,54 @@ DUMP_ARGS = (
 )
 
 
+# The same metric names the control host's worker publishes, under this
+# label, so one set of alert rules covers both. See dump_nightly.md#metrics.
+METRICS_LABEL = "db1-all-databases"
+METRICS_FILENAME = "dump_nightly_lock_bound.prom"
+DEFAULT_METRICS_DIR = "/var/lib/branchleft/backup-worker-exporter"
+_ABORTS_LINE = re.compile(
+    r'\Abackup_worker_lock_aborts_total\{tenant="' + re.escape(METRICS_LABEL) + r'"\}\s+([0-9]+(?:\.[0-9]+)?)\s*\Z'
+)
+
+
+def record_lock_metrics(
+    *, metrics_dir: str, report: bounded_snapshot.SnapshotReport | None, aborts: int
+) -> None:
+    """Writes the wait and hold gauges (when a snapshot was taken) and adds
+    `aborts` to the cumulative counter. Best-effort: never fails the dump."""
+    path = pathlib.Path(metrics_dir) / METRICS_FILENAME
+    try:
+        previous = 0.0
+        try:
+            for line in path.read_text().splitlines():
+                match = _ABORTS_LINE.match(line.strip())
+                if match:
+                    previous = float(match.group(1))
+        except FileNotFoundError:
+            pass
+        label = f'{{tenant="{METRICS_LABEL}"}}'
+        lines = []
+        if report is not None:
+            lines += [
+                "# TYPE backup_worker_lock_wait_seconds gauge",
+                f"backup_worker_lock_wait_seconds{label} {report.lock_wait_seconds}",
+                "# TYPE backup_worker_lock_hold_seconds gauge",
+                f"backup_worker_lock_hold_seconds{label} {report.hold_seconds}",
+            ]
+        lines += [
+            "# TYPE backup_worker_lock_aborts_total counter",
+            f"backup_worker_lock_aborts_total{label} {previous + max(int(aborts), 0):g}",
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as handle:
+            handle.write("\n".join(lines) + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"dump_nightly: could not write lock metrics to {metrics_dir!r}: {exc}", file=sys.stderr)
+
+
 def run_mysqldump(
     *,
     socket_path: str,
@@ -72,6 +122,7 @@ def run_mysqldump(
     popen=subprocess.Popen,
     limits: bounded_snapshot.Limits = bounded_snapshot.Limits(),
     sleep=time.sleep,
+    metrics_dir: str | None = None,
 ) -> bounded_snapshot.SnapshotReport:
     """Writes the resume-point comment, then the dump, to `out_path`.
     Every user schema's tables are locked for the snapshot; see
@@ -91,7 +142,11 @@ def run_mysqldump(
             sleep=sleep,
             log=lambda message: print(f"dump_nightly: {message}", file=sys.stderr),
         )
+        if metrics_dir is not None:
+            record_lock_metrics(metrics_dir=metrics_dir, report=report, aborts=report.aborted_attempts)
     except bounded_snapshot.SnapshotError as exc:
+        if metrics_dir is not None:
+            record_lock_metrics(metrics_dir=metrics_dir, report=None, aborts=exc.aborted_attempts)
         raise DumpError(
             f"no consistent snapshot ({exc.aborted_attempts} lock attempt(s) aborted on a bound): {exc}"
         ) from exc
@@ -149,6 +204,7 @@ def run_dump(
     upload=put_object,
     limits: bounded_snapshot.Limits = bounded_snapshot.Limits(),
     sleep=time.sleep,
+    metrics_dir: str | None = None,
 ) -> str:
     """Returns the object key written on success; raises DumpError or
     ObjectStorageError otherwise."""
@@ -160,7 +216,13 @@ def run_dump(
         encrypted_path = os.path.join(tmp, "dump.sql.age")
 
         run_mysqldump(
-            socket_path=socket_path, password=password, out_path=plain_path, popen=popen, limits=limits, sleep=sleep
+            socket_path=socket_path,
+            password=password,
+            out_path=plain_path,
+            popen=popen,
+            limits=limits,
+            sleep=sleep,
+            metrics_dir=metrics_dir,
         )
         encrypt_with_age(in_path=plain_path, out_path=encrypted_path, recipient=recipient, run=run)
 
@@ -199,6 +261,7 @@ def main(argv: list[str]) -> int:
             region=_require_env("DB_BACKUP_REGION"),
             access_key=_require_env("AWS_ACCESS_KEY_ID"),
             secret_key=_require_env("AWS_SECRET_ACCESS_KEY"),
+            metrics_dir=os.environ.get("DB_DUMP_METRICS_DIR", DEFAULT_METRICS_DIR),
         )
     except (DumpError, ObjectStorageError) as exc:
         print(f"dump_nightly: {exc}", file=sys.stderr)
