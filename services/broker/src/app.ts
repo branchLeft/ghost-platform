@@ -28,6 +28,7 @@ import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slo
 import {
   assertHashRotated,
   readSlotState,
+  resetRefusal,
   writeSlotState,
   UnrotatedHashError,
   type Phase,
@@ -240,6 +241,12 @@ async function handleReconcile(
     }
     if (state.phase !== 'free') {
       return send(res, 409, { error: `slot "${slot}" is occupied (phase "${state.phase}")` });
+    }
+    // A free slot still carrying unconfirmed evidence must not enter the
+    // fresh-deploy path: its failure branch resets the slot.
+    const evidenceRefusal = resetRefusal(state, slot);
+    if (evidenceRefusal !== undefined) {
+      return send(res, 409, { error: evidenceRefusal });
     }
     try {
       assertHashRotated(state, newHashId, slot);
@@ -656,6 +663,13 @@ async function handleReset(
   }
   try {
     const state = await readSlotState(deps.stateDir, slot);
+    // Held evidence is released only by a confirmed detach, never by a
+    // reset: refuse before any write, so the slot is left untouched.
+    const refusal = resetRefusal(state, slot);
+    if (refusal !== undefined) {
+      deps.log(`reset refused: ${refusal}`);
+      return send(res, 409, { error: refusal });
+    }
     await writeSlotState(deps.stateDir, slot, {
       phase: 'resetting' satisfies Phase,
       lastHashId: state.lastHashId,
