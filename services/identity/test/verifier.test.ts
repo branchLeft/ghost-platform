@@ -1,6 +1,6 @@
 import { createHmac, createSign, generateKeyPairSync } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTokenVerifier } from '../src/verifier.js';
 import type { Jwk, TokenVerifierOptions } from '../src/verifier.js';
 import { CLAIM_PROJECT_ROLES, CLAIM_RESOURCE_OWNER } from '../src/tokens.js';
@@ -40,7 +40,10 @@ function sign(
   return `${header}.${payload}.${signer.sign(privateKey).toString('base64url')}`;
 }
 
-function verifier(keys: () => Promise<readonly Jwk[]>, extra: Partial<TokenVerifierOptions> = {}) {
+function verifier(
+  keys: (signal: AbortSignal) => Promise<readonly Jwk[]>,
+  extra: Partial<TokenVerifierOptions> = {}
+) {
   return createTokenVerifier({
     issuer: ISSUER,
     clientId: 'app',
@@ -299,5 +302,217 @@ describe('createTokenVerifier', () => {
     } finally {
       globalThis.fetch = real;
     }
+  });
+});
+
+describe('key set age and fetch timeout', () => {
+  const { privateKey, jwk } = keyPair();
+  // Outlives every clock advance below, so a refusal is the key set's doing and not the expiry's.
+  const token = (): string => sign(privateKey, { payload: { ...claims, exp: NOW + 200_000 } });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('refuses a key withdrawn from the key set once the cache age has passed', async () => {
+    let published: Jwk[] = [jwk];
+    let now = NOW;
+    const v = verifier(async () => published, { clock: () => now, maxCacheSeconds: 600 });
+    expect((await v.verify(token())).ok).toBe(true);
+    published = [];
+    now += 599;
+    expect((await v.verify(token())).ok).toBe(true);
+    now += 1;
+    expect(await v.verify(token())).toEqual({ ok: false, reason: 'signing key is not published' });
+  });
+
+  it('refuses a withdrawn key a day later, as the default age is ten minutes', async () => {
+    let published: Jwk[] = [jwk];
+    let now = NOW;
+    const v = verifier(async () => published, { clock: () => now });
+    expect((await v.verify(token())).ok).toBe(true);
+    published = [];
+    now += 24 * 3600;
+    expect((await v.verify(token())).ok).toBe(false);
+  });
+
+  it('refetches a stale key set and keeps a key that is still published', async () => {
+    let calls = 0;
+    let now = NOW;
+    const v = verifier(
+      async () => {
+        calls += 1;
+        return [jwk];
+      },
+      { clock: () => now, maxCacheSeconds: 600 }
+    );
+    await v.verify(token());
+    now += 601;
+    expect((await v.verify(token())).ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it('refuses a cached key when the refetch of a stale set fails, rather than trusting the old set', async () => {
+    let fail = false;
+    let now = NOW;
+    const v = verifier(
+      async () => {
+        if (fail) throw new Error('down');
+        return [jwk];
+      },
+      { clock: () => now, maxCacheSeconds: 600, minRefetchSeconds: 10 }
+    );
+    expect((await v.verify(token())).ok).toBe(true);
+    fail = true;
+    now += 601;
+    expect(await v.verify(token())).toEqual({ ok: false, reason: 'token could not be verified' });
+    now += 5;
+    expect((await v.verify(token())).ok).toBe(false);
+  });
+
+  it('does not let a failed refetch for an unknown id extend the age of the cached keys', async () => {
+    let fail = false;
+    let now = NOW;
+    const v = verifier(
+      async () => {
+        if (fail) throw new Error('down');
+        return [jwk];
+      },
+      { clock: () => now, maxCacheSeconds: 600, minRefetchSeconds: 10 }
+    );
+    expect((await v.verify(token())).ok).toBe(true);
+    fail = true;
+    now += 595;
+    await v.verify(sign(privateKey, { header: { kid: 'unknown' } }));
+    now += 6;
+    expect((await v.verify(token())).ok).toBe(false);
+  });
+
+  it('shares one refetch between concurrent requests that find the set stale', async () => {
+    let calls = 0;
+    let now = NOW;
+    const v = verifier(
+      async () => {
+        calls += 1;
+        return [jwk];
+      },
+      { clock: () => now, maxCacheSeconds: 600 }
+    );
+    await v.verify(token());
+    now += 601;
+    const verdicts = await Promise.all(Array.from({ length: 20 }, () => v.verify(token())));
+    expect(verdicts.every((verdict) => verdict.ok)).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it('treats a clock that runs backwards as an expired cache', async () => {
+    let calls = 0;
+    let now = NOW;
+    const v = verifier(
+      async () => {
+        calls += 1;
+        return [jwk];
+      },
+      { clock: () => now, minRefetchSeconds: 0.5 }
+    );
+    await v.verify(token());
+    now -= 5;
+    await v.verify(token());
+    expect(calls).toBe(2);
+  });
+
+  it('falls back to the default age and timeout when given a value that is not a positive number', async () => {
+    let published: Jwk[] = [jwk];
+    let now = NOW;
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      published = [jwk];
+      now = NOW;
+      const v = verifier(async () => published, {
+        clock: () => now,
+        maxCacheSeconds: bad,
+        fetchTimeoutMs: bad,
+      });
+      expect((await v.verify(token())).ok).toBe(true);
+      published = [];
+      now += 1;
+      expect((await v.verify(token())).ok).toBe(true);
+      now += 600;
+      expect((await v.verify(token())).ok).toBe(false);
+    }
+  });
+
+  it('refuses when a supplied key fetch never answers, and aborts it', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const v = verifier(
+      (given) => {
+        signal = given;
+        return new Promise<never>(() => undefined);
+      },
+      { fetchTimeoutMs: 2000 }
+    );
+    const pending = v.verify(token());
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toEqual({ ok: false, reason: 'token could not be verified' });
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('refuses when the default key fetch never answers, and applies a default timeout', async () => {
+    vi.useFakeTimers();
+    const real = globalThis.fetch;
+    let aborted = false;
+    globalThis.fetch = ((_: unknown, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          aborted = true;
+          reject(new Error('aborted'));
+        });
+      })) as unknown as typeof fetch;
+    try {
+      const v = createTokenVerifier({
+        issuer: ISSUER,
+        clientId: 'app',
+        requiredRole: 'tenant-admin',
+        allowedOrgIds: new Set(['org-a']),
+        clock: () => NOW,
+      });
+      const pending = v.verify(token());
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual({ ok: false, reason: 'token could not be verified' });
+      expect(aborted).toBe(true);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  it('settles every concurrent request when the key fetch hangs, and tries again after the interval', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    let now = NOW;
+    const v = verifier(
+      () => {
+        calls += 1;
+        return calls === 1 ? new Promise<never>(() => undefined) : Promise.resolve([jwk]);
+      },
+      { fetchTimeoutMs: 1000, clock: () => now, minRefetchSeconds: 10 }
+    );
+    const pending = Promise.all([v.verify(token()), v.verify(token()), v.verify(token())]);
+    await vi.advanceTimersByTimeAsync(1000);
+    const verdicts = await pending;
+    expect(verdicts.every((verdict) => !verdict.ok)).toBe(true);
+    expect(calls).toBe(1);
+    now += 11;
+    expect((await v.verify(token())).ok).toBe(true);
+  });
+
+  it('does not leave a timer running after a fetch that answers', async () => {
+    vi.useFakeTimers();
+    const v = verifier(async () => [jwk]);
+    expect((await v.verify(token())).ok).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

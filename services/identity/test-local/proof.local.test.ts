@@ -245,4 +245,46 @@ describe('with tokens Zitadel really signed', () => {
     const none = Buffer.from(JSON.stringify({ alg: 'none', kid: 'x' })).toString('base64url');
     expect((await portalVerifier().verify(`${none}.${payload}.`)).ok).toBe(false);
   });
+
+  it('stops trusting a real signing key once the issuer withdraws it, and refuses when the key endpoint hangs', async () => {
+    const out = await signIn({
+      clientId: outputs.clientIds.portal,
+      redirectUri: portalRedirect,
+      projectId: outputs.projectId,
+      user: alpha,
+    });
+    const realKeys = async (signal: AbortSignal) => {
+      const response = await fetch(`${instanceUrl}/oauth/v2/keys`, { signal });
+      return ((await response.json()) as { keys: never[] }).keys;
+    };
+    let mode: 'real' | 'withdrawn' | 'hung' = 'real';
+    let now = Math.floor(Date.now() / 1000);
+    const verifier = createTokenVerifier({
+      issuer: instanceUrl,
+      clientId: outputs.clientIds.portal,
+      requiredRole: ROLE_TENANT_ADMIN,
+      allowedOrgIds: new Set(Object.values(outputs.tenantOrgIds)),
+      leewaySeconds: 30,
+      clock: () => now,
+      maxCacheSeconds: 60,
+      fetchTimeoutMs: 1000,
+      fetchKeys: (signal) => {
+        if (mode === 'real') return realKeys(signal);
+        if (mode === 'withdrawn') return Promise.resolve([]);
+        return new Promise<never>(() => undefined);
+      },
+    });
+    expect((await verifier.verify(out.token!)).ok).toBe(true);
+
+    mode = 'withdrawn';
+    now += 61;
+    expect(await verifier.verify(out.token!)).toEqual({
+      ok: false,
+      reason: 'signing key is not published',
+    });
+
+    mode = 'hung';
+    now += 61;
+    expect((await verifier.verify(out.token!)).ok).toBe(false);
+  });
 });

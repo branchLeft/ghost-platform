@@ -60,7 +60,11 @@ verdict-producing export of `src/index.ts`). It checks, in order: shape and size
 a **pinned signing algorithm** (RS256 only unless widened on purpose; `none`, any
 HMAC and any elliptic curve have no verifier at all); a published key for the
 token's `kid`, fetched from the issuer's `/oauth/v2/keys` (an unknown `kid`
-triggers at most one refetch per interval; an unreachable key set is a refusal);
+triggers at most one refetch per interval; the whole set is dropped and fetched
+again once it is older than `maxCacheSeconds`, ten minutes by default, so a key
+the issuer has withdrawn stops verifying; each fetch is abandoned after
+`fetchTimeoutMs`, five seconds by default; an unreachable, slow or empty key set
+is a refusal, never a fall back to the old keys);
 the signature; then the claims (`src/tokens.md`). Any failure returns a fixed
 reason carrying nothing from the token.
 
