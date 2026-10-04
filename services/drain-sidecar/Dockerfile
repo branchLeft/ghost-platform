@@ -8,7 +8,11 @@
 # reason to prefer -alpine. bookworm-slim is chosen instead because it tracks
 # Debian's glibc and Node's own release-testing matrix -- the same choice
 # services/mailgun-shim makes, for the same reason.
-FROM node:26.5.0-bookworm-slim
+# Pinned by digest as well as tag: the digest is the multi-arch index of
+# node:26.5.0-bookworm-slim as read from Docker Hub with
+# `docker buildx imagetools inspect node:26.5.0-bookworm-slim`, so a re-pointed
+# tag cannot change what ships. Re-read it when the tag is bumped.
+FROM node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb
 
 WORKDIR /app
 

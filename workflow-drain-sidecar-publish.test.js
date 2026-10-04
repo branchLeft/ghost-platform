@@ -5,51 +5,103 @@ import path from 'node:path';
 
 // The sidecar is delivered to the host by digest only, so the publish job's
 // shape is a control: it must follow the proof, run only from main, hold the
-// write credential alone, and refuse to finish without a verified digest.
+// write credential alone, publish the image the proof tested without
+// rebuilding it, and refuse to finish without a verified digest.
 const FILE = path.join(import.meta.dirname, '.github', 'workflows', 'drain-sidecar-image.yml');
+const DOCKERFILE = path.join(import.meta.dirname, 'services', 'drain-sidecar', 'Dockerfile');
 
-export function jobs(text) {
-  const body = text.split(/^jobs:\n/m)[1] ?? '';
-  const out = {};
-  const parts = body.split(/^ {2}(?=[a-z][a-z-]*:\n)/m).filter(Boolean);
-  for (const part of parts) out[part.split(':')[0]] = part;
-  return out;
+const withoutComments = (text) => text.replace(/^\s*#.*$/gm, '');
+
+// A job is the block under `jobs:` at two spaces of indent. Its own keys sit
+// at four spaces, so a step-level `if:` (eight or more) is never mistaken for
+// the job's own.
+export function parseJobs(source) {
+  const lines = withoutComments(source).split('\n');
+  const jobs = {};
+  let current = null;
+  for (const line of lines.slice(lines.indexOf('jobs:') + 1)) {
+    const header = /^ {2}([a-z][a-z-]*):\s*$/.exec(line);
+    if (header) {
+      current = { lines: [], condition: '' };
+      jobs[header[1]] = current;
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+  for (const job of Object.values(jobs)) {
+    job.text = job.lines.join('\n');
+    const at = job.lines.findIndex((l) => /^ {4}if:/.test(l));
+    if (at >= 0) {
+      const rest = job.lines.slice(at + 1);
+      const end = rest.findIndex((l) => /^ {4}\S/.test(l));
+      job.condition = [job.lines[at], ...(end < 0 ? rest : rest.slice(0, end))].join('\n');
+    }
+  }
+  return jobs;
 }
 
 export function problems(source) {
-  const text = source.replace(/^\s*#.*$/gm, '');
   const found = [];
-  const { build, push } = jobs(text);
+  const { build, push } = parseJobs(source);
   if (!build || !push) return ['build and push jobs both exist'];
-  const top = text.split(/^jobs:\n/m)[0];
+  const top = withoutComments(source).split(/^jobs:\n/m)[0];
   if (/packages:\s*write/.test(top)) found.push('top-level permissions grant packages: write');
-  if (/packages:\s*write/.test(build)) found.push('proof job holds packages: write');
-  if (!/packages:\s*write/.test(push)) found.push('push job lacks packages: write');
-  if (!/^ {4}needs: build$/m.test(push)) found.push('push job does not wait on the proof job');
-  if (!/github\.ref == 'refs\/heads\/main'/.test(push))
-    found.push('push job is not limited to main');
-  if (!/docker push "\$IMAGE:\$IMAGE_TAG"/.test(push)) found.push('push job never pushes');
-  if (!/\^sha256:\[0-9a-f\]\{64\}\$/.test(push) || !/exit 1/.test(push)) {
+  if (/packages:\s*write/.test(build.text)) found.push('proof job holds packages: write');
+  if (!/packages:\s*write/.test(push.text)) found.push('push job lacks packages: write');
+  if (!/^ {4}needs: build$/m.test(push.text)) found.push('push job does not wait on the proof job');
+  if (!/github\.ref == 'refs\/heads\/main'/.test(push.condition)) {
+    found.push('push job has no job-level guard limiting it to main');
+  }
+  if (!/docker push "\$IMAGE:\$IMAGE_TAG"/.test(push.text)) found.push('push job never pushes');
+  if (/docker build\b|docker\/build-push-action|docker buildx build/.test(push.text)) {
+    found.push('push job rebuilds the image instead of publishing the proven one');
+  }
+  if (!/needs\.build\.outputs\.image-id/.test(push.text)) {
+    found.push("push job does not consume the proof job's image ID");
+  }
+  if (!/docker load\b/.test(push.text)) found.push('push job does not load the proven image');
+  if (!/image-id=.*docker image inspect/.test(build.text) || !/docker save\b/.test(build.text)) {
+    found.push('proof job does not save the proven image and output its ID');
+  }
+  if (!/\^sha256:\[0-9a-f\]\{64\}\$/.test(push.text) || !/exit 1/.test(push.text)) {
     found.push('push job does not refuse a malformed digest');
   }
-  if (!/image: \$\{\{ steps\.digest\.outputs\.image \}\}/.test(push)) {
+  if (!/image: \$\{\{ steps\.digest\.outputs\.image \}\}/.test(push.text)) {
     found.push('push job does not output the pinned reference');
   }
-  if (/:latest|--tag "?\$IMAGE"?\s/.test(push)) found.push('push job tags latest');
+  if (/:latest/.test(push.text)) found.push('push job tags latest');
   return found;
 }
 
-test('the sidecar publish job is gated, scoped and digest-verified', () => {
+test('the sidecar publish job is gated, scoped, digest-verified and does not rebuild', () => {
   assert.deepEqual(problems(fs.readFileSync(FILE, 'utf8')), []);
+});
+
+test('the sidecar base image is pinned by digest as well as tag', () => {
+  assert.match(fs.readFileSync(DOCKERFILE, 'utf8'), /^FROM node:[\w.-]+@sha256:[0-9a-f]{64}$/m);
 });
 
 test('the checker still reports each way the publish job can go wrong', () => {
   const good = fs.readFileSync(FILE, 'utf8');
+  const guard = /^ {4}if: \|\n(?: {6}.*\n)+/m;
+  const stepOnly = good
+    .replace(guard, '')
+    .replace(
+      '      - name: Push\n',
+      "      - name: Push\n        if: github.ref == 'refs/heads/main'\n"
+    );
+  const rebuilds = good.replace(
+    '      - name: Push\n',
+    '      - name: Rebuild\n        run: docker build --tag "$IMAGE:$IMAGE_TAG" services/drain-sidecar\n\n      - name: Push\n'
+  );
   const cases = [
     [good.replace('    needs: build\n', ''), 'does not wait'],
-    [good.replace("github.ref == 'refs/heads/main'", 'true'), 'not limited to main'],
+    [good.replace(guard, ''), 'job-level guard'],
+    [stepOnly, 'job-level guard'],
+    [rebuilds, 'rebuilds'],
+    [good.replace('needs.build.outputs.image-id', 'needs.build.outputs.other'), 'image ID'],
     [good.replace('  contents: read\n  packages: read\n', '  packages: write\n'), 'top-level'],
-    [good.replace('exit 1', 'true'), 'malformed digest'],
+    [good.split('exit 1').join('true'), 'malformed digest'],
     [good.replace('docker push "$IMAGE:$IMAGE_TAG"', 'true'), 'never pushes'],
   ];
   for (const [text, expected] of cases) {
