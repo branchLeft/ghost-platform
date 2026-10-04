@@ -20,6 +20,7 @@ import pathlib
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -27,6 +28,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 
+import backup_manifest
 import backup_worker as bw
 import shared_objectstorage
 
@@ -37,7 +39,8 @@ restore_drained = bw._load_module("branchleft_restore_drained", _RESTORE_DRAINED
 ENV_PREFIX = "BACKUP_DRILL_"
 DEFAULT_TENANTS_FILE = "/etc/branchleft/backup-worker-tenants"
 DEFAULT_IDENTITY_DIR = "/etc/branchleft/restore-drill/identities"
-DEFAULT_WORK_DIR = "/var/lib/branchleft/restore-drill"
+DEFAULT_WORK_DIR = "/run/branchleft-restore-drill/work"
+VOLATILE_FILESYSTEMS = frozenset({"tmpfs", "ramfs"})
 DEFAULT_FLAG_ROOT = "/run/branchleft-restore-drill"
 DEFAULT_MAX_BACKUP_AGE_HOURS = 48.0
 DEFAULT_CONTAINER_MEMORY = "1g"
@@ -49,6 +52,9 @@ OBJECT_NAME = re.compile(r"\A(\d{8}T\d{6}Z)\.sql\.age\Z")
 AGE_HEADER_LINE = b"age-encryption.org/v1"
 AGE_HEADER_PROBE_BYTES = 4096
 NO_IDENTITY_MATCHED = "no identity matched any of the recipients"
+# Every short-lived container that sees plaintext or key material: a log
+# driver would keep a copy of its stdout under /var/lib/docker.
+NO_LOGS = ("--log-driver", "none")
 CHILD_ENV_PASSTHROUGH = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH")
 
 # The synthetic tenant the erasure check encrypts and then makes
@@ -118,6 +124,11 @@ class ContentFloorError(DrillError):
     """The restored database holds no tenant content to verify against."""
 
 
+class DrillInterrupted(BaseException):
+    """SIGTERM arrived. A BaseException so no `except DrillError` swallows it
+    and every `finally` still removes the containers and decrypted bytes."""
+
+
 class ColourStateError(DrillError):
     """The colour's sidecar did not report the drain state the chain expects."""
 
@@ -160,6 +171,7 @@ class DrillConfig:
     max_backup_age_s: float
     mysql_memory: str = DEFAULT_CONTAINER_MEMORY
     ghost_memory: str = DEFAULT_CONTAINER_MEMORY
+    require_volatile_work_dir: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -178,10 +190,6 @@ class RestoredContent:
     newest_post_title: str | None
     problem: str | None = None
 
-    def expected_strings(self) -> tuple[str, ...]:
-        found = (self.site_title, self.newest_post_title)
-        return tuple(text for text in found if text and text.strip())
-
 
 @dataclasses.dataclass
 class DrillReport:
@@ -196,7 +204,9 @@ class DrillReport:
     restore_s: float | None = None
     verify_s: float | None = None
     content: RestoredContent | None = None
+    manifest: backup_manifest.Manifest | None = None
     erasure_reason: str | None = None
+    interrupted: bool = False
 
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -264,6 +274,7 @@ def config_from_env(environ: Mapping[str, str]) -> DrillConfig:
         max_backup_age_s=max_age_hours * 3600,
         mysql_memory=environ.get(f"{ENV_PREFIX}MYSQL_MEMORY", DEFAULT_CONTAINER_MEMORY),
         ghost_memory=environ.get(f"{ENV_PREFIX}GHOST_MEMORY", DEFAULT_CONTAINER_MEMORY),
+        require_volatile_work_dir=environ.get(f"{ENV_PREFIX}REQUIRE_VOLATILE_WORK_DIR", "1") != "0",
     )
 
 
@@ -382,7 +393,7 @@ def age_decrypt(
     """`age --decrypt` inside the pinned recovery image, with no network,
     each identity bind-mounted read-only. Returns the completed process
     so the caller decides what a failure means."""
-    argv = ["docker", "run", "--rm", "-i", "--network", "none"]
+    argv = ["docker", "run", "--rm", "-i", *NO_LOGS, "--network", "none"]
     for index, path in enumerate(identity_paths):
         argv += ["-v", f"{path}:/run/drill/id{index}:ro"]
     argv += [image, "age", "--decrypt"]
@@ -409,7 +420,7 @@ def prove_erasure(*, runner: Runner, image: str, identity_dir: pathlib.Path, scr
     drill holds to fail with age's own "no identity matched" error. Returns
     that error line."""
     keygen = runner(
-        ["docker", "run", "--rm", "--network", "none", image, "age-keygen"],
+        ["docker", "run", "--rm", *NO_LOGS, "--network", "none", image, "age-keygen"],
         capture_output=True, check=False, env=_child_env(),
     )
     output = keygen.stdout.decode(errors="replace") if isinstance(keygen.stdout, bytes) else keygen.stdout
@@ -420,7 +431,8 @@ def prove_erasure(*, runner: Runner, image: str, identity_dir: pathlib.Path, scr
 
     plaintext = SHREDDED_TENANT_DUMP.encode()
     encrypted = runner(
-        ["docker", "run", "--rm", "-i", "--network", "none", image, "age", "-r", recipient_match.group(1)],
+        ["docker", "run", "--rm", "-i", *NO_LOGS, "--network", "none", image, "age", "-r",
+         recipient_match.group(1)],
         input=plaintext, capture_output=True, check=False, env=_child_env(),
     )
     if encrypted.returncode != 0:
@@ -464,7 +476,7 @@ def container_mysql_runner(*, runner: Runner, image: str, network: str) -> Runne
     as an environment value, never argv."""
 
     def run(argv, *, env, stdin=None, capture_output=False, text=False, check=False):
-        docker_argv = ["docker", "run", "--rm", "--network", network]
+        docker_argv = ["docker", "run", "--rm", *NO_LOGS, "--network", network]
         if stdin is not None:
             docker_argv.append("-i")
         docker_argv += ["-e", "MYSQL_PWD", image, *argv]
@@ -518,19 +530,84 @@ def snapshot_restored_content(*, run: Runner, host: str, password: str, database
     )
 
 
-def require_tenant_content(content: RestoredContent) -> None:
-    """The empty-restore control. Without it, an empty restore reaches a
-    Ghost that answers 200 with nothing of the tenant's to look for."""
+def read_manifest(plaintext: bytes) -> backup_manifest.Manifest:
+    """What the backup worker recorded about this tenant at backup time,
+    from inside the decrypted dump. It must name a title and a staff user,
+    or there is nothing of the tenant's own to assert."""
+    try:
+        manifest = backup_manifest.parse_trailer(plaintext)
+    except backup_manifest.ManifestError as exc:
+        raise ContentFloorError(str(exc)) from exc
+    if manifest.error is not None:
+        raise ContentFloorError(f"the backup's manifest was not recorded cleanly: {manifest.error}")
+    if not (manifest.site_title or "").strip() or manifest.users < 1:
+        raise ContentFloorError("the backup's manifest records no site title or no staff user")
+    return manifest
+
+
+COMPARED_FIELDS = ("site_title", "users", "published_posts", "members", "newest_post_title")
+
+
+def compare_with_manifest(content: RestoredContent, manifest: backup_manifest.Manifest) -> None:
+    """The restored database must hold exactly what was backed up. Ghost's
+    install defaults, or an empty restore, differ on the title at least."""
     if content.problem is not None:
         raise ContentFloorError(
             f"the restored database {content.database} holds no Ghost schema -- nothing was restored: "
             f"{content.problem}"
         )
-    if not content.site_title.strip() or content.users < 1:
-        raise ContentFloorError(
-            f"the restored database {content.database} has no site title or no staff user -- a restore "
-            "with nothing to assert cannot pass"
+    diffs = [
+        f"{field}: restored {getattr(content, field)!r}, backed up {getattr(manifest, field)!r}"
+        for field in COMPARED_FIELDS
+        if getattr(content, field) != getattr(manifest, field)
+    ]
+    if diffs:
+        raise ContentFloorError("the restore does not match its backup -- " + "; ".join(diffs))
+
+
+def expected_from_manifest(manifest: backup_manifest.Manifest | RestoredContent) -> tuple[str, ...]:
+    """What the rendered page must carry, taken from the source, never from
+    the restore being checked."""
+    found = (manifest.site_title, manifest.newest_post_title)
+    return tuple(text for text in found if text and text.strip())
+
+
+def mount_filesystem(path: pathlib.Path, mounts_text: str) -> str | None:
+    """The filesystem type of the mount holding `path`, from /proc/mounts."""
+    target = str(path.resolve())
+    best, best_type = "", None
+    for line in mounts_text.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        point = fields[1].replace("\\040", " ")
+        if (target == point or target.startswith(point.rstrip("/") + "/")) and len(point) >= len(best):
+            best, best_type = point, fields[2]
+    return best_type
+
+
+def require_volatile(path: pathlib.Path, mounts_path: str = "/proc/mounts") -> None:
+    """The decrypted dump may only ever exist in memory-backed storage, which
+    systemd removes with the unit's RuntimeDirectory however the run ends."""
+    try:
+        mounts_text = pathlib.Path(mounts_path).read_text()
+    except OSError as exc:
+        raise DrillConfigError(f"cannot tell what filesystem {path} is on: {exc}") from exc
+    fstype = mount_filesystem(path, mounts_text)
+    if fstype not in VOLATILE_FILESYSTEMS:
+        raise DrillConfigError(
+            f"{path} is on {fstype or 'an unknown filesystem'}, not tmpfs -- the decrypted dump would reach disk"
         )
+
+
+def sweep_stale_runs(config: DrillConfig) -> list[pathlib.Path]:
+    """Removes every run directory an earlier, killed run left behind."""
+    removed = []
+    for root in (config.work_dir, config.flag_root):
+        for stale in sorted(root.glob("run-*")) if root.is_dir() else []:
+            shutil.rmtree(stale, ignore_errors=True)
+            removed.append(stale)
+    return removed
 
 
 def http_get(url: str, timeout_s: float) -> tuple[int, str]:
@@ -725,7 +802,11 @@ def run_drill(
         check_single_recipient(ciphertext, f"{copy.name}:{backup.key}")
 
         containers.sweep()
+        sweep_stale_runs(config)
         containers.pull(config.images)
+        config.work_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if config.require_volatile_work_dir:
+            require_volatile(config.work_dir)
         run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
         flag_dir.mkdir(mode=0o755, parents=True, exist_ok=False)
         os.chmod(flag_dir, 0o755)
@@ -744,6 +825,7 @@ def run_drill(
                 f"{chosen_tenant}'s own key did not decrypt {backup.key}: "
                 f"{decrypted.stderr.decode(errors='replace').strip()}"
             )
+        report.manifest = read_manifest(decrypted.stdout)
         dump_path = run_dir / "dump.sql"
         fd = os.open(dump_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as handle:
@@ -762,7 +844,7 @@ def run_drill(
         report.content = snapshot_restored_content(
             run=mysql_run, host=containers.mysql, password=password, database=database
         )
-        require_tenant_content(report.content)
+        compare_with_manifest(report.content, report.manifest)
         report.restore_s = hooks.clock() - restore_started
 
         verify_started = hooks.clock()
@@ -782,7 +864,7 @@ def run_drill(
             get=hooks.get, url=ghost_url, want=200, timeout_s=hooks.content_timeout_s,
             sleep=hooks.sleep, now=hooks.clock,
         )
-        for expected in report.content.expected_strings():
+        for expected in expected_from_manifest(report.manifest):
             restore_drained.verify_tenant_content(
                 base_url=ghost_url, expected_post_body=expected,
                 timeout_s=hooks.content_timeout_s, get=unescaping_get(hooks.get), sleep=hooks.sleep, now=hooks.clock,
@@ -797,6 +879,9 @@ def run_drill(
     except (DrillError, restore_drained.RestoreError, shared_objectstorage.ObjectStorageError,
             bw.InvalidTenantName, OSError) as exc:
         report.error = f"{type(exc).__name__}: {exc}"
+    except DrillInterrupted:
+        report.interrupted = True
+        report.error = "DrillInterrupted: stopped by SIGTERM before the drill finished"
     finally:
         containers.remove()
         shutil.rmtree(run_dir, ignore_errors=True)
@@ -853,6 +938,12 @@ def format_report(report: DrillReport) -> list[str]:
     lines.append(f"restore_drill: recipients checked on {report.objects_audited} object(s)")
     if report.erasure_reason:
         lines.append(f"restore_drill: shredded tenant refused, for the right reason: {report.erasure_reason}")
+    if report.manifest:
+        m = report.manifest
+        lines.append(
+            f"restore_drill: backed up: title={m.site_title!r} users={m.users} published_posts={m.published_posts} "
+            f"members={m.members} newest_post={m.newest_post_title!r}"
+        )
     if report.content:
         c = report.content
         lines.append(
@@ -875,9 +966,18 @@ def main(argv: Sequence[str] | None = None, *, hooks: Hooks | None = None,
     parser.add_argument("--tenants-file", default=DEFAULT_TENANTS_FILE)
     parser.add_argument("--tenant", help="drill this tenant instead of this week's choice")
     parser.add_argument("--copy", dest="copy_name", help="restore from this copy instead of this week's choice")
+    parser.add_argument("--cleanup", action="store_true",
+                        help="remove what a killed run left behind (the unit's ExecStopPost); run nothing")
     args = parser.parse_args(argv)
     hooks = hooks or Hooks()
     environ = os.environ if environ is None else environ
+    if args.cleanup:
+        return cleanup(environ, hooks)
+    try:
+        hooks.content_timeout_s = float(environ.get(f"{ENV_PREFIX}CONTENT_TIMEOUT_S", hooks.content_timeout_s))
+    except ValueError:
+        print(f"restore_drill: {ENV_PREFIX}CONTENT_TIMEOUT_S is not a number", file=sys.stderr)
+        return 2
     try:
         config = config_from_env(environ)
         tenants = read_tenants(args.tenants_file)
@@ -894,10 +994,14 @@ def main(argv: Sequence[str] | None = None, *, hooks: Hooks | None = None,
     except OSError as exc:
         print(f"restore_drill: another drill run holds the lock, or it cannot be taken: {exc}", file=sys.stderr)
         return 2
-    with lock:
-        report = run_drill(
-            config=config, tenants=tenants, hooks=hooks, tenant=args.tenant, copy_name=args.copy_name
-        )
+    previous = signal.signal(signal.SIGTERM, _on_sigterm)
+    try:
+        with lock:
+            report = run_drill(
+                config=config, tenants=tenants, hooks=hooks, tenant=args.tenant, copy_name=args.copy_name
+            )
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     for line in format_report(report):
         print(line, file=sys.stdout if report.ok else sys.stderr)
     try:
@@ -905,7 +1009,36 @@ def main(argv: Sequence[str] | None = None, *, hooks: Hooks | None = None,
     except OSError as exc:
         print(f"restore_drill: could not export the result: {exc}", file=sys.stderr)
         return 1
+    if report.interrupted:
+        return 128 + signal.SIGTERM
     return 0 if report.ok else 1
+
+
+def _on_sigterm(signum: int, frame: object) -> None:
+    """Turns SIGTERM into an exception so cleanup runs. A second SIGTERM
+    during that cleanup is ignored rather than cutting it short."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise DrillInterrupted()
+
+
+def cleanup(environ: Mapping[str, str], hooks: Hooks) -> int:
+    """The unit's ExecStopPost: whatever a run that was killed outright left
+    behind -- containers, networks, run directories -- is removed."""
+    config = DrillConfig(
+        copies=(), images=Images("", "", "", ""),
+        identity_dir=pathlib.Path(DEFAULT_IDENTITY_DIR),
+        work_dir=pathlib.Path(environ.get(f"{ENV_PREFIX}WORK_DIR", DEFAULT_WORK_DIR)),
+        flag_root=pathlib.Path(environ.get(f"{ENV_PREFIX}FLAG_ROOT", DEFAULT_FLAG_ROOT)),
+        metrics_dir=pathlib.Path("."), max_backup_age_s=0,
+    )
+    try:
+        Containers(runner=hooks.runner, run_id="cleanup").sweep()
+    except DrillError as exc:
+        print(f"restore_drill: cleanup could not remove containers: {exc}", file=sys.stderr)
+        return 1
+    for stale in sweep_stale_runs(config):
+        print(f"restore_drill: removed {stale}")
+    return 0
 
 
 def read_tenants(path: str) -> list[str]:

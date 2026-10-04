@@ -42,8 +42,27 @@ break that use:
 
 It deliberately sets no `PrivateTmp`. The docker daemon resolves bind-mount
 paths in the host's own mount namespace, so a private `/tmp` would hide the
-drain flag and the identities from it. The drain flag lives in the
-`RuntimeDirectory`, and the decrypted dump in the 0700 `StateDirectory`.
+drain flag and the identities from it.
+
+## Where decrypted data may exist
+
+The decrypted dump is written only under the unit's `RuntimeDirectory`
+(`/run/branchleft-restore-drill`), a tmpfs that systemd removes however the
+run ends. The drill reads `/proc/mounts` and refuses any work directory
+that is not on tmpfs or ramfs. Cleanup happens at three points:
+
+- on SIGTERM, the drill turns the signal into an exception, so its own
+  cleanup still runs, and it exits 143;
+- `ExecStopPost` runs `restore_drill.py --cleanup` after any stop, a
+  SIGKILL at `TimeoutStopSec` included, and removes every labelled
+  container and network, with their volumes;
+- every run first sweeps `run-*` directories that an earlier run left
+  behind.
+
+Every short-lived container that sees plaintext or key material runs with
+`--log-driver none`, so Docker keeps no copy of its output under
+`/var/lib/docker`: the decrypt, the key generation and encryption, and
+every `mysql` client call.
 
 ## Timer
 

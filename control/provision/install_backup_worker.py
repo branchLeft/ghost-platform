@@ -30,6 +30,7 @@ UNIT_FILES = (SERVICE_UNIT, TIMER_UNIT)
 REQUIRED_RELEASE_FILES = (
     "infra/provisioning/scripts/nightly_dump_loop.py",
     "infra/provisioning/scripts/backup_worker.py",
+    "infra/provisioning/scripts/backup_manifest.py",
     "infra/provisioning/scripts/dial_in_transport.py",
     "infra/provisioning/scripts/pull_encrypt_store.py",
     "infra/provisioning/scripts/media_backup_restore.py",

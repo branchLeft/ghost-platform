@@ -75,6 +75,7 @@ def pull_encrypt_and_store(
     copies: Sequence[CopyTarget],
     chunk_watcher: Callable[[bytes], None] | None = None,
     post_stream_check: Callable[[], None] | None = None,
+    trailer: Callable[[], bytes] | None = None,
     popen=subprocess.Popen,
     count_stanzas=count_age_recipient_stanzas,
 ) -> PullResult:
@@ -109,6 +110,10 @@ def pull_encrypt_and_store(
 
         try:
             exit_code = transport.run(command=command, env=env, stdout=sink)
+            # Bytes the caller appends after a clean producer exit, inside
+            # the same ciphertext -- the worker's backup manifest.
+            if exit_code == 0 and trailer is not None:
+                age_process.stdin.write(trailer())
         finally:
             # age is always drained and waited on, whatever the producer
             # did -- a nonzero producer exit must not leave age hanging on

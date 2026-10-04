@@ -8,16 +8,21 @@ The real-container proof is prove-restore-drill.sh."""
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime
 import io
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
+import backup_manifest as bm
 import restore_drill as rd
 
 HAVE_AGE = shutil.which("age") is not None and shutil.which("age-keygen") is not None
@@ -99,7 +104,7 @@ class FakeDocker:
                 index += 2
             elif argv[index] in ("--rm", "-i"):
                 index += 1
-            elif argv[index] == "--network":
+            elif argv[index] in ("--network", "--log-driver"):
                 index += 2
             else:
                 break
@@ -421,45 +426,87 @@ class DestroyFileTests(unittest.TestCase):
         rd._destroy_file(path)
 
 
+MANIFEST = bm.Manifest(site_title="SITE", users=1, published_posts=2, members=3,
+                       newest_post_title="NEWEST POST", newest_post_slug="newest-post")
+
+
 class SnapshotTests(unittest.TestCase):
     def _run(self, out="", code=0, err=""):
         return lambda argv, **kw: _completed(argv, code=code, out=out, err=err)
 
+    def _content(self, out="SITE\t1\t2\t3\tNEWEST POST\n", code=0, err=""):
+        return rd.snapshot_restored_content(run=self._run(out, code, err), host="h", password="p", database="ghost_a")
+
     def test_parses_the_row(self):
-        content = rd.snapshot_restored_content(
-            run=self._run("My\\tSite\t2\t5\t7\tA \\\\ post\n"), host="h", password="p", database="ghost_a"
-        )
+        content = self._content("My\\tSite\t2\t5\t7\tA \\\\ post\n")
         self.assertEqual((content.site_title, content.users, content.published_posts, content.members),
                          ("My\tSite", 2, 5, 7))
         self.assertEqual(content.newest_post_title, "A \\ post")
-        self.assertEqual(content.expected_strings(), ("My\tSite", "A \\ post"))
-        rd.require_tenant_content(content)
+
+    def test_a_restore_matching_its_backup_passes(self):
+        rd.compare_with_manifest(self._content(), MANIFEST)
+        self.assertEqual(rd.expected_from_manifest(MANIFEST), ("SITE", "NEWEST POST"))
+
+    def test_ghost_install_defaults_are_refused(self):
+        defaults = self._content("Ghost\t1\t1\t0\tComing soon\n")
+        with self.assertRaisesRegex(rd.ContentFloorError, "site_title: restored 'Ghost', backed up 'SITE'"):
+            rd.compare_with_manifest(defaults, MANIFEST)
+
+    def test_a_missing_member_is_refused(self):
+        with self.assertRaisesRegex(rd.ContentFloorError, "members: restored 2, backed up 3"):
+            rd.compare_with_manifest(self._content("SITE\t1\t2\t2\tNEWEST POST\n"), MANIFEST)
 
     def test_nulls(self):
-        content = rd.snapshot_restored_content(run=self._run("NULL\t1\t0\t0\tNULL\n"), host="h", password="p",
-                                               database="d")
+        content = self._content("NULL\t1\t0\t0\tNULL\n")
         self.assertEqual((content.site_title, content.newest_post_title), ("", None))
-        self.assertEqual(content.expected_strings(), ())
-        with self.assertRaisesRegex(rd.ContentFloorError, "no site title"):
-            rd.require_tenant_content(content)
 
     def test_no_schema_is_the_empty_restore(self):
-        content = rd.snapshot_restored_content(run=self._run(code=1, err="Unknown database"), host="h",
-                                               password="p", database="ghost_a")
-        self.assertEqual(content.expected_strings(), ())
+        content = self._content("", code=1, err="Unknown database")
         with self.assertRaisesRegex(rd.ContentFloorError, "no Ghost schema.*Unknown database"):
-            rd.require_tenant_content(content)
+            rd.compare_with_manifest(content, MANIFEST)
 
     def test_malformed_output_is_a_problem(self):
-        content = rd.snapshot_restored_content(run=self._run("x\ty\n"), host="h", password="p", database="d")
         with self.assertRaisesRegex(rd.ContentFloorError, "unexpected snapshot output"):
-            rd.require_tenant_content(content)
+            rd.compare_with_manifest(self._content("x\ty\n"), MANIFEST)
 
-    def test_no_staff_user(self):
-        content = rd.snapshot_restored_content(run=self._run("T\t0\t0\t0\tNULL\n"), host="h", password="p",
-                                               database="d")
-        with self.assertRaises(rd.ContentFloorError):
-            rd.require_tenant_content(content)
+
+class ManifestReadTests(unittest.TestCase):
+    def test_reads_the_trailer(self):
+        self.assertEqual(rd.read_manifest(b"-- dump\n" + MANIFEST.to_trailer()), MANIFEST)
+
+    def test_no_manifest_is_refused(self):
+        with self.assertRaisesRegex(rd.ContentFloorError, "carries no manifest"):
+            rd.read_manifest(b"")
+
+    def test_a_manifest_with_an_error_is_refused(self):
+        bad = bm.Manifest("SITE", 1, 0, 0, None, None, error="ValueError: x")
+        with self.assertRaisesRegex(rd.ContentFloorError, "not recorded cleanly"):
+            rd.read_manifest(bad.to_trailer())
+
+    def test_a_manifest_with_nothing_to_assert_is_refused(self):
+        for empty in (bm.Manifest(None, 1, 0, 0, None, None), bm.Manifest("T", 0, 0, 0, None, None)):
+            with self.assertRaisesRegex(rd.ContentFloorError, "no site title or no staff user"):
+                rd.read_manifest(empty.to_trailer())
+
+
+class VolatileWorkDirTests(unittest.TestCase):
+    MOUNTS = "sysfs /sys sysfs rw 0 0\n/dev/sda1 / ext4 rw 0 0\ntmpfs /run tmpfs rw 0 0\nbad\n"
+
+    def test_longest_mount_wins(self):
+        self.assertEqual(rd.mount_filesystem(pathlib.Path("/run/branchleft-restore-drill/work"), self.MOUNTS), "tmpfs")
+        self.assertEqual(rd.mount_filesystem(pathlib.Path("/var/lib/x"), self.MOUNTS), "ext4")
+
+    def test_require_volatile(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        mounts = directory / "mounts"
+        mounts.write_text(f"/dev/sda1 / ext4 rw 0 0\ntmpfs {directory.resolve()} tmpfs rw 0 0\n")
+        rd.require_volatile(directory, str(mounts))
+        mounts.write_text("/dev/sda1 / ext4 rw 0 0\n")
+        with self.assertRaisesRegex(rd.DrillConfigError, "on ext4, not tmpfs"):
+            rd.require_volatile(directory, str(mounts))
+        with self.assertRaisesRegex(rd.DrillConfigError, "cannot tell"):
+            rd.require_volatile(directory, str(directory / "absent"))
 
 
 class RunnerAdapterTests(unittest.TestCase):
@@ -470,7 +517,7 @@ class RunnerAdapterTests(unittest.TestCase):
         with open(os.devnull, "rb") as stdin:
             run(["mysql"], env={"MYSQL_PWD": "pw"}, stdin=stdin)
         first, second = docker.calls
-        self.assertEqual(first[:5], ["docker", "run", "--rm", "--network", "net"])
+        self.assertEqual(first[:7], ["docker", "run", "--rm", "--log-driver", "none", "--network", "net"])
         self.assertNotIn("-i", first)
         self.assertIn("-i", second)
         self.assertNotIn("pw", " ".join(first + second))
@@ -566,9 +613,10 @@ class RunDrillTests(unittest.TestCase):
             copies=(_copy("primary"), _copy("secondary")),
             images=rd.Images(recovery="r" + DIGEST, mysql="m" + DIGEST, ghost="g" + DIGEST, sidecar="s" + DIGEST),
             identity_dir=self.ids, work_dir=self.dir / "work", flag_root=self.dir / "flags",
-            metrics_dir=self.dir / "metrics", max_backup_age_s=48 * 3600,
+            metrics_dir=self.dir / "metrics", max_backup_age_s=48 * 3600, require_volatile_work_dir=False,
         )
-        dump = _encrypt(b"CREATE DATABASE ghost_blog;\n", self.recipient)
+        self.plaintext = b"CREATE DATABASE ghost_blog;\n" + MANIFEST.to_trailer()
+        dump = _encrypt(self.plaintext, self.recipient)
         self.key = "dumps/blog/20261003T014000Z.sql.age"
         self.store = FakeStore({"primary": {self.key: dump}, "secondary": {self.key: dump}})
 
@@ -589,8 +637,14 @@ class RunDrillTests(unittest.TestCase):
         self.assertTrue(report.ok, report.error)
         self.assertEqual((report.tenant, report.copy, report.object_key), ("blog", "primary", self.key))
         self.assertEqual(report.objects_audited, 1)
-        self.assertEqual(report.bytes_recovered, len(b"CREATE DATABASE ghost_blog;\n"))
+        self.assertEqual(report.bytes_recovered, len(self.plaintext))
         self.assertEqual(report.content.site_title, "SITE")
+        self.assertEqual(report.manifest, MANIFEST)
+        transient = [c for c in docker.calls if c[:3] == ["docker", "run", "--rm"]]
+        self.assertGreaterEqual(len(transient), 6)
+        for call in transient:
+            pairs = list(zip(call, call[1:]))
+            self.assertIn(("--log-driver", "none"), pairs, call)
         self.assertIn(rd.NO_IDENTITY_MATCHED, report.erasure_reason)
         self.assertAlmostEqual(report.object_age_s, (NOW - datetime.datetime(2026, 10, 3, 1, 40, tzinfo=datetime.timezone.utc)).total_seconds())
         self.assertEqual(docker.imports, 1)
@@ -611,6 +665,65 @@ class RunDrillTests(unittest.TestCase):
         self.assertFalse(docker.ran("restore-drill-ghost-abcd --network"))
         self.assertEqual(self.http.events, [])
         self.assert_cleaned_up(docker)
+
+    def test_ghost_defaults_restored_are_refused_before_any_colour_starts(self):
+        docker = FakeDocker(snapshot="Ghost\t1\t1\t0\tComing soon\n")
+        report = rd.run_drill(config=self.config, tenants=["blog"], hooks=self.hooks(docker), copy_name="primary")
+        self.assertIn("site_title: restored 'Ghost', backed up 'SITE'", report.error or "")
+        self.assertEqual(self.http.events, [])
+
+    def test_a_backup_without_a_manifest_is_refused(self):
+        self.store.objects["primary"][self.key] = _encrypt(b"CREATE DATABASE ghost_blog;\n", self.recipient)
+        report = rd.run_drill(config=self.config, tenants=["blog"], hooks=self.hooks(FakeDocker()), copy_name="primary")
+        self.assertIn("carries no manifest", report.error)
+        self.assert_cleaned_up_files()
+
+    def test_the_page_must_carry_the_backed_up_title_not_the_restored_one(self):
+        docker = FakeDocker()
+        report = rd.run_drill(config=self.config, tenants=["blog"],
+                              hooks=self.hooks(docker, body="<title>Ghost</title><h2>NEWEST POST</h2>"),
+                              copy_name="primary")
+        self.assertIn("'SITE' not found", report.error)
+
+    def test_without_the_comparison_the_page_is_still_checked_against_the_backup(self):
+        docker = FakeDocker(snapshot="Ghost\t1\t1\t0\tComing soon\n")
+        with mock.patch.object(rd, "compare_with_manifest", lambda content, manifest: None):
+            report = rd.run_drill(config=self.config, tenants=["blog"],
+                                  hooks=self.hooks(docker, body="<title>Ghost</title><h2>Coming soon</h2>"),
+                                  copy_name="primary")
+        self.assertIn("'SITE' not found", report.error or "")
+        self.assertNotIn("sidecar:200", self.http.events)
+
+    def test_stale_run_directories_are_swept(self):
+        for root in (self.config.work_dir, self.config.flag_root):
+            (root / "run-dead" / "x").mkdir(parents=True)
+        report = rd.run_drill(config=self.config, tenants=["blog"], hooks=self.hooks(FakeDocker()), copy_name="primary")
+        self.assertTrue(report.ok, report.error)
+        self.assertFalse((self.config.work_dir / "run-dead").exists())
+        self.assertFalse((self.config.flag_root / "run-dead").exists())
+
+    def test_a_non_volatile_work_dir_is_refused_before_decrypting(self):
+        config = dataclasses.replace(self.config, require_volatile_work_dir=True)
+        docker = FakeDocker()
+        with mock.patch.object(rd, "require_volatile", side_effect=rd.DrillConfigError("on ext4, not tmpfs")):
+            report = rd.run_drill(config=config, tenants=["blog"], hooks=self.hooks(docker), copy_name="primary")
+        self.assertIn("not tmpfs", report.error or "")
+        self.assertFalse(docker.ran("age --decrypt"))
+
+    def test_sigterm_mid_run_removes_containers_and_the_decrypted_dump(self):
+        def interrupt(argv):
+            self.assertTrue((self.config.work_dir / "run-abcd" / "dump.sql").exists())
+            raise rd.DrillInterrupted()
+
+        docker = FakeDocker(fail={"network create": interrupt})
+        report = rd.run_drill(config=self.config, tenants=["blog"], hooks=self.hooks(docker), copy_name="primary")
+        self.assertTrue(report.interrupted)
+        self.assertIn("SIGTERM", report.error)
+        self.assert_cleaned_up(docker)
+
+    def assert_cleaned_up_files(self):
+        self.assertFalse((self.config.work_dir / "run-abcd").exists())
+        self.assertFalse((self.config.flag_root / "run-abcd").exists())
 
     def test_content_missing_from_the_page_never_undrains(self):
         docker = FakeDocker()
@@ -731,12 +844,112 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 2)
         run.assert_not_called()
 
+    def test_content_timeout_from_the_environment(self):
+        self.env["BACKUP_DRILL_CONTENT_TIMEOUT_S"] = "42"
+        self._main(rd.DrillReport(tenant="blog", copy="primary", error="x"))
+        self.assertEqual(self.hooks.content_timeout_s, 42.0)
+        self.env["BACKUP_DRILL_CONTENT_TIMEOUT_S"] = "soon"
+        code, _, err, _ = self._main()
+        self.assertEqual((code, "not a number" in err), (2, True))
+
     def test_unwritable_metrics_exits_one(self):
         report = rd.DrillReport(tenant="blog", copy="primary", error="x")
         with mock.patch.object(rd, "record_metrics", side_effect=OSError("read-only")):
             code, _, err, _ = self._main(report)
         self.assertEqual(code, 1)
         self.assertIn("could not export", err)
+
+
+_SIGTERM_CHILD = r"""
+import pathlib, sys, time
+sys.path.insert(0, sys.argv[1])
+import test_restore_drill as t
+import restore_drill as rd
+
+root = pathlib.Path(sys.argv[2])
+ids = root / "ids"
+recipient = sys.argv[3]
+env = t._env(BACKUP_DRILL_IDENTITY_DIR=str(ids), BACKUP_DRILL_WORK_DIR=str(root / "work"),
+             BACKUP_DRILL_FLAG_ROOT=str(root / "flags"), BACKUP_DRILL_METRICS_DIR=str(root / "metrics"),
+             BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR="0")
+dump = t._encrypt(b"CREATE DATABASE ghost_blog;\n" + t.MANIFEST.to_trailer(), recipient)
+store = t.FakeStore({"primary": {"dumps/blog/20261003T014000Z.sql.age": dump}})
+
+def block(argv):
+    (root / "ready").write_text("dump on disk")
+    time.sleep(60)
+
+docker = t.FakeDocker(fail={"network create": block})
+hooks = rd.Hooks(runner=docker, store=store, now=lambda: t.NOW, run_id=lambda: "sig1")
+code = rd.main(["--tenants-file", str(root / "tenants"), "--copy", "primary"], hooks=hooks, environ=env)
+removed = [c for c in docker.calls if c[:4] == ["docker", "rm", "-f", "-v"]]
+(root / "removed").write_text(str(len(removed)))
+sys.exit(code)
+"""
+
+
+@unittest.skipUnless(HAVE_AGE, "needs the age binary")
+class SigtermTests(unittest.TestCase):
+    """A real SIGTERM, delivered to a real process mid-restore, after the
+    decrypted dump has been written: the run must still clean up."""
+
+    def test_sigterm_cleans_up_and_exits_143(self):
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        (root / "ids").mkdir()
+        _, recipient = _keygen(root / "ids", "blog")
+        (root / "tenants").write_text("blog\n")
+        child = subprocess.Popen(
+            [sys.executable, "-c", _SIGTERM_CHILD, str(pathlib.Path(__file__).parent), str(root), recipient],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        deadline = time.monotonic() + 60
+        while not (root / "ready").exists():
+            self.assertIsNone(child.poll(), child.stderr.read() if child.poll() is not None else "")
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        self.assertTrue((root / "work" / "run-sig1" / "dump.sql").exists())
+        child.send_signal(signal.SIGTERM)
+        _, err = child.communicate(timeout=60)
+        self.assertEqual(child.returncode, 143, err)
+        self.assertFalse((root / "work" / "run-sig1").exists())
+        self.assertFalse((root / "flags" / "run-sig1").exists())
+        self.assertEqual((root / "removed").read_text(), "3")
+        self.assertIn("restore_drill_last_run_success 0.0", (root / "metrics" / rd.METRICS_FILENAME).read_text())
+        self.assertIn(b"SIGTERM", err)
+
+    def test_handler_ignores_a_second_sigterm_and_raises(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        with self.assertRaises(rd.DrillInterrupted):
+            rd._on_sigterm(signal.SIGTERM, None)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)
+
+
+class CleanupModeTests(unittest.TestCase):
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.env = {"BACKUP_DRILL_WORK_DIR": str(self.root / "work"), "BACKUP_DRILL_FLAG_ROOT": str(self.root / "flags")}
+
+    def test_removes_containers_and_stale_runs(self):
+        (self.root / "work" / "run-old").mkdir(parents=True)
+        (self.root / "flags" / "run-old").mkdir(parents=True)
+        (self.root / "flags" / "drill.lock").write_text("")
+        docker = FakeDocker(fail={"ps -aq": _completed([], out="c1\n")})
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = rd.main(["--cleanup"], hooks=rd.Hooks(runner=docker), environ=self.env)
+        self.assertEqual(code, 0)
+        self.assertIn(["docker", "rm", "-f", "-v", "c1"], docker.calls)
+        self.assertEqual(sorted(p.name for p in (self.root / "flags").iterdir()), ["drill.lock"])
+        self.assertEqual(list((self.root / "work").iterdir()), [])
+
+    def test_docker_failure_is_reported(self):
+        docker = FakeDocker(fail={"ps -aq": _completed([], code=1, err="daemon down")})
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code = rd.main(["--cleanup"], hooks=rd.Hooks(runner=docker), environ=self.env)
+        self.assertEqual(code, 1)
+        self.assertIn("daemon down", err.getvalue())
 
 
 if __name__ == "__main__":

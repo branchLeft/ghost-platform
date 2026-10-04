@@ -24,6 +24,7 @@ import time
 from collections.abc import Callable
 
 import shared_objectstorage
+from backup_manifest import ManifestWatcher
 from dial_in_transport import (
     DialInTransport,
     DialInTransportError,
@@ -173,6 +174,7 @@ def run_tenant_dump(
     validate_tenant_name(tenant)
 
     watcher = _FloorWatcher(FLOOR_TABLES)
+    manifest = ManifestWatcher()
     timer = _LockWaitTimer()
     command = [python_executable, dump_tenant_path, tenant, "--socket", socket_path]
     env = {"DB_DUMP_MYSQL_PWD": mysql_pwd}
@@ -184,6 +186,7 @@ def run_tenant_dump(
         # this ordering and this composition existing at all.
         timer.observe(chunk)
         watcher.observe(chunk)
+        manifest.observe(chunk)
 
     try:
         result = pull_encrypt_and_store(
@@ -194,6 +197,7 @@ def run_tenant_dump(
             copies=copies,
             chunk_watcher=_chunk_watcher,
             post_stream_check=watcher.assert_floor_met,
+            trailer=lambda: manifest.manifest().to_trailer(),
         )
     except PullEncryptStoreError as exc:
         # `assert_floor_met` raising, a stanza count other than 1, `age`

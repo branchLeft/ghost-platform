@@ -117,6 +117,8 @@ drill() {
         BACKUP_DRILL_WORK_DIR="$WORK/drill-work" \
         BACKUP_DRILL_FLAG_ROOT="$WORK/flags" \
         BACKUP_DRILL_METRICS_DIR="$WORK/metrics" \
+        BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR=0 \
+        BACKUP_DRILL_CONTENT_TIMEOUT_S=240 \
         "$PYTHON" "$DRILL" --tenants-file "$WORK/tenants" "$@" >"$WORK/drill.out" 2>&1
 }
 drill_expect() {
@@ -234,6 +236,8 @@ pass "the source database and its Ghost are gone: the drill restores from the ba
 
 note "GREEN (primary copy): restore, content on a drained colour, undrain last, erasure refused"
 drill_expect pass "title='$SITE_TITLE'" "GREEN primary: the drill passed and read the tenant's own title" --copy primary
+grep -qF "backed up: title='$SITE_TITLE' users=1 published_posts=2 members=1 newest_post='$KNOWN_POST'" "$WORK/drill.out" \
+    && pass "GREEN primary: the worker's manifest recorded the source's title, counts and named post" || fail "GREEN primary: manifest"
 grep -qF "newest_post='$KNOWN_POST'" "$WORK/drill.out" && grep -qF "members=1" "$WORK/drill.out" \
     && pass "GREEN primary: the named post and the member came back" || fail "GREEN primary: content missing"
 grep -qF "no identity matched any of the recipients" "$WORK/drill.out" \
@@ -252,17 +256,37 @@ note "CONTROL: an empty backup object, newer than the real one"
 docker run --rm -i --network none "$RECOVERY_IMAGE" age -r "$RECIPIENT" <"$WORK/empty.sql" >"$WORK/empty.sql.age"
 EMPTY_KEY="dumps/$TENANT/$(date -u -v+1M +%Y%m%dT%H%M%SZ 2>/dev/null || date -u -d '+1 min' +%Y%m%dT%H%M%SZ).sql.age"
 s3 "$SCRIPTS" put "localhost:$S3_PORT" drill-primary "$EMPTY_KEY" "$WORK/empty.sql.age"
-drill_expect fail "ContentFloorError" "CONTROL: the empty restore is refused on content" --copy primary
+drill_expect fail "carries no manifest" "CONTROL: the empty backup is refused: it carries no manifest" --copy primary
 [ "$(metric last_run_success)" = "0.0" ] && [ "$(metric last_success_timestamp_seconds)" = "$GREEN_SUCCESS" ] \
     && pass "CONTROL: last_run_success 0, last success left at the GREEN run's time" || fail "CONTROL: metrics"
 no_leftovers "CONTROL"
-
-note "CONTROL SABOTAGE: remove the content gate; the empty restore must then wrongly pass on Ghost's 200"
-sabotage 's/^        require_tenant_content(report.content)$/        pass  # SABOTAGE: content gate removed/' "content gate"
-drill_expect pass "restore_drill: PASS" "CONTROL SABOTAGE: RED confirmed -- with the gate gone an empty restore passes, Ghost answered 200 and undrained" --copy primary
-revert
-drill_expect fail "ContentFloorError" "CONTROL after revert: the empty restore is refused again" --copy primary
 s3 "$SCRIPTS" delete "localhost:$S3_PORT" drill-primary "$EMPTY_KEY"
+
+note "CONTROL: a backup that restores nothing but carries the real tenant's manifest, so Ghost boots its own defaults"
+REAL_KEY="$(s3 "$SCRIPTS" list "localhost:$S3_PORT" drill-primary "dumps/$TENANT/" | tail -1)"
+s3get() {
+    SSL_CERT_FILE="$WORK/certs/s3.crt" "$PYTHON" -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import shared_objectstorage as s3
+sys.stdout.buffer.write(s3.get_object(endpoint='localhost:$S3_PORT', region='us-east-1', access_key='$S3_KEY',
+    secret_key='$S3_SECRET', bucket='drill-primary', key='$1'))"
+}
+s3get "$REAL_KEY" | docker run --rm -i --log-driver none --network none -v "$WORK/identities:/ids:ro" "$RECOVERY_IMAGE" \
+    age --decrypt -i "/ids/$TENANT.key" | grep '^-- branchleft-backup-manifest v1 ' >"$WORK/manifest-only.sql"
+[ -s "$WORK/manifest-only.sql" ] || { echo "FAILED: the real backup carries no manifest line" >&2; exit 1; }
+docker run --rm -i --network none "$RECOVERY_IMAGE" age -r "$RECIPIENT" <"$WORK/manifest-only.sql" >"$WORK/defaults.sql.age"
+DEFAULTS_KEY="dumps/$TENANT/$(date -u -v+2M +%Y%m%dT%H%M%SZ 2>/dev/null || date -u -d '+2 min' +%Y%m%dT%H%M%SZ).sql.age"
+s3 "$SCRIPTS" put "localhost:$S3_PORT" drill-primary "$DEFAULTS_KEY" "$WORK/defaults.sql.age"
+drill_expect fail "no Ghost schema" "DEFAULTS: refused before any colour starts -- nothing to compare with the backup" --copy primary
+sabotage 's/^        compare_with_manifest(report.content, report.manifest)$/        pass  # SABOTAGE/' "comparison removed"
+drill_expect fail "'$SITE_TITLE' not found" "DEFAULTS, comparison removed: still RED -- Ghost served its install defaults, not the backed-up title" --copy primary
+revert
+sabotage 's/^        compare_with_manifest(report.content, report.manifest)$/        pass  # SABOTAGE/;s/expected_from_manifest(report.manifest):/expected_from_manifest(report.content):/' "comparison removed and expectations taken from the restore"
+drill_expect pass "restore_drill: PASS" "DEFAULTS SABOTAGE: RED confirmed -- judged against itself, Ghost's install defaults pass" --copy primary
+revert
+drill_expect fail "no Ghost schema" "DEFAULTS after revert: refused again" --copy primary
+s3 "$SCRIPTS" delete "localhost:$S3_PORT" drill-primary "$DEFAULTS_KEY"
+no_leftovers "DEFAULTS"
 
 note "CONTROL: a real-shaped backup object with a second recipient"
 docker run --rm --network none "$RECOVERY_IMAGE" age-keygen 2>/dev/null | sed -n 's/^# public key: //p' >"$WORK/second.pub"
