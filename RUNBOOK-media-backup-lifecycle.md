@@ -31,7 +31,7 @@ hel1 except the throwaway probe bucket in step 9 and its deletion in step 10.
   `ExpiredObjectDeleteMarker`. They cost nothing but clutter listings; adding
   the element in a rule of its own is a separate change, once overlapping rules
   are proven on this engine.
-- **Media, by the owner's 2026-10-04 ruling:** the media backup job never
+- **Media, by the owner's ruling (branchLeft/workspace#1325):** the media backup job never
   deletes. Each run writes a new dated copy under
   `media/<tenant>/generations/<UTC run id>/` and the job keeps the put-only
   key. This applies the bucket's half: a current-version expiry on `media/`
