@@ -16,13 +16,15 @@ describe('writeArtefacts', () => {
     await rm(base, { recursive: true, force: true });
   });
 
-  it('writes each artefact under <base>/<slot>/<path>, creating subdirectories', async () => {
+  it('writes each artefact under <base>/demo-<slot>/<path>, creating subdirectories', async () => {
     await writeArtefacts(base, '0' as SlotName, [
       { path: 'compose.yml', content: 'a: 1' },
       { path: 'env/ghost.env', content: 'NODE_ENV=production' },
     ]);
-    expect(await readFile(join(base, '0', 'compose.yml'), 'utf8')).toBe('a: 1');
-    expect(await readFile(join(base, '0', 'env', 'ghost.env'), 'utf8')).toBe('NODE_ENV=production');
+    expect(await readFile(join(base, 'demo-0', 'compose.yml'), 'utf8')).toBe('a: 1');
+    expect(await readFile(join(base, 'demo-0', 'env', 'ghost.env'), 'utf8')).toBe(
+      'NODE_ENV=production'
+    );
   });
 
   it('refuses an artefact path that would escape the slot directory', async () => {
@@ -42,6 +44,6 @@ describe('writeArtefacts', () => {
     // check that catches traversal, proving the guard can pass as well as
     // fail rather than refusing everything indiscriminately.
     await writeArtefacts(base, '3' as SlotName, [{ path: 'nested/dir/file.txt', content: 'ok' }]);
-    expect(await readFile(join(base, '3', 'nested', 'dir', 'file.txt'), 'utf8')).toBe('ok');
+    expect(await readFile(join(base, 'demo-3', 'nested', 'dir', 'file.txt'), 'utf8')).toBe('ok');
   });
 });

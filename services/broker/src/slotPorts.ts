@@ -47,3 +47,12 @@ export function slotAllocation(
     },
   };
 }
+
+/**
+ * The slot's one directory: where the broker writes rendered artefacts and
+ * what the wrapper's reset wipes. Slot-derived like every other value here,
+ * and pinned to the wrapper's own `SLOT_DIR` by `slot-dirs.golden.json`.
+ */
+export function slotDir(slotDirBase: string, slot: SlotName): string {
+  return `${slotDirBase.replace(/\/+$/, '')}/demo-${slot}`;
+}

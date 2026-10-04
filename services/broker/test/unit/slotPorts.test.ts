@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
-import { slotAllocation, slotHealthPort, slotPort, slotUid } from '../../src/slotPorts.js';
+import { slotAllocation, slotDir, slotHealthPort, slotPort, slotUid } from '../../src/slotPorts.js';
 
 const GOLDEN_PORTS_PATH = fileURLToPath(
   new URL('../../../../demo-host/provision/slot-ports.golden.json', import.meta.url)
@@ -103,5 +103,26 @@ describe('slotPorts', () => {
     expect(a.ports.health).not.toBe(b.ports.health);
     // Nor does one slot's own colour pair collide with itself.
     expect(a.ports.a).not.toBe(a.ports.b);
+  });
+});
+
+describe('slotDir, cross-checked against the wrapper via slot-dirs.golden.json', () => {
+  const GOLDEN_DIRS_PATH = fileURLToPath(
+    new URL('../../../../demo-host/provision/slot-dirs.golden.json', import.meta.url)
+  );
+
+  it('returns the golden directory for every slot', async () => {
+    const golden = JSON.parse(await readFile(GOLDEN_DIRS_PATH, 'utf8')) as {
+      base: string;
+      slots: { slot: string; dir: string }[];
+    };
+    expect(golden.slots).toHaveLength(7);
+    for (const { slot, dir } of golden.slots) {
+      expect(slotDir(golden.base, slot as SlotName)).toBe(dir);
+    }
+  });
+
+  it('tolerates a trailing slash on the base', () => {
+    expect(slotDir('/opt/branchleft/', '2' as SlotName)).toBe('/opt/branchleft/demo-2');
   });
 });
