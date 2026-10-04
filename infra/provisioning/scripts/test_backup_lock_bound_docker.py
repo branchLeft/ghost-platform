@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""The bounded snapshot against db1's own server image, end to end.
-
-A container of the digest `db/RUNBOOK-db.md` pins, configured with
-`db/stack/conf.d/branchleft.cnf`, holds three tenant schemas with a writer
-on each. A full nightly run goes through `nightly_dump_loop.run_nightly_loop`
-and the real `RemoteMysqldumpTransport`; db1's own `dump_nightly.run_mysqldump`
-runs too. Every writer's worst insert must stay under two seconds, with a
-long query held on one tenant's table and with an uncommitted write held
-open on another. The clients run inside the container, so the client line
-is the image's own. In CI a missing Docker or image fails; locally it skips.
-"""
+"""The bounded snapshot end to end against db1's pinned image and config:
+three tenant schemas with a writer each, full runs of `run_nightly_loop`
+(real `RemoteMysqldumpTransport`) and of `dump_nightly.run_mysqldump`. No
+writer's insert may take two seconds, under a long query or an open write
+transaction. In CI a missing Docker or image fails; locally it skips. See
+db/provision/bounded_snapshot.md."""
 
 from __future__ import annotations
 
