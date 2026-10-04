@@ -276,6 +276,71 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
         self.assertEqual(captured["media_noncurrent_days"], 3)
 
 
+class DbCurrentVersionExpiryTests(unittest.TestCase):
+    """The put-only worker key cannot delete, so dumps/ and binlogs/ age out
+    through the bucket's own lifecycle: a current-version expiry on each, and
+    on nothing else."""
+
+    @staticmethod
+    def _rule(doc: str, prefix: str) -> str:
+        return doc.split(f"<Filter><Prefix>{prefix}</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
+
+    def test_dumps_and_binlogs_each_expire_current_versions(self):
+        doc = cbb.lifecycle_document(35, 1, 10).decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertIn("<Expiration><Days>10</Days></Expiration>", self._rule(doc, prefix))
+
+    def test_media_and_fence_probe_carry_no_day_based_expiry(self):
+        doc = cbb.lifecycle_document(35, 1, 10).decode()
+        self.assertEqual(doc.count("<Days>"), 2)
+        for prefix in ("media/", "fence-probe/"):
+            self.assertNotIn("<Days>", self._rule(doc, prefix))
+
+    def test_the_default_matches_the_prune_script_retention(self):
+        import prune_backups
+
+        self.assertEqual(cbb.DB_CURRENT_EXPIRATION_DAYS, prune_backups.RETENTION_DAYS)
+        self.assertIn(
+            f"<Days>{prune_backups.RETENTION_DAYS}</Days>".encode(), cbb.lifecycle_document()
+        )
+
+    def test_zero_omits_the_expiry_and_negative_is_refused(self):
+        self.assertNotIn(b"<Days>", cbb.lifecycle_document(35, 1, 0))
+        with self.assertRaises(ValueError):
+            cbb.lifecycle_document(35, 1, -1)
+
+    def test_the_expiry_is_threaded_through_configure_and_the_cli(self):
+        import contextlib
+        import io
+        import os
+
+        calls = []
+        cbb.configure_backup_bucket(
+            bucket="b", endpoint="fsn1.your-objectstorage.com", region="fsn1",
+            access_key="AK", secret_key="S", policy_body=b"{}", db_expiration_days=7,
+            put=lambda **kwargs: calls.append(kwargs),
+        )
+        body = next(c for c in calls if c["subresource"] == "lifecycle")["body"].decode()
+        self.assertEqual(body.count("<Days>7</Days>"), 2)
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "policy.json"
+            policy_file.write_text(json.dumps(fence_policy()))
+            captured = {}
+            environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                cbb, "owner_id", return_value="p1231234"
+            ), mock.patch.object(cbb, "configure_backup_bucket", lambda **kw: captured.update(kw)):
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    code = cbb.main(
+                        ["--bucket", BUCKET, "--endpoint", "fsn1.your-objectstorage.com",
+                         "--region", "fsn1", "--policy-file", str(policy_file),
+                         "--engine-diagnostic-passed", "--db-expiration-days", "4"]
+                    )
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["db_expiration_days"], 4)
+
+
 class ConfigureBackupBucketTests(unittest.TestCase):
     def test_enables_versioning_then_sets_the_lifecycle(self):
         calls = []

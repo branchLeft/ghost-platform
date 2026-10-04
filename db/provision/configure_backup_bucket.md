@@ -101,6 +101,13 @@ that share no common leading substring by construction (`dumps/`,
 ever apply to the same key. Only `media/`'s rule carries
 `ExpiredObjectDeleteMarker` -- see the module docstring for why.
 
+`db_expiration_days` adds a current-version `Expiration/Days` to the `dumps/`
+and `binlogs/` rules only. The backup worker's key is put-only, so nothing
+else can prune them. `ExpiredObjectDeleteMarker` cannot share an `Expiration`
+element with `Days`, which is why `media/` does not get one. A rule cannot
+keep the newest object, so a pipeline that stops writing for the whole window
+loses its last good copy: alert on dump freshness.
+
 ## Accounting for an exemption by a Deny
 
 The Action patterns some Deny withholds from `arn` on one resource class.
