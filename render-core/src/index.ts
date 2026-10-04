@@ -91,6 +91,25 @@ export type { TenantIdentity } from './identity.js';
 export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
 export { renderSendingAddress, sendingDomainOf } from './mail.js';
 export { renderDrainList } from './drain.js';
+export {
+  MAIL_SPOOL_BASE_URL,
+  MAIL_SPOOL_DATA_VOLUME,
+  MAIL_SPOOL_DRAIN_BIND_ADDRESS,
+  MAIL_SPOOL_DRAIN_BRIDGE,
+  MAIL_SPOOL_DRAIN_NETWORK,
+  MAIL_SPOOL_DRAIN_TOKEN_KEY,
+  MAIL_SPOOL_HTTP_PORT,
+  MAIL_SPOOL_SECRETS_PATH,
+  MAIL_SPOOL_SERVICE,
+  MAIL_SPOOL_SMTP_PORT,
+  MAIL_SPOOL_STACK,
+  MAIL_SPOOL_UID,
+  assertSpoolPosture,
+  mailSpoolDocument,
+  mailSpoolNetworkName,
+  renderMailSpoolStack,
+} from './spool.js';
+export type { MailSpoolStackArgs } from './spool.js';
 export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
 export type { ComposeStackArgs, DemoDataMount } from './compose.js';
 export {

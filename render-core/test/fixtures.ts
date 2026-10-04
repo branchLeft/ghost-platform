@@ -28,7 +28,6 @@ export const TEST_ZONES: ZoneConfig = {
   ownedDomains: ['demo-domain.example.test', 'platform-domain.example.test'],
   imagesWithBreakGlassAdapter: [`ghost:6.55.0-alpine@sha256:${DIGEST}`],
   demoMailDomain: 'demo-mail.example.test',
-  mailSpoolBaseUrl: 'http://mail-spool.internal.example.test:8080',
 };
 
 /** A break-glass triple, valid for `tenantDescriptor()`'s own slug — the

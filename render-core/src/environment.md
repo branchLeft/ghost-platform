@@ -84,4 +84,24 @@ per host, serving both SMTP and the Mailgun-shaped API. Rendered from
 `mail.enabled` and the sending identity alone — never from `transport.kind`
 — so a demo (whose transactional path may be `queue`, carrying no host at
 all) still gets a bulk path pointed at the spool; the two paths share a
-spool, not a `TransportSpec` variant.
+spool, not a `TransportSpec` variant. The base URL is `spool.ts`'s
+`MAIL_SPOOL_BASE_URL`, the spool's own service name and port, never a
+caller-supplied address.
+
+## Transport environment
+
+`smtp` renders the host, port and user a caller supplies, with the password
+as a `${GHOST_MAIL_PASSWORD:?…}` reference.
+
+`queue` means the host's own mail spool (`spool.ts`). With mail enabled it
+renders Ghost's SMTP transport pointed at the spool by name
+(`MAIL_SPOOL_SERVICE`, `MAIL_SPOOL_SMTP_PORT`), never at a caller-supplied
+address, so the address Ghost dials and the listener the spool renders come
+from the same constants. The username is the tenant's sending domain, and the
+password is the per-tenant key the bulk path already carries
+(`GHOST_BULK_EMAIL_API_KEY`): the spool's SMTP front door checks a submitter
+against the same key store as its Mailgun-shaped API. With mail disabled,
+`queue` renders no transport at all, as before.
+
+Member mail is addressed through a Ghost *setting*
+(`members_support_address`, `settings.ts`), not through these keys.
