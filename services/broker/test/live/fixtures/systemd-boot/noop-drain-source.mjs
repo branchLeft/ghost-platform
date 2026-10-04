@@ -1,9 +1,9 @@
-// Test-only stand-in for the `DrainSource` seam (`src/drainSource.ts`) so
-// this proof's server can start at all. No real implementation exists
-// anywhere in this repo yet -- RUNBOOK-broker-deploy.md's "Left out,
-// deliberately" -- and this file is never what a real install points
-// `BROKER_DRAIN_SOURCE_MODULE` at.
+// Test-only stand-in for the `DrainSource` seam (`src/drainSource.ts`).
+// `standIn: true` makes `/status` list it (`src/standIns.ts`), so a host
+// still running it can never pass for one ready to go live. A real install
+// points `BROKER_DRAIN_SOURCE_MODULE` at a shipped module instead.
 export default {
+  standIn: true,
   async poll(signal) {
     return new Promise((resolve) => {
       const done = () => resolve({ mail: [], mediaHashes: [] });

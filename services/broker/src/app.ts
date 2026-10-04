@@ -48,6 +48,8 @@ export interface BrokerDeps {
   readonly renderer: Renderer;
   readonly adminApi: AdminApiClient;
   readonly drainSource: DrainSource;
+  /** Seams loaded from a test stand-in (`standIns.ts`); reported by `/status`. */
+  readonly standIns: readonly string[];
   readonly leaseStoreConfig: LeaseStoreConfig;
   readonly drainFlags: DrainFlagStore;
   readonly imagePush: ImagePushDeps;
@@ -720,7 +722,7 @@ async function handleStatus(
     state.phase === 'running' && state.colour !== undefined
       ? await deps.healthChecker.isHealthy(deps.healthPortBase + Number(slot))
       : false;
-  send(res, 200, { slot, phase: state.phase, healthy });
+  send(res, 200, { slot, phase: state.phase, healthy, standIns: deps.standIns });
 }
 
 async function handleDrain(

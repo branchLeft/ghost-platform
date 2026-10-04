@@ -6,6 +6,7 @@
 // wrote at build time.
 //
 // Usage: node sign-request.mjs <method> <path> <body-json> <private-key-path> <base-url>
+// (pass '' as <body-json> for a GET)
 import { readFileSync } from 'node:fs';
 import { createPrivateKey, randomBytes, sign as cryptoSign } from 'node:crypto';
 
@@ -53,7 +54,9 @@ const res = await fetch(`${baseUrl}${path}`, {
     'X-Broker-Nonce': nonce,
     'X-Broker-Signature': signature,
   },
-  body: rawBody,
+  // A GET carries no body at all (fetch refuses one); its signed bytes are
+  // then empty, matching what the broker reads off the wire.
+  body: method === 'GET' ? undefined : rawBody,
 });
 const text = await res.text();
 console.log(`HTTP ${res.status}`);

@@ -289,6 +289,7 @@ export async function startTestBroker(options: TestBrokerOptions = {}): Promise<
     renderer,
     adminApi,
     drainSource,
+    standIns: [],
     leaseStoreConfig: { slotsPath, leaseDir, nowMs: () => nowMs },
     drainFlags: createDrainFlagStore(drainFlagDir),
     imagePush: {

@@ -26,7 +26,7 @@ exists for it yet" (`CLAUDE.md`). A host install would therefore need the
 whole monorepo checkout staged at that exact relative layout, which is
 fragile to rsync and easy to let drift from what actually shipped.
 
-Instead, `npm run bundle` (`esbuild.bundle.mjs`) produces three self-
+Instead, `npm run bundle` (`esbuild.bundle.mjs`) produces five self-
 contained ESM files with render-core (and this package's own modules)
 inlined:
 
@@ -34,9 +34,12 @@ inlined:
 - `dist/bundle/plugins/renderCorePlugin.mjs` -- the real `Renderer` seam.
 - `dist/bundle/plugins/dockerImageLoader.mjs` -- the real `ImageLoader`
   seam.
-
-(`BROKER_ADMIN_API_MODULE` and `BROKER_DRAIN_SOURCE_MODULE` have no real
-implementation anywhere in this repo yet -- see "Left out, deliberately".)
+- `dist/bundle/plugins/refusingDrainSource.mjs` -- the final `DrainSource`
+  seam: it refuses every poll, because mail is collected from the mail
+  queue directly and nothing is handed over through the broker.
+- `dist/bundle/plugins/refusingAdminApi.mjs` -- an interim `AdminApiClient`
+  that refuses every build until the real client ships (see "Left out,
+  deliberately").
 
 Each file has no `node_modules` dependency once built: `server.ts#loadPlugin`
 reaches the plugin modules through a runtime `import()` of an environment
@@ -122,9 +125,11 @@ because no publish path exists yet either -- see "Delivery path" below).
    Fill in a real `BROKER_VERIFY_KEY_FILE` at the path it names, 32 raw
    Ed25519 public-key bytes, owned **`root:broker`, mode 0640**. See
    `systemd/README.md` ("The verify key") for why it is group-readable
-   rather than broker-owned. Point `BROKER_ADMIN_API_MODULE`/
-   `BROKER_DRAIN_SOURCE_MODULE` at real modules once those stories land
-   (see "Left out, deliberately"). **Never set `LISTEN_HOST`** --
+   rather than broker-owned. Leave the four `BROKER_*_MODULE` lines as the
+   template ships them: every one names a module in the bundle. If one is
+   ever pointed at a test stand-in under `test/live/fixtures/`,
+   `GET /status/<slot>` lists it under `standIns`, and the host is not
+   ready to go live until that list is empty. **Never set `LISTEN_HOST`** --
    `test/unit/listenHostDefault.test.ts` is the guard that keeps this file's
    own committed template from regressing that.
 
@@ -203,15 +208,15 @@ docker rm -f broker-boot-proof
 
 ## Left out, deliberately
 
-- **`BROKER_ADMIN_API_MODULE` / `BROKER_DRAIN_SOURCE_MODULE`.** No module
-  implementing either seam exists anywhere in this repo
-  (`src/adminApi.ts`/`src/drainSource.ts`'s own doc comments, and this
-  package's `.claude/delivery-paths.json` row). `POST /reconcile` and
-  `GET /drain` are therefore not usable in a real install until whichever
-  story builds them lands; `/status` and the sudoers-reaching endpoints
-  (`/reset`, `/stop`) are. The boot proof's own stand-ins for these two
-  seams live only under `test/live/fixtures/` and are never installed by
-  this runbook.
+- **A real `BROKER_ADMIN_API_MODULE`.** The shipped one refuses every
+  build, so `POST /reconcile` answers `503` (a fresh build ends with the
+  slot in `error`; a colour swap leaves the slot on its current colour) and
+  the journal names why. `/status`, `/reset` and `/stop` never call it and
+  work normally. Swapping in the real client is a one-line change to this
+  env file once it ships.
+- **`GET /drain` never hands anything over.** That is final, not a gap:
+  the shipped drain source answers `502` and logs that mail is collected
+  from the mail queue directly.
 - **`BROKER_SLOTS_FILE` writability.** This issue's own scope: the file and
   its containing directory (`/var/lib/branchleft`) are created by step 5
   above and are in the unit's `ReadWritePaths=`, so a real `/reconcile` or
