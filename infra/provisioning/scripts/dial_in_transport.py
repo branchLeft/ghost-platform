@@ -189,6 +189,7 @@ class RemoteMysqldumpTransport:
     def dump_args(self, db_name: str) -> list[str]:
         return [
             "--single-transaction",
+            "--source-data=2",
             "--routines",
             "--triggers",
             "--set-gtid-purged=OFF",
