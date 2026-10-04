@@ -17,7 +17,9 @@ contradict each other; both are load-bearing, so one of them has to give.
 
 The decision this module settles: the flag directory is its own path,
 outside every slot directory, owned and writable by the broker account
-alone. It is never touched by `reset` (which only ever wipes
+alone, under the broker unit's own state directory
+(`/var/lib/branchleft-broker`, systemd `StateDirectory=`), which is the path
+the broker's `BROKER_DRAIN_FLAG_DIR` already names. It is never touched by `reset` (which only ever wipes
 `/opt/branchleft/demo-<slot>/` and the two
 `/etc/branchleft/demo-<slot>-<colour>.env` files -- `branchleft_slot.py`'s
 `perform()`), so a flag this module preseeds at host build stays present
@@ -38,8 +40,24 @@ uid 1000 exactly `r-x` as "other", which is what
 directory; this module is what gives a real host directory that same
 shape rather than a test-only stand-in. No slot uid (30001..30007, or any
 other) is ever the owner or the group, so none of them has write access
-either -- only `root` (who owns the parent, `/var/run/branchleft`) and the
-broker account itself can write here.
+either -- only `root` and the broker account itself can write here. The parent,
+`/var/lib/branchleft-broker`, is broker-owned 0750, the shape the unit's
+`StateDirectoryMode=` re-applies at every broker start.
+
+## Why the directory is on disk, not in `/run`
+
+The design says a new colour always boots drained, and that the broker
+recovers a swap in flight by reading these flags at start. Both need a flag
+to outlast a reboot: with the flags gone, a colour that was drained comes
+back undrained next to the live one and the edge splits traffic between two
+versions, and a missing directory makes `docker run --mount type=bind`
+refuse to start any sidecar. `/run` and `/var/run` are tmpfs on the demo
+host, so neither can hold them.
+
+The one source of truth is
+`drain-flag-dir.golden.json`: the broker's env template is tested against it
+in `services/broker/test/unit/drainFlagDirGolden.test.ts`, and this module and
+`demo_sidecar.py` in `test_drain_flag_dir.py`.
 
 ## Preseeding, not merely creating the directory
 
