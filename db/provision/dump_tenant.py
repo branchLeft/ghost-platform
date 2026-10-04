@@ -17,6 +17,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 from naming import (
     InvalidTenantName,
@@ -49,6 +51,15 @@ CHILD_ENV_ALLOWLIST = ("PATH",)
 # the bucket/endpoint/region trio, AGE_* for the recipient key). This host
 # must never see one, regardless of whether anything here would forward it.
 FORBIDDEN_ENV_PREFIXES = ("AWS_", "DB_BACKUP_", "AGE_")
+
+
+# How long the dump's `FLUSH TABLES WITH READ LOCK` may wait before it is
+# killed. While that statement waits for a long-running query, every writer
+# on the instance queues behind it, so this is the longest the dump can stall
+# the instance. mysqldump has no option to set the session's lock wait, so a
+# second connection enforces it.
+LOCK_WAIT_BOUND_SECONDS = 2.0
+LOCK_WATCHDOG_POLL_SECONDS = 0.2
 
 
 class DumpError(Exception):
@@ -123,7 +134,94 @@ def check_floor(*, socket_path: str, db_name: str, password: str, run=subprocess
     return counts
 
 
-def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, popen=subprocess.Popen) -> set[str]:
+class LockWaitWatchdog:
+    """Kills the dump's own `FLUSH ...` statement once it has been waiting
+    for `bound` seconds. Killing the statement makes mysqldump exit nonzero,
+    which drops the pending global lock and releases every queued writer;
+    the account may kill its own threads with no extra privilege. Used as a
+    context manager around the mysqldump process. If the watchdog cannot
+    reach the server on its last poll, `error` is set and the caller must
+    treat the bound as unenforced."""
+
+    def __init__(
+        self,
+        *,
+        socket_path: str,
+        password: str,
+        bound: float = LOCK_WAIT_BOUND_SECONDS,
+        poll: float = LOCK_WATCHDOG_POLL_SECONDS,
+        run=subprocess.run,
+        clock=time.monotonic,
+    ) -> None:
+        self._socket_path = socket_path
+        self._password = password
+        self._bound = bound
+        self._poll = poll
+        self._run = run
+        self._clock = clock
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.killed: list[int] = []
+        self.error: str | None = None
+
+    def _waiting_flushes(self) -> list[int]:
+        out = _run_mysql(
+            "SELECT ID FROM information_schema.PROCESSLIST "
+            f"WHERE USER = '{DUMP_MYSQL_USER}' AND INFO LIKE 'FLUSH%'",
+            socket_path=self._socket_path,
+            password=self._password,
+            run=self._run,
+        )
+        return [int(line) for line in out.split() if line.strip().isdigit()]
+
+    def _poll_once(self, first_seen: dict[int, float]) -> None:
+        current = set(self._waiting_flushes())
+        for thread_id in list(first_seen):
+            if thread_id not in current:
+                del first_seen[thread_id]
+        now = self._clock()
+        for thread_id in current:
+            first_seen.setdefault(thread_id, now)
+            if now - first_seen[thread_id] >= self._bound:
+                self.killed.append(thread_id)
+                del first_seen[thread_id]
+                _run_mysql(
+                    f"KILL QUERY {thread_id}",
+                    socket_path=self._socket_path,
+                    password=self._password,
+                    run=self._run,
+                )
+
+    def _watch(self) -> None:
+        first_seen: dict[int, float] = {}
+        while not self._stop.wait(self._poll):
+            try:
+                self._poll_once(first_seen)
+                self.error = None
+            except (DumpError, OSError) as exc:
+                self.error = str(exc)
+
+    def __enter__(self) -> "LockWaitWatchdog":
+        self._thread = threading.Thread(target=self._watch, name="lock-wait-watchdog", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+
+
+def run_mysqldump(
+    *,
+    socket_path: str,
+    password: str,
+    db_name: str,
+    stdout,
+    popen=subprocess.Popen,
+    run=subprocess.run,
+    lock_wait_bound: float = LOCK_WAIT_BOUND_SECONDS,
+) -> set[str]:
     """The floor check that actually matters: streams mysqldump's stdout,
     watching for an `INSERT` naming each floor table -- proof against what
     the dump actually wrote, not the source it read from. Returns the set
@@ -131,7 +229,8 @@ def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, pope
     patterns = {table: f"INSERT INTO `{table}` VALUES".encode() for table in FLOOR_TABLES}
     seen: set[str] = set()
 
-    with tempfile.TemporaryFile() as stderr_file:
+    watchdog = LockWaitWatchdog(socket_path=socket_path, password=password, bound=lock_wait_bound, run=run)
+    with tempfile.TemporaryFile() as stderr_file, watchdog:
         process = popen(
             [
                 "mysqldump",
@@ -164,7 +263,18 @@ def run_mysqldump(*, socket_path: str, password: str, db_name: str, stdout, pope
         if returncode != 0:
             stderr_file.seek(0)
             stderr_bytes = stderr_file.read()
-            raise DumpError(f"mysqldump exited {returncode}: {stderr_bytes.decode(errors='replace')}")
+            aborted = (
+                f" (its lock wait exceeded {lock_wait_bound:g}s and was aborted, no lock is held)"
+                if watchdog.killed
+                else ""
+            )
+            raise DumpError(f"mysqldump exited {returncode}{aborted}: {stderr_bytes.decode(errors='replace')}")
+
+    if watchdog.error is not None:
+        raise DumpError(
+            f"the lock-wait watchdog could not reach the server, so the {lock_wait_bound:g}s bound "
+            f"was not enforced: {watchdog.error}"
+        )
 
     missing = sorted(table for table in FLOOR_TABLES if table not in seen)
     if missing:
@@ -193,7 +303,9 @@ def run_dump(
     db_name = database_and_user_name(sql_identifier(tenant_name))
 
     check_floor(socket_path=socket_path, db_name=db_name, password=password, run=run)
-    run_mysqldump(socket_path=socket_path, password=password, db_name=db_name, stdout=stdout, popen=popen)
+    run_mysqldump(
+        socket_path=socket_path, password=password, db_name=db_name, stdout=stdout, popen=popen, run=run
+    )
     return db_name
 
 

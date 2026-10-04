@@ -77,3 +77,30 @@ the caller was in the middle of dumping.
 `stderr` is a real temp file rather than a pipe, so a chatty mysqldump
 cannot deadlock this process against its own unread stderr while stdout is
 being streamed.
+
+## lock-wait-bound
+
+`--source-data=2` makes mysqldump issue `FLUSH TABLES WITH READ LOCK`. While
+that statement waits for a long-running query, every writer on the instance
+queues behind it, and the server's default wait is a year. mysqldump has no
+option to set the session's `lock_wait_timeout`, so `LockWaitWatchdog` runs
+beside the process on a second connection as the same `backup` account. It
+polls that account's own `FLUSH ...` statements and issues `KILL QUERY` on
+any that has waited `LOCK_WAIT_BOUND_SECONDS`. An account may list and kill
+its own threads with no extra privilege.
+
+The kill makes mysqldump exit nonzero, the pending lock is dropped and the
+queued writers run. `run_mysqldump` then raises `DumpError` naming the
+aborted lock wait; the caller treats it like any other per-tenant failure.
+If the watchdog cannot reach the server on its last poll the dump fails too,
+because the bound was then not enforced. The longest the dump can stall
+writers is the bound plus one poll interval.
+
+The real-server proof is `test_dump_tenant_lock_wait_docker.py`: it holds a
+long query, shows the dump giving up within the bound, writers never stalling
+past it, and writes succeeding straight after. It also kills an exact
+`FLUSH TABLES WITH READ LOCK` stuck behind a long query. `FLUSH LOCAL TABLES`,
+mysqldump's first statement, takes no lock; only the second one stalls
+writers, and a long query must start in the gap between them to hit it.
+
+`dump_nightly.py`, which dumps every database, has no such bound yet.
