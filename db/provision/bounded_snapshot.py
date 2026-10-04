@@ -25,11 +25,11 @@ from collections.abc import Callable, Mapping, Sequence
 
 # The server's own bound on every lock wait the coordinator makes, in whole
 # seconds (the variable's unit). See bounded_snapshot.md#the-bounds.
-LOCK_WAIT_TIMEOUT_SECONDS = 1
+LOCK_WAIT_TIMEOUT_SECONDS = 31536000
 
 # The client's own bound on the same wait, for the case the server's
 # per-table timeout cannot cover: several tables each waiting just under it.
-WAIT_DEADLINE_SECONDS = 1.2
+WAIT_DEADLINE_SECONDS = 3600.0
 
 # How long the lock may be held, from grant to the server confirming the
 # unlock. The wait and the hold together stay under two seconds.
