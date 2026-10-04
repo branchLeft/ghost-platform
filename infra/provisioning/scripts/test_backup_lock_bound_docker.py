@@ -57,6 +57,15 @@ def pinned_image() -> str:
     return pins.pop()
 
 
+def recovery_toolchain_image() -> str:
+    """The recovery image `db/RUNBOOK-db.md` pins: the toolchain point-in-time
+    replay actually runs with."""
+    pins = set(re.findall(r"ghcr\.io/branchleft/db-recovery@sha256:[0-9a-f]{64}", (_REPO_ROOT / "db" / "RUNBOOK-db.md").read_text(encoding="utf-8")))
+    if len(pins) != 1:
+        raise AssertionError(f"db/RUNBOOK-db.md pins {sorted(pins)}; expected exactly one db-recovery digest")
+    return pins.pop()
+
+
 def _unavailable(reason: str):
     if _REQUIRED:
         raise AssertionError(f"the lock-bound proof cannot run in CI: {reason}")
@@ -449,9 +458,20 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         binlogs = [row.split()[0] for row in self.container.root_ok("SHOW BINARY LOGS;").splitlines()]
         paths = [f"/var/lib/mysql/{name}" for name in binlogs if name >= log_file]
 
+        recovery_image = recovery_toolchain_image()
+
         def in_source_container(argv, **kwargs):
+            # The PITR toolchain image, reading the source's binary logs from
+            # its data volume: the server image ships no mysqlbinlog.
             kwargs.pop("env", None)
-            return subprocess.run(["docker", "exec", "-e", "TZ=UTC", self.container.name, *argv], **kwargs)
+            return subprocess.run(
+                [
+                    "docker", "run", "--rm", "--user", "0", "-e", "TZ=UTC",
+                    "--volumes-from", f"{self.container.name}:ro", "--entrypoint", argv[0],
+                    recovery_image, *argv[1:],
+                ],
+                **kwargs,
+            )
 
         stream = extract_tenant_binlog.extract_tenant_stream(
             paths, database=schema, start_position=position, run=in_source_container
