@@ -54,8 +54,13 @@ services:
       storage__files__wraps: 'LocalFilesStorage'
       storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: true
+      mail__transport: 'SMTP'
+      mail__options__host: 'mail-spool'
+      mail__options__port: 2525
+      mail__options__secure: false
+      mail__options__auth__user: 'demo-mail.example.test'
       mail__from: 'demo-1@demo-mail.example.test'
-      bulkEmail__mailgun__baseUrl: 'http://mail-spool.internal.example.test:8080'
+      bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
       bulkEmail__mailgun__domain: 'demo-mail.example.test'
       hostSettings__limits__members__max: 50
       hostSettings__limits__staff__max: 1
@@ -65,7 +70,11 @@ services:
       theme__uploadLimits__totalUncompressedBytes: 67108864
       privacy__useUpdateCheck: false
       logging__transports: '["stdout"]'
+      mail__options__auth__pass: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
       bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
+    networks:
+      - 'default'
+      - 'branchleft-mail-30001'
     volumes:
       - 'ghost-demo-1-content:/var/lib/ghost/content'
       - 'ghost-demo-1-adapters:/var/lib/ghost/content/adapters:ro'
@@ -126,8 +135,13 @@ services:
       storage__files__wraps: 'LocalFilesStorage'
       storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: true
+      mail__transport: 'SMTP'
+      mail__options__host: 'mail-spool'
+      mail__options__port: 2525
+      mail__options__secure: false
+      mail__options__auth__user: 'demo-mail.example.test'
       mail__from: 'demo-1@demo-mail.example.test'
-      bulkEmail__mailgun__baseUrl: 'http://mail-spool.internal.example.test:8080'
+      bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
       bulkEmail__mailgun__domain: 'demo-mail.example.test'
       hostSettings__limits__members__max: 50
       hostSettings__limits__staff__max: 1
@@ -137,7 +151,11 @@ services:
       theme__uploadLimits__totalUncompressedBytes: 67108864
       privacy__useUpdateCheck: false
       logging__transports: '["stdout"]'
+      mail__options__auth__pass: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
       bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
+    networks:
+      - 'default'
+      - 'branchleft-mail-30001'
     volumes:
       - 'ghost-demo-1-content:/var/lib/ghost/content'
       - 'ghost-demo-1-adapters:/var/lib/ghost/content/adapters:ro'
@@ -156,6 +174,10 @@ services:
       timeout: '5s'
       retries: 3
       start_period: '60s'
+networks:
+  branchleft-mail-30001:
+    name: 'branchleft-mail-30001'
+    external: true
 volumes:
   ghost-demo-1-content:
     external: true

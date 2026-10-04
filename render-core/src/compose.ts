@@ -53,6 +53,9 @@ export interface ComposeStackArgs {
   readonly caps: ResourceCaps;
   /** Non-null exactly for a `sqlite` + `local` (demo) descriptor. */
   readonly dataMount: DemoDataMount | null;
+  /** The host spool's internal network for this tenant, non-null exactly
+   * when mail is enabled. See compose.md#the-mail-network. */
+  readonly mailNetwork: string | null;
 }
 
 type Colour = 'a' | 'b';
@@ -99,6 +102,7 @@ function ghostService(
     },
     ports: [`${bindAddress(args)}:${hostPort}:${GHOST_CONTAINER_PORT}`],
     environment: args.environment as YamlValue,
+    ...(args.mailNetwork ? { networks: ['default', args.mailNetwork] } : {}),
     volumes,
     healthcheck: {
       test: [
@@ -137,6 +141,9 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
       'ghost-a': ghostService(args, 'a', content, adapters),
       'ghost-b': ghostService(args, 'b', content, adapters),
     },
+    ...(args.mailNetwork
+      ? { networks: { [args.mailNetwork]: { name: args.mailNetwork, external: true } } }
+      : {}),
     // `external: true`: the host-side provisioning step creates and owns
     // these volumes before this stack ever starts — see
     // `infra/tenant/compose.ts`'s own comment on why Compose must never be

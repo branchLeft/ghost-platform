@@ -20,6 +20,7 @@ const CONTAINER = `${PROJECT}-ghost-a-1`;
 // (demoDescriptor(): slug "demo-1", uid 30001) — see compose.ts/render.ts.
 const VOLUMES = ['ghost-demo-1-content', 'ghost-demo-1-adapters', 'ghost-demo-30001-data'];
 const LOOPBACK_PORT = 3001; // demoDescriptor().ports.a
+const MAIL_NETWORK = 'branchleft-mail-30001'; // spool.ts#mailSpoolNetworkName(30001)
 
 function dockerAvailable(): boolean {
   const result = spawnSync('docker', ['info'], { stdio: 'ignore' });
@@ -78,6 +79,11 @@ describe.skipIf(!canRun)(
       // must: create each external volume and chown it to the slot's uid,
       // because a fresh Docker named volume is root-owned and the container
       // runs as 30001:30001 with `read_only: true`.
+      // The host spool's stack owns this network in production; the demo
+      // stack only names it as external, so it must exist first.
+      execFileSync('docker', ['network', 'create', '--internal', MAIL_NETWORK], {
+        stdio: 'ignore',
+      });
       for (const volume of VOLUMES) {
         execFileSync('docker', ['volume', 'create', volume], { stdio: 'ignore' });
         execFileSync(
@@ -97,6 +103,7 @@ describe.skipIf(!canRun)(
       for (const volume of VOLUMES) {
         spawnSync('docker', ['volume', 'rm', '-f', volume], { stdio: 'ignore' });
       }
+      spawnSync('docker', ['network', 'rm', MAIL_NETWORK], { stdio: 'ignore' });
     }, 30_000);
 
     it('boots the real image from the rendered compose.yml and answers on loopback', async () => {

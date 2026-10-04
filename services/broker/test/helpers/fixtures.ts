@@ -32,7 +32,6 @@ export const TEST_ZONES: ZoneConfig = {
   platformZone: 'platform-domain.example.test',
   ownedDomains: ['demo-domain.example.test', 'platform-domain.example.test'],
   demoMailDomain: 'demo-mail.example.test',
-  mailSpoolBaseUrl: 'http://mail-spool.internal.example.test:8080',
 };
 
 export function demoDescriptor(overrides: Partial<TenantDescriptor> = {}): TenantDescriptor {

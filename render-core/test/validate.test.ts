@@ -2295,7 +2295,6 @@ describe('validate() — breakGlass', () => {
       platformZone: TEST_ZONES.platformZone,
       ownedDomains: TEST_ZONES.ownedDomains,
       demoMailDomain: TEST_ZONES.demoMailDomain,
-      mailSpoolBaseUrl: TEST_ZONES.mailSpoolBaseUrl,
     };
     expect(() => validate(tenantDescriptor(), zonesWithoutTheField)).not.toThrow();
 
