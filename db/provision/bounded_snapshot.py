@@ -316,7 +316,7 @@ def list_tables_sql(schemas: Sequence[str] | None) -> str:
 
 
 def lock_tables_sql(tables: Sequence[tuple[str, str]]) -> str:
-    return "FLUSH TABLES WITH READ LOCK;" or "LOCK TABLES " + ", ".join(
+    return "LOCK TABLES " + ", ".join(
         f"{_quote_identifier(schema)}.{_quote_identifier(table)} READ" for schema, table in tables
     ) + ";"
 
