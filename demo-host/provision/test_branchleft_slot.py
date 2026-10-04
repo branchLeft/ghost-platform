@@ -136,6 +136,22 @@ class ParseInvocationExactnessTests(unittest.TestCase):
             bs.parse_invocation(["0\treset"])
 
 
+class SlotDirGoldenTests(unittest.TestCase):
+    """The wrapper's reset directory is pinned to the same golden the broker's
+    `slotDir` is tested against, so the two cannot diverge."""
+
+    GOLDEN = os.path.join(os.path.dirname(__file__), "slot-dirs.golden.json")
+
+    def test_slot_dir_matches_golden_for_every_slot_in_the_sudoers_table(self):
+        import json
+
+        with open(self.GOLDEN) as fh:
+            golden = json.load(fh)
+        expected = {e["slot"]: e["dir"] for e in golden["slots"]}
+        actual = {slot: bs.SLOT_DIR.format(slot=slot) for slot in rss.SLOT_NAMES}
+        self.assertEqual(expected, actual)
+
+
 class SlotNamesDriftGuardTests(unittest.TestCase):
     def test_slot_names_matches_the_sudoers_generators_table(self):
         # The two files are deliberately not one import (see

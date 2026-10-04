@@ -121,18 +121,3 @@ head** — Docker was unavailable when these were added; the next real boot
 proof must confirm both that the unit still starts and that `/reset` still
 reaches the wrapper with these applied, the same way every directive above
 was individually confirmed.
-
-## Known gap: `BROKER_SLOT_DIR_BASE` vs. the wrapper's own path
-
-`writeArtefacts.ts` writes reconciled artefacts under
-`<BROKER_SLOT_DIR_BASE>/<slot>/`; `branchleft_slot.py`'s `reset` wipes
-`/opt/branchleft/demo-<slot>` — a different, hyphenated path no value of
-`BROKER_SLOT_DIR_BASE` can produce through `path.join`, which always inserts
-a separator. With the shipped template, a reset never clears what a prior
-reconcile wrote. Fixing it means changing either `writeArtefacts.ts`'s own
-directory convention (tested against `<base>/<slot>` across
-`writeArtefacts.test.ts`, `renderCorePlugin.test.ts` and `server.test.ts`)
-or the wrapper's own `SLOT_DIR` — both outside this file's remit and named
-by branchLeft/workspace#1545 as branchLeft/workspace#1447/#1448's territory,
-not touched here. Filed as discovered work rather than worked around in this
-PR.

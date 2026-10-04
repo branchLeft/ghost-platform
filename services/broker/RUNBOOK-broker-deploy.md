@@ -224,13 +224,8 @@ docker rm -f broker-boot-proof
   (`slotsFile.ts#readSlotsFile` reads `parsed.slots` as the array itself,
   not `{}`) -- the boot proof's fixture seeds a real leased entry and
   resets it, so this can't silently regress again. See `systemd/README.md`.
-- **`BROKER_SLOT_DIR_BASE` vs. the wrapper's own path.** Still open:
-  `writeArtefacts.ts` writes under `<BROKER_SLOT_DIR_BASE>/<slot>/`, but
-  `branchleft_slot.py`'s `reset` wipes `/opt/branchleft/demo-<slot>` -- a
-  different, hyphenated path no value of `BROKER_SLOT_DIR_BASE` can produce
-  through `path.join`. A reset therefore never clears what a prior
-  reconcile wrote. Fixing it touches either `writeArtefacts.ts`'s own
-  directory convention (tested elsewhere against `<base>/<slot>`) or the
-  wrapper's `SLOT_DIR` -- both branchLeft/workspace#1447/#1448's territory,
-  not this issue's, and not worked around here. See `systemd/README.md`
-  ("Known gap").
+- **`BROKER_SLOT_DIR_BASE` and the wrapper's slot directory.** Fixed: the
+  broker writes under `<BROKER_SLOT_DIR_BASE>/demo-<slot>/`, the directory
+  the wrapper's `reset` wipes, so a reset clears what a reconcile wrote.
+  Both sides are pinned by tests to `demo-host/provision/slot-dirs.golden.json`,
+  derived from the sudoers generator's slot table.
