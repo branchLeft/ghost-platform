@@ -172,6 +172,16 @@ the drill has only the backup to work from.
 | Revert | FAIL again |
 | SABOTAGE: the destroyed key is kept where the drill holds keys | FAIL, `ErasureBrokenError` |
 | Revert | PASS |
+| LOGS: `docker logs` of every container the drill ran, read before removal | no plaintext or key material; every short-lived one ran with `--log-driver none` |
+| SABOTAGE: `--log-driver none` dropped | the decrypted dump and the throwaway secret key appear in a container's log |
+| SIGTERM sent while the decrypted dump is on disk | exit 143; no dump, no drill container left; the run is exported as failed |
+| SABOTAGE: SIGTERM handler not installed | the dump and the restore containers survive the stop |
+| Teardown | no container, network or volume of the proof remains |
+
+So that it can read the logs of short-lived containers, the proof puts a
+`docker` shim first on the drill's `PATH`. The shim keeps `--rm` containers
+under a label rather than letting them auto-remove, and saves each
+container's logs and volume names just before every `docker rm`.
 
 The proof runs on a workstation's temporary directory, so it sets
 `BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR=0`. The tmpfs refusal itself is

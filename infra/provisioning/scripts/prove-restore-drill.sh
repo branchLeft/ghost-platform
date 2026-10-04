@@ -35,9 +35,36 @@ SOURCE_GHOST_PORT=4460
 
 WORK="$(mktemp -d)"
 chmod 0755 "$WORK"
-mkdir -p "$WORK/certs" "$WORK/identities" "$WORK/drill-work" "$WORK/flags" "$WORK/metrics" "$WORK/s3data"
+mkdir -p "$WORK/certs" "$WORK/identities" "$WORK/drill-work" "$WORK/flags" "$WORK/metrics" "$WORK/s3data" \
+    "$WORK/shim" "$WORK/logs"
 chmod 0700 "$WORK/identities"
 METRICS="$WORK/metrics/restore_drill.prom"
+VOLUMES="$WORK/volumes.txt"
+: >"$VOLUMES"
+KEPT_LABEL="branchleft.restore-drill.proof-kept"
+
+# The drill runs with this `docker` first on its PATH. It drops `--rm` from
+# every short-lived container (labelling it instead) so the proof can read its
+# logs afterwards, and before every `docker rm` it saves that container's logs
+# and volume names. Everything else passes straight through.
+REAL_DOCKER="$(command -v docker)"
+cat >"$WORK/shim/docker" <<SHIM
+#!/usr/bin/env python3
+import os, subprocess, sys
+real, logs, volumes, kept = "$REAL_DOCKER", "$WORK/logs", "$VOLUMES", "$KEPT_LABEL"
+args = sys.argv[1:]
+if args[:1] == ["run"] and "--rm" in args:
+    args = ["run", "--label", kept + "=1"] + [a for a in args[1:] if a != "--rm"]
+elif args[:1] == ["rm"]:
+    for name in [a for a in args[1:] if not a.startswith("-")]:
+        out = subprocess.run([real, "logs", name], capture_output=True)
+        open(os.path.join(logs, name + ".log"), "wb").write(out.stdout + out.stderr)
+        mounts = subprocess.run([real, "inspect", "--format", "{{range .Mounts}}{{.Name}} {{end}}", name],
+                                capture_output=True, text=True).stdout.split()
+        open(volumes, "a").write("".join(m + "\\n" for m in mounts))
+os.execv(real, [real] + args)
+SHIM
+chmod 0755 "$WORK/shim/docker"
 
 FAILURES=0
 note() { echo; echo "== $* =="; }
@@ -48,12 +75,24 @@ restore_original() {
     [ -f "$WORK/restore_drill.py.orig" ] && cp "$WORK/restore_drill.py.orig" "$DRILL"
     rm -f "$WORK/restore_drill.py.orig"
 }
+# Every container this proof or a drill under it created: by name, by the
+# drill's label, or by the shim's label. Their volumes are recorded first.
+teardown() {
+    ids="$( (docker ps -aq --filter name=restore-drill; docker ps -aq --filter label=branchleft.restore-drill;
+        docker ps -aq --filter "label=$KEPT_LABEL") | sort -u)"
+    for id in $ids; do
+        docker inspect --format '{{range .Mounts}}{{.Name}} {{end}}' "$id" 2>/dev/null | tr ' ' '\n' >>"$VOLUMES"
+    done
+    if [ -n "$ids" ]; then docker rm -f -v $ids >/dev/null 2>&1 || true; fi
+    for net in $(docker network ls -q --filter name=restore-drill); do docker network rm "$net" >/dev/null 2>&1 || true; done
+    for vol in $(grep -v '^$' "$VOLUMES" | sort -u); do
+        if docker volume inspect "$vol" >/dev/null 2>&1; then docker volume rm "$vol" >/dev/null 2>&1 || true; fi
+    done
+    return 0
+}
 cleanup() {
     restore_original
-    docker rm -f -v "$SOURCE_GHOST" "$SOURCE_DB" "$S3" >/dev/null 2>&1 || true
-    ids="$(docker ps -aq --filter label=branchleft.restore-drill)"
-    [ -n "$ids" ] && docker rm -f -v $ids >/dev/null 2>&1
-    docker network rm "$NET" >/dev/null 2>&1 || true
+    [ -f "$VOLUMES" ] && teardown
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -96,8 +135,8 @@ elif op == "list":
 PY
 }
 
-drill() {
-    env -i PATH="$PATH" HOME="$HOME" ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
+drill_exec() {
+    exec env -i PATH="$WORK/shim:$PATH" HOME="$HOME" ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} \
         SSL_CERT_FILE="$WORK/certs/s3.crt" \
         BACKUP_DRILL_COPY_PRIMARY_BUCKET=drill-primary \
         BACKUP_DRILL_COPY_PRIMARY_ENDPOINT="localhost:$S3_PORT" \
@@ -119,7 +158,36 @@ drill() {
         BACKUP_DRILL_METRICS_DIR="$WORK/metrics" \
         BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR=0 \
         BACKUP_DRILL_CONTENT_TIMEOUT_S=240 \
-        "$PYTHON" "$DRILL" --tenants-file "$WORK/tenants" "$@" >"$WORK/drill.out" 2>&1
+        "$PYTHON" "$DRILL" --tenants-file "$WORK/tenants" "$@"
+}
+drill() {
+    (drill_exec "$@") >"$WORK/drill.out" 2>&1
+    rc=$?
+    harvest_kept
+    return $rc
+}
+# Reads the logs of every short-lived container the shim kept, records its
+# log driver, then removes it with its volumes.
+harvest_kept() {
+    for id in $(docker ps -aq --filter "label=$KEPT_LABEL"); do
+        docker logs "$id" >"$WORK/logs/kept-$id.log" 2>&1
+        echo "$id $(docker inspect --format '{{.HostConfig.LogConfig.Type}}' "$id")" >>"$WORK/logs/drivers.txt"
+        docker inspect --format '{{range .Mounts}}{{.Name}} {{end}}' "$id" | tr ' ' '\n' >>"$VOLUMES"
+        docker rm -f -v "$id" >/dev/null
+    done
+}
+# No tenant plaintext or key material in any container log the drill produced.
+CANARIES="AGE-SECRET-KEY-1|SHREDDED_TENANT_CANARY|drill-member@example.test|$KNOWN_POST body"
+logs_clean() {
+    found="$(grep -lE "$CANARIES" "$WORK"/logs/*.log 2>/dev/null || true)"
+    drivers="$(awk '$2 != "none"' "$WORK/logs/drivers.txt" 2>/dev/null || true)"
+    kept="$(wc -l <"$WORK/logs/drivers.txt" 2>/dev/null | tr -d ' ')"
+    if [ -z "$found" ] && [ -z "$drivers" ] && [ "${kept:-0}" -gt 0 ]; then
+        echo "clean: $kept short-lived container(s), all --log-driver none; $(ls "$WORK"/logs/*.log | wc -l | tr -d ' ') log(s) read"
+        return 0
+    fi
+    echo "plaintext or key material in: ${found:-nothing}; drivers other than none: ${drivers:-none}"
+    return 1
 }
 drill_expect() {
     # $1 = pass|fail, $2 = text the output must carry, $3 = label, rest = drill args
@@ -245,6 +313,7 @@ grep -qF "no identity matched any of the recipients" "$WORK/drill.out" \
 [ "$(metric last_run_success)" = "1.0" ] && pass "GREEN primary: last_run_success exported as 1" || fail "GREEN primary: metric"
 [ -n "$(metric last_success_timestamp_seconds)" ] && pass "GREEN primary: last_success_timestamp_seconds exported" || fail "GREEN primary: no last success"
 no_leftovers "GREEN primary"
+if out="$(logs_clean)"; then pass "LOGS: $out"; else fail "LOGS: $out"; fi
 
 note "GREEN (secondary copy): the other copy restores too"
 drill_expect pass "copy=secondary" "GREEN secondary: the drill passed from the second copy" --copy secondary
@@ -307,6 +376,60 @@ revert
 rm -f "$WORK/identities/leaked.key"
 drill_expect pass "restore_drill: PASS" "ERASURE after revert: the full drill passes again" --copy primary
 no_leftovers "final"
+
+note "LOGS SABOTAGE: drop --log-driver none; Docker must then keep the decrypted dump in a container log"
+rm -f "$WORK"/logs/*.log "$WORK/logs/drivers.txt"
+sabotage 's/^NO_LOGS = ("--log-driver", "none")$/NO_LOGS = ()/' "no log driver"
+drill --copy primary || true
+if out="$(logs_clean)"; then fail "LOGS SABOTAGE: logs still clean without the flag -- $out"; else pass "LOGS SABOTAGE: RED confirmed -- $out"; fi
+revert
+rm -f "$WORK"/logs/*.log "$WORK/logs/drivers.txt"
+drill --copy primary || true
+if out="$(logs_clean)"; then pass "LOGS after revert: $out"; else fail "LOGS after revert: $out"; fi
+
+note "SIGTERM: stop the drill while the decrypted dump is on disk"
+sigterm_case() {
+    (drill_exec --copy primary) >"$WORK/drill.out" 2>&1 &
+    pid=$!
+    deadline=$(($(date +%s) + 300))
+    until ls "$WORK"/drill-work/run-*/dump.sql >/dev/null 2>&1 && [ -n "$(docker ps -q --filter name=restore-drill-mysql)" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "the drill never reached its restore"; return 1; }
+        sleep 0.5
+    done
+    echo "dump on disk: $(ls "$WORK"/drill-work/run-*/dump.sql)"
+    kill -TERM "$pid"
+    wait "$pid"
+    rc=$?
+    harvest_kept
+    sed 's/^/    /' "$WORK/drill.out"
+    echo "exit $rc"
+    [ "$rc" = 143 ] && [ -z "$(ls -A "$WORK/drill-work")" ] \
+        && [ -z "$(docker ps -aq --filter label=branchleft.restore-drill)" ] && grep -q SIGTERM "$WORK/drill.out" \
+        && [ "$(metric last_run_success)" = "0.0" ]
+}
+if sigterm_case; then pass "SIGTERM: exit 143, no dump left, no drill container left, run exported as failed"
+else fail "SIGTERM: something survived the stop"; fi
+sabotage 's/^    previous = signal.signal(signal.SIGTERM, _on_sigterm)$/    previous = signal.getsignal(signal.SIGTERM)/' "SIGTERM handler not installed"
+if sigterm_case; then fail "SIGTERM SABOTAGE: still clean with no handler"
+else pass "SIGTERM SABOTAGE: RED confirmed -- with no handler the dump and the restore containers survive the stop"; fi
+revert
+teardown
+rm -rf "$WORK"/drill-work/run-* "$WORK"/flags/run-*
+if out="$(logs_clean)"; then pass "LOGS across every run since the sabotage: $out"; else fail "LOGS: $out"; fi
+
+note "Teardown: every container, network and volume this proof created"
+teardown
+docker rm -f -v "$SOURCE_GHOST" "$SOURCE_DB" "$S3" >/dev/null 2>&1 || true
+LEFT_CONTAINERS="$( (docker ps -aq --filter name=restore-drill; docker ps -aq --filter label=branchleft.restore-drill;
+    docker ps -aq --filter "label=$KEPT_LABEL") | sort -u)"
+LEFT_VOLUMES=""
+for vol in $(grep -v '^$' "$VOLUMES" | sort -u); do
+    if docker volume inspect "$vol" >/dev/null 2>&1; then LEFT_VOLUMES="$LEFT_VOLUMES $vol"; fi
+done
+echo "docker ps -a (restore-drill names and labels): ${LEFT_CONTAINERS:-none}"
+echo "docker volume ls (the $(grep -cv '^$' "$VOLUMES") volume(s) the proof's containers used): ${LEFT_VOLUMES:-none}"
+[ -z "$LEFT_CONTAINERS" ] && [ -z "$LEFT_VOLUMES" ] && [ -z "$(docker network ls -q --filter name=restore-drill)" ] \
+    && pass "teardown: no container, network or volume of this proof remains" || fail "teardown: something remains"
 
 if [ "$FAILURES" -gt 0 ]; then
     echo
