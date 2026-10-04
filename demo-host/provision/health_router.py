@@ -108,16 +108,10 @@ def _pinned_path(colour_fd: int, name: str, fallback: str) -> str:
 @contextlib.contextmanager
 def pinned_socket(root: str, slot: str, colour: str, owner_uid: int) -> Iterator[str]:
     """Yields the colour's socket path once every link of it has been checked,
-    or raises. Checked on every request, so a directory changed after start is
-    refused on the next check rather than trusted from the last.
-
-    Each directory is opened once, the next one relative to it, and the
-    checks run on the open descriptors. The path yielded goes through the
-    last descriptor, so renaming or replacing any directory between the
-    checks and the connect cannot send the router to another socket. The
-    root and its parent must belong to root or the router and be writable by
-    nobody else, because whoever can write either can rename the router's
-    directory. The descriptors close when the block ends."""
+    or raises. Checked on every request. Each directory is opened once, the
+    next relative to it, and the path yielded goes through the last
+    descriptor, so a rename between check and connect cannot redirect it.
+    See health_router.md ("How the check and the connect stay one")."""
     plain = socket_path(root, slot, colour)
     root = os.path.normpath(root)
     fds: list[int] = []
