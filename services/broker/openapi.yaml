@@ -125,9 +125,10 @@ paths:
       description: >-
         Revokes the slot's lease and gate hash, then tears down both colours
         via the sudoers-wrapped `reset` verb, and marks both colours drained.
-        Always ends the slot `free` on success, whatever it held before.
-        Requires the broker's signature scheme; the signed bytes are the raw
-        JSON request body.
+        Ends the slot `free` on success, whatever it held before, except that
+        a slot still `detaching`, or holding frozen evidence not yet confirmed
+        detached, is refused untouched. Requires the broker's signature
+        scheme; the signed bytes are the raw JSON request body.
       security:
         - brokerSignature: []
       parameters:
@@ -156,7 +157,7 @@ paths:
         '401':
           description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
         '409':
-          description: The slot is locked by a concurrent request.
+          description: The slot is locked by a concurrent request, or is detaching or holding frozen evidence not yet confirmed detached; the slot is left untouched.
           content:
             application/json:
               schema:
