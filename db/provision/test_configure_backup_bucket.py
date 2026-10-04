@@ -7,6 +7,7 @@ See test_configure_backup_bucket.md#module-overview.
 import base64
 import hashlib
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -151,15 +152,14 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
         self.assertEqual(doc.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
         self.assertEqual(doc.count("<NoncurrentDays>1</NoncurrentDays>"), 2)
 
-    def test_only_the_media_rule_carries_expired_object_delete_marker(self):
-        # Every deletion a backup run performs leaves a delete marker;
-        # Hetzner's lifecycle how-to documents this element as supported
-        # (ghost-platform-docs/14 SS16 item 3). dumps/, binlogs/ and
-        # fence-probe/ have no equivalent churn and do not carry it.
-        doc = cbb.lifecycle_document(35, 1).decode()
-        self.assertEqual(doc.count("<ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker>"), 1)
-        media_rule = doc.split("<Filter><Prefix>media/</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
-        self.assertIn("<ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker>", media_rule)
+    def test_no_rule_carries_expired_object_delete_marker(self):
+        # A Days expiry cannot share a lifecycle element with
+        # ExpiredObjectDeleteMarker, and a second rule on the same prefix is
+        # unproven on this engine, so media/'s one rule carries the Days
+        # expiry and no rule carries the marker element.
+        for media_days in (0, 14):
+            doc = cbb.lifecycle_document(35, 1, 10, media_days).decode()
+            self.assertNotIn("ExpiredObjectDeleteMarker", doc)
 
     def test_no_two_prefixes_can_ever_match_the_same_key(self):
         # The actual defence: construct a key under each prefix and confirm
@@ -290,11 +290,48 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
         for prefix in ("dumps/", "binlogs/"):
             self.assertIn("<Expiration><Days>10</Days></Expiration>", self._rule(doc, prefix))
 
-    def test_media_and_fence_probe_carry_no_day_based_expiry(self):
+    def test_media_and_fence_probe_carry_no_day_based_expiry_unless_media_is_given_one(self):
         doc = cbb.lifecycle_document(35, 1, 10).decode()
         self.assertEqual(doc.count("<Days>"), 2)
         for prefix in ("media/", "fence-probe/"):
             self.assertNotIn("<Days>", self._rule(doc, prefix))
+
+    def test_media_expiry_lands_on_the_media_rule_only(self):
+        doc = cbb.lifecycle_document(35, 1, 10, 14).decode()
+        self.assertEqual(doc.count("<Days>"), 3)
+        self.assertIn("<Expiration><Days>14</Days></Expiration>", self._rule(doc, "media/"))
+        self.assertNotIn("<Days>", self._rule(doc, "fence-probe/"))
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertIn("<Days>10</Days>", self._rule(doc, prefix))
+
+    def test_media_rule_keeps_its_own_short_noncurrent_expiry_beside_the_days_expiry(self):
+        media_rule = self._rule(cbb.lifecycle_document(35, 1, 10, 14).decode(), "media/")
+        self.assertIn("<NoncurrentDays>1</NoncurrentDays>", media_rule)
+
+    def test_no_lifecycle_element_mixes_days_with_expired_object_delete_marker(self):
+        for media_days in (0, 3, 14):
+            for db_days in (0, 10):
+                doc = cbb.lifecycle_document(35, 1, db_days, media_days).decode()
+                for expiration in re.findall(r"<Expiration>.*?</Expiration>", doc):
+                    self.assertFalse("<Days>" in expiration and "ExpiredObjectDeleteMarker" in expiration)
+
+    def test_media_default_is_no_expiry_until_one_is_ruled(self):
+        self.assertEqual(cbb.MEDIA_CURRENT_EXPIRATION_DAYS, 0)
+        self.assertNotIn("<Days>", self._rule(cbb.lifecycle_document().decode(), "media/"))
+
+    def test_a_negative_media_expiry_is_refused(self):
+        with self.assertRaises(ValueError):
+            cbb.lifecycle_document(35, 1, 10, -1)
+
+    def test_media_expiry_is_threaded_through_configure(self):
+        calls = []
+        cbb.configure_backup_bucket(
+            bucket="b", endpoint="fsn1.your-objectstorage.com", region="fsn1",
+            access_key="AK", secret_key="S", policy_body=b"{}", media_expiration_days=21,
+            put=lambda **kwargs: calls.append(kwargs),
+        )
+        body = next(c for c in calls if c["subresource"] == "lifecycle")["body"].decode()
+        self.assertIn("<Expiration><Days>21</Days></Expiration>", self._rule(body, "media/"))
 
     def test_the_default_matches_the_prune_script_retention(self):
         import prune_backups
@@ -339,6 +376,30 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
                     )
         self.assertEqual(code, 0)
         self.assertEqual(captured["db_expiration_days"], 4)
+
+    def test_the_media_expiry_flag_is_threaded_through_the_cli(self):
+        import contextlib
+        import io
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "policy.json"
+            policy_file.write_text(json.dumps(fence_policy()))
+            environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
+            for extra, expected in (([], 0), (["--media-expiration-days", "9"], 9)):
+                captured = {}
+                with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                    cbb, "owner_id", return_value="p1231234"
+                ), mock.patch.object(cbb, "configure_backup_bucket", lambda **kw: captured.update(kw)):
+                    out = io.StringIO()
+                    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(out):
+                        code = cbb.main(
+                            ["--bucket", BUCKET, "--endpoint", "fsn1.your-objectstorage.com",
+                             "--region", "fsn1", "--policy-file", str(policy_file),
+                             "--engine-diagnostic-passed", *extra]
+                        )
+                self.assertEqual(code, 0)
+                self.assertEqual(captured["media_expiration_days"], expected)
 
 
 class ConfigureBackupBucketTests(unittest.TestCase):
