@@ -3,9 +3,10 @@ import { dirname, join, normalize, sep } from 'node:path';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
 import { writeFileAtomic } from './atomicFile.js';
 import type { Artefact } from './render.js';
+import { slotDir } from './slotPorts.js';
 
 /**
- * Writes each rendered artefact under `<slotDirBase>/<slot>/`, refusing any
+ * Writes each rendered artefact under `<slotDirBase>/demo-<slot>/`, refusing any
  * artefact path that would escape that directory -- a renderer is a
  * dependency this service does not control the implementation of (`render.ts`),
  * so its output is treated as untrusted the same way any other input is,
@@ -16,7 +17,7 @@ export async function writeArtefacts(
   slot: SlotName,
   artefacts: readonly Artefact[]
 ): Promise<void> {
-  const root = join(slotDirBase, slot);
+  const root = normalize(slotDir(slotDirBase, slot));
   for (const artefact of artefacts) {
     const target = normalize(join(root, artefact.path));
     if (target !== root && !target.startsWith(root + sep)) {
