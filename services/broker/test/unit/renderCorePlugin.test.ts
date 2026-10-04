@@ -156,7 +156,7 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const res = await reconcile(`http://127.0.0.1:${port}`, keyPair);
     expect(res.status).toBe(200);
 
-    const slotDir = join(slotDirBase, '0');
+    const slotDir = join(slotDirBase, 'demo-0');
     const compose = await readFile(join(slotDir, 'compose.yml'), 'utf8');
     const identity = JSON.parse(await readFile(join(slotDir, 'identity.json'), 'utf8')) as {
       slug: string;
@@ -204,7 +204,7 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const res = await reconcile(`http://127.0.0.1:${port}`, keyPair);
     expect(res.status).toBe(200);
 
-    const slotDir = join(slotDirBase, '0');
+    const slotDir = join(slotDirBase, 'demo-0');
     // The generic fixture's own, single, trivial artefact — proving the
     // disconnected state is distinguishable from the real wiring above,
     // not merely "some file got written".

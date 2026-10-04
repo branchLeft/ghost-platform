@@ -6,10 +6,21 @@ name: Drain sidecar image
 # -- never a second-hand copy of what the platform ships, because it's the
 # same image handed to the script.
 #
-# Build-only, mirroring build.yml's stance for the tenant image: no push,
-# no registry credential. Delivering this sidecar to a host (an image
-# registry, a slot's Compose stack) is a separate story -- see the PR that
-# introduced this workflow for what that leaves owed.
+# A pull request builds and proves only, with no credential. On push to
+# `main` (or a manual dispatch from `main`) a second job pushes the sidecar
+# to ghcr.io/branchleft/drain-sidecar tagged with the git SHA, reads the
+# pushed digest back from the image store, refuses to finish without a
+# well-formed sha256, and publishes `ghcr.io/branchleft/drain-sidecar@sha256:...`
+# as the job's `image` output and in its summary. The host pins that
+# digest-qualified reference and nothing else; a tag can be re-pointed, a
+# digest cannot. There is deliberately no `latest` tag.
+#
+# The push job publishes the very image the proof tested: the proof job saves
+# it as an artifact and outputs its image ID, and the push job loads it,
+# checks the ID matches, then tags and pushes it. Nothing is rebuilt, so the
+# proof covers the pushed bytes. It waits on the proof job and requests `packages: write` only
+# for itself. GHCR authenticates with the workflow's own GITHUB_TOKEN. Wiring
+# the digest into a slot's units is the host-build story.
 
 on:
   push:
@@ -19,6 +30,7 @@ on:
       - scripts/test-drain-sidecar.sh
       - Dockerfile
       - .github/workflows/drain-sidecar-image.yml
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
@@ -29,7 +41,8 @@ on:
 
 # `packages: read` because the image's build stage installs
 # `@branchleft/tsconfig` from GitHub Packages -- read-only, and this
-# workflow never requests a write credential at all.
+# workflow's top level never requests a write credential: only the push job
+# below asks for `packages: write`, for itself.
 permissions:
   contents: read
   packages: read
@@ -42,6 +55,9 @@ jobs:
     # plus the sidecar), the slowest step being Ghost's own fresh-SQLite
     # migration on first boot.
     timeout-minutes: 15
+
+    outputs:
+      image-id: ${{ steps.proven.outputs.image-id }}
 
     steps:
       - name: Checkout
@@ -67,3 +83,97 @@ jobs:
 
       - name: Real-Ghost proof (Ghost not ready, flag set, flag cleared, unreadable flag directory)
         run: ./scripts/test-drain-sidecar.sh drain-sidecar:ci ghost-platform:ci
+
+      # Only reached when the proof above passed. The image ID is read after
+      # the proof, from the tag the proof ran, and travels with the saved
+      # tarball so the push job can refuse anything else.
+      - name: Save the proven image
+        id: proven
+        run: |
+          docker save --output drain-sidecar.tar drain-sidecar:ci
+          echo "image-id=$(docker image inspect --format '{{.Id}}' drain-sidecar:ci)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the proven image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: drain-sidecar-image
+          path: drain-sidecar.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    name: Push the proven drain-sidecar image
+    runs-on: ubuntu-latest
+    needs: build
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+
+    env:
+      IMAGE: ghcr.io/branchleft/drain-sidecar
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Download the proven image
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: drain-sidecar-image
+
+      # The loaded image must be exactly the one the proof ran against.
+      - name: Load the proven image and check its ID
+        env:
+          PROVEN_ID: ${{ needs.build.outputs.image-id }}
+        run: |
+          docker load --input drain-sidecar.tar
+          loaded="$(docker image inspect --format '{{.Id}}' drain-sidecar:ci)"
+          if [ -z "$PROVEN_ID" ] || [ "$loaded" != "$PROVEN_ID" ]; then
+            echo "::error::loaded image '$loaded' is not the proven image '$PROVEN_ID'"
+            exit 1
+          fi
+          docker tag drain-sidecar:ci "$IMAGE:$IMAGE_TAG"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: docker push "$IMAGE:$IMAGE_TAG"
+
+      # The digest is read from the image store after the push, never
+      # assembled from the tag or the commit. A missing or malformed digest
+      # fails the job, so no run ends green without a reference to pin.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
+        run: |
+          {
+            echo '## drain-sidecar image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
