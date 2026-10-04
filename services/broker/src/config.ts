@@ -141,6 +141,26 @@ export function wrapperConfigFromEnv(env: BrokerEnv): WrapperConfig {
   };
 }
 
+export interface AdminApiConfig {
+  /** Holds one private folder per slot, each with that slot's Ghost access key. */
+  readonly keyDir: string;
+  /** How long to wait for a freshly started Ghost to answer its Admin API. */
+  readonly readyTimeoutMs: number;
+  readonly zones: ZoneConfig;
+}
+
+/**
+ * What the Ghost admin client plugin reads. `BROKER_ADMIN_KEY_DIR` has no
+ * default: it holds credentials, so an unset value refuses to start.
+ */
+export function adminApiConfigFromEnv(env: BrokerEnv): AdminApiConfig {
+  return {
+    keyDir: requireEnv(env, 'BROKER_ADMIN_KEY_DIR'),
+    readyTimeoutMs: positiveInteger(env, 'BROKER_GHOST_READY_TIMEOUT_MS', 30_000, 300_000),
+    zones: zonesFromEnv(env),
+  };
+}
+
 /**
  * Every input that decides who may cause a side effect has no default: the
  * verify key, the slots path and the lease/state/drain-flag directories. An

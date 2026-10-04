@@ -275,7 +275,7 @@ async function handleReconcile(
       // The slot's own fixed port, never the descriptor's (LLD-2 §01,
       // load-bearing: "no port to pick"). See slotPorts.ts.
       const port = slotPort(deps.appPortBase, slot, FRESH_COLOUR);
-      await deps.adminApi.configure(`http://127.0.0.1:${port}`, descriptor);
+      await deps.adminApi.configure(`http://127.0.0.1:${port}`, descriptor, slot);
       await writeLeaseAndHash(deps.leaseStoreConfig, host, slot, argon2idHash);
       await deps.drainFlags.clear(slot, FRESH_COLOUR);
     }
@@ -296,6 +296,7 @@ async function handleReconcile(
           lastHashId: state.lastHashId,
         });
         await clearLeaseAndHash(deps.leaseStoreConfig, slot).catch(() => undefined);
+        await deps.adminApi.forget?.(slot).catch(() => undefined);
         await deps.wrapper.reset(slot).catch(() => undefined);
         await writeSlotState(deps.stateDir, slot, {
           phase: 'free' satisfies Phase,
@@ -315,6 +316,7 @@ async function handleReconcile(
         // anything less safe, and doing it before the wrapper runs means a
         // teardown that then fails still leaves no live access behind.
         await clearLeaseAndHash(deps.leaseStoreConfig, slot);
+        await deps.adminApi.forget?.(slot);
         await deps.wrapper.reset(slot);
         await deps.drainFlags.set(slot, 'a');
         await deps.drainFlags.set(slot, 'b');
@@ -431,7 +433,7 @@ async function attemptColourSwap(
     await writeArtefacts(deps.slotDirBase, slot, artefacts);
     await deps.wrapper.start(slot, target);
     const targetPort = slotPort(deps.appPortBase, slot, target);
-    await deps.adminApi.configure(`http://127.0.0.1:${targetPort}`, descriptor);
+    await deps.adminApi.configure(`http://127.0.0.1:${targetPort}`, descriptor, slot);
     // "Migrate, verify by calling it directly" (LLD-4 §U3b) -- Ghost's own
     // app port is never ambiguous between colours (unlike the slot's one
     // shared health port), so this needs no router to ask a specific
@@ -682,6 +684,9 @@ async function handleReset(
     // passphrase admitting for as long as the slot sits in `error`.
     await clearLeaseAndHash(deps.leaseStoreConfig, slot);
     try {
+      // The slot's Ghost access key goes with its lease, before the wipe:
+      // a reset that then fails still leaves no way back into the site.
+      await deps.adminApi.forget?.(slot);
       await deps.wrapper.reset(slot);
     } catch (err) {
       deps.log(`reset failed for slot "${slot}": ${(err as Error).message}`);

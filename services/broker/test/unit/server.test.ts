@@ -311,11 +311,12 @@ describe('the real dist/server.js entrypoint', () => {
     });
   });
 
-  it('starts on the shipped modules, reporting only the interim admin client, and lists an unmarked stand-in as not real', async () => {
+  it('starts on the shipped modules with nothing to report, and lists an unmarked stand-in as not real', async () => {
     const distPlugins = join(process.cwd(), 'dist/plugins');
     const shippedPlugins = {
       BROKER_RENDERER_MODULE: join(distPlugins, 'renderCorePlugin.js'),
-      BROKER_ADMIN_API_MODULE: join(distPlugins, 'refusingAdminApi.js'),
+      BROKER_ADMIN_API_MODULE: join(distPlugins, 'ghostAdminApi.js'),
+      BROKER_ADMIN_KEY_DIR: await makeTempDir('broker-spawn-keys-'),
       BROKER_IMAGE_LOADER_MODULE: join(distPlugins, 'dockerImageLoader.js'),
     };
 
@@ -330,8 +331,8 @@ describe('the real dist/server.js entrypoint', () => {
       slot: '0',
       phase: 'free',
       healthy: false,
-      notReal: ['adminApi'],
-      interim: ['adminApi'],
+      notReal: [],
+      interim: [],
     });
     broker.stop();
 
@@ -346,8 +347,8 @@ describe('the real dist/server.js entrypoint', () => {
     const withStandIn = await broker.waitListening(8000);
     const standInStatus = await fetch(`http://127.0.0.1:${withStandIn.port}/status/0`);
     expect(await standInStatus.json()).toMatchObject({
-      notReal: ['adminApi', 'drainSource'],
-      interim: ['adminApi'],
+      notReal: ['drainSource'],
+      interim: [],
     });
   });
 
