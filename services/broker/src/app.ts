@@ -7,6 +7,7 @@ import {
   type TenantDescriptor,
   type ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
+import type { SeamReadiness } from './seamReadiness.js';
 import type { AdminApiClient } from './adminApi.js';
 import { type AuthDeps, verifyRequest } from './auth.js';
 import { descriptorHash } from './descriptorHash.js';
@@ -48,8 +49,8 @@ export interface BrokerDeps {
   readonly renderer: Renderer;
   readonly adminApi: AdminApiClient;
   readonly drainSource: DrainSource;
-  /** Seams loaded from a test stand-in (`standIns.ts`); reported by `/status`. */
-  readonly standIns: readonly string[];
+  /** Which loaded seams are not shipped final modules (`seamReadiness.ts`); reported by `/status`. */
+  readonly seamReadiness: SeamReadiness;
   readonly leaseStoreConfig: LeaseStoreConfig;
   readonly drainFlags: DrainFlagStore;
   readonly imagePush: ImagePushDeps;
@@ -722,7 +723,13 @@ async function handleStatus(
     state.phase === 'running' && state.colour !== undefined
       ? await deps.healthChecker.isHealthy(deps.healthPortBase + Number(slot))
       : false;
-  send(res, 200, { slot, phase: state.phase, healthy, standIns: deps.standIns });
+  send(res, 200, {
+    slot,
+    phase: state.phase,
+    healthy,
+    notReal: deps.seamReadiness.notReal,
+    interim: deps.seamReadiness.interim,
+  });
 }
 
 async function handleDrain(

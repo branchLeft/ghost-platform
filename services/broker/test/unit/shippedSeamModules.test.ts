@@ -9,7 +9,9 @@ import type { BrokerConfig } from '../../src/config.js';
 import refusingAdminApi, { ADMIN_API_REFUSAL } from '../../src/plugins/refusingAdminApi.js';
 import refusingDrainSource, { DRAIN_REFUSAL } from '../../src/plugins/refusingDrainSource.js';
 import { buildDeps, loadPlugin } from '../../src/server.js';
-import { standInSeams } from '../../src/standIns.js';
+import renderCorePlugin from '../../src/plugins/renderCorePlugin.js';
+import dockerImageLoader from '../../src/plugins/dockerImageLoader.js';
+import { seamReadiness } from '../../src/seamReadiness.js';
 import { demoDescriptor, TEST_ZONES } from '../helpers/fixtures.js';
 import { startTestBroker, type TestBroker } from '../helpers/testBroker.js';
 
@@ -133,27 +135,38 @@ describe('the interim admin client refuses every build', () => {
   });
 });
 
-describe('standInSeams', () => {
-  it('lists only seams that mark themselves, sorted', () => {
+describe('seamReadiness fails closed', () => {
+  it('a module with no markers at all is reported as not real', () => {
+    expect(seamReadiness({ adminApi: { configure: () => undefined } })).toEqual({
+      notReal: ['adminApi'],
+      interim: [],
+    });
+  });
+
+  it('only exactly `real: true` counts as real; anything else is listed, sorted', () => {
     expect(
-      standInSeams({
-        renderer: { render: () => undefined },
-        drainSource: { standIn: true },
-        adminApi: { standIn: true },
-        imageLoader: { standIn: false },
-      })
-    ).toEqual(['adminApi', 'drainSource']);
+      seamReadiness({
+        renderer: { real: true },
+        drainSource: { real: 'true' },
+        imageLoader: { real: 1 },
+        adminApi: { real: false },
+      }).notReal
+    ).toEqual(['adminApi', 'drainSource', 'imageLoader']);
   });
 
-  it('counts a mistyped marker rather than hiding it', () => {
-    expect(standInSeams({ adminApi: { standIn: 'yes' }, drainSource: { standIn: 1 } })).toEqual([
-      'adminApi',
-      'drainSource',
-    ]);
+  it('lists an interim module even when it also claims to be real', () => {
+    expect(seamReadiness({ adminApi: { real: true, interim: true } })).toEqual({
+      notReal: [],
+      interim: ['adminApi'],
+    });
+    expect(seamReadiness({ adminApi: { interim: 'yes' } }).interim).toEqual(['adminApi']);
   });
 
-  it('tolerates a seam that is not an object', () => {
-    expect(standInSeams({ a: null, b: undefined, c: 3 })).toEqual([]);
+  it('treats a seam that is not an object as not real', () => {
+    expect(seamReadiness({ a: null, b: undefined, c: 3 })).toEqual({
+      notReal: ['a', 'b', 'c'],
+      interim: [],
+    });
   });
 });
 
@@ -187,11 +200,8 @@ function fakeConfig(): BrokerConfig {
   };
 }
 
-describe('the test stand-ins are reported, the shipped modules are not', () => {
-  const renderer = { render: async () => [] };
-  const imageLoader = { load: async () => ({ imageId: `sha256:${'0'.repeat(64)}` }) };
-
-  it('loading both boot-proof stand-ins puts both on the deps', async () => {
+describe('stand-ins are reported, the shipped modules carry their markers', () => {
+  it('loading both boot-proof stand-ins reports both as not real', async () => {
     const env = {
       BROKER_ADMIN_API_MODULE: join(FIXTURES, 'noop-admin-api.mjs'),
       BROKER_DRAIN_SOURCE_MODULE: join(FIXTURES, 'noop-drain-source.mjs'),
@@ -207,19 +217,25 @@ describe('the test stand-ins are reported, the shipped modules are not', () => {
       (c): c is typeof refusingDrainSource =>
         typeof (c as typeof refusingDrainSource).poll === 'function'
     );
-    const deps = buildDeps(fakeConfig(), renderer, adminApi, drainSource, imageLoader);
-    expect(deps.standIns).toEqual(['adminApi', 'drainSource']);
-  });
-
-  it('the shipped refusing modules leave the list empty', () => {
     const deps = buildDeps(
       fakeConfig(),
-      renderer,
+      renderCorePlugin,
+      adminApi,
+      drainSource,
+      dockerImageLoader
+    );
+    expect(deps.seamReadiness).toEqual({ notReal: ['adminApi', 'drainSource'], interim: [] });
+  });
+
+  it('the shipped set reports only the interim admin client', () => {
+    const deps = buildDeps(
+      fakeConfig(),
+      renderCorePlugin,
       refusingAdminApi,
       refusingDrainSource,
-      imageLoader
+      dockerImageLoader
     );
-    expect(deps.standIns).toEqual([]);
+    expect(deps.seamReadiness).toEqual({ notReal: ['adminApi'], interim: ['adminApi'] });
   });
 
   describe('through the real handler', () => {
@@ -229,16 +245,20 @@ describe('the test stand-ins are reported, the shipped modules are not', () => {
       broker = undefined;
     });
 
-    it('/status carries the list', async () => {
+    it('/status carries both lists', async () => {
       broker = await startTestBroker({
-        wrapDeps: (deps) => ({ ...deps, standIns: ['adminApi'] }),
+        wrapDeps: (deps) => ({
+          ...deps,
+          seamReadiness: { notReal: ['adminApi'], interim: ['adminApi'] },
+        }),
       });
       const res = await fetch(`${broker.baseUrl}/status/0`);
       expect(await res.json()).toEqual({
         slot: '0',
         phase: 'free',
         healthy: false,
-        standIns: ['adminApi'],
+        notReal: ['adminApi'],
+        interim: ['adminApi'],
       });
     });
   });
@@ -274,16 +294,25 @@ describe('the shipped env template names only modules the bundle builds', () => 
   });
 });
 
-describe('loadPlugin and a written standIn marker', () => {
-  it('a written plugin file marked standIn is honoured by loadPlugin', async () => {
-    const dir = await makeTempDir('broker-standin-');
+describe('loadPlugin and a hand-written module', () => {
+  it('an unmarked module written to disk is reported as not real once loaded', async () => {
+    const dir = await makeTempDir('broker-unmarked-');
     const path = join(dir, 'admin.mjs');
-    await writeFile(path, 'export default { standIn: true, async configure() {} };\n');
+    await writeFile(path, 'export default { async configure() {} };\n');
     const mod = await loadPlugin(
       'BROKER_ADMIN_API_MODULE',
       { BROKER_ADMIN_API_MODULE: path },
       (c): c is AdminApiClient => typeof (c as AdminApiClient).configure === 'function'
     );
-    expect(standInSeams({ adminApi: mod })).toEqual(['adminApi']);
+    expect(seamReadiness({ adminApi: mod }).notReal).toEqual(['adminApi']);
+  });
+});
+
+describe('the shipped env template uses the demo host paths', () => {
+  it('keeps the slots file in the broker-owned directory, not its root-owned parent', async () => {
+    const envText = await readFile(ENV_EXAMPLE, 'utf8');
+    expect(envValue(envText, 'BROKER_SLOTS_FILE')).toBe(
+      '/var/lib/branchleft/broker-slots/slots.json'
+    );
   });
 });

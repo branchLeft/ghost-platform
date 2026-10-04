@@ -14,7 +14,7 @@ import type { ImageLoader } from './imagePush.js';
 import { createFileRealTrafficChecker, createZeroRealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { createSlotLock } from './slotLock.js';
-import { standInSeams } from './standIns.js';
+import { seamReadiness } from './seamReadiness.js';
 import { recoverCrashedSlots } from './stateStore.js';
 import { createSlotWrapper } from './wrapper.js';
 
@@ -99,7 +99,7 @@ export function buildDeps(
     renderer,
     adminApi,
     drainSource,
-    standIns: standInSeams({ renderer, adminApi, drainSource, imageLoader }),
+    seamReadiness: seamReadiness({ renderer, adminApi, drainSource, imageLoader }),
     leaseStoreConfig: {
       slotsPath: config.slotsPath,
       leaseDir: config.leaseDir,

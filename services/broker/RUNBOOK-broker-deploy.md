@@ -113,7 +113,8 @@ because no publish path exists yet either -- see "Delivery path" below).
    `226/NAMESPACE` at start, not at install:
    ```bash
    sudo mkdir -p /etc/branchleft
-   sudo mkdir -p /var/lib/branchleft && sudo chown broker:broker /var/lib/branchleft
+   sudo install -d -m 0755 -o root -g root /var/lib/branchleft
+   sudo install -d -m 0755 -o broker -g broker /var/lib/branchleft/broker-slots
    ```
 
 6. **Write `/etc/branchleft/broker.env`** on demo1 from
@@ -126,10 +127,12 @@ because no publish path exists yet either -- see "Delivery path" below).
    Ed25519 public-key bytes, owned **`root:broker`, mode 0640**. See
    `systemd/README.md` ("The verify key") for why it is group-readable
    rather than broker-owned. Leave the four `BROKER_*_MODULE` lines as the
-   template ships them: every one names a module in the bundle. If one is
-   ever pointed at a test stand-in under `test/live/fixtures/`,
-   `GET /status/<slot>` lists it under `standIns`, and the host is not
-   ready to go live until that list is empty. **Never set `LISTEN_HOST`** --
+   template ships them: every one names a module in the bundle.
+   `GET /status/<slot>` lists any loaded module not marked real (a test
+   stand-in, or anything unmarked) under `notReal`, and the interim admin
+   client under `interim`. The host is not ready to go live until both
+   lists are empty; with this template, both name `adminApi` until the real
+   client ships. **Never set `LISTEN_HOST`** --
    `test/unit/listenHostDefault.test.ts` is the guard that keeps this file's
    own committed template from regressing that.
 
@@ -200,9 +203,9 @@ docker build -f services/broker/test/live/fixtures/systemd-boot/Dockerfile -t br
 docker run -d --name broker-boot-proof --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw branchleft-broker-boot-proof
 docker exec broker-boot-proof systemctl is-active branchleft-broker.service
 docker exec broker-boot-proof curl -s http://127.0.0.1:8090/status/0
-docker exec broker-boot-proof cat /var/lib/branchleft/slots.json   # carries the fixture's seeded leased slot "0"
+docker exec broker-boot-proof cat /var/lib/branchleft/broker-slots/slots.json   # carries the fixture's seeded leased slot "0"
 docker exec broker-boot-proof /opt/branchleft/broker/node/bin/node /opt/branchleft/broker/proof/sign-request.mjs POST /reset '{"slot":"0"}' /opt/branchleft/broker/proof/signing-key.bin http://127.0.0.1:8090
-docker exec broker-boot-proof cat /var/lib/branchleft/slots.json   # the leased entry is gone: the write-rename reached the real mount
+docker exec broker-boot-proof cat /var/lib/branchleft/broker-slots/slots.json   # the leased entry is gone: the write-rename reached the real mount
 docker rm -f broker-boot-proof
 ```
 
@@ -218,8 +221,8 @@ docker rm -f broker-boot-proof
   the shipped drain source answers `502` and logs that mail is collected
   from the mail queue directly.
 - **`BROKER_SLOTS_FILE` writability.** This issue's own scope: the file and
-  its containing directory (`/var/lib/branchleft`) are created by step 5
-  above and are in the unit's `ReadWritePaths=`, so a real `/reconcile` or
+  its containing directory (`/var/lib/branchleft/broker-slots`, broker-owned
+  inside a root-owned parent) are created by step 5 above and are in the unit's `ReadWritePaths=`, so a real `/reconcile` or
   `/reset` can write it. The shape is `{"slots": []}`
   (`slotsFile.ts#readSlotsFile` reads `parsed.slots` as the array itself,
   not `{}`) -- the boot proof's fixture seeds a real leased entry and

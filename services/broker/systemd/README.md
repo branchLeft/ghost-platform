@@ -86,7 +86,7 @@ running in it. Two real, independent writes need this:
   without `/etc/branchleft` in `ReadWritePaths`, that `unlink()` fails with
   `Read-only file system` even though the wrapper is, by that point,
   genuinely running as root.
-- `BROKER_SLOTS_FILE` (`/var/lib/branchleft/slots.json`) is written
+- `BROKER_SLOTS_FILE` (`/var/lib/branchleft/broker-slots/slots.json`) is written
   directly by the unprivileged broker process itself
   (`writeLeaseAndHash`/`clearLeaseAndHash`, atomically: a temp file into the
   same directory, then a rename), so both the file and its containing
