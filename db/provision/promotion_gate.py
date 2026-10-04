@@ -10,6 +10,7 @@ See promotion_gate.md for the decision table and the live proof.
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import subprocess
 import sys
@@ -42,6 +43,11 @@ _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 
 # The smallest position a binary log event can start at, after the magic.
 _FIRST_EVENT_POSITION = 4
+
+# The longest the gate may wait. The caller holds the blog's write freeze
+# for the whole wait, so the wait must end; ten minutes is far beyond the
+# under-a-second catch-up the cutover expects.
+MAX_WAIT_SECONDS = 600.0
 
 
 class GateInputError(Exception):
@@ -181,6 +187,17 @@ def _evaluate_row(frozen: FrozenSource, target: Coordinates, rows: list[dict[str
     return Verdict(PROMOTE, f"positions match ({where}) and both threads report Yes")
 
 
+def bounded_seconds_problem(seconds: float) -> str | None:
+    """Why `seconds` cannot bound a wait, or None; see promotion_gate.md#inputs."""
+    if not math.isfinite(seconds):
+        return f"{seconds!r} is not a finite number of seconds"
+    if seconds <= 0:
+        return f"{seconds:g} is not a positive number of seconds"
+    if seconds > MAX_WAIT_SECONDS:
+        return f"{seconds:g} is more than the {MAX_WAIT_SECONDS:g}-second limit"
+    return None
+
+
 def wait_for_promotion(
     frozen: FrozenSource,
     read_status: Callable[[], list[dict[str, str]]],
@@ -191,8 +208,10 @@ def wait_for_promotion(
     sleep: Callable[[float], None] = time.sleep,
 ) -> Verdict:
     """Polls until PROMOTE or ABANDON; a WAIT still standing at the deadline abandons."""
-    if timeout_seconds <= 0 or poll_seconds <= 0:
-        return Verdict(ABANDON, "timeout and poll interval must both be positive")
+    for name, seconds in (("timeout", timeout_seconds), ("poll interval", poll_seconds)):
+        problem = bounded_seconds_problem(seconds)
+        if problem is not None:
+            return Verdict(ABANDON, f"{name} is unusable: {problem}")
     deadline = clock() + timeout_seconds
     while True:
         try:
@@ -224,13 +243,34 @@ def command_status_reader(
     return read
 
 
+def _seconds_argument(text: str) -> float:
+    try:
+        seconds = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number of seconds") from None
+    problem = bounded_seconds_problem(seconds)
+    if problem is not None:
+        raise argparse.ArgumentTypeError(problem)
+    return seconds
+
+
+class _RefusingParser(argparse.ArgumentParser):
+    """A usage error prints a refusal on stdout, where the caller reads the verdict."""
+
+    def error(self, message: str):
+        print(f"DO NOT PROMOTE: usage error: {message}")
+        self.exit(2)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Promote a replica only at the frozen coordinates.")
+    parser = _RefusingParser(description="Promote a replica only at the frozen coordinates.")
     parser.add_argument("--source-uuid", required=True, help="performance_schema.log_status SERVER_UUID")
     parser.add_argument("--source-log-file", required=True, help="log_status LOCAL binary_log_file")
     parser.add_argument("--source-log-position", required=True, type=int, help="log_status LOCAL binary_log_position")
-    parser.add_argument("--timeout", required=True, type=float, help="seconds to wait for the replica")
-    parser.add_argument("--poll", type=float, default=1.0, help="seconds between readings")
+    parser.add_argument(
+        "--timeout", required=True, type=_seconds_argument, help=f"seconds to wait, at most {MAX_WAIT_SECONDS:g}"
+    )
+    parser.add_argument("--poll", type=_seconds_argument, default=1.0, help="seconds between readings")
     parser.add_argument("status_command", nargs=argparse.REMAINDER, help="-- then a command printing the status")
     return parser
 
