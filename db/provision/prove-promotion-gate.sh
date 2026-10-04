@@ -110,6 +110,10 @@ expect_refusal() {
 
 replica_has() { [ "$(rep_sql -e "SELECT COUNT(*) FROM blog.posts WHERE title = '$1'")" = "1" ]; }
 
+# PROOF_SCENARIOS="1 4" runs only those scenarios, for a sabotage run that
+# must reach one scenario without an earlier one stopping it.
+want() { [ -z "${PROOF_SCENARIOS:-}" ] || [[ " $PROOF_SCENARIOS " == *" $1 "* ]]; }
+
 echo "== setup"
 docker network create "$NET" >/dev/null
 start_server "$SRC" "$SOURCE_IMAGE" /etc/mysql/conf.d
@@ -127,67 +131,132 @@ src_sql -e "INSERT INTO blog.posts (title) VALUES ('before the move')"
 for _ in $(seq 1 60); do replica_has 'before the move' && break; sleep 1; done
 replica_has 'before the move' || fail "replication never started"
 
-echo "== 1. healthy replica under continuous writes: PROMOTE"
-touch "$WRITER_FLAG"
-(while [ -f "$WRITER_FLAG" ]; do src_sql -e "INSERT INTO blog.posts (title) VALUES ('writer')"; done) &
-WRITER_PID=$!
-sleep 5
-freeze 40
-out="$(gate 30)" || fail "healthy replica refused: $out"
-echo "  $out"
-[ "$(rep_sql -e 'SELECT COUNT(*) FROM blog.posts')" = "$F_COUNT" ] || fail "promoted with a row count differing from the frozen source"
-echo "PASS promote at the frozen coordinates, replica count $F_COUNT equals frozen count"
-rm -f "$WRITER_FLAG"
-wait "$WRITER_PID" || true
-thaw
+if want 1; then
+    echo "== 1. healthy replica under continuous writes: PROMOTE"
+    touch "$WRITER_FLAG"
+    (while [ -f "$WRITER_FLAG" ]; do src_sql -e "INSERT INTO blog.posts (title) VALUES ('writer')"; done) &
+    WRITER_PID=$!
+    sleep 5
+    freeze 40
+    out="$(gate 30)" || fail "healthy replica refused: $out"
+    echo "  $out"
+    [ "$(rep_sql -e 'SELECT COUNT(*) FROM blog.posts')" = "$F_COUNT" ] || fail "promoted with a row count differing from the frozen source"
+    echo "PASS promote at the frozen coordinates, replica count $F_COUNT equals frozen count"
+    rm -f "$WRITER_FLAG"
+    wait "$WRITER_PID" || true
+    thaw
+fi
 
-echo "== 2. coordinates mismatch: refused"
-freeze 30
-expect_refusal "different source" "coordinates mismatch" gate 5 --source-uuid "00000000-0000-0000-0000-000000000000"
-expect_refusal "different binary log name" "coordinates mismatch" gate 5 --source-log-file "binlog.${F_FILE##*.}"
-expect_refusal "replica past the frozen position" "past the frozen coordinates" gate 5 --source-log-position "$((F_POS - 1))"
-thaw
+if want 2; then
+    echo "== 2. coordinates mismatch: refused"
+    freeze 30
+    expect_refusal "different source" "coordinates mismatch" gate 5 --source-uuid "00000000-0000-0000-0000-000000000000"
+    expect_refusal "different binary log name" "coordinates mismatch" gate 5 --source-log-file "binlog.${F_FILE##*.}"
+    expect_refusal "replica past the frozen position" "past the frozen coordinates" gate 5 --source-log-position "$((F_POS - 1))"
+    thaw
+fi
 
-echo "== 3. disconnected replica, post written during the outage: DO NOT PROMOTE"
-rep_sql -e "STOP REPLICA IO_THREAD"
-docker network disconnect "$NET" "$REP"
-rep_sql -e "START REPLICA IO_THREAD"
-src_sql -e "INSERT INTO blog.posts (title) VALUES ('published during the outage')"
-freeze 40
-sleep 4
-echo "  replica reports IO=$(rep_field Replica_IO_Running) SQL=$(rep_field Replica_SQL_Running) Seconds_Behind_Source=$(rep_field Seconds_Behind_Source)"
-expect_refusal "disconnected replica" "timed out.*behind" gate 8
-replica_has 'published during the outage' && fail "the outage post reached a disconnected replica"
-echo "PASS the post written during the outage is absent on the replica the gate refused"
-thaw
-docker network connect "$NET" "$REP"
-for _ in $(seq 1 60); do replica_has 'published during the outage' && break; sleep 1; done
-freeze 30
-out="$(gate 30)" || fail "reconnected replica refused: $out"
-echo "  $out"
-replica_has 'published during the outage' || fail "promoted without the outage post"
-echo "PASS reconnected replica promotes with the outage post present"
-thaw
+if want 3; then
+    echo "== 3. disconnected replica, post written during the outage: DO NOT PROMOTE"
+    rep_sql -e "STOP REPLICA IO_THREAD"
+    docker network disconnect "$NET" "$REP"
+    rep_sql -e "START REPLICA IO_THREAD"
+    src_sql -e "INSERT INTO blog.posts (title) VALUES ('published during the outage')"
+    freeze 40
+    sleep 4
+    echo "  replica reports IO=$(rep_field Replica_IO_Running) SQL=$(rep_field Replica_SQL_Running) Seconds_Behind_Source=$(rep_field Seconds_Behind_Source)"
+    expect_refusal "disconnected replica" "timed out.*behind" gate 8
+    replica_has 'published during the outage' && fail "the outage post reached a disconnected replica"
+    echo "PASS the post written during the outage is absent on the replica the gate refused"
+    thaw
+    docker network connect "$NET" "$REP"
+    for _ in $(seq 1 60); do replica_has 'published during the outage' && break; sleep 1; done
+    freeze 30
+    out="$(gate 30)" || fail "reconnected replica refused: $out"
+    echo "  $out"
+    replica_has 'published during the outage' || fail "promoted without the outage post"
+    echo "PASS reconnected replica promotes with the outage post present"
+    thaw
+fi
 
-echo "== 4. replica behind with both threads running: refused at the timeout"
-rep_sql -e "STOP REPLICA SQL_THREAD; CHANGE REPLICATION SOURCE TO SOURCE_DELAY=3600; START REPLICA SQL_THREAD;"
-src_sql -e "INSERT INTO blog.posts (title) VALUES ('delayed')"
-freeze 30
-sleep 2
-expect_refusal "replica behind" "timed out.*behind" gate 6
-thaw
-rep_sql -e "STOP REPLICA SQL_THREAD; CHANGE REPLICATION SOURCE TO SOURCE_DELAY=0; START REPLICA SQL_THREAD;"
-for _ in $(seq 1 60); do replica_has 'delayed' && break; sleep 1; done
+# The shape the gate exists for. The network is cut under a running IO
+# thread, so the replica still believes it is connected: both threads Yes
+# and zero lag, which a lag-only check reads as caught up. It runs well
+# inside replica_net_timeout (60 s), after which the IO thread reconnects.
+if want 4; then
+    echo "== 4. silent partition, zero lag while behind: DO NOT PROMOTE"
+    docker network disconnect "$NET" "$REP"
+    src_sql -e "INSERT INTO blog.posts (title) VALUES ('published during the partition')"
+    freeze 40
+    sleep 2
+    io="$(rep_field Replica_IO_Running)" sql="$(rep_field Replica_SQL_Running)" lag="$(rep_field Seconds_Behind_Source)"
+    echo "  replica reports IO=$io SQL=$sql Seconds_Behind_Source=$lag"
+    [ "$io" = Yes ] && [ "$sql" = Yes ] && [ "$lag" = 0 ] ||
+        fail "the partition did not produce zero lag with both threads Yes"
+    echo "PASS the replica reports what a lag-only check promotes on: both threads Yes, zero lag"
+    expect_refusal "silently partitioned replica" "timed out.*behind.*IO thread Yes" gate 8
+    replica_has 'published during the partition' && fail "the partition post reached a partitioned replica"
+    echo "PASS the post written during the partition is absent on the replica the gate refused"
+    thaw
+    rep_sql -e "STOP REPLICA IO_THREAD"
+    docker network connect "$NET" "$REP"
+    rep_sql -e "START REPLICA IO_THREAD"
+    for _ in $(seq 1 60); do replica_has 'published during the partition' && break; sleep 1; done
+    replica_has 'published during the partition' || fail "the replica never recovered from the partition"
+fi
 
-echo "== 5. SQL thread error: ABANDON at once, without waiting for the timeout"
-rep_sql -e "INSERT INTO blog.posts (id, title) VALUES (999999, 'replica-only row')"
-src_sql -e "INSERT INTO blog.posts (id, title) VALUES (999999, 'conflicting source row')"
-for _ in $(seq 1 60); do [ "$(rep_field Last_SQL_Errno)" != "0" ] && break; sleep 1; done
-freeze 30
-started=$(date +%s)
-expect_refusal "SQL thread error" "SQL thread error 1062" gate 25
-[ $(($(date +%s) - started)) -lt 15 ] || fail "the SQL-error refusal waited for the timeout"
-echo "PASS the SQL-thread error abandoned without waiting"
-thaw
+if want 5; then
+    echo "== 5. replica behind with both threads running: refused at the timeout"
+    rep_sql -e "STOP REPLICA SQL_THREAD; CHANGE REPLICATION SOURCE TO SOURCE_DELAY=3600; START REPLICA SQL_THREAD;"
+    src_sql -e "INSERT INTO blog.posts (title) VALUES ('delayed')"
+    freeze 30
+    sleep 2
+    expect_refusal "replica behind" "timed out.*behind" gate 6
+    thaw
+    rep_sql -e "STOP REPLICA SQL_THREAD; CHANGE REPLICATION SOURCE TO SOURCE_DELAY=0; START REPLICA SQL_THREAD;"
+    for _ in $(seq 1 60); do replica_has 'delayed' && break; sleep 1; done
+fi
 
-echo "ALL PASSED"
+# Another schema on the source during the freeze. A logged write moves the
+# replica's executed position past the freeze even though its filter drops
+# the row, so the gate refuses. A writer with sql_log_bin = 0 never reaches
+# the binary log, so it can probe the freeze for stalls without tripping it.
+if want 6; then
+    echo "== 6. another schema written during the freeze"
+    src_sql -e "CREATE DATABASE other; CREATE TABLE other.probe (id INT AUTO_INCREMENT PRIMARY KEY, v INT NOT NULL);"
+    sleep 2
+    touch "$WRITER_FLAG"
+    (while [ -f "$WRITER_FLAG" ]; do src_sql -e "SET SESSION sql_log_bin = 0; INSERT INTO other.probe (v) VALUES (1)"; done) &
+    WRITER_PID=$!
+    freeze 40
+    before="$(src_sql -e 'SELECT COUNT(*) FROM other.probe')"
+    out="$(gate 20)" || fail "an unlogged writer on another schema tripped the gate: $out"
+    echo "  $out"
+    sleep 1
+    after="$(src_sql -e 'SELECT COUNT(*) FROM other.probe')"
+    [ "$after" -gt "$before" ] || fail "the other schema's writer stalled under the blog's freeze"
+    echo "PASS an unlogged writer on another schema kept writing ($before to $after rows) and the gate promoted"
+    rm -f "$WRITER_FLAG"
+    wait "$WRITER_PID" || true
+    thaw
+    freeze 30
+    src_sql -e "INSERT INTO other.probe (v) VALUES (2)"
+    sleep 2
+    expect_refusal "logged write to another schema" "past the frozen coordinates" gate 5
+    thaw
+fi
+
+if want 7; then
+    echo "== 7. SQL thread error: ABANDON at once, without waiting for the timeout"
+    rep_sql -e "INSERT INTO blog.posts (id, title) VALUES (999999, 'replica-only row')"
+    src_sql -e "INSERT INTO blog.posts (id, title) VALUES (999999, 'conflicting source row')"
+    for _ in $(seq 1 60); do [ "$(rep_field Last_SQL_Errno)" != "0" ] && break; sleep 1; done
+    freeze 30
+    started=$(date +%s)
+    expect_refusal "SQL thread error" "SQL thread error 1062" gate 25
+    [ $(($(date +%s) - started)) -lt 15 ] || fail "the SQL-error refusal waited for the timeout"
+    echo "PASS the SQL-thread error abandoned without waiting"
+    thaw
+fi
+
+echo "ALL PASSED${PROOF_SCENARIOS:+ (scenarios $PROOF_SCENARIOS)}"

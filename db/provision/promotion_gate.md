@@ -16,7 +16,9 @@ reports zero lag. Promoting on lag alone would lose every write made during
 the outage. LLD-10 measured exactly that in its spike. On 8.0.46, stock MySQL
 and Percona Server alike, the live proof below sees `Seconds_Behind_Source` as `NULL` rather
 than 0 for a replica whose IO thread was restarted into `Connecting`. A
-lag check that reads `NULL` as "no lag" fails the same way. The value
+lag check that reads `NULL` as "no lag" fails the same way. A network cut
+under a running IO thread does produce LLD-10's 0: both threads still say
+`Yes` while the post is missing (scenario 4 below). The value
 depends on version and on how the connection was lost, which is one more
 reason the gate does not read it.
 
@@ -33,6 +35,14 @@ reason the gate does not read it.
   beyond the read bound, or text the parser cannot read is a refusal.
 - **`--timeout`** (required) bounds how long the gate waits for a replica that
   is behind. **`--poll`** (default 1 s) is the interval between readings.
+  Each must be a finite number of seconds above 0 and at most 600
+  (`MAX_WAIT_SECONDS`). The caller holds the blog's write freeze for the
+  whole wait, so the wait must always end. `nan` compares false against every
+  deadline and `inf` never arrives, so either would hold the freeze open
+  forever. A value that is not a number, not finite, not positive or over the
+  limit is a usage error: the gate prints `DO NOT PROMOTE: usage error: …`
+  and exits 2 before it reads any status. `wait_for_promotion` refuses the
+  same values itself, for a caller that imports it.
 
 ## Decision table
 
@@ -63,7 +73,17 @@ so nothing of the tenant's can follow the frozen position. Under the stop
 condition in the migration design, no other tenant schema is on the source
 either. A replica past the frozen position therefore means something wrote on
 the source after the freeze, or the coordinates are stale. Either way they no
-longer describe the frozen state, so the gate refuses rather than guesses. A
+longer describe the frozen state, so the gate refuses rather than guesses.
+The position alone cannot show that what followed the freeze held none of
+the tenant's rows, so the gate does not try.
+
+**A probe writer on another schema.** A replica's filter drops another
+schema's rows, but its executed position still moves past them. So any
+logged write on the source after the freeze, to any schema, makes the gate
+refuse. A writer that probes the freeze for stalls on another schema must run
+with `SET SESSION sql_log_bin = 0`. Its writes then never reach the binary
+log, so they cannot move the position or reach the replica's relay log. The
+live proof's scenario 6 shows both halves. A
 benign source of this is a binary log rotation inside the freeze window. The
 binlog-ship timer runs `FLUSH BINARY LOGS` every 15 minutes, so the cutover
 should start just after a ship run. A refusal from a rotation is safe: unfreeze
@@ -111,12 +131,26 @@ gate as a cutover script would.
    the outage, then the freeze: refused. The script prints the replica's
    `Seconds_Behind_Source` for the record and asserts the post is absent.
    Reconnected, the replica then promotes with the post present.
-4. The replica held behind by `SOURCE_DELAY` with both threads `Yes`: refused
+4. **The silent partition: zero lag while behind.** The network is cut under
+   a running IO thread, then a post is published, then the freeze. The
+   replica still reports both threads `Yes` and `Seconds_Behind_Source` 0,
+   which is exactly what a lag-only check promotes on. The script asserts
+   that reading, then that the gate refuses at the timeout and the post is
+   absent. It runs inside `replica_net_timeout`, before the IO thread
+   notices the cut.
+5. The replica held behind by `SOURCE_DELAY` with both threads `Yes`: refused
    at the timeout.
-5. A duplicate-key conflict stops the SQL thread: refused at once, well inside
+6. Another schema on the source during the freeze. A writer with
+   `sql_log_bin = 0` keeps writing through the blog's freeze and the gate
+   promotes. One logged write to that schema after the freeze makes the gate
+   refuse as past the frozen coordinates.
+7. A duplicate-key conflict stops the SQL thread: refused at once, well inside
    the timeout.
 
-Run it from the repo root with `db/provision/prove-promotion-gate.sh`. It
+Run it from the repo root with `db/provision/prove-promotion-gate.sh`.
+`PROOF_SCENARIOS="1 4"` runs only the scenarios listed, after the same setup.
+A sabotage run uses it to reach one scenario without an earlier one stopping
+the script. It
 needs Docker and about 3 GB of memory. On Apple silicon the amd64 image runs
 under emulation and the run takes a few minutes. Containers and the network
 are removed on exit. It prints `ALL PASSED` last. It touches no host.
