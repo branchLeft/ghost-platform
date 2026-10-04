@@ -17,7 +17,14 @@ from typing import Sequence
 
 from render_slot_sudoers import COLOURS, SLOT_NAMES
 
-DEFAULT_FLAG_DIR = "/var/run/branchleft/drain-flags"
+# On disk, under the broker unit's StateDirectory, so the flags survive a
+# reboot: a colour that was drained must come back drained.
+DEFAULT_FLAG_DIR = "/var/lib/branchleft-broker/drain-flags"
+# The broker unit's StateDirectory and StateDirectoryMode, which systemd
+# re-applies at every broker start; provisioned the same here so the two
+# never disagree about who owns it.
+STATE_DIR = "/var/lib/branchleft-broker"
+STATE_DIR_MODE = 0o750
 DEFAULT_BROKER_USER = "broker"
 
 # Matches services/broker/src/drainFlag.ts's own `flagPath` exactly -- the
@@ -59,6 +66,14 @@ def provision_drain_flag_dir(
     a previous partial run left in the wrong shape is corrected rather than
     trusted.
     """
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    if parent == STATE_DIR:
+        # Only the broker's own state directory is ever re-owned; a
+        # caller's --path under some other directory leaves that
+        # directory alone.
+        os.chown(parent, broker_uid, broker_gid)
+        os.chmod(parent, STATE_DIR_MODE)
     os.makedirs(path, exist_ok=True)
     os.chown(path, broker_uid, broker_gid)
     os.chmod(path, 0o755)
