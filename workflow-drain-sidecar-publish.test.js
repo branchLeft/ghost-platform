@@ -10,7 +10,17 @@ import path from 'node:path';
 const FILE = path.join(import.meta.dirname, '.github', 'workflows', 'drain-sidecar-image.yml');
 const DOCKERFILE = path.join(import.meta.dirname, 'services', 'drain-sidecar', 'Dockerfile');
 
-const withoutComments = (text) => text.replace(/^\s*#.*$/gm, '');
+// Whole-line comments and trailing ones (a `#` after whitespace) both go, so
+// text inside a comment can never satisfy a check.
+const withoutComments = (text) => text.replace(/^\s*#.*$/gm, '').replace(/\s+#.*$/gm, '');
+
+const GUARD =
+  "github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')";
+const normalise = (condition) =>
+  condition
+    .replace(/^\s*if:\s*\|?-?/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
 // A job is the block under `jobs:` at two spaces of indent. Its own keys sit
 // at four spaces, so a step-level `if:` (eight or more) is never mistaken for
@@ -49,11 +59,11 @@ export function problems(source) {
   if (/packages:\s*write/.test(build.text)) found.push('proof job holds packages: write');
   if (!/packages:\s*write/.test(push.text)) found.push('push job lacks packages: write');
   if (!/^ {4}needs: build$/m.test(push.text)) found.push('push job does not wait on the proof job');
-  if (!/github\.ref == 'refs\/heads\/main'/.test(push.condition)) {
-    found.push('push job has no job-level guard limiting it to main');
+  if (normalise(push.condition) !== GUARD) {
+    found.push('push job has no job-level guard that is exactly the main-only expression');
   }
   if (!/docker push "\$IMAGE:\$IMAGE_TAG"/.test(push.text)) found.push('push job never pushes');
-  if (/docker build\b|docker\/build-push-action|docker buildx build/.test(push.text)) {
+  if (/\bdocker\b[^\n]*\bbuild\b|build-push-action/.test(push.text)) {
     found.push('push job rebuilds the image instead of publishing the proven one');
   }
   if (!/needs\.build\.outputs\.image-id/.test(push.text)) {
@@ -94,7 +104,16 @@ test('the checker still reports each way the publish job can go wrong', () => {
     '      - name: Push\n',
     '      - name: Rebuild\n        run: docker build --tag "$IMAGE:$IMAGE_TAG" services/drain-sidecar\n\n      - name: Push\n'
   );
+  const withGuard = (expression) => good.replace(guard, `    if: ${expression}\n`);
+  const rebuildWith = (step) =>
+    good.replace('      - name: Push\n', `      - name: Rebuild\n${step}\n\n      - name: Push\n`);
   const cases = [
+    [withGuard("always() # github.ref == 'refs/heads/main'"), 'exactly the main-only'],
+    [withGuard(`${GUARD} || true`), 'exactly the main-only'],
+    [withGuard('always()'), 'exactly the main-only'],
+    [rebuildWith('        run: docker image build --tag x services/drain-sidecar'), 'rebuilds'],
+    [rebuildWith('        run: docker buildx build --tag x services/drain-sidecar'), 'rebuilds'],
+    [rebuildWith('        uses: docker/build-push-action@v6'), 'rebuilds'],
     [good.replace('    needs: build\n', ''), 'does not wait'],
     [good.replace(guard, ''), 'job-level guard'],
     [stepOnly, 'job-level guard'],
