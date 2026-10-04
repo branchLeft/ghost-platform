@@ -323,9 +323,14 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         return session
 
     def _hold_open_transaction(self, schema: str, seconds: float) -> subprocess.Popen:
+        """An uncommitted write on `users`, the last table the lock takes in
+        name order, so the lock already holds `posts` (where the writer
+        writes) while it waits: the case a missing wait bound turns into a
+        writer stall. A pending lock on the writer's own table blocks
+        nothing."""
         session = self.container.root_session()
         session.stdin.write(
-            f"BEGIN; INSERT INTO {schema}.posts (title) VALUES ('held'); SELECT SLEEP({seconds}); COMMIT;\n".encode()
+            f"BEGIN; UPDATE {schema}.users SET name = 'HELD' WHERE id = 1; SELECT SLEEP({seconds}); COMMIT;\n".encode()
         )
         session.stdin.flush()
         self.addCleanup(self._end_session, session)
