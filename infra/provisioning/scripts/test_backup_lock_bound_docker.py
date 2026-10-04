@@ -243,7 +243,7 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
             statements += [f"CREATE TABLE {schema}.filler_{n} (id INT PRIMARY KEY)" for n in range(20)]
         statements += [
             f"CREATE USER 'backup_ops1'@'%' IDENTIFIED BY '{WORKER_PASSWORD}' REQUIRE SSL",
-            "GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, BACKUP_ADMIN ON *.* TO 'backup_ops1'@'%'",
+            "GRANT RELOAD, SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, BACKUP_ADMIN ON *.* TO 'backup_ops1'@'%'",
             f"CREATE USER 'backup'@'localhost' IDENTIFIED BY '{DB1_BACKUP_PASSWORD}'",
             "GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, REPLICATION CLIENT, BACKUP_ADMIN "
             "ON *.* TO 'backup'@'localhost'",

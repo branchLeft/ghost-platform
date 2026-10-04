@@ -60,7 +60,6 @@ def get_server_uuid(*, socket_path: str, password: str, run=subprocess.run) -> s
 DUMP_ARGS = (
     "--all-databases",
     "--single-transaction",
-    "--source-data=2",
     "--routines",
     "--triggers",
     "--set-gtid-purged=OFF",
