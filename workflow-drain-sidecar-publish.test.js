@@ -25,8 +25,8 @@ const normalise = (condition) =>
 // A job is the block under `jobs:` at two spaces of indent. Its own keys sit
 // at four spaces, so a step-level `if:` (eight or more) is never mistaken for
 // the job's own.
-export function parseJobs(source) {
-  const lines = withoutComments(source).split('\n');
+export function parseJobs(source, strip = true) {
+  const lines = (strip ? withoutComments(source) : source).split('\n');
   const jobs = {};
   let current = null;
   for (const line of lines.slice(lines.indexOf('jobs:') + 1)) {
@@ -55,15 +55,23 @@ export function problems(source) {
   const { build, push } = parseJobs(source);
   if (!build || !push) return ['build and push jobs both exist'];
   const top = withoutComments(source).split(/^jobs:\n/m)[0];
-  if (/packages:\s*write/.test(top)) found.push('top-level permissions grant packages: write');
-  if (/packages:\s*write/.test(build.text)) found.push('proof job holds packages: write');
+  const grantsWrite = /:\s*write(-all)?\s*$|^\s*permissions:\s*write-all/m;
+  if (grantsWrite.test(top)) found.push('top-level permissions grant a write scope');
+  for (const [name, job] of Object.entries(parseJobs(source))) {
+    if (name !== 'push' && grantsWrite.test(job.text)) {
+      found.push(`job ${name} holds a write permission; only push may`);
+    }
+  }
   if (!/packages:\s*write/.test(push.text)) found.push('push job lacks packages: write');
   if (!/^ {4}needs: build$/m.test(push.text)) found.push('push job does not wait on the proof job');
   if (normalise(push.condition) !== GUARD) {
     found.push('push job has no job-level guard that is exactly the main-only expression');
   }
   if (!/docker push "\$IMAGE:\$IMAGE_TAG"/.test(push.text)) found.push('push job never pushes');
-  if (/\bdocker\b[^\n]*\bbuild\b|build-push-action/.test(push.text)) {
+  // Scanned unstripped: a `#` inside a `run: |` body is shell text, not a
+  // YAML comment, and must not be able to hide a build behind it.
+  const rawPush = parseJobs(source, false).push.text;
+  if (/\bdocker\b[^\n]*\bbuild\b|build-push-action/.test(rawPush)) {
     found.push('push job rebuilds the image instead of publishing the proven one');
   }
   if (!/needs\.build\.outputs\.image-id/.test(push.text)) {
@@ -111,6 +119,17 @@ test('the checker still reports each way the publish job can go wrong', () => {
     [withGuard("always() # github.ref == 'refs/heads/main'"), 'exactly the main-only'],
     [withGuard(`${GUARD} || true`), 'exactly the main-only'],
     [withGuard('always()'), 'exactly the main-only'],
+    [
+      rebuildWith('        run: echo " #"; docker build --tag x services/drain-sidecar'),
+      'rebuilds',
+    ],
+    [
+      good.replace(
+        '    timeout-minutes: 15\n',
+        '    timeout-minutes: 15\n    permissions:\n      id-token: write\n'
+      ),
+      'only push may',
+    ],
     [rebuildWith('        run: docker image build --tag x services/drain-sidecar'), 'rebuilds'],
     [rebuildWith('        run: docker buildx build --tag x services/drain-sidecar'), 'rebuilds'],
     [rebuildWith('        uses: docker/build-push-action@v6'), 'rebuilds'],
