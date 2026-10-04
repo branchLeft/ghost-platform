@@ -22,13 +22,25 @@ hel1 except the throwaway probe bucket in step 9 and its deletion in step 10.
   same 10 days `prune_backups.py` kept (7-day point-in-time window plus 3 days
   of margin). The put-only key never needs to delete.
 - **The trade you are accepting:** `prune_backups.py` refused to drop the
-  retained set below the 7-day window; a lifecycle rule cannot. If dumps stop
-  arriving for 10 days, the last good dump expires too. Dump freshness has to
-  be alerted on separately.
+  retained set below the 7-day window; a lifecycle rule cannot. The bucket is
+  versioned, so a dump that expires is not destroyed: it stays as a noncurrent
+  version for 35 days and can be restored with the read-only key. The real
+  protection is the merged per-tenant 36-hour dump freshness alert.
+- **Delete markers accumulate.** Each expiry leaves a zero-byte delete marker
+  under `dumps/` and `binlogs/`. The existing `ExpiredObjectDeleteMarker`
+  element is on the `media/` rule only, so it does not cover them. They cost
+  nothing but clutter listings; adding the element there is a separate change.
 - **Not changed, and still open:** `media/` has no current-version expiry. The
   media backup worker's own delete-the-previous-generation step needs a key
   that can read and delete, which the put-only key is not. See "What this does
   not unblock" at the end.
+
+## Prerequisite
+
+The per-tenant 36-hour dump freshness alert must be live on edge1 before, or
+with, the worker writing to this bucket. Confirm it is firing-capable before
+step 5; without it a stalled dump pipeline is silent until the 35-day
+noncurrent tail runs out.
 
 ## 1. Confirm the checkout
 
@@ -91,9 +103,12 @@ role-aware one that is live:
 POLICY_FILE=$(mktemp -t branchleft-tenant-backups-policy); python3 infra/provisioning/scripts/render-bucket-fence-policy.py --bucket branchleft-tenant-backups --project-id 16139785 --writer-access-key "$PROBE_WRITER_ACCESS_KEY_ID" --reader-access-key "$PROBE_READER_ACCESS_KEY_ID" --admin-access-key "$PROBE_OPERATOR_ACCESS_KEY_ID" --endpoint fsn1.your-objectstorage.com --region fsn1 > "$POLICY_FILE"; echo "exit $?"
 ```
 
-Expected: `exit 0`. Compare it with the live policy (`get-bucket-policy`, same
-credential): the only difference you should be able to explain is nothing at
-all. Any difference is a stop.
+Expected: `exit 0`. Compare it with the live policy; the expected result is no
+difference at all, and any difference is a stop:
+
+```bash
+AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=fsn1 aws --endpoint-url https://fsn1.your-objectstorage.com s3api get-bucket-policy --bucket branchleft-tenant-backups --query Policy --output text | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))' > /tmp/live-policy.norm; python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "$POLICY_FILE" > /tmp/new-policy.norm; diff /tmp/live-policy.norm /tmp/new-policy.norm && echo "policies identical"
+```
 
 ## 5. Apply
 
@@ -167,18 +182,22 @@ aws --endpoint-url https://hel1.your-objectstorage.com s3api put-object --bucket
 ```
 
 This overwrites the lifecycle on the probe bucket, which is fine: it holds only
-canaries and its earlier PASS is already recorded. Wait 48 hours, then:
+canaries and its earlier PASS is already recorded. Wait 48 hours, then check with the versions listing, which cannot confuse a hidden object with a deleted one:
 
 ```bash
-aws --endpoint-url https://hel1.your-objectstorage.com s3api list-objects-v2 --bucket branchleft-lifecycle-probe-20260924 --prefix expiry-probe/ --query 'length(Contents || `[]`)'; aws --endpoint-url https://hel1.your-objectstorage.com s3api list-objects-v2 --bucket branchleft-lifecycle-probe-20260924 --prefix control-keep/ --query 'length(Contents || `[]`)'
+aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket branchleft-lifecycle-probe-20260924 --prefix expiry-probe/ --query '{versions: Versions[].[Key,IsLatest], markers: DeleteMarkers[].[Key,IsLatest]}'; aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket branchleft-lifecycle-probe-20260924 --prefix control-keep/ --query '{versions: Versions[].[Key,IsLatest], markers: DeleteMarkers[].[Key,IsLatest]}'
 ```
 
-Expected: `0` then `1`. The probe object gone and the control still there is the
-PASS: the rule acted, and only on its own prefix. If the probe object is still
-there after 48 hours, or the control is gone, **step 5 must not stay applied**:
-roll back with the rollback below and report. Do the proof before step 5 if you
-prefer to wait before touching the real bucket; the order is yours, the
-result is required before dumps are relied on to age out.
+Expected for `expiry-probe/`: exactly one version with `IsLatest` false and
+exactly one delete marker with `IsLatest` true. A listing showing no versions
+at all would mean the object was truly deleted, not expired by this rule: not a
+PASS. Expected for `control-keep/`: exactly one version with `IsLatest` true
+and no delete marker. That is the PASS: the rule acted, and only on its own
+prefix. If the probe is still current after 72 hours (the lifecycle pass can
+lag, so re-check at 72, not 48, before concluding), or the control changed,
+**step 5 must not stay applied**: roll back with the rollback below and report.
+Do the proof before step 5 if you prefer to wait before touching the real
+bucket; the result is required before dumps are relied on to age out.
 
 Clear the shell:
 
@@ -239,7 +258,9 @@ AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS
 Expected: a listing whose every `Key` is one of `media/control/canary`,
 `media/noncurrent/canary`, `media/deleted/canary`, `dumps/control/canary`,
 `dumps/noncurrent/canary`, `dumps/deleted/canary` — the six keys
-`setup_prefix_split` writes, nothing else. **If any other key appears, stop
+`setup_prefix_split` writes — plus the two keys step 9 writes,
+`expiry-probe/canary` (with its delete marker) and `control-keep/canary`,
+nothing else. **If any other key appears, stop
 before deleting anything** — this bucket may hold something the probe did
 not write, and the guard below only checks the bucket's name, not its
 contents.

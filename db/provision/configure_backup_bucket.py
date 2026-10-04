@@ -25,9 +25,10 @@ NONCURRENT_VERSION_EXPIRATION_DAYS = 35
 # against this bucket and the bucket's own lifecycle has to age out the current
 # versions of `dumps/` and `binlogs/`. Same figure as that script's
 # RETENTION_DAYS (a 7-day point-in-time window plus 3 days of margin). Unlike
-# the script, a lifecycle rule cannot keep the newest object whatever its age:
-# if dumps stop arriving for this many days the last good one expires too, so
-# dump freshness has to be monitored. 0 omits the rule.
+# the script, a lifecycle rule cannot keep the newest object whatever its age.
+# The bucket is versioned, so an expired current dump stays as a noncurrent
+# version for NONCURRENT_VERSION_EXPIRATION_DAYS and is restorable; the
+# per-tenant dump freshness alert is the real protection. 0 omits the rule.
 DB_CURRENT_EXPIRATION_DAYS = 10
 
 # C-refresh deletes a tenant's previous media generation every run, so the

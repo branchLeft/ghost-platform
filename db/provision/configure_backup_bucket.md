@@ -105,8 +105,10 @@ ever apply to the same key. Only `media/`'s rule carries
 and `binlogs/` rules only. The backup worker's key is put-only, so nothing
 else can prune them. `ExpiredObjectDeleteMarker` cannot share an `Expiration`
 element with `Days`, which is why `media/` does not get one. A rule cannot
-keep the newest object, so a pipeline that stops writing for the whole window
-loses its last good copy: alert on dump freshness.
+keep the newest object, but the bucket is versioned, so an expired current
+object stays as a noncurrent version for the noncurrent window and is
+restorable. The dump freshness alert is the real protection. Delete markers
+left by the expiry are not cleaned up on these two prefixes.
 
 ## Accounting for an exemption by a Deny
 
