@@ -359,6 +359,10 @@ class Tools(unittest.TestCase):
         problems = ibw.tool_problems(FakeRun(), lambda tool: None if tool == "age" else f"/usr/bin/{tool}")
         self.assertEqual(problems, ["age is not installed"])
 
+    def test_the_mysql_client_the_lock_session_runs_on_is_required(self) -> None:
+        problems = ibw.tool_problems(FakeRun(), lambda tool: None if tool == "mysql" else f"/usr/bin/{tool}")
+        self.assertEqual(problems, ["mysql is not installed"])
+
     def test_a_newer_client_line_is_refused(self) -> None:
         for version in ("mysqldump  Ver 8.4.6 for Linux", "mysqldump from 11.8.3-MariaDB", ""):
             problems = ibw.tool_problems(FakeRun(mysqldump_version=version), _which_all)

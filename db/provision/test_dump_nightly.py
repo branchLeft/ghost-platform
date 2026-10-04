@@ -10,9 +10,15 @@ and nothing plaintext must survive the run.
 import datetime
 import os
 import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
+import bounded_snapshot as bs
 import dump_nightly as dn
+from fake_mysql_clients import FakeMysqlClients
+
+FAST = bs.Limits(hold_bound_seconds=1.5, max_attempts=3, backoff_seconds=(0.0,))
 
 FAKE_SERVER_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -67,50 +73,81 @@ class GetServerUuidTests(unittest.TestCase):
             self.assertNotIn("super-secret", call)
 
 
-class RunMysqldumpTests(unittest.TestCase):
-    def test_writes_stdout_to_the_target_path(self):
-        run = FakeRun()
-        with self._tmp_path() as path:
-            dn.run_mysqldump(socket_path="/tmp/mysqld.sock", password="pw", out_path=path, run=run)
-            with open(path, "rb") as f:
-                self.assertEqual(f.read(), b"-- dump content\n")
+class _FakeClientsOnPath(unittest.TestCase):
+    """The real mysql and mysqldump are replaced by fake_mysql_clients.py's
+    fakes on PATH: run_mysqldump drives them through bounded_snapshot."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.fakes = FakeMysqlClients(tmp.name)
+        self.fakes.configure(tables=[["ghost_blog", "users"], ["ghost_shop", "users"]])
+        patcher = mock.patch.dict(os.environ, {"PATH": tmp.name + os.pathsep + os.environ.get("PATH", "")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.out_path = os.path.join(tmp.name, "dump.sql")
+
+
+class RunMysqldumpTests(_FakeClientsOnPath):
+    def _dump(self, **overrides):
+        kwargs = dict(socket_path="/tmp/mysqld.sock", password="pw", out_path=self.out_path, limits=FAST, sleep=lambda s: None)
+        kwargs.update(overrides)
+        return dn.run_mysqldump(**kwargs)
+
+    def test_writes_the_resume_comment_then_the_dump(self):
+        self._dump()
+        with open(self.out_path, "rb") as f:
+            self.assertEqual(
+                f.read(), b"-- CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000007', MASTER_LOG_POS=1234;\n-- dump content\n"
+            )
+
+    def test_dumps_every_database_without_source_data(self):
+        self._dump()
+        argv = self.fakes.starts("mysqldump")[0]["argv"]
+        self.assertIn("--all-databases", argv)
+        self.assertIn("--single-transaction", argv)
+        self.assertNotIn("--source-data=2", argv)
+
+    def test_locks_every_user_schema_and_never_flushes(self):
+        self._dump()
+        statements = self.fakes.statements()
+        self.assertIn("LOCK TABLES `ghost_blog`.`users` READ, `ghost_shop`.`users` READ", statements)
+        self.assertFalse([s for s in statements if "FLUSH" in s.upper()])
 
     def test_never_passes_the_password_as_an_argument(self):
-        run = FakeRun()
-        with self._tmp_path() as path:
-            dn.run_mysqldump(socket_path="/tmp/mysqld.sock", password="super-secret", out_path=path, run=run)
-        for call in run.calls:
-            self.assertNotIn("super-secret", call)
+        self._dump(password="super-secret")
+        for start in self.fakes.events():
+            if start["kind"] == "start":
+                self.assertFalse(any("super-secret" in arg for arg in start["argv"]))
+                self.assertNotIn("MYSQL_PWD", start["environ"])
 
     def test_connects_over_the_socket_not_tcp(self):
-        run = FakeRun()
-        with self._tmp_path() as path:
-            dn.run_mysqldump(socket_path="/opt/branchleft/db/run/mysqld/mysqld.sock", password="pw", out_path=path, run=run)
-        call = run.calls[0]
-        self.assertIn("--socket", call)
-        self.assertEqual(call[call.index("--socket") + 1], "/opt/branchleft/db/run/mysqld/mysqld.sock")
-        self.assertNotIn("--host", call)
+        self._dump(socket_path="/opt/branchleft/db/run/mysqld/mysqld.sock")
+        for start in self.fakes.events():
+            if start["kind"] == "start":
+                argv = start["argv"]
+                self.assertEqual(argv[argv.index("--socket") + 1], "/opt/branchleft/db/run/mysqld/mysqld.sock")
+                self.assertEqual(argv[argv.index("--user") + 1], "backup")
+                self.assertNotIn("--host", argv)
 
     def test_raises_on_a_nonzero_exit(self):
-        run = FakeRun(fail_command="mysqldump")
-        with self._tmp_path() as path:
-            with self.assertRaises(dn.DumpError):
-                dn.run_mysqldump(socket_path="/tmp/mysqld.sock", password="pw", out_path=path, run=run)
+        self.fakes.configure(dump_exit=2, dump_stderr=["mysqldump: Error 2013"])
+        with self.assertRaises(dn.DumpError) as ctx:
+            self._dump()
+        self.assertIn("Error 2013", str(ctx.exception))
 
-    def _tmp_path(self):
-        import tempfile
+    def test_raises_when_no_snapshot_can_be_taken(self):
+        self.fakes.configure(lock=["timeout"])
+        with self.assertRaises(dn.DumpError) as ctx:
+            self._dump()
+        self.assertIn("3 lock attempt(s) aborted", str(ctx.exception))
+        self.assertFalse(os.path.exists(self.out_path))
 
-        class _Ctx:
-            def __enter__(self_inner):
-                self_inner.dir = tempfile.mkdtemp()
-                return os.path.join(self_inner.dir, "dump.sql")
-
-            def __exit__(self_inner, *exc):
-                import shutil
-
-                shutil.rmtree(self_inner.dir, ignore_errors=True)
-
-        return _Ctx()
+    def test_retries_a_lock_timeout_and_reports_it(self):
+        self.fakes.configure(lock=["timeout", "ok"])
+        report = self._dump()
+        self.assertEqual(report.aborted_attempts, 1)
 
 
 class ObjectKeyTests(unittest.TestCase):
@@ -130,8 +167,9 @@ class ObjectKeyTests(unittest.TestCase):
         self.assertNotEqual(before_rebuild, after_rebuild)
 
 
-class RunDumpTests(unittest.TestCase):
+class RunDumpTests(_FakeClientsOnPath):
     def setUp(self):
+        super().setUp()
         self.now = datetime.datetime(2026, 8, 22, 3, 15, 0, tzinfo=datetime.timezone.utc)
         self.uploads = []
 
@@ -151,6 +189,8 @@ class RunDumpTests(unittest.TestCase):
             now=self.now,
             run=run,
             upload=self._fake_upload,
+            limits=FAST,
+            sleep=lambda s: None,
         )
         kwargs.update(overrides)
         return dn.run_dump(**kwargs)
@@ -161,7 +201,11 @@ class RunDumpTests(unittest.TestCase):
         self.assertEqual(key, f"dumps/{FAKE_SERVER_UUID}/db1-20260822T031500Z.sql.age")
         self.assertEqual(len(self.uploads), 1)
         self.assertEqual(self.uploads[0]["key"], key)
-        self.assertEqual(self.uploads[0]["data"], b"AGE-ENCRYPTED:-- dump content\n")
+        self.assertEqual(
+            self.uploads[0]["data"],
+            b"AGE-ENCRYPTED:-- CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000007', MASTER_LOG_POS=1234;\n"
+            b"-- dump content\n",
+        )
         self.assertEqual(self.uploads[0]["bucket"], "branchleft-db-backups")
 
     def test_a_failed_server_uuid_lookup_never_reaches_mysqldump(self):
@@ -169,10 +213,11 @@ class RunDumpTests(unittest.TestCase):
         with self.assertRaises(dn.DumpError):
             self._run_dump(run)
         self.assertEqual(self.uploads, [])
-        self.assertNotIn("mysqldump", [c[0] for c in run.calls])
+        self.assertEqual(self.fakes.starts("mysqldump"), [])
 
     def test_a_failed_mysqldump_never_reaches_encrypt_or_upload(self):
-        run = FakeRun(fail_command="mysqldump")
+        self.fakes.configure(dump_exit=2)
+        run = FakeRun()
         with self.assertRaises(dn.DumpError):
             self._run_dump(run)
         self.assertEqual(self.uploads, [])
@@ -188,8 +233,8 @@ class RunDumpTests(unittest.TestCase):
         seen_paths = []
 
         def spying_run(argv, **kwargs):
-            if argv[0] == "mysqldump":
-                seen_paths.append(os.path.dirname(kwargs["stdout"].name))
+            if argv[0] == "age":
+                seen_paths.append(os.path.dirname(argv[-1]))
             return FakeRun()(argv, **kwargs)
 
         self._run_dump(spying_run)

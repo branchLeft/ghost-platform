@@ -247,7 +247,7 @@ def tenants_file_problems(path: pathlib.Path, *, owner_uid: int = 0, group_gid: 
 
 
 def tool_problems(run: Runner, which: Callable[[str], str | None] = shutil.which) -> list[str]:
-    problems = [f"{tool} is not installed" for tool in ("age", "mysqldump") if which(tool) is None]
+    problems = [f"{tool} is not installed" for tool in ("age", "mysql", "mysqldump") if which(tool) is None]
     if which("mysqldump") is not None:
         result = run(["mysqldump", "--version"], capture_output=True, text=True, check=False)
         if f"Ver {MYSQLDUMP_REQUIRED_LINE}." not in (result.stdout or ""):
