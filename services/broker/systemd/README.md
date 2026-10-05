@@ -74,7 +74,7 @@ protection `ProtectSystem=strict` would otherwise give these paths before
 more specific path wins inside a `ReadWritePaths` entry, and neither the
 broker nor the wrapper ever writes any of the three.
 
-## `/etc/branchleft` and `/var/lib/branchleft` are writable
+## `/etc/branchleft` and `/var/lib/branchleft/broker-slots` are writable
 
 `ProtectSystem=strict`'s read-only mount applies to this unit's whole
 process tree, including the `sudo`-elevated `branchleft_slot.py` it execs —
@@ -90,7 +90,10 @@ running in it. Two real, independent writes need this:
   directly by the unprivileged broker process itself
   (`writeLeaseAndHash`/`clearLeaseAndHash`, atomically: a temp file into the
   same directory, then a rename), so both the file and its containing
-  directory need to be broker-writable. Missed on the first boot proof
+  directory need to be broker-writable. `/var/lib/branchleft` itself stays
+  root-owned and read-only to the unit: the health router's directory sits
+  beside the slots directory, and the broker must not be able to rename it.
+  Missed on the first boot proof
   because that proof's fixture seeded an *empty* `{"slots": []}`:
   `removeSlotEntry` skips the write entirely when nothing matches, so a
   reset against an empty slots file never touches the mount at all. The

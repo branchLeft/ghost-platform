@@ -47,7 +47,7 @@ The other two are a deliberate, permanent divergence, not a defect:
 *pre-sending-identity* renderer, which still points Ghost straight at mx1
 (`mx1.branchleft.co.uk:8443`) — exactly the "Ghost dials into the main
 estate" shape this component exists to correct. Render-core points at the
-host's own mail spool instead (`ZONES.mailSpoolBaseUrl` above), so
+host's own mail spool instead (`spool.ts`'s `MAIL_SPOOL_BASE_URL`), so
 `bulkEmail__mailgun__baseUrl` can never equal the old snapshot without
 reintroducing the violation. `mail__from` diverges too, for a smaller
 reason: the snapshot carries a human display name ("branchLeft blog <…>"),

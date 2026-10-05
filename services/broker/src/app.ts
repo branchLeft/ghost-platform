@@ -295,8 +295,21 @@ async function handleReconcile(
           phase: 'resetting' satisfies Phase,
           lastHashId: state.lastHashId,
         });
-        await clearLeaseAndHash(deps.leaseStoreConfig, slot).catch(() => undefined);
-        await deps.wrapper.reset(slot).catch(() => undefined);
+        try {
+          await clearLeaseAndHash(deps.leaseStoreConfig, slot);
+          await deps.wrapper.reset(slot);
+        } catch (teardownErr) {
+          // Same rule as `/reset`: a slot is only ever `free` after its
+          // wipe succeeded, or the next visitor could get this site.
+          deps.log(
+            `teardown after host conflict failed for slot "${slot}": ${(teardownErr as Error).message}`
+          );
+          await writeSlotState(deps.stateDir, slot, {
+            phase: 'error' satisfies Phase,
+            lastHashId: state.lastHashId,
+          });
+          return send(res, 503, { slot, phase: 'error' });
+        }
         await writeSlotState(deps.stateDir, slot, {
           phase: 'free' satisfies Phase,
           lastHashId: state.lastHashId,

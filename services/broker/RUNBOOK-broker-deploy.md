@@ -113,8 +113,8 @@ because no publish path exists yet either -- see "Delivery path" below).
    `226/NAMESPACE` at start, not at install:
    ```bash
    sudo mkdir -p /etc/branchleft
-   sudo install -d -m 0755 -o root -g root /var/lib/branchleft
-   sudo install -d -m 0755 -o broker -g broker /var/lib/branchleft/broker-slots
+   sudo install -d -o root -g root -m 0755 /var/lib/branchleft
+   sudo install -d -o broker -g broker -m 0755 /var/lib/branchleft/broker-slots
    ```
 
 6. **Write `/etc/branchleft/broker.env`** on demo1 from
@@ -222,7 +222,8 @@ docker rm -f broker-boot-proof
   from the mail queue directly.
 - **`BROKER_SLOTS_FILE` writability.** This issue's own scope: the file and
   its containing directory (`/var/lib/branchleft/broker-slots`, broker-owned
-  inside a root-owned parent) are created by step 5 above and are in the unit's `ReadWritePaths=`, so a real `/reconcile` or
+  inside a root-owned parent) are created by step 5 above and are in the
+  unit's `ReadWritePaths=`, so a real `/reconcile` or
   `/reset` can write it. The shape is `{"slots": []}`
   (`slotsFile.ts#readSlotsFile` reads `parsed.slots` as the array itself,
   not `{}`) -- the boot proof's fixture seeds a real leased entry and

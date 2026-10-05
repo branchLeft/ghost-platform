@@ -25,7 +25,7 @@ SOCKET_ROOT = "/var/lib/branchleft/demo-router"
 SOCKET_NAME = "health.sock"
 SOCKET_DIR_MODE = 0o700
 SLOT_DIR = "/opt/branchleft/demo-{slot}"
-FLAG_DIR = "/var/run/branchleft/drain-flags"
+FLAG_DIR = "/var/lib/branchleft-broker/drain-flags"
 FLAG_FILE = "{slot}-{colour}.drain"
 
 # Mirrors render-core's GHOST_CONTAINER_PORT, which the sidecar probes over

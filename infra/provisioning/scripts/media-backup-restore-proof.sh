@@ -1,8 +1,9 @@
 #!/bin/sh
 # Live proof that media backup/restore round-trips real bytes: real Ghost,
 # real S3-compatible store, real `age` encryption -- checks the recovered
-# bytes' digest, never just an exit code. Nine RED/GREEN/C-REFRESH/
-# CONCURRENT rounds plus a cross-tenant-identity check.
+# bytes' digest, never just an exit code. RED/GREEN/DATED rounds plus a
+# cross-tenant-identity check. The backup run only ever PUTs and never
+# deletes; the lifecycle rule on the bucket ages out old copies.
 # See media-backup-restore-proof.md#header-overview.
 set -e
 
@@ -36,13 +37,13 @@ fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
 cleanup() {
     docker rm -f "$GHOST_NAME" "$MINIO_NAME" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
-    # Belt-and-braces revert of the RED-4, RED-5, RED-6 and C-REFRESH-2
+    # Belt-and-braces revert of the RED-4, RED-5 and RED-6
     # sabotages, in case the script exited before their own explicit reverts
     # ran. A saved copy on disk, not `git checkout --`: the latter depends
     # on this file's commit state, which this trap has no reason to assume
     # anything about, while a copy taken immediately before the sabotage is
     # unconditionally correct.
-    for saved in "$WORKDIR/media_backup_restore.py.orig" "$WORKDIR/media_backup_restore.py.orig-red5" "$WORKDIR/media_backup_restore.py.orig-red6" "$WORKDIR/media_backup_restore.py.orig-crefresh2" "$WORKDIR/media_backup_restore.py.orig-lossyput"; do
+    for saved in "$WORKDIR/media_backup_restore.py.orig" "$WORKDIR/media_backup_restore.py.orig-red5" "$WORKDIR/media_backup_restore.py.orig-red6"; do
         [ -f "$saved" ] && cp "$saved" "$SCRIPTS_DIR/media_backup_restore.py"
     done
     rm -rf "$WORKDIR"
@@ -337,30 +338,6 @@ if run_backup "$LIVE_EMPTY_BUCKET" "" "$TENANT_A_RECIPIENT"; then
 else
     pass "RED-3: backup refused a zero-object result with no flag (control proven -- the floor defaults on, like dump_tenant.py's)"
 fi
-echo "-- CONFIRM-EMPTY-GUARD: the explicit opt-out must itself be refused against a tenant that already has a POPULATED previous generation --"
-TENANT_A_GEN_COUNT_BEFORE_GUARD="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$BACKUP_BUCKET" --prefix "media/tenant-a/generations/")"
-if run_backup "$LIVE_EMPTY_BUCKET" "--confirm-tenant-has-no-media" "$TENANT_A_RECIPIENT"; then
-    fail "CONFIRM-EMPTY-GUARD: backup succeeded with --confirm-tenant-has-no-media against tenant-a, which already has a populated previous generation -- WRONG, this must be refused"
-else
-    pass "CONFIRM-EMPTY-GUARD: --confirm-tenant-has-no-media was correctly refused against tenant-a's populated previous generation"
-fi
-TENANT_A_GEN_COUNT_AFTER_GUARD="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$BACKUP_BUCKET" --prefix "media/tenant-a/generations/")"
-if [ "$TENANT_A_GEN_COUNT_AFTER_GUARD" = "$TENANT_A_GEN_COUNT_BEFORE_GUARD" ]; then
-    pass "CONFIRM-EMPTY-GUARD: tenant-a's existing generation was left completely untouched by the refused run"
-else
-    fail "CONFIRM-EMPTY-GUARD: tenant-a's generation content changed even though the run was refused ($TENANT_A_GEN_COUNT_BEFORE_GUARD -> $TENANT_A_GEN_COUNT_AFTER_GUARD)"
-fi
-if run_restore "$WORKDIR/tenant-a.identity" ""; then
-    pass "CONFIRM-EMPTY-GUARD: tenant-a's real backup still restores correctly after the refused confirm-empty attempt"
-else
-    fail "CONFIRM-EMPTY-GUARD: tenant-a's restore broke after the refused confirm-empty attempt"
-fi
 echo "-- the explicit opt-out DOES work for its real purpose: a brand-new tenant with NO previous generation at all --"
 if run_backup "$LIVE_EMPTY_BUCKET" "--confirm-tenant-has-no-media" "$TENANT_C_RECIPIENT" "tenant-c"; then
     pass "backup succeeded for a genuinely new, empty tenant, only because the explicit flag was passed"
@@ -500,366 +477,66 @@ else
     pass "RED-6 reverted: the backup bucket's listing no longer contains the plaintext digest"
 fi
 
-note "C-REFRESH-1: a second backup run deletes the first run's objects, and restore still verifies"
-# The whole tenant's generations/ prefix, across every run -- not one run's
-# own objects/ subdirectory -- since a "did storage grow" question is about
-# the tenant's total footprint, and each run now lives under its own
-# generation prefix rather than sharing one.
+note "DATED-1: a second backup run adds a dated generation, removes nothing, and restore picks the newest"
 TENANT_GENERATIONS_PREFIX="media/tenant-a/generations/"
+FIRST_GEN_RUN_ID="$(resolve_run_id)"
 FIRST_GEN_KEY="$(resolve_backup_key)"
 FIRST_GEN_COUNT="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
     --bucket "$BACKUP_BUCKET" --prefix "$TENANT_GENERATIONS_PREFIX")"
 run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
-SECOND_GEN_KEY="$(resolve_backup_key)"
+SECOND_GEN_RUN_ID="$(resolve_run_id)"
 SECOND_GEN_COUNT="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
     --bucket "$BACKUP_BUCKET" --prefix "$TENANT_GENERATIONS_PREFIX")"
-if [ "$FIRST_GEN_KEY" = "$SECOND_GEN_KEY" ]; then
-    fail "C-REFRESH-1: the second run reused the first run's backup key -- ids are supposed to be fresh and random every run"
-else
-    pass "C-REFRESH-1: the second run used a fresh random backup key ($SECOND_GEN_KEY != $FIRST_GEN_KEY)"
-fi
 SECOND_GEN_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
     --bucket "$BACKUP_BUCKET" --prefix "$TENANT_GENERATIONS_PREFIX")"
-if echo "$SECOND_GEN_LISTING" | grep -qF "$FIRST_GEN_KEY"; then
-    fail "C-REFRESH-1: the first generation's ciphertext is STILL in the backup bucket after a second run"
+if [ "$FIRST_GEN_RUN_ID" != "$SECOND_GEN_RUN_ID" ]; then
+    pass "DATED-1: the second run wrote a new dated generation ($SECOND_GEN_RUN_ID != $FIRST_GEN_RUN_ID)"
 else
-    pass "C-REFRESH-1: the first generation's ciphertext is genuinely gone from the backup bucket, not merely unreferenced"
+    fail "DATED-1: the second run did not write a new generation"
 fi
-if [ "$SECOND_GEN_COUNT" = "$FIRST_GEN_COUNT" ]; then
-    pass "C-REFRESH-1: object count under $TENANT_GENERATIONS_PREFIX did not grow across the second run ($SECOND_GEN_COUNT)"
+if echo "$SECOND_GEN_LISTING" | grep -qF "$FIRST_GEN_KEY"; then
+    pass "DATED-1: the first generation's ciphertext is still in the backup bucket after the second run (nothing deleted)"
 else
-    fail "C-REFRESH-1: object count under $TENANT_GENERATIONS_PREFIX changed unexpectedly ($FIRST_GEN_COUNT -> $SECOND_GEN_COUNT)"
+    fail "DATED-1: the first generation's ciphertext is GONE after a second run -- the job deleted something"
+fi
+if [ "$SECOND_GEN_COUNT" -gt "$FIRST_GEN_COUNT" ]; then
+    pass "DATED-1: object count under $TENANT_GENERATIONS_PREFIX grew ($FIRST_GEN_COUNT -> $SECOND_GEN_COUNT), as dated copies do"
+else
+    fail "DATED-1: object count under $TENANT_GENERATIONS_PREFIX did not grow ($FIRST_GEN_COUNT -> $SECOND_GEN_COUNT)"
 fi
 if run_restore "$WORKDIR/tenant-a.identity" ""; then
-    pass "C-REFRESH-1: restore still succeeds (exit 0) after a second, superseding backup run"
+    pass "DATED-1: restore succeeds (exit 0) with two dated copies present"
 else
-    fail "C-REFRESH-1: restore failed after a second backup run"
-fi
-RESTORED_AFTER_SECOND_SHA256="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" sha256 \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$LIVE_BUCKET" --key "$LIVE_KEY")"
-if [ "$RESTORED_AFTER_SECOND_SHA256" = "$FIXTURE_SHA256" ]; then
-    pass "C-REFRESH-1: the live object's digest after two backup runs still matches the original upload"
-else
-    fail "C-REFRESH-1: the live object's digest changed unexpectedly across two backup runs"
+    fail "DATED-1: restore failed with two dated copies present"
 fi
 
-note "C-REFRESH-2: an upload failure mid-run must leave the previous generation intact and restorable"
-echo "-- adding a second live object so this run has something to fail partway through --"
-python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" put \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$LIVE_BUCKET" --key "content/images/2026/09/second-live-object.txt" \
-    --body "a second live object, added only for C-REFRESH-2"
-LIVE_OBJECT_COUNT="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" --bucket "$LIVE_BUCKET")"
-echo "-- repairing: one clean backup run so this generation covers every live object ($LIVE_OBJECT_COUNT of them -- Ghost's own upload pipeline writes more than the one this proof uploaded) --"
-run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
-PRE_SABOTAGE_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$BACKUP_BUCKET" --prefix "$TENANT_GENERATIONS_PREFIX" | sort)"
-
-cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-crefresh2"
-python3 - "$SCRIPTS_DIR/media_backup_restore.py" <<'PYEOF'
-import sys
-path = sys.argv[1]
-text = open(path).read()
-marker = "            backup_key = _object_key_for_backup(tenant, run_id, backup_id)\n            put_object(\n"
-assert marker in text, "expected marker not found -- has the loop shape changed?"
-sabotaged = text.replace(
-    marker,
-    "            backup_key = _object_key_for_backup(tenant, run_id, backup_id)\n"
-    "            _SABOTAGE_UPLOAD_COUNT[0] += 1\n"
-    "            if _SABOTAGE_UPLOAD_COUNT[0] == 2:\n"
-    "                raise ObjectStorageError('SABOTAGE: simulated upload failure mid-run')\n"
-    "            put_object(\n",
-    1,
-)
-assert sabotaged != text
-sabotaged = sabotaged.replace(
-    "MEDIA_PREFIX = \"media\"\n",
-    "MEDIA_PREFIX = \"media\"\n_SABOTAGE_UPLOAD_COUNT = [0]\n",
-    1,
-)
-open(path, "w").write(sabotaged)
-PYEOF
-if ! diff -q "$WORKDIR/media_backup_restore.py.orig-crefresh2" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
-    echo "upload-failure sabotage applied: the second object's upload now raises"
-else
-    echo "FAILED: the sabotage patch did not change the file -- cannot prove this control" >&2
-    exit 1
-fi
-
-if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
-    fail "C-REFRESH-2: backup exited 0 despite the sabotaged upload failure -- WRONG"
-else
-    pass "C-REFRESH-2: the sabotaged run's own exit code is non-zero, as expected"
-fi
-POST_SABOTAGE_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$BACKUP_BUCKET" --prefix "$TENANT_GENERATIONS_PREFIX" | sort)"
-# Temp files, not `comm -23 <(...) <(...)`: process substitution is a
-# bashism this `#!/bin/sh` script cannot rely on, and a shell that rejects
-# it turns the whole check into a silent, always-empty (so always "PASS")
-# no-op rather than a loud failure -- exactly the shape of bug this proof
-# exists to catch elsewhere, so it must not carry one of its own.
-echo "$PRE_SABOTAGE_LISTING" >"$WORKDIR/pre-sabotage-listing.txt"
-echo "$POST_SABOTAGE_LISTING" >"$WORKDIR/post-sabotage-listing.txt"
-MISSING_FROM_PREVIOUS_GENERATION="$(comm -23 "$WORKDIR/pre-sabotage-listing.txt" "$WORKDIR/post-sabotage-listing.txt")"
-if [ -z "$MISSING_FROM_PREVIOUS_GENERATION" ]; then
-    pass "C-REFRESH-2: RED: every object from the pre-sabotage generation is still present after the failed run"
-else
-    fail "C-REFRESH-2: RED: at least one pre-sabotage object is MISSING after the failed run -- the previous generation was not preserved ($MISSING_FROM_PREVIOUS_GENERATION)"
-fi
-if run_restore "$WORKDIR/tenant-a.identity" "$RESTORED_BUCKET"; then
-    pass "C-REFRESH-2: RED: restore from the (untouched) previous generation still succeeds after the failed run"
-else
-    fail "C-REFRESH-2: RED: restore from the previous generation failed after the sabotaged run -- the old generation was not left restorable"
-fi
-echo "-- reverting the upload-failure sabotage --"
-cp "$WORKDIR/media_backup_restore.py.orig-crefresh2" "$SCRIPTS_DIR/media_backup_restore.py"
-if diff -q "$WORKDIR/media_backup_restore.py.orig-crefresh2" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
-    echo "upload-failure sabotage reverted: file matches the pre-sabotage original"
-else
-    echo "FAILED: revert did not restore the original file" >&2
-    exit 1
-fi
-echo "-- repairing: re-running a clean backup (both live objects) --"
-if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
-    pass "C-REFRESH-2: GREEN: with the sabotage reverted, a clean backup run succeeds again"
-else
-    fail "C-REFRESH-2: GREEN: a clean backup run failed after reverting the sabotage"
-fi
-# This run's own objects/ subdirectory specifically -- not the whole
-# tenant-wide generations/ prefix -- so this is an exact count again (one
-# object per live object, no manifest key mixed in).
-POST_REPAIR_RUN_ID="$(resolve_run_id)"
-POST_REPAIR_OBJECTS_PREFIX="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" objects-prefix \
-    --tenant tenant-a --run-id "$POST_REPAIR_RUN_ID")"
-POST_REPAIR_LISTING="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" list \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$BACKUP_BUCKET" --prefix "$POST_REPAIR_OBJECTS_PREFIX")"
-POST_REPAIR_COUNT="$(echo "$POST_REPAIR_LISTING" | grep -c .)"
-if [ "$POST_REPAIR_COUNT" = "$LIVE_OBJECT_COUNT" ]; then
-    pass "C-REFRESH-2: GREEN: the repaired generation covers exactly the $LIVE_OBJECT_COUNT live objects, and the sabotaged run's own partial orphan is gone too"
-else
-    fail "C-REFRESH-2: GREEN: expected exactly $LIVE_OBJECT_COUNT objects after repair (one per live object), found $POST_REPAIR_COUNT"
-fi
-echo "-- cleaning up the extra live object added for this round --"
+note "DATED-2: a newer copy without its completion marker is ignored by restore"
 python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" delete \
     --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
     --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$LIVE_BUCKET" --key "content/images/2026/09/second-live-object.txt"
-echo "-- repairing: one more clean backup so later rounds see tenant-a's original single-object generation --"
+    --bucket "$BACKUP_BUCKET" --key "media/tenant-a/generations/$SECOND_GEN_RUN_ID/manifest.json.age"
+if [ "$(resolve_run_id)" = "$FIRST_GEN_RUN_ID" ]; then
+    pass "DATED-2: with the newest copy's marker removed, the newest COMPLETE copy is the first generation"
+else
+    fail "DATED-2: an incomplete newest copy was still treated as the newest"
+fi
+if run_restore "$WORKDIR/tenant-a.identity" ""; then
+    pass "DATED-2: restore ignores the incomplete copy and succeeds from the earlier complete one"
+else
+    fail "DATED-2: restore failed instead of ignoring the incomplete copy"
+fi
+echo "-- repairing: a clean run writes a new complete copy --"
 run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
-
-note "CONCURRENT-1: two REAL, overlapping CLI backup runs against the same tenant must never leave it unrestorable"
-# Genuinely parallel OS processes, not a simulated interleaving -- both
-# start against the SAME live Ghost-uploaded media and the SAME real
-# MinIO-backed backup bucket, launched with no ordering between them.
-# Whichever process's own manifest ends up newest (by generation id, not by
-# which process happened to start first) is the tenant's current, fully
-# restorable generation; the other either already finished earlier and was
-# safely superseded, or lost the race and exited non-zero having deleted
-# nothing -- see media_backup_restore.py's own docstring for why every
-# interleaving lands one of those two ways, and test_media_backup_restore.py's
-# ConcurrentRunSafetyTests for the same property proven deterministically.
-run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >"$WORKDIR/concurrent-a.log" 2>&1 &
-CONCURRENT_PID_A=$!
-run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >"$WORKDIR/concurrent-b.log" 2>&1 &
-CONCURRENT_PID_B=$!
-CONCURRENT_RC_A=0
-CONCURRENT_RC_B=0
-wait "$CONCURRENT_PID_A" || CONCURRENT_RC_A=$?
-wait "$CONCURRENT_PID_B" || CONCURRENT_RC_B=$?
-echo "concurrent run A exit=$CONCURRENT_RC_A, run B exit=$CONCURRENT_RC_B"
-if [ "$CONCURRENT_RC_A" -eq 0 ] || [ "$CONCURRENT_RC_B" -eq 0 ]; then
-    pass "CONCURRENT-1: at least one of the two overlapping runs completed successfully"
-else
-    fail "CONCURRENT-1: BOTH overlapping runs failed -- see $WORKDIR/concurrent-a.log and $WORKDIR/concurrent-b.log"
-fi
-if run_restore "$WORKDIR/tenant-a.identity" "$RESTORED_BUCKET"; then
-    pass "CONCURRENT-1: restore succeeds after two real overlapping backup runs -- nothing was left unrestorable"
-else
-    fail "CONCURRENT-1: restore FAILED after two overlapping runs -- the concurrency fix is not actually working"
-fi
-CONCURRENT_RESTORED_SHA256="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" sha256 \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$RESTORED_BUCKET" --key "$LIVE_KEY")"
-if [ "$CONCURRENT_RESTORED_SHA256" = "$FIXTURE_SHA256" ]; then
-    pass "CONCURRENT-1: the digest recovered after two overlapping runs still matches the original upload"
-else
-    fail "CONCURRENT-1: the digest recovered after two overlapping runs does NOT match the original upload"
-fi
-echo "-- repairing: one clean backup so later rounds see a single, unambiguous generation --"
-run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT" >/dev/null
-
-note "LOSSY-PUT: an object PUT that answers success without landing must be caught before any delete"
-PRE_LOSSY_TENANT_COUNT="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$BACKUP_BUCKET" --prefix "$TENANT_GENERATIONS_PREFIX")"
-cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-lossyput"
-python3 - "$SCRIPTS_DIR/media_backup_restore.py" <<'PYEOF'
-import sys
-path = sys.argv[1]
-text = open(path).read()
-marker = "    _assert_valid_tenant_slug(tenant, MediaBackupError)\n\n    live_objects = list_objects("
-assert marker in text, "expected marker not found -- has the function's own opening shape changed?"
-sabotaged = text.replace(
-    marker,
-    "    _assert_valid_tenant_slug(tenant, MediaBackupError)\n\n"
-    "    _SABOTAGE_PUT_COUNT = [0]\n"
-    "    _SABOTAGE_REAL_PUT_OBJECT = put_object\n"
-    "    def put_object(**kw):  # noqa: F811 -- SABOTAGE: local shadow, object puts only\n"
-    "        _SABOTAGE_PUT_COUNT[0] += 1\n"
-    "        if _SABOTAGE_PUT_COUNT[0] == 2 and '/objects/' in kw.get('key', ''):\n"
-    "            return  # SABOTAGE: 2xx in spirit -- no exception -- but never actually stored\n"
-    "        return _SABOTAGE_REAL_PUT_OBJECT(**kw)\n\n"
-    "    live_objects = list_objects(",
-    1,
-)
-assert sabotaged != text
-open(path, "w").write(sabotaged)
-PYEOF
-if ! diff -q "$WORKDIR/media_backup_restore.py.orig-lossyput" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
-    echo "lossy-put sabotage applied: the second object's PUT now silently drops its ciphertext"
-else
-    echo "FAILED: the sabotage patch did not change the file -- cannot prove this control" >&2
-    exit 1
-fi
-if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
-    fail "LOSSY-PUT: backup exited 0 despite a silently dropped object PUT -- WRONG"
-else
-    pass "LOSSY-PUT: the sabotaged run's own exit code is non-zero, as expected"
-fi
-POST_LOSSY_TENANT_COUNT="$(python3 "$SCRIPTS_DIR/media_backup_restore_proof_helpers.py" count \
-    --endpoint "$MINIO_ENDPOINT" --region "$REGION" \
-    --access-key "$MINIO_ROOT_USER" --secret-key "$MINIO_ROOT_PASSWORD" \
-    --bucket "$BACKUP_BUCKET" --prefix "$TENANT_GENERATIONS_PREFIX")"
-if [ "$POST_LOSSY_TENANT_COUNT" -ge "$PRE_LOSSY_TENANT_COUNT" ]; then
-    pass "LOSSY-PUT: nothing was deleted -- the tenant's total object/manifest count did not shrink ($PRE_LOSSY_TENANT_COUNT -> $POST_LOSSY_TENANT_COUNT)"
-else
-    fail "LOSSY-PUT: the tenant's total object/manifest count SHRANK ($PRE_LOSSY_TENANT_COUNT -> $POST_LOSSY_TENANT_COUNT) -- something was deleted despite the missing object"
-fi
-# The sabotaged run's own presence check -- run BEFORE its manifest is ever
-# written -- caught the missing object and raised without writing one. So
-# the tenant's newest generation with a manifest is still the PREVIOUS
-# (good) one, untouched by this run: a default restore must SUCCEED here,
-# reading that previous generation, with no --run-id needed. A manifest
-# existing means the generation it names is complete -- see
-# media_backup_restore.py's own docstring.
 if run_restore "$WORKDIR/tenant-a.identity" ""; then
-    pass "LOSSY-PUT: restore succeeds by default -- the lossy run never wrote a manifest, so the previous (good) generation is still the newest one"
+    pass "DATED-2: GREEN: restore succeeds again once a clean run has written a new complete copy"
 else
-    fail "LOSSY-PUT: restore FAILED -- WRONG, the previous generation should still be the newest, unbroken one"
-fi
-echo "-- reverting the lossy-put sabotage --"
-cp "$WORKDIR/media_backup_restore.py.orig-lossyput" "$SCRIPTS_DIR/media_backup_restore.py"
-if diff -q "$WORKDIR/media_backup_restore.py.orig-lossyput" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
-    echo "lossy-put sabotage reverted: file matches the pre-sabotage original"
-else
-    echo "FAILED: revert did not restore the original file" >&2
-    exit 1
-fi
-echo "-- repairing: a clean run supersedes the broken generation --"
-if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
-    pass "LOSSY-PUT: GREEN: with the sabotage reverted, a clean backup run succeeds again"
-else
-    fail "LOSSY-PUT: GREEN: a clean backup run failed after reverting the sabotage"
-fi
-if run_restore "$WORKDIR/tenant-a.identity" ""; then
-    pass "LOSSY-PUT: GREEN: restore succeeds again once a clean run supersedes the broken one"
-else
-    fail "LOSSY-PUT: GREEN: restore still fails after a clean run -- the broken generation was not actually superseded"
-fi
-
-note "MANIFEST-MISMATCH: a manifest PUT that reports success but stores different bytes must never be silently trusted"
-GOOD_RUN_ID_BEFORE_MISMATCH="$(resolve_run_id)"
-cp "$SCRIPTS_DIR/media_backup_restore.py" "$WORKDIR/media_backup_restore.py.orig-mismatch"
-python3 - "$SCRIPTS_DIR/media_backup_restore.py" <<'PYEOF'
-import sys
-path = sys.argv[1]
-text = open(path).read()
-marker = "    _assert_valid_tenant_slug(tenant, MediaBackupError)\n\n    live_objects = list_objects("
-assert marker in text, "expected marker not found -- has the function's own opening shape changed?"
-sabotaged = text.replace(
-    marker,
-    "    _assert_valid_tenant_slug(tenant, MediaBackupError)\n\n"
-    "    _SABOTAGE_REAL_PUT_OBJECT = put_object\n"
-    "    def put_object(**kw):  # noqa: F811 -- SABOTAGE: local shadow, manifest only\n"
-    "        if kw.get('key', '').endswith('manifest.json.age'):\n"
-    "            kw = dict(kw)\n"
-    "            kw['data'] = kw['data'][:-5]  # SABOTAGE: PUT 'succeeds'; stored bytes differ\n"
-    "        return _SABOTAGE_REAL_PUT_OBJECT(**kw)\n\n"
-    "    live_objects = list_objects(",
-    1,
-)
-assert sabotaged != text
-open(path, "w").write(sabotaged)
-PYEOF
-if ! diff -q "$WORKDIR/media_backup_restore.py.orig-mismatch" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
-    echo "manifest-mismatch sabotage applied: the manifest PUT now stores truncated bytes"
-else
-    echo "FAILED: the sabotage patch did not change the file -- cannot prove this control" >&2
-    exit 1
-fi
-if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
-    fail "MANIFEST-MISMATCH: backup exited 0 despite a torn manifest read-back -- WRONG"
-else
-    pass "MANIFEST-MISMATCH: the sabotaged run's own exit code is non-zero, as expected"
-fi
-echo "-- reverting the manifest-mismatch sabotage --"
-cp "$WORKDIR/media_backup_restore.py.orig-mismatch" "$SCRIPTS_DIR/media_backup_restore.py"
-if diff -q "$WORKDIR/media_backup_restore.py.orig-mismatch" "$SCRIPTS_DIR/media_backup_restore.py" >/dev/null; then
-    echo "manifest-mismatch sabotage reverted: file matches the pre-sabotage original"
-else
-    echo "FAILED: revert did not restore the original file" >&2
-    exit 1
-fi
-# Unlike LOSSY-PUT, the torn manifest key itself DOES now exist -- the PUT
-# reported success -- so this run IS the tenant's newest generation with a
-# manifest present. A default restore must refuse it rather than invent a
-# fallback on its own.
-DEFAULT_RESTORE_OUTPUT="$(run_restore "$WORKDIR/tenant-a.identity" "" 2>&1)" && DEFAULT_RESTORE_RC=0 || DEFAULT_RESTORE_RC=$?
-echo "$DEFAULT_RESTORE_OUTPUT"
-if [ "$DEFAULT_RESTORE_RC" -eq 0 ]; then
-    fail "MANIFEST-MISMATCH: default restore succeeded against the torn newest manifest -- WRONG, this should never report success"
-else
-    pass "MANIFEST-MISMATCH: default restore correctly refuses the torn newest generation -- no silent false success"
-fi
-if echo "$DEFAULT_RESTORE_OUTPUT" | grep -q -- "--run-id $GOOD_RUN_ID_BEFORE_MISMATCH"; then
-    pass "MANIFEST-MISMATCH: the refusal names the newest OLDER generation ($GOOD_RUN_ID_BEFORE_MISMATCH) and the exact --run-id command to recover it"
-else
-    fail "MANIFEST-MISMATCH: the refusal did NOT name the older generation's exact --run-id recovery command"
-fi
-if run_restore "$WORKDIR/tenant-a.identity" "" "" "$GOOD_RUN_ID_BEFORE_MISMATCH"; then
-    pass "MANIFEST-MISMATCH: the named --run-id recovery actually works -- restore succeeds against the older, unbroken generation"
-else
-    fail "MANIFEST-MISMATCH: the named --run-id recovery FAILED -- WRONG, that generation was never touched by the sabotaged run"
-fi
-echo "-- repairing: a clean run supersedes the torn generation --"
-if run_backup "$LIVE_BUCKET" "" "$TENANT_A_RECIPIENT"; then
-    pass "MANIFEST-MISMATCH: GREEN: with the sabotage reverted, a clean backup run succeeds again"
-else
-    fail "MANIFEST-MISMATCH: GREEN: a clean backup run failed after reverting the sabotage"
-fi
-if run_restore "$WORKDIR/tenant-a.identity" ""; then
-    pass "MANIFEST-MISMATCH: GREEN: default restore succeeds again once a clean run supersedes the torn one"
-else
-    fail "MANIFEST-MISMATCH: GREEN: restore still fails after a clean run -- the torn generation was not actually superseded"
+    fail "DATED-2: GREEN: restore still fails after a clean run"
 fi
 
 note "Direct check: a different tenant's identity cannot restore tenant-a's media"
@@ -910,7 +587,7 @@ fi
 
 note "Summary"
 if [ "$FAILURES" -eq 0 ]; then
-    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code, a second age recipient and a content-derived backup id are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are random, not derived from the live key or the plaintext digest; a second run supersedes the first (fresh generation, old ciphertext genuinely gone, object count steady, restore still verifies) and an upload failure mid-run leaves the previous generation untouched and restorable; two REAL overlapping CLI backup runs against the same tenant never leave it unrestorable; an object PUT that answers success without landing is caught before this run's own manifest is ever written, so a default restore afterwards still succeeds against the untouched previous generation; and a manifest PUT that reports success but stores different bytes leaves a default restore refusing rather than guessing, naming the newest older generation and the exact --run-id command that recovers it -- which this proof then runs for real."
+    echo "PROOF OK: media backup/restore round-trips real bytes through a real Ghost upload, a real S3-compatible store and real age encryption; a corrupted object, a missing object, a default-empty backup, a disconnected exit code, a second age recipient and a content-derived backup id are each independently caught; a genuinely empty tenant still restores successfully with the explicit flag; a different tenant's identity is independently refused; backup object keys are random, not derived from the live key or the plaintext digest; a second run adds a dated generation and deletes nothing, and restore picks the newest complete copy, ignoring one whose completion marker is missing."
     exit 0
 else
     echo "PROOF FAILED: $FAILURES check(s) did not behave as expected -- see the FAIL lines above."

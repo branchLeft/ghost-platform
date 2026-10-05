@@ -38,7 +38,10 @@ jobs:
   test:
     name: Scripts unit tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # test_backup_lock_bound_docker.py starts db1's pinned MySQL image and
+    # runs several full nightly backups against it; in CI it fails rather
+    # than skips when Docker or the image is missing.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: infra/provisioning

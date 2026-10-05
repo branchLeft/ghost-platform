@@ -21,6 +21,7 @@ import { renderIdentity } from './identity.js';
 import { imageEnvPath, secretsEnvPath, stackName, validateSlugAvailability } from './naming.js';
 import { uploadLimits } from './runtime.js';
 import { renderSettings } from './settings.js';
+import { mailSpoolNetworkName } from './spool.js';
 import type { ZoneConfig } from './validate.js';
 import { FieldValidationError } from './brand.js';
 
@@ -213,6 +214,7 @@ export function render(
     limits,
     caps: descriptor.caps,
     dataMount,
+    mailNetwork: descriptor.mail.enabled ? mailSpoolNetworkName(descriptor.uid) : null,
   });
   const edge = renderEdgeSiteBlock(descriptor, zones, limits, themeCsp);
   const settings = renderSettings(descriptor, zones);

@@ -437,5 +437,23 @@ class MetricsWiringThroughLoopTests(_RealProducerLoopTestCase):
         self.assertIn("shop", waits)  # failed dump -> STILL a lock-wait gauge
 
 
+
+class ReportLineTests(unittest.TestCase):
+    def test_an_ok_tenant_reports_its_wait_hold_and_aborts(self) -> None:
+        result = bw.DumpResult(
+            tenant="blog", ok=True, exit_code=0, floor_tables_seen=frozenset(), missing_floor_tables=frozenset(),
+            copies_written=("primary",), error=None, lock_wait_seconds=0.25, lock_hold_seconds=0.125, lock_aborts=2,
+        )
+        line = loop._report_line(loop.TenantOutcome(tenant="blog", result=result, crashed=False, error=None))
+        self.assertIn("lock wait 0.250s, hold 0.125s, 2 aborted lock attempt(s)", line)
+
+    def test_an_unmeasured_hold_says_so(self) -> None:
+        result = bw.DumpResult(
+            tenant="blog", ok=True, exit_code=0, floor_tables_seen=frozenset(), missing_floor_tables=frozenset(),
+            copies_written=("primary",), error=None,
+        )
+        line = loop._report_line(loop.TenantOutcome(tenant="blog", result=result, crashed=False, error=None))
+        self.assertIn("lock wait unmeasured, hold unmeasured, 0 aborted", line)
+
 if __name__ == "__main__":
     unittest.main()

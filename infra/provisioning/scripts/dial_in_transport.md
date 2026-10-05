@@ -18,6 +18,9 @@ dials in. This module holds:
     existing MySQL port over TLS through a host-restricted backup account.
     No new listener anywhere, and the database host gains no new service.
 
+`bounded_snapshot` is loaded by path from `db/provision/`, the same file
+db1's nightly dump runs, so the two paths cannot drift.
+
 ## FORBIDDEN_ENV_PREFIXES
 
 Every prefix that names a storage or encryption credential in this
@@ -46,3 +49,29 @@ Streams line-by-line, mirroring `db/provision/dump_tenant.py`'s own
 needs whole lines, and a chunk boundary that split one across two
 `stdout.write()` calls would make that watch unreliable for no reason a
 real remote channel would ever force on it.
+
+## RemoteMysqldumpTransport
+
+Grants: ghost-platform-docs/backup-worker-account-handover-runbook.md.
+
+Each `run` takes the tenant's snapshot through
+`bounded_snapshot.take_bounded_snapshot`, scoped to that tenant's schema
+only: a `mysql` coordinator session locks the tenant's tables `READ`
+(wait bounded by the server and by a client deadline), reads the
+binary-log position, starts `mysqldump -v --single-transaction
+--no-tablespaces` and unlocks once mysqldump reports its snapshot open
+(hold bounded). No `--source-data`, so no `FLUSH TABLES WITH READ LOCK`
+and no lock on any other tenant. See db/provision/bounded_snapshot.md.
+
+The resume-point comment is written to `stdout` first, then mysqldump's
+own output streams after it. If no snapshot can be taken after the
+retries, nothing is written and `run` returns `SNAPSHOT_FAILED_EXIT_CODE`
+(75): an ordinary producer failure, with the reason on stderr.
+`last_snapshot` holds the successful attempt's measurements (lock wait,
+hold, attempts) and `last_snapshot_aborts` the number of attempts given up
+on a bound, success or not; `backup_worker.run_tenant_dump` reads both.
+
+The password reaches each `mysql` and `mysqldump` child only through an
+inherited pipe fd, read once as an option file
+(`--defaults-extra-file=/dev/fd/N`): never argv, never the child's
+environ, never a file on disk. The child environment is `PATH` only.

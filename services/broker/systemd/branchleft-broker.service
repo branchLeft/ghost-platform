@@ -49,13 +49,15 @@ IPAddressAllow=localhost
 PrivateIPC=yes
 RemoveIPC=yes
 
-# /opt/branchleft, /etc/branchleft and /var/lib/branchleft: see
-# systemd/README.md ("`/etc/branchleft` and `/var/lib/branchleft` are
-# writable"). /opt/branchleft/demo-<slot> (BROKER_SLOT_DIR_BASE) is owned
+# /opt/branchleft, /etc/branchleft and /var/lib/branchleft/broker-slots: see
+# systemd/README.md ("`/etc/branchleft` and the slots directory are
+# writable"). /var/lib/branchleft itself is root-owned and left read-only
+# here, so nothing in this unit can touch the health router's directory
+# beside it. /opt/branchleft/demo-<slot> (BROKER_SLOT_DIR_BASE) is owned
 # and permissioned by the host-build/uid-claim work, not this unit -- left
 # writable here so this unit does not itself regress that path once it
 # exists.
-ReadWritePaths=/opt/branchleft /etc/branchleft /var/lib/branchleft
+ReadWritePaths=/opt/branchleft /etc/branchleft /var/lib/branchleft/broker-slots
 # The deeper path wins inside a ReadWritePaths entry: this narrows the
 # verify key, broker.env and the installed release tree back to read-only
 # even though the whole directories above are writable. See
