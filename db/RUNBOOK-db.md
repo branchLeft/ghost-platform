@@ -434,11 +434,12 @@ GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'localhost';
 GRANT SELECT ON performance_schema.* TO 'exporter'@'localhost';
 
 -- dump_nightly.py: enough to run mysqldump --all-databases --single-transaction
--- --source-data=2 (the last of which runs SHOW MASTER STATUS, hence
--- REPLICATION CLIENT below), plus SELECT @@server_uuid (no privilege
--- required, any authenticated user).
+-- under bounded_snapshot.py's table locks (LOCK TABLES) and read the
+-- position from performance_schema.log_status (BACKUP_ADMIN), plus
+-- SELECT @@server_uuid. No RELOAD: this account cannot take a global
+-- read lock.
 CREATE USER 'backup'@'localhost' IDENTIFIED BY '<matches DB_DUMP_MYSQL_PWD>';
-GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT ON *.* TO 'backup'@'localhost';
+GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, REPLICATION CLIENT, BACKUP_ADMIN ON *.* TO 'backup'@'localhost';
 
 -- ship_binlogs.py: enough for `mysqlbinlog --read-from-remote-server` and
 -- `FLUSH BINARY LOGS`, nothing more.

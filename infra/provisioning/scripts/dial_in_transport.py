@@ -9,15 +9,42 @@ database host gains no new service). See dial_in_transport.md#module-overview.
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import pathlib
 import re
-import signal
 import subprocess
 import sys
-import tempfile
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from typing import BinaryIO, Protocol
+
+
+def _load_bounded_snapshot():
+    """`db/provision/bounded_snapshot.py`, by path: the one implementation
+    db1's nightly dump also runs. A missing file fails the import loudly."""
+    if "bounded_snapshot" in sys.modules:
+        return sys.modules["bounded_snapshot"]
+    source = pathlib.Path(__file__).resolve().parents[3] / "db" / "provision" / "bounded_snapshot.py"
+    spec = importlib.util.spec_from_file_location("bounded_snapshot", source)
+    if spec is None or spec.loader is None or not source.is_file():
+        raise ImportError(f"{source} is missing -- check out the whole of branchLeft/ghost-platform")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["bounded_snapshot"] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules["bounded_snapshot"]
+        raise
+    return module
+
+
+bounded_snapshot = _load_bounded_snapshot()
+
+# What `run` returns when no consistent snapshot could be taken: a producer
+# failure like any other nonzero exit, with the reason already on stderr.
+SNAPSHOT_FAILED_EXIT_CODE = 75
 
 # Every prefix that names a storage or encryption credential in this
 # estate's convention, restated here rather than imported since the two
@@ -130,14 +157,11 @@ def _tenant_from_command(command: Sequence[str]) -> str:
 
 class RemoteMysqldumpTransport:
     """The real dial-in channel: `mysqldump`, local subprocess, TLS to the
-    tenant database host's existing port. Grants:
-    ghost-platform-docs/backup-worker-account-handover-runbook.md.
-    Re-validates the tenant independently -- this is the layer that turns
-    it into a `--databases` argument. `env["DB_DUMP_MYSQL_PWD"]` reaches
-    `mysqldump` only through an inherited pipe fd
-    (`--defaults-extra-file=/dev/fd/N`), read once at the child's own
-    startup -- never argv, never the child's environ, never a file on
-    disk."""
+    tenant database host's existing port. Re-validates the tenant itself,
+    since this layer turns it into a `--databases` argument. The snapshot
+    is `bounded_snapshot`'s: this tenant's tables only, bounded wait and
+    hold, never `--source-data`. `last_snapshot` and `last_snapshot_aborts`
+    describe the latest run. See dial_in_transport.md#remotemysqldumptransport."""
 
     def __init__(
         self,
@@ -148,6 +172,8 @@ class RemoteMysqldumpTransport:
         port: int = 3306,
         timeout_seconds: float = 1800.0,
         popen=subprocess.Popen,
+        limits: "bounded_snapshot.Limits | None" = None,
+        sleep=time.sleep,
     ) -> None:
         self._host = host
         self._port = port
@@ -155,9 +181,26 @@ class RemoteMysqldumpTransport:
         self._ssl_ca = ssl_ca
         self._timeout_seconds = timeout_seconds
         self._popen = popen
+        self._limits = limits or bounded_snapshot.Limits()
+        self._sleep = sleep
+        self.last_snapshot: bounded_snapshot.SnapshotReport | None = None
+        self.last_snapshot_aborts = 0
+
+    def dump_args(self, db_name: str) -> list[str]:
+        return [
+            "--single-transaction",
+            "--routines",
+            "--triggers",
+            "--set-gtid-purged=OFF",
+            "--no-tablespaces",
+            "--databases",
+            db_name,
+        ]
 
     def run(self, *, command: Sequence[str], env: Mapping[str, str], stdout: BinaryIO) -> int:
         assert_no_forbidden_env(env)
+        self.last_snapshot = None
+        self.last_snapshot_aborts = 0
         tenant = _tenant_from_command(command)
         if not TENANT_NAME_PATTERN.match(tenant):
             raise DialInTransportError(f"refusing to dial in: {tenant!r} is not a strictly valid tenant slug")
@@ -169,109 +212,76 @@ class RemoteMysqldumpTransport:
 
         db_name = _TENANT_DB_PREFIX + tenant.replace("-", "_")
         child_env = {name: os.environ[name] for name in _CHILD_ENV_ALLOWLIST if name in os.environ}
+        factory = bounded_snapshot.ClientFactory(
+            connection_args=[
+                "--host", self._host,
+                "--port", str(self._port),
+                "--user", self._user,
+                "--ssl-mode=VERIFY_CA",
+                "--ssl-ca", self._ssl_ca,
+            ],
+            password=mysql_pwd,
+            env=child_env,
+            popen=self._popen,
+        )
 
-        # The credential never touches argv or the child's own environ: an
-        # anonymous pipe, passed by fd (subprocess.Popen's own `pass_fds`
-        # makes exactly the listed fd -- and only that one -- survive the
-        # exec), read by mysqldump itself as an option file at startup and
-        # never again. Short enough (well under a pipe's own OS buffer)
-        # that the write below can never block.
-        read_fd, write_fd = os.pipe()
         try:
-            os.write(write_fd, f"[client]\npassword={mysql_pwd}\n".encode())
-        finally:
-            os.close(write_fd)
-
-        argv = [
-            "mysqldump",
-            f"--defaults-extra-file=/dev/fd/{read_fd}",
-            "--host", self._host,
-            "--port", str(self._port),
-            "--user", self._user,
-            "--ssl-mode=VERIFY_CA",
-            "--ssl-ca", self._ssl_ca,
-            "--single-transaction",
-            "--source-data=2",
-            "--routines",
-            "--triggers",
-            "--set-gtid-purged=OFF",
-            "--databases", db_name,
-        ]
-
-        # A real temp file, not a pipe: dump_tenant.py's own run_mysqldump
-        # uses the same shape, for the same reason -- stderr is never read
-        # while stdout streams below, so a pipe would deadlock once
-        # mysqldump wrote more warnings than one OS pipe buffer holds.
-        stderr_file = tempfile.TemporaryFile()
-        try:
-            # start_new_session so a kill on timeout reaches the whole
-            # process group `mysqldump` heads, not just the one pid this
-            # class holds -- otherwise a child it spawned could keep the
-            # stdout pipe's write end open after the parent is gone, and
-            # the read loop below would block for however long that child
-            # took to exit on its own, rather than for this transport's
-            # own timeout.
-            process = self._popen(
-                argv,
-                env=child_env,
-                stdout=subprocess.PIPE,
-                stderr=stderr_file,
-                start_new_session=True,
-                pass_fds=(read_fd,),
+            dump, report = bounded_snapshot.take_bounded_snapshot(
+                factory=factory,
+                schemas=[db_name],
+                dump_args=self.dump_args(db_name),
+                limits=self._limits,
+                sleep=self._sleep,
+                log=lambda message: print(f"dial_in_transport: {tenant}: {message}", file=sys.stderr),
             )
-        finally:
-            os.close(read_fd)  # this process's own copy; the child has its own, independent reference
+        except bounded_snapshot.SnapshotError as exc:
+            self.last_snapshot_aborts = exc.aborted_attempts
+            print(
+                f"dial_in_transport: {tenant}: no consistent snapshot of {self._host}:{self._port}: {exc}",
+                file=sys.stderr,
+            )
+            return SNAPSHOT_FAILED_EXIT_CODE
+        self.last_snapshot = report
+        self.last_snapshot_aborts = report.aborted_attempts
 
+        process = dump.process
         timed_out = threading.Event()
 
         def _on_timeout() -> None:
             timed_out.set()
-            self._kill_process_group(process)
+            bounded_snapshot.kill_process(process)
 
         timer = threading.Timer(self._timeout_seconds, _on_timeout)
         timer.start()
         try:
             try:
+                stdout.write(report.coordinates_comment())
                 for line in process.stdout:
                     stdout.write(line)
             finally:
                 process.stdout.close()
             exit_code = process.wait()
+        except BaseException:
+            bounded_snapshot.kill_process(process)
+            raise
         finally:
             timer.cancel()
 
-        stderr_file.seek(0)
-        stderr_tail = stderr_file.read(_STDERR_CAPTURE_LIMIT)
-        stderr_file.close()
+        dump.stderr.join(5.0)
+        stderr_tail = dump.stderr.text()[-_STDERR_CAPTURE_LIMIT:]
 
         if timed_out.is_set():
             raise DialInTransportError(
                 f"mysqldump against {self._host}:{self._port} exceeded its {self._timeout_seconds}s "
                 "timeout and was killed -- refusing to treat this as an ordinary producer failure. "
-                f"stderr so far: {stderr_tail.decode(errors='replace')!r}"
+                f"stderr so far: {stderr_tail!r}"
             )
-        if exit_code != 0 and stderr_tail:
-            # Not raised -- a nonzero producer exit is pull_encrypt_store.py's
-            # ordinary, expected outcome (see DialInTransportError's own
-            # docstring), reported through the return value, not this
-            # exception. mysqldump's own reason would otherwise be lost
-            # entirely: stderr was captured but nothing else ever surfaces
-            # it.
+        if exit_code != 0:
+            # Not raised: a nonzero producer exit is pull_encrypt_store.py's
+            # ordinary, expected outcome, reported through the return value.
             print(
                 f"dial_in_transport: mysqldump against {self._host}:{self._port} exited "
-                f"{exit_code}: {stderr_tail.decode(errors='replace')}",
+                f"{exit_code}: {stderr_tail}",
                 file=sys.stderr,
             )
         return exit_code
-
-    @staticmethod
-    def _kill_process_group(process) -> None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (AttributeError, ProcessLookupError, PermissionError, OSError):
-            # AttributeError: a test double with no real pid/session.
-            # ProcessLookupError: already exited. PermissionError/OSError:
-            # os.killpg unavailable (e.g. Windows) or the group is gone --
-            # either way, falling back to killing this one pid is strictly
-            # weaker, never worse than doing nothing.
-            process.kill()

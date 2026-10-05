@@ -152,6 +152,15 @@ stopped running at all.
 
 ## _LockWaitTimer
 
+**No longer the production measurement.** `RemoteMysqldumpTransport`
+now takes its snapshot through `db/provision/bounded_snapshot.py`, whose
+coordinator session times the lock wait directly, from issuing
+`LOCK TABLES` to its grant, and the hold, from grant to the server
+confirming `UNLOCK TABLES`. `_snapshot_measurements` uses those whenever
+the transport reports them. This timer remains only for a transport that
+measures nothing (the `LocalProcessTransport` test double). The rest of
+this section describes the proxy as it was.
+
 Times the gap from construction — just before `pull_encrypt_and_store`
 is called, so before `RemoteMysqldumpTransport.run` spawns anything — to
 the producer's first byte of stdout, as a PROXY for how long
@@ -196,3 +205,15 @@ whose wait needs to be seen. `record_backup_age_metric` is the opposite:
 called only on a floor-verified success, so a stopped tenant's gauge
 simply stops advancing rather than being overwritten with a misleadingly
 healthy timestamp.
+
+## Lock-bound metric file
+
+`backup_worker_lock_hold_seconds` (gauge) and
+`backup_worker_lock_aborts_total` (counter), per tenant, in their own file
+and lock for the same reason the lock-wait gauge has its own. The counter
+counts lock attempts given up on a wait or hold bound, including those a
+retry recovered from, so repeated retries show even when every run ends
+in success. It is cumulative across runs (read, add, write under the
+lock) and is written at 0 too, so the series exists before the first
+abort. `record_dump_lock_metrics` writes all three lock metrics for both
+callers, whatever `result.ok` says.

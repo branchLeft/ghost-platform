@@ -42,6 +42,10 @@ infra/provisioning/scripts/backup_worker.py
 infra/provisioning/scripts/test_backup_worker.py
 infra/provisioning/scripts/test_pull_encrypt_store.py
 
+# Backup: the per-tenant transport's tests read back the lock session's
+# statements, which a real dump drives directly, never through the ORM.
+infra/provisioning/scripts/test_dial_in_transport.py
+
 # Backup: the nightly loop's own test fixtures fake mysqldump's output,
 # literal INSERT INTO text a real dump never runs through the ORM.
 infra/provisioning/scripts/test_nightly_dump_loop.py

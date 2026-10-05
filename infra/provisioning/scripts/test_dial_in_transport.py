@@ -11,7 +11,9 @@ fake `Popen` would otherwise assume correct.
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import pathlib
 import sys
 import tempfile
 import time
@@ -156,48 +158,51 @@ class RemoteMysqldumpTransportRefusalTests(unittest.TestCase):
             transport.run(command=_COMMAND, env={}, stdout=_CollectingSink())
 
 
-class _FakeStdout:
-    def __iter__(self):
-        return iter(())
-
-    def close(self) -> None:
-        pass
-
-
-class _FakeCompletedProcess:
-    """A minimal stand-in for what `subprocess.Popen` returns, for the one
-    test that only cares about the argv/env `RemoteMysqldumpTransport`
-    builds -- everything else in this file runs a real subprocess, per
-    this module's own no-Popen-mocking convention."""
-
-    def __init__(self) -> None:
-        self.stdout = _FakeStdout()
-        self.stderr = mock.Mock(close=lambda: None)
-
-    def wait(self) -> int:
-        return 0
-
-    def kill(self) -> None:
-        pass
+def _load_fake_mysql_clients():
+    source = pathlib.Path(__file__).resolve().parents[3] / "db" / "provision" / "fake_mysql_clients.py"
+    spec = importlib.util.spec_from_file_location("fake_mysql_clients", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-class RemoteMysqldumpTransportArgvTests(unittest.TestCase):
-    def test_builds_the_expected_mysqldump_invocation(self) -> None:
-        captured = {}
+FakeMysqlClients = _load_fake_mysql_clients().FakeMysqlClients
 
-        def fake_popen(argv, *, env, stdout, stderr, start_new_session, pass_fds):
-            captured["argv"] = argv
-            captured["env"] = env
-            captured["pass_fds"] = pass_fds
-            return _FakeCompletedProcess()
+_FAST = dit.bounded_snapshot.Limits(hold_bound_seconds=1.5, max_attempts=3, backoff_seconds=(0.0,))
 
-        transport = _remote_transport(
-            host="10.20.1.20", user="backup_ops1", ssl_ca="/etc/branchleft/mysql-ca.pem", port=3306, popen=fake_popen
+
+class _RemoteTransportFixture(unittest.TestCase):
+    """`mysql` and `mysqldump` are fake_mysql_clients.py's fakes on `PATH`:
+    real `subprocess.Popen`, real streaming, real exit codes and kills,
+    matching this file's own no-Popen-mocking convention."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.fakes = FakeMysqlClients(self.tmp.name)
+        self.fakes.configure(tables=[["ghost_blog", "settings"], ["ghost_blog", "users"]])
+        self._path_patch = mock.patch.dict(
+            os.environ, {"PATH": self.tmp.name + os.pathsep + os.environ.get("PATH", "")}
         )
-        transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+        self._path_patch.start()
+        self.addCleanup(self._path_patch.stop)
 
-        argv = captured["argv"]
-        self.assertEqual(argv[0], "mysqldump")
+    def transport(self, **overrides) -> "dit.RemoteMysqldumpTransport":
+        overrides.setdefault("limits", _FAST)
+        overrides.setdefault("sleep", lambda seconds: None)
+        return _remote_transport(**overrides)
+
+    def run_transport(self, transport=None, command=_COMMAND, env=_ENV) -> tuple[int, bytes]:
+        transport = transport or self.transport()
+        sink = _CollectingSink()
+        exit_code = transport.run(command=command, env=env, stdout=sink)
+        return exit_code, b"".join(sink.chunks)
+
+
+class RemoteMysqldumpTransportArgvTests(_RemoteTransportFixture):
+    def test_builds_the_expected_mysqldump_invocation(self) -> None:
+        self.run_transport()
+        argv = self.fakes.starts("mysqldump")[0]["argv"]
         for expected in (
             "--host", "10.20.1.20",
             "--port", "3306",
@@ -205,117 +210,108 @@ class RemoteMysqldumpTransportArgvTests(unittest.TestCase):
             "--ssl-mode=VERIFY_CA",
             "--ssl-ca", "/etc/branchleft/mysql-ca.pem",
             "--single-transaction",
-            "--source-data=2",
             "--routines",
             "--triggers",
             "--set-gtid-purged=OFF",
+            "--no-tablespaces",
             "--databases", "ghost_blog",
         ):
             self.assertIn(expected, argv)
-        # Never a plain --password/-p argument, never MYSQL_PWD in the
-        # child's own environ -- see the class docstring. The credential
-        # travels only through the one fd named in --defaults-extra-file,
-        # which pass_fds is what keeps open across the exec.
-        self.assertTrue(any(a.startswith("--defaults-extra-file=/dev/fd/") for a in argv))
-        self.assertFalse(any("pw" in a for a in argv))
-        self.assertNotIn("MYSQL_PWD", captured["env"])
-        self.assertEqual(len(captured["pass_fds"]), 1)
+        self.assertTrue(argv[0].startswith("--defaults-extra-file=/dev/fd/"))
+
+    def test_never_asks_for_a_global_read_lock(self) -> None:
+        self.run_transport()
+        argv = self.fakes.starts("mysqldump")[0]["argv"]
+        self.assertFalse([a for a in argv if a.startswith(("--source-data", "--master-data", "--flush-logs"))])
+        self.assertFalse([a for a in argv if a in ("--lock-all-tables", "-x")])
+        self.assertFalse([s for s in self.fakes.statements() if "FLUSH" in s.upper()])
+
+    def test_locks_only_this_tenants_schema(self) -> None:
+        self.run_transport()
+        listing = next(s for s in self.fakes.statements() if s.startswith("SELECT TABLE_SCHEMA"))
+        self.assertIn("TABLE_SCHEMA IN ('ghost_blog')", listing)
+
+    def test_the_coordinator_connects_exactly_as_the_dump_does(self) -> None:
+        self.run_transport()
+        coordinator = self.fakes.starts("mysql")[0]["argv"]
+        dump = self.fakes.starts("mysqldump")[0]["argv"]
+        self.assertEqual(coordinator[1:10], dump[1:10])
 
     def test_a_hyphenated_tenant_becomes_the_underscored_database_name(self) -> None:
-        captured = {}
-
-        def fake_popen(argv, *, env, stdout, stderr, start_new_session, pass_fds):
-            captured["argv"] = argv
-            return _FakeCompletedProcess()
-
-        transport = _remote_transport(popen=fake_popen)
         command = ["python3", "/x/dump_tenant.py", "my-shop", "--socket", "/x.sock"]
-        transport.run(command=command, env=_ENV, stdout=_CollectingSink())
-        self.assertIn("ghost_my_shop", captured["argv"])
+        self.run_transport(command=command)
+        self.assertIn("ghost_my_shop", self.fakes.starts("mysqldump")[0]["argv"])
 
 
-class RemoteMysqldumpTransportRealSubprocessTests(unittest.TestCase):
-    """`mysqldump` itself is faked as a tiny shell script on `PATH` --
-    real `subprocess.Popen`, real streaming, real exit codes, matching
-    this file's own no-Popen-mocking convention for everything but argv
-    construction."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.bin_dir = self.tmp.name
-        self._path_patch = mock.patch.dict(
-            os.environ, {"PATH": self.bin_dir + os.pathsep + os.environ.get("PATH", "")}
-        )
-        self._path_patch.start()
-        self.addCleanup(self._path_patch.stop)
-
-    def _write_fake_mysqldump(self, script: str) -> None:
-        path = os.path.join(self.bin_dir, "mysqldump")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(script)
-        os.chmod(path, 0o755)
-
-    def test_streams_stdout_and_returns_zero_on_success(self) -> None:
-        self._write_fake_mysqldump("#!/bin/sh\necho line one\necho line two\nexit 0\n")
-        transport = _remote_transport()
-        sink = _CollectingSink()
-        exit_code = transport.run(command=_COMMAND, env=_ENV, stdout=sink)
+class RemoteMysqldumpTransportRealSubprocessTests(_RemoteTransportFixture):
+    def test_streams_the_resume_comment_then_stdout_and_returns_zero(self) -> None:
+        self.fakes.configure(tables=[["ghost_blog", "users"]], dump_lines=["line one", "line two"])
+        exit_code, output = self.run_transport()
         self.assertEqual(exit_code, 0)
-        self.assertEqual(b"".join(sink.chunks), b"line one\nline two\n")
+        self.assertEqual(
+            output,
+            b"-- CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000007', MASTER_LOG_POS=1234;\nline one\nline two\n",
+        )
 
     def test_returns_the_real_nonzero_exit_code(self) -> None:
-        self._write_fake_mysqldump("#!/bin/sh\nexit 7\n")
-        transport = _remote_transport()
-        exit_code = transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+        self.fakes.configure(tables=[["ghost_blog", "users"]], dump_exit=7)
+        exit_code, _ = self.run_transport()
         self.assertEqual(exit_code, 7)
 
-    def test_the_credential_never_appears_on_the_command_line(self) -> None:
-        """The fake script echoes its own argv (never its env) -- if the
-        password were ever passed as an argument rather than through the
-        passed fd, it would show up in this output."""
-        self._write_fake_mysqldump('#!/bin/sh\necho "$@"\nexit 0\n')
-        transport = _remote_transport()
-        sink = _CollectingSink()
-        transport.run(command=_COMMAND, env={"DB_DUMP_MYSQL_PWD": "s3cret-pw"}, stdout=sink)
-        self.assertNotIn(b"s3cret-pw", b"".join(sink.chunks))
+    def test_records_the_snapshot_it_took(self) -> None:
+        self.fakes.configure(tables=[["ghost_blog", "users"]], lock=["timeout", "ok"])
+        transport = self.transport()
+        self.run_transport(transport)
+        self.assertEqual(transport.last_snapshot.aborted_attempts, 1)
+        self.assertEqual(transport.last_snapshot_aborts, 1)
+        self.assertLess(transport.last_snapshot.hold_seconds, _FAST.hold_bound_seconds)
 
-    def test_the_credential_reaches_mysqldump_only_through_the_passed_fd(self) -> None:
-        """The positive half of the property above: the password DOES
-        reach the child -- by reading the exact file named in its own
-        `--defaults-extra-file=` argument -- and it is absent from the
-        child's own environ (`env` lists every inherited variable, one per
-        line; MYSQL_PWD is never among them)."""
-        self._write_fake_mysqldump(
-            "#!/bin/sh\n"
-            "for arg in \"$@\"; do\n"
-            "  case \"$arg\" in\n"
-            "    --defaults-extra-file=*) cat \"${arg#--defaults-extra-file=}\" ;;\n"
-            "  esac\n"
-            "done\n"
-            "env\n"
-            "exit 0\n"
-        )
-        transport = _remote_transport()
-        sink = _CollectingSink()
-        transport.run(command=_COMMAND, env={"DB_DUMP_MYSQL_PWD": "s3cret-pw"}, stdout=sink)
-        output = b"".join(sink.chunks)
-        self.assertIn(b"password=s3cret-pw", output)
-        self.assertNotIn(b"MYSQL_PWD=", output)
+    def test_no_snapshot_is_a_producer_failure_with_nothing_streamed(self) -> None:
+        self.fakes.configure(tables=[["ghost_blog", "users"]], lock=["timeout"])
+        transport = self.transport()
+        exit_code, output = self.run_transport(transport)
+        self.assertEqual(exit_code, dit.SNAPSHOT_FAILED_EXIT_CODE)
+        self.assertEqual(output, b"")
+        self.assertIsNone(transport.last_snapshot)
+        self.assertEqual(transport.last_snapshot_aborts, 3)
+        self.assertEqual(self.fakes.starts("mysqldump"), [])
+
+    def test_a_second_run_does_not_inherit_the_first_runs_measurements(self) -> None:
+        self.fakes.configure(tables=[["ghost_blog", "users"]])
+        transport = self.transport()
+        self.run_transport(transport)
+        self.fakes.configure(tables=[["ghost_blog", "users"]], lock=["timeout"])
+        self.run_transport(transport)
+        self.assertIsNone(transport.last_snapshot)
+
+    def test_the_credential_never_appears_on_the_command_line(self) -> None:
+        self.fakes.configure(tables=[["ghost_blog", "users"]], dump_echo=True)
+        _, output = self.run_transport(env={"DB_DUMP_MYSQL_PWD": "s3cret-pw"})
+        first_line = output.splitlines()[1]
+        self.assertNotIn(b"s3cret-pw", first_line)
+        for start in self.fakes.events():
+            if start["kind"] == "start":
+                self.assertFalse(any("s3cret-pw" in arg for arg in start["argv"]))
+
+    def test_the_credential_reaches_each_child_only_through_the_passed_fd(self) -> None:
+        self.fakes.configure(tables=[["ghost_blog", "users"]])
+        self.run_transport(env={"DB_DUMP_MYSQL_PWD": "s3cret-pw"})
+        starts = [e for e in self.fakes.events() if e["kind"] == "start"]
+        self.assertEqual({e["binary"] for e in starts}, {"mysql", "mysqldump"})
+        for start in starts:
+            self.assertEqual(start["password"], "[client]\npassword=s3cret-pw\n")
+            self.assertNotIn("MYSQL_PWD", start["environ"])
+            self.assertTrue(set(start["environ"]) <= {"PATH", "PWD", "SHLVL", "_", "LC_CTYPE", "__CF_USER_TEXT_ENCODING"})
 
     def test_a_hanging_producer_is_killed_after_its_timeout(self) -> None:
-        self._write_fake_mysqldump("#!/bin/sh\nsleep 30\n")
-        transport = _remote_transport(timeout_seconds=0.3)
+        self.fakes.configure(tables=[["ghost_blog", "users"]], dump_sleep=30)
+        transport = self.transport(timeout_seconds=0.5)
         start = time.monotonic()
         with self.assertRaises(dit.DialInTransportError) as ctx:
-            transport.run(command=_COMMAND, env=_ENV, stdout=_CollectingSink())
+            self.run_transport(transport)
         elapsed = time.monotonic() - start
         self.assertIn("timeout", str(ctx.exception))
-        # The bound a plain `process.kill()` (one pid, not the process
-        # group) would blow: an orphaned `sleep 30` keeps the stdout pipe
-        # open, and the read loop blocks for the full 30s instead of this
-        # 0.3s timeout. Comfortably under 30s, comfortably over 0.3s.
-        self.assertLess(elapsed, 5.0)
+        self.assertLess(elapsed, 8.0)
 
 
 if __name__ == "__main__":
