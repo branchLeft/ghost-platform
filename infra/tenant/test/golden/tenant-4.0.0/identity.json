@@ -1,0 +1,10 @@
+{
+  "slug": "zero",
+  "uid": 30001,
+  "stackName": "zero",
+  "contentVolume": "ghost-zero-content",
+  "adaptersVolume": "ghost-zero-adapters",
+  "databaseName": "ghost_zero",
+  "appHostPrivateIp": "10.20.1.100",
+  "maxUserConnections": 10
+}

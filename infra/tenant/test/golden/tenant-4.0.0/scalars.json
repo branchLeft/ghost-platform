@@ -1,0 +1,15 @@
+{
+  "stackName": "zero",
+  "stackDirectory": "/opt/branchleft/zero",
+  "composeUnit": "branchleft-compose@zero.service",
+  "secretsEnvPath": "/etc/branchleft/zero.env",
+  "imageEnvPath": "/etc/branchleft/zero.image.env",
+  "contentVolume": "ghost-zero-content",
+  "adaptersVolume": "ghost-zero-adapters",
+  "databaseName": "ghost_zero",
+  "databaseUser": "ghost_zero",
+  "mediaBucket": "branchleft-media-zero",
+  "mediaPublicBaseUrl": "https://objects.example.test/branchleft-media-zero",
+  "edgeRequestBodyMaxSize": "64MiB",
+  "hostProvisioningCommand": "provision_tenant_volume.py --uid 30001 zero"
+}
