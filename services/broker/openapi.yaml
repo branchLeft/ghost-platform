@@ -573,7 +573,7 @@ components:
       additionalProperties: false
     StatusResponse:
       type: object
-      required: [slot, phase, healthy]
+      required: [slot, phase, healthy, notReal, interim]
       properties:
         slot:
           $ref: '#/components/schemas/SlotName'
@@ -581,6 +581,24 @@ components:
           $ref: '#/components/schemas/Phase'
         healthy:
           type: boolean
+        notReal:
+          description: >-
+            Host-wide, not per-slot: the plugin seams ("adminApi",
+            "drainSource", "imageLoader", "renderer") whose loaded module does
+            not mark itself `real: true`, sorted. A test stand-in or any
+            unmarked module is listed. A host is not ready to go live while
+            this is non-empty.
+          type: array
+          items:
+            type: string
+        interim:
+          description: >-
+            Host-wide: the plugin seams whose loaded module marks itself
+            interim (shipped, but standing in for a part not built yet),
+            sorted. A host is not ready to go live while this is non-empty.
+          type: array
+          items:
+            type: string
       additionalProperties: false
     QueuedMailItem:
       type: object

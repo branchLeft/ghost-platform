@@ -83,14 +83,9 @@ COPY services/broker/dist/bundle/ /opt/branchleft/broker/releases/proof/
 RUN ln -s /opt/branchleft/broker/releases/proof /opt/branchleft/broker/current \
  && chown -R root:root /opt/branchleft/broker/releases/proof
 
-# The two real plugin seams this proof can wire (Renderer, ImageLoader) are
-# already in that bundle. AdminApi/DrainSource have no real implementation
-# anywhere in this repo yet (RUNBOOK-broker-deploy.md's "Left out,
-# deliberately") -- these two no-op stand-ins exist only so the server can
-# start at all for this proof, and are never what RUNBOOK-broker-deploy.md's
-# install step points a real deploy at.
-COPY services/broker/test/live/fixtures/systemd-boot/noop-admin-api.mjs services/broker/test/live/fixtures/systemd-boot/noop-drain-source.mjs /opt/branchleft/broker/current/plugins/
-
+# All four plugin seams are the shipped modules already in that bundle:
+# the env file below is the shipped template itself, so this proof boots
+# exactly what a real install boots. No test stand-in is copied in.
 COPY services/broker/test/live/fixtures/systemd-boot/make-verify-key.mjs services/broker/test/live/fixtures/systemd-boot/sign-request.mjs /opt/branchleft/broker/proof/
 # root:broker 0640, and a non-empty slots.json seeding a real leased slot
 # "0": see systemd/README.md for why (ownership found by EACCES, the
@@ -102,10 +97,10 @@ RUN mkdir -p /etc/branchleft /var/lib/branchleft/broker-slots \
  && chown root:broker /etc/branchleft/broker-verify-key.bin \
  && chmod 0640 /etc/branchleft/broker-verify-key.bin \
  && printf '{"slots": [{"host": "proof-leased.demo.trypublicpress.co.uk", "slot": "0", "gate": {"kind": "passphrase", "argon2idHash": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA"}}]}' > /var/lib/branchleft/broker-slots/slots.json \
- && chown root:root /var/lib/branchleft \
+ && chown root:root /var/lib/branchleft && chmod 0755 /var/lib/branchleft \
  && chown -R broker:broker /var/lib/branchleft/broker-slots
 
-COPY services/broker/test/live/fixtures/systemd-boot/broker.env /etc/branchleft/broker.env
+COPY services/broker/systemd/broker.env.example /etc/branchleft/broker.env
 RUN chown root:root /etc/branchleft/broker.env && chmod 0600 /etc/branchleft/broker.env
 
 COPY services/broker/systemd/branchleft-broker.service /etc/systemd/system/branchleft-broker.service

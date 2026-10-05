@@ -301,7 +301,53 @@ describe('the real dist/server.js entrypoint', () => {
     // /status needs no signature at all (LLD-2 §03).
     const statusRes = await fetch(`${baseUrl}/status/0`);
     expect(statusRes.status).toBe(200);
-    expect(await statusRes.json()).toEqual({ slot: '0', phase: 'running', healthy: false });
+    expect(await statusRes.json()).toEqual({
+      slot: '0',
+      phase: 'running',
+      healthy: false,
+      notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
+      interim: [],
+    });
+  });
+
+  it('starts on the shipped modules, reporting only the interim admin client, and lists an unmarked stand-in as not real', async () => {
+    const distPlugins = join(process.cwd(), 'dist/plugins');
+    const shippedPlugins = {
+      BROKER_RENDERER_MODULE: join(distPlugins, 'renderCorePlugin.js'),
+      BROKER_ADMIN_API_MODULE: join(distPlugins, 'refusingAdminApi.js'),
+      BROKER_IMAGE_LOADER_MODULE: join(distPlugins, 'dockerImageLoader.js'),
+    };
+
+    broker = spawnBroker({
+      ...(await baseEnv()).env,
+      ...shippedPlugins,
+      BROKER_DRAIN_SOURCE_MODULE: join(distPlugins, 'refusingDrainSource.js'),
+    });
+    const shipped = await broker.waitListening(8000);
+    const shippedStatus = await fetch(`http://127.0.0.1:${shipped.port}/status/0`);
+    expect(await shippedStatus.json()).toEqual({
+      slot: '0',
+      phase: 'free',
+      healthy: false,
+      notReal: ['adminApi'],
+      interim: ['adminApi'],
+    });
+    broker.stop();
+
+    broker = spawnBroker({
+      ...(await baseEnv()).env,
+      ...shippedPlugins,
+      BROKER_DRAIN_SOURCE_MODULE: join(
+        process.cwd(),
+        'test/live/fixtures/systemd-boot/noop-drain-source.mjs'
+      ),
+    });
+    const withStandIn = await broker.waitListening(8000);
+    const standInStatus = await fetch(`http://127.0.0.1:${withStandIn.port}/status/0`);
+    expect(await standInStatus.json()).toMatchObject({
+      notReal: ['adminApi', 'drainSource'],
+      interim: ['adminApi'],
+    });
   });
 
   // --- push delivery, end to end through the real spawned process: a real
@@ -556,7 +602,13 @@ describe('the real dist/server.js entrypoint', () => {
 
     // Recovered, not left looking like a live in-flight reconcile.
     const statusRes = await fetch(`${baseUrl}/status/2`);
-    expect(await statusRes.json()).toEqual({ slot: '2', phase: 'error', healthy: false });
+    expect(await statusRes.json()).toEqual({
+      slot: '2',
+      phase: 'error',
+      healthy: false,
+      notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
+      interim: [],
+    });
 
     await new Promise((resolve) => setTimeout(resolve, 1100)); // past item 2's same-second floor
 
@@ -570,7 +622,13 @@ describe('the real dist/server.js entrypoint', () => {
     expect(resetRes.status).toBe(200);
 
     const statusAfterReset = await fetch(`${baseUrl}/status/2`);
-    expect(await statusAfterReset.json()).toEqual({ slot: '2', phase: 'free', healthy: false });
+    expect(await statusAfterReset.json()).toEqual({
+      slot: '2',
+      phase: 'free',
+      healthy: false,
+      notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
+      interim: [],
+    });
   });
 
   // --- A slot recovered from "resetting" must also have the previous

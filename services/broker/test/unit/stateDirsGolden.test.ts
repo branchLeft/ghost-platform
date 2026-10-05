@@ -6,7 +6,7 @@ import { loadConfig } from '../../src/config.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SYSTEMD_DIR = join(HERE, '../../systemd');
-const FIXTURE_ENV = join(HERE, '../live/fixtures/systemd-boot/broker.env');
+const BOOT_DOCKERFILE = join(HERE, '../live/fixtures/systemd-boot/Dockerfile');
 const GOLDEN_PATH = join(HERE, '../../../../demo-host/provision/state-dirs.golden.json');
 
 interface GoldenStateDirs {
@@ -52,8 +52,10 @@ describe('the broker slots file, pinned to state-dirs.golden.json', () => {
     );
   });
 
-  it('the boot proof env names the golden slots file', () => {
-    expect(parseEnvFile(FIXTURE_ENV).get('BROKER_SLOTS_FILE')).toBe(golden.brokerSlotsFile);
+  it('the boot proof installs the shipped template, so it names the golden slots file too', () => {
+    expect(readFileSync(BOOT_DOCKERFILE, 'utf8')).toContain(
+      'COPY services/broker/systemd/broker.env.example /etc/branchleft/broker.env'
+    );
   });
 
   it('loadConfig over the shipped env template yields the golden slots file', () => {

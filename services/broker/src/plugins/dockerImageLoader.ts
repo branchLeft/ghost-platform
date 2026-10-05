@@ -12,6 +12,7 @@ import { realpath } from 'node:fs/promises';
 import { sep } from 'node:path';
 import { wrapperConfigFromEnv } from '../config.js';
 import type { ImageLoader } from '../imagePush.js';
+import type { SeamMarker } from '../seamReadiness.js';
 import { createSlotWrapper } from '../wrapper.js';
 
 const LOADED_IMAGE_ID_PATTERN = /Loaded image ID:\s*(sha256:[0-9a-f]{64})/;
@@ -42,7 +43,8 @@ async function assertInsideFixedDirectory(tarPath: string, fixedDir: string): Pr
   }
 }
 
-const dockerImageLoader: ImageLoader = {
+const dockerImageLoader: ImageLoader & SeamMarker = {
+  real: true,
   async load(tarPath) {
     const fixedDir = requireEnv('BROKER_IMAGE_TMP_DIR');
     await assertInsideFixedDirectory(tarPath, fixedDir);
