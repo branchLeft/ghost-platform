@@ -75,7 +75,7 @@ jobs:
 
       - name: The fixture seeded a real leased slot in the shared slots file
         run: |
-          docker exec broker-boot-proof cat /var/lib/branchleft/slots.json | tee /tmp/slots-before.json
+          docker exec broker-boot-proof cat /var/lib/branchleft/broker-slots/slots.json | tee /tmp/slots-before.json
           grep -q 'proof-leased.demo.trypublicpress.co.uk' /tmp/slots-before.json
 
       - name: A real signed POST /reset reaches the wrapper through sudo -n
@@ -86,7 +86,7 @@ jobs:
 
       - name: The reset actually wrote the shared slots file through the ProtectSystem=strict mount
         run: |
-          docker exec broker-boot-proof cat /var/lib/branchleft/slots.json | tee /tmp/slots-after.json
+          docker exec broker-boot-proof cat /var/lib/branchleft/broker-slots/slots.json | tee /tmp/slots-after.json
           if grep -q 'proof-leased.demo.trypublicpress.co.uk' /tmp/slots-after.json; then
             echo "slots.json still carries the leased entry after /reset -- the write never happened" >&2
             exit 1

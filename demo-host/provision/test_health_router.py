@@ -9,6 +9,7 @@ foreign owner is simulated by telling the router to expect another uid.
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import http.server
 import os
@@ -16,6 +17,7 @@ import shutil
 import socket
 import socketserver
 import stat
+import sys
 import tempfile
 import threading
 import unittest
@@ -80,9 +82,11 @@ def make_tree(root: str, slot: str = SLOT, colours=("a", "b")) -> None:
 
 class _Case(unittest.TestCase):
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="hr", dir="/tmp")
-        os.chmod(self.root, 0o755)
-        self.addCleanup(shutil.rmtree, self.root, True)
+        self.base = tempfile.mkdtemp(prefix="hr", dir="/tmp")
+        os.chmod(self.base, 0o755)
+        self.addCleanup(shutil.rmtree, self.base, True)
+        self.root = os.path.join(self.base, "demo-router")
+        os.mkdir(self.root, 0o755)
         self.sidecars: list[FakeSidecar] = []
         self.addCleanup(self._close_sidecars)
 
@@ -321,45 +325,154 @@ class SocketDirectoryTests(_Case):
         with self.assertRaises(hr.SocketRefused):
             hr.verify_socket(self.root, SLOT, "a", ME + 1)
 
-    def _lstat_owned_by_someone_else(self, victim: str):
-        real = os.lstat
+    def _owned_by_someone_else(self, victim: str):
+        """Makes the router see `victim` (whatever way it reaches it) as owned
+        by another uid, keyed on the directory entry's identity."""
+        target = os.lstat(victim)
+        real_fstat, real_stat = os.fstat, os.stat
 
-        def fake(path, *args, **kwargs):
-            st = real(path, *args, **kwargs)
-            if os.fspath(path) == victim:
-                return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, ME + 1, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
-            return st
+        def other(st):
+            return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, ME + 1, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))  # fmt: skip
 
-        return mock.patch.object(hr.os, "lstat", fake)
+        def same(st):
+            return (st.st_dev, st.st_ino) == (target.st_dev, target.st_ino)
+
+        def fstat(fd):
+            st = real_fstat(fd)
+            return other(st) if same(st) else st
+
+        def stat_(path, *args, **kwargs):
+            st = real_stat(path, *args, **kwargs)
+            return other(st) if same(st) else st
+
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(hr.os, "fstat", fstat))
+        stack.enter_context(mock.patch.object(hr.os, "stat", stat_))
+        return stack
 
     def test_a_slot_directory_owned_by_someone_else_is_refused(self):
         self.sidecar("a")
-        with self._lstat_owned_by_someone_else(os.path.join(self.root, SLOT)):
+        with self._owned_by_someone_else(os.path.join(self.root, SLOT)):
             with self.assertRaises(hr.SocketRefused):
                 hr.verify_socket(self.root, SLOT, "a", ME)
 
     def test_a_colour_directory_owned_by_someone_else_is_refused(self):
         self.sidecar("a")
-        with self._lstat_owned_by_someone_else(os.path.join(self.root, SLOT, "a")):
+        with self._owned_by_someone_else(os.path.join(self.root, SLOT, "a")):
             with self.assertRaises(hr.SocketRefused):
                 hr.verify_socket(self.root, SLOT, "a", ME)
 
     def test_a_socket_owned_by_someone_else_is_refused(self):
         self.sidecar("a")
-        with self._lstat_owned_by_someone_else(hr.socket_path(self.root, SLOT, "a")):
+        with self._owned_by_someone_else(hr.socket_path(self.root, SLOT, "a")):
             with self.assertRaises(hr.SocketRefused):
                 hr.verify_socket(self.root, SLOT, "a", ME)
 
     def test_a_root_directory_owned_by_someone_else_is_refused(self):
         self.sidecar("a")
-        with self._lstat_owned_by_someone_else(self.root):
+        with self._owned_by_someone_else(self.root):
             with self.assertRaises(hr.SocketRefused):
                 hr.verify_socket(self.root, SLOT, "a", ME)
+
+    def test_a_parent_directory_owned_by_someone_else_is_refused(self):
+        self.sidecar("a")
+        with self._owned_by_someone_else(self.base):
+            with self.assertRaises(hr.SocketRefused):
+                hr.verify_socket(self.root, SLOT, "a", ME)
+
+    def test_a_parent_directory_others_can_write_is_refused(self):
+        self.sidecar("a")
+        for mode in (0o775, 0o757, 0o777):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.base, mode)
+                with self.assertRaises(hr.SocketRefused):
+                    hr.verify_socket(self.root, SLOT, "a", ME)
+                port = self.start_router()
+                self.assertEqual(self.ask(port, "a"), 503)
+
+    def test_a_symlinked_parent_entry_for_the_root_is_refused(self):
+        self.sidecar("a")
+        moved = os.path.join(self.base, "moved")
+        os.rename(self.root, moved)
+        os.symlink(moved, self.root)
+        with self.assertRaises(hr.SocketRefused):
+            hr.verify_socket(self.root, SLOT, "a", ME)
+
+    def test_the_descriptors_are_closed_after_every_check(self):
+        self.sidecar("a")
+        before = set(os.listdir("/dev/fd"))
+        for _ in range(20):
+            hr.verify_socket(self.root, SLOT, "a", ME)
+            with self.assertRaises(hr.SocketRefused):
+                hr.verify_socket(self.root, SLOT, "a", ME + 1)
+        self.assertEqual(set(os.listdir("/dev/fd")), before)
 
     def test_socket_modes_are_not_assumed(self):
         self.sidecar("a")
         mode = stat.S_IMODE(os.lstat(os.path.join(self.root, SLOT)).st_mode)
         self.assertEqual(mode, 0o700)
+
+
+@unittest.skipUnless(sys.platform == "linux", "the pinned connect resolves through /proc, which only the demo host's Linux has")
+class RaceTests(_Case):
+    """The check and the connect see one directory, however the tree is
+    changed between them. The change is made from inside the router's own
+    call to the sidecar, after every check has passed and before the connect,
+    which is the window a path-based connect leaves open."""
+
+    def _swap_during_the_window(self, swap):
+        real = hr.sidecar_status
+
+        def racing(path, *args, **kwargs):
+            swap()
+            return real(path, *args, **kwargs)
+
+        return mock.patch.object(hr, "sidecar_status", racing)
+
+    def test_a_renamed_colour_directory_cannot_redirect_the_connect(self):
+        sick = self.sidecar("a", status=503)
+        well = self.sidecar("b", status=200)
+        a_dir = os.path.join(self.root, SLOT, "a")
+        b_dir = os.path.join(self.root, SLOT, "b")
+
+        def swap():
+            os.rename(a_dir, a_dir + ".aside")
+            os.rename(b_dir, a_dir)
+
+        with self._swap_during_the_window(swap):
+            status, reason = hr.decide(self.root, SLOT, ME, [f"127.0.0.1:{hr.slot_app_port(SLOT, 'a')}"])
+        self.assertEqual(status, 503, reason)
+        self.assertEqual((sick.requests, well.requests), (1, 0))
+
+    def test_a_renamed_root_directory_cannot_redirect_the_connect(self):
+        sick = self.sidecar("a", status=503)
+        well = self.sidecar("b", status=200)
+        elsewhere = self.root + ".aside"
+
+        def swap():
+            os.rename(self.root, elsewhere)
+            os.makedirs(os.path.join(self.root, SLOT))
+            os.rename(os.path.join(elsewhere, SLOT, "b"), os.path.join(self.root, SLOT, "a"))
+
+        with self._swap_during_the_window(swap):
+            status, reason = hr.decide(self.root, SLOT, ME, [f"127.0.0.1:{hr.slot_app_port(SLOT, 'a')}"])
+        self.assertEqual(status, 503, reason)
+        self.assertEqual((sick.requests, well.requests), (1, 0))
+
+    def test_a_replaced_slot_directory_cannot_redirect_the_connect(self):
+        sick = self.sidecar("a", status=503)
+        well = self.sidecar("b", status=200)
+        slot_dir = os.path.join(self.root, SLOT)
+
+        def swap():
+            os.rename(slot_dir, slot_dir + ".aside")
+            os.mkdir(slot_dir, 0o700)
+            os.rename(os.path.join(slot_dir + ".aside", "b"), os.path.join(slot_dir, "a"))
+
+        with self._swap_during_the_window(swap):
+            status, reason = hr.decide(self.root, SLOT, ME, [f"127.0.0.1:{hr.slot_app_port(SLOT, 'a')}"])
+        self.assertEqual(status, 503, reason)
+        self.assertEqual((sick.requests, well.requests), (1, 0))
 
 
 class ContractTests(unittest.TestCase):

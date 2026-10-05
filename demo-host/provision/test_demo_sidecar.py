@@ -518,8 +518,11 @@ class ProvisionTests(unittest.TestCase):
                 psd.resolve_router()
 
     def test_main_exit_codes(self):
-        with mock.patch.object(psd, "provision", return_value=[]):
+        with mock.patch.object(psd, "provision", return_value=[]), mock.patch.object(
+            psd, "provision_broker_slots_dir", return_value=True
+        ) as slots_dir:
             self.assertEqual(psd.main(["--root", self.root]), 0)
+        slots_dir.assert_called_once_with(psd.BROKER_SLOTS_DIR)
         with mock.patch.object(psd, "provision", side_effect=psd.ProvisionError("x")):
             self.assertEqual(psd.main(["--root", self.root]), 1)
 
