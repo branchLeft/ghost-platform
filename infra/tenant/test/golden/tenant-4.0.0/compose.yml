@@ -1,0 +1,99 @@
+# The zero Ghost stack, deployed as `zero` under
+# /opt/branchleft/zero on an app host.
+#
+# Rendered by @branchleft/ghost-platform-tenant. Do not hand-edit on the
+# host: every line below is a runtime-isolation control, and a stack that
+# omits one still starts, still serves, and silently drops the boundary.
+#
+# `${IMAGE}` is written to /etc/branchleft/<stack>.image.env by
+# /usr/local/sbin/branchleft-deploy and is always a digest, never a tag.
+# The `${GHOST_*}` references come from /etc/branchleft/<stack>.env, which
+# is root-owned 0600 and written by an operator alone.
+name: 'zero'
+services:
+  ghost:
+    image: '${IMAGE}'
+    restart: 'unless-stopped'
+    user: '30001:30001'
+    init: true
+    read_only: true
+    tmpfs:
+      - '/tmp:rw,noexec,nosuid,nodev,size=128m'
+    cap_drop:
+      - 'ALL'
+    security_opt:
+      - 'no-new-privileges:true'
+    pids_limit: 256
+    mem_limit: '640m'
+    memswap_limit: '640m'
+    cpus: '1.0'
+    cpu_shares: 512
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    ports:
+      - '10.20.1.100:8101:2368'
+    environment:
+      url: 'https://zero.platform-domain.example.test'
+      database__client: 'mysql'
+      database__connection__host: '10.20.1.20'
+      database__connection__port: 3306
+      database__connection__database: 'ghost_zero'
+      database__connection__user: 'ghost_zero'
+      database__connection__password: '${GHOST_DB_PASSWORD:?set GHOST_DB_PASSWORD in /etc/branchleft/zero.env}'
+      database__connection__ssl__rejectUnauthorized: false
+      storage__active: 'S3Storage'
+      storage__S3Storage__bucket: 'branchleft-media-zero'
+      storage__S3Storage__region: 'region-1'
+      storage__S3Storage__endpoint: 'https://objects.example.test'
+      storage__S3Storage__forcePathStyle: true
+      storage__S3Storage__staticFileURLPrefix: 'content/images'
+      storage__S3Storage__cdnUrl: 'https://objects.example.test/branchleft-media-zero'
+      storage__S3Storage__multipartUploadThresholdBytes: 10485760
+      storage__S3Storage__multipartChunkSizeBytes: 5242880
+      storage__S3Storage__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/zero.env}'
+      storage__S3Storage__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/zero.env}'
+      security__allowWebhookInternalIPs: false
+      theme__uploadLimits__compressedBytes: 33554432
+      theme__uploadLimits__entryUncompressedBytes: 33554432
+      theme__uploadLimits__totalUncompressedBytes: 67108864
+      privacy__useUpdateCheck: false
+      logging__transports: '["stdout"]'
+      mail__transport: 'SMTP'
+      mail__options__host: 'mx.example.test'
+      mail__options__port: 587
+      mail__options__secure: false
+      mail__options__auth__user: 'zero@example.test'
+      mail__options__auth__pass: '${GHOST_MAIL_PASSWORD:?set GHOST_MAIL_PASSWORD in /etc/branchleft/zero.env}'
+      mail__from: 'PLACEHOLDER_SENDER_NAME <zero@example.test>'
+      bulkEmail__mailgun__baseUrl: 'https://mx.example.test:8443'
+      bulkEmail__mailgun__domain: 'zero-mail.example.test'
+      bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/zero.env}'
+    volumes:
+      - 'ghost-zero-content:/var/lib/ghost/content'
+      - 'ghost-zero-adapters:/var/lib/ghost/content/adapters:ro'
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'wget'
+        - '-q'
+        - '-O'
+        - '/dev/null'
+        - '--header'
+        - 'X-Forwarded-Proto: https'
+        - 'http://127.0.0.1:2368/'
+      interval: '30s'
+      timeout: '5s'
+      retries: 3
+      start_period: '60s'
+volumes:
+  ghost-zero-content:
+    external: true
+  ghost-zero-adapters:
+    external: true

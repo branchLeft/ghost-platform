@@ -3,6 +3,13 @@
 The `GhostTenant` Pulumi component: everything one Ghost tenant needs on a
 shared Hetzner app host.
 
+**Since 6.0.0 it takes a tenant descriptor and renders nothing itself.**
+Every artefact below comes from `render()` in
+`@branchleft/ghost-platform-render-core`, the same function the broker renders
+demos from. The runtime posture, upload limits and media addressing described
+below are therefore the render core's; this README keeps the reasoning because
+it is what a tenant runs. See `index.md` and `CHANGELOG.md`.
+
 ## What it produces, and what it does not
 
 **This component declares no cloud resources.** Every durable thing a tenant
@@ -15,7 +22,10 @@ renders:
 |---|---|
 | `composeFile` | `/opt/branchleft/<slug>/compose.yml` on the app host |
 | `secretsEnvFile` (a Pulumi secret) | `/etc/branchleft/<slug>.env`, root-owned `0600` |
-| `hostProvisioningCommand` | run as root on the app host, before the unit is enabled |
+| `provisionScript` | run as root on the app host, before the unit is enabled |
+| `imageEnvFile` | `/etc/branchleft/<slug>.image.env`, today written by `branchleft-deploy` |
+| `edgeSiteBlock` | the tenant's site block in the edge's site registry |
+| `ghostSettings` | the tenant's Ghost settings |
 | `edgeRequestBodyMaxSize` | the tenant's site block in the edge's site registry |
 | `composeUnit`, `stackDirectory`, `imageEnvPath` | the deploy path |
 | `databaseName`, `databaseUser` | `db/provision/provision_tenant_db.py` |
@@ -31,7 +41,7 @@ Each fails loudly rather than silently when it has not been done:
 
 1. **The database.** `provision_tenant_db.py <slug>` on `db1`, as root. It
    prints the tenant's DB password once; that value is the component's
-   `database.password` input and belongs in the tenant stack's own encrypted
+   `secrets.databasePassword` input and belongs in the tenant stack's own encrypted
    config, never in a plain config value.
 2. **The volumes.** `provision_tenant_volume.py --uid <uid> <slug>` on the app
    host, as root. `--list-claims` reports which UIDs that host has already
@@ -60,8 +70,8 @@ outside the content volume, `content/adapters` mounted read-only,
 `pids_limit`/`mem_limit`/`memswap_limit`/`cpus`/`cpu_shares`/`ulimits`, bounded
 `json-file` logging, and publishing to the app host's private address alone.
 
-`assertRuntimePosture` re-reads the finished document inside
-`renderComposeStack`, so there is no rendered stack that reaches a host without
+The render core's `assertRuntimePosture` re-reads the finished document inside
+its `renderComposeStack`, so there is no rendered stack that reaches a host without
 having passed it, and the unit tests assert the *absence* of the Docker socket,
 `cap_add`, `privileged`, `seccomp=unconfined`, a `0.0.0.0` publish and host
 networking. A posture with no test for its absence is a comment.
@@ -72,7 +82,7 @@ no loopback, no leading-zero octet — rather than compared against the rendered
 port string it produced, since a check whose expectation comes from its subject
 cannot fail. And the posture check runs over the object *before* serialisation,
 so it cannot see a value that only becomes document structure once written out;
-the refusal for that lives in `yaml.ts`, which throws on any control character
+the refusal for that lives in the render core's `yaml.ts`, which throws on any control character
 rather than emitting a single-quoted scalar it cannot round-trip.
 
 **What is asserted here is what the component renders, not what is on a host.**
@@ -89,7 +99,7 @@ Two controls in the same design are deliberately **not** this component's:
 
 ## One number drives every upload limit
 
-`uploadCeilingMib` (default 128) derives the `/tmp` tmpfs `size=`, the three
+The upload ceiling (default 128 MiB, the render core's default) derives the `/tmp` tmpfs `size=`, the three
 `theme__uploadLimits__*` values, the tenant's Caddy `request_body` limit at the
 edge, and the tmpfs half of `mem_limit`. They are derived rather than set
 independently because three limits that must agree is exactly the kind of thing
@@ -128,7 +138,7 @@ prefix, needs a policy `Condition` that Hetzner documents nowhere and nobody has
 tested.
 
 **What the component therefore does not take as input.** `bucket` and
-`publicBaseUrl` are derived from the slug and the endpoint by `media.ts`, not
+`publicBaseUrl` are derived from the slug and the endpoint by the render core's `media.ts`, not
 configured. A value a stack can set is a value a stack can set to another
 tenant's bucket, and this is the platform's only isolation boundary for media —
 so the safest configuration surface for it is none. `endpoint` and `region` stay
