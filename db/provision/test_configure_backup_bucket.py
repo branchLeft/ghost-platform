@@ -291,7 +291,7 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
             self.assertIn("<Expiration><Days>10</Days></Expiration>", self._rule(doc, prefix))
 
     def test_media_and_fence_probe_carry_no_day_based_expiry_unless_media_is_given_one(self):
-        doc = cbb.lifecycle_document(35, 1, 10).decode()
+        doc = cbb.lifecycle_document(35, 1, 10, 0).decode()
         self.assertEqual(doc.count("<Days>"), 2)
         for prefix in ("media/", "fence-probe/"):
             self.assertNotIn("<Days>", self._rule(doc, prefix))
@@ -315,9 +315,14 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
                 for expiration in re.findall(r"<Expiration>.*?</Expiration>", doc):
                     self.assertFalse("<Days>" in expiration and "ExpiredObjectDeleteMarker" in expiration)
 
-    def test_media_default_is_no_expiry_until_one_is_ruled(self):
-        self.assertEqual(cbb.MEDIA_CURRENT_EXPIRATION_DAYS, 0)
-        self.assertNotIn("<Days>", self._rule(cbb.lifecycle_document().decode(), "media/"))
+    def test_media_default_expires_current_copies_after_28_days(self):
+        self.assertEqual(cbb.MEDIA_CURRENT_EXPIRATION_DAYS, 28)
+        rule = self._rule(cbb.lifecycle_document().decode(), "media/")
+        self.assertIn("<Expiration><Days>28</Days></Expiration>", rule)
+
+    def test_media_expiry_of_zero_still_omits_the_rule(self):
+        rule = self._rule(cbb.lifecycle_document(35, 1, 10, 0).decode(), "media/")
+        self.assertNotIn("<Expiration>", rule)
 
     def test_a_negative_media_expiry_is_refused(self):
         with self.assertRaises(ValueError):
@@ -342,7 +347,7 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
         )
 
     def test_zero_omits_the_expiry_and_negative_is_refused(self):
-        self.assertNotIn(b"<Days>", cbb.lifecycle_document(35, 1, 0))
+        self.assertNotIn(b"<Days>", cbb.lifecycle_document(35, 1, 0, 0))
         with self.assertRaises(ValueError):
             cbb.lifecycle_document(35, 1, -1)
 
@@ -386,7 +391,7 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
             policy_file = Path(directory) / "policy.json"
             policy_file.write_text(json.dumps(fence_policy()))
             environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
-            for extra, expected in (([], 0), (["--media-expiration-days", "9"], 9)):
+            for extra, expected in (([], 28), (["--media-expiration-days", "9"], 9), (["--media-expiration-days", "0"], 0)):
                 captured = {}
                 with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
                     cbb, "owner_id", return_value="p1231234"

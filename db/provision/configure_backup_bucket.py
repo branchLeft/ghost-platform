@@ -41,12 +41,11 @@ DB_CURRENT_EXPIRATION_DAYS = 10
 # expiry on this prefix.
 MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS = 1
 
-# How long a dated media copy stays current. No figure has been ruled: dated
-# full copies cost retention times the media size, and the owner has
-# already withdrawn one ten-day figure on cost. 0 omits the rule, so
-# applying this without a ruled figure leaves media/ unbounded; the CLI makes
-# the choice explicit rather than defaulting it.
-MEDIA_CURRENT_EXPIRATION_DAYS = 0
+# How long a dated media copy stays current: 28 days, at a weekly backup
+# cadence (the owner's ruling), so about four generations exist at once. Dated
+# full copies cost retention times the media size. 0 omits the rule and
+# leaves media/ unbounded.
+MEDIA_CURRENT_EXPIRATION_DAYS = 28
 
 # `verify-bucket-fence.py`'s PROBE_PREFIX: the fence verifier writes tiny
 # `fence-probe/*` control objects into THIS bucket to prove the fence policy
@@ -527,8 +526,8 @@ def main(argv: list[str]) -> int:
         type=int,
         default=MEDIA_CURRENT_EXPIRATION_DAYS,
         help="how long a dated media copy stays current before the bucket expires it, since "
-        "the media backup key cannot delete; 0 omits it and media/ then grows without "
-        "bound. See MEDIA_CURRENT_EXPIRATION_DAYS",
+        "the media backup key cannot delete; the default is 28; 0 omits it and media/ then "
+        "grows without bound. See MEDIA_CURRENT_EXPIRATION_DAYS",
     )
     parser.add_argument(
         "--policy-file",
