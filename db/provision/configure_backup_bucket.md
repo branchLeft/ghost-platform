@@ -50,7 +50,7 @@ sharing the bucket with `dump_nightly.py`'s `dumps/<server_uuid>/`,
 `verify-bucket-fence.py`'s own `fence-probe/` control objects. Every backup
 run adds a new dated generation and deletes nothing (the key is put-only), so
 `media/` is bounded by the bucket itself: a current-version expiry
-(`--media-expiration-days`, no default figure ruled yet, 0 omits it) ages
+(`--media-expiration-days`, default 28, 0 omits it) ages
 out old generations, and its own SHORT noncurrent-version expiry (`--media-noncurrent-days`,
 default 1) then removes the version the expiry leaves behind. Not a 35-day
 window, which would keep every expired generation of every tenant's media
