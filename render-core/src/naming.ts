@@ -22,10 +22,8 @@ export const MAX_TENANT_SLUG_LENGTH = 32 - TENANT_DB_PREFIX.length;
 /**
  * Stack names already in use on an app host by something that is not a
  * tenant — mirrors `infra/tenant/naming.ts#RESERVED_STACK_NAMES` plus the host
- * mail spool's own stack (`spool.ts`). `blog` is deliberately absent: it is
- * tenant zero's own slug, not something that is not a tenant, so reserving
- * it would refuse the live blog's own descriptor. See naming.md. A tenant's
- * Compose project name *is* its directory under `/opt/branchleft`, its
+ * mail spool's own stack (`spool.ts`). `blog` is deliberately absent (see
+ * naming.md). A tenant's Compose project name *is* its directory under `/opt/branchleft`, its
  * `/etc/branchleft/<name>.env` secrets file and its `branchleft-compose@<name>`
  * unit, so a slug matching one of these would overwrite that stack's
  * directory, secrets file and systemd unit.
