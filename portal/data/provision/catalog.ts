@@ -532,7 +532,7 @@ async function mentions(
   const found = await rows<{ text: string; deptype: string }>(
     client,
     `SELECT s.deptype::text AS deptype,
-            s.deptype || ' ' ||
+            s.deptype::text || ' ' ||
             CASE WHEN s.classid = 0 THEN 'no object' WHEN s.dbid IN (0, $2) THEN (pg_identify_object(s.classid, s.objid, s.objsubid)).type
                    || ' ' || coalesce((pg_identify_object(s.classid, s.objid, s.objsubid)).identity, '?')
                  ELSE s.classid::regclass::text || ' ' || s.objid || ' in database '
@@ -679,7 +679,7 @@ async function functionDefinitions(
   const found = await rows<{ text: string }>(
     client,
     `SELECT 'definition of ' || f || ': src=' || encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex')
-            || ' lang=' || l.lanname || ' volatile=' || p.provolatile || ' secdef=' || p.prosecdef
+            || ' lang=' || l.lanname || ' volatile=' || p.provolatile::text || ' secdef=' || p.prosecdef
             || ' leakproof=' || p.proleakproof || ' config=' || coalesce(array_to_string(p.proconfig, ','), 'null')
             AS text
        FROM unnest($1::text[]) f JOIN pg_proc p ON p.oid = to_regprocedure(f)
@@ -739,7 +739,7 @@ async function defaultAcls(client: ClientBase): Promise<Observation> {
     client,
     `SELECT 'default privileges of ' || pg_get_userbyid(defaclrole) || ' in '
             || CASE WHEN defaclnamespace = 0 THEN 'every schema' ELSE defaclnamespace::regnamespace::text END
-            || ' for ' || defaclobjtype || ': ' || defaclacl::text AS text
+            || ' for ' || defaclobjtype::text || ': ' || defaclacl::text AS text
        FROM pg_default_acl`
   );
   return { mechanism: 'M17', actual: found.map((r) => r.text), expected: [] };
@@ -748,7 +748,7 @@ async function defaultAcls(client: ClientBase): Promise<Observation> {
 async function policies(client: ClientBase, checkpoint: Checkpoint): Promise<Observation> {
   const found = await rows<{ text: string }>(
     client,
-    `SELECT 'policy ' || p.polname || ' on ' || p.polrelid::regclass::text || ': cmd=' || p.polcmd
+    `SELECT 'policy ' || p.polname || ' on ' || p.polrelid::regclass::text || ': cmd=' || p.polcmd::text
             || ' permissive=' || p.polpermissive || ' roles='
             || array_to_string(ARRAY(SELECT CASE WHEN r = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(r) END
                                        FROM unnest(p.polroles) r ORDER BY 1), ',')

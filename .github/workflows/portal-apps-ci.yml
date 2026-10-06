@@ -3,11 +3,13 @@ name: Portal applications CI
 # Type-checks and tests the tenant portal and the owner console
 # (portal/apps/). Each application's sign-in is driven end to end against a
 # stand-in token endpoint with real signed tokens, and its storage is a real
-# PostgreSQL service container, because the tenant boundary is the database's
-# row-level security together with the scope bound at sign-in. The two
-# packages it consumes, the data layer and the identity verifier, are built
-# first, as the applications import their built output. A missing
-# PORTAL_TEST_DATABASE_URL fails the suite rather than skipping it.
+# PostgreSQL, because the tenant boundary is the database's row-level policies
+# together with the scope bound at sign-in. The data layer's provisioning
+# command builds that database and checks pg_hba too, so the server runs with
+# the data layer's test pg_hba.conf mounted. The two packages it consumes, the
+# data layer and the identity verifier, are built first, as the applications
+# import their built output. A missing PORTAL_TEST_DATABASE_URL fails the
+# suite rather than skipping it.
 
 on:
   push:
@@ -31,18 +33,6 @@ jobs:
     name: Portal applications type check and test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
-        env:
-          POSTGRES_PASSWORD: ci-only-throwaway
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       PORTAL_TEST_DATABASE_URL: postgres://postgres:ci-only-throwaway@127.0.0.1:5432/postgres
       NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -50,6 +40,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Started here rather than as a service container, which cannot mount a
+      # file from the checkout.
+      - name: Start PostgreSQL with the data layer's test pg_hba.conf
+        env:
+          IMAGE: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+        run: |
+          install -m 0666 portal/data/test/pg_hba.ci.conf "$RUNNER_TEMP/pg_hba.conf"
+          sleep 1
+          docker run -d --rm --name portal-apps-pg -p 5432:5432 \
+            -e POSTGRES_PASSWORD=ci-only-throwaway \
+            -v "$RUNNER_TEMP/pg_hba.conf:/etc/postgresql/pg_hba.conf" \
+            "$IMAGE" -c hba_file=/etc/postgresql/pg_hba.conf
+          for attempt in $(seq 1 60); do
+            if docker exec portal-apps-pg pg_isready -U postgres -h 127.0.0.1 >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs portal-apps-pg
+          exit 1
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
