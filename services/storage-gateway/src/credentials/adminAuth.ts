@@ -154,6 +154,8 @@ export function authenticateAdmin(
   }
   // Plus the forward skew: a request stamped ahead of the clock before a
   // restart would otherwise clear the floor once the nonces are forgotten.
+  // So a caller must retry, freshly signed, a 401 received within about 6 s
+  // of a gateway start: it looks exactly like a wrong key, by design.
   if (requestSeconds <= deps.processStartSeconds + FORWARD_SKEW_SECONDS) {
     return { ok: false, reason: 'timestamp predates this process' };
   }
