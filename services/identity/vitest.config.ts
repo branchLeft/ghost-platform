@@ -10,7 +10,7 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       // Process entrypoint: environment wiring and argv only. The local
       // container proof exercises it.
-      exclude: ['src/cli.ts'],
+      exclude: ['src/cli.ts', 'src/recover-cli.ts'],
       thresholds: { lines: 95, statements: 95, functions: 95, branches: 90 },
     },
   },
