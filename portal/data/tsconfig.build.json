@@ -4,8 +4,9 @@
   // ever type-check. This is the one config here that has to produce output.
   "compilerOptions": {
     "noEmit": false,
-    "declaration": true
+    "declaration": true,
+    "rootDir": "."
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["test/**/*.ts"]
+  "include": ["src/**/*.ts", "provision/**/*.ts"],
+  "exclude": ["test/**/*.ts", "provision/inspect.ts"]
 }

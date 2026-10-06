@@ -9,10 +9,10 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      include: ['src/**/*.ts'],
+      include: ['src/**/*.ts', 'provision/**/*.ts'],
       // Command-line entrypoints. checkIsolation's one call is `assertTenantTablesIsolated`,
       // tested directly, and CI runs the built script.
-      exclude: ['src/checkIsolation.ts', 'src/provisionMain.ts'],
+      exclude: ['src/checkIsolation.ts', 'provision/provisionMain.ts', 'provision/inspect.ts'],
       thresholds: { lines: 90, statements: 90, functions: 90, branches: 90 },
     },
   },

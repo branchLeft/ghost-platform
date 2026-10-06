@@ -4,14 +4,14 @@ import pg from 'pg';
 import { connect, type PortalDb } from '../src/db.js';
 import { migrateSchema } from '../src/migrate.js';
 import { tenantRegister } from '../src/schema.js';
-import { provisionPortal } from '../src/provisionPortal.js';
+import { provisionPortal } from '../provision/provisionPortal.js';
 import {
   createLogin,
   dropDatabase,
   grantAccess,
   grantRole,
   lockDatabase,
-} from '../src/provision.js';
+} from '../provision/provision.js';
 
 const ADMIN_URL = process.env['PORTAL_TEST_DATABASE_URL'];
 

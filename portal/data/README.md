@@ -81,7 +81,7 @@ One command, run by the operator as a database administrator and never by the
 portal. In the portal-apps image, from `/app/portal/data`:
 
 ```sh
-node dist/provisionMain.js   # or: npm run provision
+node dist/provision/provisionMain.js   # or: npm run provision
 ```
 
 Every input is a file named by an environment variable; a secret in argv or in

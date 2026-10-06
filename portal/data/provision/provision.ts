@@ -128,13 +128,21 @@ export async function dropDatabase(admin: Pool, name: string): Promise<void> {
   }
 }
 
-/** Removes a portal role from a login, so a login ends up in one role alone. */
-export async function revokeRole(
-  admin: Pool,
-  role: 'portal_tenant' | 'portal_owner',
-  login: string
-): Promise<void> {
-  await admin.query(`REVOKE ${role} FROM ${ident(login)}`);
+/**
+ * Leaves a login holding `keep` and no other role. A pre-existing login may
+ * hold memberships this command never granted; any of them would widen what
+ * the login can reach, so each is revoked.
+ */
+export async function revokeOtherRoles(admin: Pool, login: string, keep: string): Promise<void> {
+  const held = await admin.query(
+    `SELECT r.rolname FROM pg_auth_members a
+       JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
+      WHERE m.rolname = $1 AND r.rolname <> $2`,
+    [login, keep]
+  );
+  for (const row of held.rows as { rolname: string }[]) {
+    await admin.query(`REVOKE "${row.rolname.replaceAll('"', '""')}" FROM ${ident(login)}`);
+  }
 }
 
 /**

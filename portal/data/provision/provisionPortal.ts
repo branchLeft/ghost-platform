@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
-import { bind, connect, enterRole, type Tx } from './db.js';
-import { migrateSchema } from './migrate.js';
+import { bind, connect, enterRole, type Tx } from '../src/db.js';
+import { migrateSchema } from '../src/migrate.js';
 import {
   createDatabaseIfAbsent,
   createLogin,
@@ -12,11 +12,11 @@ import {
   lockPublicSchema,
   grantAccess,
   grantRole,
-  revokeRole,
+  revokeOtherRoles,
   type TableAccess,
 } from './provision.js';
 import { scramVerifier } from './scram.js';
-import { healthReading, tenantRegister } from './schema.js';
+import { healthReading, tenantRegister } from '../src/schema.js';
 
 export interface ProvisionConfig {
   /** An administrator connection to a maintenance database, e.g. `postgres`. */
@@ -122,13 +122,23 @@ export function loadConfig(
   };
 }
 
+/** A password as `URL` writes it into the userinfo of a connection string. */
+function urlUserinfo(value: string): string {
+  const url = new URL('postgres://user@host/');
+  url.password = value;
+  return url.password;
+}
+
 /** Removes every secret in `config`, in raw and URL-encoded form, from a message. */
 export function redact(message: string, config: Partial<ProvisionConfig>): string {
   const secrets = new Set<string>();
   for (const value of [config.adminUrl, config.tenantPassword, config.ownerPassword]) {
     if (value !== undefined && value !== '') {
       secrets.add(value);
-      secrets.add(encodeURIComponent(value));
+      for (const form of [encodeURIComponent(value), urlUserinfo(value), escape(value)]) {
+        secrets.add(form);
+        secrets.add(form.replace(/%[0-9A-F]{2}/g, (hex) => hex.toLowerCase()));
+      }
     }
   }
   if (config.adminUrl !== undefined) {
@@ -159,19 +169,30 @@ function urlFor(config: ProvisionConfig, database: string, login?: string): stri
 }
 
 /**
- * A pool whose password is explicit: the one in the URL, or a function
- * returning an empty string. Left undefined, the driver would read PGPASSWORD
- * or the user's `.pgpass`, so a credential could arrive from outside the
- * files this command is given.
+ * A pool built from parsed fields, never from a connection string, with the
+ * password as a function. The driver lets a parsed connection string overwrite
+ * a password option and, left with no password, reads PGPASSWORD or the user's
+ * `.pgpass`; a password function that returns a string, even an empty one, is
+ * the one form it does not override. Host, user, database and port are explicit
+ * too, so no PG* variable can supply them.
  */
 export function poolFor(url: string): pg.Pool {
   const parsed = new URL(url);
   if (parsed.hostname === '' || parsed.username === '') {
     throw new Error('a connection URL must name its host and user');
   }
+  const mode = parsed.searchParams.get('sslmode') ?? 'disable';
+  if (!['disable', 'require', 'verify-ca', 'verify-full'].includes(mode)) {
+    throw new Error(`sslmode ${mode} is not supported`);
+  }
+  const password = decodeURIComponent(parsed.password);
   const pool = new pg.Pool({
-    connectionString: url,
-    password: () => Promise.resolve(decodeURIComponent(parsed.password)),
+    host: parsed.hostname.replace(/^\[|\]$/g, ''),
+    port: parsed.port === '' ? 5432 : Number(parsed.port),
+    user: decodeURIComponent(parsed.username),
+    database: decodeURIComponent(parsed.pathname.replace(/^\//, '')),
+    password: () => Promise.resolve(password),
+    ssl: mode === 'disable' ? false : true,
     max: 1,
   });
   pool.on('error', () => undefined);
@@ -291,8 +312,8 @@ export async function provisionPortal(
     await migrateSchema(admin);
     log('schema migrated');
     for (const access of PORTAL_TABLES) await grantAccess(admin, access);
-    await revokeRole(admin, 'portal_owner', config.tenantLogin);
-    await revokeRole(admin, 'portal_tenant', config.ownerLogin);
+    await revokeOtherRoles(admin, config.tenantLogin, 'portal_tenant');
+    await revokeOtherRoles(admin, config.ownerLogin, 'portal_owner');
     await grantRole(admin, 'portal_tenant', config.tenantLogin);
     await grantRole(admin, 'portal_owner', config.ownerLogin);
     log('grants applied');

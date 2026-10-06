@@ -14,9 +14,9 @@ import {
   sqlState,
   verifyBoundary,
   type ProvisionConfig,
-} from '../src/provisionPortal.js';
-import { createLogin, dropDatabase, grantRole, lockDatabase } from '../src/provision.js';
-import { scramVerifier } from '../src/scram.js';
+} from '../provision/provisionPortal.js';
+import { createLogin, dropDatabase, grantRole, lockDatabase } from '../provision/provision.js';
+import { scramVerifier } from '../provision/scram.js';
 import {
   createInPublic,
   loginAttributes,
@@ -146,6 +146,24 @@ describe('redact', () => {
     expect(out).toContain('[redacted]');
   });
 
+  it('removes a login password in every URL form, including the one URL writes itself', () => {
+    const password = 'a b{c}|d^e$f&g+h,i%j#k';
+    const cfg: Partial<ProvisionConfig> = {
+      adminUrl: 'postgres://admin:x@host/postgres',
+      tenantPassword: password,
+      ownerPassword: 'owner|pw ok',
+    };
+    const url = new URL('postgres://login@host/portal');
+    url.password = password;
+    const encoded = [url.password, encodeURIComponent(password), escape(password)];
+    const lower = encoded.map((e) => e.replace(/%[0-9A-F]{2}/g, (h) => h.toLowerCase()));
+    const text = [url.toString(), ...encoded, ...lower, password, 'owner%7Cpw%20ok'].join(' ');
+    const out = redact(text, cfg);
+    for (const secret of [password, 'owner%7Cpw%20ok', ...encoded, ...lower]) {
+      expect(out).not.toContain(secret);
+    }
+  });
+
   it('leaves text alone when there is nothing to hide', () => {
     expect(redact('plain', {})).toBe('plain');
     expect(redact('plain', { adminUrl: 'not a url' })).toBe('plain');
@@ -239,6 +257,57 @@ describe('the connection never takes a password from outside its files', () => {
     expect(typeof option === 'function' ? await (option as () => Promise<string>)() : option).toBe(
       'p@ss'
     );
+  });
+
+  it('keeps its password function when PGPASSWORD and a decoy .pgpass are present', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'portal-pgpass-'));
+    const decoy = join(home, '.pgpass');
+    writeFileSync(decoy, '*:*:*:*:decoy-pgpass-password\n', { mode: 0o600 });
+    const saved = { ...process.env };
+    process.env['PGPASSWORD'] = 'wrong-env-password';
+    process.env['PGPASSFILE'] = decoy;
+    process.env['HOME'] = home;
+    try {
+      const pool = poolFor('postgres://someone@127.0.0.1:1/db');
+      const client = new pg.Client(pool.options);
+      await pool.end();
+      expect(typeof client.password).toBe('function');
+      expect(await (client.password as unknown as () => Promise<string>)()).toBe('');
+    } finally {
+      process.env = saved;
+      rmSync(home, { recursive: true });
+    }
+  });
+
+  it('takes host, user, database and port from the URL alone', () => {
+    const saved = { ...process.env };
+    process.env['PGHOST'] = 'env-host';
+    process.env['PGUSER'] = 'env-user';
+    process.env['PGDATABASE'] = 'env-db';
+    process.env['PGPORT'] = '9';
+    try {
+      const pool = poolFor('postgres://u%40x:p@127.0.0.1/some%20db');
+      const options = (pool as unknown as { options: Record<string, unknown> }).options;
+      void pool.end();
+      expect([options['host'], options['user'], options['database'], options['port']]).toEqual([
+        '127.0.0.1',
+        'u@x',
+        'some db',
+        5432,
+      ]);
+    } finally {
+      process.env = saved;
+    }
+  });
+
+  it('refuses an sslmode it does not understand and turns TLS on for the others', async () => {
+    expect(() => poolFor('postgres://u@127.0.0.1/db?sslmode=allow')).toThrow('not supported');
+    const tls = poolFor('postgres://u@127.0.0.1/db?sslmode=verify-full');
+    const plain = poolFor('postgres://u@127.0.0.1/db');
+    const ssl = (p: pg.Pool): unknown =>
+      (p as unknown as { options: { ssl: unknown } }).options.ssl;
+    expect([ssl(tls), ssl(plain)]).toEqual([true, false]);
+    await Promise.all([tls.end(), plain.end()]);
   });
 
   it('refuses a URL that leaves the host or user to the environment', () => {
@@ -549,6 +618,52 @@ describe('against a real PostgreSQL', () => {
   it('lockDatabase is idempotent', async () => {
     await lockDatabase(bootstrap, database, [config.tenantLogin, config.ownerLogin]);
     expect(await state()).toEqual(afterFirst);
+  });
+
+  it('revokes a role membership a pre-existing login should not hold', async () => {
+    const extra = `prov_extra_${suffix}`;
+    await bootstrap.query(`CREATE ROLE "${extra}" NOLOGIN`);
+    await withAdmin(async (pool) => {
+      await pool.query(`GRANT "${extra}" TO "${config.tenantLogin}"`);
+      await pool.query(`GRANT "${extra}" TO "${config.ownerLogin}"`);
+    });
+    await provisionPortal(config);
+    const after = await state();
+    await bootstrap.query(`DROP ROLE "${extra}"`);
+    expect(after).toEqual(afterFirst);
+  });
+
+  it('never takes PGPASSWORD or a .pgpass password when the file supplies none', async (ctx) => {
+    const url = new URL(dbUrl());
+    url.username = config.tenantLogin;
+    url.password = '';
+    const home = mkdtempSync(join(tmpdir(), 'portal-pgpass-'));
+    const decoy = join(home, '.pgpass');
+    writeFileSync(decoy, `*:*:*:*:${TENANT_PW}\n`, { mode: 0o600 });
+    const saved = { ...process.env };
+    try {
+      const anyPassword = poolFor(url.toString());
+      const accepted = await anyPassword.connect().then(
+        (c) => (c.release(), true),
+        () => false
+      );
+      await anyPassword.end();
+      if (accepted) ctx.skip('server does not use password auth; this runs in CI');
+      process.env['PGPASSWORD'] = TENANT_PW;
+      process.env['PGPASSFILE'] = decoy;
+      process.env['HOME'] = home;
+      const pool = poolFor(url.toString());
+      const error = await pool.connect().then(
+        (c) => (c.release(), undefined),
+        (e: unknown) => e
+      );
+      await pool.end();
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/password|authentication/i);
+    } finally {
+      process.env = saved;
+      rmSync(home, { recursive: true });
+    }
   });
 
   it('runProvision succeeds end to end from files and prints no secret', async () => {
