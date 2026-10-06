@@ -532,5 +532,112 @@ class MainTests(unittest.TestCase):
         self.assertIn("nothing to revoke", out.getvalue())
 
 
+def _installation(**overrides):
+    have = dict(app_token.REQUIRED_PERMISSIONS)
+    have.update(overrides)
+    return 200, {"id": 42, "permissions": have}
+
+
+class InstallationDiffTests(unittest.TestCase):
+    def test_an_exact_installation_has_no_shortfall(self):
+        self.assertEqual(
+            app_token.permission_shortfalls(dict(app_token.REQUIRED_PERMISSIONS)), [])
+
+    def test_a_missing_permission_is_named_with_none_to_need(self):
+        have = dict(app_token.REQUIRED_PERMISSIONS)
+        del have["workflows"]
+        self.assertEqual(app_token.permission_shortfalls(have),
+                         ["workflows: none -> write"])
+
+    def test_an_under_levelled_permission_is_named(self):
+        have = dict(app_token.REQUIRED_PERMISSIONS, secrets="read")
+        self.assertEqual(app_token.permission_shortfalls(have),
+                         ["secrets: read -> write"])
+
+    def test_a_broad_installation_has_no_shortfall(self):
+        have = dict(app_token.REQUIRED_PERMISSIONS, members="write",
+                    issues="admin", contents="admin", metadata="write")
+        self.assertEqual(app_token.permission_shortfalls(have), [])
+
+    def test_a_non_mapping_is_unknown_not_a_shortfall(self):
+        for value in (None, [], "write"):
+            self.assertIsNone(app_token.permission_shortfalls(value))
+
+    def test_a_malformed_level_counts_as_none(self):
+        have = dict(app_token.REQUIRED_PERMISSIONS, secrets=["write"], variables="")
+        self.assertEqual(app_token.permission_shortfalls(have),
+                         ["secrets: none -> write", "variables: none -> write"])
+
+    def test_every_shortfall_is_listed_in_name_order(self):
+        self.assertEqual(
+            app_token.permission_shortfalls({"metadata": "read"}),
+            ["administration: none -> write", "contents: none -> write",
+             "environments: none -> write", "pull_requests: none -> write",
+             "secrets: none -> write", "variables: none -> write",
+             "workflows: none -> write"])
+
+
+class PreMintDiagnosisTests(unittest.TestCase):
+    def test_a_missing_permission_stops_before_any_mint_call(self):
+        have = dict(app_token.REQUIRED_PERMISSIONS)
+        del have["workflows"]
+        api = FakeApi(installation=(200, {"id": 42, "permissions": have}))
+        with self.assertRaises(app_token.TokenError) as ctx:
+            _mint(api)
+        self.assertIn("workflows: none -> write", str(ctx.exception))
+        self.assertEqual([c[0] for c in api.calls], ["GET"])
+
+    def test_an_under_levelled_permission_stops_before_any_mint_call(self):
+        api = FakeApi(installation=_installation(environments="read"))
+        with self.assertRaises(app_token.TokenError) as ctx:
+            _mint(api)
+        self.assertIn("environments: read -> write", str(ctx.exception))
+        self.assertEqual(len(api.calls), 1)
+
+    def test_a_broad_installation_still_mints_requesting_exactly_the_eight(self):
+        api = FakeApi(installation=_installation(members="write", issues="admin"))
+        self.assertEqual(_mint(api), "ghs_FAKETOKEN")
+        self.assertEqual(api.calls[-1][3],
+                         {"permissions": app_token.REQUIRED_PERMISSIONS})
+
+    def test_an_exact_installation_mints(self):
+        self.assertEqual(_mint(FakeApi(installation=_installation())), "ghs_FAKETOKEN")
+
+    def test_the_message_carries_names_and_levels_only(self):
+        have = dict(app_token.REQUIRED_PERMISSIONS)
+        del have["secrets"]
+        with self.assertRaises(app_token.TokenError) as ctx:
+            _mint(FakeApi(installation=(200, {"id": 42, "permissions": have})))
+        message = str(ctx.exception)
+        self.assertNotIn("SECRETKEYMATERIAL", message)
+        self.assertNotIn("ghs_", message)
+
+    def test_a_422_with_an_exact_installation_says_the_cause_is_not_a_missing_permission(self):
+        api = FakeApi(installation=_installation(),
+                      minted=(422, {"message": "not granted"}))
+        with self.assertRaises(app_token.TokenError) as ctx:
+            _mint(api)
+        self.assertIn("HTTP 422", str(ctx.exception))
+        self.assertIn("not a missing one", str(ctx.exception))
+
+    def test_a_422_with_no_installation_permissions_says_nothing_was_comparable(self):
+        api = FakeApi(minted=(422, {"message": "not granted"}))
+        with self.assertRaises(app_token.TokenError) as ctx:
+            _mint(api)
+        self.assertIn("no permissions to compare", str(ctx.exception))
+
+    def test_a_422_after_a_changed_installation_names_the_shortfall(self):
+        """The installation can change between the read and the mint; the
+        refused-mint message re-diffs the installation it read."""
+        have = dict(app_token.REQUIRED_PERMISSIONS)
+        api = FakeApi(installation=(200, {"id": 42, "permissions": have}),
+                      minted=(422, {"message": "x"}))
+        with patch.object(app_token, "permission_shortfalls",
+                          side_effect=[[], ["secrets: read -> write"]]):
+            with self.assertRaises(app_token.TokenError) as ctx:
+                _mint(api)
+        self.assertIn("secrets: read -> write", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

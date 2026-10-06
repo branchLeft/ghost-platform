@@ -46,3 +46,14 @@ in the request. The installation therefore has to cover all repositories in the
 organisation, and the token can reach them within the permissions above. The
 permissions, the hour and the revocation are the bounds; the repository list is
 not one.
+
+## Diagnosing a refused mint
+
+GitHub answers a mint for permissions the installation does not hold with an
+unhelpful 422 that names none of them. The installation lookup already returns
+the installation's own permissions, so the module diffs them against the eight
+before minting and stops with each shortfall named as `name: have -> need`
+(names and levels only). A broader installation is fine: the mint requests
+exactly the eight, so GitHub narrows the token. The same diff is attached to
+any refused mint, saying when the installation grants everything named and the
+cause is elsewhere.

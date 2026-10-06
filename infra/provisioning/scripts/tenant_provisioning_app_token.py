@@ -79,6 +79,38 @@ def permission_problems(granted):
     return problems
 
 
+_LEVEL_RANK = {"read": 1, "write": 2, "admin": 3}
+
+
+def permission_shortfalls(have):
+    """Each permission the installation lacks or holds at too low a level, as
+    `name: have -> need`. Extra and higher-level grants are not shortfalls:
+    the mint requests exactly REQUIRED_PERMISSIONS, so GitHub narrows them.
+    Returns None when `have` is not a mapping, since nothing is then known."""
+    if not isinstance(have, dict):
+        return None
+    shortfalls = []
+    for name in sorted(REQUIRED_PERMISSIONS):
+        need = REQUIRED_PERMISSIONS[name]
+        held = have.get(name)
+        if not isinstance(held, str) or not held:
+            held = "none"
+        if _LEVEL_RANK.get(held, 0) < _LEVEL_RANK[need]:
+            shortfalls.append("%s: %s -> %s" % (name, held, need))
+    return shortfalls
+
+
+def _installation_summary(have):
+    """Why a refused mint is or is not explained by the installation."""
+    shortfalls = permission_shortfalls(have)
+    if shortfalls is None:
+        return "The installation reported no permissions to compare."
+    if shortfalls:
+        return "The installation lacks (have -> need): %s." % "; ".join(shortfalls)
+    return ("The installation grants every named permission, so the cause "
+            "is not a missing one.")
+
+
 def _b64url(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -194,6 +226,14 @@ def mint_token(app_id, pem, org, http=http_request, sign=None, now=None):
     if not isinstance(installation_id, int) or isinstance(installation_id, bool):
         raise TokenError("the installation response carried no integer id")
 
+    shortfalls = permission_shortfalls(installation.get("permissions"))
+    if shortfalls:
+        raise TokenError(
+            "the App's installation on %s does not grant what the run needs "
+            "(have -> need): %s. Add these on the installation's settings "
+            "page and accept the permission request, then run again"
+            % (org, "; ".join(shortfalls)))
+
     status, minted = http(
         "POST",
         "%s/app/installations/%d/access_tokens" % (API_ROOT, installation_id),
@@ -202,9 +242,9 @@ def mint_token(app_id, pem, org, http=http_request, sign=None, now=None):
     )
     if status != 201 or not isinstance(minted, dict):
         raise TokenError(
-            "GitHub refused to mint an installation token (HTTP %s: %s). The "
-            "installation must grant at least the named permissions."
-            % (status, _github_message(minted)))
+            "GitHub refused to mint an installation token (HTTP %s: %s). %s"
+            % (status, _github_message(minted),
+               _installation_summary(installation.get("permissions"))))
 
     token = minted.get("token")
     if not isinstance(token, str) or not token.strip():
