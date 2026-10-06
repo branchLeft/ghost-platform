@@ -21,14 +21,31 @@ S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 # -- see MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS below for `media/`.
 NONCURRENT_VERSION_EXPIRATION_DAYS = 35
 
-# C-refresh deletes a tenant's previous media generation every run, so the
-# undo window this rule provides only needs to comfortably outlive the delete
-# marker turning into a durable removal, not the weeks a database dump's
-# retention argues for. 1-2 days, proven live before this figure is ever
-# applied to a real bucket -- see
+# The put-only worker key cannot delete, so `prune_backups.py` no longer runs
+# against this bucket and the bucket's own lifecycle has to age out the current
+# versions of `dumps/` and `binlogs/`. Same figure as that script's
+# RETENTION_DAYS (a 7-day point-in-time window plus 3 days of margin). Unlike
+# the script, a lifecycle rule cannot keep the newest object whatever its age.
+# The bucket is versioned, so an expired current dump stays as a noncurrent
+# version for NONCURRENT_VERSION_EXPIRATION_DAYS and is restorable; the
+# per-tenant dump freshness alert is the real protection. 0 omits the rule.
+DB_CURRENT_EXPIRATION_DAYS = 10
+
+# The media backup writes each run as a new dated copy and its key cannot
+# delete, so nothing but this bucket's lifecycle ever removes one. A copy
+# is current until its expiry (MEDIA_CURRENT_EXPIRATION_DAYS below) and then
+# stays as a noncurrent version for this many days, which only needs to
+# outlive the delete marker turning into a durable removal. Proven live in
 # infra/provisioning/scripts/probe-media-lifecycle-expiration.py's
-# prefix-split mode.
+# prefix-split mode; RUNBOOK-media-backup-lifecycle.md proves the current
+# expiry on this prefix.
 MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS = 1
+
+# How long a dated media copy stays current: 28 days, at a weekly backup
+# cadence (the owner's ruling), so about four generations exist at once. Dated
+# full copies cost retention times the media size. 0 omits the rule and
+# leaves media/ unbounded.
+MEDIA_CURRENT_EXPIRATION_DAYS = 28
 
 # `verify-bucket-fence.py`'s PROBE_PREFIX: the fence verifier writes tiny
 # `fence-probe/*` control objects into THIS bucket to prove the fence policy
@@ -80,21 +97,31 @@ def versioning_document() -> bytes:
 def lifecycle_document(
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
     media_noncurrent_days: int = MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
+    db_expiration_days: int = DB_CURRENT_EXPIRATION_DAYS,
+    media_expiration_days: int = MEDIA_CURRENT_EXPIRATION_DAYS,
 ) -> bytes:
     """Four non-overlapping prefix rules. See configure_backup_bucket.md, "Lifecycle rules"."""
+    if db_expiration_days < 0:
+        raise ValueError("db_expiration_days must be 0 (no current-version expiry) or positive")
+    if media_expiration_days < 0:
+        raise ValueError("media_expiration_days must be 0 (no current-version expiry) or positive")
+
+    def expiry(days: int) -> str:
+        return f"<Expiration><Days>{days}</Days></Expiration>" if days else ""
+
     rules = "".join(
         (
             f"<Rule><ID>branchleft-db-backups-{rule_id}-noncurrent-expiry</ID><Status>Enabled</Status>"
             f"<Filter><Prefix>{prefix}</Prefix></Filter>"
             f"<NoncurrentVersionExpiration><NoncurrentDays>{days}</NoncurrentDays>"
             "</NoncurrentVersionExpiration>"
-            f"{delete_marker}"
+            f"{current_expiry}"
             "</Rule>"
         )
-        for rule_id, prefix, days, delete_marker in (
-            ("dumps", DB_DUMP_PREFIX, noncurrent_days, ""),
-            ("binlogs", DB_BINLOG_PREFIX, noncurrent_days, ""),
-            ("media", MEDIA_OBJECT_PREFIX, media_noncurrent_days, "<Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration>"),
+        for rule_id, prefix, days, current_expiry in (
+            ("dumps", DB_DUMP_PREFIX, noncurrent_days, expiry(db_expiration_days)),
+            ("binlogs", DB_BINLOG_PREFIX, noncurrent_days, expiry(db_expiration_days)),
+            ("media", MEDIA_OBJECT_PREFIX, media_noncurrent_days, expiry(media_expiration_days)),
             ("fence-probe", FENCE_PROBE_PREFIX, media_noncurrent_days, ""),
         )
     )
@@ -428,6 +455,8 @@ def configure_backup_bucket(
     policy_body: bytes,
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
     media_noncurrent_days: int = MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
+    db_expiration_days: int = DB_CURRENT_EXPIRATION_DAYS,
+    media_expiration_days: int = MEDIA_CURRENT_EXPIRATION_DAYS,
     fence_dwell_seconds: float = FENCE_ENGINE_DWELL_SECONDS,
     put=put_bucket_subresource,
 ) -> None:
@@ -441,7 +470,9 @@ def configure_backup_bucket(
         body=versioning_document(),
     )
 
-    lifecycle_body = lifecycle_document(noncurrent_days, media_noncurrent_days)
+    lifecycle_body = lifecycle_document(
+        noncurrent_days, media_noncurrent_days, db_expiration_days, media_expiration_days
+    )
     content_md5 = base64.b64encode(hashlib.md5(lifecycle_body, usedforsecurity=False).digest()).decode()
     put(
         bucket=bucket,
@@ -482,6 +513,21 @@ def main(argv: list[str]) -> int:
         default=MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
         help="the media/ prefix's own, shorter noncurrent-version expiry -- see the module "
         "docstring's FOUR NON-OVERLAPPING PREFIX RULES section (shared with fence-probe/)",
+    )
+    parser.add_argument(
+        "--db-expiration-days",
+        type=int,
+        default=DB_CURRENT_EXPIRATION_DAYS,
+        help="current-version expiry on dumps/ and binlogs/, so a put-only key never has to "
+        "delete; 0 omits it. See DB_CURRENT_EXPIRATION_DAYS",
+    )
+    parser.add_argument(
+        "--media-expiration-days",
+        type=int,
+        default=MEDIA_CURRENT_EXPIRATION_DAYS,
+        help="how long a dated media copy stays current before the bucket expires it, since "
+        "the media backup key cannot delete; the default is 28; 0 omits it and media/ then "
+        "grows without bound. See MEDIA_CURRENT_EXPIRATION_DAYS",
     )
     parser.add_argument(
         "--policy-file",
@@ -558,15 +604,22 @@ def main(argv: list[str]) -> int:
             policy_body=policy_body,
             noncurrent_days=args.noncurrent_days,
             media_noncurrent_days=args.media_noncurrent_days,
+            db_expiration_days=args.db_expiration_days,
+            media_expiration_days=args.media_expiration_days,
         )
     except ObjectStorageError as exc:
         print(f"configure_backup_bucket: {exc}", file=sys.stderr)
         return 1
 
+    media_expiry = (
+        f"{args.media_expiration_days}-day current-version expiry"
+        if args.media_expiration_days
+        else "NO current-version expiry (media/ grows without bound until one is applied)"
+    )
     print(
         f"configure_backup_bucket: versioning enabled, {args.noncurrent_days}-day noncurrent "
-        f"expiry set on dumps/ and binlogs/, {args.media_noncurrent_days}-day noncurrent expiry "
-        f"set on media/ (with ExpiredObjectDeleteMarker) and fence-probe/, and the fence applied "
+        f"expiry and {args.db_expiration_days}-day current-version expiry set on dumps/ and binlogs/, {media_expiry} and {args.media_noncurrent_days}-day noncurrent expiry "
+        f"set on media/, {args.media_noncurrent_days}-day noncurrent expiry set on fence-probe/, and the fence applied "
         f"on {args.bucket}, then re-applied to prove the "
         f"bucket is still administrable. The fence is not proven to FENCE anything until "
         f"verify-bucket-fence.py passes -- run it now, from this terminal. The media/ expiry is "

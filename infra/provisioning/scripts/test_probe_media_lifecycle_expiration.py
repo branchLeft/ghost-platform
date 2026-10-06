@@ -465,9 +465,9 @@ class TestPrefixSplitLifecycleDocument(unittest.TestCase):
         self.assertIn("<Filter><Prefix>binlogs/</Prefix></Filter>", body)
         self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", body)
 
-    def test_only_the_media_rule_carries_expired_object_delete_marker(self):
+    def test_no_rule_carries_expired_object_delete_marker(self):
         body = probe.prefix_split_lifecycle_document(1, 35).decode()
-        self.assertEqual(body.count("<ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker>"), 1)
+        self.assertNotIn("ExpiredObjectDeleteMarker", body)
 
     def test_no_abort_multipart_element_on_any_rule(self):
         # configure_backup_bucket.py's own shape, not render-media-bucket-policy.py's.
@@ -659,12 +659,11 @@ class TestCheckPrefixSplit(unittest.TestCase):
         self.assertIn("PASS", verdict)
 
     def test_media_delete_marker_also_gone_is_still_pass_not_fail(self):
-        # The real media/ rule now carries ExpiredObjectDeleteMarker, so
-        # once the noncurrent version under a deleted key is pruned, this
-        # engine may ALSO remove the now-sole delete marker on a later
-        # pass. That is a consistent, expected reading of the element this
-        # rule now carries -- not a missing CURRENT object -- so it must
-        # not turn a PASS into a FAIL.
+        # An earlier media/ rule carried ExpiredObjectDeleteMarker, so the
+        # engine may ALSO have removed the now-sole delete marker once the
+        # noncurrent version under a deleted key was pruned. A receipt from
+        # such a run is still a consistent reading -- not a missing CURRENT
+        # object -- so it must not turn a PASS into a FAIL.
         media_marker_also_gone = [("media/noncurrent/canary", "media-noncurrent-new", True, "version")]
         with tempfile.TemporaryDirectory() as tmp:
             receipt_path = self._receipt(tmp, earliest_decisive_check="2000-01-01T00:00:00+00:00")

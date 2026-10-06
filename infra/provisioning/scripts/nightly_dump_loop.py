@@ -146,8 +146,8 @@ def run_nightly_loop(
         outcomes.append(outcome)
 
         result = outcome.result
-        if result is not None and result.lock_wait_seconds is not None:
-            bw.record_lock_wait_metric(tenant=tenant, metrics_dir=metrics_dir, wait_seconds=result.lock_wait_seconds)
+        if result is not None:
+            bw.record_dump_lock_metrics(result=result, metrics_dir=metrics_dir)
         if result is not None and result.ok:
             bw.record_backup_age_metric(tenant=tenant, metrics_dir=metrics_dir, now=now())
 
@@ -178,9 +178,12 @@ def _report_line(outcome: TenantOutcome) -> str:
     if outcome.ok:
         assert outcome.result is not None
         wait = outcome.result.lock_wait_seconds
+        hold = outcome.result.lock_hold_seconds
         wait_text = f"{wait:.3f}s" if wait is not None else "unmeasured"
+        hold_text = f"{hold:.3f}s" if hold is not None else "unmeasured"
         return (
-            f"nightly_dump_loop: {outcome.tenant}: ok, lock wait {wait_text}, "
+            f"nightly_dump_loop: {outcome.tenant}: ok, lock wait {wait_text}, hold {hold_text}, "
+            f"{outcome.result.lock_aborts} aborted lock attempt(s), "
             f"stored to {list(outcome.result.copies_written)}"
         )
     return f"nightly_dump_loop: {outcome.tenant}: FAILED: {outcome.error}"

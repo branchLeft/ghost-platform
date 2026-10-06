@@ -1,139 +1,57 @@
 import * as pulumi from '@pulumi/pulumi';
-import { renderComposeStack } from './compose';
 import {
   SECRET_ENV_KEYS,
-  tenantEnvironment,
-  tenantSecretsEnvFile,
-  type TenantBulkEmailConfig,
-  type TenantMailConfig,
-} from './environment';
-import { mediaBucketName, mediaPublicBaseUrl } from './media';
-import {
   adaptersVolumeName,
   composeUnitName,
   contentVolumeName,
   databaseAndUserName,
   imageEnvPath,
+  mediaBucketName,
+  mediaPublicBaseUrl,
+  render,
   secretsEnvPath,
   stackDirectory,
   stackName,
-  validateTenantSlug,
-} from './naming';
-import {
-  DEFAULT_RESOURCE_CAPS,
-  DEFAULT_RSS_BUDGET_MIB,
-  DEFAULT_UPLOAD_CEILING_MIB,
-  uploadLimits,
-  validateTenantUid,
-  type ResourceCaps,
-} from './runtime';
+  validate,
+  type Artefact,
+  type TenantDescriptor,
+  type ZoneConfig,
+} from '@branchleft/ghost-platform-render-core';
 
-export interface GhostTenantDatabaseArgs {
-  /** `db1`'s private address, e.g. `10.20.1.20`. */
-  host: string;
-  /** Defaults to 3306. */
-  port?: number;
-  /** The password `db/provision/provision_tenant_db.py` printed when it
-   * created this tenant's account. Never re-derived, never defaulted: that
-   * script prints it once and prints nothing on a re-run. */
-  password: pulumi.Input<string>;
-  /** Applied by the provisioning script, recorded here so the tenant's
-   * configured cap is visible in its own repo. Defaults to 10. */
+/**
+ * The secret values this tenant's `/etc/branchleft/<slug>.env` carries. The
+ * descriptor holds no secret by design, so they arrive here, beside it. Which
+ * of them are required is decided by the render core's `secrets.env`
+ * template, never by this component. See index.md#ghosttenantsecrets.
+ */
+export interface GhostTenantSecrets {
+  /** The password `db/provision/provision_tenant_db.py` printed once. */
+  databasePassword?: pulumi.Input<string>;
+  /** This tenant's Object Storage key pair, allowlisted to its own bucket. */
+  s3AccessKeyId?: pulumi.Input<string>;
+  s3SecretAccessKey?: pulumi.Input<string>;
+  /** The SMTP submission password, for an `smtp` transport. */
+  mailPassword?: pulumi.Input<string>;
+  /** The bulk-mail API key, when the descriptor enables mail. */
+  bulkEmailApiKey?: pulumi.Input<string>;
+}
+
+export interface GhostTenantArgs {
+  /** The paying tenant's descriptor, as the render core defines it. A demo
+   * descriptor is refused: demos are reconciled by the broker. */
+  descriptor: TenantDescriptor;
+  /** The zones `validate()` and `render()` check hostnames and mail against. */
+  zones: ZoneConfig;
+  secrets: GhostTenantSecrets;
+  /** Applied on `db1` by the provisioning script; recorded in the identity so
+   * the tenant's configured cap is visible in its own stack. Defaults to 10. */
   maxUserConnections?: number;
 }
 
 /**
- * The platform-wide half of media addressing, plus this tenant's own S3 key
- * pair. The bucket and public base URL are deliberately not here — each
- * tenant's bucket is derived from its slug, never set, so a stack has no
- * value it could set to another tenant's bucket. See index.md#ghosttenantmediaargs.
- */
-export interface GhostTenantMediaArgs {
-  /** e.g. `https://hel1.your-objectstorage.com`. Platform-wide. */
-  endpoint: string;
-  /** Must name the bucket's own location; a mismatch is an opaque 403 that
-   * reads as a credential problem. Platform-wide. */
-  region: string;
-  /** This tenant's Object Storage access key id, allowlisted by bucket policy
-   * to this tenant's bucket alone. */
-  accessKeyId: pulumi.Input<string>;
-  /** This tenant's Object Storage secret access key. */
-  secretAccessKey: pulumi.Input<string>;
-}
-
-/** `TenantMailConfig`'s SMTP transport plus its credential. */
-export interface GhostTenantMailArgs extends TenantMailConfig {
-  /** The SMTP submission password. One of the two credentials every tenant
-   * container necessarily holds that reach the platform's sending reputation
-   * from anywhere, so it never appears in the Compose file. */
-  password: pulumi.Input<string>;
-}
-
-/** `TenantBulkEmailConfig`'s shim endpoint plus its credential. */
-export interface GhostTenantBulkEmailArgs extends TenantBulkEmailConfig {
-  /** This tenant's bulk-mail shim API key, presented as HTTP Basic auth. */
-  apiKey: pulumi.Input<string>;
-}
-
-export interface GhostTenantArgs {
-  /**
-   * Short tenant identifier, e.g. `blog`. Plain `string`, not an Input: it is
-   * the Compose project name, the systemd instance name, the directory under
-   * `/opt/branchleft`, the stem of both files under `/etc/branchleft`, the
-   * MySQL database and account name and both volume names, so it has to be
-   * usable synchronously.
-   */
-  slug: string;
-
-  /** Public site URL including protocol. Ghost refuses to boot without one. */
-  siteUrl: string;
-
-  /**
-   * This tenant's reserved UID, distinct per tenant on the host and never
-   * reused. Required rather than derived: it is host state, allocated by the
-   * host-side provisioning step against what is already claimed on that host,
-   * and a value this component computed from the slug would collide the first
-   * time two hosts disagreed about who lives where.
-   */
-  uid: number;
-
-  /** The app host's private address. Every published port binds this. */
-  appHostPrivateIp: string;
-
-  /** Host-side port for this tenant's Ghost. Distinct per tenant on a host;
-   * the edge reaches this over the private network. */
-  hostPort: number;
-
-  database: GhostTenantDatabaseArgs;
-  media: GhostTenantMediaArgs;
-  mail?: GhostTenantMailArgs;
-  bulkEmail?: GhostTenantBulkEmailArgs;
-
-  /**
-   * The single number every upload-related limit derives from, in MiB: the
-   * `/tmp` tmpfs `size=`, the three `theme__uploadLimits__*` values, the
-   * tenant's Caddy `request_body` limit at the edge, and the tmpfs half of
-   * `mem_limit`. One input because three separately-configured limits that
-   * must agree is exactly the kind of thing that drifts.
-   */
-  uploadCeilingMib?: number;
-
-  /** Ghost's resident-set budget in MiB, before the tmpfs ceiling is added. */
-  rssBudgetMib?: number;
-
-  /** CPU, PID and descriptor caps. Defaults are sized for a `cx23`-class host. */
-  resourceCaps?: Partial<ResourceCaps>;
-}
-
-/**
  * The fields whose change destroys or orphans live tenant data rather than
- * updating it — read by `scripts/assert-no-tenant-deletes.py` out of the
- * component's own preview state. Every one of them names something that
- * already holds data by the time a second apply happens: rename the content
- * volume and the tenant's themes, settings and generated assets are orphaned
- * on the host under the old name; change the UID and the tenant loses access
- * to its own `0700` volume; change the database name and Ghost boots against
- * an empty schema.
+ * updating it, read by `scripts/assert-no-tenant-deletes.py` out of the
+ * component's own preview state. See index.md#ghosttenantidentity.
  */
 export interface GhostTenantIdentity {
   slug: string;
@@ -146,14 +64,105 @@ export interface GhostTenantIdentity {
   maxUserConnections: number;
 }
 
-const DEFAULT_DB_PORT = 3306;
 const DEFAULT_MAX_USER_CONNECTIONS = 10;
 
+type SecretField = keyof typeof SECRET_ENV_KEYS;
+
+/** The `GhostTenantSecrets` field each secrets-file key is filled from. */
+const SECRET_FIELD_BY_KEY = new Map<string, SecretField>(
+  (Object.entries(SECRET_ENV_KEYS) as [SecretField, string][]).map(([field, key]) => [key, field])
+);
+
+// eslint-disable-next-line no-control-regex -- refusing control characters is the point
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
+const TEMPLATE_KEY_LINE = /^([A-Z][A-Z0-9_]*)=$/;
+
+function artefactContent(artefacts: readonly Artefact[], path: string): string {
+  const found = artefacts.find((artefact) => artefact.path === path);
+  if (found === undefined) {
+    throw new Error(`GhostTenant: render() returned no ${path} artefact.`);
+  }
+  return found.content;
+}
+
+/** The secrets-file keys the render core's template names, in its order. */
+export function requiredSecretKeys(template: string): string[] {
+  return template
+    .split('\n')
+    .map((line) => TEMPLATE_KEY_LINE.exec(line)?.[1])
+    .filter((key): key is string => key !== undefined);
+}
+
 /**
- * Everything one Ghost tenant needs on a shared Hetzner app host, rendered
- * rather than created. This component declares no cloud resources: what is
- * genuinely per-tenant is configuration, and three steps outside Pulumi
- * must already have happened before the rendered stack will start.
+ * Refuses, before anything is registered, a secret the template needs but was
+ * not supplied, and a secret supplied that the template does not name. See
+ * index.md#secret-coverage.
+ */
+export function assertSecretCoverage(
+  slug: string,
+  required: readonly string[],
+  secrets: GhostTenantSecrets
+): void {
+  for (const key of required) {
+    const field = SECRET_FIELD_BY_KEY.get(key);
+    if (field === undefined) {
+      throw new Error(
+        `GhostTenant: the render core names a secret "${key}" for "${slug}" that this component ` +
+          `has no input for.`
+      );
+    }
+    if (secrets[field] === undefined) {
+      throw new Error(`GhostTenant: "${slug}" needs secrets.${field} (${key}); none was supplied.`);
+    }
+  }
+  for (const [field, value] of Object.entries(secrets) as [SecretField, unknown][]) {
+    if (value !== undefined && !required.includes(SECRET_ENV_KEYS[field])) {
+      throw new Error(
+        `GhostTenant: secrets.${field} was supplied for "${slug}", but its descriptor needs no ` +
+          `such secret. Refused rather than dropped, so a configuration mismatch is visible.`
+      );
+    }
+  }
+}
+
+/**
+ * Fills each `KEY=` line of the render core's template with its value and
+ * leaves every other line exactly as rendered. See
+ * index.md#filling-the-secrets-file.
+ */
+export function fillSecretsTemplate(
+  slug: string,
+  template: string,
+  values: ReadonlyMap<string, string>
+): string {
+  return template
+    .split('\n')
+    .map((line) => {
+      const key = TEMPLATE_KEY_LINE.exec(line)?.[1];
+      if (key === undefined) {
+        return line;
+      }
+      const value = values.get(key);
+      if (value === undefined) {
+        throw new Error(`GhostTenant: no value for ${key} in the secrets file for "${slug}".`);
+      }
+      if (CONTROL_CHARACTER.test(value)) {
+        throw new Error(
+          `GhostTenant: the ${key} for "${slug}" contains a control character. A newline in an ` +
+            `EnvironmentFile value adds a line rather than breaking one, so it can set any ` +
+            `variable in the container's environment.`
+        );
+      }
+      return `${key}=${value}`;
+    })
+    .join('\n');
+}
+
+/**
+ * One paying Ghost tenant on a shared app host. Every artefact comes from the
+ * render core's `render(descriptor)`; this component validates, registers
+ * and exposes them, and fills the secrets file with the values the
+ * descriptor never carries. It declares no cloud resources.
  * See index.md#ghosttenant.
  */
 export class GhostTenant extends pulumi.ComponentResource {
@@ -169,127 +178,101 @@ export class GhostTenant extends pulumi.ComponentResource {
   public readonly adaptersVolume: string;
   public readonly databaseName: string;
   public readonly databaseUser: string;
-  /** This tenant's own Object Storage bucket. Must exist, and must carry the
-   * bucket policy from `render-media-bucket-policy.py`, before the container
-   * can store anything: nothing in this component creates it. */
+  /** This tenant's own Object Storage bucket. Nothing here creates it. */
   public readonly mediaBucket: string;
-  /** `<endpoint>/<bucket>` — what Ghost writes into every published post. */
+  /** `<endpoint>/<bucket>`, what Ghost writes into every published post. */
   public readonly mediaPublicBaseUrl: string;
   /** The rendered `compose.yml` for `/opt/branchleft/<slug>/`. */
   public readonly composeFile: string;
-  /** The tenant's Caddy `request_body max_size`, for the edge site registry.
-   * Derived from the same input as the tmpfs ceiling so the two cannot
-   * disagree. */
+  /** The rendered `/etc/branchleft/<slug>.image.env`. */
+  public readonly imageEnvFile: string;
+  /** The rendered root-run script that creates this tenant's volumes. */
+  public readonly provisionScript: string;
+  /** The rendered edge site block, as JSON. */
+  public readonly edgeSiteBlock: string;
+  /** The edge site block's `request_body max_size`, read out of it. */
   public readonly edgeRequestBodyMaxSize: string;
-  /** The exact root-run command that must create this tenant's volumes before
-   * its unit is enabled. */
-  public readonly hostProvisioningCommand: string;
-  /** The exact content of `/etc/branchleft/<slug>.env`. A Pulumi secret: it
-   * carries the tenant's database password and, where configured, its SMTP
-   * and bulk-mail credentials. */
+  /** The rendered Ghost settings document, as JSON. */
+  public readonly ghostSettings: string;
+  /** The exact content of `/etc/branchleft/<slug>.env`. A Pulumi secret. */
   public readonly secretsEnvFile: pulumi.Output<string>;
-  /** See `GhostTenantIdentity`. Registered as one output so the tenant-stack
-   * delete guard has a single place to compare old against new. */
+  /** See `GhostTenantIdentity`. */
   public readonly identity: pulumi.Output<GhostTenantIdentity>;
 
   constructor(name: string, args: GhostTenantArgs, opts?: pulumi.ComponentResourceOptions) {
-    // Before super(): an invalid slug or uid must never reach the engine at
-    // all, registered or not. Neither validator touches `this`, so both are
-    // legal here and the alternative -- validating after registration, as
-    // this used to -- sends the bad value to the engine microtask queue
-    // before the throw unwinds the constructor.
-    validateTenantSlug(args.slug);
-    validateTenantUid(args.uid);
+    // Everything that can refuse runs before super(), so an invalid
+    // descriptor never reaches the engine. See index.md#constructor-order.
+    if (args.descriptor.kind !== 'tenant') {
+      throw new Error(
+        `GhostTenant: descriptor.kind must be "tenant", got "${args.descriptor.kind}". A demo ` +
+          `is reconciled by the broker, never by this component.`
+      );
+    }
+    const descriptor = validate(args.descriptor, args.zones);
+    const artefacts = render(descriptor, args.zones);
+    const slug = descriptor.slug;
 
-    // Computed before super() and reused (not recomputed) for `this.identity`
-    // below: a preview's new-state carries only the registered inputs, so a
-    // second copy of these fields could drift from what super() registers
-    // and hide an in-flight identity change from the delete guard.
+    const secretsTemplate = artefactContent(artefacts, 'secrets.env');
+    const required = requiredSecretKeys(secretsTemplate);
+    assertSecretCoverage(slug, required, args.secrets);
+
+    const rendered = JSON.parse(artefactContent(artefacts, 'identity.json')) as Omit<
+      GhostTenantIdentity,
+      'maxUserConnections'
+    >;
     // See index.md#constructor-identity-object.
     const identity: GhostTenantIdentity = {
-      slug: args.slug,
-      uid: args.uid,
-      stackName: stackName(args.slug),
-      contentVolume: contentVolumeName(args.slug),
-      adaptersVolume: adaptersVolumeName(args.slug),
-      databaseName: databaseAndUserName(args.slug),
-      appHostPrivateIp: args.appHostPrivateIp,
-      maxUserConnections: args.database.maxUserConnections ?? DEFAULT_MAX_USER_CONNECTIONS,
+      slug: rendered.slug,
+      uid: rendered.uid,
+      stackName: rendered.stackName,
+      contentVolume: rendered.contentVolume,
+      adaptersVolume: rendered.adaptersVolume,
+      databaseName: rendered.databaseName,
+      appHostPrivateIp: rendered.appHostPrivateIp,
+      maxUserConnections: args.maxUserConnections ?? DEFAULT_MAX_USER_CONNECTIONS,
     };
 
     super('ghostPlatform:tenant:GhostTenant', name, { identity }, opts);
 
-    const limits = uploadLimits(
-      args.uploadCeilingMib ?? DEFAULT_UPLOAD_CEILING_MIB,
-      args.rssBudgetMib ?? DEFAULT_RSS_BUDGET_MIB
-    );
-    const caps = { ...DEFAULT_RESOURCE_CAPS, ...args.resourceCaps };
+    const edge = artefactContent(artefacts, 'edge.json');
 
-    this.slug = args.slug;
-    this.uid = args.uid;
-    this.stackName = stackName(args.slug);
-    this.stackDirectory = stackDirectory(args.slug);
-    this.composeUnit = composeUnitName(args.slug);
-    this.secretsEnvPath = secretsEnvPath(args.slug);
-    this.imageEnvPath = imageEnvPath(args.slug);
-    this.contentVolume = contentVolumeName(args.slug);
-    this.adaptersVolume = adaptersVolumeName(args.slug);
-    this.databaseName = databaseAndUserName(args.slug);
+    this.slug = slug;
+    this.uid = descriptor.uid;
+    this.stackName = stackName(slug);
+    this.stackDirectory = stackDirectory(slug);
+    this.composeUnit = composeUnitName(slug);
+    this.secretsEnvPath = secretsEnvPath(slug);
+    this.imageEnvPath = imageEnvPath(slug);
+    this.contentVolume = contentVolumeName(slug);
+    this.adaptersVolume = adaptersVolumeName(slug);
+    this.databaseName = databaseAndUserName(slug);
     this.databaseUser = this.databaseName;
-    this.mediaBucket = mediaBucketName(args.slug);
-    this.mediaPublicBaseUrl = mediaPublicBaseUrl(args.media.endpoint, args.slug);
-    this.edgeRequestBodyMaxSize = limits.edgeRequestBodyMaxSize;
+    this.mediaBucket = mediaBucketName(slug);
+    this.mediaPublicBaseUrl =
+      descriptor.media.kind === 's3' ? mediaPublicBaseUrl(descriptor.media.endpoint, slug) : '';
+    this.composeFile = artefactContent(artefacts, 'compose.yml');
+    this.imageEnvFile = artefactContent(artefacts, 'image.env');
+    this.provisionScript = artefactContent(artefacts, 'provision.sh');
+    this.edgeSiteBlock = edge;
+    this.edgeRequestBodyMaxSize = (
+      JSON.parse(edge) as { requestBodyMaxSize: string }
+    ).requestBodyMaxSize;
+    this.ghostSettings = artefactContent(artefacts, 'ghost-settings.json');
 
-    this.composeFile = renderComposeStack({
-      slug: args.slug,
-      uid: args.uid,
-      appHostPrivateIp: args.appHostPrivateIp,
-      hostPort: args.hostPort,
-      limits,
-      caps,
-      environment: tenantEnvironment(
-        {
-          siteUrl: args.siteUrl,
-          database: {
-            host: args.database.host,
-            port: args.database.port ?? DEFAULT_DB_PORT,
-            name: this.databaseName,
-            user: this.databaseUser,
-          },
-          media: {
-            endpoint: args.media.endpoint,
-            region: args.media.region,
-            bucket: this.mediaBucket,
-            publicBaseUrl: this.mediaPublicBaseUrl,
-          },
-          limits,
-          mail: args.mail,
-          bulkEmail: args.bulkEmail,
-        },
-        this.secretsEnvPath
-      ),
-    });
-
-    this.hostProvisioningCommand = `provision_tenant_volume.py --uid ${args.uid} ${args.slug}`;
-
+    const values = required.map((key) =>
+      pulumi.output(
+        args.secrets[SECRET_FIELD_BY_KEY.get(key) as SecretField] as pulumi.Input<string>
+      )
+    );
     this.secretsEnvFile = pulumi.secret(
       pulumi
-        .all([
-          args.database.password,
-          args.media.accessKeyId,
-          args.media.secretAccessKey,
-          args.mail?.password ?? pulumi.output(undefined),
-          args.bulkEmail?.apiKey ?? pulumi.output(undefined),
-        ])
-        .apply(
-          ([databasePassword, s3AccessKeyId, s3SecretAccessKey, mailPassword, bulkEmailApiKey]) =>
-            tenantSecretsEnvFile(args.slug, {
-              databasePassword,
-              s3AccessKeyId,
-              s3SecretAccessKey,
-              mailPassword,
-              bulkEmailApiKey,
-            })
+        .all(values)
+        .apply((resolved) =>
+          fillSecretsTemplate(
+            slug,
+            secretsTemplate,
+            new Map(required.map((key, index) => [key, resolved[index]]))
+          )
         )
     );
 
@@ -302,8 +285,11 @@ export class GhostTenant extends pulumi.ComponentResource {
       stackDirectory: this.stackDirectory,
       secretsEnvPath: this.secretsEnvPath,
       imageEnvPath: this.imageEnvPath,
+      imageEnvFile: this.imageEnvFile,
+      provisionScript: this.provisionScript,
+      edgeSiteBlock: this.edgeSiteBlock,
       edgeRequestBodyMaxSize: this.edgeRequestBodyMaxSize,
-      hostProvisioningCommand: this.hostProvisioningCommand,
+      ghostSettings: this.ghostSettings,
       mediaBucket: this.mediaBucket,
       mediaPublicBaseUrl: this.mediaPublicBaseUrl,
       secretsEnvFile: this.secretsEnvFile,
@@ -311,9 +297,12 @@ export class GhostTenant extends pulumi.ComponentResource {
   }
 }
 
+export type {
+  Artefact,
+  TenantDescriptor,
+  ZoneConfig,
+} from '@branchleft/ghost-platform-render-core';
 export { SECRET_ENV_KEYS };
-export { assertRuntimePosture, GHOST_CONTAINER_PORT, renderComposeStack } from './compose';
-export { tenantEnvironment, tenantSecretsEnvFile } from './environment';
 export { MEDIA_BUCKET_PREFIX, mediaBucketName, mediaPublicBaseUrl } from './media';
 export {
   MAX_TENANT_SLUG_LENGTH,
@@ -339,9 +328,3 @@ export {
   validateTenantUid,
 } from './runtime';
 export type { ResourceCaps, UploadLimits } from './runtime';
-export type {
-  TenantBulkEmailConfig,
-  TenantDatabaseConfig,
-  TenantMailConfig,
-  TenantMediaConfig,
-} from './environment';

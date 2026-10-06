@@ -1,0 +1,43 @@
+name: Demo host router directory CI
+
+# Proves demo-host/provision/provision_socket_dirs.py's ownership shape
+# against real uids in a throwaway container: the broker account cannot
+# rename the health router's directory or create anything beside it, and
+# can still write its own slots directory. test_state_dirs.py (unit tests,
+# run by repo-tooling-ci.yml) models the same shape; this runs it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - demo-host/provision/provision_socket_dirs.py
+      - demo-host/provision/test_state_dirs.py
+      - demo-host/provision/state-dirs.golden.json
+      - scripts/test-demo-router-dir-permissions.sh
+      - .github/workflows/demo-host-router-dir-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - demo-host/provision/provision_socket_dirs.py
+      - demo-host/provision/test_state_dirs.py
+      - demo-host/provision/state-dirs.golden.json
+      - scripts/test-demo-router-dir-permissions.sh
+      - .github/workflows/demo-host-router-dir-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  permissions-proof:
+    name: real-uid permission proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the permission proof
+        run: ./scripts/test-demo-router-dir-permissions.sh

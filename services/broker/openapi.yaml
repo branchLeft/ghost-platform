@@ -125,9 +125,10 @@ paths:
       description: >-
         Revokes the slot's lease and gate hash, then tears down both colours
         via the sudoers-wrapped `reset` verb, and marks both colours drained.
-        Always ends the slot `free` on success, whatever it held before.
-        Requires the broker's signature scheme; the signed bytes are the raw
-        JSON request body.
+        Ends the slot `free` on success, whatever it held before, except that
+        a slot still `detaching`, or holding frozen evidence not yet confirmed
+        detached, is refused untouched. Requires the broker's signature
+        scheme; the signed bytes are the raw JSON request body.
       security:
         - brokerSignature: []
       parameters:
@@ -156,7 +157,7 @@ paths:
         '401':
           description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
         '409':
-          description: The slot is locked by a concurrent request.
+          description: The slot is locked by a concurrent request, or is detaching or holding frozen evidence not yet confirmed detached; the slot is left untouched.
           content:
             application/json:
               schema:
@@ -572,7 +573,7 @@ components:
       additionalProperties: false
     StatusResponse:
       type: object
-      required: [slot, phase, healthy]
+      required: [slot, phase, healthy, notReal, interim]
       properties:
         slot:
           $ref: '#/components/schemas/SlotName'
@@ -580,6 +581,24 @@ components:
           $ref: '#/components/schemas/Phase'
         healthy:
           type: boolean
+        notReal:
+          description: >-
+            Host-wide, not per-slot: the plugin seams ("adminApi",
+            "drainSource", "imageLoader", "renderer") whose loaded module does
+            not mark itself `real: true`, sorted. A test stand-in or any
+            unmarked module is listed. A host is not ready to go live while
+            this is non-empty.
+          type: array
+          items:
+            type: string
+        interim:
+          description: >-
+            Host-wide: the plugin seams whose loaded module marks itself
+            interim (shipped, but standing in for a part not built yet),
+            sorted. A host is not ready to go live while this is non-empty.
+          type: array
+          items:
+            type: string
       additionalProperties: false
     QueuedMailItem:
       type: object

@@ -24,6 +24,7 @@ import time
 from collections.abc import Callable
 
 import shared_objectstorage
+from backup_manifest import ManifestWatcher
 from dial_in_transport import (
     DialInTransport,
     DialInTransportError,
@@ -140,9 +141,12 @@ class DumpResult:
     an exit code, for the on-demand caller that needs to know whether the
     dump it just took is trustworthy before acting on it.
 
-    `lock_wait_seconds` is `_LockWaitTimer`'s measurement -- `None` when no
-    byte of the producer's output was ever observed (see that class'
-    docstring), never a fabricated 0."""
+    `lock_wait_seconds` and `lock_hold_seconds` are measured in the
+    transport's own coordinator session when it reports them (see
+    `_snapshot_measurements`); otherwise the wait is `_LockWaitTimer`'s
+    proxy, `None` when no byte was observed, never a fabricated 0.
+    `lock_aborts` counts lock attempts given up on a bound, whether or not
+    a later attempt succeeded."""
 
     tenant: str
     ok: bool
@@ -152,6 +156,23 @@ class DumpResult:
     copies_written: tuple[str, ...]
     error: str | None
     lock_wait_seconds: float | None = None
+    lock_hold_seconds: float | None = None
+    lock_aborts: int = 0
+
+
+def _snapshot_measurements(transport: DialInTransport, timer: _LockWaitTimer) -> dict:
+    """What the transport measured directly, when it can (the real
+    channel). A test double that measures nothing falls back to the
+    first-byte proxy for the wait and leaves the hold unmeasured."""
+    report = getattr(transport, "last_snapshot", None)
+    aborts = int(getattr(transport, "last_snapshot_aborts", 0) or 0)
+    if report is not None:
+        return {
+            "lock_wait_seconds": report.lock_wait_seconds,
+            "lock_hold_seconds": report.hold_seconds,
+            "lock_aborts": aborts,
+        }
+    return {"lock_wait_seconds": timer.elapsed, "lock_hold_seconds": None, "lock_aborts": aborts}
 
 
 def run_tenant_dump(
@@ -173,6 +194,7 @@ def run_tenant_dump(
     validate_tenant_name(tenant)
 
     watcher = _FloorWatcher(FLOOR_TABLES)
+    manifest = ManifestWatcher()
     timer = _LockWaitTimer()
     command = [python_executable, dump_tenant_path, tenant, "--socket", socket_path]
     env = {"DB_DUMP_MYSQL_PWD": mysql_pwd}
@@ -184,6 +206,7 @@ def run_tenant_dump(
         # this ordering and this composition existing at all.
         timer.observe(chunk)
         watcher.observe(chunk)
+        manifest.observe(chunk)
 
     try:
         result = pull_encrypt_and_store(
@@ -194,6 +217,7 @@ def run_tenant_dump(
             copies=copies,
             chunk_watcher=_chunk_watcher,
             post_stream_check=watcher.assert_floor_met,
+            trailer=lambda: manifest.manifest().to_trailer(),
         )
     except PullEncryptStoreError as exc:
         # `assert_floor_met` raising, a stanza count other than 1, `age`
@@ -211,7 +235,7 @@ def run_tenant_dump(
             missing_floor_tables=missing,
             copies_written=(),
             error=str(exc),
-            lock_wait_seconds=timer.elapsed,
+            **_snapshot_measurements(transport, timer),
         )
 
     seen = frozenset(watcher.seen)
@@ -223,7 +247,7 @@ def run_tenant_dump(
         missing_floor_tables=frozenset(FLOOR_TABLES) - seen,
         copies_written=tuple(result.copies_written),
         error=result.error,
-        lock_wait_seconds=timer.elapsed,
+        **_snapshot_measurements(transport, timer),
     )
 
 
@@ -488,9 +512,8 @@ def _parse_previous_lock_wait_metrics(text: str) -> dict[str, float]:
 def render_lock_wait_prometheus_text(waits: dict[str, float]) -> str:
     """The lock-wait mirror of `render_backup_age_prometheus_text`."""
     lines = [
-        f"# HELP {BACKUP_LOCK_WAIT_METRIC_NAME} Seconds this worker's most recent attempt for "
-        "this tenant waited from starting mysqldump to its first byte of output -- a proxy "
-        "for how long mysqldump's --source-data=2 waited for db1's global read lock.",
+        f"# HELP {BACKUP_LOCK_WAIT_METRIC_NAME} Seconds this worker's most recent dump for "
+        "this tenant waited for its table lock, measured in the lock's own session.",
         f"# TYPE {BACKUP_LOCK_WAIT_METRIC_NAME} gauge",
     ]
     for tenant in sorted(waits):
@@ -548,6 +571,95 @@ def record_lock_wait_metric(
         )
 
 
+# The hold gauge and the abort counter share one file and lock of their own,
+# for the reason the lock-wait gauge has its own: one metric's write
+# failure must never cost another's.
+BACKUP_LOCK_BOUND_METRIC_FILENAME = "backup_worker_lock_bound.prom"
+BACKUP_LOCK_BOUND_METRIC_LOCK_FILENAME = BACKUP_LOCK_BOUND_METRIC_FILENAME + ".lock"
+BACKUP_LOCK_HOLD_METRIC_NAME = "backup_worker_lock_hold_seconds"
+BACKUP_LOCK_ABORTS_METRIC_NAME = "backup_worker_lock_aborts_total"
+
+_LOCK_BOUND_METRIC_LINE = re.compile(
+    r'\A(' + re.escape(BACKUP_LOCK_HOLD_METRIC_NAME) + '|' + re.escape(BACKUP_LOCK_ABORTS_METRIC_NAME)
+    + r')\{tenant="([^"]*)"\}\s+([0-9]+(?:\.[0-9]+)?)\s*\Z'
+)
+
+
+def _parse_previous_lock_bound_metrics(text: str) -> tuple[dict[str, float], dict[str, float]]:
+    holds: dict[str, float] = {}
+    aborts: dict[str, float] = {}
+    for line in text.splitlines():
+        match = _LOCK_BOUND_METRIC_LINE.match(line.strip())
+        if match:
+            target = holds if match.group(1) == BACKUP_LOCK_HOLD_METRIC_NAME else aborts
+            target[match.group(2)] = float(match.group(3))
+    return holds, aborts
+
+
+def render_lock_bound_prometheus_text(holds: dict[str, float], aborts: dict[str, float]) -> str:
+    lines = [
+        f"# HELP {BACKUP_LOCK_HOLD_METRIC_NAME} Seconds this worker's most recent dump for this "
+        "tenant held its table lock, from grant to the server confirming the unlock.",
+        f"# TYPE {BACKUP_LOCK_HOLD_METRIC_NAME} gauge",
+    ]
+    for tenant in sorted(holds):
+        lines.append(f'{BACKUP_LOCK_HOLD_METRIC_NAME}{{tenant="{_escape_label_value(tenant)}"}} {holds[tenant]}')
+    lines += [
+        f"# HELP {BACKUP_LOCK_ABORTS_METRIC_NAME} Lock attempts this worker has given up on a "
+        "wait or hold bound for this tenant, including ones a retry recovered from.",
+        f"# TYPE {BACKUP_LOCK_ABORTS_METRIC_NAME} counter",
+    ]
+    for tenant in sorted(aborts):
+        lines.append(f'{BACKUP_LOCK_ABORTS_METRIC_NAME}{{tenant="{_escape_label_value(tenant)}"}} {aborts[tenant]:g}')
+    return "\n".join(lines) + "\n"
+
+
+def record_lock_bound_metrics(
+    *,
+    tenant: str,
+    metrics_dir: str,
+    hold_seconds: float | None,
+    aborts: int,
+) -> None:
+    """Sets the tenant's hold gauge (when a hold was measured) and adds
+    `aborts` to its counter, which is written even at 0 so the series
+    exists before the first abort. Best-effort and never raises, like the
+    other two metric writers."""
+    try:
+        output_dir = pathlib.Path(metrics_dir)
+        output_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+        output_path = output_dir / BACKUP_LOCK_BOUND_METRIC_FILENAME
+        lock_path = output_dir / BACKUP_LOCK_BOUND_METRIC_LOCK_FILENAME
+        with open(lock_path, "a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                try:
+                    existing = output_path.read_text()
+                except FileNotFoundError:
+                    existing = ""
+                holds, abort_totals = _parse_previous_lock_bound_metrics(existing)
+                if hold_seconds is not None:
+                    holds[tenant] = hold_seconds
+                abort_totals[tenant] = abort_totals.get(tenant, 0.0) + max(int(aborts), 0)
+                write_textfile_atomically(output_path, render_lock_bound_prometheus_text(holds, abort_totals))
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        print(
+            f"backup_worker: {tenant}: could not write the lock-bound metrics to {metrics_dir!r}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def record_dump_lock_metrics(*, result: DumpResult, metrics_dir: str) -> None:
+    """Every lock metric one dump produces, for both callers alike."""
+    if result.lock_wait_seconds is not None:
+        record_lock_wait_metric(tenant=result.tenant, metrics_dir=metrics_dir, wait_seconds=result.lock_wait_seconds)
+    record_lock_bound_metrics(
+        tenant=result.tenant, metrics_dir=metrics_dir, hold_seconds=result.lock_hold_seconds, aborts=result.lock_aborts
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tenant", required=True, help="the tenant slug, e.g. 'blog'")
@@ -603,8 +715,7 @@ def main(argv: list[str] | None = None) -> int:
     # Recorded whether or not the dump itself succeeded (see
     # record_lock_wait_metric's own docstring) -- the lock is taken, or
     # waited for, before the floor check or storage ever run.
-    if result.lock_wait_seconds is not None:
-        record_lock_wait_metric(tenant=args.tenant, metrics_dir=metrics_dir, wait_seconds=result.lock_wait_seconds)
+    record_dump_lock_metrics(result=result, metrics_dir=metrics_dir)
 
     if not result.ok:
         print(f"backup_worker: {args.tenant}: {result.error}", file=sys.stderr)

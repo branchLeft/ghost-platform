@@ -2,6 +2,43 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## 6.0.0
+
+**`GhostTenant` now takes a tenant descriptor and builds every output by
+calling the render core's `render()`; it renders nothing itself.**
+
+- **Breaking: the input is a descriptor.** `GhostTenantArgs` is now
+  `{ descriptor, zones, secrets, maxUserConnections? }`, where `descriptor` and
+  `zones` are the render core's `TenantDescriptor` and `ZoneConfig`. A 5.x
+  caller does not compile. A demo descriptor is refused.
+- **New dependency:** `@branchleft/ghost-platform-render-core`, pinned exactly
+  at `0.1.0`. It is an ES module; this package stays CommonJS and loads it
+  through Node's `require()` of ES modules, which the package's Node 26 floor
+  supports.
+- **Breaking: the rendered output changes.** Every changed value, against
+  4.0.0 for the same configuration, is listed in
+  `test/golden/reviewed-output-diff.json` and tied to a ratified decision, and
+  `output-diff.test.ts` fails on any change not listed. In short: two Ghost
+  services (`ghost-a`, `ghost-b`) on the descriptor's port pair, for
+  blue/green; the scanning storage adapter wrapping `S3Storage` for images,
+  media and files; member mail sent as the tenant's own sending identity
+  through the host's mail spool; and the render core's own header comments.
+- **Breaking: outputs.** `hostProvisioningCommand` is replaced by
+  `provisionScript`, the render core's `provision.sh`. New outputs:
+  `imageEnvFile`, `edgeSiteBlock` and `ghostSettings`. `identity`,
+  `composeFile`, `secretsEnvFile` and every naming output keep their names and,
+  for the identity, their values.
+- **Removed:** `renderComposeStack`, `assertRuntimePosture`,
+  `GHOST_CONTAINER_PORT`, `tenantEnvironment`, `tenantSecretsEnvFile` and the
+  `Tenant*Config` types. Their render-core equivalents are the only renderer.
+- `uploadCeilingMib`, `rssBudgetMib` and `resourceCaps` are no longer inputs:
+  the render core applies its default upload limits, and the caps are the
+  descriptor's `caps`.
+- **Nothing changes for a stack that pins an earlier version.** A tenant moves
+  to 6.0.0 only by bumping its own pin and rewriting its program to build a
+  descriptor. Tenant zero cannot yet: render core 0.1.0 reserves its slug.
+  See `output-diff.md#the-slug`.
+
 ## 5.0.0
 
 **`nextcloud1` is now a reserved stack name, so no tenant can take the slug

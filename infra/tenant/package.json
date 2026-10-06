@@ -1,6 +1,6 @@
 {
   "name": "@branchleft/ghost-platform-tenant",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,11 +24,14 @@
     "test:unit": "vitest --run"
   },
   "dependencies": {
+    "@branchleft/ghost-platform-render-core": "0.1.0",
     "@pulumi/pulumi": "^3.262.0"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.4.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.5.1",
+    "js-yaml": "^4.3.2",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
   }

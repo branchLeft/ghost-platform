@@ -18,6 +18,7 @@ import type {
 } from './descriptor.js';
 import { renderSendingAddress, sendingDomainOf } from './mail.js';
 import { mediaBucketName, mediaPublicBaseUrl, validateMediaBucket } from './media.js';
+import { MAIL_SPOOL_BASE_URL, MAIL_SPOOL_SERVICE, MAIL_SPOOL_SMTP_PORT } from './spool.js';
 import { databaseAndUserName, validateDatabaseIdentity } from './naming.js';
 import type { UploadLimits } from './runtime.js';
 import type { ZoneConfig } from './validate.js';
@@ -225,16 +226,28 @@ function mediaEnvironment(
 }
 
 /**
- * `transport` env wiring stays deliberately narrow: `smtp` renders the
- * three non-secret fields a caller supplies for the transactional path;
- * `queue` (the platform's own local mail spool, addressed some other way)
- * renders no Ghost env var at all. Member mail is addressed through a
- * Ghost *setting* (`members_support_address`, `settings.ts`), not the
- * `mail__from` env var below — this function carries neither, on purpose.
+ * `smtp` renders the three non-secret fields a caller supplies for the
+ * transactional path. `queue` is the host's own mail spool: with mail
+ * enabled it renders Ghost's SMTP transport pointed at the spool, from
+ * `spool.ts`'s constants, and with mail disabled it renders nothing. See
+ * environment.md#transport-environment.
  */
-function transportEnvironment(transport: TransportSpec): Record<string, string | number | boolean> {
+function transportEnvironment(
+  transport: TransportSpec,
+  mail: MailSpec,
+  zones: Pick<ZoneConfig, 'demoMailDomain'>
+): Record<string, string | number | boolean> {
   if (transport.kind === 'queue') {
-    return {};
+    if (!mail.enabled) {
+      return {};
+    }
+    return {
+      mail__transport: 'SMTP',
+      mail__options__host: MAIL_SPOOL_SERVICE,
+      mail__options__port: MAIL_SPOOL_SMTP_PORT,
+      mail__options__secure: false,
+      mail__options__auth__user: sendingDomainOf(mail.identity, zones),
+    };
   }
   return {
     mail__transport: 'SMTP',
@@ -270,13 +283,13 @@ function breakGlassEnvironment(breakGlass: BreakGlassSpec): Record<string, strin
  */
 function bulkMailEnvironment(
   mail: MailSpec,
-  zones: Pick<ZoneConfig, 'demoMailDomain' | 'mailSpoolBaseUrl'>
+  zones: Pick<ZoneConfig, 'demoMailDomain'>
 ): Record<string, string | number | boolean> {
   const env: Record<string, string | number | boolean> = {
     mail__from: renderSendingAddress(mail.identity, zones),
   };
   if (mail.enabled) {
-    env.bulkEmail__mailgun__baseUrl = zones.mailSpoolBaseUrl;
+    env.bulkEmail__mailgun__baseUrl = MAIL_SPOOL_BASE_URL;
     env.bulkEmail__mailgun__domain = sendingDomainOf(mail.identity, zones);
   }
   return env;
@@ -322,13 +335,13 @@ export function tenantEnvironment(
   >,
   limits: UploadLimits,
   secretsFilePath: string,
-  zones: Pick<ZoneConfig, 'demoMailDomain' | 'mailSpoolBaseUrl'>
+  zones: Pick<ZoneConfig, 'demoMailDomain'>
 ): Record<string, string | number | boolean> {
   const env: Record<string, string | number | boolean> = {
     url: descriptor.siteUrl,
     ...databaseEnvironment(descriptor.slug, descriptor.database),
     ...mediaEnvironment(descriptor.slug, descriptor.media, descriptor.safety),
-    ...transportEnvironment(descriptor.transport),
+    ...transportEnvironment(descriptor.transport, descriptor.mail, zones),
     ...bulkMailEnvironment(descriptor.mail, zones),
     ...hostLimitsEnvironment(descriptor.limits),
     ...breakGlassEnvironment(descriptor.breakGlass),
@@ -363,6 +376,10 @@ export function tenantEnvironment(
   }
   if (descriptor.transport.kind === 'smtp') {
     escaped.mail__options__auth__pass = required('mailPassword', secretsFilePath);
+  } else if (descriptor.mail.enabled) {
+    // The spool's SMTP front door authenticates a submitter with the same
+    // per-tenant key its Mailgun-shaped API takes, so no second secret.
+    escaped.mail__options__auth__pass = required('bulkEmailApiKey', secretsFilePath);
   }
   if (descriptor.mail.enabled) {
     escaped.bulkEmail__mailgun__apiKey = required('bulkEmailApiKey', secretsFilePath);

@@ -1,0 +1,441 @@
+[
+  {
+    "change": "changed",
+    "path": "compose.comment.10",
+    "before": "# is root-owned 0600 and written by an operator alone.",
+    "after": "# Any `${GHOST_*}` reference comes from /etc/branchleft/<stack>.env,",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "added",
+    "path": "compose.comment.11",
+    "after": "# which is root-owned 0600 and written by an operator alone.",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "compose.comment.3",
+    "before": "# Rendered by @branchleft/ghost-platform-tenant. Do not hand-edit on the",
+    "after": "# Rendered by @branchleft/ghost-platform-render-core. Do not hand-edit on",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "compose.comment.4",
+    "before": "# host: every line below is a runtime-isolation control, and a stack that",
+    "after": "# the host: every line below is a runtime-isolation control, and a stack",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "compose.comment.5",
+    "before": "# omits one still starts, still serves, and silently drops the boundary.",
+    "after": "# that omits one still starts, still serves, and silently drops the",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "compose.comment.6",
+    "before": "#",
+    "after": "# boundary.",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "compose.comment.7",
+    "before": "# `${IMAGE}` is written to /etc/branchleft/<stack>.image.env by",
+    "after": "#",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "compose.comment.8",
+    "before": "# /usr/local/sbin/branchleft-deploy and is always a digest, never a tag.",
+    "after": "# `${IMAGE}` is written to /etc/branchleft/<stack>.image.env by",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "compose.comment.9",
+    "before": "# The `${GHOST_*}` references come from /etc/branchleft/<stack>.env, which",
+    "after": "# /usr/local/sbin/branchleft-deploy and is always a digest, never a tag.",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "compose.serviceNames",
+    "before": "ghost",
+    "after": "ghost-a,ghost-b",
+    "decision": "blue-green"
+  },
+  {
+    "change": "changed",
+    "path": "compose.services.ghost.environment.bulkEmail__mailgun__baseUrl",
+    "before": "https://mx.example.test:8443",
+    "after": "http://mail-spool.example.test:8080",
+    "decision": "mail-spool"
+  },
+  {
+    "change": "changed",
+    "path": "compose.services.ghost.environment.mail__from",
+    "before": "PLACEHOLDER_SENDER_NAME <zero@example.test>",
+    "after": "hello@zero-mail.example.test",
+    "decision": "mail-spool"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__active",
+    "before": "S3Storage",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__adapter",
+    "after": "ScanningStorageAdapter",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__quarantinePath",
+    "after": "/var/lib/ghost/content/quarantine",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__accessKeyId",
+    "after": "${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/zero.env}",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__bucket",
+    "after": "branchleft-media-zero",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__cdnUrl",
+    "after": "https://objects.example.test/branchleft-media-zero",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__endpoint",
+    "after": "https://objects.example.test",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__forcePathStyle",
+    "after": true,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__multipartChunkSizeBytes",
+    "after": 5242880,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__multipartUploadThresholdBytes",
+    "after": 10485760,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__region",
+    "after": "region-1",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__secretAccessKey",
+    "after": "${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/zero.env}",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wrappedConfig__staticFileURLPrefix",
+    "after": "content/files",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__wraps",
+    "after": "S3Storage",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__adapter",
+    "after": "ScanningStorageAdapter",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__quarantinePath",
+    "after": "/var/lib/ghost/content/quarantine",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__accessKeyId",
+    "after": "${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/zero.env}",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__bucket",
+    "after": "branchleft-media-zero",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__cdnUrl",
+    "after": "https://objects.example.test/branchleft-media-zero",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__endpoint",
+    "after": "https://objects.example.test",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__forcePathStyle",
+    "after": true,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__multipartChunkSizeBytes",
+    "after": 5242880,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__multipartUploadThresholdBytes",
+    "after": 10485760,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__region",
+    "after": "region-1",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__secretAccessKey",
+    "after": "${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/zero.env}",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wrappedConfig__staticFileURLPrefix",
+    "after": "content/images",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__wraps",
+    "after": "S3Storage",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__adapter",
+    "after": "ScanningStorageAdapter",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__quarantinePath",
+    "after": "/var/lib/ghost/content/quarantine",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__accessKeyId",
+    "after": "${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/zero.env}",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__bucket",
+    "after": "branchleft-media-zero",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__cdnUrl",
+    "after": "https://objects.example.test/branchleft-media-zero",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__endpoint",
+    "after": "https://objects.example.test",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__forcePathStyle",
+    "after": true,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__multipartChunkSizeBytes",
+    "after": 5242880,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__multipartUploadThresholdBytes",
+    "after": 10485760,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__region",
+    "after": "region-1",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__secretAccessKey",
+    "after": "${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/zero.env}",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wrappedConfig__staticFileURLPrefix",
+    "after": "content/media",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__wraps",
+    "after": "S3Storage",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__accessKeyId",
+    "before": "${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/zero.env}",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__bucket",
+    "before": "branchleft-media-zero",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__cdnUrl",
+    "before": "https://objects.example.test/branchleft-media-zero",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__endpoint",
+    "before": "https://objects.example.test",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__forcePathStyle",
+    "before": true,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__multipartChunkSizeBytes",
+    "before": 5242880,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__multipartUploadThresholdBytes",
+    "before": 10485760,
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__region",
+    "before": "region-1",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__secretAccessKey",
+    "before": "${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/zero.env}",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "removed",
+    "path": "compose.services.ghost.environment.storage__S3Storage__staticFileURLPrefix",
+    "before": "content/images",
+    "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "output.edgeSiteBlock",
+    "after": "{\n  \"displayHostname\": \"zero.platform-domain.example.test\",\n  \"admittedHostname\": \"zero.platform-domain.example.test\",\n  \"gate\": {\n    \"kind\": \"none\"\n  },\n  \"requestBodyMaxSize\": \"64MiB\",\n  \"contentSecurityPolicy\": \"default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'\",\n  \"contentSecurityPolicyMode\": \"report-only\"\n}\n",
+    "decision": "render-core-artefact"
+  },
+  {
+    "change": "added",
+    "path": "output.ghostSettings",
+    "after": "{\n  \"codeinjection_head\": \"\",\n  \"codeinjection_foot\": \"\",\n  \"codeInjectionExplainer\": \"ALL_CAPS_PLACEHOLDER: code injection explainer copy\",\n  \"members_support_address\": \"hello@zero-mail.example.test\"\n}\n",
+    "decision": "render-core-artefact"
+  },
+  {
+    "change": "removed",
+    "path": "output.hostProvisioningCommand",
+    "before": "provision_tenant_volume.py --uid 30001 zero",
+    "decision": "render-core-artefact"
+  },
+  {
+    "change": "added",
+    "path": "output.imageEnvFile",
+    "after": "IMAGE=ghcr.io/example/ghost-tenant@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+    "decision": "render-core-artefact"
+  },
+  {
+    "change": "added",
+    "path": "output.provisionScript",
+    "after": "#!/bin/sh\nset -eu\n# Provisions zero's two named volumes before zero's\n# unit is enabled. Idempotent; safe to re-run.\n/root/platform-provision/provision_tenant_volume.py --uid '30001' 'zero'\n",
+    "decision": "render-core-artefact"
+  },
+  {
+    "change": "changed",
+    "path": "secrets.comment.0",
+    "before": "# Secrets for the zero Ghost stack. Root-owned, mode 0600.",
+    "after": "# Secrets for the zero Ghost stack, at /etc/branchleft/zero.env.",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "changed",
+    "path": "secrets.comment.1",
+    "before": "# Written by an operator; no automated path may rewrite this file.",
+    "after": "# Root-owned, mode 0600. Written by an operator; no automated path may",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "added",
+    "path": "secrets.comment.2",
+    "after": "# rewrite this file. render() names the keys this tenant needs below \u2014",
+    "decision": "single-renderer"
+  },
+  {
+    "change": "added",
+    "path": "secrets.comment.3",
+    "after": "# it never has a value to put here.",
+    "decision": "single-renderer"
+  }
+]

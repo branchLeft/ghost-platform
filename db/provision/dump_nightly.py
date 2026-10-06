@@ -2,19 +2,24 @@
 """Nightly logical dump of every database on db1, encrypted client-side and
 shipped to Object Storage.
 
-`--source-data=2` (a commented resume point, since `--all-databases`
-rejects the uncommented `=1`) and `@@server_uuid`-namespaced object keys are
-both load-bearing for restore -- see dump_nightly.md for why.
+The commented resume point (`-- CHANGE MASTER TO ...`, the form
+`--source-data=2` wrote) and `@@server_uuid`-namespaced object keys are both
+load-bearing for restore. The snapshot is `bounded_snapshot`'s: table locks
+with a bounded wait and hold, never `FLUSH TABLES`. See dump_nightly.md.
 """
 
 from __future__ import annotations
 
 import datetime
 import os
+import pathlib
+import re
 import subprocess
 import sys
 import tempfile
+import time
 
+import bounded_snapshot
 from objectstorage import ObjectStorageError, put_object
 
 DUMP_MYSQL_USER = "backup"
@@ -52,29 +57,121 @@ def get_server_uuid(*, socket_path: str, password: str, run=subprocess.run) -> s
     return server_uuid
 
 
-def run_mysqldump(*, socket_path: str, password: str, out_path: str, run=subprocess.run) -> None:
-    with open(out_path, "wb") as handle:
-        result = run(
-            [
-                "mysqldump",
-                "--socket",
-                socket_path,
-                "--user",
-                DUMP_MYSQL_USER,
-                "--all-databases",
-                "--single-transaction",
-                "--source-data=2",
-                "--routines",
-                "--triggers",
-                "--set-gtid-purged=OFF",
-            ],
-            env={**os.environ, "MYSQL_PWD": password},
-            stdout=handle,
-            stderr=subprocess.PIPE,
-            check=False,
+DUMP_ARGS = (
+    "--all-databases",
+    "--single-transaction",
+    "--routines",
+    "--triggers",
+    "--set-gtid-purged=OFF",
+)
+
+
+# The same metric names the control host's worker publishes, under this
+# label, so one set of alert rules covers both. See dump_nightly.md#metrics.
+METRICS_LABEL = "db1-all-databases"
+METRICS_FILENAME = "dump_nightly_lock_bound.prom"
+DEFAULT_METRICS_DIR = "/var/lib/branchleft/backup-worker-exporter"
+_ABORTS_LINE = re.compile(
+    r'\Abackup_worker_lock_aborts_total\{tenant="' + re.escape(METRICS_LABEL) + r'"\}\s+([0-9]+(?:\.[0-9]+)?)\s*\Z'
+)
+
+
+def record_lock_metrics(
+    *, metrics_dir: str, report: bounded_snapshot.SnapshotReport | None, aborts: int
+) -> None:
+    """Writes the wait and hold gauges (when a snapshot was taken) and adds
+    `aborts` to the cumulative counter. Best-effort: never fails the dump."""
+    path = pathlib.Path(metrics_dir) / METRICS_FILENAME
+    try:
+        previous = 0.0
+        try:
+            for line in path.read_text().splitlines():
+                match = _ABORTS_LINE.match(line.strip())
+                if match:
+                    previous = float(match.group(1))
+        except FileNotFoundError:
+            pass
+        label = f'{{tenant="{METRICS_LABEL}"}}'
+        lines = []
+        if report is not None:
+            lines += [
+                "# TYPE backup_worker_lock_wait_seconds gauge",
+                f"backup_worker_lock_wait_seconds{label} {report.lock_wait_seconds}",
+                "# TYPE backup_worker_lock_hold_seconds gauge",
+                f"backup_worker_lock_hold_seconds{label} {report.hold_seconds}",
+            ]
+        lines += [
+            "# TYPE backup_worker_lock_aborts_total counter",
+            f"backup_worker_lock_aborts_total{label} {previous + max(int(aborts), 0):g}",
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as handle:
+            handle.write("\n".join(lines) + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"dump_nightly: could not write lock metrics to {metrics_dir!r}: {exc}", file=sys.stderr)
+
+
+def run_mysqldump(
+    *,
+    socket_path: str,
+    password: str,
+    out_path: str,
+    popen=subprocess.Popen,
+    limits: bounded_snapshot.Limits = bounded_snapshot.Limits(),
+    sleep=time.sleep,
+    metrics_dir: str | None = None,
+) -> bounded_snapshot.SnapshotReport:
+    """Writes the resume-point comment, then the dump, to `out_path`.
+    Every user schema's tables are locked for the snapshot; see
+    dump_nightly.md#the-snapshot for why the system schemas are not."""
+    factory = bounded_snapshot.ClientFactory(
+        connection_args=["--socket", socket_path, "--user", DUMP_MYSQL_USER],
+        password=password,
+        env={"PATH": os.environ.get("PATH", "")},
+        popen=popen,
+    )
+    try:
+        dump, report = bounded_snapshot.take_bounded_snapshot(
+            factory=factory,
+            schemas=None,
+            dump_args=DUMP_ARGS,
+            limits=limits,
+            sleep=sleep,
+            log=lambda message: print(f"dump_nightly: {message}", file=sys.stderr),
         )
-    if result.returncode != 0:
-        raise DumpError(f"mysqldump exited {result.returncode}: {result.stderr.decode(errors='replace')}")
+        if metrics_dir is not None:
+            record_lock_metrics(metrics_dir=metrics_dir, report=report, aborts=report.aborted_attempts)
+    except bounded_snapshot.SnapshotError as exc:
+        if metrics_dir is not None:
+            record_lock_metrics(metrics_dir=metrics_dir, report=None, aborts=exc.aborted_attempts)
+        raise DumpError(
+            f"no consistent snapshot ({exc.aborted_attempts} lock attempt(s) aborted on a bound): {exc}"
+        ) from exc
+
+    try:
+        with open(out_path, "wb") as handle:
+            handle.write(report.coordinates_comment())
+            for chunk in iter(lambda: dump.process.stdout.read(1 << 16), b""):
+                handle.write(chunk)
+        exit_code = dump.process.wait()
+    except BaseException:
+        bounded_snapshot.kill_process(dump.process)
+        raise
+    finally:
+        dump.process.stdout.close()
+    dump.stderr.join(5.0)
+    if exit_code != 0:
+        raise DumpError(f"mysqldump exited {exit_code}: {dump.stderr.text()}")
+    print(
+        f"dump_nightly: snapshot at {report.log_file}:{report.log_position}, lock wait "
+        f"{report.lock_wait_seconds:.3f}s, hold {report.hold_seconds:.3f}s, "
+        f"{report.aborted_attempts} aborted lock attempt(s), {report.tables_locked} tables locked",
+        file=sys.stderr,
+    )
+    return report
 
 
 def encrypt_with_age(*, in_path: str, out_path: str, recipient: str, run=subprocess.run) -> None:
@@ -103,7 +200,11 @@ def run_dump(
     secret_key: str,
     now: datetime.datetime | None = None,
     run=subprocess.run,
+    popen=subprocess.Popen,
     upload=put_object,
+    limits: bounded_snapshot.Limits = bounded_snapshot.Limits(),
+    sleep=time.sleep,
+    metrics_dir: str | None = None,
 ) -> str:
     """Returns the object key written on success; raises DumpError or
     ObjectStorageError otherwise."""
@@ -114,7 +215,15 @@ def run_dump(
         plain_path = os.path.join(tmp, "dump.sql")
         encrypted_path = os.path.join(tmp, "dump.sql.age")
 
-        run_mysqldump(socket_path=socket_path, password=password, out_path=plain_path, run=run)
+        run_mysqldump(
+            socket_path=socket_path,
+            password=password,
+            out_path=plain_path,
+            popen=popen,
+            limits=limits,
+            sleep=sleep,
+            metrics_dir=metrics_dir,
+        )
         encrypt_with_age(in_path=plain_path, out_path=encrypted_path, recipient=recipient, run=run)
 
         with open(encrypted_path, "rb") as handle:
@@ -152,6 +261,7 @@ def main(argv: list[str]) -> int:
             region=_require_env("DB_BACKUP_REGION"),
             access_key=_require_env("AWS_ACCESS_KEY_ID"),
             secret_key=_require_env("AWS_SECRET_ACCESS_KEY"),
+            metrics_dir=os.environ.get("DB_DUMP_METRICS_DIR", DEFAULT_METRICS_DIR),
         )
     except (DumpError, ObjectStorageError) as exc:
         print(f"dump_nightly: {exc}", file=sys.stderr)

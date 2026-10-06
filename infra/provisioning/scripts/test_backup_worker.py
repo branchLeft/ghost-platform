@@ -11,6 +11,7 @@ See test_backup_worker.md#module-overview."""
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import io
 import os
 import pathlib
@@ -23,6 +24,7 @@ import unittest
 from unittest import mock
 
 import backup_worker as bw
+import dial_in_transport
 from dial_in_transport import LocalProcessTransport, RemoteMysqldumpTransport
 from pull_encrypt_store import CopyTarget
 
@@ -47,6 +49,21 @@ _FAKE_MYSQLDUMP_MISSING_SETTINGS = """#!/bin/sh
 echo "-- MySQL dump 10.13 (--no-data)"
 echo "INSERT INTO \\`users\\` VALUES ('u1','Owner');"
 exit 0"""
+
+
+_HAPPY_DUMP_LINES = [
+    "-- MySQL dump 10.13",
+    "INSERT INTO `users` VALUES ('u1','Owner');",
+    "INSERT INTO `settings` VALUES ('s1','title','Blog');",
+]
+_MISSING_SETTINGS_DUMP_LINES = ["-- MySQL dump 10.13 (--no-data)", "INSERT INTO `users` VALUES ('u1','Owner');"]
+
+_FAKE_LIMITS_SOURCE = _REPO_ROOT / "db" / "provision" / "fake_mysql_clients.py"
+_fake_spec = importlib.util.spec_from_file_location("fake_mysql_clients", _FAKE_LIMITS_SOURCE)
+_fake_module = importlib.util.module_from_spec(_fake_spec)
+_fake_spec.loader.exec_module(_fake_module)
+_FakeMysqlClients = _fake_module.FakeMysqlClients
+_FAST_LIMITS = dial_in_transport.bounded_snapshot.Limits(hold_bound_seconds=1.5, max_attempts=3, backoff_seconds=(0.0,))
 
 
 def _write_fake_bin(directory: str, name: str, contents: str) -> None:
@@ -210,9 +227,18 @@ class RunTenantDumpAgainstTheRealMysqldumpTransportTests(unittest.TestCase):
         self._path_patch.start()
         self.addCleanup(self._path_patch.stop)
 
+    def _fakes(self, **config):
+        fakes = _FakeMysqlClients(self.bin_dir)
+        fakes.configure(tables=[["ghost_blog", "settings"], ["ghost_blog", "users"]], **config)
+        return fakes
+
     def _run(self, tenant: str = "blog") -> bw.DumpResult:
         transport = RemoteMysqldumpTransport(
-            host="10.20.1.20", user="backup_ops1", ssl_ca="/etc/branchleft/mysql-ca.pem"
+            host="10.20.1.20",
+            user="backup_ops1",
+            ssl_ca="/etc/branchleft/mysql-ca.pem",
+            limits=_FAST_LIMITS,
+            sleep=lambda seconds: None,
         )
         return bw.run_tenant_dump(
             tenant=tenant,
@@ -224,7 +250,7 @@ class RunTenantDumpAgainstTheRealMysqldumpTransportTests(unittest.TestCase):
         )
 
     def test_happy_path_through_a_real_mysqldump_subprocess(self) -> None:
-        _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_HAPPY)
+        self._fakes(dump_lines=_HAPPY_DUMP_LINES)
         result = self._run()
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.exit_code, 0)
@@ -236,6 +262,23 @@ class RunTenantDumpAgainstTheRealMysqldumpTransportTests(unittest.TestCase):
             ["age", "--decrypt", "-i", self.identity_a], input=ciphertext, capture_output=True, check=True
         )
         self.assertIn(b"INSERT INTO `users`", decrypted.stdout)
+        self.assertTrue(decrypted.stdout.startswith(b"-- CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000007'"))
+
+    def test_the_lock_is_measured_in_the_lock_session_not_by_proxy(self) -> None:
+        self._fakes(dump_lines=_HAPPY_DUMP_LINES, lock=["timeout", "ok"])
+        result = self._run()
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.lock_aborts, 1)
+        self.assertIsNotNone(result.lock_hold_seconds)
+        self.assertLess(result.lock_wait_seconds, 1.0)
+
+    def test_a_snapshot_that_cannot_be_taken_writes_to_no_copy_and_counts_its_aborts(self) -> None:
+        self._fakes(dump_lines=_HAPPY_DUMP_LINES, lock=["timeout"])
+        result = self._run()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.copies_written, ())
+        self.assertEqual(result.lock_aborts, _FAST_LIMITS.max_attempts)
+        self.assertIsNone(result.lock_hold_seconds)
 
     def test_a_dump_missing_the_settings_floor_writes_to_no_copy(self) -> None:
         """The same missing-floor defect `RunTenantDumpAgainstTheRealProducerTests`
@@ -244,7 +287,7 @@ class RunTenantDumpAgainstTheRealMysqldumpTransportTests(unittest.TestCase):
         `mysqldump`'s stream directly as it arrives (there is no server
         side to buffer it away this time), sees only `users`, and refuses
         to store."""
-        _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_MISSING_SETTINGS)
+        self._fakes(dump_lines=_MISSING_SETTINGS_DUMP_LINES)
         result = self._run()
         self.assertFalse(result.ok)
         self.assertEqual(result.missing_floor_tables, frozenset({"settings"}))
@@ -252,7 +295,7 @@ class RunTenantDumpAgainstTheRealMysqldumpTransportTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.primary.path))
 
     def test_a_nonzero_exit_writes_to_no_copy(self) -> None:
-        _write_fake_bin(self.bin_dir, "mysqldump", "#!/bin/sh\necho partial\nexit 1")
+        self._fakes(dump_lines=["partial"], dump_exit=1)
         result = self._run()
         self.assertFalse(result.ok)
         self.assertEqual(result.copies_written, ())
@@ -350,15 +393,12 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
 
     @classmethod
     def _provision_database_and_account(cls) -> None:
-        # One row per floor table, real GRANTs, real REQUIRE SSL, matching
-        # ghost-platform-docs/backup-worker-account-handover-runbook.md's
-        # grant set (LOCK TABLES and EVENT dropped; this test confirms
-        # mysqldump still runs without them). `backup_ops1` stays host-'%'
-        # -- this test's client reaches the container through Docker's NAT,
-        # whose source address inside the container isn't reliably
-        # 127.0.0.1. Host restriction is proven instead by
-        # `backup_right_host`/`backup_wrong_host`, a control pair tested
-        # container-internally.
+        # One row per floor table, real GRANTs, real REQUIRE SSL: the
+        # bounded snapshot's grant set (LOCK TABLES and BACKUP_ADMIN; no
+        # RELOAD, PROCESS or REPLICATION CLIENT). `backup_ops1` stays
+        # host-'%' -- this test's client reaches the container through
+        # Docker's NAT. Host restriction is proven instead by
+        # `backup_right_host`/`backup_wrong_host`, tested container-internally.
         sql_template = (
             "CREATE DATABASE ghost_blog;"
             "CREATE TABLE ghost_blog.users (id INT PRIMARY KEY, name VARCHAR(64));"
@@ -366,7 +406,7 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
             "CREATE TABLE ghost_blog.settings (id INT PRIMARY KEY, value VARCHAR(64));"
             "INSERT INTO ghost_blog.settings VALUES (1, 'title');"
             "CREATE USER 'backup_ops1'@'%' IDENTIFIED BY '{worker_pwd}' REQUIRE SSL;"
-            "GRANT SELECT, SHOW VIEW, TRIGGER, PROCESS, RELOAD, REPLICATION CLIENT "
+            "GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, BACKUP_ADMIN "
             "ON *.* TO 'backup_ops1'@'%';"
             "CREATE USER 'backup_right_host'@'127.0.0.1' IDENTIFIED BY '{right_host_pwd}' REQUIRE SSL;"
             "GRANT SELECT ON *.* TO 'backup_right_host'@'127.0.0.1';"
@@ -1252,6 +1292,85 @@ def tearDownModule() -> None:
             "real production backup-age metrics directory instead of a temp one"
         )
 
+
+
+class LockBoundMetricTests(unittest.TestCase):
+    """The hold gauge and the abort counter: one file of their own, the
+    counter cumulative across runs and present at 0."""
+
+    def _read(self, metrics_dir: str):
+        path = pathlib.Path(metrics_dir) / bw.BACKUP_LOCK_BOUND_METRIC_FILENAME
+        return bw._parse_previous_lock_bound_metrics(path.read_text())
+
+    def test_the_counter_accumulates_and_the_gauge_replaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_lock_bound_metrics(tenant="blog", metrics_dir=tmp, hold_seconds=0.2, aborts=2)
+            bw.record_lock_bound_metrics(tenant="blog", metrics_dir=tmp, hold_seconds=0.1, aborts=1)
+            self.assertEqual(self._read(tmp), ({"blog": 0.1}, {"blog": 3.0}))
+
+    def test_a_zero_abort_run_still_publishes_the_counter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_lock_bound_metrics(tenant="blog", metrics_dir=tmp, hold_seconds=0.2, aborts=0)
+            text = (pathlib.Path(tmp) / bw.BACKUP_LOCK_BOUND_METRIC_FILENAME).read_text()
+            self.assertIn('backup_worker_lock_aborts_total{tenant="blog"} 0\n', text)
+            self.assertIn("# TYPE backup_worker_lock_aborts_total counter", text)
+
+    def test_an_unmeasured_hold_keeps_the_last_one_and_still_counts_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_lock_bound_metrics(tenant="blog", metrics_dir=tmp, hold_seconds=0.2, aborts=0)
+            bw.record_lock_bound_metrics(tenant="blog", metrics_dir=tmp, hold_seconds=None, aborts=5)
+            self.assertEqual(self._read(tmp), ({"blog": 0.2}, {"blog": 5.0}))
+
+    def test_tenants_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_lock_bound_metrics(tenant="blog", metrics_dir=tmp, hold_seconds=0.2, aborts=1)
+            bw.record_lock_bound_metrics(tenant="shop", metrics_dir=tmp, hold_seconds=0.3, aborts=0)
+            self.assertEqual(self._read(tmp), ({"blog": 0.2, "shop": 0.3}, {"blog": 1.0, "shop": 0.0}))
+
+    def test_a_write_failure_is_reported_never_raised(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = os.path.join(tmp, "not-a-dir")
+            with open(blocker, "w", encoding="utf-8") as handle:
+                handle.write("x")
+            captured = io.StringIO()
+            with contextlib.redirect_stderr(captured):
+                bw.record_lock_bound_metrics(tenant="blog", metrics_dir=blocker, hold_seconds=0.2, aborts=1)
+            self.assertIn("could not write the lock-bound metrics", captured.getvalue())
+
+    def test_a_failed_dump_still_records_its_aborts(self) -> None:
+        result = bw.DumpResult(
+            tenant="blog", ok=False, exit_code=75, floor_tables_seen=frozenset(), missing_floor_tables=frozenset(),
+            copies_written=(), error="no snapshot", lock_wait_seconds=None, lock_hold_seconds=None, lock_aborts=5,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            bw.record_dump_lock_metrics(result=result, metrics_dir=tmp)
+            self.assertEqual(self._read(tmp), ({}, {"blog": 5.0}))
+            self.assertFalse((pathlib.Path(tmp) / bw.BACKUP_LOCK_WAIT_METRIC_FILENAME).exists())
+
+
+class SnapshotMeasurementTests(unittest.TestCase):
+    def test_a_transport_that_measured_the_lock_wins_over_the_proxy(self) -> None:
+        report = mock.Mock(lock_wait_seconds=0.3, hold_seconds=0.1)
+        transport = mock.Mock(last_snapshot=report, last_snapshot_aborts=2)
+        timer = mock.Mock(elapsed=9.0)
+        self.assertEqual(
+            bw._snapshot_measurements(transport, timer),
+            {"lock_wait_seconds": 0.3, "lock_hold_seconds": 0.1, "lock_aborts": 2},
+        )
+
+    def test_a_transport_that_measures_nothing_falls_back_to_the_proxy(self) -> None:
+        timer = mock.Mock(elapsed=0.7)
+        self.assertEqual(
+            bw._snapshot_measurements(LocalProcessTransport(), timer),
+            {"lock_wait_seconds": 0.7, "lock_hold_seconds": None, "lock_aborts": 0},
+        )
+
+    def test_a_failed_snapshot_reports_its_aborts_without_a_wait(self) -> None:
+        transport = mock.Mock(last_snapshot=None, last_snapshot_aborts=5)
+        self.assertEqual(
+            bw._snapshot_measurements(transport, mock.Mock(elapsed=None)),
+            {"lock_wait_seconds": None, "lock_hold_seconds": None, "lock_aborts": 5},
+        )
 
 if __name__ == "__main__":
     unittest.main()

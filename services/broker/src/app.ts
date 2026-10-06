@@ -7,6 +7,7 @@ import {
   type TenantDescriptor,
   type ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
+import type { SeamReadiness } from './seamReadiness.js';
 import type { AdminApiClient } from './adminApi.js';
 import { type AuthDeps, verifyRequest } from './auth.js';
 import { descriptorHash } from './descriptorHash.js';
@@ -28,6 +29,7 @@ import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slo
 import {
   assertHashRotated,
   readSlotState,
+  resetRefusal,
   writeSlotState,
   UnrotatedHashError,
   type Phase,
@@ -47,6 +49,8 @@ export interface BrokerDeps {
   readonly renderer: Renderer;
   readonly adminApi: AdminApiClient;
   readonly drainSource: DrainSource;
+  /** Which loaded seams are not shipped final modules (`seamReadiness.ts`); reported by `/status`. */
+  readonly seamReadiness: SeamReadiness;
   readonly leaseStoreConfig: LeaseStoreConfig;
   readonly drainFlags: DrainFlagStore;
   readonly imagePush: ImagePushDeps;
@@ -241,6 +245,12 @@ async function handleReconcile(
     if (state.phase !== 'free') {
       return send(res, 409, { error: `slot "${slot}" is occupied (phase "${state.phase}")` });
     }
+    // A free slot still carrying unconfirmed evidence must not enter the
+    // fresh-deploy path: its failure branch resets the slot.
+    const evidenceRefusal = resetRefusal(state, slot);
+    if (evidenceRefusal !== undefined) {
+      return send(res, 409, { error: evidenceRefusal });
+    }
     try {
       assertHashRotated(state, newHashId, slot);
     } catch (err) {
@@ -285,8 +295,21 @@ async function handleReconcile(
           phase: 'resetting' satisfies Phase,
           lastHashId: state.lastHashId,
         });
-        await clearLeaseAndHash(deps.leaseStoreConfig, slot).catch(() => undefined);
-        await deps.wrapper.reset(slot).catch(() => undefined);
+        try {
+          await clearLeaseAndHash(deps.leaseStoreConfig, slot);
+          await deps.wrapper.reset(slot);
+        } catch (teardownErr) {
+          // Same rule as `/reset`: a slot is only ever `free` after its
+          // wipe succeeded, or the next visitor could get this site.
+          deps.log(
+            `teardown after host conflict failed for slot "${slot}": ${(teardownErr as Error).message}`
+          );
+          await writeSlotState(deps.stateDir, slot, {
+            phase: 'error' satisfies Phase,
+            lastHashId: state.lastHashId,
+          });
+          return send(res, 503, { slot, phase: 'error' });
+        }
         await writeSlotState(deps.stateDir, slot, {
           phase: 'free' satisfies Phase,
           lastHashId: state.lastHashId,
@@ -656,6 +679,13 @@ async function handleReset(
   }
   try {
     const state = await readSlotState(deps.stateDir, slot);
+    // Held evidence is released only by a confirmed detach, never by a
+    // reset: refuse before any write, so the slot is left untouched.
+    const refusal = resetRefusal(state, slot);
+    if (refusal !== undefined) {
+      deps.log(`reset refused: ${refusal}`);
+      return send(res, 409, { error: refusal });
+    }
     await writeSlotState(deps.stateDir, slot, {
       phase: 'resetting' satisfies Phase,
       lastHashId: state.lastHashId,
@@ -706,7 +736,13 @@ async function handleStatus(
     state.phase === 'running' && state.colour !== undefined
       ? await deps.healthChecker.isHealthy(deps.healthPortBase + Number(slot))
       : false;
-  send(res, 200, { slot, phase: state.phase, healthy });
+  send(res, 200, {
+    slot,
+    phase: state.phase,
+    healthy,
+    notReal: deps.seamReadiness.notReal,
+    interim: deps.seamReadiness.interim,
+  });
 }
 
 async function handleDrain(

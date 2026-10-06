@@ -31,7 +31,13 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     // /status is deliberately unauthenticated (LLD-2 §03) -- plain fetch, no signing.
     const statusRes = await fetch(`${broker.baseUrl}/status/0`);
     expect(statusRes.status).toBe(200);
-    expect(await statusRes.json()).toEqual({ slot: '0', phase: 'running', healthy: false });
+    expect(await statusRes.json()).toEqual({
+      slot: '0',
+      phase: 'running',
+      healthy: false,
+      notReal: [],
+      interim: [],
+    });
     // healthy is false because nothing is really listening on the sidecar's
     // health port in this sandbox -- proven distinctly by
     // healthCheck.test.ts against a real fake sidecar; this test's job is
@@ -42,7 +48,13 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(await resetRes.json()).toEqual({ slot: '0', phase: 'free' });
 
     const statusAfterReset = await fetch(`${broker.baseUrl}/status/0`);
-    expect(await statusAfterReset.json()).toEqual({ slot: '0', phase: 'free', healthy: false });
+    expect(await statusAfterReset.json()).toEqual({
+      slot: '0',
+      phase: 'free',
+      healthy: false,
+      notReal: [],
+      interim: [],
+    });
   });
 
   it('reconcile drives the wrapper, the renderer and the admin API in order, and writes the lease/hash contract', async () => {
@@ -757,7 +769,13 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       delete process.env.FAKE_WRAPPER_FAIL;
     }
     const status = await fetch(`${broker.baseUrl}/status/0`);
-    expect(await status.json()).toEqual({ slot: '0', phase: 'error', healthy: false });
+    expect(await status.json()).toEqual({
+      slot: '0',
+      phase: 'error',
+      healthy: false,
+      notReal: [],
+      interim: [],
+    });
   });
 
   // --- Auth (load-bearing, LLD-2 §03): every request verified before any side effect. ---

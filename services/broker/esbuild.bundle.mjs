@@ -7,6 +7,11 @@ const targets = [
   { in: 'dist/server.js', out: 'dist/bundle/broker.mjs' },
   { in: 'dist/plugins/renderCorePlugin.js', out: 'dist/bundle/plugins/renderCorePlugin.mjs' },
   { in: 'dist/plugins/dockerImageLoader.js', out: 'dist/bundle/plugins/dockerImageLoader.mjs' },
+  { in: 'dist/plugins/refusingAdminApi.js', out: 'dist/bundle/plugins/refusingAdminApi.mjs' },
+  {
+    in: 'dist/plugins/refusingDrainSource.js',
+    out: 'dist/bundle/plugins/refusingDrainSource.mjs',
+  },
 ];
 
 for (const target of targets) {

@@ -950,8 +950,13 @@ docker network ls -q --filter label=com.docker.compose.project=<slug>
 # 8. The database and its user, on db1 as root. `<sql-slug>` is the slug with
 #    every hyphen replaced by an underscore -- MySQL identifiers cannot carry
 #    the hyphens a slug may, so `acme-blog` is `ghost_acme_blog` here.
-mysql --socket /opt/branchleft/db/run/mysqld/mysqld.sock --user root \
+#    Run inside the `mysql` container, the root password read by name only:
+#    an interactive shell on db1 has no MYSQL_ROOT_PASSWORD, and db1 has no
+#    host-side mysql client.
+read -rs MYSQL_PWD; export MYSQL_PWD
+docker exec -i -e MYSQL_PWD db-mysql-1 mysql --socket=/var/run/mysqld/mysqld.sock -uroot \
   -e "DROP DATABASE ghost_<sql-slug>; DROP USER 'ghost_<sql-slug>'@'10.20.1.%';"
+unset MYSQL_PWD
 ```
 
 9. Remove this tenant's site block from the edge site registry.

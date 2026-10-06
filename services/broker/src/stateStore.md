@@ -40,6 +40,26 @@ traffic", not "reported healthy". Colour-blind like the counter itself:
 valid precisely because only `colour` (the survivor) can receive traffic
 from the moment this was taken (see `realTraffic.ts`'s doc comment).
 
+## resetRefusal
+
+The evidence leaves by `detaching` before the slot resets, so `/reset`
+refuses a slot that is `detaching`, or whose `evidence` marker is anything
+but absent or `detached` (so `frozen`, and any unrecognised value, fail
+closed; `frozen` is a freeze not yet confirmed as sealed, hashed and moved to the held area)
+whatever its phase. That covers a crashed detach left in `error`. The
+refusal runs before any write, so a refused slot is untouched. Only a
+confirmed detach (`evidence: 'detached'`, or no marker) releases it.
+
+`/reconcile` asks the same question of a `free` slot, because its
+fresh-deploy failure path resets the slot. Boot recovery never moves a
+`detaching` slot, and every `error` state it writes comes from
+`errorStateOf`, which carries the marker forward so a fail-closed recovery
+cannot release held evidence.
+
+`writeSlotState` carries any unconfirmed marker already on disk into a write
+that does not name `evidence`, so no transition (a reconcile colour swap, a
+stop, a recovery) can drop it. Only a write that names the marker changes it.
+
 ## assertHashRotated
 
 The one check downstream of the broker that nothing else can make:

@@ -74,7 +74,7 @@ protection `ProtectSystem=strict` would otherwise give these paths before
 more specific path wins inside a `ReadWritePaths` entry, and neither the
 broker nor the wrapper ever writes any of the three.
 
-## `/etc/branchleft` and `/var/lib/branchleft` are writable
+## `/etc/branchleft` and `/var/lib/branchleft/broker-slots` are writable
 
 `ProtectSystem=strict`'s read-only mount applies to this unit's whole
 process tree, including the `sudo`-elevated `branchleft_slot.py` it execs —
@@ -86,11 +86,14 @@ running in it. Two real, independent writes need this:
   without `/etc/branchleft` in `ReadWritePaths`, that `unlink()` fails with
   `Read-only file system` even though the wrapper is, by that point,
   genuinely running as root.
-- `BROKER_SLOTS_FILE` (`/var/lib/branchleft/slots.json`) is written
+- `BROKER_SLOTS_FILE` (`/var/lib/branchleft/broker-slots/slots.json`) is written
   directly by the unprivileged broker process itself
   (`writeLeaseAndHash`/`clearLeaseAndHash`, atomically: a temp file into the
   same directory, then a rename), so both the file and its containing
-  directory need to be broker-writable. Missed on the first boot proof
+  directory need to be broker-writable. `/var/lib/branchleft` itself stays
+  root-owned and read-only to the unit: the health router's directory sits
+  beside the slots directory, and the broker must not be able to rename it.
+  Missed on the first boot proof
   because that proof's fixture seeded an *empty* `{"slots": []}`:
   `removeSlotEntry` skips the write entirely when nothing matches, so a
   reset against an empty slots file never touches the mount at all. The
@@ -121,18 +124,3 @@ head** — Docker was unavailable when these were added; the next real boot
 proof must confirm both that the unit still starts and that `/reset` still
 reaches the wrapper with these applied, the same way every directive above
 was individually confirmed.
-
-## Known gap: `BROKER_SLOT_DIR_BASE` vs. the wrapper's own path
-
-`writeArtefacts.ts` writes reconciled artefacts under
-`<BROKER_SLOT_DIR_BASE>/<slot>/`; `branchleft_slot.py`'s `reset` wipes
-`/opt/branchleft/demo-<slot>` — a different, hyphenated path no value of
-`BROKER_SLOT_DIR_BASE` can produce through `path.join`, which always inserts
-a separator. With the shipped template, a reset never clears what a prior
-reconcile wrote. Fixing it means changing either `writeArtefacts.ts`'s own
-directory convention (tested against `<base>/<slot>` across
-`writeArtefacts.test.ts`, `renderCorePlugin.test.ts` and `server.test.ts`)
-or the wrapper's own `SLOT_DIR` — both outside this file's remit and named
-by branchLeft/workspace#1545 as branchLeft/workspace#1447/#1448's territory,
-not touched here. Filed as discovered work rather than worked around in this
-PR.

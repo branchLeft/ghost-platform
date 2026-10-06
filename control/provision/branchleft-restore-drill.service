@@ -1,0 +1,36 @@
+# The weekly restore drill, run on the control host. Triggered by
+# branchleft-restore-drill.timer; installed by install_restore_drill.py.
+# See install_restore_drill.md for why it runs as root and what it touches.
+[Unit]
+Description=branchLeft weekly restore drill
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/branchleft/restore-drill.env
+# The decrypted dump lives only in the RuntimeDirectory, a tmpfs systemd
+# removes however the run ends; the drill refuses any other filesystem.
+Environment=BACKUP_DRILL_WORK_DIR=/run/branchleft-restore-drill/work
+Environment=BACKUP_DRILL_FLAG_ROOT=/run/branchleft-restore-drill
+Environment=BACKUP_DRILL_METRICS_DIR=/var/lib/branchleft/backup-worker-exporter
+ExecStart=/usr/bin/python3 /opt/branchleft/backup-worker/current/infra/provisioning/scripts/restore_drill.py --tenants-file /etc/branchleft/backup-worker-tenants
+# Runs after any stop, a SIGKILL included: removes the restore containers.
+ExecStopPost=/usr/bin/python3 /opt/branchleft/backup-worker/current/infra/provisioning/scripts/restore_drill.py --cleanup
+RuntimeDirectory=branchleft-restore-drill
+RuntimeDirectoryMode=0755
+UMask=0077
+
+# Pulls, a Ghost boot and a restore; bounded so a hung run cannot pile up
+# behind the next week's. SIGTERM first: the drill cleans up on it.
+TimeoutStartSec=3h
+TimeoutStopSec=2min
+
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

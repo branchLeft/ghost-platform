@@ -31,3 +31,13 @@ This makes render's output for a "tenant zero"-equivalent descriptor
 structurally different from what `infra/tenant/compose.ts` renders today
 (one service, one port). See `render.ts`'s own note on that conflict, which
 is called out there rather than silently resolved here.
+
+## The mail network
+
+With mail enabled, both colours join two networks: the stack's own `default`
+network, which carries their published port as before, and the host spool's
+internal network for this tenant (`spool.ts#mailSpoolNetworkName`). The mail
+network is `external` here because the spool's own stack creates and owns it.
+So a Ghost started before its host's spool fails to start, rather than
+starting with nowhere to send mail. `default` has to be named once any
+network is listed, or Compose drops it and the published port with it.

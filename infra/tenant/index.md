@@ -1,54 +1,77 @@
 # index.ts
 
-## GhostTenantMediaArgs
-
-The platform-wide half of media addressing, plus this tenant's own S3 key
-pair.
-
-**The bucket and the public base URL are deliberately not here.** Each tenant
-has its own bucket, named from its slug by `media.ts`, so there is no value
-for a tenant stack to set — and therefore no value a stack could set to
-another tenant's bucket. Both are exported from this component so the
-operator who creates the bucket and the container that writes to it read one
-derivation.
-
-The key pair lands in the secrets file rather than the Compose file. The key
-id is not itself a secret; splitting a credential pair across two files makes
-rotating it two edits instead of one.
-
 ## GhostTenant
 
-Everything one Ghost tenant needs on a shared Hetzner app host, rendered
-rather than created.
+One paying Ghost tenant on a shared Hetzner app host, configured rather than
+created.
+
+**Every artefact comes from the render core.** The component validates the
+descriptor with `validate()`, calls `render()` from
+`@branchleft/ghost-platform-render-core`, and exposes the seven artefacts it
+returns as stack outputs. It renders nothing itself. The broker renders demos
+from the same function, so the two reconcilers cannot drift apart. The render
+core is consumed as a published, exact-pinned version, never a `file:` path or
+a bundled copy.
 
 **This component declares no cloud resources, and that is the design.** Every
-durable thing a tenant uses already exists and is shared: the app host and
-the database host come from the estate's own stack, the tenant's database
-and DB account are created on `db1` by `db/provision/provision_tenant_db.py`,
-and object storage is an account-level service. What is genuinely per-tenant
-is *configuration* — a Compose stack carrying a runtime-isolation posture, a
-secrets file, a UID, two volumes and a set of Ghost environment variables —
-and that is what this produces. The tenant's Pulumi stack is therefore the
-versioned, reviewed, passphrase-wrapped record of that configuration, and
-its checkpoint is what a delete guard has to protect.
+durable thing a tenant uses already exists and is shared: the app host, the
+database host, and object storage. What is genuinely per-tenant is
+configuration, and the tenant's Pulumi stack is the versioned, reviewed,
+passphrase-wrapped record of it. Its checkpoint is what the delete guard
+protects.
 
-Three steps outside Pulumi have to have happened before the stack this
-renders will start, and each fails loudly rather than silently if it has
-not: the tenant's database and DB account on `db1`
-(`provision_tenant_db.py`), the tenant's two named volumes on the app host
-owned by `uid` at `0700` (`app/provision/provision_tenant_volume.py`), and
-the secrets file at `/etc/branchleft/<slug>.env`.
+Three steps outside Pulumi must have happened before the rendered stack will
+start, and each fails loudly if it has not: the tenant's database and account
+on `db1` (`provision_tenant_db.py`), the tenant's two named volumes on the app
+host (the `provisionScript` output), and the secrets file at
+`/etc/branchleft/<slug>.env` (the `secretsEnvFile` output, placed by an
+operator).
+
+## GhostTenantSecrets
+
+The descriptor carries no secret by design, so the five secret values arrive
+beside it. Which ones a tenant needs is not decided here: the render core's
+`secrets.env` template names them, from the descriptor's database, media,
+transport and mail choices.
+
+## Secret coverage
+
+Checked before `super()`, against the template:
+
+- a key the template names with no matching input is refused;
+- an input supplied that the template does not name is refused, not dropped.
+  A dropped credential is a configuration mismatch nobody sees.
+
+## Filling the secrets file
+
+`fillSecretsTemplate` replaces each `KEY=` line of the render core's template
+with `KEY=<value>` and leaves every other line exactly as rendered, so the
+file's keys, order and header are the render core's. A value carrying a
+control character is refused: systemd reads an `EnvironmentFile` line by
+line, so a newline in a credential adds a variable rather than breaking one.
+
+## GhostTenantIdentity
+
+The fields whose change destroys or orphans live tenant data rather than
+updating it, read by `scripts/assert-no-tenant-deletes.py` from the
+component's own preview state. Rename the content volume and the tenant's
+themes and settings are orphaned; change the UID and the tenant loses its own
+`0700` volume; change the database name and Ghost boots against an empty
+schema. Seven of the eight fields come from the render core's
+`identity.json`; `maxUserConnections` is the one this component adds, because
+the descriptor does not carry it.
+
+## Constructor order
+
+The kind check, `validate()`, `render()` and the secret-coverage check all run
+before `super()`, so an invalid descriptor never reaches the engine,
+registered or not.
 
 ## Constructor identity object
 
-Computed before super() and passed as its props rather than `{}`, then
-reused (not recomputed) for `this.identity` below: a ComponentResource's
-step in a preview is derived from whether its registered inputs changed,
-so empty props can never produce a step, and `identity_changes()` in
-`scripts/assert-no-tenant-deletes.py` has no step to read a comparison
-from. One object rather than two copies of the same fields means the
-props super() registers and the output the guard also reads cannot drift
-apart — a preview's new-state carries only the registered inputs, never
-the computed output (Pulumi does not resolve a component's outputs until
-an actual apply), so a mismatch between the two would hide an in-flight
-identity change on exactly the run meant to catch it.
+Computed before `super()` and passed as its props rather than `{}`, then
+reused for `this.identity`: a component's step in a preview is derived from
+whether its registered inputs changed, so empty props can never produce a
+step, and `identity_changes()` in `scripts/assert-no-tenant-deletes.py` has no
+step to read a comparison from. One object rather than two copies means the
+props `super()` registers and the output the guard reads cannot drift apart.

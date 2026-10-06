@@ -24,7 +24,6 @@ describe('renderCorePlugin — the adapter itself', () => {
     process.env.BROKER_PLATFORM_ZONE = TEST_ZONES.platformZone;
     process.env.BROKER_OWNED_DOMAINS = TEST_ZONES.ownedDomains.join(',');
     process.env.BROKER_DEMO_MAIL_DOMAIN = TEST_ZONES.demoMailDomain;
-    process.env.BROKER_MAIL_SPOOL_BASE_URL = TEST_ZONES.mailSpoolBaseUrl;
     const mod = (await import('../../src/plugins/renderCorePlugin.js')) as {
       default: { render: (d: unknown) => Promise<readonly { path: string; content: string }[]> };
     };
@@ -48,7 +47,6 @@ describe('renderCorePlugin — the adapter itself', () => {
     process.env.BROKER_PLATFORM_ZONE = TEST_ZONES.platformZone;
     process.env.BROKER_OWNED_DOMAINS = TEST_ZONES.ownedDomains.join(',');
     process.env.BROKER_DEMO_MAIL_DOMAIN = TEST_ZONES.demoMailDomain;
-    process.env.BROKER_MAIL_SPOOL_BASE_URL = TEST_ZONES.mailSpoolBaseUrl;
     // Fresh module instance per test would need a registry reset; instead
     // this asserts the exported function's own env read, which is what
     // `zonesFromEnv` actually is — re-imported modules are cached by
@@ -115,7 +113,6 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
         BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
         BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),
         BROKER_DEMO_MAIL_DOMAIN: TEST_ZONES.demoMailDomain,
-        BROKER_MAIL_SPOOL_BASE_URL: TEST_ZONES.mailSpoolBaseUrl,
         BROKER_WRAPPER_COMMAND: join(SERVICE_ROOT, 'test/helpers/fakeWrapper.mjs'),
         BROKER_WRAPPER_PREFIX: process.execPath,
         BROKER_SLOT_LITERALS: '0,1,2,3,4,5,6',
@@ -156,7 +153,7 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const res = await reconcile(`http://127.0.0.1:${port}`, keyPair);
     expect(res.status).toBe(200);
 
-    const slotDir = join(slotDirBase, '0');
+    const slotDir = join(slotDirBase, 'demo-0');
     const compose = await readFile(join(slotDir, 'compose.yml'), 'utf8');
     const identity = JSON.parse(await readFile(join(slotDir, 'identity.json'), 'utf8')) as {
       slug: string;
@@ -204,7 +201,7 @@ describe('the real broker dist, wired to the real render-core plugin', () => {
     const res = await reconcile(`http://127.0.0.1:${port}`, keyPair);
     expect(res.status).toBe(200);
 
-    const slotDir = join(slotDirBase, '0');
+    const slotDir = join(slotDirBase, 'demo-0');
     // The generic fixture's own, single, trivial artefact — proving the
     // disconnected state is distinguishable from the real wiring above,
     // not merely "some file got written".

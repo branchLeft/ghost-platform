@@ -633,9 +633,10 @@ def check_prefix_split(*, receipt_path: pathlib.Path, access_key: str, secret_ke
     media, db = results["media"], results["db"]
     # `control_survives` and `current_of_noncurrent_present` must hold for
     # BOTH prefixes unconditionally. `delete_marker_present` differs for
-    # media/, whose rule also carries `ExpiredObjectDeleteMarker` and can
-    # remove the now-sole delete marker once its noncurrent version is
-    # pruned. See probe-media-lifecycle-expiration.md#check-split-verdict-fields.
+    # media/ when the bucket was set up with an earlier document whose media/
+    # rule carried `ExpiredObjectDeleteMarker`, which can remove the now-sole
+    # delete marker once its noncurrent version is pruned. See
+    # probe-media-lifecycle-expiration.md#check-split-verdict-fields.
     all_currents_present = all(
         r[field]
         for r in (media, db)

@@ -285,5 +285,33 @@ class MultiCopyFailureTests(unittest.TestCase):
         self.assertEqual(copy_b.puts, [])
 
 
+class TrailerTests(unittest.TestCase):
+    """The caller's trailer lands inside the one ciphertext, after the
+    producer's bytes, and only after a clean exit."""
+
+    def setUp(self) -> None:
+        self.identity, self.recipient = _generate_age_identity()
+
+    def _run(self, exit_code: int) -> _RecordingCopy:
+        copy = _RecordingCopy("primary")
+        pes.pull_encrypt_and_store(
+            transport=_FakeTransport(lines=[b"-- dump\n"], exit_code=exit_code),
+            command=["producer"], env={}, age_recipient=self.recipient,
+            copies=[pes.CopyTarget(name=copy.name, put=copy.put)],
+            trailer=lambda: b"-- trailer\n",
+        )
+        return copy
+
+    def test_trailer_is_encrypted_after_the_producer_output(self) -> None:
+        copy = self._run(0)
+        plaintext = subprocess.run(
+            ["age", "--decrypt", "-i", self.identity], input=copy.puts[0], capture_output=True, check=True
+        ).stdout
+        self.assertEqual(plaintext, b"-- dump\n-- trailer\n")
+
+    def test_no_trailer_and_no_copy_after_a_failed_exit(self) -> None:
+        self.assertEqual(self._run(3).puts, [])
+
+
 if __name__ == "__main__":
     unittest.main()

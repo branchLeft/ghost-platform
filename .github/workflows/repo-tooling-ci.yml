@@ -125,6 +125,12 @@ jobs:
       # on a volume the Ghost image leaves world-writable -- so its refusals
       # are covered here rather than by a live host. Every `docker` call is
       # mocked; no daemon, no root.
+      - name: Replica tunnel account tests
+        run: python3 -m unittest discover -s db/tunnel -p 'test_*.py'
+
+      - name: Replica tunnel shellcheck
+        run: shellcheck db/tunnel/*.sh
+
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'
 

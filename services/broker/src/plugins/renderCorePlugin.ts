@@ -9,8 +9,10 @@
 import { render } from '@branchleft/ghost-platform-render-core';
 import { zonesFromEnv } from '../config.js';
 import type { Renderer } from '../render.js';
+import type { SeamMarker } from '../seamReadiness.js';
 
-const renderer: Renderer = {
+const renderer: Renderer & SeamMarker = {
+  real: true,
   async render(descriptor) {
     return render(descriptor, zonesFromEnv(process.env));
   },
