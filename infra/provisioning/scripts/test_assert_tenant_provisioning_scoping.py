@@ -43,7 +43,7 @@ class CheckTests(unittest.TestCase):
         # was the whole conflict the rename exists to resolve.
         missing, shadowed = guard.check(
             environment_names=[
-                "GH_PAT_TENANT_PROVISIONING",
+                "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                 "TENANT_STATE_S3_ACCESS_KEY_ID",
                 "TENANT_STATE_S3_SECRET_ACCESS_KEY",
             ],
@@ -59,7 +59,7 @@ class CheckTests(unittest.TestCase):
 
     def test_one_required_secret_missing(self):
         missing, shadowed = guard.check(
-            environment_names=["GH_PAT_TENANT_PROVISIONING", "TENANT_STATE_S3_ACCESS_KEY_ID"],
+            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY", "TENANT_STATE_S3_ACCESS_KEY_ID"],
             repository_names=[],
         )
         self.assertEqual(missing, {"TENANT_STATE_S3_SECRET_ACCESS_KEY"})
@@ -70,7 +70,7 @@ class CheckTests(unittest.TestCase):
         # repository copy for a run this environment never gated.
         missing, shadowed = guard.check(
             environment_names=[
-                "GH_PAT_TENANT_PROVISIONING",
+                "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                 "TENANT_STATE_S3_ACCESS_KEY_ID",
                 "TENANT_STATE_S3_SECRET_ACCESS_KEY",
             ],
@@ -84,7 +84,7 @@ class CheckTests(unittest.TestCase):
         # which also has a stale repository-level copy -- nothing about the
         # two checks is mutually exclusive.
         missing, shadowed = guard.check(
-            environment_names=["GH_PAT_TENANT_PROVISIONING"],
+            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
             repository_names=["TENANT_STATE_S3_ACCESS_KEY_ID"],
         )
         self.assertEqual(
@@ -95,7 +95,7 @@ class CheckTests(unittest.TestCase):
     def test_an_unrelated_repository_secret_is_never_a_shadow(self):
         missing, shadowed = guard.check(
             environment_names=[
-                "GH_PAT_TENANT_PROVISIONING",
+                "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                 "TENANT_STATE_S3_ACCESS_KEY_ID",
                 "TENANT_STATE_S3_SECRET_ACCESS_KEY",
             ],
@@ -127,7 +127,7 @@ class MainTests(unittest.TestCase):
                 directory,
                 "env.txt",
                 [
-                    "GH_PAT_TENANT_PROVISIONING",
+                    "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                     "TENANT_STATE_S3_ACCESS_KEY_ID",
                     "TENANT_STATE_S3_SECRET_ACCESS_KEY",
                 ],
@@ -160,7 +160,7 @@ class MainTests(unittest.TestCase):
                 directory,
                 "env.txt",
                 [
-                    "GH_PAT_TENANT_PROVISIONING",
+                    "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                     "TENANT_STATE_S3_ACCESS_KEY_ID",
                     "TENANT_STATE_S3_SECRET_ACCESS_KEY",
                 ],
@@ -193,7 +193,7 @@ class MessageFunctionsTests(unittest.TestCase):
     # if an operator pastes it straight out of a failed run's log -- exactly
     # when nobody wants to be reconstructing the command by hand.
     def test_missing_message_interpolates_the_given_repo(self):
-        message = guard._missing_message(frozenset({"GH_PAT_TENANT_PROVISIONING"}), "acme/widgets")
+        message = guard._missing_message(frozenset({"TENANT_PROVISIONING_APP_PRIVATE_KEY"}), "acme/widgets")
         self.assertIn("gh secret set <NAME> --repo acme/widgets --env tenant-provisioning", message)
 
     def test_shadowed_message_interpolates_the_given_repo(self):

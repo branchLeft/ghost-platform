@@ -15,6 +15,13 @@
       "when": 1791060246303,
       "tag": "0001_tenant_register",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791251526580,
+      "tag": "0002_health_reading",
+      "breakpoints": true
     }
   ]
 }

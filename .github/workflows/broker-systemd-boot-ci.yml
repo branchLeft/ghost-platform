@@ -73,14 +73,14 @@ jobs:
           echo "$body" | grep -q '"slot":"0"'
           echo "$body" | grep -q '"phase":"free"'
 
-      - name: The shipped env template loads only shipped modules; only the interim admin client is reported
+      - name: The shipped env template loads only real, final modules
         run: |
           docker exec broker-boot-proof cat /etc/branchleft/broker.env > /tmp/broker-env.txt
-          grep -q '^BROKER_ADMIN_API_MODULE=.*/plugins/refusingAdminApi.mjs$' /tmp/broker-env.txt
+          grep -q '^BROKER_ADMIN_API_MODULE=.*/plugins/ghostAdminApi.mjs$' /tmp/broker-env.txt
           grep -q '^BROKER_DRAIN_SOURCE_MODULE=.*/plugins/refusingDrainSource.mjs$' /tmp/broker-env.txt
           docker exec broker-boot-proof curl -sf http://127.0.0.1:8090/status/0 > /tmp/status.json
-          grep -q '"notReal":\["adminApi"\]' /tmp/status.json
-          grep -q '"interim":\["adminApi"\]' /tmp/status.json
+          grep -q '"notReal":\[\]' /tmp/status.json
+          grep -q '"interim":\[\]' /tmp/status.json
 
       - name: A real signed GET /drain is refused openly, not answered empty
         run: |

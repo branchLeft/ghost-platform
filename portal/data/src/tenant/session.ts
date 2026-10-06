@@ -1,6 +1,8 @@
 import type { Pool } from 'pg';
 import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
-import { tenantRegister } from '../schema.js';
+import { deriveHealthView } from '../healthView.js';
+import type { HealthView } from '../reading.js';
+import { healthReading, tenantRegister } from '../schema.js';
 import { parseTenantId } from '../tenantId.js';
 import { bindTenant, type TenantScope } from './scope.js';
 
@@ -35,6 +37,17 @@ export class TenantDb {
     const rows = await this.run(scope, (tx) => tx.select().from(tenantRegister));
     const row = rows[0];
     return row ? { tenantId: row.tenantId, zitadelOrgId: row.zitadelOrgId } : null;
+  }
+
+  /**
+   * The bound tenant's own latest health and version reading, or null when
+   * none has been recorded. Row-level isolation limits the read to the bound
+   * tenant.
+   */
+  async ownHealth(scope: TenantScope): Promise<HealthView | null> {
+    const rows = await this.run(scope, (tx) => tx.select().from(healthReading));
+    const row = rows[0];
+    return row ? deriveHealthView(row) : null;
   }
 
   /**

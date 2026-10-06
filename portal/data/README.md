@@ -40,6 +40,23 @@ binding call (`set_config`, `bind` in `src/db.ts`), and the binding functions
 `src/schema.ts`). `provision/` holds the operator's role and grant statements,
 which Drizzle cannot model.
 
+## Health and version readings
+
+`portal.health_reading` holds one row per tenant: the latest health, the Ghost
+version the instance reports, whether that matches the descriptor's intended
+version, and `mismatch_since`, the first reading of a continuing mismatch. It is
+isolated like every tenant table: a tenant reads its own row (`TenantDb.ownHealth`)
+and cannot write; the owner role writes and reads all rows.
+
+The source is the drain sidecar's `GET /metrics`, scraped per colour by a
+collector that dials in. `OwnerDb.recordReading(tenantId, scrapes, observedAt)`
+takes the colours' scrape texts. Only the undrained colour answers: its version
+and match are the tenant's, a drained colour's are never read, and with no
+scrape, no undrained colour or two the reading is `unknown` (`src/reading.ts`).
+`OwnerDb.listHealth()` is the console's cross-tenant read. The collector that
+fetches the scrapes is separate work; grant `portal.health_reading` with
+`grantAccess` (tenant `SELECT`, owner `SELECT, INSERT, UPDATE, DELETE`).
+
 ## The owner path
 
 `portal/data` exports `./tenant` and `./owner` separately. Tenant-facing code

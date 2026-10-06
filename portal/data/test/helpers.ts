@@ -87,6 +87,12 @@ export async function createFixture(): Promise<Fixture> {
     owner: 'SELECT, INSERT, UPDATE, DELETE',
   });
   await grantAccess(admin, {
+    schema: 'portal',
+    table: 'health_reading',
+    tenant: 'SELECT',
+    owner: 'SELECT, INSERT, UPDATE, DELETE',
+  });
+  await grantAccess(admin, {
     schema: 'portal_test',
     table: 'note',
     tenant: 'SELECT, INSERT',
