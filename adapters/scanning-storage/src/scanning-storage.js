@@ -65,6 +65,11 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.checks = Array.isArray(checks) ? checks.filter((check) => check.blocking) : [];
       this.policy = config.policy;
 
+      // Same-name replacement window: see delete() and save().
+      this.overwriteWindowMs =
+        Number(config.overwriteWindowMs) > 0 ? Number(config.overwriteWindowMs) : 60000;
+      this.pendingOverwrites = new Map();
+
       this.hold = new HoldRegistry({
         checks: this.checks,
         policy: this.policy,
@@ -103,11 +108,38 @@ function defineScanningStorageAdapter(StorageBase, deps) {
 
     async save(file, targetDir) {
       const buffer = await fs.readFile(file.path);
+      if (this.#takePendingOverwrite(file && file.name, targetDir)) {
+        // The caller removed this name a moment ago and is replacing it.
+        // wrapped.save() would see a free name only on a backend that
+        // really deleted, and would otherwise pick a new one, so the bytes
+        // go to the same key as an ordinary, scanned, overwriting write.
+        const targetPath = this.#overwriteKey(file.name, targetDir);
+        return this.#scanAndProceed(buffer, {
+          proceed: () => this.wrapped.saveRaw(buffer, targetPath),
+          onHold: (digest) => this.#registerHold(digest, buffer, targetPath),
+        });
+      }
       return this.#scanAndProceed(buffer, {
         proceed: () => this.wrapped.save(file, targetDir),
         onHold: (digest) =>
           this.#registerHold(digest, buffer, this.#computeHeldTargetPath(digest, file, targetDir)),
       });
+    }
+
+    // Never reaches the wrapped adapter: the storage gateway refuses every
+    // delete, and the one place Ghost deletes is replacing a same-name
+    // thumbnail (delete, then save). The request is remembered for a short
+    // window instead, and the next save() of that name overwrites the key.
+    // The superseded object stays recoverable through bucket versioning.
+    async delete(fileName, targetDir) {
+      const now = Date.now();
+      for (const [key, expiresAt] of this.pendingOverwrites) {
+        if (expiresAt <= now) {
+          this.pendingOverwrites.delete(key);
+        }
+      }
+      const key = this.#overwriteKey(fileName, targetDir);
+      this.pendingOverwrites.set(key, now + this.overwriteWindowMs);
     }
 
     // Nothing here is intercepted, on either backend: a currently-held
@@ -124,16 +156,32 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       return this.wrapped.read(...args);
     }
 
-    delete(...args) {
-      return this.wrapped.delete(...args);
-    }
-
     urlToPath(...args) {
       return this.wrapped.urlToPath(...args);
     }
 
     serve(...args) {
       return this.wrapped.serve(...args);
+    }
+
+    #overwriteKey(fileName, targetDir) {
+      const name = String(fileName);
+      const joined = targetDir ? path.posix.join(String(targetDir), name) : name;
+      return joined.replace(/^\/+/, '');
+    }
+
+    // One-shot: consumed by the save it announced, or dropped once stale.
+    #takePendingOverwrite(fileName, targetDir) {
+      if (typeof fileName !== 'string' || fileName.length === 0) {
+        return false;
+      }
+      const key = this.#overwriteKey(fileName, targetDir);
+      const expiresAt = this.pendingOverwrites.get(key);
+      if (expiresAt === undefined) {
+        return false;
+      }
+      this.pendingOverwrites.delete(key);
+      return expiresAt > Date.now();
     }
 
     async #scanAndProceed(buffer, { proceed, onHold }) {
