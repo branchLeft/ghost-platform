@@ -85,6 +85,23 @@ Read from a live instance: Zitadel lists *every* application of the project in
 `urn:zitadel:iam:user:resourceowner`, so the roles and the organisation claim are
 present.
 
+## Owner recovery
+
+`src/recovery.ts` is the way back into the owner organisation when sign-in is
+what is broken. It is a command run on the identity host, not a service:
+nothing listens, and it never calls the portal or the console. It refuses
+unless every condition holds: the sign-in address is a loopback address; the
+recovery credential was staged within the age limit (30 minutes by default, 60
+at most) as a plain file owned by the running user and closed to everyone else;
+the output is a terminal; the credential and the user belong to the owner
+organisation; and the audit file can be appended to. It writes an audit line
+before acting and one at the end, consumes the staged credential on first read,
+and then unlocks or reactivates the user if needed and sets a one-time password
+that must be changed at first sign-in. It does not reset a second factor.
+
+The owner's procedure, and how the credential is stored and rotated, is in
+`ghost-platform-docs`, `owner-console-recovery-runbook.md`.
+
 ## Proof against real containers
 
 `local/prove.sh` starts a throwaway Zitadel and PostgreSQL in Docker, then:
