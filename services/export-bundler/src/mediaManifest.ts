@@ -1,9 +1,34 @@
-import {
-  assertSafeObjectKey,
-  signMediaLink,
-  MediaLinkError,
-  type MediaLinkSigner,
-} from './mediaLinks.js';
+/** A relative object key: no empty, dot or encoded-dot segments, no backslash, no control byte. */
+export function assertSafeObjectKey(key: string): void {
+  const segments = key.split('/');
+  const bad =
+    key.length === 0 ||
+    key.length > 1024 ||
+    key.startsWith('/') ||
+    key.includes('\\') ||
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f?#]/.test(key) ||
+    segments.some((seg) => seg === '' || seg === '.' || seg === '..' || /^(%2e)+$/i.test(seg)) ||
+    /%2f|%5c/i.test(key);
+  if (bad) throw new MediaBaseError(`unsafe media object key: ${JSON.stringify(key)}`);
+}
+
+export class ErasureDateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ErasureDateError';
+  }
+}
+
+/** The date after which the tenant's public media addresses stop working: a real, future calendar day. */
+export function parseErasureDate(value: string, nowSeconds: number): string {
+  const ms = /^\d{4}-\d{2}-\d{2}$/.test(value) ? Date.parse(`${value}T00:00:00Z`) : NaN;
+  if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== value) {
+    throw new ErasureDateError('the erasure date is not a calendar date (YYYY-MM-DD)');
+  }
+  if (ms <= nowSeconds * 1000) throw new ErasureDateError('the erasure date is not in the future');
+  return value;
+}
 
 /**
  * The media half of the export: links, never bytes. A tenant holds no
@@ -93,20 +118,20 @@ export interface MediaProbeResult {
   readonly bytes: number | null;
 }
 
-/** Checks that one object really is there. Runs against the unsigned media address. */
+/** Checks that one object really is there. Runs against the public media address. */
 export interface MediaProbe {
   head(url: string): Promise<MediaProbeResult>;
 }
 
-export interface MediaLinkEntry {
+export interface MediaAddress {
   readonly key: string;
+  /** The ordinary public address, the one the tenant's own site serves the file from. */
   readonly url: string;
-  readonly expiresAt: number;
   readonly bytes: number | null;
 }
 
 export interface MediaPlan {
-  readonly links: readonly MediaLinkEntry[];
+  readonly addresses: readonly MediaAddress[];
   readonly missing: readonly string[];
   readonly unverified: readonly string[];
   readonly refused: readonly RefusedReference[];
@@ -120,52 +145,38 @@ export function objectUrl(mediaBaseUrl: string, key: string): string {
 }
 
 /**
- * Probes every referenced object and signs a link for each one that is
- * there. An object that is not there is `missing`; one the probe could not
- * answer for is `unverified`. Neither gets a link, and neither is silent.
+ * Probes every referenced object and lists the public address of each one
+ * that is there. An object that is not there is `missing`; one the probe
+ * could not answer for is `unverified`. Neither is listed, and neither is
+ * silent.
  */
 export async function planMedia(
   scan: ReferenceScan,
   mediaBaseUrl: string,
-  probe: MediaProbe,
-  signer: MediaLinkSigner,
-  tenantId: string,
-  nowSeconds: number
+  probe: MediaProbe
 ): Promise<MediaPlan> {
-  const links: MediaLinkEntry[] = [];
+  const addresses: MediaAddress[] = [];
   const missing: string[] = [];
   const unverified: string[] = [];
   const queue = [...scan.keys];
   async function worker(): Promise<void> {
     for (let key = queue.shift(); key !== undefined; key = queue.shift()) {
+      const url = objectUrl(mediaBaseUrl, key);
       let result: MediaProbeResult;
       try {
-        result = await probe.head(objectUrl(mediaBaseUrl, key));
+        result = await probe.head(url);
       } catch {
         unverified.push(key);
         continue;
       }
-      if (!result.exists) {
-        missing.push(key);
-        continue;
-      }
-      let signed;
-      try {
-        signed = signMediaLink(signer, tenantId, key, nowSeconds);
-      } catch (err) {
-        if (err instanceof MediaLinkError && err.reason === 'bad-key') {
-          unverified.push(key);
-          continue;
-        }
-        throw err;
-      }
-      links.push({ key, url: signed.url, expiresAt: signed.expiresAt, bytes: result.bytes });
+      if (result.exists) addresses.push({ key, url, bytes: result.bytes });
+      else missing.push(key);
     }
   }
   await Promise.all(Array.from({ length: PROBE_CONCURRENCY }, worker));
   const byKey = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
   return {
-    links: links.sort((a, b) => byKey(a.key, b.key)),
+    addresses: addresses.sort((a, b) => byKey(a.key, b.key)),
     missing: missing.sort(byKey),
     unverified: unverified.sort(byKey),
     refused: scan.refused,

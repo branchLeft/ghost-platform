@@ -9,7 +9,6 @@ import {
   type ExportRequest,
   type ExportRunnerDeps,
 } from '../../src/exportRunner.js';
-import { verifyMediaLink } from '../../src/mediaLinks.js';
 import { UndrainedColourError } from '../../src/drainGate.js';
 import type { DrainFlag } from '../../src/drainFlag.js';
 import type { ColourAttachments, ContainerRunner } from '../../src/containerRunner.js';
@@ -52,9 +51,8 @@ const ANALYTICS_MARKER = 'PLAINTEXT-ANALYTICS-ROW-marker';
 
 const MEDIA_BASE = 'https://media.test/opaque-t1';
 const MEDIA: MediaConfig = {
-  redeemable: true,
   baseUrl: MEDIA_BASE,
-  signer: { baseUrl: 'https://export.test', ttlSeconds: 3600, secret: Buffer.alloc(32, 7) },
+  erasureDate: '2030-01-01',
 };
 // One object of this tenant's, and one under another tenant's prefix on the same shard.
 const CONTENT_JSON = `{"members":[{"email":"${'PLAINTEXT-MEMBER-EMAIL-marker@tenant.test'}"}],"posts":[{"feature_image":"${MEDIA_BASE}/2026/own.png"},{"feature_image":"https://media.test/opaque-t2/2026/other.png"}]}`;
@@ -418,7 +416,7 @@ describe('runExport', () => {
     expect(result.manifest.included.map((e) => e.name).sort()).toEqual([
       'comments',
       'content_and_settings',
-      'media_links',
+      'media_addresses',
       'members',
       'members_csv',
       'post_analytics',
@@ -443,7 +441,7 @@ describe('runExport', () => {
         contents: [
           'content_and_settings',
           'post_analytics',
-          'media_links',
+          'media_addresses',
           'members',
           'members_csv',
           'comments',
@@ -465,7 +463,7 @@ describe('runExport', () => {
     expect(tarListing(tar)).toEqual([
       'content_and_settings.json',
       'post_analytics.csv',
-      'media_links.json',
+      'media_addresses.json',
       'members.json',
       'members.csv',
       'comments.json',
@@ -630,8 +628,6 @@ describe('runExport', () => {
   });
 
   describe('export completeness', () => {
-    const FIXED_NOW = Math.floor(Date.parse('2026-01-01T00:00:00.000Z') / 1000);
-
     async function archiveOf(result: Awaited<ReturnType<typeof runExport>>) {
       const tar = decryptAge(result.archivePath, identity.identityPath);
       const part = (name: string) => JSON.parse(tarMember(tar, name).toString('utf8'));
@@ -652,7 +648,7 @@ describe('runExport', () => {
       const { part } = await archiveOf(result);
       expect(part('members.json').members).toHaveLength(2);
       expect(part('comments.json').comments).toHaveLength(2);
-      expect(part('media_links.json').links).toHaveLength(1);
+      expect(part('media_addresses.json').addresses).toHaveLength(1);
     });
 
     it("carries each comment's moderation state with its text", async () => {
@@ -666,41 +662,33 @@ describe('runExport', () => {
       expect(comments[1]?.moderation.reports).toEqual([{ id: 'r1', member_id: 'm2' }]);
     });
 
-    it("CROSS-TENANT: signs a link only for this tenant, and never for an object under another tenant's prefix", async () => {
+    it("CROSS-TENANT: lists only this tenant's public addresses, never an object under another tenant's prefix", async () => {
       const { deps } = fakeDeps({});
       const { part } = await archiveOf(await runExport(deps, request()));
-      const links = part('media_links.json');
-      expect(links.links.map((l: { key: string }) => l.key)).toEqual(['2026/own.png']);
-      expect(links.refused).toEqual([
+      const body = part('media_addresses.json');
+      expect(body.addresses.map((a: { url: string }) => a.url)).toEqual([
+        `${MEDIA_BASE}/2026/own.png`,
+      ]);
+      expect(body.refused).toEqual([
         {
           reference: 'https://media.test/opaque-t2/2026/other.png',
           reason: 'outside-tenant-prefix',
         },
       ]);
-      const everyLink = links.links.map((l: { url: string }) => l.url).join(' ');
-      expect(everyLink).not.toContain('opaque-t2');
-      expect(everyLink).not.toContain('other.png');
-      for (const link of links.links as { url: string }[]) {
-        const verified = verifyMediaLink(MEDIA.signer.secret, link.url, FIXED_NOW, 'tenant-1');
-        expect(verified.tenantId).toBe('tenant-1');
-        expect(() => verifyMediaLink(MEDIA.signer.secret, link.url, FIXED_NOW, 'tenant-2')).toThrow(
-          /another tenant/
-        );
-      }
+      expect(JSON.stringify(body.addresses)).not.toContain('opaque-t2');
+      expect(JSON.stringify(body.addresses)).not.toContain('other.png');
     });
 
-    it('the links in the archive EXPIRE at the lifetime asked for', async () => {
+    it('states the erasure date in the archive and in the manifest beside it', async () => {
       const { deps } = fakeDeps({});
-      const { part } = await archiveOf(await runExport(deps, request()));
-      const [link] = part('media_links.json').links as { url: string; expiresAt: number }[];
-      expect(link?.expiresAt).toBe(FIXED_NOW + 3600);
-      expect(() => verifyMediaLink(MEDIA.signer.secret, link!.url, FIXED_NOW + 3599)).not.toThrow();
-      expect(() => verifyMediaLink(MEDIA.signer.secret, link!.url, FIXED_NOW + 3600)).toThrow(
-        /expired/
-      );
+      const result = await runExport(deps, request());
+      const { part } = await archiveOf(result);
+      expect(part('media_addresses.json').erasureDate).toBe('2030-01-01');
+      const sidecar = await readFile(result.manifestPath, 'utf8');
+      expect(sidecar).toContain('they stop working after 2030-01-01');
     });
 
-    it('puts no link and no tenant content in the manifest that sits beside the archive', async () => {
+    it('puts no address and no tenant content in the manifest that sits beside the archive', async () => {
       const { deps } = fakeDeps({});
       const result = await runExport(deps, request());
       const sidecar = await readFile(result.manifestPath, 'utf8');
@@ -772,13 +760,16 @@ describe('runExport', () => {
       ]);
     });
 
-    it('does not claim completeness while no route verifies the media links', async () => {
+    it('does not claim completeness when the erasure date is unusable', async () => {
       const { deps } = fakeDeps({});
-      const result = await runExport(deps, request({ media: { ...MEDIA, redeemable: false } }));
+      const result = await runExport(
+        deps,
+        request({ media: { ...MEDIA, erasureDate: '2020-01-01' } })
+      );
       expect(result.manifest.complete).toBe(false);
       expect(result.manifest.excluded[0]).toEqual({
         name: 'media',
-        reason: 'partial: no route verifies these links yet',
+        reason: 'failed: ErasureDateError',
       });
     });
 

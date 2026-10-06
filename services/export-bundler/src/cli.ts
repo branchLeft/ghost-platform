@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { MIN_SECRET_BYTES } from './mediaLinks.js';
 import { join } from 'node:path';
 import { createFileDrainFlag } from './drainFlag.js';
 import { createDrainFlagStore, flagPathFor } from './drainFlagStore.js';
@@ -51,11 +50,8 @@ export interface CliOptions {
   readonly flagDir: string;
   readonly auditLogPath: string;
   readonly loopbackPort: number;
-  /** A bare https origin that serves the signed export downloads. */
-  readonly linkBaseUrl: string;
-  /** A file holding the shared secret the download route verifies links with. */
-  readonly linkSecretFile: string;
-  readonly linkTtlSeconds: number;
+  /** The day after which the tenant's public media addresses stop working, YYYY-MM-DD. */
+  readonly erasureDate: string;
 }
 
 const RETIRED_FLAGS = [
@@ -104,9 +100,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     flagDir: requireFlag(argv, 'flag-dir'),
     auditLogPath: requireFlag(argv, 'audit-log'),
     loopbackPort: Number(requireFlag(argv, 'loopback-port')),
-    linkBaseUrl: requireFlag(argv, 'link-base-url'),
-    linkSecretFile: requireFlag(argv, 'link-secret-file'),
-    linkTtlSeconds: Number(flagValue(argv, 'link-ttl-seconds') ?? 86_400),
+    erasureDate: requireFlag(argv, 'erasure-date'),
   };
 }
 
@@ -134,11 +128,6 @@ async function main(argv: readonly string[]): Promise<void> {
     })
   );
   const ageRecipient = bindTenant(descriptor, runtime, opts.ageRecipient);
-
-  const linkSecret = Buffer.from((await readFile(opts.linkSecretFile, 'utf8')).trim(), 'utf8');
-  if (linkSecret.length < MIN_SECRET_BYTES) {
-    throw new TenantConfigError(`the link secret file holds fewer than ${MIN_SECRET_BYTES} bytes`);
-  }
 
   const colourId = `${slug}-export-${process.pid}`;
   // runExport clears the flag itself on every normal exit; this covers a signal.
@@ -214,12 +203,7 @@ async function main(argv: readonly string[]): Promise<void> {
       liveDatabase,
       media: {
         baseUrl: mediaBaseUrlOf(runtime.env),
-        redeemable: false,
-        signer: {
-          baseUrl: opts.linkBaseUrl,
-          ttlSeconds: opts.linkTtlSeconds,
-          secret: linkSecret,
-        },
+        erasureDate: opts.erasureDate,
       },
     }
   );

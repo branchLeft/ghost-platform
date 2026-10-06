@@ -1,7 +1,11 @@
 import type { ArchiveFile } from './archive.js';
 import type { Collection, ExportFile, GhostExportClient } from './ghostExportClient.js';
-import { planMedia, scanMediaReferences, type MediaProbe } from './mediaManifest.js';
-import type { MediaLinkSigner } from './mediaLinks.js';
+import {
+  parseErasureDate,
+  planMedia,
+  scanMediaReferences,
+  type MediaProbe,
+} from './mediaManifest.js';
 
 /**
  * The three gaps the first bundler only named: media, members and their
@@ -37,9 +41,8 @@ export interface ExtensionOutcome {
 export interface MediaConfig {
   /** The base URL the tenant's own rendered environment serves media from; `null` when it has none. */
   readonly baseUrl: string | null;
-  /** True only once a route exists that redeems these links; until then media is never complete. */
-  readonly redeemable: boolean;
-  readonly signer: MediaLinkSigner;
+  /** The day after which the public addresses stop working: the tenant's erasure date, YYYY-MM-DD. */
+  readonly erasureDate: string;
 }
 
 export interface ExtensionDeps {
@@ -55,7 +58,7 @@ export interface ExtensionDeps {
 export const MEMBERS_ENTRY = 'members.json';
 export const MEMBERS_CSV_ENTRY = 'members.csv';
 export const COMMENTS_ENTRY = 'comments.json';
-export const MEDIA_LINKS_ENTRY = 'media_links.json';
+export const MEDIA_ADDRESSES_ENTRY = 'media_addresses.json';
 
 /** Ghost's admin comment list returns these two; it leaves `deleted` out, which the manifest names. */
 export const COMMENT_STATUSES: readonly string[] = ['published', 'hidden'];
@@ -229,44 +232,35 @@ export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcom
     );
   }
   try {
+    const erasureDate = parseErasureDate(deps.media.erasureDate, deps.nowSeconds);
     const scan = scanMediaReferences(deps.contentJson, deps.media.baseUrl);
-    const plan = await planMedia(
-      scan,
-      deps.media.baseUrl,
-      deps.mediaProbe,
-      deps.media.signer,
-      deps.tenantId,
-      deps.nowSeconds
-    );
+    const plan = await planMedia(scan, deps.media.baseUrl, deps.mediaProbe);
     const notes: string[] = [];
-    if (!deps.media.redeemable) notes.push('no route verifies these links yet');
     if (plan.missing.length > 0) {
       notes.push(`${plan.missing.length} referenced objects are not in storage`);
     }
     if (plan.unverified.length > 0) {
       notes.push(`${plan.unverified.length} referenced objects could not be checked`);
     }
-    const expiry = plan.links.reduce((min, l) => Math.min(min, l.expiresAt), Infinity);
     return {
       report: {
         name: 'media',
         status: statusFor(notes),
         expected: scan.keys.length,
-        present: plan.links.length,
+        present: plan.addresses.length,
         notes,
         info: [
-          `${plan.refused.length} references under another prefix were refused and not linked`,
-          'links only: the archive carries no media bytes, and the links expire',
+          `${plan.refused.length} references under another prefix were refused and not listed`,
+          `public addresses only, no media bytes: they stop working after ${erasureDate}`,
         ],
       },
       files: [
         {
-          name: MEDIA_LINKS_ENTRY,
+          name: MEDIA_ADDRESSES_ENTRY,
           data: json({
             tenantId: deps.tenantId,
-            ttlSeconds: deps.media.signer.ttlSeconds,
-            earliestExpiry: Number.isFinite(expiry) ? new Date(expiry * 1000).toISOString() : null,
-            links: plan.links,
+            erasureDate,
+            addresses: plan.addresses,
             missing: plan.missing,
             unverified: plan.unverified,
             refused: plan.refused,

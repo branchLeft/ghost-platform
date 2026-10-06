@@ -3,7 +3,10 @@ import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import {
   createHttpMediaProbe,
+  assertSafeObjectKey,
+  ErasureDateError,
   MediaBaseError,
+  parseErasureDate,
   objectUrl,
   parseMediaBase,
   planMedia,
@@ -11,11 +14,8 @@ import {
   type MediaProbe,
 } from '../../src/mediaManifest.js';
 import { mediaBaseUrlOf } from '../../src/tenantConfig.js';
-import { verifyMediaLink, type MediaLinkSigner } from '../../src/mediaLinks.js';
 
 const BASE = 'https://media.test/opaque-t1';
-const SECRET = Buffer.alloc(32, 5);
-const signer: MediaLinkSigner = { baseUrl: 'https://export.test', ttlSeconds: 600, secret: SECRET };
 const NOW = 1_800_000_000;
 
 describe('parseMediaBase', () => {
@@ -83,7 +83,7 @@ describe('scanMediaReferences', () => {
 describe('planMedia', () => {
   const scan = { keys: ['a.png', 'b.png', 'c.png', 'd.png'], refused: [] };
 
-  it('signs a link for each object that exists, and names the ones that do not or cannot be checked', async () => {
+  it('lists the public address of each object that exists, and names the ones that do not or cannot be checked', async () => {
     const probe: MediaProbe = {
       async head(url) {
         if (url.endsWith('/b.png')) return { exists: false, bytes: null };
@@ -91,57 +91,64 @@ describe('planMedia', () => {
         return { exists: true, bytes: 12 };
       },
     };
-    const plan = await planMedia(scan, BASE, probe, signer, 'tenant-1', NOW);
-    expect(plan.links.map((l) => l.key)).toEqual(['a.png', 'd.png']);
+    const plan = await planMedia(scan, BASE, probe);
+    expect(plan.addresses).toEqual([
+      { key: 'a.png', url: `${BASE}/a.png`, bytes: 12 },
+      { key: 'd.png', url: `${BASE}/d.png`, bytes: 12 },
+    ]);
     expect(plan.missing).toEqual(['b.png']);
     expect(plan.unverified).toEqual(['c.png']);
-    for (const link of plan.links) {
-      expect(verifyMediaLink(SECRET, link.url, NOW, 'tenant-1').key).toBe(link.key);
-      expect(link.bytes).toBe(12);
-    }
   });
 
-  it('never signs for an object the probe did not find', async () => {
-    const plan = await planMedia(
-      scan,
-      BASE,
-      { head: async () => ({ exists: false, bytes: null }) },
-      signer,
-      'tenant-1',
-      NOW
-    );
-    expect(plan.links).toEqual([]);
+  it('lists nothing for an object the probe did not find', async () => {
+    const plan = await planMedia(scan, BASE, {
+      head: async () => ({ exists: false, bytes: null }),
+    });
+    expect(plan.addresses).toEqual([]);
     expect(plan.missing).toHaveLength(4);
-  });
-
-  it('turns a key the signer refuses into an unverified object rather than a link', async () => {
-    const plan = await planMedia(
-      { keys: ['a/../b.png'], refused: [] },
-      BASE,
-      { head: async () => ({ exists: true, bytes: null }) },
-      signer,
-      'tenant-1',
-      NOW
-    );
-    expect(plan.links).toEqual([]);
-    expect(plan.unverified).toEqual(['a/../b.png']);
-  });
-
-  it('lets a signing defect other than a bad key surface instead of hiding it', async () => {
-    await expect(
-      planMedia(
-        scan,
-        BASE,
-        { head: async () => ({ exists: true, bytes: 1 }) },
-        { ...signer, ttlSeconds: 1 },
-        'tenant-1',
-        NOW
-      )
-    ).rejects.toThrow(/lifetime/);
   });
 
   it('encodes keys when it builds the address it probes', () => {
     expect(objectUrl(BASE, '2026/a b.png')).toBe('https://media.test/opaque-t1/2026/a%20b.png');
+  });
+});
+
+describe('parseErasureDate', () => {
+  it('accepts a real future calendar day', () => {
+    expect(parseErasureDate('2030-02-28', NOW)).toBe('2030-02-28');
+  });
+
+  it.each(['2030-02-30', '2030-2-3', 'soon', '', '2030-02-28T00:00:00Z'])('refuses %j', (v) => {
+    expect(() => parseErasureDate(v, NOW)).toThrow(ErasureDateError);
+  });
+
+  it('refuses today and the past, because addresses listed past that day would be a lie', () => {
+    expect(() => parseErasureDate('2027-01-15', NOW)).toThrow(/future/);
+    expect(() => parseErasureDate('2020-01-01', NOW)).toThrow(/future/);
+  });
+});
+
+describe('assertSafeObjectKey', () => {
+  it.each([
+    '',
+    '/a',
+    'a//b',
+    'a/./b',
+    'a/../b',
+    '..',
+    'a\\b',
+    'a%2Fb',
+    'a/%2e%2E/b',
+    'a\u0000b',
+    'a?b',
+    'a#b',
+    'x'.repeat(1025),
+  ])('refuses %j', (key) => {
+    expect(() => assertSafeObjectKey(key)).toThrow(MediaBaseError);
+  });
+
+  it('accepts an ordinary object key', () => {
+    expect(() => assertSafeObjectKey('2026/10/photo-1.png')).not.toThrow();
   });
 });
 

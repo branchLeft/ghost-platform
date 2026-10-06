@@ -53,9 +53,8 @@ function deps(over: Partial<ExtensionDeps> = {}): ExtensionDeps {
     baseUrl: 'http://127.0.0.1:1',
     tenantId: 'tenant-1',
     media: {
-      redeemable: true,
       baseUrl: BASE,
-      signer: { baseUrl: 'https://export.test', ttlSeconds: 600, secret: Buffer.alloc(32, 3) },
+      erasureDate: '2030-01-01',
     },
     nowSeconds: 1_800_000_000,
     contentJson: `{"a":"${BASE}/a.png","b":"${BASE}/b.png"}`,
@@ -241,15 +240,21 @@ describe('collectComments', () => {
 });
 
 describe('collectMedia', () => {
-  it('links every referenced object that exists, and the links file sits in the archive only', async () => {
+  it('lists the public address of every referenced object, with the erasure date, inside the archive only', async () => {
     const out = await collectMedia(deps());
-    expect(out.report).toMatchObject({ status: 'complete', expected: 2, present: 2 });
-    expect(out.files.map((f) => f.name)).toEqual(['media_links.json']);
-    const links = JSON.parse(String(out.files[0]?.data));
-    expect(links.links).toHaveLength(2);
-    expect(links.earliestExpiry).toBe(new Date((1_800_000_000 + 600) * 1000).toISOString());
-    // What the manifest beside the archive says must carry no link.
-    expect(JSON.stringify(out.report)).not.toMatch(/sig=|https?:/);
+    expect(out.report).toMatchObject({ status: 'complete', expected: 2, present: 2, notes: [] });
+    expect(out.files.map((f) => f.name)).toEqual(['media_addresses.json']);
+    const body = JSON.parse(String(out.files[0]?.data));
+    expect(body.erasureDate).toBe('2030-01-01');
+    expect(body.addresses.map((a: { url: string }) => a.url)).toEqual([
+      `${BASE}/a.png`,
+      `${BASE}/b.png`,
+    ]);
+    expect(out.report.info).toContain(
+      'public addresses only, no media bytes: they stop working after 2030-01-01'
+    );
+    // The manifest beside the archive carries the date but no address.
+    expect(JSON.stringify(out.report)).not.toMatch(/https?:/);
   });
 
   it('is partial when an object the content references is not in storage or cannot be checked', async () => {
@@ -269,7 +274,7 @@ describe('collectMedia', () => {
       '1 referenced objects could not be checked',
     ]);
     expect(out.report.present).toBe(0);
-    expect(JSON.parse(String(out.files[0]?.data)).earliestExpiry).toBeNull();
+    expect(JSON.parse(String(out.files[0]?.data)).addresses).toEqual([]);
   });
 
   it('is failed when the tenant has no object-storage media address', async () => {
@@ -285,29 +290,32 @@ describe('collectMedia', () => {
     expect(out.report.status).toBe('failed');
   });
 
-  it("never links another tenant's object, and counts it as refused", async () => {
+  it("never lists another tenant's object, and counts it as refused", async () => {
     const out = await collectMedia(
       deps({ contentJson: `{"a":"${BASE}/a.png","x":"https://media.test/opaque-t2/x.png"}` })
     );
-    const links = JSON.parse(String(out.files[0]?.data));
-    expect(links.links.map((l: { key: string }) => l.key)).toEqual(['a.png']);
-    expect(JSON.stringify(links.links)).not.toContain('opaque-t2');
-    expect(links.refused).toEqual([
+    const body = JSON.parse(String(out.files[0]?.data));
+    expect(body.addresses.map((a: { key: string }) => a.key)).toEqual(['a.png']);
+    expect(JSON.stringify(body.addresses)).not.toContain('opaque-t2');
+    expect(body.refused).toEqual([
       { reference: 'https://media.test/opaque-t2/x.png', reason: 'outside-tenant-prefix' },
     ]);
     expect(out.report.info[0]).toBe(
-      '1 references under another prefix were refused and not linked'
+      '1 references under another prefix were refused and not listed'
     );
   });
 });
 
-describe('media completeness until a route redeems the links', () => {
-  it('is PARTIAL, naming why, while no route verifies the links, even when every object is linked', async () => {
-    const out = await collectMedia(deps({ media: { ...deps().media, redeemable: false } }));
-    expect(out.report.status).toBe('partial');
-    expect(out.report.notes).toEqual(['no route verifies these links yet']);
-    expect(out.report.present).toBe(out.report.expected);
-  });
+describe('the erasure date', () => {
+  it.each(['2020-01-01', 'soon', '2030-02-30'])(
+    'FAILS the media extension for the unusable erasure date %j, listing nothing',
+    async (erasureDate) => {
+      const out = await collectMedia(deps({ media: { ...deps().media, erasureDate } }));
+      expect(out.report.status).toBe('failed');
+      expect(out.report.notes).toEqual(['ErasureDateError']);
+      expect(out.files).toEqual([]);
+    }
+  );
 });
 
 describe('collectExtensions', () => {

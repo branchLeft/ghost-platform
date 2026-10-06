@@ -71,7 +71,7 @@ export const KNOWN_EXPORT_GAPS: readonly ManifestGap[] = [
   {
     name: 'media_bytes',
     reason:
-      'the archive carries a manifest of time-bounded links to the media, never the bytes; the links expire, and a tenant keeps nothing from them after that unless they download first',
+      "the archive lists the public address of each media file, never the bytes; those addresses stop working on the tenant's erasure date, and a tenant keeps nothing from them after that unless they download first",
   },
 ];
 

@@ -98,19 +98,21 @@ three are `complete` and counted. A fetch that fails or falls short is named
 in `excluded` with the reason, the rest of the archive is still produced,
 and the audit record carries the same `complete` flag.
 
-- **Media: links, never bytes.** Live media sits in shared shard buckets
-  behind the storage gateway under one opaque prefix per tenant, and a tenant
-  holds no storage key, so a bucket-to-bucket copy with the tenant's own
-  credentials cannot exist (ghost-platform-docs pages 20 and 21). The
-  archive carries `media_links.json`: one time-bounded link per object the
-  content export references. The tenant's scope is the media address its own
-  rendered environment serves from, never a flag. A reference under another
-  prefix on the same shard is another tenant's object: it is listed as
-  `refused` and never signed. Every object is checked to exist before it is
-  linked. The links are HMAC tokens bound to tenant, key and expiry
-  (`mediaLinks.ts`), not S3 presigns: the gateway refuses presigned
-  requests. They live only inside the encrypted archive, never in the
-  manifest beside it. The download route that verifies them is separate work.
+- **Media: public addresses, never bytes.** Live media sits in shared shard
+  buckets behind the storage gateway under one opaque prefix per tenant, and a
+  tenant holds no storage key, so a bucket-to-bucket copy cannot exist
+  (ghost-platform-docs pages 20 and 21). Owner ruling on the export links
+  (option A): the export lists the ordinary public address of each file, with
+  the date after which those addresses stop working. The archive carries
+  `media_addresses.json`: one public address per object the content export
+  references, plus the tenant's erasure date (`--erasure-date`, a future
+  `YYYY-MM-DD`; no system records it yet, so the operator states it). The
+  tenant's scope is the media address plus Ghost's `tenantPrefix` from its own
+  rendered environment, never a flag; a bare address with no prefix fails
+  closed. A reference under another prefix on the same shard is another
+  tenant's object: it is listed as `refused` and never as an address. Every
+  object is checked to exist first. No signing, no secret and no download
+  route exist or are needed.
 - **Members and subscriptions.** `members.json` is every member with tiers,
   labels, newsletters and subscription records; `members.csv` is Ghost's own
   re-importable export. Stripe's side of each subscription is named as out of
@@ -311,9 +313,7 @@ node dist/cli.js \
   --flag-dir <where this run's own drain flag lives> \
   --audit-log <path to the audit JSONL file> \
   --loopback-port <an unused local port> \
-  --link-base-url <bare https origin of the export download route> \
-  --link-secret-file <file holding the link-signing secret, 32 bytes or more> \
-  [--link-ttl-seconds <60 to 604800, default 86400>] \
+  --erasure-date <YYYY-MM-DD, the day the tenant's media addresses stop working> \
   [--stack-dir /opt/branchleft/<slug>] \
   [--secrets-env /etc/branchleft/<slug>.env] \
   [--image-env /etc/branchleft/<slug>.image.env]
