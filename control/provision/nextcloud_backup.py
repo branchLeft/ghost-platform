@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""Backs up the Nextcloud stack on the control host and proves the backup
-restores, by counts only. See nextcloud_backup.md.
-
-    nextcloud_backup.py take    -- dump the database and archive the app volume
-    nextcloud_backup.py verify DIR -- restore DIR into throwaway containers and compare
-    nextcloud_backup.py seal DIR --recipient-file F -- encrypt DIR for the off-host copy
-    nextcloud_backup.py run     -- take, verify, then prune older on-host copies
-
-Exit 0: done and proven. Exit 1: a check failed (a mismatch, a corrupt file, an
-empty restore). Exit 2: a precondition is missing and nothing was proven.
-Nothing this prints is ever row data, a name or an address: counts, sizes,
-digests and paths only.
+"""Backs up the control host's Nextcloud stack and proves it restores, by counts
+only. Exit 0 proven, 1 a check failed, 2 a precondition is missing. Commands,
+controls and what is never printed: nextcloud_backup.md.
 """
 
 from __future__ import annotations

@@ -1,8 +1,5 @@
-"""Tests for nextcloud_backup.py. See test_nextcloud_backup.md.
-
-The unit tests fake every docker call. The Docker proof at the bottom runs only
-with NEXTCLOUD_BACKUP_DOCKER_PROOF=1, against throwaway PostgreSQL and
-synthetic rows, never against a real stack.
+"""Tests for nextcloud_backup.py: faked docker, plus a Docker proof on synthetic
+rows run only with NEXTCLOUD_BACKUP_DOCKER_PROOF=1. See test_nextcloud_backup.md.
 """
 
 from __future__ import annotations
