@@ -65,3 +65,14 @@ jobs:
         run: npm run test:image
         env:
           IMAGE: ghost-platform:ci
+
+      # An export is verified by using it: Ghost's own export is taken from a
+      # seeded Ghost and re-imported into a fresh one, and named posts, tags,
+      # members and settings must be there. The same check against a Ghost
+      # that imported nothing must fail. Needs no install -- the test uses
+      # Node built-ins only.
+      - name: Export re-import against the built image
+        working-directory: services/export-bundler
+        run: node --test test/image/*.test.mjs
+        env:
+          IMAGE: ghost-platform:ci
