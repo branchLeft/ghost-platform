@@ -73,7 +73,9 @@ export async function admit(
   let keyId: string;
   try {
     const verified = await deps.verifier.verify(request);
-    if (!verified.ok) return refuse(verified.refusal.code);
+    if (verified.ok !== true) return refuse(verified.refusal.code);
+    if (typeof verified.keyId !== 'string' || verified.keyId === '')
+      return refuse('internal-error');
     keyId = verified.keyId;
   } catch {
     return refuse('internal-error');

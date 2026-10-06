@@ -101,6 +101,48 @@ describe('routeRequest: operations that are refused', () => {
     expect(verdict(req(method, target))).toBe('operation-not-allowed');
   });
 
+  it.each([
+    'x-amz-acl',
+    'X-Amz-Acl',
+    'x-amz-grant-read',
+    'x-amz-grant-full-control',
+    'x-amz-tagging',
+    'x-amz-tagging-directive',
+    'x-amz-metadata-directive',
+    'x-amz-server-side-encryption',
+    'x-amz-server-side-encryption-aws-kms-key-id',
+    'x-amz-server-side-encryption-customer-algorithm',
+    'x-amz-server-side-encryption-customer-key',
+    'x-amz-server-side-encryption-customer-key-md5',
+    'x-amz-website-redirect-location',
+    'x-amz-object-lock-mode',
+    'x-amz-object-lock-retain-until-date',
+    'x-amz-object-lock-legal-hold',
+    'x-amz-bypass-governance-retention',
+    'x-amz-storage-class',
+  ])('refuses the operation-changing header %s on every allowed shape', (header) => {
+    for (const [method, query] of [
+      ['PUT', ''],
+      ['POST', '?uploads'],
+      ['PUT', '?partNumber=1&uploadId=a'],
+      ['POST', '?uploadId=a'],
+      ['GET', ''],
+    ] as const) {
+      const r = req(method, `/${BUCKET}/${key}${query}`, { [header]: 'x' });
+      expect(verdict(r)).toBe('operation-not-allowed');
+    }
+  });
+
+  it('still admits the checksum and content headers the SDK sends', () => {
+    const headers = {
+      'x-amz-checksum-crc32': 'AAAA',
+      'x-amz-sdk-checksum-algorithm': 'CRC32',
+      'x-amz-content-sha256': 'abc',
+      'content-type': 'image/png',
+    };
+    expect(verdict(req('PUT', `/${BUCKET}/${key}`, headers))).toBe('ok');
+  });
+
   it.each(['x-amz-copy-source', 'X-Amz-Copy-Source', 'x-amz-copy-source-range'])(
     'refuses a copy through the %s header',
     (header) => {
@@ -182,6 +224,9 @@ describe('routeRequest: malformed targets', () => {
     ['part number over the limit', `/${BUCKET}/${key}?uploadId=a&partNumber=10001`],
     ['part number with a sign', `/${BUCKET}/${key}?uploadId=a&partNumber=%2B1`],
     ['part number with leading zero', `/${BUCKET}/${key}?uploadId=a&partNumber=01`],
+    ['encoded letter in a parameter name', `/${BUCKET}/${key}?upload%49d=abc&partNumber=1`],
+    ['encoded dash in x-id', `/${BUCKET}/${key}?x%2did=GetObject`],
+    ['encoded parameter name on an abort', `/${BUCKET}/${key}?upload%49d=abc`],
     ['part number that is not a number', `/${BUCKET}/${key}?uploadId=a&partNumber=x`],
   ])('refuses %s', (_label, target) => {
     expect(verdict(req('PUT', target))).toBe('target-malformed');

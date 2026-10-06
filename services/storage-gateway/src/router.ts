@@ -77,7 +77,12 @@ function parseQuery(raw: string): Query | undefined {
   if (raw === '') return params;
   for (const pair of raw.split('&')) {
     const eq = pair.indexOf('=');
-    const name = decodeOnce(eq === -1 ? pair : pair.slice(0, eq));
+    const rawName = eq === -1 ? pair : pair.slice(0, eq);
+    // The SDK never encodes a parameter name, and a decoded name would let
+    // `upload%49d` choose the operation while an upstream that does not decode
+    // names sees something else.
+    if (rawName.includes('%')) return undefined;
+    const name = decodeOnce(rawName);
     const value = decodeOnce(eq === -1 ? '' : pair.slice(eq + 1));
     if (name === undefined || value === undefined || name === '') return undefined;
     if (FORBIDDEN_CHARS.test(name) || FORBIDDEN_CHARS.test(value)) return undefined;
@@ -87,10 +92,31 @@ function parseQuery(raw: string): Query | undefined {
   return params;
 }
 
-function hasCopySource(request: GatewayRequest): boolean {
-  return Object.keys(request.headers).some((name) =>
-    name.toLowerCase().startsWith('x-amz-copy-source')
-  );
+/**
+ * Headers that change what an allowed request does: copy, ACLs and grants,
+ * tagging, metadata directives, any server-side encryption, website redirect,
+ * object lock and storage class. Ghost sends none of them, so a request that
+ * carries one is not Ghost and is refused rather than stripped: stripping
+ * would alter signed headers and hide the caller.
+ */
+const OPERATION_CHANGING_HEADERS = [
+  'x-amz-copy-source',
+  'x-amz-acl',
+  'x-amz-grant-',
+  'x-amz-tagging',
+  'x-amz-metadata-directive',
+  'x-amz-server-side-encryption',
+  'x-amz-website-redirect-location',
+  'x-amz-object-lock-',
+  'x-amz-bypass-governance-retention',
+  'x-amz-storage-class',
+];
+
+function hasOperationChangingHeader(request: GatewayRequest): boolean {
+  return Object.keys(request.headers).some((name) => {
+    const lower = name.toLowerCase();
+    return OPERATION_CHANGING_HEADERS.some((prefix) => lower.startsWith(prefix));
+  });
 }
 
 /** Names of the query parameters the seven shapes may carry. */
@@ -171,7 +197,8 @@ export function routeRequest(request: GatewayRequest): RouteResult {
   if (query === undefined) return refused('target-malformed');
 
   const operation = classify(request.method, query);
-  if (operation === undefined || hasCopySource(request)) return refused('operation-not-allowed');
+  if (operation === undefined || hasOperationChangingHeader(request))
+    return refused('operation-not-allowed');
 
   const uploadId = query.get('uploadId');
   const partText = query.get('partNumber');

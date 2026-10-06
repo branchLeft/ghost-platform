@@ -168,4 +168,36 @@ describe('admit', () => {
     expect(result).toEqual({ ok: false, refusal: refusal('credential-invalid') });
     expect(logged[0]).toMatchObject({ code: 'credential-invalid', keyId: KEY_ID });
   });
+
+  it.each([
+    ['ok is truthy but not true', { ok: 1, keyId: KEY_ID }],
+    ['the key id is empty', { ok: true, keyId: '' }],
+    ['the key id is missing', { ok: true }],
+    ['the key id is not a string', { ok: true, keyId: 7 }],
+  ])('refuses when the verifier answers loosely: %s', async (_label, answer) => {
+    const { deps, logged } = setup({
+      verifier: { verify: async () => answer as never },
+    });
+    const result = await admit(goodRequest, deps);
+    expect(result.ok).toBe(false);
+    expect(logged).toHaveLength(1);
+  });
+
+  it('does not rely on the store to refuse an empty key id', async () => {
+    const { deps, logged } = setup({});
+    const result = await admit(goodRequest, {
+      ...deps,
+      verifier: { verify: async () => ({ ok: true, keyId: '' }) },
+      credentials: {
+        lookup: async () => ({
+          folder: FOLDER,
+          bucket: BUCKET,
+          state: 'active',
+          createdAt: CREATED,
+        }),
+      },
+    });
+    expect(result).toEqual({ ok: false, refusal: refusal('internal-error') });
+    expect(logged).toHaveLength(1);
+  });
 });
