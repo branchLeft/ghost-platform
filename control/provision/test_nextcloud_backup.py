@@ -180,8 +180,19 @@ class DockerLookupTest(unittest.TestCase):
         self.assertIn("label=com.docker.compose.service=db", fake.calls[0])
 
     def test_exactly_one_app_volume(self):
+        def unlabelled(found):
+            def runner(argv, **kwargs):
+                if argv[1:3] == ["volume", "inspect"]:
+                    return done(returncode=0 if found else 1)
+                return done("")
+            return runner
+
         with self.assertRaises(nb.Precondition):
-            nb.find_app_volume(FakeDocker(volumes=""), nb.Stack())
+            nb.find_app_volume(unlabelled(False), nb.Stack())
+        with self.assertRaises(nb.Precondition):
+            nb.find_app_volume(FakeDocker(volumes="a\nb\n"), nb.Stack())
+        self.assertEqual(nb.find_app_volume(unlabelled(True), nb.Stack()), "nextcloud1_nextcloud-app")
+        self.assertEqual(nb.find_app_volume(FakeDocker(), nb.Stack()), "nextcloud1_nextcloud-app")
 
     def test_image_must_be_a_digest(self):
         with self.assertRaises(nb.Precondition):

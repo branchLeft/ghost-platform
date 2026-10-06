@@ -160,6 +160,11 @@ def find_app_volume(runner: Runner, stack: Stack) -> str:
          "--filter", f"label=com.docker.compose.volume={stack.app_volume}"],
         "listing the app volume",
     )
+    if not out.split():
+        # A volume created before Compose labelled volumes carries only its name.
+        named = f"{stack.project}_{stack.app_volume}"
+        if runner(["docker", "volume", "inspect", named]).returncode == 0:
+            return named
     return _single(out, f"{stack.app_volume!r} volume in project {stack.project!r}")
 
 
