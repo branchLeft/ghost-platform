@@ -1,0 +1,157 @@
+name: Portal applications image
+
+# Builds the tenant portal and owner console image (portal/Dockerfile) on every
+# PR touching what goes into it (build-only, no credentials), and on push to
+# `main` also pushes it to ghcr.io/branchleft/portal-apps tagged with the git
+# SHA. The push job reads the pushed manifest's digest back from the local image
+# store and refuses to finish without a well-formed sha256 digest, then
+# publishes `ghcr.io/branchleft/portal-apps@sha256:...` as the job's `image`
+# output and in its summary. That digest-qualified reference is the only thing a
+# deployment may pin. There is deliberately no `latest` tag.
+#
+# One image, two entry points: the control-plane stack on ops1 runs it twice,
+# once as the tenant portal and once as the owner console, by command.
+#
+# The type check and tests of the packages inside it run in
+# portal-apps-ci.yml on the same triggers; this workflow proves the image builds
+# and nothing more, so read that workflow's result on the same commit before
+# pinning a digest.
+#
+# Mirrors mail-collector-image.yml. GHCR authenticates with the workflow's own
+# GITHUB_TOKEN, so there is no new secret and no GCP identity involved. The push
+# job requests `packages: write` only for itself, on the triggers that ever run
+# it, so a PR build never sits in the same permissions block as a publish
+# credential.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - portal/**
+      - services/identity/**
+      - .github/workflows/portal-apps-image.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - portal/**
+      - services/identity/**
+      - .github/workflows/portal-apps-image.yml
+  workflow_dispatch:
+
+# `packages: read` because the build installs `@branchleft/tsconfig` from
+# GitHub Packages. It is read-only and deliberately separate from the
+# `packages: write` the push job grants itself.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: docker build (portal-apps)
+    runs-on: ubuntu-latest
+    # workflow_dispatch has no path filter to gate on; it means "push the
+    # current main", so it goes straight to the push job below.
+    if: github.event_name != 'workflow_dispatch'
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The secret is consumed by a `RUN --mount` in the Dockerfile, so it
+      # reaches `npm ci` without entering a layer or the build history.
+      - name: Build image
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build \
+            --file portal/Dockerfile \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --tag portal-apps:ci \
+            .
+
+      # Both entry points must load: a missing built sibling package fails
+      # here, at import, rather than on the host. The container is removed on
+      # exit. PORT and the config files are unset on purpose, so each process
+      # must stop at its own configuration check, never at a missing module.
+      - name: Both entry points reach their configuration check
+        run: |
+          for entry in tenant console; do
+            output="$(docker run --rm portal-apps:ci node "dist/$entry/main.js" 2>&1 || true)"
+            printf '%s\n' "$output" | grep -q 'ConfigError' || { echo "::error::$entry entry point did not reach its configuration check: $output"; exit 1; }
+          done
+
+  push:
+    name: Build and push portal-apps image
+    runs-on: ubuntu-latest
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+
+    env:
+      IMAGE: ghcr.io/branchleft/portal-apps
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build \
+            --file portal/Dockerfile \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --tag "$IMAGE:$IMAGE_TAG" \
+            .
+
+      - name: Push
+        run: docker push "$IMAGE:$IMAGE_TAG"
+
+      # The digest is read from the image store after the push, never
+      # assembled from the tag or the commit. A missing or malformed digest
+      # fails the job, so no run ends green without a reference to pin.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
+        run: |
+          {
+            echo '## portal-apps image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
