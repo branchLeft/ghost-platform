@@ -13,3 +13,11 @@ schema states, for example a password.
 What this module owns is that `configure()` is called, in order, between
 starting the unit and clearing the drain flag, and that a failure here routes
 through the same reset-and-retry path every other reconcile failure does.
+
+## slot and forget
+
+`configure` receives the slot so the client can keep per-slot state: the
+real client keeps the demo owner's staff access token in that slot's
+private folder. `forget` is optional. Every reset path calls it, before
+the wrapper wipes the slot, so a reset that then fails still leaves no way
+back into the site.
