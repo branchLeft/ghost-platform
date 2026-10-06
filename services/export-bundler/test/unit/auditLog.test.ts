@@ -10,6 +10,7 @@ function entry(tenantId: string, overrides: Partial<ExportAuditEntry> = {}): Exp
     requestedBy: 'a',
     occurredAt: '2026-01-01T00:00:00.000Z',
     contents: [],
+    complete: true,
     deliveredTo: 'a',
     grant: { lane: 'consented', reference: 'staff-log entry' },
     supportIdentity: 'support@tenant.test',

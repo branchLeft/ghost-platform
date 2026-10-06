@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { MIN_SECRET_BYTES } from './mediaLinks.js';
 import { join } from 'node:path';
 import { createFileDrainFlag } from './drainFlag.js';
 import { createDrainFlagStore, flagPathFor } from './drainFlagStore.js';
 import { createDockerContainerRunner, type VolumeMount } from './containerRunner.js';
+import { createHttpMediaProbe } from './mediaManifest.js';
 import { createHttpGhostExportClient } from './ghostExportClient.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
 import { createFileAuditLog } from './auditLog.js';
@@ -18,6 +20,7 @@ import { isolateExportColour } from './colourIsolation.js';
 import {
   bindTenant,
   loadComposeConfig,
+  mediaBaseUrlOf,
   parseComposeConfig,
   parseDescriptorFacts,
   TenantConfigError,
@@ -48,6 +51,11 @@ export interface CliOptions {
   readonly flagDir: string;
   readonly auditLogPath: string;
   readonly loopbackPort: number;
+  /** A bare https origin that serves the signed export downloads. */
+  readonly linkBaseUrl: string;
+  /** A file holding the shared secret the download route verifies links with. */
+  readonly linkSecretFile: string;
+  readonly linkTtlSeconds: number;
 }
 
 const RETIRED_FLAGS = [
@@ -96,6 +104,9 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     flagDir: requireFlag(argv, 'flag-dir'),
     auditLogPath: requireFlag(argv, 'audit-log'),
     loopbackPort: Number(requireFlag(argv, 'loopback-port')),
+    linkBaseUrl: requireFlag(argv, 'link-base-url'),
+    linkSecretFile: requireFlag(argv, 'link-secret-file'),
+    linkTtlSeconds: Number(flagValue(argv, 'link-ttl-seconds') ?? 86_400),
   };
 }
 
@@ -123,6 +134,11 @@ async function main(argv: readonly string[]): Promise<void> {
     })
   );
   const ageRecipient = bindTenant(descriptor, runtime, opts.ageRecipient);
+
+  const linkSecret = Buffer.from((await readFile(opts.linkSecretFile, 'utf8')).trim(), 'utf8');
+  if (linkSecret.length < MIN_SECRET_BYTES) {
+    throw new TenantConfigError(`the link secret file holds fewer than ${MIN_SECRET_BYTES} bytes`);
+  }
 
   const colourId = `${slug}-export-${process.pid}`;
   // runExport clears the flag itself on every normal exit; this covers a signal.
@@ -179,6 +195,7 @@ async function main(argv: readonly string[]): Promise<void> {
         ),
         10_000
       ),
+      mediaProbe: createHttpMediaProbe(10_000),
       auditLog: createFileAuditLog(opts.auditLogPath),
       nowIso: () => new Date().toISOString(),
       healthTimeoutMs: 60_000,
@@ -195,12 +212,21 @@ async function main(argv: readonly string[]): Promise<void> {
       ageRecipient,
       colourBaseEnv: isolateExportColour(runtime.env),
       liveDatabase,
+      media: {
+        baseUrl: mediaBaseUrlOf(runtime.env),
+        signer: {
+          baseUrl: opts.linkBaseUrl,
+          ttlSeconds: opts.linkTtlSeconds,
+          secret: linkSecret,
+        },
+      },
     }
   );
 
   console.log(`export-bundler: wrote ${result.archivePath}`);
   console.log(`export-bundler: sha256 ${result.archiveSha256}`);
   console.log(`export-bundler: manifest ${result.manifestPath}`);
+  console.log(`export-bundler: complete ${String(result.manifest.complete)}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

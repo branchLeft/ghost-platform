@@ -206,3 +206,14 @@ export function loadComposeConfig(
     );
   });
 }
+
+/**
+ * The address the tenant's own rendered environment serves media from, or
+ * `null` when it has object-storage media at none. Read from the stack and
+ * never typed by the operator: it is what decides which objects are this
+ * tenant's, so a flag here would let a link be signed for another tenant's
+ * prefix.
+ */
+export function mediaBaseUrlOf(env: Readonly<Record<string, string>>): string | null {
+  return env.storage__images__wrappedConfig__cdnUrl ?? env.storage__images__cdnUrl ?? null;
+}

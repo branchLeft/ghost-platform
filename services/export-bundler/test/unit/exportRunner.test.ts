@@ -9,6 +9,7 @@ import {
   type ExportRequest,
   type ExportRunnerDeps,
 } from '../../src/exportRunner.js';
+import { verifyMediaLink } from '../../src/mediaLinks.js';
 import { UndrainedColourError } from '../../src/drainGate.js';
 import type { DrainFlag } from '../../src/drainFlag.js';
 import type { ColourAttachments, ContainerRunner } from '../../src/containerRunner.js';
@@ -18,7 +19,9 @@ import {
   type ScratchCopy,
   type ScratchDatabase,
 } from '../../src/scratchDatabase.js';
-import type { GhostExportClient } from '../../src/ghostExportClient.js';
+import type { Collection, GhostExportClient } from '../../src/ghostExportClient.js';
+import type { MediaProbe } from '../../src/mediaManifest.js';
+import type { MediaConfig } from '../../src/extensions.js';
 import type { GhostProbe } from '../../src/ghostProbe.js';
 import { AuditWriteError, type AuditRecorder, type ExportAuditEntry } from '../../src/auditLog.js';
 import {
@@ -46,6 +49,29 @@ import {
 // and must never be readable on disk.
 const CONTENT_MARKER = 'PLAINTEXT-MEMBER-EMAIL-marker@tenant.test';
 const ANALYTICS_MARKER = 'PLAINTEXT-ANALYTICS-ROW-marker';
+
+const MEDIA_BASE = 'https://media.test/opaque-t1';
+const MEDIA: MediaConfig = {
+  baseUrl: MEDIA_BASE,
+  signer: { baseUrl: 'https://export.test', ttlSeconds: 3600, secret: Buffer.alloc(32, 7) },
+};
+// One object of this tenant's, and one under another tenant's prefix on the same shard.
+const CONTENT_JSON = `{"members":[{"email":"${'PLAINTEXT-MEMBER-EMAIL-marker@tenant.test'}"}],"posts":[{"feature_image":"${MEDIA_BASE}/2026/own.png"},{"feature_image":"https://media.test/opaque-t2/2026/other.png"}]}`;
+const MEMBERS: Collection = {
+  total: 2,
+  items: [
+    { id: 'm1', email: 'one@tenant.test', subscriptions: [{ id: 's1', status: 'active' }] },
+    { id: 'm2', email: 'two@tenant.test', subscriptions: [] },
+  ],
+};
+const COMMENTS: Collection = {
+  total: 3,
+  items: [
+    { id: 'c1', status: 'published', html: '<p>one</p>', count: { reports: 0 } },
+    { id: 'c2', status: 'hidden', html: '<p>two</p>', count: { reports: 1 } },
+    { id: 'c3', status: 'deleted', html: '<p>three</p>', count: { reports: 0 } },
+  ],
+};
 
 const LIVE_ENV = {
   url: 'https://tenant-1.example',
@@ -107,6 +133,9 @@ function fakeDeps(overrides: {
   copy?: ScratchCopy;
   /** What Docker reports for the running colour; the default is what it was given. */
   reportedColourEnv?: Readonly<Record<string, string>>;
+  members?: () => Promise<Collection>;
+  comments?: () => Promise<Collection>;
+  mediaExists?: boolean;
 }): { deps: ExportRunnerDeps; recording: Recording } {
   const recording: Recording = {
     accountReads: [],
@@ -167,7 +196,7 @@ function fakeDeps(overrides: {
       return {
         filename: 'ghost.json',
         contentType: 'application/json',
-        body: Buffer.from(`{"members":[{"email":"${CONTENT_MARKER}"}]}`),
+        body: Buffer.from(CONTENT_JSON),
       };
     },
     async fetchPostAnalytics() {
@@ -177,6 +206,31 @@ function fakeDeps(overrides: {
         contentType: 'text/csv',
         body: Buffer.from(`post,visits\n${ANALYTICS_MARKER},2\n`),
       };
+    },
+    async fetchMembersCsv() {
+      recording.exportCalls.push('members_csv');
+      return {
+        filename: 'members.csv',
+        contentType: 'text/csv',
+        body: Buffer.from('id,email\nm1,one@tenant.test\n'),
+      };
+    },
+    async fetchMembers() {
+      recording.exportCalls.push('members');
+      return (overrides.members ?? (async () => MEMBERS))();
+    },
+    async fetchComments() {
+      recording.exportCalls.push('comments');
+      return (overrides.comments ?? (async () => COMMENTS))();
+    },
+    async fetchCommentReports() {
+      recording.exportCalls.push('comment_reports');
+      return { total: 1, items: [{ id: 'r1', member_id: 'm2' }] };
+    },
+  };
+  const mediaProbe: MediaProbe = {
+    async head() {
+      return { exists: overrides.mediaExists ?? true, bytes: 10 };
     },
   };
 
@@ -210,6 +264,7 @@ function fakeDeps(overrides: {
     containerRunner,
     probe,
     exportClient,
+    mediaProbe,
     auditLog,
     nowIso: () => '2026-01-01T00:00:00.000Z',
     healthTimeoutMs: 200,
@@ -264,6 +319,7 @@ describe('runExport', () => {
       ageRecipient: identity.recipient,
       colourBaseEnv: LIVE_ENV,
       liveDatabase: LIVE_DATABASE,
+      media: MEDIA,
       ...overrides,
     };
   }
@@ -349,11 +405,22 @@ describe('runExport', () => {
     expect(recording.accountReads).toEqual(['support@tenant-1.test']);
     expect(recording.drainSetCalls).toEqual(['tenant-1-export-1']);
     expect(recording.containerStarted).toBe(true);
-    expect(recording.exportCalls.sort()).toEqual(['content_and_settings', 'post_analytics']);
+    expect(recording.exportCalls.sort()).toEqual([
+      'comment_reports',
+      'comments',
+      'content_and_settings',
+      'members',
+      'members_csv',
+      'post_analytics',
+    ]);
     expect(recording.containerStopped).toBe(true);
     expect(recording.drainClearCalls).toEqual(['tenant-1-export-1']);
     expect(result.manifest.included.map((e) => e.name).sort()).toEqual([
+      'comments',
       'content_and_settings',
+      'media_links',
+      'members',
+      'members_csv',
       'post_analytics',
     ]);
     expect((await readdir(destDir)).sort()).toEqual([
@@ -373,7 +440,15 @@ describe('runExport', () => {
         tenantId: 'tenant-1',
         requestedBy: 'rob@branchleft.co.uk',
         occurredAt: '2026-01-01T00:00:00.000Z',
-        contents: ['content_and_settings', 'post_analytics'],
+        contents: [
+          'content_and_settings',
+          'post_analytics',
+          'media_links',
+          'members',
+          'members_csv',
+          'comments',
+        ],
+        complete: true,
         deliveredTo: 'rob@branchleft.co.uk',
         grant: { lane: 'incident', reference: 'incident request 7' },
         supportIdentity: 'support@tenant-1.test',
@@ -390,6 +465,10 @@ describe('runExport', () => {
     expect(tarListing(tar)).toEqual([
       'content_and_settings.json',
       'post_analytics.csv',
+      'media_links.json',
+      'members.json',
+      'members.csv',
+      'comments.json',
       'manifest.json',
     ]);
     expect(tarMember(tar, 'content_and_settings.json').toString('utf8')).toContain(CONTENT_MARKER);
@@ -548,5 +627,161 @@ describe('runExport', () => {
     expect('subscriptionActive' in req).toBe(false);
     expect('liveColourHealthy' in req).toBe(false);
     await expect(runExport(deps, req)).resolves.toBeDefined();
+  });
+
+  describe('export completeness', () => {
+    const FIXED_NOW = Math.floor(Date.parse('2026-01-01T00:00:00.000Z') / 1000);
+
+    async function archiveOf(result: Awaited<ReturnType<typeof runExport>>) {
+      const tar = decryptAge(result.archivePath, identity.identityPath);
+      const part = (name: string) => JSON.parse(tarMember(tar, name).toString('utf8'));
+      return { tar, part };
+    }
+
+    it('names all three extensions in the manifest, each present, and claims completeness', async () => {
+      const { deps } = fakeDeps({});
+      const result = await runExport(deps, request());
+      expect(result.manifest.complete).toBe(true);
+      expect(
+        result.manifest.extensions.map((e) => [e.name, e.status, e.expected, e.present])
+      ).toEqual([
+        ['media', 'complete', 1, 1],
+        ['members_and_subscriptions', 'complete', 2, 2],
+        ['comments', 'complete', 3, 3],
+      ]);
+      const { part } = await archiveOf(result);
+      expect(part('members.json').members).toHaveLength(2);
+      expect(part('comments.json').comments).toHaveLength(3);
+      expect(part('media_links.json').links).toHaveLength(1);
+    });
+
+    it("carries each comment's moderation state with its text", async () => {
+      const { deps } = fakeDeps({});
+      const { part } = await archiveOf(await runExport(deps, request()));
+      const comments = part('comments.json').comments as Record<string, any>[];
+      expect(comments.map((c) => [c.html, c.moderation.status])).toEqual([
+        ['<p>one</p>', 'published'],
+        ['<p>two</p>', 'hidden'],
+        ['<p>three</p>', 'deleted'],
+      ]);
+      expect(comments[1]?.moderation.reports).toEqual([{ id: 'r1', member_id: 'm2' }]);
+    });
+
+    it("CROSS-TENANT: signs a link only for this tenant, and never for an object under another tenant's prefix", async () => {
+      const { deps } = fakeDeps({});
+      const { part } = await archiveOf(await runExport(deps, request()));
+      const links = part('media_links.json');
+      expect(links.links.map((l: { key: string }) => l.key)).toEqual(['2026/own.png']);
+      expect(links.refused).toEqual([
+        {
+          reference: 'https://media.test/opaque-t2/2026/other.png',
+          reason: 'outside-tenant-prefix',
+        },
+      ]);
+      const everyLink = links.links.map((l: { url: string }) => l.url).join(' ');
+      expect(everyLink).not.toContain('opaque-t2');
+      expect(everyLink).not.toContain('other.png');
+      for (const link of links.links as { url: string }[]) {
+        const verified = verifyMediaLink(MEDIA.signer.secret, link.url, FIXED_NOW, 'tenant-1');
+        expect(verified.tenantId).toBe('tenant-1');
+        expect(() => verifyMediaLink(MEDIA.signer.secret, link.url, FIXED_NOW, 'tenant-2')).toThrow(
+          /another tenant/
+        );
+      }
+    });
+
+    it('the links in the archive EXPIRE at the lifetime asked for', async () => {
+      const { deps } = fakeDeps({});
+      const { part } = await archiveOf(await runExport(deps, request()));
+      const [link] = part('media_links.json').links as { url: string; expiresAt: number }[];
+      expect(link?.expiresAt).toBe(FIXED_NOW + 3600);
+      expect(() => verifyMediaLink(MEDIA.signer.secret, link!.url, FIXED_NOW + 3599)).not.toThrow();
+      expect(() => verifyMediaLink(MEDIA.signer.secret, link!.url, FIXED_NOW + 3600)).toThrow(
+        /expired/
+      );
+    });
+
+    it('puts no link and no tenant content in the manifest that sits beside the archive', async () => {
+      const { deps } = fakeDeps({});
+      const result = await runExport(deps, request());
+      const sidecar = await readFile(result.manifestPath, 'utf8');
+      expect(sidecar).not.toMatch(/sig=|expires=|https?:\/\//);
+      expect(sidecar).not.toContain('one@tenant.test');
+      expect(sidecar).not.toContain('<p>');
+    });
+
+    it.each([
+      [
+        'members fetch',
+        {
+          members: async () => {
+            throw new Error('members down');
+          },
+        },
+        'members_and_subscriptions',
+      ],
+      [
+        'comments fetch',
+        {
+          comments: async () => {
+            throw new Error('comments down');
+          },
+        },
+        'comments',
+      ],
+    ])(
+      'a failed %s shows in the manifest and the audit record; the archive is not called complete',
+      async (_l, over, name) => {
+        const { deps, recording } = fakeDeps(over);
+        const result = await runExport(deps, request());
+        expect(result.manifest.complete).toBe(false);
+        expect(result.manifest.extensions.find((e) => e.name === name)?.status).toBe('failed');
+        expect(result.manifest.excluded[0]).toEqual({ name, reason: 'failed: Error' });
+        expect(recording.auditEntries[0]?.complete).toBe(false);
+        const sidecar = JSON.parse(await readFile(result.manifestPath, 'utf8'));
+        expect(sidecar.complete).toBe(false);
+      }
+    );
+
+    it('a short members read is partial, not complete', async () => {
+      const { deps } = fakeDeps({
+        members: async () => ({ total: 9, items: [{ id: 'm1', subscriptions: [] }] }),
+      });
+      const result = await runExport(deps, request());
+      expect(result.manifest.complete).toBe(false);
+      expect(result.manifest.excluded[0]?.reason).toBe('partial: read 1 members, Ghost counts 9');
+    });
+
+    it('a referenced object missing from storage makes the media extension partial', async () => {
+      const { deps } = fakeDeps({ mediaExists: false });
+      const result = await runExport(deps, request());
+      expect(result.manifest.complete).toBe(false);
+      expect(result.manifest.excluded[0]).toEqual({
+        name: 'media',
+        reason: 'partial: 1 referenced objects are not in storage',
+      });
+    });
+
+    it('a tenant with no object-storage media gets the media gap named, and the rest still exported', async () => {
+      const { deps } = fakeDeps({});
+      const result = await runExport(deps, request({ media: { ...MEDIA, baseUrl: null } }));
+      expect(result.manifest.complete).toBe(false);
+      expect(result.manifest.extensions.map((e) => e.status)).toEqual([
+        'failed',
+        'complete',
+        'complete',
+      ]);
+    });
+
+    it("names what no archive can hold: Stripe's side, the portal moderation record, media bytes and analytics", async () => {
+      const { deps } = fakeDeps({});
+      const result = await runExport(deps, request());
+      expect(result.manifest.excluded.map((g) => g.name)).toEqual([
+        'analytics_beyond_post_csv',
+        'stripe_billing_relationship',
+        'portal_moderation_record',
+        'media_bytes',
+      ]);
+    });
   });
 });

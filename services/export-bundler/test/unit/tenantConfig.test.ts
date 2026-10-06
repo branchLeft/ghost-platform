@@ -6,6 +6,7 @@ import {
   bindTenant,
   buildComposeConfigArgs,
   loadComposeConfig,
+  mediaBaseUrlOf,
   parseComposeConfig,
   parseDescriptorFacts,
   RecipientMismatchError,
@@ -258,5 +259,20 @@ describe('loadComposeConfig', () => {
     } finally {
       process.env.PATH = saved;
     }
+  });
+});
+
+describe('mediaBaseUrlOf', () => {
+  it("reads the tenant's media address from its own rendered environment", () => {
+    expect(
+      mediaBaseUrlOf({ storage__images__wrappedConfig__cdnUrl: 'https://m.test/opaque' })
+    ).toBe('https://m.test/opaque');
+    expect(mediaBaseUrlOf({ storage__images__cdnUrl: 'https://m.test/plain' })).toBe(
+      'https://m.test/plain'
+    );
+  });
+
+  it('is null for a tenant with no object-storage media', () => {
+    expect(mediaBaseUrlOf({ storage__images__adapter: 'LocalImagesStorage' })).toBeNull();
   });
 });
