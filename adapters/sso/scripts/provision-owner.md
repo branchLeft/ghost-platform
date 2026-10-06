@@ -16,7 +16,10 @@ node provision-owner.mjs --container <name> --email <address> --name <owner name
 ## Flow
 
 1. Reads Ghost's setup status from inside the container. A Ghost that already
-   has an owner is left untouched and reported as `alreadySetUp`; a second run
+   has an owner is left untouched and reported as `alreadySetUp`, but only if
+   that owner's email matches `--email` (case aside). A different owner means
+   someone else claimed it first, so the script refuses with
+   `OwnerProvisionRefusedError` rather than reporting success. A second run
    never sends a second link or changes anything.
 2. Creates the owner through Ghost's own setup route, with a password
    generated inside the container and dropped. It is never printed, logged,

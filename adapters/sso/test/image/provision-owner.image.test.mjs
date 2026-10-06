@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import net from 'node:net';
 import { decodeMail, SmtpSink } from '../helpers/smtp-sink.mjs';
-import { provisionOwner } from '../../scripts/provision-owner.mjs';
+import { OwnerProvisionRefusedError, provisionOwner } from '../../scripts/provision-owner.mjs';
 
 const IMAGE = process.env.IMAGE;
 if (!IMAGE) {
@@ -279,5 +279,25 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
     assert.deepEqual(result, { created: false, alreadySetUp: true });
     await sleep(2000);
     assert.equal(sink.messages.length, before);
+  });
+
+  it('refuses, rather than reporting success, a Ghost someone else already claimed', async () => {
+    const before = sink.messages.length;
+    assert.throws(
+      () => provisionOwner({ container: unprovisioned.name, ...owner }),
+      (error) =>
+        error instanceof OwnerProvisionRefusedError && /different owner/.test(error.message)
+    );
+    await sleep(2000);
+    assert.equal(sink.messages.length, before, 'no link is sent for a claimed Ghost');
+  });
+
+  it('accepts the existing owner by email regardless of letter case', () => {
+    const result = provisionOwner({
+      container: provisioned.name,
+      ...owner,
+      email: OWNER_EMAIL.toUpperCase(),
+    });
+    assert.deepEqual(result, { created: false, alreadySetUp: true });
   });
 });

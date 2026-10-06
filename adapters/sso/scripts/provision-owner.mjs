@@ -80,10 +80,27 @@ function refuse(reason) {
   console.error('${REFUSED_MARKER}' + reason);
   process.exit(3);
 }
+async function ownerEmail() {
+  const knex = require('/var/lib/ghost/current/core/server/data/db/connection.js');
+  try {
+    const row = await knex('users')
+      .join('roles_users', 'roles_users.user_id', 'users.id')
+      .join('roles', 'roles.id', 'roles_users.role_id')
+      .where('roles.name', 'Owner')
+      .first('users.email');
+    return row ? row.email : null;
+  } finally {
+    await knex.destroy();
+  }
+}
 async function main() {
   const state = await call('GET', '/ghost/api/admin/authentication/setup/');
   if (state.status !== 200) refuse('setup status answered ' + state.status + ' ' + state.text.slice(0, 300));
   if (JSON.parse(state.text).setup[0].status === true) {
+    const existing = await ownerEmail();
+    if (!existing || existing.toLowerCase() !== process.env.PROVISION_OWNER_EMAIL.toLowerCase()) {
+      refuse('this Ghost is already set up with a different owner: it was claimed by someone else');
+    }
     console.log(JSON.stringify({ created: false, alreadySetUp: true }));
     return;
   }

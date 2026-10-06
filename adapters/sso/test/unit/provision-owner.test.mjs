@@ -125,6 +125,19 @@ describe('provisionOwner', () => {
     expect(link).toBeGreaterThan(create);
   });
 
+  it('compares an existing owner to --email before reporting a Ghost as set up', () => {
+    const execFile = vi.fn(() => '{}');
+    provisionOwner(input, execFile);
+    const script = execFile.mock.calls[0][1].at(-1);
+    const read = script.indexOf('await ownerEmail()');
+    const refuse = script.indexOf('different owner', read);
+    const report = script.indexOf('alreadySetUp: true', read);
+    expect(read).toBeGreaterThanOrEqual(0);
+    expect(refuse).toBeGreaterThan(read);
+    expect(report).toBeGreaterThan(refuse);
+    expect(script).toContain('.toLowerCase()');
+  });
+
   it('turns a refusal from inside the container into OwnerProvisionRefusedError', () => {
     const execFile = vi.fn(() => {
       const error = new Error('exit 3');
