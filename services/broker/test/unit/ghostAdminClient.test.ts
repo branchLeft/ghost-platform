@@ -344,7 +344,7 @@ describe('the key store', () => {
 describe('the Admin API token', () => {
   const KEY = `${'1'.repeat(24)}:${'ab'.repeat(32)}`;
 
-  it('is HS256 over the hex secret, names the key, and lives five minutes', async () => {
+  it('is HS256 over the hex secret, names the key, and lives five minutes', () => {
     const token = adminApiToken(KEY, 1_000);
     const [h, p] = token.split('.') as [string, string, string];
     expect(JSON.parse(Buffer.from(h, 'base64url').toString())).toEqual({
@@ -357,11 +357,13 @@ describe('the Admin API token', () => {
       exp: 1_300,
       aud: '/admin/',
     });
-    const { createHmac } = await import('node:crypto');
-    const expected = createHmac('sha256', Buffer.from('ab'.repeat(32), 'hex'))
-      .update(`${h}.${p}`)
-      .digest('base64url');
-    expect(token.split('.')[2]).toBe(expected);
+    // A known answer, computed independently (Python's hmac over the same
+    // header and payload), so the signature is checked without re-deriving it.
+    expect(token).toBe(
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjExMTExMTExMTExMTExMTExMTExMTExMSJ9.' +
+        'eyJpYXQiOjEwMDAsImV4cCI6MTMwMCwiYXVkIjoiL2FkbWluLyJ9.' +
+        'iM32qCG3wgtvmQof8Glc7soVFDWjEqOBc9cONAwVNFM'
+    );
   });
 
   it('refuses something that is not a key', () => {
