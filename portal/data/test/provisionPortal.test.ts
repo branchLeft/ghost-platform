@@ -2,971 +2,184 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { migrateSchema } from '../src/migrate.js';
+import { readMigrations, replayMigrations } from '../provision/migrations.js';
 import {
-  PORTAL_TABLES,
-  loadConfig,
+  connectionOptions,
   poolFor,
   provisionPortal,
-  redact,
-  runProvision,
-  sqlState,
   verifyBoundary,
-  type ProvisionConfig,
 } from '../provision/provisionPortal.js';
+import { dropDatabase, testPool, testUrl } from './helpers.js';
 import {
-  assertHardened,
-  assertOnlyRole,
-  createLogin,
-  grantRole,
-  lockDatabase,
-  revokeOtherRoles,
-} from '../provision/provision.js';
-import { dropDatabase } from './helpers.js';
-import { scramVerifier } from '../provision/scram.js';
-import {
-  createInPublic,
-  loginAttributes,
-  owners,
-  provisionedState,
-  roleSettingCount,
-  storedVerifier,
-} from '../provision/inspect.js';
+  OWNER,
+  PROV_DB,
+  TENANT,
+  TENANT_PW,
+  admin,
+  provConfig,
+  resetServer,
+  run,
+  stateSnapshot,
+} from './provisionSetup.js';
+
+// The command's lifecycle on a real server: a fresh database, a second run, a
+// pending migration, the one crash state CREATE DATABASE can leave, and the
+// compiled entry point. Refusals on tampered state are in closedWorld.test.ts.
 
 const ADMIN_URL = process.env['PORTAL_TEST_DATABASE_URL'];
-const TENANT_PW = 'tenant-secret-9f2c41';
-const OWNER_PW = 'owner-secret-77ab03';
-const ADMIN_PW = 'admin-secret-c0ffee';
 
-function files(entries: Record<string, string>): { dir: string; env: Record<string, string> } {
-  const dir = mkdtempSync(join(tmpdir(), 'portal-provision-'));
-  const env: Record<string, string> = {};
-  for (const [name, content] of Object.entries(entries)) {
-    const path = join(dir, name);
-    writeFileSync(path, content);
-    env[name] = path;
+async function connectAs(login: string, password: string, database = PROV_DB): Promise<void> {
+  const client = new pg.Client(connectionOptions(testUrl(database, login), password));
+  client.on('error', () => undefined);
+  try {
+    await client.connect();
+  } finally {
+    await client.end().catch(() => undefined);
   }
-  return { dir, env };
 }
 
-const GOOD = {
-  PORTAL_ADMIN_URL_FILE: `postgres://admin:${ADMIN_PW}@db.invalid:5432/postgres\n`,
-  PORTAL_TENANT_PASSWORD_FILE: `${TENANT_PW}\n`,
-  PORTAL_OWNER_PASSWORD_FILE: `${OWNER_PW}\n`,
-};
-
-describe('loadConfig', () => {
-  it('reads the connection and both passwords from files, trimming one newline', () => {
-    const { dir, env } = files(GOOD);
-    const config = loadConfig(env, []);
-    rmSync(dir, { recursive: true });
-    expect(config.adminUrl).toBe(`postgres://admin:${ADMIN_PW}@db.invalid:5432/postgres`);
-    expect(config.tenantPassword).toBe(TENANT_PW);
-    expect(config.ownerPassword).toBe(OWNER_PW);
-    expect(config.database).toBe('portal');
-    expect(config.tenantLogin).toBe('portal_tenant_login');
-    expect(config.ownerLogin).toBe('portal_owner_login');
-  });
-
-  it('takes the database and login names from the environment when given', () => {
-    const { dir, env } = files(GOOD);
-    const config = loadConfig(
-      { ...env, PORTAL_DATABASE_NAME: 'p2', PORTAL_TENANT_LOGIN: 't2', PORTAL_OWNER_LOGIN: 'o2' },
-      []
-    );
-    rmSync(dir, { recursive: true });
-    expect([config.database, config.tenantLogin, config.ownerLogin]).toEqual(['p2', 't2', 'o2']);
-  });
-
-  it.each(['PORTAL_ADMIN_URL_FILE', 'PORTAL_TENANT_PASSWORD_FILE', 'PORTAL_OWNER_PASSWORD_FILE'])(
-    'refuses with a clear error when %s is missing',
-    (name) => {
-      const { dir, env } = files(GOOD);
-      delete env[name];
-      expect(() => loadConfig(env, [])).toThrow(new RegExp(`${name} must name a file`));
-      rmSync(dir, { recursive: true });
-    }
+async function privilege(role: string, table: string, what: string): Promise<boolean> {
+  const [result] = await admin(
+    PROV_DB,
+    `SELECT has_table_privilege('${role}', '${table}', '${what}') AS p`
   );
+  return Boolean(result!.rows[0].p);
+}
 
-  it('refuses an unreadable file by naming the path, not any content', () => {
-    const { dir, env } = files(GOOD);
-    env['PORTAL_TENANT_PASSWORD_FILE'] = join(dir, 'absent');
-    expect(() => loadConfig(env, [])).toThrow(
-      /PORTAL_TENANT_PASSWORD_FILE: cannot read the file at/
-    );
-    rmSync(dir, { recursive: true });
-  });
-
-  it('refuses an empty file', () => {
-    const { dir, env } = files({ ...GOOD, PORTAL_OWNER_PASSWORD_FILE: '\n' });
-    expect(() => loadConfig(env, [])).toThrow(/PORTAL_OWNER_PASSWORD_FILE: .* is empty/);
-    rmSync(dir, { recursive: true });
-  });
-
-  it('refuses a file that is not a connection URL, without quoting it', () => {
-    const { dir, env } = files({ ...GOOD, PORTAL_ADMIN_URL_FILE: `not-a-url ${ADMIN_PW}` });
-    let message = '';
-    try {
-      loadConfig(env, []);
-    } catch (error) {
-      message = (error as Error).message;
-    }
-    rmSync(dir, { recursive: true });
-    expect(message).toMatch(/does not hold a connection URL/);
-    expect(message).not.toContain(ADMIN_PW);
-  });
-
-  it.each(['PORTAL_ADMIN_URL', 'PORTAL_TENANT_PASSWORD', 'PORTAL_OWNER_PASSWORD'])(
-    'refuses a secret placed in %s itself',
-    (name) => {
-      const { dir, env } = files(GOOD);
-      let message = '';
-      try {
-        loadConfig({ ...env, [name]: 'inline-secret-value' }, []);
-      } catch (error) {
-        message = (error as Error).message;
-      }
-      rmSync(dir, { recursive: true });
-      expect(message).toContain(`use ${name}_FILE`);
-      expect(message).not.toContain('inline-secret-value');
-    }
-  );
-
-  it('refuses any argument, since argv is visible in the process list', () => {
-    const { dir, env } = files(GOOD);
-    expect(() => loadConfig(env, ['--password=hunter2'])).toThrow(/takes no arguments/);
-    rmSync(dir, { recursive: true });
-  });
-});
-
-describe('redact', () => {
-  const config: Partial<ProvisionConfig> = {
-    adminUrl: 'postgres://admin:p%40ss@host:5432/postgres',
-    tenantPassword: 'tenant pw/1',
-    ownerPassword: OWNER_PW,
-  };
-
-  it('removes the URL, its password decoded and encoded, and both login passwords', () => {
-    const text = `a ${config.adminUrl} b p%40ss c p@ss d tenant pw/1 e tenant%20pw%2F1 f ${OWNER_PW}`;
-    const out = redact(text, config);
-    for (const secret of ['p%40ss', 'p@ss', 'tenant pw/1', 'tenant%20pw%2F1', OWNER_PW, 'admin:']) {
-      expect(out).not.toContain(secret);
-    }
-    expect(out).toContain('[redacted]');
-  });
-
-  it('removes a login password in every URL form, including the one URL writes itself', () => {
-    const password = 'a b{c}|d^e$f&g+h,i%j#k';
-    const cfg: Partial<ProvisionConfig> = {
-      adminUrl: 'postgres://admin:x@host/postgres',
-      tenantPassword: password,
-      ownerPassword: 'owner|pw ok',
-    };
-    const url = new URL('postgres://login@host/portal');
-    url.password = password;
-    const encoded = [url.password, encodeURIComponent(password), escape(password)];
-    const lower = encoded.map((e) => e.replace(/%[0-9A-F]{2}/g, (h) => h.toLowerCase()));
-    const text = [url.toString(), ...encoded, ...lower, password, 'owner%7Cpw%20ok'].join(' ');
-    const out = redact(text, cfg);
-    for (const secret of [password, 'owner%7Cpw%20ok', ...encoded, ...lower]) {
-      expect(out).not.toContain(secret);
-    }
-  });
-
-  it('leaves text alone when there is nothing to hide', () => {
-    expect(redact('plain', {})).toBe('plain');
-    expect(redact('plain', { adminUrl: 'not a url' })).toBe('plain');
-  });
-});
-
-describe('runProvision with no usable input', () => {
-  it('exits 1 with a clear error on stderr and nothing on stdout', async () => {
-    const out: string[] = [];
-    const err: string[] = [];
-    const code = await runProvision({}, [], { out: (l) => out.push(l), err: (l) => err.push(l) });
-    expect(code).toBe(1);
-    expect(out).toEqual([]);
-    expect(err.join('\n')).toMatch(/provision failed: PORTAL_ADMIN_URL_FILE must name a file/);
-  });
-
-  it('echoes no secret when the database cannot be reached', async () => {
-    const { dir, env } = files({
-      ...GOOD,
-      PORTAL_ADMIN_URL_FILE: `postgres://admin:${ADMIN_PW}@127.0.0.1:1/postgres`,
-    });
-    const lines: string[] = [];
-    const code = await runProvision(env, [], {
-      out: (l) => lines.push(l),
-      err: (l) => lines.push(l),
-    });
-    rmSync(dir, { recursive: true });
-    expect(code).toBe(1);
-    const all = lines.join('\n');
-    expect(all).toMatch(/provision failed: /);
-    for (const secret of [ADMIN_PW, TENANT_PW, OWNER_PW]) expect(all).not.toContain(secret);
-  });
-
-  it('redacts a secret that a driver error quotes', async () => {
-    const { dir, env } = files(GOOD);
-    const err: string[] = [];
-    const code = await runProvision(
-      env,
-      [],
-      { out: () => undefined, err: (l) => err.push(l) },
-      () => {
-        throw new Error(`boom ${ADMIN_PW}`);
-      }
-    );
-    rmSync(dir, { recursive: true });
-    expect(code).toBe(1);
-    expect(err.join('\n')).not.toContain(ADMIN_PW);
-  });
-});
-
-describe('login passwords never reach the SQL text', () => {
-  const nasty = "pa$$word'; DROP ROLE x; --";
-
-  it('sends a verifier, not the password, in every statement', async () => {
-    const seen: string[] = [];
-    const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
-    await createLogin(fake, 'a_login', nasty);
-    expect(seen.length).toBe(2);
-    for (const text of seen) {
-      expect(text).not.toContain(nasty);
-      expect(text).not.toContain('pa$$word');
-      expect(text).toContain("PASSWORD 'SCRAM-SHA-256$4096:");
-    }
-  });
-
-  it('refuses a password the server would normalise differently', () => {
-    expect(() => scramVerifier('caf\u00e9')).toThrow('printable ASCII');
-    expect(() => scramVerifier('')).toThrow('printable ASCII');
-  });
-
-  it('produces a different salt each time and the documented shape', () => {
-    const a = scramVerifier('x');
-    expect(a).toMatch(/^SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/);
-    expect(scramVerifier('x')).not.toBe(a);
-  });
-});
-
-describe('the connection never takes a password from outside its files', () => {
-  it('gives the driver an explicit password function when the URL has none', async () => {
-    const pool = poolFor('postgres://someone@127.0.0.1:1/db');
-    const option = (pool as unknown as { options: { password: unknown } }).options.password;
-    await pool.end();
-    expect(typeof option).toBe('function');
-    expect(await (option as () => Promise<string>)()).toBe('');
-  });
-
-  it('decodes the password the URL carries', async () => {
-    const pool = poolFor(`postgres://someone:p%40ss@127.0.0.1:1/db`);
-    const option = (pool as unknown as { options: { password: unknown } }).options.password;
-    await pool.end();
-    expect(typeof option === 'function' ? await (option as () => Promise<string>)() : option).toBe(
-      'p@ss'
-    );
-  });
-
-  it('keeps its password function when PGPASSWORD and a decoy .pgpass are present', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'portal-pgpass-'));
-    const decoy = join(home, '.pgpass');
-    writeFileSync(decoy, '*:*:*:*:decoy-pgpass-password\n', { mode: 0o600 });
-    const saved = { ...process.env };
-    process.env['PGPASSWORD'] = 'wrong-env-password';
-    process.env['PGPASSFILE'] = decoy;
-    process.env['HOME'] = home;
-    try {
-      const pool = poolFor('postgres://someone@127.0.0.1:1/db');
-      const client = new pg.Client(pool.options);
-      await pool.end();
-      expect(typeof client.password).toBe('function');
-      expect(await (client.password as unknown as () => Promise<string>)()).toBe('');
-    } finally {
-      process.env = saved;
-      rmSync(home, { recursive: true });
-    }
-  });
-
-  it('takes host, user, database and port from the URL alone', () => {
-    const saved = { ...process.env };
-    process.env['PGHOST'] = 'env-host';
-    process.env['PGUSER'] = 'env-user';
-    process.env['PGDATABASE'] = 'env-db';
-    process.env['PGPORT'] = '9';
-    try {
-      const pool = poolFor('postgres://u%40x:p@127.0.0.1/some%20db');
-      const options = (pool as unknown as { options: Record<string, unknown> }).options;
-      void pool.end();
-      expect([options['host'], options['user'], options['database'], options['port']]).toEqual([
-        '127.0.0.1',
-        'u@x',
-        'some db',
-        5432,
-      ]);
-    } finally {
-      process.env = saved;
-    }
-  });
-
-  it('refuses an sslmode it does not understand and turns TLS on for the others', async () => {
-    expect(() => poolFor('postgres://u@127.0.0.1/db?sslmode=allow')).toThrow('not supported');
-    const tls = poolFor('postgres://u@127.0.0.1/db?sslmode=verify-full');
-    const plain = poolFor('postgres://u@127.0.0.1/db');
-    const ssl = (p: pg.Pool): unknown =>
-      (p as unknown as { options: { ssl: unknown } }).options.ssl;
-    expect([ssl(tls), ssl(plain)]).toEqual([true, false]);
-    await Promise.all([tls.end(), plain.end()]);
-  });
-
-  it('refuses a URL that leaves the host or user to the environment', () => {
-    expect(() => poolFor('postgres://127.0.0.1:1/db')).toThrow('must name its host and user');
-    expect(() => poolFor('postgres://:pw@127.0.0.1/db')).toThrow('must name its host and user');
-  });
-});
-
-describe('sqlState', () => {
-  it('reads the code through the ORM wrapper and ignores anything else', () => {
-    expect(sqlState({ code: '42501' })).toBe('42501');
-    expect(sqlState({ message: 'wrapped', cause: { code: '28000' } })).toBe('28000');
-    expect(sqlState({ code: 'ECONNREFUSED' })).toBeUndefined();
-    expect(sqlState('text')).toBeUndefined();
-    expect(sqlState(null)).toBeUndefined();
-  });
-});
-
-describe('loadConfig names', () => {
-  it.each([
-    ['PORTAL_DATABASE_NAME', 'a"b'],
-    ['PORTAL_TENANT_LOGIN', 'Upper'],
-    ['PORTAL_OWNER_LOGIN', 'x; drop'],
-  ])('refuses %s=%s before anything touches a server', (name, value) => {
-    const { dir, env } = files(GOOD);
-    expect(() => loadConfig({ ...env, [name]: value }, [])).toThrow(
-      `${name} must be a plain lower-case identifier`
-    );
-    rmSync(dir, { recursive: true });
-  });
-
-  it('refuses one login for both roles', () => {
-    const { dir, env } = files(GOOD);
-    expect(() =>
-      loadConfig({ ...env, PORTAL_TENANT_LOGIN: 'same', PORTAL_OWNER_LOGIN: 'same' }, [])
-    ).toThrow('must differ');
-    rmSync(dir, { recursive: true });
-  });
-
-  it('refuses a password the verifier cannot carry', () => {
-    const { dir, env } = files({ ...GOOD, PORTAL_TENANT_PASSWORD_FILE: 'caf\u00e9' });
-    expect(() => loadConfig(env, [])).toThrow('printable ASCII');
-    rmSync(dir, { recursive: true });
-  });
-});
-
-describe('against a real PostgreSQL', () => {
+describe('the provisioning lifecycle', () => {
   if (ADMIN_URL === undefined) {
     it('needs PORTAL_TEST_DATABASE_URL', () => {
       throw new Error('PORTAL_TEST_DATABASE_URL must name a PostgreSQL superuser connection');
     });
     return;
   }
-  const suffix = randomBytes(5).toString('hex');
-  const database = `portal_prov_${suffix}`;
-  const config: ProvisionConfig = {
-    adminUrl: ADMIN_URL,
-    database,
-    tenantLogin: `prov_tenant_${suffix}`,
-    tenantPassword: TENANT_PW,
-    ownerLogin: `prov_owner_${suffix}`,
-    ownerPassword: OWNER_PW,
-  };
-  const bootstrap = new pg.Pool({ connectionString: ADMIN_URL, max: 1 });
-  bootstrap.on('error', () => undefined);
 
-  async function withLogin<T>(login: string, password: string, work: (p: pg.Pool) => Promise<T>) {
-    const url = new URL(dbUrl());
-    url.username = login;
-    url.password = password;
-    const pool = new pg.Pool({ connectionString: url.toString(), max: 1 });
-    pool.on('error', () => undefined);
-    try {
-      return await work(pool);
-    } finally {
-      await pool.end();
-    }
-  }
-
-  function dbUrl(): string {
-    const url = new URL(ADMIN_URL as string);
-    url.pathname = `/${database}`;
-    return url.toString();
-  }
-
-  function urlWith(login: string, password: string): string {
-    const url = new URL(dbUrl());
-    url.username = login;
-    url.password = password;
-    return url.toString();
-  }
-
-  async function withAdmin<T>(work: (pool: pg.Pool) => Promise<T>): Promise<T> {
-    const pool = new pg.Pool({ connectionString: dbUrl(), max: 1 });
-    pool.on('error', () => undefined);
-    try {
-      return await work(pool);
-    } finally {
-      await pool.end();
-    }
-  }
-
-  async function state(): Promise<unknown> {
-    return withAdmin((pool) =>
-      provisionedState(pool, database, [config.tenantLogin, config.ownerLogin])
-    );
-  }
-
-  afterAll(async () => {
-    try {
-      await dropDatabase(bootstrap, database).catch(() => undefined);
-      for (const login of [config.tenantLogin, config.ownerLogin]) {
-        await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`).catch(() => undefined);
-      }
-    } finally {
-      await bootstrap.end();
-    }
+  beforeEach(async () => {
+    await resetServer();
   }, 60000);
 
-  const firstLog: string[] = [];
-  const secondLog: string[] = [];
-  let afterFirst: unknown;
+  afterAll(async () => {
+    await resetServer();
+  }, 60000);
 
-  beforeAll(async () => {
-    await provisionPortal(config, (line) => firstLog.push(line));
-    afterFirst = await state();
-  });
-
-  it('creates the database, the schema, two logins in one role each, and the grants', () => {
-    expect(firstLog[0]).toBe(`created database ${database}`);
-    const s = afterFirst as {
-      members: { role: string; member: string; admin_option: boolean }[];
-      tables: { tablename: string }[];
-      grants: { grantee: string; table_name: string; privilege_type: string }[];
-    };
-    expect(s.members).toEqual([
-      { role: 'portal_owner', member: config.ownerLogin, admin_option: false },
-      { role: 'portal_tenant', member: config.tenantLogin, admin_option: false },
+  it('creates exactly the manifest on a fresh server and verifies the boundary', async () => {
+    const result = await run();
+    expect(result.err).toEqual([]);
+    expect(result.code).toBe(0);
+    expect(result.out).toEqual([
+      'pre-check passed: no difference from the manifest',
+      `created portal_tenant, portal_owner, ${TENANT}, ${OWNER}`,
+      `created database ${PROV_DB}`,
+      'applied migration 0000_binding_functions',
+      'applied migration 0001_tenant_register',
+      'applied migration 0002_health_reading',
+      'post-check passed: the server matches the manifest',
+      'boundary verified',
+      'portal database provisioned',
     ]);
-    expect(s.tables.map((t) => t.tablename)).toEqual(
-      expect.arrayContaining(PORTAL_TABLES.map((t) => t.table))
+    // Nothing deletes, and nothing updates a registration.
+    expect(await privilege('portal_owner', 'portal.tenant_register', 'DELETE')).toBe(false);
+    expect(await privilege('portal_owner', 'portal.tenant_register', 'UPDATE')).toBe(false);
+    expect(await privilege('portal_owner', 'portal.health_reading', 'DELETE')).toBe(false);
+    expect(await privilege('portal_owner', 'portal.health_reading', 'UPDATE')).toBe(true);
+    // A bare login session, with no SET ROLE, holds nothing in the portal schema.
+    expect(await privilege(TENANT, 'portal.tenant_register', 'SELECT')).toBe(false);
+  });
+
+  it('changes nothing but the passwords on a second run', async () => {
+    expect((await run()).code).toBe(0);
+    const before = await stateSnapshot();
+    const second = await run({}, { tenant: 'rotated-tenant-1', owner: 'rotated-owner-1' });
+    expect(second.err).toEqual([]);
+    expect(second.code).toBe(0);
+    expect(second.out).toContain('passwords rotated');
+    expect(second.out.some((line) => line.startsWith('applied migration'))).toBe(false);
+    const after = await stateSnapshot();
+    const strip = (lines: string[]): string[] =>
+      lines.filter((line) => !line.startsWith(`${TENANT} `) && !line.startsWith(`${OWNER} `));
+    expect(strip(after)).toEqual(strip(before));
+    expect(after).not.toEqual(before);
+    await connectAs(TENANT, 'rotated-tenant-1');
+    await expect(connectAs(TENANT, TENANT_PW)).rejects.toThrow();
+  });
+
+  it('applies a pending migration and grants what it made, in one transaction', async () => {
+    const all = readMigrations();
+    const older = await run({ migrations: all.slice(0, 2) });
+    expect(older.err).toEqual([]);
+    expect(older.code).toBe(0);
+    const [absent] = await admin(PROV_DB, "SELECT to_regclass('portal.health_reading') AS t");
+    expect(absent!.rows[0].t).toBeNull();
+    const upgrade = await run();
+    expect(upgrade.err).toEqual([]);
+    expect(upgrade.code).toBe(0);
+    expect(upgrade.out).toContain('applied migration 0002_health_reading');
+    expect(await privilege('portal_owner', 'portal.health_reading', 'INSERT')).toBe(true);
+  });
+
+  it('completes a database that was created and left empty (the CREATE DATABASE crash state)', async () => {
+    await admin('postgres', `CREATE DATABASE ${PROV_DB}`);
+    const result = await run();
+    expect(result.err).toEqual([]);
+    expect(result.code).toBe(0);
+    expect(result.out).not.toContain(`created database ${PROV_DB}`);
+  });
+
+  it('refuses a migration history it did not ship, writing nothing', async () => {
+    expect((await run()).code).toBe(0);
+    await admin(
+      PROV_DB,
+      "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ('f00d', 1)"
     );
-    const tenantGrants = s.grants.filter((g) => g.grantee === 'portal_tenant');
-    expect(tenantGrants.every((g) => g.privilege_type === 'SELECT')).toBe(true);
-    expect(
-      s.grants.some((g) => g.grantee === 'portal_owner' && g.privilege_type === 'INSERT')
-    ).toBe(true);
+    const before = await stateSnapshot();
+    const result = await run();
+    expect(result.code).toBe(1);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 4 \(f00d\)/);
+    expect(await stateSnapshot()).toEqual(before);
   });
 
-  it('is idempotent: a second run reports the database as existing and changes nothing', async () => {
-    await provisionPortal(config, (line) => secondLog.push(line));
-    expect(secondLog[0]).toBe(`database ${database} exists`);
-    expect(await state()).toEqual(afterFirst);
-  });
-
-  it('prints no secret', () => {
-    const all = [...firstLog, ...secondLog].join('\n');
-    for (const secret of [TENANT_PW, OWNER_PW, ADMIN_URL]) expect(all).not.toContain(secret);
-  });
-
-  it('a rotated password takes effect on a re-run', async (ctx) => {
-    const probe = new pg.Pool({
-      connectionString: urlWith(config.tenantLogin, 'wrong-password'),
-      max: 1,
-    });
-    probe.on('error', () => undefined);
-    const acceptsAnyPassword = await probe.connect().then(
-      (client) => {
-        client.release();
-        return true;
-      },
-      () => false
-    );
-    await probe.end();
-    if (acceptsAnyPassword) ctx.skip('server does not use password auth; this runs in CI');
-    const rotated = { ...config, tenantPassword: 'rotated-secret-1234' };
-    await provisionPortal(rotated);
-    await verifyBoundary(rotated);
-    await expect(verifyBoundary(config)).rejects.toThrow();
-    await provisionPortal(config);
-    await verifyBoundary(config);
-  });
-
-  it('repairs a login that was given the other role', async () => {
-    await withAdmin((pool) => grantRole(pool, 'portal_owner', config.tenantLogin));
-    await provisionPortal(config);
-    expect(await state()).toEqual(afterFirst);
-  });
-
-  it('the boundary check refuses a tenant login that holds the owner role', async () => {
-    await withAdmin((pool) => grantRole(pool, 'portal_owner', config.tenantLogin));
-    await expect(verifyBoundary(config)).rejects.toThrow(
-      'tenant login assumes portal_owner: expected 42501, got ok'
-    );
-    await provisionPortal(config);
-  });
-
-  it('the boundary check refuses an owner login that holds the tenant role', async () => {
-    await withAdmin((pool) => grantRole(pool, 'portal_tenant', config.ownerLogin));
-    await expect(verifyBoundary(config)).rejects.toThrow(
-      'owner login assumes portal_tenant: expected 42501, got ok'
-    );
-    await provisionPortal(config);
-  });
-
-  it('the boundary check refuses a tenant login with no role at all', async () => {
-    await withAdmin((pool) => pool.query(`REVOKE portal_tenant FROM "${config.tenantLogin}"`));
-    await expect(verifyBoundary(config)).rejects.toThrow(
-      'tenant login assumes portal_tenant: expected ok, got 42501'
-    );
-    await provisionPortal(config);
-  });
-
-  it('the boundary check refuses an owner login with no role at all', async () => {
-    await withAdmin((pool) => pool.query(`REVOKE portal_owner FROM "${config.ownerLogin}"`));
-    await expect(verifyBoundary(config)).rejects.toThrow(
-      'owner login assumes portal_owner: expected ok, got 42501'
-    );
-    await provisionPortal(config);
-  });
-
-  it('the boundary proof fails on a database whose table grants were deleted', async () => {
-    await withAdmin(async (pool) => {
-      for (const t of PORTAL_TABLES) {
-        await pool.query(
-          `REVOKE ALL ON "${t.schema}"."${t.table}" FROM portal_tenant, portal_owner`
-        );
-      }
-    });
-    await expect(verifyBoundary(config)).rejects.toThrow(
-      'tenant read with a tenant bound: expected ok, got 42501'
-    );
-    await provisionPortal(config);
-    await verifyBoundary(config);
-  });
-
-  it('the boundary proof names the SQLSTATE and refuses any other error', async () => {
-    await withAdmin((pool) => pool.query('REVOKE USAGE ON SCHEMA portal FROM portal_tenant'));
-    await expect(verifyBoundary(config)).rejects.toThrow(
-      'tenant read with no tenant bound: expected 28000, got 42501'
-    );
-    await provisionPortal(config);
-    expect(await state()).toEqual(afterFirst);
-  });
-
-  it('leaves only the two logins able to connect or create temporary tables', async () => {
-    const s = (await state()) as {
-      databaseAcl: { login: string; connect: boolean; temp: boolean }[];
-    };
-    expect(s.databaseAcl.map((a) => [a.connect, a.temp])).toEqual([
-      [true, false],
-      [true, false],
-    ]);
-    const stranger = `prov_stranger_${suffix}`;
-    await createLogin(bootstrap, stranger, 'stranger-password-1');
-    const strangerUrl = new URL(dbUrl());
-    strangerUrl.username = stranger;
-    strangerUrl.password = 'stranger-password-1';
-    const pool = new pg.Pool({ connectionString: strangerUrl.toString(), max: 1 });
-    pool.on('error', () => undefined);
-    const error = await pool.connect().then(
-      (client) => {
-        client.release();
-        return undefined;
-      },
-      (e: unknown) => e
-    );
-    await pool.end();
-    await bootstrap.query(`DROP ROLE "${stranger}"`);
-    expect((error as Error).message).toMatch(/permission denied for database/);
-  });
-
-  it('keeps the tenant login out of schema public', async () => {
-    const error = await withLogin(config.tenantLogin, TENANT_PW, (pool) => createInPublic(pool));
-    expect(sqlState(error)).toBe('42501');
-  });
-
-  it('computes the verifier the server itself would store', async () => {
-    const role = `prov_verifier_${suffix}`;
-    await bootstrap.query(`SET password_encryption = 'scram-sha-256'`);
-    const client = await bootstrap.connect();
-    try {
-      await client.query(`SET password_encryption = 'scram-sha-256'`);
-      await client.query(`CREATE ROLE "${role}" PASSWORD 'reference-password-1'`);
-    } finally {
-      client.release();
-    }
-    const stored = await storedVerifier(bootstrap, role);
-    await bootstrap.query(`DROP ROLE "${role}"`);
-    const salt = Buffer.from(/\$\d+:([^$]+)\$/.exec(stored)?.[1] ?? '', 'base64');
-    expect(scramVerifier('reference-password-1', salt)).toBe(stored);
-  });
-
-  it('strips superuser, createrole, createdb and replication from an existing login', async () => {
-    const login = `prov_priv_${suffix}`;
-    await bootstrap.query(`CREATE ROLE "${login}" LOGIN SUPERUSER CREATEROLE CREATEDB REPLICATION`);
-    await createLogin(bootstrap, login, 'priv-password-1');
-    const flags = await loginAttributes(bootstrap, login);
-    await bootstrap.query(`DROP ROLE "${login}"`);
-    expect(flags).toEqual([
-      {
-        rolsuper: false,
-        rolcreaterole: false,
-        rolcreatedb: false,
-        rolreplication: false,
-        rolcanlogin: true,
-      },
-    ]);
-  });
-
-  it('lockDatabase is idempotent', async () => {
-    await lockDatabase(bootstrap, database, [config.tenantLogin, config.ownerLogin]);
-    expect(await state()).toEqual(afterFirst);
-  });
-
-  it('revokes a role membership a pre-existing login should not hold', async () => {
-    const extra = `prov_extra_${suffix}`;
-    await bootstrap.query(`CREATE ROLE "${extra}" NOLOGIN`);
-    await withAdmin(async (pool) => {
-      await pool.query(`GRANT "${extra}" TO "${config.tenantLogin}"`);
-      await pool.query(`GRANT "${extra}" TO "${config.ownerLogin}"`);
-    });
-    await provisionPortal(config);
-    const after = await state();
-    await bootstrap.query(`DROP ROLE "${extra}"`);
-    expect(after).toEqual(afterFirst);
-  });
-
-  it('revokes a membership another role granted, which a plain REVOKE leaves behind from PostgreSQL 16', async () => {
-    const extra = `prov_gextra_${suffix}`;
-    const grantor = `prov_grantor_${suffix}`;
-    await bootstrap.query(`CREATE ROLE "${extra}" NOLOGIN`);
-    await bootstrap.query(`CREATE ROLE "${grantor}" NOLOGIN`);
-    await withAdmin(async (pool) => {
-      await pool.query(`GRANT "${extra}" TO "${grantor}" WITH ADMIN OPTION`);
-      await pool.query(`GRANT "${extra}" TO "${config.tenantLogin}" GRANTED BY "${grantor}"`);
-      await pool.query(`GRANT "${extra}" TO "${config.ownerLogin}" GRANTED BY "${grantor}"`);
-    });
-    await provisionPortal(config);
-    const after = await state();
-    await bootstrap.query(`DROP ROLE "${extra}"`);
-    await bootstrap.query(`DROP ROLE "${grantor}"`);
-    expect(after).toEqual(afterFirst);
-  });
-
-  it('removes a membership whose grantor role was dropped, which PostgreSQL before 16 leaves orphaned', async (ctx) => {
-    const extra = `prov_oextra_${suffix}`;
-    const grantor = `prov_ograntor_${suffix}`;
-    await bootstrap.query(`CREATE ROLE "${extra}" NOLOGIN`);
-    await bootstrap.query(`CREATE ROLE "${grantor}" NOLOGIN`);
-    try {
-      await withAdmin(async (pool) => {
-        await pool.query(`GRANT "${extra}" TO "${grantor}" WITH ADMIN OPTION`);
-        await pool.query(`GRANT "${extra}" TO "${config.tenantLogin}" GRANTED BY "${grantor}"`);
-        await pool.query(`GRANT "${extra}" TO "${config.ownerLogin}" GRANTED BY "${grantor}"`);
-      });
-      const dropped = await bootstrap.query(`DROP ROLE "${grantor}"`).then(
-        () => true,
-        () => false
-      );
-      if (!dropped) ctx.skip('PostgreSQL 16 and later keep the grantor; the orphan cannot be made');
-      await provisionPortal(config);
-      expect(await state()).toEqual(afterFirst);
-    } finally {
-      // Where the grantor could not be dropped, the command itself removes the
-      // memberships, so the roles can then go and no later test sees them.
-      await provisionPortal(config);
-      await bootstrap.query(`DROP ROLE IF EXISTS "${grantor}"`);
-      await bootstrap.query(`DROP ROLE IF EXISTS "${extra}"`);
-    }
-  });
-
-  it('fails by name when a revoke is skipped and a foreign role is still held', async () => {
-    const extra = `prov_pextra_${suffix}`;
-    await bootstrap.query(`CREATE ROLE "${extra}" NOLOGIN`);
-    await withAdmin((pool) => pool.query(`GRANT "${extra}" TO "${config.tenantLogin}"`));
-    try {
-      await expect(
-        provisionPortal(config, undefined, { revokeOtherRoles: () => Promise.resolve() })
-      ).rejects.toThrow(
-        `login ${config.tenantLogin} must be a member of portal_tenant only, but holds: portal_tenant, ${extra}`
-      );
-      await provisionPortal(config);
-      expect(await state()).toEqual(afterFirst);
-    } finally {
-      await bootstrap.query(`DROP ROLE IF EXISTS "${extra}"`).catch(() => undefined);
-    }
-  });
-
-  it('assertOnlyRole refuses a login with no role and one with the wrong role', async () => {
-    await withAdmin(async (pool) => {
-      await expect(assertOnlyRole(pool, config.tenantLogin, 'portal_owner')).rejects.toThrow(
-        `login ${config.tenantLogin} must be a member of portal_owner only, but holds: portal_tenant`
-      );
-      await pool.query(`REVOKE portal_tenant FROM "${config.tenantLogin}"`);
-      await expect(assertOnlyRole(pool, config.tenantLogin, 'portal_tenant')).rejects.toThrow(
-        'but holds: nothing'
-      );
-    });
-    await provisionPortal(config);
-  });
-
-  it('strips a predefined role granted to a portal role', async () => {
-    await withAdmin((pool) => pool.query('GRANT pg_execute_server_program TO portal_tenant'));
-    await provisionPortal(config);
-    expect(await state()).toEqual(afterFirst);
-    await withAdmin((pool) =>
-      expect(assertOnlyRole(pool, config.tenantLogin, 'portal_tenant')).resolves.toBeUndefined()
-    );
-  });
-
-  /** The real revoke for the logins, and none for the portal roles. */
-  const loginsOnly: typeof revokeOtherRoles = (admin, member, keep) =>
-    member.startsWith('portal_') ? Promise.resolve() : revokeOtherRoles(admin, member, keep);
-
-  it('fails by name, through the portal role, when the strip is disabled', async () => {
-    await withAdmin((pool) => pool.query('GRANT pg_execute_server_program TO portal_tenant'));
-    try {
-      await expect(
-        provisionPortal(config, undefined, { revokeOtherRoles: loginsOnly })
-      ).rejects.toThrow(
-        `login ${config.tenantLogin} must be a member of portal_tenant only, but holds: pg_execute_server_program, portal_tenant`
-      );
-    } finally {
-      await provisionPortal(config);
-    }
-    expect(await state()).toEqual(afterFirst);
-  });
-
-  it('catches a nested chain from the login through a portal role to a predefined role', async () => {
-    const chain = `prov_chain_${suffix}`;
-    await bootstrap.query(`CREATE ROLE "${chain}" NOLOGIN`);
-    await withAdmin(async (pool) => {
-      await pool.query(`GRANT pg_read_server_files TO "${chain}"`);
-      await pool.query(`GRANT "${chain}" TO portal_owner`);
-    });
-    try {
-      await expect(
-        provisionPortal(config, undefined, { revokeOtherRoles: loginsOnly })
-      ).rejects.toThrow(
-        `login ${config.ownerLogin} must be a member of portal_owner only, but holds: pg_read_server_files, portal_owner, ${chain}`
-      );
-      await provisionPortal(config);
-      expect(await state()).toEqual(afterFirst);
-    } finally {
-      await provisionPortal(config);
-      await bootstrap.query(`DROP ROLE IF EXISTS "${chain}"`);
-    }
-  });
-
-  // The attack classes a role the portal assumes can be pre-armed with. Each is
-  // set by hand, then the command must put it right (convergence), and the
-  // catalog postcondition must name it when nothing has put it right.
-  type Who = 'portal_tenant' | 'portal_owner' | 'tenant login' | 'owner login';
-  const WHO: Who[] = ['portal_tenant', 'portal_owner', 'tenant login', 'owner login'];
-  const roleOf = (who: Who): string =>
-    ({
-      portal_tenant: 'portal_tenant',
-      portal_owner: 'portal_owner',
-      'tenant login': config.tenantLogin,
-      'owner login': config.ownerLogin,
-    })[who];
-  const loginOf = (who: Who): string =>
-    who === 'portal_tenant' || who === 'tenant login' ? config.tenantLogin : config.ownerLogin;
-  const allowBypassFor = (who: Who): string | null =>
-    loginOf(who) === config.ownerLogin ? 'portal_owner' : null;
-  const ATTRIBUTES = ['SUPERUSER', 'CREATEROLE', 'CREATEDB', 'REPLICATION', 'BYPASSRLS'] as const;
-  // portal_owner holds BYPASSRLS by design, so arming it with that is a no-op.
-  const attributePairs = WHO.flatMap((who) =>
-    ATTRIBUTES.filter((a) => !(who === 'portal_owner' && a === 'BYPASSRLS')).map(
-      (a) => [a, who] as const
-    )
-  );
-
-  it.each(attributePairs)('the command removes %s from %s', async (attribute, who) => {
-    await withAdmin((pool) => pool.query(`ALTER ROLE "${roleOf(who)}" ${attribute}`));
-    await provisionPortal(config);
-    expect(await state()).toEqual(afterFirst);
-  });
-
-  it.each(attributePairs)('the postcondition names %s on %s', async (attribute, who) => {
-    await withAdmin((pool) => pool.query(`ALTER ROLE "${roleOf(who)}" ${attribute}`));
-    try {
-      await withAdmin((pool) =>
-        expect(assertHardened(pool, loginOf(who), allowBypassFor(who))).rejects.toThrow(
-          `login ${loginOf(who)}: role ${roleOf(who)} has attribute ${attribute}`
-        )
-      );
-    } finally {
-      await provisionPortal(config);
-    }
-  });
-
-  it('allows BYPASSRLS on portal_owner and nowhere else', async () => {
-    await withAdmin((pool) =>
-      expect(assertHardened(pool, config.ownerLogin, 'portal_owner')).resolves.toBeUndefined()
-    );
-    await withAdmin((pool) =>
-      expect(assertHardened(pool, config.ownerLogin, null)).rejects.toThrow(
-        `login ${config.ownerLogin}: role portal_owner has attribute BYPASSRLS`
+  it('refuses when the probe finds another database that lets a login in', async () => {
+    const result = await run({ attempt: () => Promise.resolve('ok') });
+    expect(result.code).toBe(1);
+    expect(result.err.join('\n')).toMatch(
+      new RegExp(
+        `extra M28: login ${TENANT} was not refused by pg_hba at database postgres \\(got ok\\)`
       )
     );
   });
 
-  it.each(['portal_tenant', 'portal_owner'] as const)(
-    '%s cannot log in or inherit',
-    async (role) => {
-      await withAdmin((pool) => pool.query(`ALTER ROLE "${role}" LOGIN INHERIT`));
-      const login = role === 'portal_tenant' ? config.tenantLogin : config.ownerLogin;
-      try {
-        await withAdmin((pool) =>
-          expect(assertHardened(pool, login, 'portal_owner')).rejects.toThrow(
-            `login ${login}: role ${role} can log in`
-          )
-        );
-      } finally {
-        await provisionPortal(config);
-      }
-      expect(await state()).toEqual(afterFirst);
-    }
-  );
-
-  it.each(WHO)('the command clears role settings on %s, global and per database', async (who) => {
-    const role = roleOf(who);
-    await withAdmin(async (pool) => {
-      await pool.query(`ALTER ROLE "${role}" SET search_path = 'evil'`);
-      await pool.query(`ALTER ROLE "${role}" IN DATABASE "${database}" SET work_mem = '1MB'`);
-      await pool.query(`ALTER ROLE "${role}" IN DATABASE postgres SET work_mem = '1MB'`);
-    });
-    try {
-      await withAdmin((pool) =>
-        expect(assertHardened(pool, loginOf(who), allowBypassFor(who))).rejects.toThrow(
-          `login ${loginOf(who)}: role ${role} has role-level settings`
-        )
-      );
-    } finally {
-      await provisionPortal(config);
-    }
-    await withAdmin(async (pool) =>
-      expect(
-        await roleSettingCount(pool, [
-          'portal_tenant',
-          'portal_owner',
-          config.tenantLogin,
-          config.ownerLogin,
-        ])
-      ).toBe(0)
+  it('refuses an administrator URL that names the portal database itself', async () => {
+    await expect(provisionPortal({ ...provConfig(), adminUrl: testUrl(PROV_DB) })).rejects.toThrow(
+      'must name a maintenance database'
     );
   });
 
-  const OWNERSHIPS = [
-    ['database', 'owner', (db: string) => `ALTER DATABASE "${db}" OWNER TO portal_owner`],
-    ['schema public', 'tenant', () => 'ALTER SCHEMA public OWNER TO portal_tenant'],
-    ['function', 'owner', () => 'ALTER FUNCTION public.bound_tenant() OWNER TO portal_owner'],
-  ] as const;
-
-  it.each(OWNERSHIPS)(
-    'the command takes %s back from a portal role',
-    async (_name, side, statement) => {
-      await withAdmin((pool) => pool.query(statement(database)));
-      const login = side === 'owner' ? config.ownerLogin : config.tenantLogin;
-      try {
-        // Owning the database also makes the role a member of pg_database_owner.
-        await withAdmin((pool) =>
-          expect(assertHardened(pool, login, 'portal_owner')).rejects.toThrow(
-            /owns an object|pg_database_owner/
-          )
-        );
-      } finally {
-        await provisionPortal(config);
-      }
-      const held = await withAdmin((pool) => owners(pool, database));
-      const portal = ['portal_tenant', 'portal_owner', config.tenantLogin, config.ownerLogin];
-      expect((held as { owner: string }[]).filter((o) => portal.includes(o.owner))).toEqual([]);
-    }
-  );
-
-  it('fails by name on default privileges, which no run grants or clears', async () => {
-    await withAdmin((pool) =>
-      pool.query(
-        'ALTER DEFAULT PRIVILEGES FOR ROLE portal_tenant GRANT SELECT ON TABLES TO portal_owner'
-      )
-    );
+  it('the boundary smoke test fails when a login holds the other role', async () => {
+    expect((await run()).code).toBe(0);
+    await admin('postgres', `GRANT portal_owner TO ${TENANT}`);
     try {
-      await expect(provisionPortal(config)).rejects.toThrow(
-        `login ${config.tenantLogin}: role portal_tenant has default privileges`
+      await expect(verifyBoundary(provConfig())).rejects.toThrow(
+        'tenant login assumes portal_owner: expected 42501, got ok'
       );
     } finally {
-      await withAdmin((pool) =>
-        pool.query(
-          'ALTER DEFAULT PRIVILEGES FOR ROLE portal_tenant REVOKE SELECT ON TABLES FROM portal_owner'
-        )
-      );
+      await admin('postgres', `REVOKE portal_owner FROM ${TENANT}`);
     }
-    await provisionPortal(config);
   });
 
-  it('the command clears ADMIN OPTION, and the postcondition names it', async () => {
-    await withAdmin(async (pool) => {
-      await pool.query(`REVOKE portal_tenant FROM "${config.tenantLogin}"`);
-      await pool.query(`GRANT portal_tenant TO "${config.tenantLogin}" WITH ADMIN OPTION`);
-    });
-    try {
-      await withAdmin((pool) =>
-        expect(assertHardened(pool, config.tenantLogin, null)).rejects.toThrow(
-          `login ${config.tenantLogin}: role ${config.tenantLogin} holds ADMIN OPTION`
-        )
-      );
-    } finally {
-      await provisionPortal(config);
-    }
-    expect(await state()).toEqual(afterFirst);
-  });
-
-  it('fails by name when another login holds a portal role', async () => {
-    const other = `prov_other_${suffix}`;
-    await createLogin(bootstrap, other, 'other-password-1');
-    await withAdmin((pool) => pool.query(`GRANT portal_tenant TO "${other}"`));
-    try {
-      await expect(provisionPortal(config)).rejects.toThrow(
-        `role portal_tenant must have the login ${config.tenantLogin} as its only member, but has: ${other}, ${config.tenantLogin}`
-      );
-    } finally {
-      await bootstrap.query(`DROP ROLE "${other}"`);
-    }
-    await provisionPortal(config);
-  });
-
-  it('never takes PGPASSWORD or a .pgpass password when the file supplies none', async (ctx) => {
-    const url = new URL(dbUrl());
-    url.username = config.tenantLogin;
-    url.password = '';
+  it('never takes PGPASSWORD or a .pgpass password when the file supplies none', async () => {
+    expect((await run()).code).toBe(0);
     const home = mkdtempSync(join(tmpdir(), 'portal-pgpass-'));
     const decoy = join(home, '.pgpass');
     writeFileSync(decoy, `*:*:*:*:${TENANT_PW}\n`, { mode: 0o600 });
     const saved = { ...process.env };
     try {
-      const anyPassword = poolFor(url.toString());
-      const accepted = await anyPassword.connect().then(
-        (c) => (c.release(), true),
-        () => false
-      );
-      await anyPassword.end();
-      if (accepted) ctx.skip('server does not use password auth; this runs in CI');
       process.env['PGPASSWORD'] = TENANT_PW;
       process.env['PGPASSFILE'] = decoy;
       process.env['HOME'] = home;
-      const pool = poolFor(url.toString());
+      const pool = poolFor(testUrl(PROV_DB, TENANT));
       const error = await pool.connect().then(
         (c) => (c.release(), undefined),
         (e: unknown) => e
@@ -979,30 +192,55 @@ describe('against a real PostgreSQL', () => {
       rmSync(home, { recursive: true });
     }
   });
+});
 
-  it('runProvision succeeds end to end from files and prints no secret', async () => {
-    const { dir, env } = files({
-      PORTAL_ADMIN_URL_FILE: ADMIN_URL,
-      PORTAL_TENANT_PASSWORD_FILE: TENANT_PW,
-      PORTAL_OWNER_PASSWORD_FILE: OWNER_PW,
-    });
-    const lines: string[] = [];
-    const code = await runProvision(
-      {
-        ...env,
-        PORTAL_DATABASE_NAME: database,
-        PORTAL_TENANT_LOGIN: config.tenantLogin,
-        PORTAL_OWNER_LOGIN: config.ownerLogin,
-      },
-      [],
-      { out: (l) => lines.push(l), err: (l) => lines.push(l) }
+describe("the replay of drizzle's migrator", () => {
+  if (ADMIN_URL === undefined) return;
+  const viaDrizzle = 'portal_prov_drizzle';
+  const viaReplay = 'portal_prov_replay';
+
+  beforeAll(async () => {
+    await resetServer();
+    // The policies name the portal roles, so they must exist.
+    await admin(
+      'postgres',
+      'CREATE ROLE portal_tenant NOLOGIN',
+      'CREATE ROLE portal_owner NOLOGIN'
     );
-    rmSync(dir, { recursive: true });
-    expect(code).toBe(0);
-    expect(lines.at(-1)).toBe('portal database provisioned');
-    for (const secret of [TENANT_PW, OWNER_PW, ADMIN_URL]) {
-      expect(lines.join('\n')).not.toContain(secret);
+  }, 60000);
+
+  afterAll(async () => {
+    const pool = testPool('postgres', undefined, undefined, 1);
+    for (const database of [viaDrizzle, viaReplay]) await dropDatabase(pool, database);
+    await pool.end();
+    await resetServer();
+  }, 60000);
+
+  it('writes the same history rows as migrate(), inside a transaction it does not commit', async () => {
+    await admin('postgres', `CREATE DATABASE ${viaDrizzle}`, `CREATE DATABASE ${viaReplay}`);
+    const drizzlePool = testPool(viaDrizzle);
+    await migrateSchema(drizzlePool);
+    await drizzlePool.end();
+    const pool = testPool(viaReplay, undefined, undefined, 1);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await replayMigrations(client, readMigrations());
+      await client.query('ROLLBACK');
+      const [gone] = await admin(viaReplay, "SELECT to_regnamespace('drizzle') AS n");
+      expect(gone!.rows[0].n).toBeNull();
+      await client.query('BEGIN');
+      await replayMigrations(client, readMigrations());
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+      await pool.end();
     }
+    const rows = 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id';
+    const [fromDrizzle] = await admin(viaDrizzle, rows);
+    const [fromReplay] = await admin(viaReplay, rows);
+    expect(fromReplay!.rows).toEqual(fromDrizzle!.rows);
+    expect(fromReplay!.rows.length).toBe(readMigrations().length);
   });
 });
 
@@ -1016,68 +254,67 @@ describe('the compiled command', () => {
     });
     return;
   }
-  const adminUrl = ADMIN_URL;
-  const bootstrap = new pg.Pool({ connectionString: adminUrl, max: 1 });
-  bootstrap.on('error', () => undefined);
+
   afterAll(async () => {
-    await bootstrap.end();
+    await resetServer();
   }, 60000);
 
-  async function connectAs(database: string, login: string, password: string): Promise<void> {
-    const server = new URL(adminUrl);
-    const client = new pg.Client({
-      host: server.hostname,
-      port: server.port === '' ? 5432 : Number(server.port),
-      user: login,
-      database,
-      password,
-    });
-    client.on('error', () => undefined);
+  function compiled(tenantPassword: string, ownerPassword: string) {
+    if (!existsSync(dist))
+      throw new Error('run `npm run build` first: the compiled command is missing');
+    const dir = mkdtempSync(join(tmpdir(), 'portal-provision-'));
+    const env: Record<string, string> = {};
+    for (const [name, content] of Object.entries({
+      PORTAL_ADMIN_URL_FILE: testUrl('postgres'),
+      PORTAL_TENANT_PASSWORD_FILE: tenantPassword,
+      PORTAL_OWNER_PASSWORD_FILE: ownerPassword,
+    })) {
+      env[name] = join(dir, name);
+      writeFileSync(env[name], content);
+    }
     try {
-      await client.connect();
+      return spawnSync(process.execPath, [dist], {
+        env: {
+          PATH: process.env['PATH'] ?? '',
+          ...env,
+          PORTAL_DATABASE_NAME: PROV_DB,
+          PORTAL_TENANT_LOGIN: TENANT,
+          PORTAL_OWNER_LOGIN: OWNER,
+        },
+        encoding: 'utf8',
+      });
     } finally {
-      await client.end().catch(() => undefined);
+      rmSync(dir, { recursive: true });
     }
   }
 
   it.each(passwords)(
     'provisions with the password %j and the logins connect with it',
     async (password) => {
-      if (!existsSync(dist))
-        throw new Error('run `npm run build` first: the compiled command is missing');
-      const id = randomBytes(5).toString('hex');
-      const database = `portal_e2e_${id}`;
-      const tenantLogin = `e2e_tenant_${id}`;
-      const ownerLogin = `e2e_owner_${id}`;
-      const { dir, env } = files({
-        PORTAL_ADMIN_URL_FILE: adminUrl,
-        PORTAL_TENANT_PASSWORD_FILE: password,
-        PORTAL_OWNER_PASSWORD_FILE: `${password}-owner`,
-      });
-      try {
-        const run = spawnSync(process.execPath, [dist], {
-          env: {
-            PATH: process.env['PATH'] ?? '',
-            ...env,
-            PORTAL_DATABASE_NAME: database,
-            PORTAL_TENANT_LOGIN: tenantLogin,
-            PORTAL_OWNER_LOGIN: ownerLogin,
-          },
-          encoding: 'utf8',
-        });
-        expect(run.stderr).toBe('');
-        expect(run.status).toBe(0);
-        expect(run.stdout).toContain('portal database provisioned');
-        expect(run.stdout).not.toContain(password);
-        await connectAs(database, tenantLogin, password);
-        await connectAs(database, ownerLogin, `${password}-owner`);
-      } finally {
-        rmSync(dir, { recursive: true });
-        await dropDatabase(bootstrap, database).catch(() => undefined);
-        for (const login of [tenantLogin, ownerLogin]) {
-          await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`).catch(() => undefined);
-        }
-      }
-    }
+      await resetServer();
+      const result = compiled(password, `${password}-owner`);
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('portal database provisioned');
+      expect(result.stdout).not.toContain(password);
+      await connectAs(TENANT, password);
+      await connectAs(OWNER, `${password}-owner`);
+    },
+    60000
   );
+
+  it('exits 1 and prints each difference on stderr when the server was tampered with', async () => {
+    await resetServer();
+    expect(compiled('first-tenant', 'first-owner').status).toBe(0);
+    await admin(PROV_DB, 'GRANT TRUNCATE ON portal.tenant_register TO portal_tenant');
+    const result = compiled('second-tenant', 'second-owner');
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain(
+      'extra M06: TRUNCATE on table portal.tenant_register to portal_tenant'
+    );
+    expect(result.stderr).not.toContain('second-tenant');
+    // Nothing was written: the old password still works.
+    await connectAs(TENANT, 'first-tenant');
+  }, 60000);
 });

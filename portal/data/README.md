@@ -37,8 +37,9 @@ Exactly three things are not expressed through Drizzle (`DB-2` approval, owner
 ruling): the role switch (`SET LOCAL ROLE`, `enterRole` in `src/db.ts`), the
 binding call (`set_config`, `bind` in `src/db.ts`), and the binding functions
 (`drizzle/0000_binding_functions.sql`, called from the policy predicates in
-`src/schema.ts`). `src/provision.ts` holds the operator's role and grant statements,
-which Drizzle cannot model.
+`src/schema.ts`). `provision/` holds the operator's role and grant statements,
+which Drizzle cannot model, and the catalog check that compares a server with
+them.
 
 ## Health and version readings
 
@@ -54,8 +55,9 @@ takes the colours' scrape texts. Only the undrained colour answers: its version
 and match are the tenant's, a drained colour's are never read, and with no
 scrape, no undrained colour or two the reading is `unknown` (`src/reading.ts`).
 `OwnerDb.listHealth()` is the console's cross-tenant read. The collector that
-fetches the scrapes is separate work; grant `portal.health_reading` with
-`grantAccess` (tenant `SELECT`, owner `SELECT, INSERT, UPDATE, DELETE`).
+fetches the scrapes is separate work. The grants on `portal.health_reading`
+(tenant `SELECT`, owner `SELECT, INSERT, UPDATE`) are in the manifest,
+`provision/manifest.ts`.
 
 ## The owner path
 
@@ -71,9 +73,13 @@ nvm use && npm ci
 PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres npm run coverage
 ```
 
-The URL must be a superuser on a throwaway cluster (CI uses a service
-container). The suite creates and drops its own databases. After a schema edit,
-`npm run generate` writes the migration; CI fails if the committed one differs.
+The URL must be a superuser on a throwaway cluster started with
+`test/pg_hba.ci.conf` as its `hba_file` (writable by the server's user, since
+the pg_hba tests rewrite and restore it), because the provisioning command
+refuses any rule that lets a portal login reach another database. CI runs the
+suite on PostgreSQL 14 and 17. The suite creates and drops its own databases.
+After a schema edit, `npm run generate` writes the migration; CI fails if the
+committed one differs.
 
 ## Provisioning a database
 
@@ -96,11 +102,42 @@ the variable itself is refused.
 | `PORTAL_TENANT_LOGIN` | optional, default `portal_tenant_login` |
 | `PORTAL_OWNER_LOGIN` | optional, default `portal_owner_login` |
 
-In order: the database if absent, both logins (attributes and password
-re-applied every run, sent as a SCRAM verifier), `CONNECT` on the database for
-the two logins alone, no `CREATE` on `public`, the two roles, the ORM's
-migrations, the per-table grants, exactly one role per login, then a check
-that connects as each login and asserts the specific PostgreSQL errors
-(`42501` permission denied, `28000` no tenant bound). A re-run changes nothing.
-Other databases on the server keep PUBLIC's `CONNECT`: closing them to these
-logins is a server-level step (`pg_hba.conf`), outside this command.
+The command creates what is absent, checks everything, and repairs nothing.
+`provision/manifest.ts` is the closed manifest: the two roles and two logins
+with their exact attributes (all `NOINHERIT`; the apps always `SET LOCAL
+ROLE`), one membership per login, and every grant, each justified by a call
+site. No role may `DELETE`, and the owner role may not `UPDATE` the register.
+
+1. **Check, before any write.** The whole privilege state of the server is
+   compared with the manifest through the closed list of mechanisms
+   (`MECHANISMS`, M01 to M29, in `provision/catalog.ts`): role attributes and
+   reach, settings, every ACL (counting implicit defaults), ownership,
+   `pg_shdepend` across every database, policies, the shape of each manifest
+   table, every catalog row created after initdb, ACL drift on initdb
+   objects, the settings that switch checks off, and pg_hba (the rules as
+   parsed, refusing on a rule that did not load or a file changed since the
+   last load, and on any rule that could let a portal login reach a database
+   other than the portal's). Any difference, missing or extra, other than an
+   absent role or database this run creates, refuses: exit 1, one line per
+   difference on stderr, nothing written.
+2. Absent roles and logins are created; existing logins get the new password
+   (sent as a SCRAM verifier). The database is created if absent.
+3. Each login tries every other database and must be refused by pg_hba
+   (`28000`).
+4. In the portal database, one transaction: the check again, the ORM's
+   pending migrations (drizzle's own loop, replayed on this transaction), the
+   grants on what they created, and the check against the full manifest
+   before commit.
+5. A smoke test connects as each login (`42501` permission denied, `28000` no
+   tenant bound).
+
+A re-run changes nothing but the passwords. A refusal is a security event: the
+per-difference fix is a manual step for the administrator, never this command.
+The server must be a PostgreSQL major version with a committed catalog
+snapshot (`SUPPORTED_MAJORS` in `provision/catalogSnapshot.ts`).
+
+What no in-database check can see, stated plainly: a superuser (who can edit
+the catalogs), files and configuration beyond pg_hba, rights hard-coded in the
+server rather than stored in a catalog, any new setting or rule a future
+server adds that the catalog snapshot cannot show, and changes made after the
+command has run: it checks at provision time and is not a monitor.

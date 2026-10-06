@@ -1,15 +1,15 @@
 name: Portal data layer CI
 
 # Type-checks and tests the portal's storage layer (portal/data/) against a
-# real PostgreSQL service container. The isolation guarantee is a property of
-# the database's row-level security together with the code that binds the
-# tenant, so a mock proves nothing about it: the suite creates a database per
-# test file, applies the migrations as the schema owner, and connects as
-# logins that are members of one portal role each; roles and grants come from
-# src/provision.ts, the ORM's own migrations from drizzle/. A missing
-# PORTAL_TEST_DATABASE_URL fails the suite rather than skipping it.
-# See ghost-platform-docs/19-try-it-now-design/08-portal.html sections 01 and
-# 10b.
+# real PostgreSQL, on each server major version the provisioning command
+# supports. The isolation guarantee is a property of the database's row-level
+# policies together with the code that binds the tenant, so a mock proves
+# nothing about it. The provisioning command builds every test database and
+# checks it against a closed manifest, including pg_hba, so the server runs
+# with a mounted pg_hba.conf that lets each test login reach its own database
+# alone. A missing PORTAL_TEST_DATABASE_URL fails the suite rather than
+# skipping it. See ghost-platform-docs/19-try-it-now-design/08-portal.html
+# sections 01 and 10b.
 
 on:
   push:
@@ -29,30 +29,46 @@ permissions:
 
 jobs:
   test:
-    name: Portal data type check and test
+    name: Portal data type check and test (PostgreSQL ${{ matrix.postgres }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - postgres: '14'
+            image: postgres:14@sha256:ceef4a62198b562d6fe3e51be67362f72a0abf0aaa255f54f0c0e55be9768ed2
+          - postgres: '17'
+            image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
     defaults:
       run:
         working-directory: portal/data
-    services:
-      postgres:
-        image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
-        env:
-          POSTGRES_PASSWORD: ci-only-throwaway
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       PORTAL_TEST_DATABASE_URL: postgres://postgres:ci-only-throwaway@127.0.0.1:5432/postgres
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Started here rather than as a service container, which cannot mount a
+      # file from the checkout. The file is writable by the server's own user
+      # because the hba tests rewrite it through COPY and restore it.
+      - name: Start PostgreSQL ${{ matrix.postgres }} with the test pg_hba.conf
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          install -m 0666 test/pg_hba.ci.conf "$RUNNER_TEMP/pg_hba.conf"
+          sleep 1
+          docker run -d --rm --name portal-data-pg -p 5432:5432 \
+            -e POSTGRES_PASSWORD=ci-only-throwaway \
+            -v "$RUNNER_TEMP/pg_hba.conf:/etc/postgresql/pg_hba.conf" \
+            "$IMAGE" -c hba_file=/etc/postgresql/pg_hba.conf
+          for attempt in $(seq 1 60); do
+            if docker exec portal-data-pg pg_isready -U postgres -h 127.0.0.1 >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs portal-data-pg
+          exit 1
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -83,8 +99,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      # A tenant table with no row security or policy fails here, outside the
-      # test suite, as well as when migrations are applied.
+      # A tenant table with no row-level policy fails here, outside the test
+      # suite, as well as when migrations are applied.
       - name: Every tenant table is isolated
         run: npm run check:isolation
 

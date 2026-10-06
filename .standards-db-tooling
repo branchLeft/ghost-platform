@@ -69,6 +69,14 @@ adapters/sso/test/image/provision-support-account-mysql.image.test.mjs
 # suite's throwaway databases -- operator-run, never the portal at run time.
 portal/data/provision/*
 
+# Their tests, a separate line each: they tamper with the catalog, the
+# migration history and pg_hba as an administrator would, and read the result
+# back, to prove the provisioning check refuses.
+portal/data/test/provision*.ts
+portal/data/test/closedWorld*.ts
+portal/data/test/catalogMeta.test.ts
+portal/data/test/hba*.ts
+
 # The weekly restore drill: decrypts a backup, imports it into a throwaway
 # server and reads back what it restored.
 infra/provisioning/scripts/restore_drill.py
