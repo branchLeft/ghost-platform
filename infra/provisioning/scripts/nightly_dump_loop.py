@@ -16,8 +16,9 @@ import fcntl
 import os
 import sys
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
+import backup_recipients as br
 import backup_worker as bw
 from dial_in_transport import DialInTransport, LocalProcessTransport, RemoteMysqldumpTransport
 
@@ -82,7 +83,7 @@ def _dump_one_tenant(
     tenant: str,
     transport: DialInTransport,
     mysql_pwd: str,
-    age_recipient: str,
+    recipients: Mapping[str, str],
     dump_tenant_path: str,
     socket_path: str,
 ) -> TenantOutcome:
@@ -92,6 +93,9 @@ def _dump_one_tenant(
     propagate) to prove one tenant's crash would otherwise abort every
     tenant after it in the loop."""
     try:
+        # Resolved before anything is dumped: a tenant with no recipient of its
+        # own is refused here, with no fallback to any other tenant's key.
+        age_recipient = br.recipient_for(tenant, recipients)
         copies = bw._copies_from_env(tenant=tenant)
         result = bw.run_tenant_dump(
             tenant=tenant,
@@ -102,6 +106,9 @@ def _dump_one_tenant(
             dump_tenant_path=dump_tenant_path,
             socket_path=socket_path,
         )
+    except br.MissingRecipient as exc:
+        print(f"nightly_dump_loop: ALERT: {exc}", file=sys.stderr)
+        return TenantOutcome(tenant=tenant, result=None, crashed=True, error=str(exc))
     except SystemExit as exc:
         # `_copies_from_env` (via `_copy_target_from_env`) reports a
         # misconfigured copy this way -- a real, operator-facing defect,
@@ -119,7 +126,7 @@ def run_nightly_loop(
     tenants: Sequence[str],
     transport: DialInTransport,
     mysql_pwd: str,
-    age_recipient: str,
+    recipients: Mapping[str, str],
     dump_tenant_path: str,
     socket_path: str,
     metrics_dir: str,
@@ -139,7 +146,7 @@ def run_nightly_loop(
             tenant=tenant,
             transport=transport,
             mysql_pwd=mysql_pwd,
-            age_recipient=age_recipient,
+            recipients=recipients,
             dump_tenant_path=dump_tenant_path,
             socket_path=socket_path,
         )
@@ -199,6 +206,11 @@ def main(argv: list[str] | None = None) -> int:
         help="a file naming one tenant slug per line (blank lines and #-comments ignored)",
     )
     parser.add_argument("--socket", dest="socket_path", default=bw.DEFAULT_SOCKET)
+    parser.add_argument(
+        "--recipients-file",
+        default=os.environ.get(br.RECIPIENTS_FILE_ENV, br.DEFAULT_RECIPIENTS_FILE),
+        help="one `tenant recipient` line per tenant; each tenant is encrypted to its own recipient only",
+    )
     parser.add_argument("--dump-tenant-path", default=str(bw._DUMP_TENANT_SOURCE))
     parser.add_argument(
         "--run-lock-path",
@@ -236,7 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     mysql_pwd = bw._require_env("DB_DUMP_MYSQL_PWD")
-    age_recipient = bw._require_env("AGE_RECIPIENT_PUBLIC_KEY")
+    try:
+        recipients = br.load_recipients(args.recipients_file)
+    except br.RecipientError as exc:
+        print(f"nightly_dump_loop: ALERT: recipients file refused, nothing dumped: {exc}", file=sys.stderr)
+        return 1
     metrics_dir = os.environ.get("BACKUP_WORKER_METRICS_DIR", bw.DEFAULT_BACKUP_AGE_METRICS_DIR)
 
     try:
@@ -245,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
                 tenants=tenants,
                 transport=transport,
                 mysql_pwd=mysql_pwd,
-                age_recipient=age_recipient,
+                recipients=recipients,
                 dump_tenant_path=args.dump_tenant_path,
                 socket_path=args.socket_path,
                 metrics_dir=metrics_dir,

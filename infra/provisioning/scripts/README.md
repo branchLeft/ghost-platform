@@ -7,6 +7,22 @@ at a different moment, never a second code path. `backup_worker.py`'s own
 docstrings point into `backup_worker.md` beside it; this file covers only
 what is specific to the loop.
 
+## One recipient per tenant, never a fallback
+
+Each tenant's dump is encrypted to that tenant's own age recipient, read
+from the recipients file (`--recipients-file`, default
+`/etc/branchleft/backup-worker-recipients`, one `tenant age1...` line per
+tenant). There is no shared or operator recipient: a second `-r` would let
+one key open many tenants' backups and end per-tenant erasure (LLD-9).
+
+A tenant with no recipient is skipped: its dump is not taken, the loop
+prints an `ALERT` line to stderr, carries on with the other tenants and
+exits 1, which fails the unit and lets `TenantBackupAgeHigh` fire. A
+recipients file that is missing, unreadable or malformed (a repeated
+tenant, a bad key, one recipient listed for two tenants) refuses the whole
+run before any dump. `AGE_RECIPIENT_PUBLIC_KEY` is no longer read.
+`backup_recipients.py` holds the parsing and lookup.
+
 ## Serial by construction, refused rather than queued
 
 Two separate guarantees, deliberately kept apart:

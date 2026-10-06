@@ -23,6 +23,7 @@ import tempfile
 import time
 from collections.abc import Callable
 
+import backup_recipients
 import shared_objectstorage
 from backup_manifest import ManifestWatcher
 from dial_in_transport import (
@@ -665,6 +666,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tenant", required=True, help="the tenant slug, e.g. 'blog'")
     parser.add_argument("--socket", dest="socket_path", default=DEFAULT_SOCKET)
     parser.add_argument(
+        "--recipients-file",
+        default=os.environ.get(backup_recipients.RECIPIENTS_FILE_ENV, backup_recipients.DEFAULT_RECIPIENTS_FILE),
+        help="one `tenant recipient` line per tenant; the tenant is encrypted to its own recipient only",
+    )
+    parser.add_argument(
         "--dump-tenant-path",
         default=str(_DUMP_TENANT_SOURCE),
         help="where dump_tenant.py is reachable from the transport's own side",
@@ -693,7 +699,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     mysql_pwd = _require_env("DB_DUMP_MYSQL_PWD")
-    age_recipient = _require_env("AGE_RECIPIENT_PUBLIC_KEY")
+    try:
+        age_recipient = backup_recipients.recipient_for(
+            args.tenant, backup_recipients.load_recipients(args.recipients_file)
+        )
+    except backup_recipients.RecipientError as exc:
+        print(f"backup_worker: {exc}", file=sys.stderr)
+        return 1
     copies = _copies_from_env(tenant=args.tenant)
 
     try:

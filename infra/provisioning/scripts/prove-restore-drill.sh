@@ -282,12 +282,13 @@ docker run --rm --network none "$RECOVERY_IMAGE" age-keygen >"$WORK/identities/$
 chmod 0600 "$WORK/identities/$TENANT.key"
 RECIPIENT="$(sed -n 's/^# public key: //p' "$WORK/identities/$TENANT.key")"
 echo "$TENANT" >"$WORK/tenants"
+echo "$TENANT $RECIPIENT" >"$WORK/recipients"
 
 note "The REAL backup worker (nightly_dump_loop.py over RemoteMysqldumpTransport), inside the recovery image's toolchain, writing both copies"
-docker run --rm --network "$NET" -v "$REPO_ROOT:/repo:ro" -v "$WORK/certs:/certs:ro" \
+docker run --rm --network "$NET" -v "$REPO_ROOT:/repo:ro" -v "$WORK/certs:/certs:ro" -v "$WORK/recipients:/recipients:ro" \
     -e BACKUP_WORKER_DB_HOST="$SOURCE_DB" -e BACKUP_WORKER_MYSQL_USER=backup_drill \
     -e BACKUP_WORKER_MYSQL_SSL_CA=/certs/db-ca.pem -e DB_DUMP_MYSQL_PWD="$DUMP_PW" \
-    -e AGE_RECIPIENT_PUBLIC_KEY="$RECIPIENT" -e SSL_CERT_FILE=/certs/s3.crt \
+    -e BACKUP_WORKER_RECIPIENTS_FILE=/recipients -e SSL_CERT_FILE=/certs/s3.crt \
     -e BACKUP_WORKER_COPY_PRIMARY_BUCKET=drill-primary -e BACKUP_WORKER_COPY_PRIMARY_ENDPOINT="$S3:7070" \
     -e BACKUP_WORKER_COPY_PRIMARY_REGION=us-east-1 -e BACKUP_WORKER_COPY_PRIMARY_ACCESS_KEY_ID="$S3_KEY" \
     -e BACKUP_WORKER_COPY_PRIMARY_SECRET_ACCESS_KEY="$S3_SECRET" \
