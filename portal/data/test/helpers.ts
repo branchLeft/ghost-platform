@@ -11,7 +11,7 @@ import {
   dropDatabase,
   grantAccess,
   grantRole,
-} from '../provision/provision.js';
+} from '../src/provision.js';
 
 const ADMIN_URL = process.env['PORTAL_TEST_DATABASE_URL'];
 

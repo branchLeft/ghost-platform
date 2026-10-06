@@ -37,7 +37,7 @@ Exactly three things are not expressed through Drizzle (`DB-2` approval, owner
 ruling): the role switch (`SET LOCAL ROLE`, `enterRole` in `src/db.ts`), the
 binding call (`set_config`, `bind` in `src/db.ts`), and the binding functions
 (`drizzle/0000_binding_functions.sql`, called from the policy predicates in
-`src/schema.ts`). `provision/` holds the operator's role and grant statements,
+`src/schema.ts`). `src/provision.ts` holds the operator's role and grant statements,
 which Drizzle cannot model.
 
 ## Health and version readings
@@ -78,5 +78,5 @@ container). The suite creates and drops its own databases. After a schema edit,
 ## Provisioning a database
 
 In order: `createRoles`, the ORM's migrations (`migrateSchema`), then
-`grantAccess` for each table and `grantRole` for each login (`provision/`). The
+`grantAccess` for each table and `grantRole` for each login (`src/provision.ts`). The
 roles are `NOLOGIN`; no credential lives here.

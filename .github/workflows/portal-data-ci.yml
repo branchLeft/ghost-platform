@@ -6,7 +6,7 @@ name: Portal data layer CI
 # tenant, so a mock proves nothing about it: the suite creates a database per
 # test file, applies the migrations as the schema owner, and connects as
 # logins that are members of one portal role each; roles and grants come from
-# provision/, the ORM's own migrations from drizzle/. A missing
+# src/provision.ts, the ORM's own migrations from drizzle/. A missing
 # PORTAL_TEST_DATABASE_URL fails the suite rather than skipping it.
 # See ghost-platform-docs/19-try-it-now-design/08-portal.html sections 01 and
 # 10b.

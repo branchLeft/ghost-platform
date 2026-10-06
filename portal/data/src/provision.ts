@@ -98,3 +98,37 @@ export async function dropDatabase(admin: Pool, name: string): Promise<void> {
     }
   }
 }
+
+/** Removes a portal role from a login, so a login ends up in one role alone. */
+export async function revokeRole(
+  admin: Pool,
+  role: 'portal_tenant' | 'portal_owner',
+  login: string
+): Promise<void> {
+  await admin.query(`REVOKE ${role} FROM ${ident(login)}`);
+}
+
+/**
+ * Creates the database when it is absent; a second call changes nothing. The
+ * server's own "already exists" answer is the check, so two concurrent runs
+ * cannot both pass a look-first test and then collide.
+ */
+export async function createDatabaseIfAbsent(admin: Pool, name: string): Promise<boolean> {
+  try {
+    await createDatabase(admin, name);
+    return true;
+  } catch (error) {
+    if ((error as { code?: string }).code === '42P04') return false;
+    throw error;
+  }
+}
+
+/** Sets a login's password, so a rotated secret file takes effect on a re-run. */
+export async function setLoginPassword(
+  admin: Pool,
+  login: string,
+  password: string
+): Promise<void> {
+  if (password.includes("'")) throw new Error('password may not contain a quote');
+  await admin.query(`ALTER ROLE ${ident(login)} PASSWORD '${password}'`);
+}

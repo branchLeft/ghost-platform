@@ -10,9 +10,9 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.ts'],
-      // Command-line entrypoint; its one call is `assertTenantTablesIsolated`,
+      // Command-line entrypoints. checkIsolation's one call is `assertTenantTablesIsolated`,
       // tested directly, and CI runs the built script.
-      exclude: ['src/checkIsolation.ts'],
+      exclude: ['src/checkIsolation.ts', 'src/provisionMain.ts'],
       thresholds: { lines: 90, statements: 90, functions: 90, branches: 90 },
     },
   },
