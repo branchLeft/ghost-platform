@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OwnerDb } from '../src/owner/index.js';
 import { TenantDb, bindTenant } from '../src/tenant/index.js';
@@ -145,7 +146,9 @@ describe('recordReading', () => {
   });
 
   it('lists a registered tenant with no reading as null', async () => {
-    await fixture.admin.query('DELETE FROM portal.health_reading WHERE tenant_id = $1', [TENANT_A]);
+    await fixture.adminDb
+      .delete(schema.healthReading)
+      .where(eq(schema.healthReading.tenantId, TENANT_A));
     const all = await owner.listHealth();
     expect(all.find((row) => row.tenantId === TENANT_A)?.health).toBeNull();
     expect(await tenant.ownHealth(bindTenant(TENANT_A))).toBeNull();
