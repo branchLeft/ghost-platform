@@ -87,22 +87,18 @@ rather than whatever the API happened to return that day. It is seeded to
 
 ## Owed
 
-**Self-hosted ntfy is not deployed anywhere in the estate yet**: no ntfy
-service, container, systemd unit, Caddy route, topic or token exists in
-`shared-infra`, and `alertmanager.yml.tmpl` still carries only an email
-receiver and two Healthchecks.io webhooks -- no receiver reaches a phone,
-matching branchLeft/workspace#1273's still-open statement. This service is
-built to ntfy's publish interface (a bare HTTP POST, `src/ntfy.ts`) and
-needs no Alertmanager wiring -- it pages directly, independent of
-branchLeft/workspace#1273's still-open Alertmanager page-receiver
-decision.
+**The self-hosted ntfy is built but not live until the owner has installed it.**
+It is the monitoring stack's ntfy in `branchLeft/shared-infra`
+(`hetzner/monitoring/stack/`), reachable at `https://ntfy.branchleft.co.uk`,
+with one topic, `branchleft-pages`, shared with the Alertmanager page route.
+Anonymous publish is off; this service writes with its own token, which can
+write the topic and cannot read it.
 
-Before the scheduled workflow can page for real:
-
-1. Stand up a self-hosted ntfy instance somewhere in the estate (own
-   story; out of scope here).
-2. Create the repo secrets `NTFY_URL` (the full topic URL) and, if the
-   instance requires auth to publish, `NTFY_TOKEN`, on `branchLeft/ghost-platform`.
+Before the scheduled workflow can page for real, the owner sets two repo
+secrets on `branchLeft/ghost-platform`: `NTFY_URL`
+(`https://ntfy.branchleft.co.uk/branchleft-pages`) and `NTFY_TOKEN` (the
+release watcher's token). The steps are in the private ghost-platform-docs
+page `ntfy-pager-install-runbook.md`, step 9.
 
 The schedule (`major-watcher-run.yml`, every 6 hours) is live from this PR
 -- no separate step to enable it once the secret exists. Until `NTFY_URL`
