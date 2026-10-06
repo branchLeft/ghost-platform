@@ -335,3 +335,50 @@ verdict writes and its teardown. So the test chmods the directory 0777
 before the container starts, and `reclaimHostOwnership` chowns it back
 from a throwaway root container before teardown as a second line of
 defence.
+
+## Storage request contract
+
+`test/image/storage-contract.image.test.mjs` runs the built image (the base
+image is pinned by digest in the root `Dockerfile`) behind this decorator,
+against a recording S3 double (`test/helpers/recording-s3-double.cjs`), and
+asserts the exact set of request shapes Ghost 6.55.0 sends to storage. The
+signing gateway in front of the object store allows these shapes and no
+others, so a Ghost version that adds or changes one must fail here, before it
+reaches a tenant. `build.yml` already runs every `test/image/*.image.test.mjs`
+file against each pull request's image, which is where a Ghost bump lands, so
+the contract needs no workflow of its own.
+
+The set is eight shapes: `PutObject`, `CreateMultipartUpload`, `UploadPart`,
+`CompleteMultipartUpload`, `AbortMultipartUpload`, `HeadObject`, `GetObject`
+and `DeleteObject`. No list call is ever sent. Each is produced by a named
+caller, asserted per scenario in the test:
+
+| Caller | Shapes |
+| --- | --- |
+| image upload (`save`, under the multipart threshold) | `HeadObject`, `PutObject` |
+| file upload at or over the threshold (`save`) | `HeadObject`, `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload` |
+| file upload whose part fails (`save`) | `HeadObject`, `CreateMultipartUpload`, `UploadPart`, `AbortMultipartUpload` |
+| on-demand resized image (`saveRaw`) | `HeadObject`, `GetObject`, `PutObject` |
+| hold release (`saveRaw` from this decorator) | `PutObject` |
+| admin media inliner (`saveRaw`) | `HeadObject`, `PutObject` |
+| oEmbed thumbnail and icon (`saveRaw`) | `PutObject` |
+| same-name media thumbnail (`delete`, then `save`) | `HeadObject`, `DeleteObject`, `PutObject` |
+
+Every request is also checked for the properties the gateway relies on:
+header-signed SigV4 with a signed payload hash, no presigned URL, no chunked
+transfer or `aws-chunked` body, no trailing checksum, a content length on
+every body, and a CRC32 checksum header on `PutObject` and `UploadPart`. The
+AWS SDK adds an `x-id=<Operation>` query parameter to every request; it is
+recorded but not used to classify, because a gateway judges method, path and
+query alone.
+
+`DeleteObject` reaches the store today: this decorator forwards `delete()`
+unchanged. A gateway that allows only the seven non-delete shapes needs the
+decorator to turn the same-name thumbnail's delete-then-save into an
+overwrite first, and this test goes red when that change lands, so that the
+expected set is updated in the same change.
+
+When Ghost is bumped, the version check (`PINNED_GHOST_VERSION`) fails on
+purpose. Read the shape tests' result first: if they pass the new version
+still fits the gateway, and the constant and the docs that name the version
+move together.
