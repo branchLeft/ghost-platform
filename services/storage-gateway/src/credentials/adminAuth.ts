@@ -152,7 +152,9 @@ export function authenticateAdmin(
   if (nowMs < window.opensAtMs || nowMs >= window.closesAtMs) {
     return { ok: false, reason: 'timestamp outside the replay window' };
   }
-  if (requestSeconds <= deps.processStartSeconds) {
+  // Plus the forward skew: a request stamped ahead of the clock before a
+  // restart would otherwise clear the floor once the nonces are forgotten.
+  if (requestSeconds <= deps.processStartSeconds + FORWARD_SKEW_SECONDS) {
     return { ok: false, reason: 'timestamp predates this process' };
   }
 

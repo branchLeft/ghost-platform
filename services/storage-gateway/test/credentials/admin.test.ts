@@ -369,6 +369,56 @@ describe('the admin interface', () => {
     });
   });
 
+  describe('a mint replayed across a restart', () => {
+    const T = Math.floor(NOW_MS / 1000);
+    const restartedAt = (restartSeconds: number, clockMs: number) =>
+      createAdminInterface({
+        auth: {
+          ...authDeps(() => clockMs),
+          processStartSeconds: restartSeconds,
+        },
+        store,
+        master: MASTER,
+        newKeyId: () => ids.shift() ?? 'GWEXHAUSTED000000000000000',
+      });
+
+    it('is refused when it was stamped 5 seconds ahead and the gateway restarted 2 seconds later', () => {
+      const request = signed(
+        'provisioning-controller',
+        controller.privateKey,
+        'POST',
+        '/credentials',
+        BODY,
+        {
+          timestamp: String(T + 5),
+        }
+      );
+      expect(admin.handle(request).status).toBe(201);
+      store.disableFolder(BODY.folder);
+      for (const restart of [T, T + 1, T + 2, T + 4]) {
+        const replay = restartedAt(restart, (restart + 0.5) * 1000).handle(request);
+        expect(replay.status).toBe(401);
+        expect(json(replay)).not.toHaveProperty('secret');
+      }
+      expect(store.listByFolder(BODY.folder)).toHaveLength(1);
+    });
+
+    it('still admits a fresh request stamped after the restart floor', () => {
+      const restart = T + 2;
+      const fresh = signed(
+        'provisioning-controller',
+        controller.privateKey,
+        'POST',
+        '/credentials',
+        BODY,
+        {
+          timestamp: String(restart + 6),
+        }
+      );
+      expect(restartedAt(restart, (restart + 6) * 1000).handle(fresh).status).toBe(201);
+    });
+  });
+
   describe('one active credential per folder', () => {
     const disableFolder = (
       caller: 'provisioning-controller' | 'erasure-job',
