@@ -21,7 +21,17 @@ export class FakeWrappedAdapter extends FakeStorageBase {
 
   async save(file, targetDir) {
     this.saved.push({ file, targetDir });
-    const targetPath = `${targetDir ?? ''}/${file.name}`;
+    let targetPath = `${targetDir ?? ''}/${file.name}`;
+    // Like a real adapter's save(): a taken name gets a new one, so a
+    // replace that fails to overwrite is visible as a second object.
+    if (this.config.uniqueNames) {
+      const dot = file.name.lastIndexOf('.');
+      const stem = dot < 0 ? file.name : file.name.slice(0, dot);
+      const ext = dot < 0 ? '' : file.name.slice(dot);
+      for (let n = 1; this.files.has(this.#key(targetPath)); n += 1) {
+        targetPath = `${targetDir ?? ''}/${stem}-${n}${ext}`;
+      }
+    }
     this.files.set(this.#key(targetPath), Buffer.from(`saved:${file.name}`));
     return `https://example.test/content/images/${targetPath}`;
   }
@@ -52,6 +62,10 @@ export class FakeWrappedAdapter extends FakeStorageBase {
 
   async delete(fileName, targetDir) {
     this.deleted.push({ fileName, targetDir });
+    // The storage gateway refuses every delete.
+    if (this.config.refuseDelete) {
+      throw new Error('AccessDenied: DeleteObject is refused');
+    }
     const key = targetDir !== undefined ? `${targetDir}/${fileName}` : fileName;
     this.files.delete(this.#key(key));
   }

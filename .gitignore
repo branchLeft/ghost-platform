@@ -15,7 +15,6 @@ __pycache__/
 .coverage
 .coverage.*
 
-graphify-out/
 
 # This repo tracks package-lock.json (eight of them) and CI runs `npm ci`; a
 # pnpm install here is a mistake, and its lockfile must not get committed.

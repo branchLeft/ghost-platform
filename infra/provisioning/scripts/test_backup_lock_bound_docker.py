@@ -287,7 +287,7 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
                 tenants=list(TENANTS),
                 transport=transport,
                 mysql_pwd=WORKER_PASSWORD,
-                age_recipient=self.recipient,
+                recipients={tenant: self.recipient for tenant in TENANTS},
                 dump_tenant_path="/unused",
                 socket_path="/unused",
                 metrics_dir=self.metrics_dir,
