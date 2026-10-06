@@ -45,7 +45,7 @@ REQUIRED_PERMISSIONS = {
     "metadata": "read",
     "pull_requests": "write",
     "secrets": "write",
-    "variables": "write",
+    "actions_variables": "write",
     "workflows": "write",
 }
 

@@ -111,8 +111,12 @@ class PermissionProblemsTests(unittest.TestCase):
 
     def test_extra_and_missing_are_both_reported(self):
         granted = dict(app_token.REQUIRED_PERMISSIONS, members="write")
-        del granted["variables"]
+        del granted["actions_variables"]
         self.assertEqual(len(app_token.permission_problems(granted)), 2)
+
+    def test_the_variables_permission_uses_its_real_api_key(self):
+        self.assertEqual(app_token.REQUIRED_PERMISSIONS.get("actions_variables"), "write")
+        self.assertNotIn("variables", app_token.REQUIRED_PERMISSIONS)
 
     def test_a_non_mapping_is_refused(self):
         for value in (None, [], "repo", 7):
@@ -128,7 +132,7 @@ class PermissionProblemsTests(unittest.TestCase):
                 "metadata": "read",
                 "pull_requests": "write",
                 "secrets": "write",
-                "variables": "write",
+                "actions_variables": "write",
                 "workflows": "write",
             },
         )
@@ -564,16 +568,16 @@ class InstallationDiffTests(unittest.TestCase):
             self.assertIsNone(app_token.permission_shortfalls(value))
 
     def test_a_malformed_level_counts_as_none(self):
-        have = dict(app_token.REQUIRED_PERMISSIONS, secrets=["write"], variables="")
+        have = dict(app_token.REQUIRED_PERMISSIONS, secrets=["write"], actions_variables="")
         self.assertEqual(app_token.permission_shortfalls(have),
-                         ["secrets: none -> write", "variables: none -> write"])
+                         ["actions_variables: none -> write", "secrets: none -> write"])
 
     def test_every_shortfall_is_listed_in_name_order(self):
         self.assertEqual(
             app_token.permission_shortfalls({"metadata": "read"}),
-            ["administration: none -> write", "contents: none -> write",
-             "environments: none -> write", "pull_requests: none -> write",
-             "secrets: none -> write", "variables: none -> write",
+            ["actions_variables: none -> write", "administration: none -> write",
+             "contents: none -> write", "environments: none -> write",
+             "pull_requests: none -> write", "secrets: none -> write",
              "workflows: none -> write"])
 
 

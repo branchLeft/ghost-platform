@@ -32,7 +32,7 @@ Exactly these, and no others, because each is something the workflow does:
   environment with its required reviewer.
 - `secrets: write` writes the stack passphrase, the encryption salt and the
   state credentials, and reads which secrets exist.
-- `variables: write` writes the backend URL and the app host address.
+- `actions_variables: write` (the API key for the repository "Variables" permission; there is no key named `variables`) writes the backend URL and the app host address.
 - `pull_requests: write` opens the handover pull request.
 - `metadata: read` is granted to every installation token.
 
