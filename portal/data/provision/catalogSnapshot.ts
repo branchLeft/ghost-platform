@@ -1,9 +1,22 @@
+import { INFORMATION_SCHEMA_PUBLIC as PG14_INFORMATION_SCHEMA } from './informationSchema14.js';
+import { INFORMATION_SCHEMA_PUBLIC as PG17_INFORMATION_SCHEMA } from './informationSchema17.js';
+
 // How every privilege-bearing part of the catalog is classified, per server
 // version. The meta-test checks each list against the live server, together
 // with a committed snapshot of every pg_catalog column and every privilege
 // name, so a catalog, column or privilege a new version adds fails CI until
 // it is classified here. The command refuses a server major version with no
 // committed snapshot.
+
+/**
+ * The information_schema relations initdb grants SELECT to PUBLIC, per
+ * version, with no pg_init_privs row. Every other relation there has no
+ * PUBLIC grant. The meta-test compares each list with a fresh template1.
+ */
+export const INFORMATION_SCHEMA_PUBLIC: Record<number, readonly string[]> = {
+  14: PG14_INFORMATION_SCHEMA,
+  17: PG17_INFORMATION_SCHEMA,
+};
 
 /** Server major versions whose catalog shape has been classified. */
 export const SUPPORTED_MAJORS: readonly number[] = [14, 17];
@@ -95,8 +108,11 @@ export interface BaselineCatalog {
   owner: string;
   kind: string;
   join?: string;
-  /** Where initdb's information_schema grant to PUBLIC applies, and what it grants. */
-  informationSchema?: { namespace: string; privilege: string };
+  /**
+   * Where initdb's information_schema grant to PUBLIC applies, and what it
+   * grants. `listed` limits it to the relations in INFORMATION_SCHEMA_PUBLIC.
+   */
+  informationSchema?: { namespace: string; privilege: string; listed?: string };
 }
 
 /** The non-shared catalogs whose initdb objects M29 diffs against pg_init_privs. */
@@ -106,7 +122,7 @@ export const BASELINE_ACL_CATALOGS: readonly BaselineCatalog[] = [
     acl: 'relacl',
     owner: 'c.relowner',
     kind: `CASE WHEN c.relkind = 'S' THEN 's'::"char" ELSE 'r'::"char" END`,
-    informationSchema: { namespace: 'c.relnamespace', privilege: 'SELECT' },
+    informationSchema: { namespace: 'c.relnamespace', privilege: 'SELECT', listed: 'c.relname' },
   },
   { catalog: 'pg_proc', acl: 'proacl', owner: 'c.proowner', kind: `'f'::"char"` },
   { catalog: 'pg_type', acl: 'typacl', owner: 'c.typowner', kind: `'T'::"char"` },

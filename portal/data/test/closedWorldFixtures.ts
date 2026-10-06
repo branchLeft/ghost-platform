@@ -264,6 +264,13 @@ export const EXTRAS: readonly Tamper[] = [
 /** Further extras the design check named, beyond one per mechanism. */
 export const MORE_EXTRAS: readonly Tamper[] = [
   {
+    id: 'M29',
+    title: 'SELECT for PUBLIC on an information_schema relation initdb left ungranted',
+    apply: [[P, 'GRANT SELECT ON information_schema._pg_user_mappings TO PUBLIC']],
+    undo: [[P, 'REVOKE SELECT ON information_schema._pg_user_mappings FROM PUBLIC']],
+    expect: /extra M29: added SELECT on view information_schema._pg_user_mappings to PUBLIC/,
+  },
+  {
     id: 'M03',
     title: 'a setting on the portal database (row_security off)',
     apply: [[PG, `ALTER DATABASE ${P} SET row_security = off`]],
@@ -306,6 +313,13 @@ export const MORE_EXTRAS: readonly Tamper[] = [
 
 /** One per ACL family: a manifest grant taken away. */
 export const MISSING: readonly Tamper[] = [
+  {
+    id: 'M29',
+    title: "PUBLIC's initdb SELECT on an information_schema relation",
+    apply: [[P, 'REVOKE SELECT ON information_schema.tables FROM PUBLIC']],
+    undo: [[P, 'GRANT SELECT ON information_schema.tables TO PUBLIC']],
+    expect: /extra M29: removed SELECT on view information_schema.tables to PUBLIC/,
+  },
   {
     id: 'M02',
     title: "the tenant login's membership",

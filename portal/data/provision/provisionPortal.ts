@@ -316,17 +316,33 @@ const PORTAL_TABLES: Record<string, typeof tenantRegister | typeof healthReading
   'portal.health_reading': healthReading,
 };
 
-/** A refusal: every difference found, already formatted, none of them repaired. */
+/**
+ * A refusal: every difference found, already formatted, none of them
+ * repaired. `written` says what this run had already done before it refused;
+ * absent, the run had written nothing.
+ */
 export class ProvisionRefused extends Error {
-  constructor(readonly lines: readonly string[]) {
-    super(`refused: ${lines.length} difference(s) from the manifest; nothing was changed`);
+  constructor(
+    readonly lines: readonly string[],
+    written?: string
+  ) {
+    super(
+      `refused: ${lines.length} difference(s) from the manifest; ` +
+        (written === undefined ? 'nothing was changed' : `already done by this run: ${written}`)
+    );
     this.name = 'ProvisionRefused';
   }
 }
 
 const PRINCIPALS: readonly Principal[] = ['tenantRole', 'ownerRole', 'tenantLogin', 'ownerLogin'];
 const LOGINS: readonly Principal[] = ['tenantLogin', 'ownerLogin'];
-/** Serialises runs of this command on one server; any constant would do. */
+/**
+ * Serialises runs of this command; any constant would do. PostgreSQL scopes
+ * an advisory lock to one database, so the session lock serialises only runs
+ * that name the same maintenance database. The portal transaction takes the
+ * same key in the portal database and re-checks before it writes, so runs
+ * through different maintenance databases still cannot interleave there.
+ */
 const LOCK_KEY = 735_501_873;
 
 type Attempt = (database: string, login: string, password: string) => Promise<string>;
@@ -543,9 +559,18 @@ export async function provisionPortal(
     );
 
     // 3. The database, outside any transaction, as PostgreSQL requires.
+    const done = [
+      created.size > 0 ? `created ${[...created].map((p) => names[p]).join(', ')}` : undefined,
+      LOGINS.some((p) => !created.has(p))
+        ? `rotated the password of ${LOGINS.filter((p) => !created.has(p))
+            .map((p) => names[p])
+            .join(', ')}`
+        : undefined,
+    ];
     if (outside.checkpoint.databaseState === 'absent') {
       await lock.query(`CREATE DATABASE ${ident(config.database)}`);
       log(`created database ${config.database}`);
+      done.push(`created database ${config.database} (empty)`);
     }
 
     // 4. The loaded pg_hba rules, observed: every other database refuses both logins.
@@ -560,7 +585,9 @@ export async function provisionPortal(
         options.attempt ?? attemptWith(config)
       )
     ).map((text) => `extra M28: ${text}`);
-    if (refusals.length > 0) throw new ProvisionRefused(refusals);
+    if (refusals.length > 0) {
+      throw new ProvisionRefused(refusals, done.filter((d) => d !== undefined).join('; '));
+    }
 
     // 5. In the portal database, one transaction: check again, create, check all.
     await withPool(urlFor(config, config.database), async (pool) => {

@@ -149,6 +149,26 @@ describe('the provisioning lifecycle', () => {
         `extra M28: login ${TENANT} was not refused by pg_hba at database postgres \\(got ok\\)`
       )
     );
+    // The probe runs after the logins and the database exist: the refusal says
+    // so rather than claiming nothing changed.
+    expect(result.err.at(-1)).toBe(
+      'provision failed: refused: 4 difference(s) from the manifest; already done by this run: ' +
+        `created portal_tenant, portal_owner, ${TENANT}, ${OWNER}; created database ${PROV_DB} (empty)`
+    );
+    expect(result.err.join('\n')).not.toContain('nothing was changed');
+  });
+
+  it("accepts initdb's own information_schema grants, PUBLIC holding nothing on seven relations", async () => {
+    expect((await run()).code).toBe(0);
+    const [result] = await admin(
+      PROV_DB,
+      `SELECT has_table_privilege('public', 'information_schema._pg_user_mappings', 'SELECT') AS m,
+              has_table_privilege('public', 'information_schema.tables', 'SELECT') AS t`
+    );
+    expect(result!.rows[0]).toEqual({ m: false, t: true });
+    const second = await run();
+    expect(second.err).toEqual([]);
+    expect(second.code).toBe(0);
   });
 
   it('refuses an administrator URL that names the portal database itself', async () => {

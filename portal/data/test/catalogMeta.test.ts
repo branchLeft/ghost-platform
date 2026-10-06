@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ACL_COLUMNS,
   ALL_SHDEPEND_DEPTYPES,
+  INFORMATION_SCHEMA_PUBLIC,
   AUTHID_REFERENCES,
   SHARED_OID_CATALOGS,
   SUPPORTED_MAJORS,
@@ -86,6 +87,35 @@ describe('the catalog against the committed snapshot', () => {
          FROM pg_get_catalog_foreign_keys() WHERE pktable = 'pg_authid'::regclass ORDER BY 1`
     );
     expect(found).toEqual(Object.keys(AUTHID_REFERENCES[major] ?? {}).sort());
+  });
+
+  it('lists exactly the information_schema relations initdb grants to PUBLIC, SELECT alone', async () => {
+    // template1 is the server's untouched initdb state: no test changes it.
+    const [result] = await admin(
+      'template1',
+      `SELECT c.relname || ' ' || string_agg(x.privilege_type, ',' ORDER BY x.privilege_type) AS v
+         FROM pg_class c, aclexplode(c.relacl) x
+        WHERE c.relnamespace = 'information_schema'::regnamespace AND x.grantee = 0
+        GROUP BY c.relname ORDER BY 1`
+    );
+    const found = (result!.rows as { v: string }[]).map((r) => r.v);
+    const listed = INFORMATION_SCHEMA_PUBLIC[major];
+    if (listed === undefined || listed.length === 0) {
+      console.log(
+        `INFORMATION SCHEMA pg${major} BEGIN\n${JSON.stringify(
+          found.map((v) => v.replace(/ SELECT$/, '')),
+          null,
+          2
+        )}\nINFORMATION SCHEMA END`
+      );
+    }
+    expect(found).toEqual([...(listed ?? [])].sort().map((name) => `${name} SELECT`));
+    const [none] = await admin(
+      'template1',
+      `SELECT count(*)::int AS n FROM pg_init_privs i JOIN pg_class c ON c.oid = i.objoid
+        WHERE i.classoid = 'pg_class'::regclass AND c.relnamespace = 'information_schema'::regnamespace`
+    );
+    expect(none!.rows[0].n).toBe(0);
   });
 
   it('every aclitem[] column is classified to a mechanism', async () => {

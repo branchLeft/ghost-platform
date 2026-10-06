@@ -16,6 +16,7 @@ import {
 } from './manifest.js';
 import {
   AUTHID_REFERENCES,
+  INFORMATION_SCHEMA_PUBLIC,
   BASELINE_ACL_CATALOGS,
   KNOWN_SHDEPEND_DEPTYPES,
 } from './catalogSnapshot.js';
@@ -923,6 +924,7 @@ async function catchAll(client: ClientBase, checkpoint: Checkpoint): Promise<Obs
 async function baselineDrift(
   client: ClientBase,
   scope: Scope,
+  major: number,
   only?: string
 ): Promise<Observation> {
   const actual: string[] = [];
@@ -932,12 +934,17 @@ async function baselineDrift(
     const objid = spec.catalog === 'pg_attribute' ? 'c.attrelid' : 'c.oid';
     const classoid = `'${IDENTIFY_AS[spec.catalog] ?? spec.catalog}'::regclass`;
     const filter = spec.catalog === 'pg_namespace' ? "AND c.nspname <> 'public'" : '';
-    // initdb grants information_schema to PUBLIC without a pg_init_privs row
-    // (PostgreSQL 14): SELECT on its relations and USAGE on the schema.
+    // initdb grants information_schema to PUBLIC without a pg_init_privs row:
+    // USAGE on the schema, and SELECT on the relations its per-version list
+    // names, and on no other.
+    const listed =
+      spec.informationSchema?.listed === undefined
+        ? ''
+        : `AND ${spec.informationSchema.listed} = ANY($2::text[])`;
     const initdbGrant =
       spec.informationSchema === undefined
         ? ''
-        : `|| CASE WHEN ${spec.informationSchema.namespace} = 'information_schema'::regnamespace
+        : `|| CASE WHEN ${spec.informationSchema.namespace} = 'information_schema'::regnamespace ${listed}
                    THEN ARRAY[makeaclitem(0, ${spec.owner}, '${spec.informationSchema.privilege}', false)]
                    ELSE '{}'::aclitem[] END`;
     const found = await rows<{ text: string }>(
@@ -962,8 +969,8 @@ async function baselineDrift(
            UNION ALL
            SELECT 'removed', e.* FROM (SELECT * FROM aclexplode(o.base) EXCEPT SELECT * FROM aclexplode(o.cur)) e
          ) x (kind, grantor, grantee, privilege_type, is_grantable)
-        WHERE x.grantee = ANY($1)`,
-      [scope.withPublic]
+        WHERE x.grantee = ANY($1) AND $2::text[] IS NOT NULL`,
+      [scope.withPublic, INFORMATION_SCHEMA_PUBLIC[major] ?? []]
     );
     actual.push(...found.map((r) => r.text));
   }
@@ -981,7 +988,7 @@ async function databaseObservations(
     await rowSecurity(client, checkpoint),
     ...(await functionDefinitions(client, checkpoint)),
     await typeAcls(client, checkpoint),
-    await baselineDrift(client, scope, 'pg_language'),
+    await baselineDrift(client, scope, checkpoint.major, 'pg_language'),
     await largeObjects(client),
     await foreignData(client),
     await defaultAcls(client),
@@ -991,7 +998,7 @@ async function databaseObservations(
     await publications(client),
     await extensions(client),
     await catchAll(client, checkpoint),
-    await baselineDrift(client, scope),
+    await baselineDrift(client, scope, checkpoint.major),
   ];
 }
 
