@@ -89,9 +89,9 @@ function recordingDeps(
       },
     },
     adminApi: {
-      async configure(baseUrl, descriptor) {
+      async configure(baseUrl, descriptor, slot) {
         capture('before configure');
-        await deps.adminApi.configure(baseUrl, descriptor);
+        await deps.adminApi.configure(baseUrl, descriptor, slot);
       },
     },
     ghostReadiness: {

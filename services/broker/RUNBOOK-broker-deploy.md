@@ -37,9 +37,15 @@ inlined:
 - `dist/bundle/plugins/refusingDrainSource.mjs` -- the final `DrainSource`
   seam: it refuses every poll, because mail is collected from the mail
   queue directly and nothing is handed over through the broker.
-- `dist/bundle/plugins/refusingAdminApi.mjs` -- an interim `AdminApiClient`
-  that refuses every build until the real client ships (see "Left out,
-  deliberately").
+- `dist/bundle/plugins/ghostAdminApi.mjs` -- the real `AdminApiClient`. On a
+  demo's first build it creates the owner account with a random password
+  held only in memory, keeps only that owner's staff access token in the
+  slot's private folder under `BROKER_ADMIN_KEY_DIR`, and applies the code
+  injection and members support address settings with it. Later builds
+  (colour swaps, retries) re-apply them with the stored token. If the
+  prospect regenerates the token in their Ghost profile, the next swap is
+  refused and the demo stays on its current colour. A reset deletes the
+  token. See `src/ghostAdmin/client.md`.
 
 Each file has no `node_modules` dependency once built: `server.ts#loadPlugin`
 reaches the plugin modules through a runtime `import()` of an environment
@@ -60,6 +66,7 @@ because no publish path exists yet either -- see "Delivery path" below).
 1. **Pin Node.** On demo1 -- `dpkg`'s architecture name and nodejs.org's own
    tarball name disagree (`amd64` vs. `x64`), and the tarball is verified
    against Node's own published checksums before it is ever extracted:
+
    ```bash
    case "$(dpkg --print-architecture)" in
      amd64) NODE_ARCH=x64 ;;
@@ -74,6 +81,7 @@ because no publish path exists yet either -- see "Delivery path" below).
    rm "node-v26.5.0-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt
    /opt/branchleft/broker/node/bin/node --version   # expect v26.5.0
    ```
+
    Installed once per Node version, independent of the app's own release
    directory below -- an app upgrade that does not also bump `.nvmrc` never
    touches this step.
@@ -81,18 +89,21 @@ because no publish path exists yet either -- see "Delivery path" below).
 2. **Create the `broker` account**, if the host build hasn't already
    (branchLeft/workspace#1188/#1447 own the host's user/uid plan; this is
    the minimal fallback if it hasn't landed yet):
+
    ```bash
    sudo useradd --system --home-dir /var/lib/branchleft-broker --shell /usr/sbin/nologin broker
    ```
 
 3. **Install the sudoers boundary and the wrapper**, if not already done by
    the host build:
+
    ```bash
    sudo python3 demo-host/provision/render_slot_sudoers.py --install /etc/sudoers.d/branchleft-slot
    sudo install -o root -g root -m 0755 demo-host/provision/branchleft_slot.py /usr/local/sbin/branchleft-slot
    ```
 
 4. **Build and ship the bundle**, from a workstation checkout:
+
    ```bash
    cd services/broker
    npm ci
@@ -102,6 +113,7 @@ because no publish path exists yet either -- see "Delivery path" below).
    rsync -a --chown=root:root dist/bundle/ "demo1:/tmp/broker-release-${RELEASE}/"
    ssh demo1 "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current"
    ```
+
    `rsync -a` preserves the workstation's own uid/mode bits, so the `mv`
    step keeps everything under `releases/` root-owned regardless of what
    the operator's own account looked like at the source end -- the
@@ -111,28 +123,31 @@ because no publish path exists yet either -- see "Delivery path" below).
 5. **Create the directories the unit's `ReadWritePaths=`/`ReadOnlyPaths=`
    expect to already exist** -- a missing path here fails the unit with
    `226/NAMESPACE` at start, not at install:
+
    ```bash
    sudo mkdir -p /etc/branchleft
    sudo install -d -o root -g root -m 0755 /var/lib/branchleft
    sudo install -d -o broker -g broker -m 0755 /var/lib/branchleft/broker-slots
+   sudo install -d -o broker -g broker -m 0700 /var/lib/branchleft/broker-slots/admin-keys
    ```
 
 6. **Write `/etc/branchleft/broker.env`** on demo1 from
    `systemd/broker.env.example`, root:root, mode 0600:
+
    ```bash
    sudo install -o root -g root -m 0600 /dev/null /etc/branchleft/broker.env
    sudo $EDITOR /etc/branchleft/broker.env   # fill in the real values; never echo them to a shell history
    ```
+
    Fill in a real `BROKER_VERIFY_KEY_FILE` at the path it names, 32 raw
    Ed25519 public-key bytes, owned **`root:broker`, mode 0640**. See
    `systemd/README.md` ("The verify key") for why it is group-readable
    rather than broker-owned. Leave the four `BROKER_*_MODULE` lines as the
    template ships them: every one names a module in the bundle.
    `GET /status/<slot>` lists any loaded module not marked real (a test
-   stand-in, or anything unmarked) under `notReal`, and the interim admin
-   client under `interim`. The host is not ready to go live until both
-   lists are empty; with this template, both name `adminApi` until the real
-   client ships. **Never set `LISTEN_HOST`** --
+   stand-in, or anything unmarked) under `notReal`, and any interim module
+   under `interim`. The host is not ready to go live until both lists are
+   empty; with this template, both are. **Never set `LISTEN_HOST`** --
    `test/unit/listenHostDefault.test.ts` is the guard that keeps this file's
    own committed template from regressing that.
 
@@ -211,12 +226,6 @@ docker rm -f broker-boot-proof
 
 ## Left out, deliberately
 
-- **A real `BROKER_ADMIN_API_MODULE`.** The shipped one refuses every
-  build, so `POST /reconcile` answers `503` (a fresh build ends with the
-  slot in `error`; a colour swap leaves the slot on its current colour) and
-  the journal names why. `/status`, `/reset` and `/stop` never call it and
-  work normally. Swapping in the real client is a one-line change to this
-  env file once it ships.
 - **`GET /drain` never hands anything over.** That is final, not a gap:
   the shipped drain source answers `502` and logs that mail is collected
   from the mail queue directly.
