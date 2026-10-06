@@ -27,6 +27,15 @@ export interface GatewayRequest {
    * an array in arrival order, never merged or dropped.
    */
   readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>;
+
+  /**
+   * Lower-case hex SHA-256 of the complete request body as received, the
+   * empty-body digest for no body. Set by whatever reads the body; absent
+   * until it has been read. The verifier refuses a request without it,
+   * because a signed payload hash proves nothing until it is compared with
+   * the body that actually arrived.
+   */
+  readonly bodySha256?: string;
 }
 
 /** Why a request was refused. Stable strings: they are logged and tested. */
@@ -73,6 +82,16 @@ export type VerifyResult =
  */
 export interface SignatureVerifier {
   verify(request: GatewayRequest): Promise<VerifyResult>;
+}
+
+/**
+ * Supplies the SigV4 secret for a key id, typically by deriving it from a
+ * master secret so nothing per tenant is stored in clear. Resolves to
+ * `undefined` for a key id it has never issued; rejects only when it cannot
+ * answer, which the verifier treats as a failure, never as a pass.
+ */
+export interface TenantSecretSource {
+  secretFor(keyId: string): Promise<string | undefined>;
 }
 
 /** Whether a tenant credential may currently be used. */
