@@ -30,6 +30,21 @@ const issuer = new FakeIssuer();
 beforeAll(async () => {
   fixture = await createFixture();
   const db = new OwnerDb(fixture.owner);
+  await db.recordReading(
+    TENANT_A,
+    [
+      'drain_sidecar_drained 0\ndrain_sidecar_ghost_version_info{version="6.55.0"} 1\ndrain_sidecar_version_match 1',
+    ],
+    new Date('2026-10-01T10:00:00Z')
+  );
+  await db.recordReading(
+    TENANT_B,
+    [
+      'drain_sidecar_drained 1',
+      'drain_sidecar_drained 0\ndrain_sidecar_ghost_version_info{version="6.54.0"} 1\ndrain_sidecar_version_match 0',
+    ],
+    new Date('2026-10-02T10:00:00Z')
+  );
   app = await serve((origin) =>
     createOwnerConsole({
       issuer: ISSUER,
@@ -38,7 +53,7 @@ beforeAll(async () => {
       publicOrigin: origin,
       ownerOrgId: OWNER_ORG,
       db: {
-        listTenants: () => (failing ? Promise.reject(new Error('down')) : db.listTenants()),
+        listHealth: () => (failing ? Promise.reject(new Error('down')) : db.listHealth()),
       } as OwnerDb,
       secureCookies: false,
       clock: () => NOW,
@@ -64,6 +79,18 @@ describe('the owner console', () => {
     expect(page.body).toContain(TENANT_A);
     expect(page.body).toContain(TENANT_B);
     expect(page.body).toContain('OWNER_CONSOLE');
+  });
+
+  it("shows the owner every tenant's health and version, with the reverted tenant's mismatch dated", async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    const page = await browser.request('/');
+    expect(page.body).toContain('6.55.0');
+    expect(page.body).toContain('VERSION_MATCHES');
+    expect(page.body).toContain('6.54.0');
+    expect(page.body).toContain('VERSION_MISMATCH');
+    expect(page.body).toContain('MISMATCH_SINCE');
+    expect(page.body).toContain('2026-10-02');
   });
 
   it('sends an unsigned visitor to sign in', async () => {

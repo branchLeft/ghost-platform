@@ -1,6 +1,7 @@
 import { createTokenVerifier, ROLE_TENANT_ADMIN } from 'ghost-platform-identity/dist/index.js';
 import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js';
 import { TenantDb, type TenantScope } from 'ghost-platform-portal-data/tenant';
+import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
 
@@ -55,7 +56,8 @@ export function createTenantPortal(options: TenantPortalOptions) {
     landing: async (scope) => {
       const own = await options.db.ownRegistration(scope);
       const id = own ? escapeHtml(own.tenantId) : 'NO_TENANT';
-      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>`;
+      const health = await options.db.ownHealth(scope);
+      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${renderHealth(health)}`;
     },
   });
 }

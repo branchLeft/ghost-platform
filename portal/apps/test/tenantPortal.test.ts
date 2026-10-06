@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { OwnerDb } from 'ghost-platform-portal-data/owner';
 import { TenantDb } from 'ghost-platform-portal-data/tenant';
 import {
   createFixture,
@@ -38,6 +39,21 @@ async function signIn(browser: Browser, token: string) {
 
 beforeAll(async () => {
   fixture = await createFixture();
+  const owner = new OwnerDb(fixture.owner);
+  await owner.recordReading(
+    TENANT_A,
+    [
+      'drain_sidecar_drained 0\ndrain_sidecar_ghost_version_info{version="6.55.0"} 1\ndrain_sidecar_version_match 1',
+    ],
+    new Date('2026-10-01T10:00:00Z')
+  );
+  await owner.recordReading(
+    TENANT_B,
+    [
+      'drain_sidecar_drained 0\ndrain_sidecar_ghost_version_info{version="6.54.0"} 1\ndrain_sidecar_version_match 0',
+    ],
+    new Date('2026-10-02T10:00:00Z')
+  );
   app = await serve((origin) =>
     createTenantPortal({
       issuer: ISSUER,
@@ -87,6 +103,30 @@ describe('the tenant portal sign-in', () => {
     const page = await browser.request('/');
     expect(page.body).toContain(TENANT_B);
     expect(page.body).not.toContain(TENANT_A);
+  });
+
+  it("shows tenant A its own health and version, and nothing of B's reading", async () => {
+    const browser = new Browser(app.origin);
+    await signIn(browser, tenantToken(ORG_A));
+    const page = await browser.request('/');
+    expect(page.body).toContain('SITE_HEALTH');
+    expect(page.body).toContain('HEALTHY');
+    expect(page.body).toContain('6.55.0');
+    expect(page.body).toContain('VERSION_MATCHES');
+    expect(page.body).not.toContain('6.54.0');
+    expect(page.body).not.toContain('VERSION_MISMATCH');
+    expect(page.body).not.toContain('2026-10-02');
+  });
+
+  it("shows tenant B its own dated mismatch, and nothing of A's reading", async () => {
+    const browser = new Browser(app.origin);
+    await signIn(browser, tenantToken(ORG_B));
+    const page = await browser.request('/');
+    expect(page.body).toContain('6.54.0');
+    expect(page.body).toContain('VERSION_MISMATCH');
+    expect(page.body).toContain('2026-10-02');
+    expect(page.body).not.toContain('6.55.0');
+    expect(page.body).not.toContain('VERSION_MATCHES');
   });
 
   it('still serves A when the request names B in the path, query, headers and cookies', async () => {

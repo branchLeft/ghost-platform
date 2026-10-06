@@ -1,6 +1,7 @@
 import { createTokenVerifier, ROLE_OWNER } from 'ghost-platform-identity/dist/index.js';
 import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js';
 import { OwnerDb } from 'ghost-platform-portal-data/owner';
+import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
 
@@ -52,8 +53,10 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     sessionSeconds: options.sessionSeconds,
     bind: async () => true,
     landing: async () => {
-      const tenants = await options.db.listTenants();
-      const rows = tenants.map((t) => `<li><code>${escapeHtml(t.tenantId)}</code></li>`).join('');
+      const tenants = await options.db.listHealth();
+      const rows = tenants
+        .map((t) => `<li><code>${escapeHtml(t.tenantId)}</code>${renderHealth(t.health)}</li>`)
+        .join('');
       return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><ul>${rows}</ul>`;
     },
   });
