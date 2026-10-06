@@ -52,6 +52,7 @@ const ANALYTICS_MARKER = 'PLAINTEXT-ANALYTICS-ROW-marker';
 
 const MEDIA_BASE = 'https://media.test/opaque-t1';
 const MEDIA: MediaConfig = {
+  redeemable: true,
   baseUrl: MEDIA_BASE,
   signer: { baseUrl: 'https://export.test', ttlSeconds: 3600, secret: Buffer.alloc(32, 7) },
 };
@@ -65,11 +66,10 @@ const MEMBERS: Collection = {
   ],
 };
 const COMMENTS: Collection = {
-  total: 3,
+  total: 2,
   items: [
     { id: 'c1', status: 'published', html: '<p>one</p>', count: { reports: 0 } },
     { id: 'c2', status: 'hidden', html: '<p>two</p>', count: { reports: 1 } },
-    { id: 'c3', status: 'deleted', html: '<p>three</p>', count: { reports: 0 } },
   ],
 };
 
@@ -647,11 +647,11 @@ describe('runExport', () => {
       ).toEqual([
         ['media', 'complete', 1, 1],
         ['members_and_subscriptions', 'complete', 2, 2],
-        ['comments', 'complete', 3, 3],
+        ['comments', 'complete', 2, 2],
       ]);
       const { part } = await archiveOf(result);
       expect(part('members.json').members).toHaveLength(2);
-      expect(part('comments.json').comments).toHaveLength(3);
+      expect(part('comments.json').comments).toHaveLength(2);
       expect(part('media_links.json').links).toHaveLength(1);
     });
 
@@ -662,7 +662,6 @@ describe('runExport', () => {
       expect(comments.map((c) => [c.html, c.moderation.status])).toEqual([
         ['<p>one</p>', 'published'],
         ['<p>two</p>', 'hidden'],
-        ['<p>three</p>', 'deleted'],
       ]);
       expect(comments[1]?.moderation.reports).toEqual([{ id: 'r1', member_id: 'm2' }]);
     });
@@ -773,6 +772,16 @@ describe('runExport', () => {
       ]);
     });
 
+    it('does not claim completeness while no route verifies the media links', async () => {
+      const { deps } = fakeDeps({});
+      const result = await runExport(deps, request({ media: { ...MEDIA, redeemable: false } }));
+      expect(result.manifest.complete).toBe(false);
+      expect(result.manifest.excluded[0]).toEqual({
+        name: 'media',
+        reason: 'partial: no route verifies these links yet',
+      });
+    });
+
     it("names what no archive can hold: Stripe's side, the portal moderation record, media bytes and analytics", async () => {
       const { deps } = fakeDeps({});
       const result = await runExport(deps, request());
@@ -780,6 +789,7 @@ describe('runExport', () => {
         'analytics_beyond_post_csv',
         'stripe_billing_relationship',
         'portal_moderation_record',
+        'deleted_comments',
         'media_bytes',
       ]);
     });

@@ -64,6 +64,11 @@ export const KNOWN_EXPORT_GAPS: readonly ManifestGap[] = [
       "classifier verdicts and moderator decisions held by the portal's moderation queue are not in Ghost and not in this archive; the archive carries Ghost's own status and the member reports for each comment",
   },
   {
+    name: 'deleted_comments',
+    reason:
+      "Ghost's admin comment list leaves out comments with status deleted, and blanks their text, so they are not in the archive and the comment count does not include them",
+  },
+  {
     name: 'media_bytes',
     reason:
       'the archive carries a manifest of time-bounded links to the media, never the bytes; the links expire, and a tenant keeps nothing from them after that unless they download first',

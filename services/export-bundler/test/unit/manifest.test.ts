@@ -53,6 +53,7 @@ describe('buildManifest', () => {
       'analytics_beyond_post_csv',
       'stripe_billing_relationship',
       'portal_moderation_record',
+      'deleted_comments',
       'media_bytes',
     ]);
     expect(manifest.complete).toBe(true);

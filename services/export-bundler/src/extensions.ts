@@ -37,6 +37,8 @@ export interface ExtensionOutcome {
 export interface MediaConfig {
   /** The base URL the tenant's own rendered environment serves media from; `null` when it has none. */
   readonly baseUrl: string | null;
+  /** True only once a route exists that redeems these links; until then media is never complete. */
+  readonly redeemable: boolean;
   readonly signer: MediaLinkSigner;
 }
 
@@ -55,7 +57,8 @@ export const MEMBERS_CSV_ENTRY = 'members.csv';
 export const COMMENTS_ENTRY = 'comments.json';
 export const MEDIA_LINKS_ENTRY = 'media_links.json';
 
-export const COMMENT_STATUSES: readonly string[] = ['published', 'hidden', 'deleted'];
+/** Ghost's admin comment list returns these two; it leaves `deleted` out, which the manifest names. */
+export const COMMENT_STATUSES: readonly string[] = ['published', 'hidden'];
 
 type Row = Record<string, unknown>;
 
@@ -236,6 +239,7 @@ export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcom
       deps.nowSeconds
     );
     const notes: string[] = [];
+    if (!deps.media.redeemable) notes.push('no route verifies these links yet');
     if (plan.missing.length > 0) {
       notes.push(`${plan.missing.length} referenced objects are not in storage`);
     }

@@ -128,3 +128,37 @@ describe('assertSafeObjectKey', () => {
     expect(() => assertSafeObjectKey('2026/10/photo-1.png')).not.toThrow();
   });
 });
+
+describe('the signed message encoding', () => {
+  it('matches a fixed known-answer vector, so a verifying route cannot diverge from the signer', () => {
+    const { url } = signMediaLink(signer, 't1', '0x/a.png', NOW);
+    expect(url).toBe(
+      'https://export.test/t1/0x/a.png?expires=1800003600&sig=a286beaa9254cdd7fb2e9a8983ab6450d86fd513315e11dedfdb47bb04fcc1c5'
+    );
+  });
+
+  it('does not let a link for t1 / 0x/a.png pass as t10 / x/a.png (field boundary shift)', () => {
+    const { url } = signMediaLink(signer, 't1', '0x/a.png', NOW);
+    const shifted = url.replace('/t1/0x/a.png', '/t10/x/a.png');
+    expect(reason(() => verifyMediaLink(SECRET, shifted, NOW))).toBe('bad-signature');
+  });
+
+  it('does not let key a1 at expiry E pass as key a at expiry 1E (key and expiry boundary shift)', () => {
+    const { url, expiresAt } = signMediaLink(signer, 't1', 'a1', NOW);
+    const shifted = url
+      .replace('/a1?', '/a?')
+      .replace(`expires=${expiresAt}`, `expires=1${expiresAt}`);
+    expect(reason(() => verifyMediaLink(SECRET, shifted, NOW))).toBe('bad-signature');
+  });
+
+  it('binds the expiry exactly: one second either side of the signed value fails the signature', () => {
+    const { url, expiresAt } = signMediaLink(signer, 't1', 'a.png', NOW);
+    for (const moved of [expiresAt - 1, expiresAt + 1]) {
+      expect(
+        reason(() =>
+          verifyMediaLink(SECRET, url.replace(`expires=${expiresAt}`, `expires=${moved}`), NOW)
+        )
+      ).toBe('bad-signature');
+    }
+  });
+});

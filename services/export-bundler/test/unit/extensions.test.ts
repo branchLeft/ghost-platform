@@ -35,11 +35,10 @@ function client(over: Partial<GhostExportClient> = {}): GhostExportClient {
       ],
     }),
     fetchComments: async () => ({
-      total: 3,
+      total: 2,
       items: [
         { id: 'c1', status: 'published', count: { reports: 0 } },
         { id: 'c2', status: 'hidden', count: { reports: 2 } },
-        { id: 'c3', status: 'deleted' },
       ],
     }),
     fetchCommentReports: async () => ({ total: 2, items: [{ id: 'r1' }, { id: 'r2' }] }),
@@ -54,6 +53,7 @@ function deps(over: Partial<ExtensionDeps> = {}): ExtensionDeps {
     baseUrl: 'http://127.0.0.1:1',
     tenantId: 'tenant-1',
     media: {
+      redeemable: true,
       baseUrl: BASE,
       signer: { baseUrl: 'https://export.test', ttlSeconds: 600, secret: Buffer.alloc(32, 3) },
     },
@@ -157,17 +157,16 @@ describe('collectMembers', () => {
 });
 
 describe('collectComments', () => {
-  it("carries each comment's moderation state alongside its text, including hidden and deleted", async () => {
+  it("carries each comment's moderation state alongside its text, including hidden", async () => {
     const out = await collectComments(deps());
-    expect(out.report).toMatchObject({ status: 'complete', expected: 3, present: 3 });
-    expect(out.report.info).toEqual(['moderation states: 1 published, 1 hidden, 1 deleted']);
+    expect(out.report).toMatchObject({ status: 'complete', expected: 2, present: 2 });
+    expect(out.report.info).toEqual(['moderation states: 1 published, 1 hidden']);
     const { comments } = JSON.parse(String(out.files[0]?.data)) as {
       comments: Record<string, any>[];
     };
     expect(comments.map((c) => [c.id, c.moderation.status])).toEqual([
       ['c1', 'published'],
       ['c2', 'hidden'],
-      ['c3', 'deleted'],
     ]);
     expect(comments[1]?.moderation).toMatchObject({
       reportCount: 2,
@@ -299,6 +298,15 @@ describe('collectMedia', () => {
     expect(out.report.info[0]).toBe(
       '1 references under another prefix were refused and not linked'
     );
+  });
+});
+
+describe('media completeness until a route redeems the links', () => {
+  it('is PARTIAL, naming why, while no route verifies the links, even when every object is linked', async () => {
+    const out = await collectMedia(deps({ media: { ...deps().media, redeemable: false } }));
+    expect(out.report.status).toBe('partial');
+    expect(out.report.notes).toEqual(['no route verifies these links yet']);
+    expect(out.report.present).toBe(out.report.expected);
   });
 });
 

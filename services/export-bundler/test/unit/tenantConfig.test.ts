@@ -272,6 +272,42 @@ describe('mediaBaseUrlOf', () => {
     );
   });
 
+  it("adds Ghost's tenantPrefix to the media address, the shard shape the storage design renders", () => {
+    expect(
+      mediaBaseUrlOf({
+        storage__images__wrappedConfig__cdnUrl: 'https://media.example/',
+        storage__images__wrappedConfig__tenantPrefix: '/opaque-t1/',
+      })
+    ).toBe('https://media.example/opaque-t1');
+    expect(
+      mediaBaseUrlOf({
+        storage__images__cdnUrl: 'https://media.example',
+        storage__images__tenantPrefix: 'opaque-t1',
+      })
+    ).toBe('https://media.example/opaque-t1');
+  });
+
+  it("keeps today's render-core shape, a per-tenant bucket in the address and no prefix", () => {
+    expect(
+      mediaBaseUrlOf({
+        storage__images__wrappedConfig__cdnUrl:
+          'https://s3.endpoint.example/branchleft-media-entry-co',
+      })
+    ).toBe('https://s3.endpoint.example/branchleft-media-entry-co');
+  });
+
+  it.each(['../x', 'a/../b', 'a//b', 'a?b', 'a\\b', '.'])(
+    'refuses the tenantPrefix %j',
+    (prefix) => {
+      expect(() =>
+        mediaBaseUrlOf({
+          storage__images__cdnUrl: 'https://media.example',
+          storage__images__tenantPrefix: prefix,
+        })
+      ).toThrow(TenantConfigError);
+    }
+  );
+
   it('is null for a tenant with no object-storage media', () => {
     expect(mediaBaseUrlOf({ storage__images__adapter: 'LocalImagesStorage' })).toBeNull();
   });

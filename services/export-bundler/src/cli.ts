@@ -214,6 +214,7 @@ async function main(argv: readonly string[]): Promise<void> {
       liveDatabase,
       media: {
         baseUrl: mediaBaseUrlOf(runtime.env),
+        redeemable: false,
         signer: {
           baseUrl: opts.linkBaseUrl,
           ttlSeconds: opts.linkTtlSeconds,

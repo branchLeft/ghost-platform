@@ -6,16 +6,10 @@ import {
 } from './mediaLinks.js';
 
 /**
- * The media half of the export: the archive carries a manifest of
- * time-bounded links, never the bytes. Live media sits in shared shard
- * buckets behind our gateway under one opaque prefix per tenant, and the
- * tenant holds no storage key, so a bucket-to-bucket copy with the tenant's
- * own credentials does not exist (page 20 of the storage design).
- *
- * The tenant's scope is the base URL its own rendered environment serves
- * media from (`cdnUrl`). A reference is signed only if it lies under that
- * base. A reference on the same origin but under another prefix is another
- * tenant's object on a shared shard: it is refused and named, never signed.
+ * The media half of the export: links, never bytes. A tenant holds no
+ * storage key, so a bucket-to-bucket copy cannot exist. A reference is
+ * linked only if it lies under the tenant's own scope (media address plus
+ * its Ghost tenant prefix); anything else on the shared shard is refused.
  */
 
 export interface RefusedReference {

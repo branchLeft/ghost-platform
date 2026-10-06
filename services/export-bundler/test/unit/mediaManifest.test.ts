@@ -10,6 +10,7 @@ import {
   scanMediaReferences,
   type MediaProbe,
 } from '../../src/mediaManifest.js';
+import { mediaBaseUrlOf } from '../../src/tenantConfig.js';
 import { verifyMediaLink, type MediaLinkSigner } from '../../src/mediaLinks.js';
 
 const BASE = 'https://media.test/opaque-t1';
@@ -179,5 +180,37 @@ describe('createHttpMediaProbe', () => {
     } finally {
       await s.close();
     }
+  });
+});
+
+describe('scope from the rendered shard shape', () => {
+  const shard = (prefix: string) => ({
+    storage__images__cdnUrl: 'https://media.example',
+    storage__images__tenantPrefix: prefix,
+  });
+
+  it('on a shared shard, links only the tenant whose prefix it is, and refuses a neighbour', () => {
+    const own = mediaBaseUrlOf(shard('opaque-t1'))!;
+    const content = JSON.stringify({
+      a: 'https://media.example/opaque-t1/content/images/2026/a.png',
+      b: 'https://media.example/opaque-t2/content/images/2026/b.png',
+    });
+    const scan = scanMediaReferences(content, own);
+    expect(scan.keys).toEqual(['content/images/2026/a.png']);
+    expect(scan.refused).toEqual([
+      {
+        reference: 'https://media.example/opaque-t2/content/images/2026/b.png',
+        reason: 'outside-tenant-prefix',
+      },
+    ]);
+    // The same content seen from the neighbour links the other object only.
+    expect(scanMediaReferences(content, mediaBaseUrlOf(shard('opaque-t2'))!).keys).toEqual([
+      'content/images/2026/b.png',
+    ]);
+  });
+
+  it('fails closed for a bare media address with no prefix, rather than admitting the whole shard', () => {
+    const base = mediaBaseUrlOf({ storage__images__cdnUrl: 'https://media.example' })!;
+    expect(() => scanMediaReferences('{}', base)).toThrow(MediaBaseError);
   });
 });

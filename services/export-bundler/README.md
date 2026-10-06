@@ -116,8 +116,9 @@ and the audit record carries the same `complete` flag.
   re-importable export. Stripe's side of each subscription is named as out of
   reach.
 - **Comments.** `comments.json` is every comment, replies included, each with
-  `moderation`: Ghost's status (`published`, `hidden` or `deleted`) and the
-  member reports against it. Classifier verdicts and moderator decisions held
+  `moderation`: Ghost's status (`published` or `hidden`) and the
+  member reports against it. Ghost's admin list omits `deleted` comments, so
+  they are not in the archive; the manifest names that as out of reach. Classifier verdicts and moderator decisions held
   by the portal's queue are not in Ghost and are named as out of reach.
 
 The manifest beside the archive is plaintext, so it names failures by kind
