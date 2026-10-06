@@ -139,3 +139,13 @@ export const ALLOWED_OPERATIONS = [
 ] as const;
 
 export type AllowedOperation = (typeof ALLOWED_OPERATIONS)[number];
+
+/**
+ * Gives the signature check a tenant's SigV4 secret for a key id. Resolves
+ * to `undefined` for a key id that was never issued or is not active, so
+ * a disabled credential fails at the signature as well as at the store.
+ * The secret is derived on each call and never cached or stored.
+ */
+export interface SigningSecretSource {
+  signingSecret(keyId: string): Promise<string | undefined>;
+}

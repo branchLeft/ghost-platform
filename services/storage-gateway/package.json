@@ -10,10 +10,12 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test:unit": "vitest run",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "vectors:generate": "REGENERATE_REFERENCE_VECTORS=1 vitest run test/generate-reference-vectors.test.ts"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.4.0",
+    "@smithy/signature-v4": "5.6.1",
     "@types/node": "^26.5.1",
     "@vitest/coverage-v8": "^4.1.11",
     "typescript": "^5.9.0",
