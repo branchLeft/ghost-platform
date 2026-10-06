@@ -1,0 +1,523 @@
+{
+  "signer": "@smithy/signature-v4@5.6.1",
+  "identity": {
+    "keyId": "GWTENANTKEY0001",
+    "secret": "TEST_ONLY_SECRET/with+base64=chars",
+    "region": "nbg1",
+    "signingDate": "2026-10-06T09:30:15Z"
+  },
+  "vectors": [
+    {
+      "name": "ghost PutObject",
+      "request": {
+        "method": "PUT",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/photo.png?x-id=PutObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-length": "21",
+          "x-amz-checksum-crc32": "NSRBwg==",
+          "x-amz-sdk-checksum-algorithm": "CRC32",
+          "content-type": "image/png",
+          "cache-control": "max-age=31536000",
+          "x-amz-content-sha256": "f3ec1f8f8dcc2661f89447fe7f06febad2ad5aa10c8ecc84a45ed68ac7438769",
+          "x-amz-date": "20261006T093015Z",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-checksum-crc32;x-amz-content-sha256;x-amz-date;x-amz-sdk-checksum-algorithm, Signature=2e762d863843333cd70d28f8e08f08bfbc7d7461ec2b03886067523daac20a72"
+        },
+        "bodySha256": "f3ec1f8f8dcc2661f89447fe7f06febad2ad5aa10c8ecc84a45ed68ac7438769"
+      }
+    },
+    {
+      "name": "ghost CreateMultipartUpload",
+      "request": {
+        "method": "POST",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/video.mp4?uploads=&x-id=CreateMultipartUpload",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-type": "video/mp4",
+          "content-length": "0",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date, Signature=aec27444e979ea068c387963ae295c96b6c8619fde8dd0a9d8d5bd07ee5c6b45"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "ghost CreateMultipartUpload, bare uploads flag on the wire",
+      "request": {
+        "method": "POST",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/video.mp4?uploads&x-id=CreateMultipartUpload",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-type": "video/mp4",
+          "content-length": "0",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date, Signature=aec27444e979ea068c387963ae295c96b6c8619fde8dd0a9d8d5bd07ee5c6b45"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "ghost UploadPart",
+      "request": {
+        "method": "PUT",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/video.mp4?partNumber=1&uploadId=Zm9v%2BYmFy%2FYmF6%3D2~upload.ID_x&x-id=UploadPart",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-length": "14",
+          "x-amz-checksum-crc32": "NSRBwg==",
+          "x-amz-sdk-checksum-algorithm": "CRC32",
+          "x-amz-content-sha256": "3cd87ed13a925cff7f2179d3273cfee8e2907cf88645b9acb6b6585fe24c0e29",
+          "x-amz-date": "20261006T093015Z",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;host;x-amz-checksum-crc32;x-amz-content-sha256;x-amz-date;x-amz-sdk-checksum-algorithm, Signature=9ccec2661bcffa4f3e65aead3f09f38dbf3e393a6c6b49b0486b77786dac5b92"
+        },
+        "bodySha256": "3cd87ed13a925cff7f2179d3273cfee8e2907cf88645b9acb6b6585fe24c0e29"
+      }
+    },
+    {
+      "name": "ghost CompleteMultipartUpload",
+      "request": {
+        "method": "POST",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/video.mp4?uploadId=Zm9v%2BYmFy%2FYmF6%3D2~upload.ID_x&x-id=CompleteMultipartUpload",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-type": "application/xml",
+          "content-length": "159",
+          "x-amz-content-sha256": "8bfd713edd983ef92928d46e47bd62af2cbc3aae9743ba780246e9b5d5e69e63",
+          "x-amz-date": "20261006T093015Z",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date, Signature=a3fd92e57d9bf076f906f039a3c0cff3bfddf94ab765c0a8097c44ef203b7a1d"
+        },
+        "bodySha256": "8bfd713edd983ef92928d46e47bd62af2cbc3aae9743ba780246e9b5d5e69e63"
+      }
+    },
+    {
+      "name": "ghost AbortMultipartUpload",
+      "request": {
+        "method": "DELETE",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/video.mp4?uploadId=Zm9v%2BYmFy%2FYmF6%3D2~upload.ID_x&x-id=AbortMultipartUpload",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=69c7701de210cd154f4d81e25fdd4332935a46ff0a5289fd43dac12c2d8cec86"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "ghost HeadObject",
+      "request": {
+        "method": "HEAD",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/photo.png?x-id=HeadObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=53bc9bb2c84a2784c04fc52f0d9304862ce966e47d8a35406ee4632b25dbd5c5"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "ghost GetObject",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/photo.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=412820375ff071b6abfb12a011f1aed7912003d186c9f59a1540d91b0159e42c"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "ghost DeleteObject",
+      "request": {
+        "method": "DELETE",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/2026/10/photo_o.png?x-id=DeleteObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=b29464d6d9d748f33f8235160eff2babefeb2fd49fc5e2d2cffbd4768a18bd02"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 1",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/a%20b/c%20d.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=b37f620cd53e9b792300462fc05ae1c5aa593a410b0c6cb764877eff4ef8120a"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 2",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/plus%2Bsign.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=064b242f448abdce9d2dfde853a0a04be26f159b21241dccb00615c070528074"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 3",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/per%25cent.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=5928f5263e7fbfb05bff952ed296e90fc01e06a7f2ae709ac57c90cb203b362e"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 4",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/sub-delims%21%24%26%27%28%29%2A%2B%2C%3B%3D.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=8aac1e04d51cd73c58148362efa2fd465f968363bc45adb491010884c02e3afb"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 5",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/question%3Fmark%23hash.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=739e24688c5a63505777ca88e90c9a0079465398de9802ad72e29d48dd905782"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 6",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/tilde~dash-under_dot.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=feb3daa88200af37a216997bce3d59a73fc60809f98d0179d49e64234d497873"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 7",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/caf%C3%A9/%E6%97%A5%E6%9C%AC%E8%AA%9E/%F0%9F%98%80.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=9556a865c58acf19db4deb6da1112b332c404da2230cab831171fd1053d60123"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 8",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/colon%3Aat%40bracket%5Bx%5D.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=87372d7bee6fbdd540635b99a583cedd33cf8cd17bb577c7e868959aea4c3b33"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 9",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/back%5Cslash%22quote%3Clt%3Egt%60tick.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=956bc6115736f9689630fdddf61cdae14c62513df2ca7051c8633e3e519a10dc"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 10",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/file.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=9ec7957cd4c594300862c7b2f864833fa5f83462651ad4cc8b8b3612f2902553"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "awkward object name 11",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.png?x-id=GetObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=a4f406363da96c906ceb01a54797141e9571b8bb40563f85f067fb8014d00637"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "header values needing trim and whitespace collapse",
+      "request": {
+        "method": "PUT",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/h.png?x-id=PutObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-length": "21",
+          "x-amz-checksum-crc32": "NSRBwg==",
+          "x-amz-sdk-checksum-algorithm": "CRC32",
+          "content-type": "  image/png  ",
+          "x-amz-meta-note": "two  spaces\tand a tab   end ",
+          "content-disposition": "attachment;  filename=\"a  b.png\"",
+          "x-amz-content-sha256": "f3ec1f8f8dcc2661f89447fe7f06febad2ad5aa10c8ecc84a45ed68ac7438769",
+          "x-amz-date": "20261006T093015Z",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-disposition;content-length;content-type;host;x-amz-checksum-crc32;x-amz-content-sha256;x-amz-date;x-amz-meta-note;x-amz-sdk-checksum-algorithm, Signature=863fb0dca33fccf1c9700ee2e2fd3ff60aee53a8bd50c948eaeb0f7926a4109c"
+        },
+        "bodySha256": "f3ec1f8f8dcc2661f89447fe7f06febad2ad5aa10c8ecc84a45ed68ac7438769"
+      }
+    },
+    {
+      "name": "header values with commas and equals signs",
+      "request": {
+        "method": "PUT",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/h2.png?x-id=PutObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-length": "21",
+          "x-amz-checksum-crc32": "NSRBwg==",
+          "x-amz-sdk-checksum-algorithm": "CRC32",
+          "content-type": "image/png",
+          "x-amz-meta-list": "a,b, c ,d",
+          "x-amz-meta-kv": "k=v; q=\"x=y\"",
+          "x-amz-content-sha256": "f3ec1f8f8dcc2661f89447fe7f06febad2ad5aa10c8ecc84a45ed68ac7438769",
+          "x-amz-date": "20261006T093015Z",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-checksum-crc32;x-amz-content-sha256;x-amz-date;x-amz-meta-kv;x-amz-meta-list;x-amz-sdk-checksum-algorithm, Signature=85c5e12b05d13b00156762b85083662ecaf25f157cce0dc9aa8c6e7d38114814"
+        },
+        "bodySha256": "f3ec1f8f8dcc2661f89447fe7f06febad2ad5aa10c8ecc84a45ed68ac7438769"
+      }
+    },
+    {
+      "name": "payload hash computed by the reference signer",
+      "request": {
+        "method": "PUT",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/signer-hashed.bin?x-id=PutObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-length": "21",
+          "x-amz-checksum-crc32": "NSRBwg==",
+          "x-amz-sdk-checksum-algorithm": "CRC32",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "8772cde7ed6fc2db8f07b8138906b9d732fa8e47952b185c50e47466b621bc20",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;host;x-amz-checksum-crc32;x-amz-content-sha256;x-amz-date;x-amz-sdk-checksum-algorithm, Signature=02cd1f0358fdd60fa5eaf5bd43b2160f70988b28032b421ca1366a30f84ba70a"
+        },
+        "bodySha256": "8772cde7ed6fc2db8f07b8138906b9d732fa8e47952b185c50e47466b621bc20"
+      }
+    },
+    {
+      "name": "empty body with an explicit empty-payload hash",
+      "request": {
+        "method": "PUT",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/empty.txt?x-id=PutObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-length": "0",
+          "x-amz-checksum-crc32": "NSRBwg==",
+          "x-amz-sdk-checksum-algorithm": "CRC32",
+          "content-type": "text/plain",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "x-amz-date": "20261006T093015Z",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-checksum-crc32;x-amz-content-sha256;x-amz-date;x-amz-sdk-checksum-algorithm, Signature=bdbbdc9cfb66d28e817e867257fcbca22e0efcd2bd5ad9283050347118974605"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "query sent out of order and with lower-case hex",
+      "request": {
+        "method": "PUT",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/q.png?x-id=UploadPart&uploadId=Zm9v%2bYmFy%2fYmF6%3d2~upload.ID_x&partNumber=10000",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "content-length": "1",
+          "x-amz-checksum-crc32": "NSRBwg==",
+          "x-amz-sdk-checksum-algorithm": "CRC32",
+          "x-amz-content-sha256": "5c62e091b8c0565f1bafad0dad5934276143ae2ccef7a5381e8ada5b1a8d26d2",
+          "x-amz-date": "20261006T093015Z",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;host;x-amz-checksum-crc32;x-amz-content-sha256;x-amz-date;x-amz-sdk-checksum-algorithm, Signature=b7d04915e6c2f62196aa8005e89680c09708ec02a2c15772a2b8c9c34da96747"
+        },
+        "bodySha256": "5c62e091b8c0565f1bafad0dad5934276143ae2ccef7a5381e8ada5b1a8d26d2"
+      }
+    },
+    {
+      "name": "query with unreserved characters needlessly percent-encoded",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/q2.png?%78%2Did=%47etObject",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=07087c5e7887c31cdff81ecfa3e233d03b38621d5a85ada32a3d1b51dd668ed0"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "query values needing encoding: space, slash, unicode",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/q3.png?x-id=GetObject&response-content-disposition=inline%3B%20filename%3D%22%C3%A9%20%2Fx.png%22",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=f5de7dc1233c47c2eabbfb7abfe5b9cdbcc0a3bc7e4602196370906fe2db9b43"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "repeated query name, values sorted by the signer",
+      "request": {
+        "method": "GET",
+        "rawTarget": "/media-shard-a/q7f3k2m9x1/q4.png?x-id=GetObject&tag=zeta&tag=alpha&tag=Mid",
+        "headers": {
+          "host": "storage-gateway.internal:8443",
+          "user-agent": "aws-sdk-js/3.0.0 ua/2.1 os/linux lang/js md/nodejs#26.5.0 api/s3#3.0.0",
+          "amz-sdk-invocation-id": "6f1c2b8e-0d4a-4c1e-9a77-2f3b5d6e7f80",
+          "amz-sdk-request": "attempt=1; max=3",
+          "x-amz-date": "20261006T093015Z",
+          "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "authorization": "AWS4-HMAC-SHA256 Credential=GWTENANTKEY0001/20261006/nbg1/s3/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=7f6ce1b5bcd1f0b715c5e52252bf79c2e8e52e750ef9e4486fe020fba446e8e0"
+        },
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ]
+}
