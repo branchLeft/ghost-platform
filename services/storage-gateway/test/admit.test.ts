@@ -10,6 +10,7 @@ import { refusal } from '../src/refusal.js';
 
 const BUCKET = 'shard-one-bucket';
 const FOLDER = 'k7f3q9x2m1';
+const CREATED = '2026-10-06T00:00:00Z';
 const KEY_ID = 'tenant-key-1';
 
 const request = (method: string, rawTarget: string): GatewayRequest => ({
@@ -28,7 +29,7 @@ function setup(options: {
   const record =
     'record' in options
       ? options.record
-      : ({ folder: FOLDER, bucket: BUCKET, state: 'active' } as const);
+      : ({ folder: FOLDER, bucket: BUCKET, state: 'active', createdAt: CREATED } as const);
   const credentials: CredentialStore = {
     lookup: async (keyId) => {
       if (record instanceof Error) throw record;
@@ -97,7 +98,9 @@ describe('admit', () => {
   it.each(['disabled', 'revoked'] as const)(
     'refuses a %s credential and logs the tenant',
     async (state) => {
-      const { deps, logged } = setup({ record: { folder: FOLDER, bucket: BUCKET, state } });
+      const { deps, logged } = setup({
+        record: { folder: FOLDER, bucket: BUCKET, state, createdAt: CREATED },
+      });
       const result = await admit(goodRequest, deps);
       expect(result).toEqual({ ok: false, refusal: refusal('credential-not-active') });
       expect(logged[0]).toMatchObject({
@@ -158,7 +161,9 @@ describe('admit', () => {
   });
 
   it('refuses a credential record that is malformed', async () => {
-    const { deps, logged } = setup({ record: { folder: 'a/b', bucket: BUCKET, state: 'active' } });
+    const { deps, logged } = setup({
+      record: { folder: 'a/b', bucket: BUCKET, state: 'active', createdAt: CREATED },
+    });
     const result = await admit(goodRequest, deps);
     expect(result).toEqual({ ok: false, refusal: refusal('credential-invalid') });
     expect(logged[0]).toMatchObject({ code: 'credential-invalid', keyId: KEY_ID });

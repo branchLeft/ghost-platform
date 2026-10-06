@@ -4,6 +4,7 @@ import { guardTenant, routeRequest } from '../src/router.js';
 
 const BUCKET = 'shard-one-bucket';
 const FOLDER = 'k7f3q9x2m1';
+const CREATED = '2026-10-06T00:00:00Z';
 
 const req = (
   method: string,
@@ -11,7 +12,12 @@ const req = (
   headers: GatewayRequest['headers'] = {}
 ): GatewayRequest => ({ method, rawTarget, headers });
 
-const credential: CredentialRecord = { folder: FOLDER, bucket: BUCKET, state: 'active' };
+const credential: CredentialRecord = {
+  folder: FOLDER,
+  bucket: BUCKET,
+  state: 'active',
+  createdAt: CREATED,
+};
 
 /** Routes, then applies the folder guard, as `admit` does; returns the refusal code or `ok`. */
 function verdict(request: GatewayRequest, cred: CredentialRecord = credential): string {
