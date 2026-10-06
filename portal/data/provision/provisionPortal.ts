@@ -163,7 +163,7 @@ function urlFor(config: ProvisionConfig, database: string, login?: string): stri
   url.pathname = `/${database}`;
   if (login !== undefined) {
     url.username = login;
-    url.password = login === config.tenantLogin ? config.tenantPassword : config.ownerPassword;
+    url.password = '';
   }
   return url.toString();
 }
@@ -176,7 +176,7 @@ function urlFor(config: ProvisionConfig, database: string, login?: string): stri
  * the one form it does not override. Host, user, database and port are explicit
  * too, so no PG* variable can supply them.
  */
-export function poolFor(url: string): pg.Pool {
+export function poolFor(url: string, rawPassword?: string): pg.Pool {
   const parsed = new URL(url);
   if (parsed.hostname === '' || parsed.username === '') {
     throw new Error('a connection URL must name its host and user');
@@ -185,7 +185,10 @@ export function poolFor(url: string): pg.Pool {
   if (!['disable', 'require', 'verify-ca', 'verify-full'].includes(mode)) {
     throw new Error(`sslmode ${mode} is not supported`);
   }
-  const password = decodeURIComponent(parsed.password);
+  // A login's password arrives raw from its file and never rides in a URL,
+  // where `%` would be decoded. Only the administrator URL carries one, and a
+  // URL's own encoding is the right reading of that.
+  const password = rawPassword ?? decodeURIComponent(parsed.password);
   const pool = new pg.Pool({
     host: parsed.hostname.replace(/^\[|\]$/g, ''),
     port: parsed.port === '' ? 5432 : Number(parsed.port),
@@ -199,8 +202,12 @@ export function poolFor(url: string): pg.Pool {
   return pool;
 }
 
-async function withPool<T>(url: string, work: (pool: pg.Pool) => Promise<T>): Promise<T> {
-  const pool = poolFor(url);
+async function withPool<T>(
+  url: string,
+  work: (pool: pg.Pool) => Promise<T>,
+  rawPassword?: string
+): Promise<T> {
+  const pool = poolFor(url, rawPassword);
   try {
     return await work(pool);
   } finally {
@@ -255,36 +262,44 @@ async function expectOutcome(
  * bound fails instead of returning rows.
  */
 export async function verifyBoundary(config: ProvisionConfig): Promise<void> {
-  await withPool(urlFor(config, config.database, config.tenantLogin), async (pool) => {
-    const asTenant = async (tx: Tx): Promise<void> => enterRole(tx, 'portal_tenant');
-    await expectOutcome(pool, 'tenant login assumes portal_tenant', 'ok', asTenant);
-    await expectOutcome(pool, 'tenant login assumes portal_owner', PERMISSION_DENIED, (tx) =>
-      enterRole(tx, 'portal_owner')
-    );
-    await expectOutcome(pool, 'tenant login creates in public', PERMISSION_DENIED, (tx) =>
-      tx.execute(sql`CREATE TABLE public.portal_provision_probe (id integer)`)
-    );
-    await expectOutcome(pool, 'tenant read with no tenant bound', NO_TENANT_BOUND, async (tx) => {
-      await asTenant(tx);
-      return tx.select().from(tenantRegister);
-    });
-    await expectOutcome(pool, 'tenant read with a tenant bound', 'ok', async (tx) => {
-      await asTenant(tx);
-      await bind(tx, 'portal.tenant_id', PROBE_TENANT);
-      await tx.select().from(tenantRegister);
-      await tx.select().from(healthReading);
-    });
-  });
-  await withPool(urlFor(config, config.database, config.ownerLogin), async (pool) => {
-    await expectOutcome(pool, 'owner login assumes portal_owner', 'ok', async (tx) => {
-      await enterRole(tx, 'portal_owner');
-      await tx.select().from(tenantRegister);
-      await tx.select().from(healthReading);
-    });
-    await expectOutcome(pool, 'owner login assumes portal_tenant', PERMISSION_DENIED, (tx) =>
-      enterRole(tx, 'portal_tenant')
-    );
-  });
+  await withPool(
+    urlFor(config, config.database, config.tenantLogin),
+    async (pool) => {
+      const asTenant = async (tx: Tx): Promise<void> => enterRole(tx, 'portal_tenant');
+      await expectOutcome(pool, 'tenant login assumes portal_tenant', 'ok', asTenant);
+      await expectOutcome(pool, 'tenant login assumes portal_owner', PERMISSION_DENIED, (tx) =>
+        enterRole(tx, 'portal_owner')
+      );
+      await expectOutcome(pool, 'tenant login creates in public', PERMISSION_DENIED, (tx) =>
+        tx.execute(sql`CREATE TABLE public.portal_provision_probe (id integer)`)
+      );
+      await expectOutcome(pool, 'tenant read with no tenant bound', NO_TENANT_BOUND, async (tx) => {
+        await asTenant(tx);
+        return tx.select().from(tenantRegister);
+      });
+      await expectOutcome(pool, 'tenant read with a tenant bound', 'ok', async (tx) => {
+        await asTenant(tx);
+        await bind(tx, 'portal.tenant_id', PROBE_TENANT);
+        await tx.select().from(tenantRegister);
+        await tx.select().from(healthReading);
+      });
+    },
+    config.tenantPassword
+  );
+  await withPool(
+    urlFor(config, config.database, config.ownerLogin),
+    async (pool) => {
+      await expectOutcome(pool, 'owner login assumes portal_owner', 'ok', async (tx) => {
+        await enterRole(tx, 'portal_owner');
+        await tx.select().from(tenantRegister);
+        await tx.select().from(healthReading);
+      });
+      await expectOutcome(pool, 'owner login assumes portal_tenant', PERMISSION_DENIED, (tx) =>
+        enterRole(tx, 'portal_tenant')
+      );
+    },
+    config.ownerPassword
+  );
 }
 
 /**

@@ -119,7 +119,7 @@ export async function createDatabase(admin: Pool, name: string): Promise<void> {
 export async function dropDatabase(admin: Pool, name: string): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await admin.query(`DROP DATABASE ${ident(name)}`);
+      await admin.query(`DROP DATABASE ${ident(name)} WITH (FORCE)`);
       return;
     } catch (error) {
       if (attempt >= 20) throw error;
@@ -131,17 +131,24 @@ export async function dropDatabase(admin: Pool, name: string): Promise<void> {
 /**
  * Leaves a login holding `keep` and no other role. A pre-existing login may
  * hold memberships this command never granted; any of them would widen what
- * the login can reach, so each is revoked.
+ * the login can reach, so each is revoked. From PostgreSQL 16 a membership
+ * records who granted it, and a plain REVOKE removes only the grants made by
+ * the acting role, leaving the rest with a warning: each is revoked naming its
+ * own grantor.
  */
 export async function revokeOtherRoles(admin: Pool, login: string, keep: string): Promise<void> {
   const held = await admin.query(
-    `SELECT r.rolname FROM pg_auth_members a
+    `SELECT r.rolname AS role, g.rolname AS grantor FROM pg_auth_members a
        JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
+       JOIN pg_roles g ON g.oid = a.grantor
       WHERE m.rolname = $1 AND r.rolname <> $2`,
     [login, keep]
   );
-  for (const row of held.rows as { rolname: string }[]) {
-    await admin.query(`REVOKE "${row.rolname.replaceAll('"', '""')}" FROM ${ident(login)}`);
+  const quote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+  for (const row of held.rows as { role: string; grantor: string }[]) {
+    await admin.query(
+      `REVOKE ${quote(row.role)} FROM ${ident(login)} GRANTED BY ${quote(row.grantor)}`
+    );
   }
 }
 

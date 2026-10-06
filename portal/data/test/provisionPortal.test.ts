@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -417,12 +418,15 @@ describe('against a real PostgreSQL', () => {
   }
 
   afterAll(async () => {
-    await dropDatabase(bootstrap, database).catch(() => undefined);
-    for (const login of [config.tenantLogin, config.ownerLogin]) {
-      await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`).catch(() => undefined);
+    try {
+      await dropDatabase(bootstrap, database).catch(() => undefined);
+      for (const login of [config.tenantLogin, config.ownerLogin]) {
+        await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`).catch(() => undefined);
+      }
+    } finally {
+      await bootstrap.end();
     }
-    await bootstrap.end();
-  });
+  }, 60000);
 
   const firstLog: string[] = [];
   const secondLog: string[] = [];
@@ -633,6 +637,23 @@ describe('against a real PostgreSQL', () => {
     expect(after).toEqual(afterFirst);
   });
 
+  it('revokes a membership another role granted, which a plain REVOKE leaves behind from PostgreSQL 16', async () => {
+    const extra = `prov_gextra_${suffix}`;
+    const grantor = `prov_grantor_${suffix}`;
+    await bootstrap.query(`CREATE ROLE "${extra}" NOLOGIN`);
+    await bootstrap.query(`CREATE ROLE "${grantor}" NOLOGIN`);
+    await withAdmin(async (pool) => {
+      await pool.query(`GRANT "${extra}" TO "${grantor}" WITH ADMIN OPTION`);
+      await pool.query(`GRANT "${extra}" TO "${config.tenantLogin}" GRANTED BY "${grantor}"`);
+      await pool.query(`GRANT "${extra}" TO "${config.ownerLogin}" GRANTED BY "${grantor}"`);
+    });
+    await provisionPortal(config);
+    const after = await state();
+    await bootstrap.query(`DROP ROLE "${extra}"`);
+    await bootstrap.query(`DROP ROLE "${grantor}"`);
+    expect(after).toEqual(afterFirst);
+  });
+
   it('never takes PGPASSWORD or a .pgpass password when the file supplies none', async (ctx) => {
     const url = new URL(dbUrl());
     url.username = config.tenantLogin;
@@ -690,4 +711,80 @@ describe('against a real PostgreSQL', () => {
       expect(lines.join('\n')).not.toContain(secret);
     }
   });
+});
+
+describe('the compiled command', () => {
+  const dist = join(import.meta.dirname, '../dist/provision/provisionMain.js');
+  const passwords = ['pa%ss', '%41', '%zz', 'x%', 'a@b', 'a:b', 'a/b', 'a$$b', "it's", '%'];
+
+  if (ADMIN_URL === undefined) {
+    it('needs PORTAL_TEST_DATABASE_URL', () => {
+      throw new Error('PORTAL_TEST_DATABASE_URL must name a PostgreSQL superuser connection');
+    });
+    return;
+  }
+  const adminUrl = ADMIN_URL;
+  const bootstrap = new pg.Pool({ connectionString: adminUrl, max: 1 });
+  bootstrap.on('error', () => undefined);
+  afterAll(async () => {
+    await bootstrap.end();
+  }, 60000);
+
+  async function connectAs(database: string, login: string, password: string): Promise<void> {
+    const server = new URL(adminUrl);
+    const client = new pg.Client({
+      host: server.hostname,
+      port: server.port === '' ? 5432 : Number(server.port),
+      user: login,
+      database,
+      password,
+    });
+    client.on('error', () => undefined);
+    try {
+      await client.connect();
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
+
+  it.each(passwords)(
+    'provisions with the password %j and the logins connect with it',
+    async (password) => {
+      if (!existsSync(dist))
+        throw new Error('run `npm run build` first: the compiled command is missing');
+      const id = randomBytes(5).toString('hex');
+      const database = `portal_e2e_${id}`;
+      const tenantLogin = `e2e_tenant_${id}`;
+      const ownerLogin = `e2e_owner_${id}`;
+      const { dir, env } = files({
+        PORTAL_ADMIN_URL_FILE: adminUrl,
+        PORTAL_TENANT_PASSWORD_FILE: password,
+        PORTAL_OWNER_PASSWORD_FILE: `${password}-owner`,
+      });
+      try {
+        const run = spawnSync(process.execPath, [dist], {
+          env: {
+            PATH: process.env['PATH'] ?? '',
+            ...env,
+            PORTAL_DATABASE_NAME: database,
+            PORTAL_TENANT_LOGIN: tenantLogin,
+            PORTAL_OWNER_LOGIN: ownerLogin,
+          },
+          encoding: 'utf8',
+        });
+        expect(run.stderr).toBe('');
+        expect(run.status).toBe(0);
+        expect(run.stdout).toContain('portal database provisioned');
+        expect(run.stdout).not.toContain(password);
+        await connectAs(database, tenantLogin, password);
+        await connectAs(database, ownerLogin, `${password}-owner`);
+      } finally {
+        rmSync(dir, { recursive: true });
+        await dropDatabase(bootstrap, database).catch(() => undefined);
+        for (const login of [tenantLogin, ownerLogin]) {
+          await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`).catch(() => undefined);
+        }
+      }
+    }
+  );
 });
