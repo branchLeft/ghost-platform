@@ -82,6 +82,15 @@ def _generate_age_identity() -> tuple[str, str]:
     return path, recipient
 
 
+def _recipients_file(directory: str, tenants: tuple[str, ...] = ("blog", "shop", "cafe")) -> str:
+    """A recipients file giving each named tenant its own fresh age key."""
+    path = os.path.join(directory, "recipients")
+    with open(path, "w", encoding="utf-8") as handle:
+        for tenant in tenants:
+            handle.write(f"{tenant} {_generate_age_identity()[1]}\n")
+    return path
+
+
 class _FileCopy:
     """A CopyTarget backed by a plain local file -- standing in for one of
     the two cloud copies (see the module docstring: neither cloud
@@ -551,7 +560,6 @@ class MainCopyWiringTests(unittest.TestCase):
         os.makedirs(self.bin_dir)
         _write_fake_bin(self.bin_dir, "mysql", _FAKE_MYSQL)
         _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_HAPPY)
-        _, recipient = _generate_age_identity()
 
         self._path_patch = mock.patch.dict(
             os.environ, {"PATH": self.bin_dir + os.pathsep + os.environ.get("PATH", "")}
@@ -565,7 +573,7 @@ class MainCopyWiringTests(unittest.TestCase):
 
         self._base_env = {
             "DB_DUMP_MYSQL_PWD": "dummy-mysql-password",
-            "AGE_RECIPIENT_PUBLIC_KEY": recipient,
+            "BACKUP_WORKER_RECIPIENTS_FILE": _recipients_file(self.tmp.name),
             # Without this, a successful run falls through to
             # bw.DEFAULT_BACKUP_AGE_METRICS_DIR -- a real, absolute,
             # hardcoded production path. Harmless on a dev machine or CI
@@ -590,6 +598,19 @@ class MainCopyWiringTests(unittest.TestCase):
         exit_code = self._main({**self._base_env, **_DUMMY_PRIMARY_ENV})
         self.assertEqual(exit_code, 0)
         self.assertEqual(self._bucket_args(), ["dummy-primary-bucket"])
+
+    def test_a_tenant_without_a_recipient_is_refused_before_any_put(self) -> None:
+        recipients = _recipients_file(self.tmp.name, tenants=("shop",))
+        exit_code = self._main({**self._base_env, **_DUMMY_PRIMARY_ENV, "BACKUP_WORKER_RECIPIENTS_FILE": recipients})
+        self.assertEqual(exit_code, 1)
+        self.mock_put_object.assert_not_called()
+
+    def test_a_shared_recipient_in_the_environment_is_never_used(self) -> None:
+        recipients = _recipients_file(self.tmp.name, tenants=("shop",))
+        shared = {"AGE_RECIPIENT_PUBLIC_KEY": _generate_age_identity()[1]}
+        env = {**self._base_env, **_DUMMY_PRIMARY_ENV, **shared, "BACKUP_WORKER_RECIPIENTS_FILE": recipients}
+        self.assertEqual(self._main(env), 1)
+        self.mock_put_object.assert_not_called()
 
     def test_a_partially_configured_secondary_is_refused_before_any_put(self) -> None:
         partial_secondary = {"BACKUP_WORKER_COPY_SECONDARY_BUCKET": "dummy-secondary-bucket"}
@@ -633,7 +654,6 @@ class WiringSabotageForTheCopySelectionTests(unittest.TestCase):
         os.makedirs(self.bin_dir)
         _write_fake_bin(self.bin_dir, "mysql", _FAKE_MYSQL)
         _write_fake_bin(self.bin_dir, "mysqldump", _FAKE_MYSQLDUMP_HAPPY)
-        _, recipient = _generate_age_identity()
 
         self._path_patch = mock.patch.dict(
             os.environ, {"PATH": self.bin_dir + os.pathsep + os.environ.get("PATH", "")}
@@ -647,7 +667,7 @@ class WiringSabotageForTheCopySelectionTests(unittest.TestCase):
 
         self._env = {
             "DB_DUMP_MYSQL_PWD": "dummy-mysql-password",
-            "AGE_RECIPIENT_PUBLIC_KEY": recipient,
+            "BACKUP_WORKER_RECIPIENTS_FILE": _recipients_file(self.tmp.name),
             # See MainCopyWiringTests.setUp's identical line: without this
             # a successful run here falls through to the real production
             # metrics directory default.
@@ -829,7 +849,6 @@ class BackupAgeMetricWiredThroughMainTests(unittest.TestCase):
         self.bin_dir = os.path.join(self.tmp.name, "bin")
         os.makedirs(self.bin_dir)
         _write_fake_bin(self.bin_dir, "mysql", _FAKE_MYSQL)
-        _, self.recipient = _generate_age_identity()
         self.metrics_dir = os.path.join(self.tmp.name, "metrics")
 
         self._path_patch = mock.patch.dict(
@@ -844,7 +863,7 @@ class BackupAgeMetricWiredThroughMainTests(unittest.TestCase):
 
         self._env = {
             "DB_DUMP_MYSQL_PWD": "dummy-mysql-password",
-            "AGE_RECIPIENT_PUBLIC_KEY": self.recipient,
+            "BACKUP_WORKER_RECIPIENTS_FILE": _recipients_file(self.tmp.name),
             "BACKUP_WORKER_METRICS_DIR": self.metrics_dir,
             **_DUMMY_PRIMARY_ENV,
         }
@@ -1177,7 +1196,6 @@ class LockWaitMetricWiredThroughMainTests(unittest.TestCase):
         self.bin_dir = os.path.join(self.tmp.name, "bin")
         os.makedirs(self.bin_dir)
         _write_fake_bin(self.bin_dir, "mysql", _FAKE_MYSQL)
-        _, self.recipient = _generate_age_identity()
         self.metrics_dir = os.path.join(self.tmp.name, "metrics")
 
         self._path_patch = mock.patch.dict(
@@ -1192,7 +1210,7 @@ class LockWaitMetricWiredThroughMainTests(unittest.TestCase):
 
         self._env = {
             "DB_DUMP_MYSQL_PWD": "dummy-mysql-password",
-            "AGE_RECIPIENT_PUBLIC_KEY": self.recipient,
+            "BACKUP_WORKER_RECIPIENTS_FILE": _recipients_file(self.tmp.name),
             "BACKUP_WORKER_METRICS_DIR": self.metrics_dir,
             **_DUMMY_PRIMARY_ENV,
         }
