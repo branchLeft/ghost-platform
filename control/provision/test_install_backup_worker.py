@@ -582,10 +582,20 @@ class Preflight(SandboxCase):
     def test_two_tenants_each_with_a_recipient_run(self) -> None:
         self.assertEqual(self._preflight("blog\nshop\n"), [])
 
-    def test_a_tenant_added_with_no_recipient_refuses_the_whole_run(self) -> None:
+    def test_a_tenant_with_no_recipient_does_not_refuse_the_run(self) -> None:
         self.box.write_config(tenants="blog\nshop\n", recipients=f"blog {_key('blog')}\n")
+        self.assertEqual(ibw.preflight_problems(self.box.paths, owner_uid=self.uid), [])
+
+    def test_an_invalid_recipients_file_still_refuses_the_run(self) -> None:
+        shared = _key("blog")
+        self.box.write_config(tenants="blog\nshop\n", recipients=f"blog {shared}\nshop {shared}\n")
         problems = ibw.preflight_problems(self.box.paths, owner_uid=self.uid)
-        self.assertEqual(problems, [f"{self.box.paths.recipients_file} has no recipient for tenant shop"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("share one recipient", problems[0])
+        self.box.write_config(recipients_mode=0o664)
+        self.assertTrue(ibw.preflight_problems(self.box.paths, owner_uid=self.uid))
+        self.box.paths.recipients_file.unlink()
+        self.assertIn("does not exist", ibw.preflight_problems(self.box.paths, owner_uid=self.uid)[0])
 
     def test_a_missing_or_empty_tenants_file_refuses_the_run(self) -> None:
         self.assertIn("names no tenant", self._preflight("# none\n")[0])

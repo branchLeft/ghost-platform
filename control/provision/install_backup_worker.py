@@ -362,13 +362,14 @@ def install(
 
 
 def preflight_problems(paths: Paths, *, owner_uid: int = 0, group_gid: int | None = None) -> list[str]:
-    """The unit's ExecStartPre: re-checks the tenants and recipients files at
-    every run, as the service account. A tenant added after install with no
-    recipient of its own refuses the whole run rather than being dumped under
-    another tenant's key."""
+    """The unit's ExecStartPre: re-checks, at every run and as the service
+    account, that the tenants and recipients files are present, correctly
+    owned and moded, and parseable. It never checks per-tenant coverage: a
+    tenant with no recipient is skipped by the loop with an alert while the
+    others still run, so failing closed is per tenant, never per run."""
     gid = os.getgid() if group_gid is None else group_gid
     return tenants_file_problems(paths.tenants_file, owner_uid=owner_uid, group_gid=gid) + recipients_file_problems(
-        paths.recipients_file, _tenant_names(paths.tenants_file), owner_uid=owner_uid, group_gid=gid
+        paths.recipients_file, [], owner_uid=owner_uid, group_gid=gid
     )
 
 

@@ -65,12 +65,13 @@ installer now rejects.
 
 The tenants check also runs at **every run**, not only at install. The
 unit's `ExecStartPre` calls this script with `--preflight` as the service
-account. It re-checks the tenants file (owner, mode, at least one tenant),
-and that every tenant has a recipient of its own. A failure refuses the
-run before the loop starts. A tenant added by hand with no recipient
-therefore stops the backups rather than being encrypted to another
-tenant's key. The refused run fails the unit, and `TenantBackupAgeHigh`
-fires once the last success is older than 36 hours.
+account. It re-checks that the tenants and recipients files are present,
+root-owned, correctly moded and parseable (a repeated tenant, a bad key or a
+shared recipient fails it). A failure refuses the run before the loop
+starts. It does not check that every tenant has a recipient: failing closed
+is per tenant, so the loop skips a tenant with no recipient, prints an
+`ALERT`, still dumps the others and exits 1. Either way the unit fails, and
+`TenantBackupAgeHigh` fires once the last success is older than 36 hours.
 
 If any other input breaks after the timer is on (a rotated password, a
 moved CA), the nightly run itself fails loudly in the same way.
