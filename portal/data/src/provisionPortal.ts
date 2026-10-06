@@ -1,18 +1,22 @@
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
-import { connect, enterRole, type Tx } from './db.js';
+import { sql } from 'drizzle-orm';
+import { bind, connect, enterRole, type Tx } from './db.js';
 import { migrateSchema } from './migrate.js';
 import {
   createDatabaseIfAbsent,
   createLogin,
   createRoles,
+  ident,
+  lockDatabase,
+  lockPublicSchema,
   grantAccess,
   grantRole,
   revokeRole,
-  setLoginPassword,
   type TableAccess,
 } from './provision.js';
-import { tenantRegister } from './schema.js';
+import { scramVerifier } from './scram.js';
+import { healthReading, tenantRegister } from './schema.js';
 
 export interface ProvisionConfig {
   /** An administrator connection to a maintenance database, e.g. `postgres`. */
@@ -90,13 +94,31 @@ export function loadConfig(
   } catch {
     throw new Error('PORTAL_ADMIN_URL_FILE: the file does not hold a connection URL');
   }
+  const names = {
+    PORTAL_DATABASE_NAME: env['PORTAL_DATABASE_NAME'] ?? DEFAULT_DATABASE,
+    PORTAL_TENANT_LOGIN: env['PORTAL_TENANT_LOGIN'] ?? DEFAULT_TENANT_LOGIN,
+    PORTAL_OWNER_LOGIN: env['PORTAL_OWNER_LOGIN'] ?? DEFAULT_OWNER_LOGIN,
+  };
+  for (const [name, value] of Object.entries(names)) {
+    try {
+      ident(value);
+    } catch {
+      throw new Error(`${name} must be a plain lower-case identifier`);
+    }
+  }
+  if (names.PORTAL_TENANT_LOGIN === names.PORTAL_OWNER_LOGIN) {
+    throw new Error('the tenant and owner logins must differ');
+  }
+  const tenantPassword = secretFile(env, 'PORTAL_TENANT_PASSWORD_FILE', read);
+  const ownerPassword = secretFile(env, 'PORTAL_OWNER_PASSWORD_FILE', read);
+  for (const password of [tenantPassword, ownerPassword]) scramVerifier(password);
   return {
     adminUrl,
-    database: env['PORTAL_DATABASE_NAME'] ?? DEFAULT_DATABASE,
-    tenantLogin: env['PORTAL_TENANT_LOGIN'] ?? DEFAULT_TENANT_LOGIN,
-    tenantPassword: secretFile(env, 'PORTAL_TENANT_PASSWORD_FILE', read),
-    ownerLogin: env['PORTAL_OWNER_LOGIN'] ?? DEFAULT_OWNER_LOGIN,
-    ownerPassword: secretFile(env, 'PORTAL_OWNER_PASSWORD_FILE', read),
+    database: names.PORTAL_DATABASE_NAME,
+    tenantLogin: names.PORTAL_TENANT_LOGIN,
+    tenantPassword,
+    ownerLogin: names.PORTAL_OWNER_LOGIN,
+    ownerPassword,
   };
 }
 
@@ -136,9 +158,28 @@ function urlFor(config: ProvisionConfig, database: string, login?: string): stri
   return url.toString();
 }
 
-async function withPool<T>(url: string, work: (pool: pg.Pool) => Promise<T>): Promise<T> {
-  const pool = new pg.Pool({ connectionString: url, max: 1 });
+/**
+ * A pool whose password is explicit: the one in the URL, or a function
+ * returning an empty string. Left undefined, the driver would read PGPASSWORD
+ * or the user's `.pgpass`, so a credential could arrive from outside the
+ * files this command is given.
+ */
+export function poolFor(url: string): pg.Pool {
+  const parsed = new URL(url);
+  if (parsed.hostname === '' || parsed.username === '') {
+    throw new Error('a connection URL must name its host and user');
+  }
+  const pool = new pg.Pool({
+    connectionString: url,
+    password: () => Promise.resolve(decodeURIComponent(parsed.password)),
+    max: 1,
+  });
   pool.on('error', () => undefined);
+  return pool;
+}
+
+async function withPool<T>(url: string, work: (pool: pg.Pool) => Promise<T>): Promise<T> {
+  const pool = poolFor(url);
   try {
     return await work(pool);
   } finally {
@@ -146,15 +187,44 @@ async function withPool<T>(url: string, work: (pool: pg.Pool) => Promise<T>): Pr
   }
 }
 
-async function refuses(pool: pg.Pool, work: (tx: Tx) => Promise<unknown>): Promise<boolean> {
+/** The SQLSTATE of a driver error, looking through the ORM's wrapper. */
+export function sqlState(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && typeof current === 'object' && current !== null; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code)) return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/** What the work did: `ok`, or the SQLSTATE of the error that stopped it. */
+async function outcome(pool: pg.Pool, work: (tx: Tx) => Promise<unknown>): Promise<string> {
   try {
     await connect(pool).transaction(async (tx) => {
       await work(tx);
     });
-    return false;
-  } catch {
-    return true;
+    return 'ok';
+  } catch (error) {
+    return (
+      sqlState(error) ??
+      `error without a SQLSTATE: ${error instanceof Error ? error.name : 'unknown'}`
+    );
   }
+}
+
+const PERMISSION_DENIED = '42501';
+const NO_TENANT_BOUND = '28000';
+const PROBE_TENANT = '00000000-0000-4000-8000-000000000000';
+
+async function expectOutcome(
+  pool: pg.Pool,
+  label: string,
+  expected: string,
+  work: (tx: Tx) => Promise<unknown>
+): Promise<void> {
+  const got = await outcome(pool, work);
+  if (got !== expected) throw new Error(`${label}: expected ${expected}, got ${got}`);
 }
 
 /**
@@ -165,27 +235,34 @@ async function refuses(pool: pg.Pool, work: (tx: Tx) => Promise<unknown>): Promi
  */
 export async function verifyBoundary(config: ProvisionConfig): Promise<void> {
   await withPool(urlFor(config, config.database, config.tenantLogin), async (pool) => {
-    if (await refuses(pool, (tx) => enterRole(tx, 'portal_tenant'))) {
-      throw new Error('tenant login cannot assume portal_tenant');
-    }
-    if (!(await refuses(pool, (tx) => enterRole(tx, 'portal_owner')))) {
-      throw new Error('tenant login can assume portal_owner');
-    }
-    const unbound = async (tx: Tx): Promise<unknown> => {
-      await enterRole(tx, 'portal_tenant');
+    const asTenant = async (tx: Tx): Promise<void> => enterRole(tx, 'portal_tenant');
+    await expectOutcome(pool, 'tenant login assumes portal_tenant', 'ok', asTenant);
+    await expectOutcome(pool, 'tenant login assumes portal_owner', PERMISSION_DENIED, (tx) =>
+      enterRole(tx, 'portal_owner')
+    );
+    await expectOutcome(pool, 'tenant login creates in public', PERMISSION_DENIED, (tx) =>
+      tx.execute(sql`CREATE TABLE public.portal_provision_probe (id integer)`)
+    );
+    await expectOutcome(pool, 'tenant read with no tenant bound', NO_TENANT_BOUND, async (tx) => {
+      await asTenant(tx);
       return tx.select().from(tenantRegister);
-    };
-    if (!(await refuses(pool, unbound))) {
-      throw new Error('a tenant-role read with no tenant bound did not fail');
-    }
+    });
+    await expectOutcome(pool, 'tenant read with a tenant bound', 'ok', async (tx) => {
+      await asTenant(tx);
+      await bind(tx, 'portal.tenant_id', PROBE_TENANT);
+      await tx.select().from(tenantRegister);
+      await tx.select().from(healthReading);
+    });
   });
   await withPool(urlFor(config, config.database, config.ownerLogin), async (pool) => {
-    if (await refuses(pool, (tx) => enterRole(tx, 'portal_owner'))) {
-      throw new Error('owner login cannot assume portal_owner');
-    }
-    if (!(await refuses(pool, (tx) => enterRole(tx, 'portal_tenant')))) {
-      throw new Error('owner login can assume portal_tenant');
-    }
+    await expectOutcome(pool, 'owner login assumes portal_owner', 'ok', async (tx) => {
+      await enterRole(tx, 'portal_owner');
+      await tx.select().from(tenantRegister);
+      await tx.select().from(healthReading);
+    });
+    await expectOutcome(pool, 'owner login assumes portal_tenant', PERMISSION_DENIED, (tx) =>
+      enterRole(tx, 'portal_tenant')
+    );
   });
 }
 
@@ -203,12 +280,12 @@ export async function provisionPortal(
     const created = await createDatabaseIfAbsent(bootstrap, config.database);
     log(created ? `created database ${config.database}` : `database ${config.database} exists`);
     await createLogin(bootstrap, config.tenantLogin, config.tenantPassword);
-    await setLoginPassword(bootstrap, config.tenantLogin, config.tenantPassword);
     await createLogin(bootstrap, config.ownerLogin, config.ownerPassword);
-    await setLoginPassword(bootstrap, config.ownerLogin, config.ownerPassword);
-    log('logins ready');
+    await lockDatabase(bootstrap, config.database, [config.tenantLogin, config.ownerLogin]);
+    log('logins ready, database closed to everyone else');
   });
   await withPool(urlFor(config, config.database), async (admin) => {
+    await lockPublicSchema(admin);
     await createRoles(admin);
     log('roles ready');
     await migrateSchema(admin);

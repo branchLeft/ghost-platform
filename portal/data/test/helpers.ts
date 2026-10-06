@@ -4,13 +4,13 @@ import pg from 'pg';
 import { connect, type PortalDb } from '../src/db.js';
 import { migrateSchema } from '../src/migrate.js';
 import { tenantRegister } from '../src/schema.js';
+import { provisionPortal } from '../src/provisionPortal.js';
 import {
-  createDatabase,
   createLogin,
-  createRoles,
   dropDatabase,
   grantAccess,
   grantRole,
+  lockDatabase,
 } from '../src/provision.js';
 
 const ADMIN_URL = process.env['PORTAL_TEST_DATABASE_URL'];
@@ -68,29 +68,24 @@ export async function createFixture(): Promise<Fixture> {
   }
   const database = `portal_test_${randomBytes(6).toString('hex')}`;
   const bootstrap = quiet(new pg.Pool({ connectionString: ADMIN_URL, max: 1 }));
-  await createDatabase(bootstrap, database);
-  await createLogin(bootstrap, TENANT_LOGIN, LOGIN_PASSWORD);
-  await createLogin(bootstrap, OWNER_LOGIN, LOGIN_PASSWORD);
+  // The database under test is the one the provisioning command builds: the
+  // roles, the migrations, the grants and the two logins all come from it, so
+  // the isolation suite proves what an operator would get, not a second copy.
+  await provisionPortal({
+    adminUrl: ADMIN_URL,
+    database,
+    tenantLogin: TENANT_LOGIN,
+    tenantPassword: LOGIN_PASSWORD,
+    ownerLogin: OWNER_LOGIN,
+    ownerPassword: LOGIN_PASSWORD,
+  });
   await createLogin(bootstrap, DUAL_LOGIN, LOGIN_PASSWORD, { bypassRls: true });
+  await lockDatabase(bootstrap, database, [TENANT_LOGIN, OWNER_LOGIN, DUAL_LOGIN]);
 
   const admin = quiet(new pg.Pool({ connectionString: urlFor(ADMIN_URL, database) }));
-  await createRoles(admin);
-  await migrateSchema(admin);
   await migrateSchema(admin, {
     migrationsFolder: FIXTURE_MIGRATIONS,
     migrationsTable: '__fixture_migrations',
-  });
-  await grantAccess(admin, {
-    schema: 'portal',
-    table: 'tenant_register',
-    tenant: 'SELECT',
-    owner: 'SELECT, INSERT, UPDATE, DELETE',
-  });
-  await grantAccess(admin, {
-    schema: 'portal',
-    table: 'health_reading',
-    tenant: 'SELECT',
-    owner: 'SELECT, INSERT, UPDATE, DELETE',
   });
   await grantAccess(admin, {
     schema: 'portal_test',
@@ -104,8 +99,6 @@ export async function createFixture(): Promise<Fixture> {
     tenant: 'SELECT',
     owner: 'SELECT',
   });
-  await grantRole(admin, 'portal_tenant', TENANT_LOGIN);
-  await grantRole(admin, 'portal_owner', OWNER_LOGIN);
   await grantRole(admin, 'portal_tenant', DUAL_LOGIN);
   await grantRole(admin, 'portal_owner', DUAL_LOGIN);
 

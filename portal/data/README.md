@@ -77,6 +77,30 @@ container). The suite creates and drops its own databases. After a schema edit,
 
 ## Provisioning a database
 
-In order: `createRoles`, the ORM's migrations (`migrateSchema`), then
-`grantAccess` for each table and `grantRole` for each login (`src/provision.ts`). The
-roles are `NOLOGIN`; no credential lives here.
+One command, run by the operator as a database administrator and never by the
+portal. In the portal-apps image, from `/app/portal/data`:
+
+```sh
+node dist/provisionMain.js   # or: npm run provision
+```
+
+Every input is a file named by an environment variable; a secret in argv or in
+the variable itself is refused.
+
+| Variable | Holds |
+| --- | --- |
+| `PORTAL_ADMIN_URL_FILE` | administrator connection URL (host and user required) |
+| `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII) |
+| `PORTAL_OWNER_PASSWORD_FILE` | password for the owner login (printable ASCII) |
+| `PORTAL_DATABASE_NAME` | optional, default `portal` |
+| `PORTAL_TENANT_LOGIN` | optional, default `portal_tenant_login` |
+| `PORTAL_OWNER_LOGIN` | optional, default `portal_owner_login` |
+
+In order: the database if absent, both logins (attributes and password
+re-applied every run, sent as a SCRAM verifier), `CONNECT` on the database for
+the two logins alone, no `CREATE` on `public`, the two roles, the ORM's
+migrations, the per-table grants, exactly one role per login, then a check
+that connects as each login and asserts the specific PostgreSQL errors
+(`42501` permission denied, `28000` no tenant bound). A re-run changes nothing.
+Other databases on the server keep PUBLIC's `CONNECT`: closing them to these
+logins is a server-level step (`pg_hba.conf`), outside this command.

@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import { scramVerifier } from './scram.js';
 
 // Provisioning and administration tooling, run by the operator as a database
 // administrator, never by the portal at run time. It creates the server-level
@@ -10,7 +11,7 @@ import type { Pool } from 'pg';
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
 
-function ident(value: string): string {
+export function ident(value: string): string {
   if (!IDENTIFIER.test(value)) throw new Error(`not a plain identifier: ${value}`);
   return `"${value}"`;
 }
@@ -69,17 +70,45 @@ export async function createLogin(
   password: string,
   options: { bypassRls?: boolean } = {}
 ): Promise<void> {
-  if (password.includes("'")) throw new Error('password may not contain a quote');
+  // The server receives a salted verifier, never the password, so a statement
+  // that fails and is logged cannot disclose it, and no password character can
+  // end the dollar-quoted block.
+  const verifier = scramVerifier(password);
   await admin.query(`
     DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ident(login).slice(1, -1)}') THEN
-        CREATE ROLE ${ident(login)} LOGIN PASSWORD '${password}';
+        CREATE ROLE ${ident(login)} LOGIN PASSWORD '${verifier}';
       END IF;
     END $$`);
-  // Always applied, so a login left over from an earlier run has these attributes.
+  // Always applied, so a login left over from an earlier run, or one that
+  // existed before, ends up with exactly these attributes and this password.
   await admin.query(
-    `ALTER ROLE ${ident(login)} ${options.bypassRls ? 'BYPASSRLS' : 'NOBYPASSRLS'}`
+    `ALTER ROLE ${ident(login)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION ` +
+      `${options.bypassRls ? 'BYPASSRLS' : 'NOBYPASSRLS'} PASSWORD '${verifier}'`
   );
+}
+
+/**
+ * Leaves the database connectable by the named logins alone. PUBLIC holds
+ * CONNECT and TEMP on every new database, and CREATE on schema `public` before
+ * PostgreSQL 15; none of that is wanted here. Other databases on the server are
+ * outside this command's reach: a login keeps PUBLIC's CONNECT on them until
+ * `pg_hba.conf` or a revoke there says otherwise.
+ */
+export async function lockDatabase(
+  admin: Pool,
+  database: string,
+  logins: readonly string[]
+): Promise<void> {
+  await admin.query(`REVOKE ALL ON DATABASE ${ident(database)} FROM PUBLIC`);
+  for (const login of logins) {
+    await admin.query(`GRANT CONNECT ON DATABASE ${ident(database)} TO ${ident(login)}`);
+  }
+}
+
+/** Run inside the database itself: no ordinary login may create objects in `public`. */
+export async function lockPublicSchema(admin: Pool): Promise<void> {
+  await admin.query('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
 }
 
 export async function createDatabase(admin: Pool, name: string): Promise<void> {
@@ -121,14 +150,4 @@ export async function createDatabaseIfAbsent(admin: Pool, name: string): Promise
     if ((error as { code?: string }).code === '42P04') return false;
     throw error;
   }
-}
-
-/** Sets a login's password, so a rotated secret file takes effect on a re-run. */
-export async function setLoginPassword(
-  admin: Pool,
-  login: string,
-  password: string
-): Promise<void> {
-  if (password.includes("'")) throw new Error('password may not contain a quote');
-  await admin.query(`ALTER ROLE ${ident(login)} PASSWORD '${password}'`);
 }
