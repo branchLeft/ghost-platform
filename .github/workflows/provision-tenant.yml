@@ -50,13 +50,17 @@ name: Provision tenant
 # repository-level secret is readable by any workflow run, including one added
 # on a branch.
 #
-# `GH_PAT_TENANT_PROVISIONING` is the credential this workflow writes to
-# generated repositories with. The default GITHUB_TOKEN is scoped to this
-# repository and can neither create a repo in the org nor set another repo's
-# variables, secrets or environments. What this PAT writes to the generated repo
-# is that repo's own Pulumi secrets passphrase and the encryption salt that
-# verifies it -- the two writes that hand the new repo something it needs to keep
-# secret from this repo, going forward.
+# The credential this workflow writes to generated repositories with is a
+# GitHub App installation token, minted per run by the "Mint the provisioning
+# token" step and revoked by the last step. The default GITHUB_TOKEN is scoped
+# to this repository and can neither create a repo in the org nor set another
+# repo's variables, secrets or environments. The App's private key is an
+# environment secret and its id a repository variable; no personal token is
+# read anywhere, and a failed mint stops the run with no fallback. What the
+# token writes to the generated repo is that repo's own Pulumi secrets
+# passphrase and the encryption salt that verifies it -- the two writes that
+# hand the new repo something it needs to keep secret from this repo, going
+# forward.
 
 on:
   workflow_dispatch:
@@ -235,6 +239,19 @@ jobs:
         with:
           persist-credentials: false
 
+      # Mints the one credential every later step writes with: an installation
+      # token for the provisioning GitHub App, valid for an hour and holding
+      # exactly the permissions in tenant_provisioning_app_token.py, which
+      # refuses any wider or narrower grant. Creates nothing. If minting fails
+      # for any reason the run stops here; no step falls back to another
+      # credential, and this step must never carry `continue-on-error`.
+      - name: Mint the provisioning token
+        id: app-token
+        env:
+          TENANT_PROVISIONING_APP_ID: ${{ vars.TENANT_PROVISIONING_APP_ID }}
+          TENANT_PROVISIONING_APP_PRIVATE_KEY: ${{ secrets.TENANT_PROVISIONING_APP_PRIVATE_KEY }}
+        run: python3 infra/provisioning/scripts/tenant_provisioning_app_token.py mint
+
       # The replacement for the Workload Identity provider condition this
       # rewrite deletes, and it is checked rather than assumed for the same
       # reason that one was worth having: it is the only thing standing between
@@ -242,10 +259,9 @@ jobs:
       #
       # Three properties, all fail-closed:
       #
-      #   - the token carries every OAuth scope this run needs, checked
-      #     first: a scope missing here is knowable from one API response,
-      #     before the environment or secret checks below have any subject
-      #     to examine, and before this workflow creates anything;
+      #   - the token holds exactly the permissions this run needs, no more
+      #     and no fewer. The mint step above refuses any other grant, so a
+      #     wider App installation never reaches the steps below;
       #   - the `tenant-provisioning` environment carries at least one
       #     protection rule. An environment with none runs straight through
       #     without pausing and reports nothing;
@@ -260,64 +276,14 @@ jobs:
       # to proceed past the control it replaces.
       - name: Verify the provisioning gate and its credential scoping
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ENVIRONMENT: tenant-provisioning
         run: |
           set -euo pipefail
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::GH_PAT_TENANT_PROVISIONING is empty or unset. It must be an environment secret on the $ENVIRONMENT environment."
+            echo "::error::no provisioning token was minted. Refusing: there is no fallback credential."
             exit 1
           fi
-
-          # GitHub echoes a classic PAT's own scopes on any authenticated
-          # response as the X-OAuth-Scopes header -- one read, before this
-          # run creates a repository, mints a passphrase, initialises a
-          # stack or publishes a secret, all of which a prior run found
-          # already done by the time a missing `workflow` scope rejected
-          # this workflow's own last push. The raw response is written to a
-          # file and handed to the script below whole, rather than reduced
-          # to one value with a shell pipeline here: a `grep` that finds no
-          # match exits non-zero, and under this step's `pipefail` that
-          # would abort the step on this line -- before the refusal below
-          # ever runs -- for exactly the case (no such header at all, e.g. a
-          # fine-grained PAT) this check most needs to catch. Never printed
-          # whole: only the scope names the script extracts are ever
-          # written to a message, and a failure to read the response at all
-          # is a refusal, not an assumption that the token is fine.
-          gh api "repos/${GITHUB_REPOSITORY}" --include --silent > /tmp/scope-check-headers.txt || {
-            echo "::error::could not read an authenticated response from the GitHub API to determine GH_PAT_TENANT_PROVISIONING's OAuth scopes. Refusing: whether this token can finish the run is knowable from this one response, and an unreadable one is not a passed check."
-            exit 1
-          }
-
-          # The extraction, the set logic -- which scopes this run needs and
-          # why -- and the exact-token comparison that refuses a superstring
-          # like `workflow_dispatch` standing in for `workflow` all live in a
-          # plain Python script with its own unit tests
-          # (infra/provisioning/scripts/test_assert_tenant_provisioning_token_scopes.py)
-          # rather than here, so all three stay provable offline instead of
-          # only by dispatching this workflow for real and watching it fail
-          # on its last step.
-          # A fine-grained PAT publishes no X-OAuth-Scopes header, and neither
-          # does the workflow's own GITHUB_TOKEN -- but only one of the two can
-          # do this job. They are told apart here without ever handling the
-          # token: an installation token is refused `GET /user` (403), while a
-          # PAT of either kind reads it (200).
-          #
-          # The STATUS is captured rather than merely success or failure. A
-          # bare `if gh api user` collapses 403 -- a real, diagnosable answer
-          # -- together with 401, a 429 secondary rate limit and any 5xx, and
-          # the refusal would then tell an operator that their working
-          # fine-grained token is an installation token and should be
-          # replaced. `--include` writes the status line whatever the
-          # response, and `|| true` stops this step's `set -e` aborting on
-          # the very non-2xx case being measured.
-          gh api user --include --silent > /tmp/user-check-headers.txt 2>/dev/null || true
-          user_status=$(awk 'NR==1 {for (i = 1; i <= NF; i++) if ($i ~ /^[0-9][0-9][0-9]$/) { print $i; exit } }' /tmp/user-check-headers.txt || true)
-
-          python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py --self-test
-          python3 infra/provisioning/scripts/assert-tenant-provisioning-token-scopes.py \
-            --headers-file /tmp/scope-check-headers.txt \
-            --user-endpoint-status "$user_status"
 
           rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT}" \
             --jq '[.protection_rules[].type] | join(",")') || {
@@ -348,8 +314,8 @@ jobs:
           # the environment secret EXISTS cannot see a repository-level copy
           # left behind, and `secrets.X` resolves the repository one for any
           # workflow run in this repo -- including one from a branch. So a
-          # skipped `gh secret delete` leaves GH_PAT_TENANT_PROVISIONING, a
-          # token that creates repositories in this org, readable by every run
+          # skipped `gh secret delete` leaves TENANT_PROVISIONING_APP_PRIVATE_KEY, a
+          # key that mints org-wide repository-creating tokens, readable by every run
           # here, with this workflow still green.
           gh api "repos/${GITHUB_REPOSITORY}/actions/secrets" \
             --paginate --jq '.secrets[].name' > /tmp/repo-secret-names.txt || {
@@ -374,7 +340,7 @@ jobs:
       # that acts on it.
       - name: Validate inputs
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
 
@@ -582,11 +548,11 @@ jobs:
 
       # Everything from here leaves artefacts a failure does not clean up. There
       # is no automatic rollback -- RUNBOOK-tenant-onboarding.md has the order to
-      # undo in, and why deleting the repository is the step that revokes the
-      # PAT's reach into it.
+      # undo in, and why deleting the repository is the step that ends the
+      # token's reach into it.
       - name: Generate the tenant repo from the template
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           # Re-derived here rather than carried from validation. This is the step
@@ -628,7 +594,7 @@ jobs:
       # tracked files on every push.
       - name: Clone and generate
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${TENANT_REPO}.git" tenant
@@ -644,7 +610,7 @@ jobs:
       # internet. What is published is the ciphertext.
       - name: Mint, escrow and publish this tenant's secrets passphrase
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           PASSPHRASE=$(python3 infra/provisioning/scripts/mint-tenant-passphrase.py)
@@ -833,7 +799,7 @@ jobs:
       - name: Publish this tenant's encryption salt to its own environment secret
         working-directory: tenant
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           config="Pulumi.${TENANT}.yaml"
@@ -902,7 +868,7 @@ jobs:
       # the production hcloud token lives in.
       - name: Write the tenant repo's state credentials and variables
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           printf '%s' "$AWS_ACCESS_KEY_ID" \
@@ -932,7 +898,7 @@ jobs:
       - name: Remove the encryption salt before the stack config is committed
         working-directory: tenant
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           config="Pulumi.${TENANT}.yaml"
@@ -966,7 +932,7 @@ jobs:
       - name: Open the handover pull request
         working-directory: tenant
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_TENANT_PROVISIONING }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           git config user.name "branchLeft provisioning"
@@ -1008,6 +974,15 @@ jobs:
           environment secret is not set.
           BODY
           )"
+
+      # Ends the token's life now rather than at its hour. Best effort and
+      # never a failure: the run's outcome is already decided, and expiry
+      # bounds the token if the call fails.
+      - name: Revoke the provisioning token
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: python3 infra/provisioning/scripts/tenant_provisioning_app_token.py revoke
 
       - name: Summary
         if: always()

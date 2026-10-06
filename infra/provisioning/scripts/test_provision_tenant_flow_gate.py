@@ -45,11 +45,11 @@ FIRST_MUTATING_STEP_NAME = "Generate the tenant repo from the template"
 STEPS_ALLOWED_BEFORE_THE_GATE = ()
 
 # Steps allowed to carry `if:` or `continue-on-error:`, either of which lets
-# a step run or survive after the gate has already refused. `Summary` is the
-# one exception and creates nothing; listed rather than pattern-matched
+# a step run or survive after the gate has already refused. `Summary` and the
+# token revocation are the exceptions and create nothing; listed rather than pattern-matched
 # since the idiom is already live elsewhere in this workflow.
 # See test_provision_tenant_flow_gate.md#steps_allowed_to_survive_a_failed_predecessor.
-STEPS_ALLOWED_TO_SURVIVE_A_FAILED_PREDECESSOR = ("Summary",)
+STEPS_ALLOWED_TO_SURVIVE_A_FAILED_PREDECESSOR = ("Revoke the provisioning token", "Summary")
 
 # The step's `env:` mapping, verbatim. The extracted shell reads $FLOW_READY
 # and nothing else, so what that name is bound to is half the control and is

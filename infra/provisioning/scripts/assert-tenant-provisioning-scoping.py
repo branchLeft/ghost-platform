@@ -27,7 +27,7 @@ REPO_PLACEHOLDER = "<owner>/<repo>"
 # job and so can only ever resolve a repository secret.
 REQUIRED_SECRETS = frozenset(
     {
-        "GH_PAT_TENANT_PROVISIONING",
+        "TENANT_PROVISIONING_APP_PRIVATE_KEY",
         "TENANT_STATE_S3_ACCESS_KEY_ID",
         "TENANT_STATE_S3_SECRET_ACCESS_KEY",
     }
@@ -77,7 +77,7 @@ def _self_test() -> None:
     # environment-scoped, and the two required sets no longer intersect.
     missing, shadowed = check(
         environment_names=[
-            "GH_PAT_TENANT_PROVISIONING",
+            "TENANT_PROVISIONING_APP_PRIVATE_KEY",
             "TENANT_STATE_S3_ACCESS_KEY_ID",
             "TENANT_STATE_S3_SECRET_ACCESS_KEY",
         ],
@@ -98,7 +98,7 @@ def _self_test() -> None:
     # repository-level copy was never deleted.
     missing, shadowed = check(
         environment_names=[
-            "GH_PAT_TENANT_PROVISIONING",
+            "TENANT_PROVISIONING_APP_PRIVATE_KEY",
             "TENANT_STATE_S3_ACCESS_KEY_ID",
             "TENANT_STATE_S3_SECRET_ACCESS_KEY",
         ],
@@ -111,7 +111,7 @@ def _self_test() -> None:
     # credential, or something else entirely) is never a shadow.
     missing, shadowed = check(
         environment_names=[
-            "GH_PAT_TENANT_PROVISIONING",
+            "TENANT_PROVISIONING_APP_PRIVATE_KEY",
             "TENANT_STATE_S3_ACCESS_KEY_ID",
             "TENANT_STATE_S3_SECRET_ACCESS_KEY",
         ],
