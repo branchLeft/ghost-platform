@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MASTER_SECRET_FILE_ENV,
   MasterSecret,
@@ -13,27 +13,33 @@ import {
 const SECRET = Buffer.alloc(32, 0x5a);
 const SECRET_B64 = SECRET.toString('base64');
 
-function fake(contents: string | Buffer, mode = 0o100600) {
-  return {
-    env: { [MASTER_SECRET_FILE_ENV]: '/run/secrets/master' },
-    readFile: () => (typeof contents === 'string' ? Buffer.from(contents) : contents),
-    fileMode: () => mode,
-  };
-}
-
 describe('loadMasterSecret', () => {
-  const dirs: string[] = [];
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'gw-master-'));
+  });
   afterEach(() => {
-    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   });
 
-  it('loads a real owner-only file, ignoring a trailing newline', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gw-master-'));
-    dirs.push(dir);
+  function file(contents: string | Buffer, mode = 0o600): string {
     const path = join(dir, 'master');
-    writeFileSync(path, `${SECRET_B64}\n`, { mode: 0o600 });
-    const master = loadMasterSecret({ env: { [MASTER_SECRET_FILE_ENV]: path } });
-    expect(master.keyMaterial()).toEqual(SECRET);
+    writeFileSync(path, contents, { mode });
+    chmodSync(path, mode);
+    return path;
+  }
+  const load = (path: string, expectedUid?: number) =>
+    loadMasterSecret({
+      env: { [MASTER_SECRET_FILE_ENV]: path },
+      ...(expectedUid === undefined ? {} : { expectedUid }),
+    });
+
+  it('loads an owner-only file, ignoring a trailing newline', () => {
+    expect(load(file(`${SECRET_B64}\n`)).keyMaterial()).toEqual(SECRET);
+  });
+
+  it('accepts a read-only owner file', () => {
+    expect(load(file(SECRET_B64, 0o400)).keyMaterial()).toEqual(SECRET);
   });
 
   it('refuses to start when the variable is unset or empty', () => {
@@ -43,50 +49,57 @@ describe('loadMasterSecret', () => {
   });
 
   it('refuses a relative path', () => {
-    expect(() => loadMasterSecret({ env: { [MASTER_SECRET_FILE_ENV]: 'master' } })).toThrow(
-      /absolute path/
-    );
+    expect(() => load('master')).toThrow(/absolute path/);
   });
 
   it('refuses to start when the file is missing', () => {
-    expect(() =>
-      loadMasterSecret({ env: { [MASTER_SECRET_FILE_ENV]: '/nonexistent/gateway/master' } })
-    ).toThrow(/cannot be read; refusing to start/);
+    expect(() => load(join(dir, 'absent'))).toThrow(/cannot be opened/);
   });
 
-  it.each([0o100644, 0o100640, 0o100604, 0o100660])('refuses a file with mode %o', (mode) => {
-    expect(() => loadMasterSecret(fake(SECRET_B64, mode))).toThrow(/readable by group or others/);
+  it('refuses a symlink, even to a good file', () => {
+    const target = file(SECRET_B64);
+    const link = join(dir, 'link');
+    symlinkSync(target, link);
+    expect(() => load(link)).toThrow(/cannot be opened \(missing, or a symlink\)/);
   });
 
-  it('accepts a read-only owner file', () => {
-    expect(loadMasterSecret(fake(SECRET_B64, 0o100400)).keyMaterial()).toEqual(SECRET);
+  it('refuses a path that is not a regular file', () => {
+    expect(() => load(dir)).toThrow(/not a regular file/);
+  });
+
+  it('refuses a file owned by another user', () => {
+    const path = file(SECRET_B64);
+    expect(() => load(path, (process.getuid?.() ?? 0) + 1)).toThrow(
+      /not owned by the gateway user/
+    );
+  });
+
+  it.each([0o644, 0o640, 0o604, 0o660])('refuses a file with mode %o', (mode) => {
+    expect(() => load(file(SECRET_B64, mode))).toThrow(/readable by group or others/);
   });
 
   it('refuses a secret shorter than 32 bytes', () => {
-    expect(() => loadMasterSecret(fake(Buffer.alloc(31, 1).toString('base64')))).toThrow(
+    expect(() => load(file(Buffer.alloc(31, 1).toString('base64')))).toThrow(
       /31 bytes; at least 32/
     );
   });
 
-  it.each([
-    '',
-    '   \n',
-    'not base64!',
-    `${SECRET_B64.slice(1)}`,
-    SECRET.toString('base64url') + '-_',
-  ])('refuses contents that are not standard base64: %j', (contents) => {
-    expect(() => loadMasterSecret(fake(contents))).toThrow(/not standard base64/);
-  });
+  it.each(['', '   \n', 'not base64!', SECRET_B64.slice(1), SECRET.toString('base64url') + '-_'])(
+    'refuses contents that are not standard base64: %j',
+    (contents) => {
+      expect(() => load(file(contents))).toThrow(/not standard base64/);
+    }
+  );
 
   it('refuses an oversized file', () => {
-    expect(() => loadMasterSecret(fake('A'.repeat(1028)))).toThrow(/larger than any secret/);
+    expect(() => load(file('A'.repeat(1028)))).toThrow(/larger than any secret/);
   });
 
   it('never names the secret in an error', () => {
     const short = Buffer.alloc(20, 0x41).toString('base64');
+    expect(() => load(file(short))).toThrow(MasterSecretError);
     try {
-      loadMasterSecret(fake(short));
-      expect.unreachable();
+      load(file(short));
     } catch (err) {
       expect(String(err)).not.toContain(short);
     }

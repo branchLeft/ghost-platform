@@ -71,6 +71,24 @@ describe('SqliteCredentialStore', () => {
     expect(store.disable('GWNEVERISSUED00000000')).toBe('unknown');
   });
 
+  it('refuses a second active credential for a folder, and allows one once the first is disabled', () => {
+    store.insert(NEW);
+    const other = { ...NEW, keyId: 'GWBBBBBBBBBBBBBBBBBBBBBBBB' };
+    expect(store.insert(other)).toEqual({ ok: false, reason: 'folder-has-active-credential' });
+    expect(store.get(other.keyId)).toBeUndefined();
+    expect(store.disableFolder(NEW.folder)).toBe(1);
+    expect(store.insert(other)).toMatchObject({ ok: true });
+    expect(store.listByFolder(NEW.folder).map((c) => [c.keyId, c.state])).toEqual([
+      [KEY, 'disabled'],
+      [other.keyId, 'active'],
+    ]);
+  });
+
+  it('lists nothing and disables nothing for an unused folder', () => {
+    expect(store.listByFolder('unusedfolder00000001')).toEqual([]);
+    expect(store.disableFolder('unusedfolder00000001')).toBe(0);
+  });
+
   it('keeps every credential across a close and reopen', () => {
     store.insert(NEW);
     store.disable(KEY);

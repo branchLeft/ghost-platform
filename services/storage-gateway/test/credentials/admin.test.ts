@@ -12,6 +12,7 @@ import {
   adminSigningPayload,
   authenticateAdmin,
   createInMemoryNonceStore,
+  replayWindow,
   loadCallerKeys,
   publicKeyFromRaw,
   type AdminAuthDeps,
@@ -68,16 +69,16 @@ function signed(
   };
 }
 
-function authDeps(): AdminAuthDeps {
+function authDeps(clock: () => number = () => NOW_MS): AdminAuthDeps {
   return {
     callerKeys: {
       'provisioning-controller': controller.publicKey,
       'erasure-job': erasure.publicKey,
     },
     replayWindowSeconds: 60,
-    nonces: createInMemoryNonceStore(60_000),
+    nonces: createInMemoryNonceStore(),
     processStartSeconds: Math.floor(START_MS / 1000),
-    nowMs: () => NOW_MS,
+    nowMs: clock,
   };
 }
 
@@ -209,6 +210,8 @@ describe('the admin interface', () => {
             throw new Error('disk full');
           },
           disable: () => 'unknown',
+          disableFolder: () => 0,
+          listByFolder: () => [],
           get: () => undefined,
         },
         master: MASTER,
@@ -297,6 +300,152 @@ describe('the admin interface', () => {
     });
   });
 
+  describe('a byte-identical mint replayed at the edge of the window', () => {
+    let clockMs: number;
+    let edgeAdmin: ReturnType<typeof createAdminInterface>;
+    beforeEach(() => {
+      clockMs = NOW_MS;
+      edgeAdmin = createAdminInterface({
+        auth: authDeps(() => clockMs),
+        store,
+        master: MASTER,
+        newKeyId: () => ids.shift() ?? 'GWEXHAUSTED000000000000000',
+      });
+    });
+
+    it('is refused 60.5 seconds after a same-second request', () => {
+      const request = signed(
+        'provisioning-controller',
+        controller.privateKey,
+        'POST',
+        '/credentials',
+        BODY
+      );
+      expect(edgeAdmin.handle(request).status).toBe(201);
+      store.disableFolder(BODY.folder);
+      clockMs = NOW_MS + 60_500;
+      const replay = edgeAdmin.handle(request);
+      expect(replay.status).toBe(401);
+      expect(json(replay)).not.toHaveProperty('secret');
+      expect(store.get('GWSECOND000000000000000000')).toBeUndefined();
+    });
+
+    it('is refused 62 seconds after a request stamped 5 seconds ahead', () => {
+      const ahead = String(Math.floor(NOW_MS / 1000) + 5);
+      const request = signed(
+        'provisioning-controller',
+        controller.privateKey,
+        'POST',
+        '/credentials',
+        BODY,
+        {
+          timestamp: ahead,
+        }
+      );
+      expect(edgeAdmin.handle(request).status).toBe(201);
+      store.disableFolder(BODY.folder);
+      clockMs = NOW_MS + 62_000;
+      const replay = edgeAdmin.handle(request);
+      expect(replay.status).toBe(401);
+      expect(json(replay)).not.toHaveProperty('secret');
+      expect(store.get('GWSECOND000000000000000000')).toBeUndefined();
+    });
+
+    it('is refused at every half second until the window has closed', () => {
+      const request = signed(
+        'provisioning-controller',
+        controller.privateKey,
+        'POST',
+        '/credentials',
+        BODY
+      );
+      expect(edgeAdmin.handle(request).status).toBe(201);
+      store.disableFolder(BODY.folder);
+      for (let offset = 500; offset <= 70_000; offset += 500) {
+        clockMs = NOW_MS + offset;
+        expect(edgeAdmin.handle(request).status).toBe(401);
+      }
+      expect(store.listByFolder(BODY.folder)).toHaveLength(1);
+    });
+  });
+
+  describe('one active credential per folder', () => {
+    const disableFolder = (
+      caller: 'provisioning-controller' | 'erasure-job',
+      folder = BODY.folder
+    ) =>
+      admin.handle(
+        signed(
+          caller,
+          caller === 'erasure-job' ? erasure.privateKey : controller.privateKey,
+          'POST',
+          `/folders/${folder}/disable`
+        )
+      );
+
+    it('refuses a second mint for a folder that has an active credential, with no secret', () => {
+      const first = json(mint());
+      const retry = mint();
+      expect(retry.status).toBe(409);
+      expect(json(retry).error).toMatch(/folder has an active credential/);
+      expect(retry.body).not.toContain(String(first.secret));
+      expect(json(retry)).not.toHaveProperty('secret');
+      expect(store.listByFolder(BODY.folder).map((c) => c.state)).toEqual(['active']);
+    });
+
+    it('lets the controller recover a lost mint: disable by folder, then mint again', () => {
+      const lost = json(mint());
+      const disabled = disableFolder('provisioning-controller');
+      expect(disabled.status).toBe(200);
+      expect(json(disabled)).toEqual({
+        folder: BODY.folder,
+        disabled: 1,
+        credentials: [expect.objectContaining({ keyId: lost.keyId, state: 'disabled' })],
+      });
+      expect(disabled.body).not.toContain(String(lost.secret));
+      const fresh = mint();
+      expect(fresh.status).toBe(201);
+      expect(json(fresh).keyId).not.toBe(lost.keyId);
+      expect(json(fresh).secret).not.toBe(lost.secret);
+    });
+
+    it('lets the erasure job find and disable every key id a folder ever had, with no secret', () => {
+      const one = json(mint());
+      disableFolder('provisioning-controller');
+      const two = json(mint());
+      const response = disableFolder('erasure-job');
+      expect(response.status).toBe(200);
+      const body = json(response);
+      expect(body.disabled).toBe(1);
+      expect(body.credentials).toEqual([
+        expect.objectContaining({ keyId: one.keyId, state: 'disabled' }),
+        expect.objectContaining({ keyId: two.keyId, state: 'disabled' }),
+      ]);
+      for (const secret of [one.secret, two.secret])
+        expect(response.body).not.toContain(String(secret));
+      for (const credential of body.credentials as object[])
+        expect(credential).not.toHaveProperty('secret');
+    });
+
+    it('answers a repeat with nothing newly disabled, and 404 for a folder never used', () => {
+      mint();
+      disableFolder('erasure-job');
+      expect(json(disableFolder('erasure-job')).disabled).toBe(0);
+      expect(disableFolder('erasure-job', 'unusedfolder00000001').status).toBe(404);
+    });
+
+    it('refuses a malformed folder, and a caller that is not named', () => {
+      expect(disableFolder('erasure-job', 'short').status).toBe(404);
+      const stray = signed(
+        'portal',
+        stranger.privateKey,
+        'POST',
+        `/folders/${BODY.folder}/disable`
+      );
+      expect(admin.handle(stray).status).toBe(401);
+    });
+  });
+
   describe('who may call', () => {
     it('refuses a caller that is not one of the two named ones, even with a valid signature', () => {
       for (const name of ['portal', 'broker', 'Provisioning-Controller', '']) {
@@ -352,8 +501,8 @@ describe('the admin interface', () => {
 
     it('grants exactly the listed operations', () => {
       expect(ADMIN_PERMISSIONS).toEqual({
-        'provisioning-controller': ['mint', 'disable', 'state'],
-        'erasure-job': ['disable', 'state'],
+        'provisioning-controller': ['mint', 'disable', 'disable-folder', 'state'],
+        'erasure-job': ['disable', 'disable-folder', 'state'],
       });
     });
 
@@ -453,13 +602,32 @@ describe('authenticateAdmin', () => {
 });
 
 describe('createInMemoryNonceStore', () => {
-  it('accepts a nonce once, again after the window, and refuses when full', () => {
-    const nonces = createInMemoryNonceStore(1000, 2);
-    expect(nonces.claim('a', 0)).toBe(true);
-    expect(nonces.claim('a', 500)).toBe(false);
-    expect(nonces.claim('b', 600)).toBe(true);
-    expect(nonces.claim('c', 700)).toBe(false);
-    expect(nonces.claim('a', 1000)).toBe(true);
+  it('accepts a nonce once, again after its own expiry, and refuses when full', () => {
+    const nonces = createInMemoryNonceStore(2);
+    expect(nonces.claim('a', 0, 1000)).toBe(true);
+    expect(nonces.claim('a', 500, 1500)).toBe(false);
+    expect(nonces.claim('b', 600, 5000)).toBe(true);
+    expect(nonces.claim('c', 700, 5000)).toBe(false);
+    expect(nonces.claim('a', 1000, 2000)).toBe(true);
+  });
+
+  it('expires entries out of insertion order', () => {
+    const nonces = createInMemoryNonceStore(2);
+    nonces.claim('late', 0, 10_000);
+    nonces.claim('early', 0, 1000);
+    expect(nonces.claim('third', 1000, 2000)).toBe(true);
+    expect(nonces.claim('late', 1000, 2000)).toBe(false);
+  });
+});
+
+describe('replayWindow', () => {
+  it('remembers a nonce past the last instant its request is admitted', () => {
+    for (const windowSeconds of [1, 60, 3600]) {
+      const w = replayWindow(1000, windowSeconds);
+      expect(w.opensAtMs).toBe(995_000);
+      expect(w.closesAtMs).toBe((1000 + windowSeconds + 1) * 1000);
+      expect(w.nonceExpiresAtMs).toBeGreaterThan(w.closesAtMs);
+    }
   });
 });
 

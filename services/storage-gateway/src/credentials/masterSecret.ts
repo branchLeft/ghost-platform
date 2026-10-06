@@ -1,4 +1,4 @@
-import { statSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { inspect } from 'node:util';
 
@@ -72,25 +72,59 @@ export class MasterSecret {
 
 export interface MasterSecretSourceDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
-  readonly readFile?: (path: string) => Buffer;
-  readonly fileMode?: (path: string) => number;
+  /** The uid the file must belong to; defaults to this process's own. */
+  readonly expectedUid?: number;
+}
+
+/**
+ * Opens the file once, refusing a symlink, then checks and reads through
+ * that one descriptor, so what is checked is what is read.
+ */
+function readOwnerOnlyFile(path: string, expectedUid: number): Buffer {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    throw new MasterSecretError('master secret file cannot be opened (missing, or a symlink)');
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new MasterSecretError('master secret path is not a regular file');
+    if (stat.uid !== expectedUid) {
+      throw new MasterSecretError('master secret file is not owned by the gateway user');
+    }
+    if ((stat.mode & 0o077) !== 0) {
+      throw new MasterSecretError(
+        'master secret file is readable by group or others; it must be mode 0600 or 0400'
+      );
+    }
+    const buffer = Buffer.alloc(MASTER_SECRET_MAX_FILE_BYTES + 1);
+    let length = 0;
+    for (;;) {
+      const read = readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+      if (length > MASTER_SECRET_MAX_FILE_BYTES) {
+        throw new MasterSecretError('master secret file is larger than any secret we write');
+      }
+    }
+    const contents = Buffer.from(buffer.subarray(0, length));
+    buffer.fill(0);
+    return contents;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
  * Loads the master secret from the file named by
- * {@link MASTER_SECRET_FILE_ENV}. The file holds the secret as standard
- * base64 text. Start-up fails closed when the variable is unset, the path
- * is relative, the file is readable by group or others, is not base64, or
- * decodes to fewer than {@link MASTER_SECRET_MIN_BYTES} bytes.
- *
- * A file, not the variable's own value: a secret in the environment is
- * readable from the process table and from container inspection, and a
- * file can be delivered with owner-only permissions.
+ * {@link MASTER_SECRET_FILE_ENV}: standard base64 text, at least
+ * {@link MASTER_SECRET_MIN_BYTES} bytes decoded, in a regular owner-only
+ * file belonging to this process's user. Anything else refuses to start.
+ * A file, not the variable's value: the environment is readable from the
+ * process table and from container inspection.
  */
 export function loadMasterSecret(deps: MasterSecretSourceDeps): MasterSecret {
-  const readFile = deps.readFile ?? ((path: string) => readFileSync(path));
-  const fileMode = deps.fileMode ?? ((path: string) => statSync(path).mode);
-
   const path = deps.env[MASTER_SECRET_FILE_ENV];
   if (path === undefined || path === '') {
     throw new MasterSecretError(`${MASTER_SECRET_FILE_ENV} is not set; refusing to start`);
@@ -98,25 +132,10 @@ export function loadMasterSecret(deps: MasterSecretSourceDeps): MasterSecret {
   if (!isAbsolute(path)) {
     throw new MasterSecretError(`${MASTER_SECRET_FILE_ENV} must be an absolute path`);
   }
-
-  let mode: number;
-  let raw: Buffer;
-  try {
-    mode = fileMode(path);
-    raw = readFile(path);
-  } catch {
-    throw new MasterSecretError('master secret file cannot be read; refusing to start');
-  }
-  if ((mode & 0o077) !== 0) {
-    throw new MasterSecretError(
-      'master secret file is readable by group or others; it must be mode 0600 or 0400'
-    );
-  }
-  if (raw.length > MASTER_SECRET_MAX_FILE_BYTES) {
-    throw new MasterSecretError('master secret file is larger than any secret we write');
-  }
+  const raw = readOwnerOnlyFile(path, deps.expectedUid ?? process.getuid?.() ?? -1);
 
   const text = raw.toString('utf8').trim();
+  raw.fill(0);
   if (text === '' || !BASE64_PATTERN.test(text)) {
     throw new MasterSecretError('master secret file is not standard base64 text');
   }

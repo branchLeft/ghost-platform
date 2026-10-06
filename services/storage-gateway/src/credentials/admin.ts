@@ -20,20 +20,25 @@ export interface AdminResponse {
   readonly body: string;
 }
 
-export type AdminOperation = 'mint' | 'disable' | 'state';
+export type AdminOperation = 'mint' | 'disable' | 'disable-folder' | 'state';
 
 /**
  * Which caller may do what. The erasure job disables and reads state as the
- * first step of an erasure; it never mints. Anything absent is refused.
+ * first step of an erasure; it never mints. The controller disables by
+ * folder to recover from a mint whose answer it lost. Anything absent is
+ * refused.
  */
 export const ADMIN_PERMISSIONS: Readonly<Record<AdminCaller, readonly AdminOperation[]>> = {
-  'provisioning-controller': ['mint', 'disable', 'state'],
-  'erasure-job': ['disable', 'state'],
+  'provisioning-controller': ['mint', 'disable', 'disable-folder', 'state'],
+  'erasure-job': ['disable', 'disable-folder', 'state'],
 };
 
 export interface AdminDeps {
   readonly auth: AdminAuthDeps;
-  readonly store: Pick<SqliteCredentialStore, 'insert' | 'disable' | 'get'>;
+  readonly store: Pick<
+    SqliteCredentialStore,
+    'insert' | 'disable' | 'get' | 'disableFolder' | 'listByFolder'
+  >;
   readonly master: MasterSecret;
   /** Defaults to {@link newKeyId}; injected by tests. */
   readonly newKeyId?: () => string;
@@ -57,6 +62,7 @@ const BUCKET_PATTERN = /^(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const KEY_ID_IN_PATH = '([A-Z0-9]{16,64})';
 const STATE_ROUTE = new RegExp(`^/credentials/${KEY_ID_IN_PATH}$`);
 const DISABLE_ROUTE = new RegExp(`^/credentials/${KEY_ID_IN_PATH}/disable$`);
+const DISABLE_FOLDER_ROUTE = /^\/folders\/([A-Za-z0-9_-]{16,128})\/disable$/;
 
 // Every answer is uncacheable: one of them carries a secret, and a cache in
 // between must never get the chance to keep it.
@@ -79,12 +85,16 @@ function describe(credential: StoredCredential): object {
 type Routed =
   | { readonly op: 'mint' }
   | { readonly op: 'disable' | 'state'; readonly keyId: string }
+  | { readonly op: 'disable-folder'; readonly folder: string }
   | undefined;
 
 function route(method: string, path: string): Routed {
   if (method === 'POST' && path === '/credentials') return { op: 'mint' };
   const disable = DISABLE_ROUTE.exec(path);
   if (method === 'POST' && disable) return { op: 'disable', keyId: disable[1]! };
+  const disableFolder = DISABLE_FOLDER_ROUTE.exec(path);
+  if (method === 'POST' && disableFolder)
+    return { op: 'disable-folder', folder: disableFolder[1]! };
   const state = STATE_ROUTE.exec(path);
   if (method === 'GET' && state) return { op: 'state', keyId: state[1]! };
   return undefined;
@@ -123,7 +133,11 @@ export function createAdminInterface(deps: AdminDeps) {
       bucket: body.bucket,
       createdAt: new Date(deps.auth.nowMs()).toISOString(),
     });
-    if (!inserted.ok) return respond(409, { error: 'key id already issued; mint again' });
+    if (!inserted.ok) {
+      return inserted.reason === 'key-id-taken'
+        ? respond(409, { error: 'key id already issued; mint again' })
+        : respond(409, { error: 'folder has an active credential; disable it by folder first' });
+    }
     const credential = inserted.credential;
     return respond(201, {
       ...describe(credential),
@@ -135,6 +149,15 @@ export function createAdminInterface(deps: AdminDeps) {
     const result = deps.store.disable(keyId);
     if (result === 'unknown') return respond(404, { error: 'no such credential' });
     return respond(200, describe(deps.store.get(keyId)!));
+  }
+
+  // Answers with every credential the folder has ever had, so the erasure
+  // job sees each key id it must account for. Never with a secret.
+  function disableFolder(folder: string): AdminResponse {
+    const disabled = deps.store.disableFolder(folder);
+    const all = deps.store.listByFolder(folder);
+    if (all.length === 0) return respond(404, { error: 'no credential for this folder' });
+    return respond(200, { folder, disabled, credentials: all.map(describe) });
   }
 
   function state(keyId: string): AdminResponse {
@@ -160,8 +183,16 @@ export function createAdminInterface(deps: AdminDeps) {
         return respond(403, { error: 'this caller may not do that' });
       }
       try {
-        if (routed.op === 'mint') return mint(request.rawBody);
-        return routed.op === 'disable' ? disable(routed.keyId) : state(routed.keyId);
+        switch (routed.op) {
+          case 'mint':
+            return mint(request.rawBody);
+          case 'disable-folder':
+            return disableFolder(routed.folder);
+          case 'disable':
+            return disable(routed.keyId);
+          case 'state':
+            return state(routed.keyId);
+        }
       } catch {
         return respond(503, { error: 'the credential store failed; try again' });
       }

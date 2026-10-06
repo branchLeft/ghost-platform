@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { check, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // The credential store's schema. drizzle-kit diffs this file against the
 // last snapshot in drizzle/ to write each new migration.
@@ -20,5 +20,10 @@ export const credentials = sqliteTable(
   },
   (table) => [
     check('credentials_state_known', sql`${table.state} IN ('active', 'disabled', 'revoked')`),
+    // At most one active credential per folder: a retried mint cannot leave
+    // a second, unrecorded key able to write into the tenant's folder.
+    uniqueIndex('uniq_credentials_active_folder')
+      .on(table.folder)
+      .where(sql`${table.state} = 'active'`),
   ]
 );

@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import type { CredentialRecord, CredentialStore } from '../contracts.js';
@@ -24,7 +24,9 @@ export interface NewCredential {
 export type InsertResult =
   | { readonly ok: true; readonly credential: StoredCredential }
   /** The key id was minted before, in any state. It is never issued again. */
-  | { readonly ok: false; readonly reason: 'key-id-taken' };
+  | { readonly ok: false; readonly reason: 'key-id-taken' }
+  /** The folder already has an active credential; disable it first. */
+  | { readonly ok: false; readonly reason: 'folder-has-active-credential' };
 
 export type DisableResult = 'disabled' | 'not-active' | 'unknown';
 
@@ -68,19 +70,42 @@ export class SqliteCredentialStore implements CredentialStore {
   }
 
   /**
-   * Records a new credential. Refuses a key id that has ever been minted,
-   * whatever its state, rather than overwriting it.
+   * Records a new credential. Refuses, rather than overwrites, a key id that
+   * has ever been minted, whatever its state, and refuses a folder that
+   * already has an active credential.
    */
   insert(credential: NewCredential): InsertResult {
     const inserted = this.#db
       .insert(credentials)
       .values({ ...credential, state: 'active' })
-      .onConflictDoNothing({ target: credentials.keyId })
+      .onConflictDoNothing()
       .returning()
       .all();
     const row = inserted[0];
-    if (row === undefined) return { ok: false, reason: 'key-id-taken' };
-    return { ok: true, credential: { ...row } };
+    if (row !== undefined) return { ok: true, credential: { ...row } };
+    if (this.get(credential.keyId) !== undefined) return { ok: false, reason: 'key-id-taken' };
+    return { ok: false, reason: 'folder-has-active-credential' };
+  }
+
+  /** Every credential ever minted for a folder, oldest first. */
+  listByFolder(folder: string): StoredCredential[] {
+    return this.#db
+      .select()
+      .from(credentials)
+      .where(eq(credentials.folder, folder))
+      .orderBy(asc(credentials.createdAt), asc(credentials.keyId))
+      .all()
+      .map((row) => ({ ...row }));
+  }
+
+  /** Disables every active credential for a folder; returns how many it changed. */
+  disableFolder(folder: string): number {
+    return this.#db
+      .update(credentials)
+      .set({ state: 'disabled' })
+      .where(and(eq(credentials.folder, folder), eq(credentials.state, 'active')))
+      .returning({ keyId: credentials.keyId })
+      .all().length;
   }
 
   /** Moves an active credential to disabled. A credential not active is left as it is. */

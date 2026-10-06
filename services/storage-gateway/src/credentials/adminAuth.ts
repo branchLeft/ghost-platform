@@ -59,27 +59,46 @@ export function adminSigningPayload(
   ]);
 }
 
-/** Per-process replay guard: each nonce is accepted once inside the window. */
+/**
+ * Per-process replay guard: each nonce is accepted once, and remembered
+ * until the expiry the caller gives, which is derived from the request's
+ * own timestamp so it always outlasts the window that admits the request.
+ */
 export interface NonceStore {
-  claim(nonce: string, nowMs: number): boolean;
+  claim(nonce: string, nowMs: number, expiresAtMs: number): boolean;
 }
 
-/** In-memory, bounded; refuses rather than evicts a live entry once full. */
-export function createInMemoryNonceStore(
-  windowMs: number,
-  maxEntries = NONCE_STORE_MAX_ENTRIES
-): NonceStore {
+/**
+ * In-memory, bounded; refuses rather than evicts a live entry once full.
+ * Expiries are per request, so not in insertion order: the sweep visits
+ * every entry, which the bound keeps cheap.
+ */
+export function createInMemoryNonceStore(maxEntries = NONCE_STORE_MAX_ENTRIES): NonceStore {
   const seen = new Map<string, number>();
   return {
-    claim(nonce, nowMs) {
-      for (const [key, expiresAtMs] of seen) {
-        if (expiresAtMs > nowMs) break;
-        seen.delete(key);
+    claim(nonce, nowMs, expiresAtMs) {
+      for (const [key, expiry] of seen) {
+        if (expiry <= nowMs) seen.delete(key);
       }
       if (seen.has(nonce) || seen.size >= maxEntries) return false;
-      seen.set(nonce, nowMs + windowMs);
+      seen.set(nonce, expiresAtMs);
       return true;
     },
+  };
+}
+
+/**
+ * The replay window for a request stamped `requestSeconds`, in
+ * milliseconds. A request is admitted from `opensAtMs` until just before
+ * `closesAtMs`; its nonce is remembered until `nonceExpiresAtMs`, which is
+ * later than `closesAtMs` by the forward skew plus a second, so a nonce can
+ * never be forgotten while its request would still be admitted.
+ */
+export function replayWindow(requestSeconds: number, windowSeconds: number) {
+  return {
+    opensAtMs: (requestSeconds - FORWARD_SKEW_SECONDS) * 1000,
+    closesAtMs: (requestSeconds + windowSeconds + 1) * 1000,
+    nonceExpiresAtMs: (requestSeconds + windowSeconds + FORWARD_SKEW_SECONDS + 1) * 1000,
   };
 }
 
@@ -127,10 +146,10 @@ export function authenticateAdmin(
   }
   if (signature === undefined) return { ok: false, reason: 'missing signature' };
 
-  const nowSeconds = Math.floor(deps.nowMs() / 1000);
+  const nowMs = deps.nowMs();
   const requestSeconds = Number(timestamp);
-  const age = nowSeconds - requestSeconds;
-  if (age > deps.replayWindowSeconds || age < -FORWARD_SKEW_SECONDS) {
+  const window = replayWindow(requestSeconds, deps.replayWindowSeconds);
+  if (nowMs < window.opensAtMs || nowMs >= window.closesAtMs) {
     return { ok: false, reason: 'timestamp outside the replay window' };
   }
   if (requestSeconds <= deps.processStartSeconds) {
@@ -146,7 +165,8 @@ export function authenticateAdmin(
     return { ok: false, reason: 'signature does not verify' };
   }
 
-  if (!deps.nonces.claim(nonce, deps.nowMs())) return { ok: false, reason: 'nonce already used' };
+  if (!deps.nonces.claim(nonce, nowMs, window.nonceExpiresAtMs))
+    return { ok: false, reason: 'nonce already used' };
   return { ok: true, caller };
 }
 
