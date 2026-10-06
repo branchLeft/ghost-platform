@@ -2,6 +2,7 @@ export * from './contracts.js';
 export * from './refusal.js';
 export * from './router.js';
 export * from './admit.js';
+export * from './credentials/index.js';
 export {
   DEFAULT_CLOCK_WINDOW_MS,
   SigV4Verifier,
