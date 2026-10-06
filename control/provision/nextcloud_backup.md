@@ -53,6 +53,12 @@ estimates its size as twice the database size plus twice the volume size.
 The backup sits on the same disk as the live volumes, and filling that disk
 would stop the live database from writing.
 
+`verify` and `seal` apply the same 1 GiB floor before they write anything,
+so the floor holds even when either runs long after a `take`. `verify` checks
+docker's root directory for twice the database size `take` recorded, because
+that is where the throwaway restore writes. `seal` checks the backup root for
+the size of the directory it encrypts.
+
 ## Locking
 
 `take` and `run` hold `flock` on `/etc/branchleft/<project>.deploy.lock`. That

@@ -72,6 +72,8 @@ class FakeDocker:
             return done(self.ps)
         if sub == "volume":
             return done(self.volumes)
+        if sub == "info":
+            return done("/var/lib/docker\n")
         if sub == "inspect":
             return done(IMAGE_ID + "\n")
         if sub == "rm":
@@ -313,7 +315,7 @@ class VerifyTest(unittest.TestCase):
 
     def _verify(self, fake, popen=None):
         return nb.verify(self.backup, runner=fake, popen=popen or fake_popen(), sleep=lambda _s: None,
-                         say=self.said.append)
+                         usage=plenty, say=self.said.append)
 
     def _rewrite_manifest(self, **changes):
         path = self.backup / nb.MANIFEST_FILE
@@ -338,6 +340,27 @@ class VerifyTest(unittest.TestCase):
         self.assertEqual(run[-1], IMAGE_ID)
         self.assertIn("POSTGRES_PASSWORD", run)
         self.assertFalse(any(arg.startswith("POSTGRES_PASSWORD=") for arg in run))
+
+    def test_too_little_space_for_the_restore_starts_nothing(self):
+        seen = []
+
+        def tight(path):
+            seen.append(path)
+            return Usage(10 << 30, 0, nb.HEADROOM_BYTES + 2 * 1048576 - 1)
+
+        fake = FakeDocker()
+        with self.assertRaisesRegex(nb.Precondition, "free space"):
+            nb.verify(self.backup, runner=fake, popen=fake_popen(), sleep=lambda _s: None, usage=tight,
+                      say=self.said.append)
+        self.assertEqual(seen, [pathlib.Path("/var/lib/docker")])
+        self.assertFalse(any(c[1] == "run" for c in fake.calls))
+
+    def test_the_restore_floor_uses_the_recorded_database_size(self):
+        manifest = json.loads((self.backup / nb.MANIFEST_FILE).read_text())
+        self.assertEqual(manifest["db_bytes"], 1048576)
+        roomy = lambda _p: Usage(10 << 30, 0, nb.HEADROOM_BYTES + 2 * 1048576)  # noqa: E731
+        nb.verify(self.backup, runner=FakeDocker(), popen=fake_popen(), sleep=lambda _s: None, usage=roomy,
+                  say=self.said.append)
 
     def test_a_restored_count_mismatch_fails(self):
         with self.assertRaisesRegex(nb.CheckFailed, "count mismatch"):
@@ -455,18 +478,29 @@ class SealTest(unittest.TestCase):
 
     def test_writes_the_sealed_file_and_its_digest(self):
         popen = fake_popen()
-        out = nb.seal(self.backup, self.recipients, popen=popen, which=lambda _n: "/usr/bin/age", say=lambda _m: None)
+        out = nb.seal(self.backup, self.recipients, popen=popen, which=lambda _n: "/usr/bin/age", usage=plenty,
+                      say=lambda _m: None)
         self.assertEqual(out.name, "20260102T030405Z.tar.age")
         self.assertEqual(oct(out.stat().st_mode & 0o777), "0o600")
         digest = (self.root / "20260102T030405Z.tar.age.sha256").read_text().split()[0]
         self.assertEqual(digest, nb.sha256_file(out))
         self.assertEqual(popen.procs[1][0], ["age", "-R", str(self.recipients)])
         with self.assertRaisesRegex(nb.Precondition, "already exists"):
-            nb.seal(self.backup, self.recipients, popen=popen, which=lambda _n: "/usr/bin/age")
+            nb.seal(self.backup, self.recipients, popen=popen, which=lambda _n: "/usr/bin/age", usage=plenty)
+
+    def test_too_little_space_seals_nothing(self):
+        (self.backup / nb.DB_FILE).write_bytes(b"x" * 1000)
+        tight = lambda _p: Usage(10 << 30, 0, nb.HEADROOM_BYTES + 1000)  # noqa: E731
+        popen = fake_popen()
+        with self.assertRaisesRegex(nb.Precondition, "free space"):
+            nb.seal(self.backup, self.recipients, popen=popen, which=lambda _n: "/usr/bin/age", usage=tight)
+        self.assertEqual(popen.procs, [])
+        self.assertFalse((self.root / "20260102T030405Z.tar.age").exists())
 
     def test_a_failed_encryption_leaves_no_sealed_file(self):
         with self.assertRaisesRegex(nb.CheckFailed, "sealing failed"):
-            nb.seal(self.backup, self.recipients, popen=fake_popen(code=1), which=lambda _n: "/usr/bin/age")
+            nb.seal(self.backup, self.recipients, popen=fake_popen(code=1), which=lambda _n: "/usr/bin/age",
+                    usage=plenty)
         self.assertFalse((self.root / "20260102T030405Z.tar.age").exists())
 
 
@@ -523,6 +557,20 @@ class MainTest(unittest.TestCase):
                 mock.patch.object(nb, "prune") as prune:
             self.assertEqual(nb.main(["run", *self.args], say=self.said.append), 1)
         prune.assert_not_called()
+
+    def test_take_and_run_refuse_while_a_deploy_holds_the_stack_lock(self):
+        fd = os.open(pathlib.Path(self.tmp.name) / "nextcloud1.deploy.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            for command in ("take", "run"):
+                with self.subTest(command=command), mock.patch.object(nb, "take") as take, \
+                        mock.patch.object(nb, "verify") as verify:
+                    self.assertEqual(nb.main([command, *self.args], say=self.said.append), nb.EXIT_PRECONDITION)
+                    self.assertIn("deploy of nextcloud1 is running", self.said[-1])
+                    take.assert_not_called()
+                    verify.assert_not_called()
+        finally:
+            os.close(fd)
 
     def test_take_alone_does_not_verify(self):
         with mock.patch.object(nb, "take", return_value=pathlib.Path("t")), mock.patch.object(nb, "verify") as v:

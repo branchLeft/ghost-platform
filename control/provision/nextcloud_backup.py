@@ -290,7 +290,8 @@ def take(
     image = container_image(runner, container)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
-    needed = 2 * (live_db_bytes(runner, stack, container) + 1024 * volume_kib(runner, image, volume))
+    db_bytes = live_db_bytes(runner, stack, container)
+    needed = 2 * (db_bytes + 1024 * volume_kib(runner, image, volume))
     require_free_space(root, needed, usage=usage)
 
     dest = root / _now_name(now)
@@ -315,6 +316,7 @@ def take(
         "db_user": stack.db_user,
         "db_name": stack.db_name,
         "counts": before.as_dict(),
+        "db_bytes": db_bytes,
         "app_entries": entries,
         "sha256": {DB_FILE: sha256_file(dest / DB_FILE), APP_FILE: sha256_file(dest / APP_FILE)},
     }
@@ -439,12 +441,26 @@ class Throwaway:
         return parse_counts(result.stdout)
 
 
+def backup_bytes(backup: pathlib.Path) -> int:
+    return sum(path.stat().st_size for path in backup.rglob("*") if path.is_file())
+
+
+def docker_root(runner: Runner) -> pathlib.Path:
+    root = _docker(runner, ["info", "--format", "{{.DockerRootDir}}"], "reading the docker root").strip()
+    if not root.startswith("/"):
+        raise Precondition("the docker root directory did not come back as an absolute path")
+    return pathlib.Path(root)
+
+
 def verify(
     backup: pathlib.Path, *, runner: Runner = _run, popen=subprocess.Popen, memory: str = DEFAULT_RESTORE_MEMORY,
-    sleep=time.sleep, say=print,
+    sleep=time.sleep, usage=shutil.disk_usage, say=print,
 ) -> Counts:
     manifest = load_manifest(backup)
     check_digests(backup, manifest)
+    # The restore writes a database about the live size into docker's own disk.
+    restore_bytes = int(manifest.get("db_bytes") or 0) or 10 * (backup / DB_FILE).stat().st_size
+    require_free_space(docker_root(runner), 2 * restore_bytes, usage=usage)
     recorded = manifest.get("counts") or {}
     try:
         live = Counts(int(recorded["calendars"]), int(recorded["calendar_objects"]))
@@ -466,7 +482,8 @@ def verify(
 
 
 def seal(
-    backup: pathlib.Path, recipient_file: pathlib.Path, *, popen=subprocess.Popen, which=shutil.which, say=print
+    backup: pathlib.Path, recipient_file: pathlib.Path, *, popen=subprocess.Popen, which=shutil.which,
+    usage=shutil.disk_usage, say=print,
 ) -> pathlib.Path:
     """Encrypts a verified backup into one age file beside it, for the off-host
     copy, and writes its digest so the copy can be checked byte for byte."""
@@ -479,6 +496,7 @@ def seal(
     out = backup.parent / f"{backup.name}.tar.age"
     if out.exists():
         raise Precondition(f"{out} already exists")
+    require_free_space(backup.parent, backup_bytes(backup), usage=usage)
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as handle:
         archive = popen(
