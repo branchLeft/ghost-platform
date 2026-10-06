@@ -20,6 +20,9 @@ import sys
 import tempfile
 from collections.abc import Callable, Sequence
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "infra" / "provisioning" / "scripts"))
+import backup_recipients  # noqa: E402
+
 SERVICE_USER = "backup-worker"
 SERVICE_UNIT = "branchleft-backup-worker.service"
 TIMER_UNIT = "branchleft-backup-worker.timer"
@@ -30,6 +33,7 @@ UNIT_FILES = (SERVICE_UNIT, TIMER_UNIT)
 REQUIRED_RELEASE_FILES = (
     "infra/provisioning/scripts/nightly_dump_loop.py",
     "infra/provisioning/scripts/backup_worker.py",
+    "infra/provisioning/scripts/backup_recipients.py",
     "infra/provisioning/scripts/backup_manifest.py",
     "infra/provisioning/scripts/dial_in_transport.py",
     "infra/provisioning/scripts/pull_encrypt_store.py",
@@ -50,7 +54,6 @@ REQUIRED_ENV_NAMES = (
     "BACKUP_WORKER_MYSQL_USER",
     "BACKUP_WORKER_MYSQL_SSL_CA",
     "DB_DUMP_MYSQL_PWD",
-    "AGE_RECIPIENT_PUBLIC_KEY",
     "BACKUP_WORKER_COPY_PRIMARY_BUCKET",
     "BACKUP_WORKER_COPY_PRIMARY_ENDPOINT",
     "BACKUP_WORKER_COPY_PRIMARY_REGION",
@@ -73,6 +76,7 @@ class Paths:
     unit_dir: pathlib.Path = pathlib.Path("/etc/systemd/system")
     env_file: pathlib.Path = pathlib.Path("/etc/branchleft/backup-worker.env")
     tenants_file: pathlib.Path = pathlib.Path("/etc/branchleft/backup-worker-tenants")
+    recipients_file: pathlib.Path = pathlib.Path(backup_recipients.DEFAULT_RECIPIENTS_FILE)
 
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -242,12 +246,51 @@ def tenants_file_problems(path: pathlib.Path, *, owner_uid: int = 0, group_gid: 
     ]
     if not names:
         problems.append(f"{path} names no tenant")
-    if len(set(names)) > 1:
-        problems.append(
-            f"{path} names {len(set(names))} tenants, but the loop encrypts every tenant to one "
-            "AGE_RECIPIENT_PUBLIC_KEY; each tenant needs its own recipient first"
-        )
     return problems
+
+
+def recipients_file_problems(
+    path: pathlib.Path, tenants: Sequence[str], *, owner_uid: int = 0, group_gid: int | None
+) -> list[str]:
+    """Every dumped tenant needs a recipient of its own in a file only root
+    can change. Public keys are not secret, but whoever edits this file
+    decides whose key opens whose dump."""
+    try:
+        info, raw = _open_root_file(path)
+    except FileNotFoundError:
+        return [f"{path} does not exist"]
+    except OSError as exc:
+        return [f"{path} cannot be read safely: {exc}"]
+    problems = []
+    if info.st_uid != owner_uid:
+        problems.append(f"{path} must be owned by uid {owner_uid}")
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        problems.append(f"{path} must not be writable by group or others")
+    readable = info.st_mode & stat.S_IROTH or (
+        group_gid is not None and info.st_gid == group_gid and info.st_mode & stat.S_IRGRP
+    )
+    if not readable:
+        problems.append(f"{path} must be readable by the {SERVICE_USER} group (mode 0640, group {SERVICE_USER})")
+    try:
+        recipients = backup_recipients.parse_recipients(raw.decode("utf-8", errors="replace"))
+    except backup_recipients.RecipientError as exc:
+        return problems + [f"{path} is not usable: {exc}"]
+    problems += [f"{path} has no recipient for tenant {name}" for name in tenants if name not in recipients]
+    return problems
+
+
+def _tenant_names(path: pathlib.Path) -> list[str]:
+    try:
+        _, raw = _open_root_file(path)
+    except OSError:
+        return []
+    return sorted(
+        {
+            line.strip()
+            for line in raw.decode("utf-8", errors="replace").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+    )
 
 
 def tool_problems(run: Runner, which: Callable[[str], str | None] = shutil.which) -> list[str]:
@@ -273,6 +316,9 @@ def readiness_problems(
     if "ca" in extra:
         problems += ca_problems(extra["ca"])
     problems += tenants_file_problems(paths.tenants_file, owner_uid=owner_uid, group_gid=group_gid)
+    problems += recipients_file_problems(
+        paths.recipients_file, _tenant_names(paths.tenants_file), owner_uid=owner_uid, group_gid=group_gid
+    )
     problems += tool_problems(run, which)
     return problems
 
@@ -316,11 +362,13 @@ def install(
 
 
 def preflight_problems(paths: Paths, *, owner_uid: int = 0, group_gid: int | None = None) -> list[str]:
-    """The unit's ExecStartPre: re-checks the tenants file at every run,
-    as the service account, so a tenant added after install cannot be
-    dumped under another tenant's recipient."""
-    return tenants_file_problems(
-        paths.tenants_file, owner_uid=owner_uid, group_gid=os.getgid() if group_gid is None else group_gid
+    """The unit's ExecStartPre: re-checks the tenants and recipients files at
+    every run, as the service account. A tenant added after install with no
+    recipient of its own refuses the whole run rather than being dumped under
+    another tenant's key."""
+    gid = os.getgid() if group_gid is None else group_gid
+    return tenants_file_problems(paths.tenants_file, owner_uid=owner_uid, group_gid=gid) + recipients_file_problems(
+        paths.recipients_file, _tenant_names(paths.tenants_file), owner_uid=owner_uid, group_gid=gid
     )
 
 
@@ -334,7 +382,7 @@ def main(argv: Sequence[str] | None = None, *, run: Runner = subprocess.run, pat
     parser.add_argument(
         "--preflight",
         action="store_true",
-        help="the unit's pre-start check of the tenants file; exits 1 to refuse the run",
+        help="the unit's pre-start check of the tenants and recipients files; exits 1 to refuse the run",
     )
     args = parser.parse_args(argv)
     paths = paths or Paths()

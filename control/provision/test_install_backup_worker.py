@@ -34,6 +34,11 @@ def _unit(name: str) -> configparser.ConfigParser:
     return parser
 
 
+def _key(seed: str) -> str:
+    """A well-formed, distinct age recipient per seed."""
+    return "age1" + (seed.encode().hex() * 60)[:58].translate(str.maketrans("0123456789", "qpzry9x8gf"))
+
+
 def _complete_env(ca_path: str) -> str:
     lines = [f"{name}={SECRET_VALUE}" for name in ibw.REQUIRED_ENV_NAMES if name != "BACKUP_WORKER_MYSQL_SSL_CA"]
     lines.append(f"BACKUP_WORKER_MYSQL_SSL_CA={ca_path}")
@@ -72,6 +77,7 @@ class Sandbox:
             unit_dir=root / "units",
             env_file=root / "etc" / "backup-worker.env",
             tenants_file=root / "etc" / "backup-worker-tenants",
+            recipients_file=root / "etc" / "backup-worker-recipients",
         )
         for directory in (self.paths.releases_dir, self.paths.unit_dir, root / "etc"):
             directory.mkdir(parents=True)
@@ -93,11 +99,25 @@ class Sandbox:
         os.chmod(release, 0o755)
         return release
 
-    def write_config(self, *, env: str | None = None, env_mode: int = 0o600, tenants: str = "blog\n", tenants_mode: int = 0o644) -> None:
+    def write_config(
+        self,
+        *,
+        env: str | None = None,
+        env_mode: int = 0o600,
+        tenants: str = "blog\n",
+        tenants_mode: int = 0o644,
+        recipients: str | None = None,
+        recipients_mode: int = 0o644,
+    ) -> None:
         self.paths.env_file.write_text(env if env is not None else _complete_env(str(self.ca)))
         os.chmod(self.paths.env_file, env_mode)
         self.paths.tenants_file.write_text(tenants)
         os.chmod(self.paths.tenants_file, tenants_mode)
+        if recipients is None:
+            names = sorted({n.strip() for n in tenants.splitlines() if n.strip() and not n.startswith("#")})
+            recipients = "".join(f"{n} {_key(n)}\n" for n in names)
+        self.paths.recipients_file.write_text(recipients)
+        os.chmod(self.paths.recipients_file, recipients_mode)
 
     def close(self) -> None:
         self._tmp.cleanup()
@@ -274,14 +294,14 @@ class EnvFile(SandboxCase):
     def test_names_each_missing_or_empty_key_and_never_prints_a_value(self) -> None:
         env = _complete_env(str(self.box.ca))
         env = env.replace(f"DB_DUMP_MYSQL_PWD={SECRET_VALUE}\n", "DB_DUMP_MYSQL_PWD=\n")
-        env = env.replace(f"AGE_RECIPIENT_PUBLIC_KEY={SECRET_VALUE}\n", "")
+        env = env.replace(f"BACKUP_WORKER_DB_HOST={SECRET_VALUE}\n", "")
         self.box.write_config(env=env)
         problems, _ = ibw.env_file_problems(self.box.paths.env_file, owner_uid=self.uid)
         self.assertEqual(
             sorted(problems),
             sorted(
                 f"{self.box.paths.env_file} does not set {name}"
-                for name in ("DB_DUMP_MYSQL_PWD", "AGE_RECIPIENT_PUBLIC_KEY")
+                for name in ("DB_DUMP_MYSQL_PWD", "BACKUP_WORKER_DB_HOST")
             ),
         )
         self.assertNotIn(SECRET_VALUE, "\n".join(problems))
@@ -344,14 +364,101 @@ class TenantsFile(SandboxCase):
         problems = self._problems(tenants_mode=0o600)
         self.assertTrue(any("must be readable by the backup-worker group" in p for p in problems), problems)
 
-    def test_more_than_one_tenant_is_refused_while_one_recipient_covers_them_all(self) -> None:
-        problems = self._problems(tenants="blog\nshop\n")
-        self.assertEqual(len(problems), 1)
-        self.assertIn("names 2 tenants", problems[0])
-        self.assertEqual(self._problems(tenants="blog\nblog\n"), [])
+    def test_several_tenants_are_accepted_by_the_tenants_file_itself(self) -> None:
+        self.assertEqual(self._problems(tenants="blog\nshop\n"), [])
 
     def test_naming_no_tenant_is_refused(self) -> None:
         self.assertIn(f"{self.box.paths.tenants_file} names no tenant", self._problems(tenants="# none\n\n"))
+
+
+class RecipientsFile(SandboxCase):
+    def _problems(self, names=("blog",), *, owner_offset: int = 0, group_gid=None, **kwargs) -> list[str]:
+        self.box.write_config(**kwargs)
+        return ibw.recipients_file_problems(
+            self.box.paths.recipients_file, names, owner_uid=self.uid + owner_offset, group_gid=group_gid
+        )
+
+    def test_a_root_owned_file_with_a_recipient_per_tenant_is_accepted(self) -> None:
+        self.assertEqual(self._problems(("blog", "shop"), tenants="blog\nshop\n"), [])
+
+    def test_missing_file(self) -> None:
+        self.box.write_config()
+        self.box.paths.recipients_file.unlink()
+        problems = ibw.recipients_file_problems(self.box.paths.recipients_file, ["blog"], owner_uid=self.uid, group_gid=None)
+        self.assertEqual(problems, [f"{self.box.paths.recipients_file} does not exist"])
+
+    def test_names_each_tenant_that_has_no_recipient(self) -> None:
+        problems = self._problems(("blog", "shop", "cafe"), recipients=f"blog {_key('blog')}\n")
+        self.assertEqual(
+            problems,
+            [f"{self.box.paths.recipients_file} has no recipient for tenant {n}" for n in ("shop", "cafe")],
+        )
+
+    def test_a_recipient_shared_by_two_tenants_is_refused(self) -> None:
+        shared = _key("blog")
+        problems = self._problems(("blog", "shop"), recipients=f"blog {shared}\nshop {shared}\n")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("share one recipient", problems[0])
+
+    def test_a_malformed_recipient_is_refused_without_printing_the_line(self) -> None:
+        problems = self._problems(recipients=f"blog {SECRET_VALUE}\n")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("is not usable", problems[0])
+        self.assertNotIn(SECRET_VALUE, problems[0])
+
+    def test_writable_by_group_or_others_is_refused(self) -> None:
+        for mode in (0o664, 0o646):
+            self.assertIn(
+                f"{self.box.paths.recipients_file} must not be writable by group or others",
+                self._problems(recipients_mode=mode),
+            )
+
+    def test_unreadable_by_the_service_account_is_refused(self) -> None:
+        problems = self._problems(recipients_mode=0o600)
+        self.assertTrue(any("must be readable by the backup-worker group" in p for p in problems), problems)
+
+    def test_readable_via_the_service_group_is_accepted(self) -> None:
+        self.box.write_config(recipients_mode=0o640)
+        gid = self.box.paths.recipients_file.stat().st_gid
+        self.assertEqual(
+            ibw.recipients_file_problems(self.box.paths.recipients_file, ["blog"], owner_uid=self.uid, group_gid=gid), []
+        )
+
+    def test_wrong_owner_is_refused(self) -> None:
+        self.assertIn(
+            f"{self.box.paths.recipients_file} must be owned by uid {self.uid + 1}", self._problems(owner_offset=1)
+        )
+
+    def test_a_directory_or_symlink_is_refused(self) -> None:
+        self.box.write_config()
+        self.box.paths.recipients_file.unlink()
+        self.box.paths.recipients_file.mkdir()
+        problems = ibw.recipients_file_problems(self.box.paths.recipients_file, ["blog"], owner_uid=self.uid, group_gid=None)
+        self.assertIn("cannot be read safely", problems[0])
+        self.box.paths.recipients_file.rmdir()
+        target = self.box.root / "etc" / "elsewhere"
+        target.write_text(f"blog {_key('blog')}\n")
+        self.box.paths.recipients_file.symlink_to(target)
+        problems = ibw.recipients_file_problems(self.box.paths.recipients_file, ["blog"], owner_uid=self.uid, group_gid=None)
+        self.assertIn("cannot be read safely", problems[0])
+
+    def test_the_tenant_list_ignores_comments_blanks_and_a_missing_file(self) -> None:
+        self.box.write_config(tenants="# c\n\nshop\nblog\nblog\n")
+        self.assertEqual(ibw._tenant_names(self.box.paths.tenants_file), ["blog", "shop"])
+        self.assertEqual(ibw._tenant_names(self.box.root / "absent"), [])
+
+
+class UnitAndDocsAgreeThereIsNoSharedRecipient(unittest.TestCase):
+    def test_no_shared_recipient_name_is_required_or_exampled(self) -> None:
+        self.assertNotIn("AGE_RECIPIENT_PUBLIC_KEY", ibw.REQUIRED_ENV_NAMES)
+        example = (HERE / "backup-worker.env.example").read_text()
+        self.assertFalse(
+            [l for l in example.splitlines() if l.startswith("AGE_RECIPIENT_PUBLIC_KEY")], example
+        )
+
+    def test_the_loop_source_never_reads_a_shared_recipient_variable(self) -> None:
+        for name in ("nightly_dump_loop.py", "backup_worker.py"):
+            self.assertNotIn("AGE_RECIPIENT_PUBLIC_KEY", (SCRIPTS / name).read_text(), name)
 
 
 class Tools(unittest.TestCase):
@@ -394,18 +501,23 @@ class Install(SandboxCase):
         self.assertFalse(any(call[:2] == ["systemctl", "enable"] for call in run.calls))
         self.assertEqual(run.calls[-1], ["systemctl", "disable", "--now", ibw.TIMER_UNIT])
 
-    def test_a_second_tenant_added_after_enable_turns_the_timer_off_on_reinstall(self) -> None:
+    def test_a_second_tenant_without_its_own_recipient_turns_the_timer_off_on_reinstall(self) -> None:
         self.box.write_config()
         self.assertEqual(self._install(FakeRun()), [])
-        self.box.write_config(tenants="blog\nshop\n")
+        self.box.write_config(tenants="blog\nshop\n", recipients=f"blog {_key('blog')}\n")
         run = FakeRun()
         problems = self._install(run)
-        self.assertEqual(len(problems), 1)
-        self.assertIn("names 2 tenants", problems[0])
+        self.assertEqual(problems, [f"{self.box.paths.recipients_file} has no recipient for tenant shop"])
         self.assertIn(["systemctl", "disable", "--now", ibw.TIMER_UNIT], run.calls)
         self.assertFalse(any(call[:2] == ["systemctl", "enable"] for call in run.calls))
         self.assertTrue((self.box.paths.unit_dir / ibw.SERVICE_UNIT).is_file())
         self.assertTrue(self.box.paths.current_link.is_symlink())
+
+    def test_two_tenants_each_with_their_own_recipient_enable_the_timer(self) -> None:
+        self.box.write_config(tenants="blog\nshop\n")
+        run = FakeRun()
+        self.assertEqual(self._install(run), [])
+        self.assertEqual(run.calls[-1], ["systemctl", "enable", "--now", ibw.TIMER_UNIT])
 
     def test_a_missing_tool_alone_keeps_the_timer_off(self) -> None:
         self.box.write_config()
@@ -464,13 +576,16 @@ class Preflight(SandboxCase):
         self.box.write_config(tenants=tenants)
         return ibw.preflight_problems(self.box.paths, owner_uid=self.uid)
 
-    def test_one_tenant_runs(self) -> None:
+    def test_one_tenant_with_a_recipient_runs(self) -> None:
         self.assertEqual(self._preflight("blog\n"), [])
 
-    def test_a_second_tenant_refuses_the_run(self) -> None:
-        problems = self._preflight("blog\nshop\n")
-        self.assertEqual(len(problems), 1)
-        self.assertIn("names 2 tenants", problems[0])
+    def test_two_tenants_each_with_a_recipient_run(self) -> None:
+        self.assertEqual(self._preflight("blog\nshop\n"), [])
+
+    def test_a_tenant_added_with_no_recipient_refuses_the_whole_run(self) -> None:
+        self.box.write_config(tenants="blog\nshop\n", recipients=f"blog {_key('blog')}\n")
+        problems = ibw.preflight_problems(self.box.paths, owner_uid=self.uid)
+        self.assertEqual(problems, [f"{self.box.paths.recipients_file} has no recipient for tenant shop"])
 
     def test_a_missing_or_empty_tenants_file_refuses_the_run(self) -> None:
         self.assertIn("names no tenant", self._preflight("# none\n")[0])

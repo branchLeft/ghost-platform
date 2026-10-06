@@ -47,11 +47,14 @@ name (never by value), and exits 2.
 - The tenants file is root-owned, writable only by root, readable by the
   service account, and names at least one tenant. It decides whose data is
   dumped, so the account that runs the dump must not be able to edit it.
-- The tenants file names exactly one tenant. The loop encrypts every tenant
-  it dumps to the single `AGE_RECIPIENT_PUBLIC_KEY`, and LLD-9 requires one
-  recipient per tenant, so that no tenant's key can decrypt another tenant's
-  dump. A second tenant has to wait until the loop takes a recipient per
-  tenant.
+- The recipients file (`/etc/branchleft/backup-worker-recipients`) is
+  root-owned, writable only by root, readable by the service account, and
+  gives every tenant in the tenants file a line `tenant age1...` of its
+  own. A malformed key, a repeated tenant, or one recipient listed for two
+  tenants refuses the install. Each tenant's dump is encrypted to that
+  tenant's recipient alone, so no tenant's key can decrypt another
+  tenant's dump (LLD-9). Whoever edits this file decides whose key opens
+  whose dump, which is why the service account cannot.
 - `age` and `mysqldump` are installed, and `mysqldump` reports the `8.0`
   client line. A newer client breaks `--source-data` against an 8.0 server.
   `db/provision/install_host_prereqs.py` installs both.
@@ -62,12 +65,12 @@ installer now rejects.
 
 The tenants check also runs at **every run**, not only at install. The
 unit's `ExecStartPre` calls this script with `--preflight` as the service
-account. It re-checks the tenants file (owner, mode, at least one tenant,
-no more than one), and a failure refuses the run before the loop starts.
-A second tenant added by hand, with no re-install, therefore stops the
-backups rather than encrypting two tenants to one key. The refused run
-fails the unit, and `TenantBackupAgeHigh` fires once the last success is
-older than 36 hours.
+account. It re-checks the tenants file (owner, mode, at least one tenant),
+and that every tenant has a recipient of its own. A failure refuses the
+run before the loop starts. A tenant added by hand with no recipient
+therefore stops the backups rather than being encrypted to another
+tenant's key. The refused run fails the unit, and `TenantBackupAgeHigh`
+fires once the last success is older than 36 hours.
 
 If any other input breaks after the timer is on (a rotated password, a
 moved CA), the nightly run itself fails loudly in the same way.

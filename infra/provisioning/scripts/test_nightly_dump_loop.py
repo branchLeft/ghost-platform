@@ -8,7 +8,9 @@ convention (fake `mysql`/`mysqldump` binaries on PATH, real `age`, real
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import io
 import os
 import pathlib
 import subprocess
@@ -99,6 +101,11 @@ class TenantSourceTests(unittest.TestCase):
             with open(file_path, "w", encoding="utf-8") as handle:
                 handle.write("shop\nblog\n")
 
+            recipients_path = os.path.join(tmp, "recipients")
+            with open(recipients_path, "w", encoding="utf-8") as handle:
+                for name in ("blog", "shop", "cafe"):
+                    handle.write(f"{name} {_generate_age_identity()[1]}\n")
+
             captured: list[str] = []
 
             def fake_run_nightly_loop(*, tenants, **kwargs):
@@ -108,7 +115,7 @@ class TenantSourceTests(unittest.TestCase):
             with mock.patch.object(loop, "run_nightly_loop", fake_run_nightly_loop):
                 with mock.patch.dict(
                     os.environ,
-                    {"DB_DUMP_MYSQL_PWD": "x", "AGE_RECIPIENT_PUBLIC_KEY": "x"},
+                    {"DB_DUMP_MYSQL_PWD": "x"},
                 ):
                     exit_code = loop.main(
                         [
@@ -118,6 +125,8 @@ class TenantSourceTests(unittest.TestCase):
                             "cafe",
                             "--tenants-file",
                             file_path,
+                            "--recipients-file",
+                            recipients_path,
                             "--run-lock-path",
                             os.path.join(tmp, "run.lock"),
                             "--local-test-transport",
@@ -142,7 +151,8 @@ class _RealProducerLoopTestCase(unittest.TestCase):
         os.makedirs(self.bin_dir)
         _write_fake_bin(self.bin_dir, "mysql", _FAKE_MYSQL)
 
-        _, self.recipient = _generate_age_identity()
+        self.recipients = {t: _generate_age_identity()[1] for t in ("blog", "shop", "cafe")}
+        self.recipient = self.recipients["blog"]
         self.copies_dir = os.path.join(self.tmp.name, "copies")
         os.makedirs(self.copies_dir)
         self.metrics_dir = os.path.join(self.tmp.name, "metrics")
@@ -162,7 +172,7 @@ class _RealProducerLoopTestCase(unittest.TestCase):
                 tenants=tenants,
                 transport=LocalProcessTransport(),
                 mysql_pwd="irrelevant-fake-password",
-                age_recipient=self.recipient,
+                recipients=self.recipients,
                 dump_tenant_path=_DUMP_TENANT_PATH,
                 socket_path=bw.DEFAULT_SOCKET,
                 metrics_dir=self.metrics_dir,
@@ -402,6 +412,114 @@ _DISPATCHING_MYSQLDUMP = (
     "fi\n"
     "exit 0\n"
 )
+
+
+class PerTenantRecipientTests(_RealProducerLoopTestCase):
+    """Each tenant's dump is encrypted to that tenant's own recipient and no
+    other, and a tenant with no recipient is refused rather than given a key
+    from somewhere else."""
+
+    TENANTS = ("blog", "shop", "cafe")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.identities = {t: _generate_age_identity() for t in self.TENANTS}
+        self.recipients = {t: pair[1] for t, pair in self.identities.items()}
+        _write_fake_bin(self.bin_dir, "mysqldump", _happy_mysqldump("ok"))
+
+    def _decrypts(self, copy_tenant: str, identity_tenant: str) -> bool:
+        with open(os.path.join(self.copies_dir, f"{copy_tenant}-primary.age"), "rb") as handle:
+            ciphertext = handle.read()
+        result = subprocess.run(
+            ["age", "--decrypt", "-i", self.identities[identity_tenant][0]],
+            input=ciphertext,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0
+
+    def test_each_tenants_dump_opens_with_its_own_identity_and_no_other(self) -> None:
+        outcomes = self._run_loop(list(self.TENANTS))
+        self.assertTrue(all(outcome.ok for outcome in outcomes), outcomes)
+        for copy_tenant in self.TENANTS:
+            for identity_tenant in self.TENANTS:
+                self.assertEqual(
+                    self._decrypts(copy_tenant, identity_tenant),
+                    copy_tenant == identity_tenant,
+                    f"{copy_tenant}'s dump vs {identity_tenant}'s identity",
+                )
+
+    def test_a_tenant_without_a_recipient_is_refused_and_the_rest_still_run(self) -> None:
+        del self.recipients["shop"]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            outcomes = self._run_loop(list(self.TENANTS))
+        by_tenant = {outcome.tenant: outcome for outcome in outcomes}
+        self.assertFalse(by_tenant["shop"].ok)
+        self.assertIn("no age recipient of its own", by_tenant["shop"].error)
+        self.assertTrue(by_tenant["blog"].ok)
+        self.assertTrue(by_tenant["cafe"].ok)
+        self.assertIn("ALERT", stderr.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(self.copies_dir, "shop-primary.age")))
+
+    def test_a_missing_recipient_never_borrows_another_tenants_key(self) -> None:
+        del self.recipients["shop"]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self._run_loop(list(self.TENANTS))
+        for other in ("blog", "cafe"):
+            self.assertFalse(os.path.exists(os.path.join(self.copies_dir, "shop-primary.age")))
+            self.assertTrue(self._decrypts(other, other))
+
+    def _main(self, recipients_text: str | None, extra_env: dict[str, str] | None = None) -> tuple[int, str]:
+        recipients_path = os.path.join(self.tmp.name, "recipients")
+        if recipients_text is not None:
+            with open(recipients_path, "w", encoding="utf-8") as handle:
+                handle.write(recipients_text)
+        env = {"DB_DUMP_MYSQL_PWD": "x", "BACKUP_WORKER_METRICS_DIR": self.metrics_dir, **(extra_env or {})}
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, env):
+            with mock.patch.object(bw, "_copies_from_env", side_effect=lambda *, tenant: self._copies_for(tenant)):
+                with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+                    code = loop.main(
+                        [
+                            "--tenant", "blog",
+                            "--tenant", "shop",
+                            "--recipients-file", recipients_path,
+                            "--run-lock-path", os.path.join(self.tmp.name, "run.lock"),
+                            "--local-test-transport",
+                        ]
+                    )
+        return code, stderr.getvalue()
+
+    def test_main_exits_nonzero_when_any_tenant_has_no_recipient(self) -> None:
+        code, stderr = self._main(f"blog {self.recipients['blog']}\n")
+        self.assertEqual(code, 1)
+        self.assertIn("shop: no age recipient", stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.copies_dir, "blog-primary.age")))
+        self.assertFalse(os.path.exists(os.path.join(self.copies_dir, "shop-primary.age")))
+
+    def test_main_ignores_a_shared_recipient_in_the_environment(self) -> None:
+        shared = self.recipients["cafe"]
+        code, _ = self._main(
+            f"blog {self.recipients['blog']}\n",
+            {"AGE_RECIPIENT_PUBLIC_KEY": shared, "BACKUP_WORKER_RECIPIENTS_FILE": "/nonexistent"},
+        )
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists(os.path.join(self.copies_dir, "shop-primary.age")))
+        self.assertFalse(self._decrypts("blog", "cafe"))
+
+    def test_main_dumps_nothing_when_the_recipients_file_is_missing(self) -> None:
+        code, stderr = self._main(None)
+        self.assertEqual(code, 1)
+        self.assertIn("nothing dumped", stderr)
+        self.assertEqual(os.listdir(self.copies_dir), [])
+
+    def test_main_dumps_nothing_when_two_tenants_share_a_recipient(self) -> None:
+        shared = self.recipients["blog"]
+        code, stderr = self._main(f"blog {shared}\nshop {shared}\n")
+        self.assertEqual(code, 1)
+        self.assertIn("share one recipient", stderr)
+        self.assertEqual(os.listdir(self.copies_dir), [])
 
 
 class MetricsWiringThroughLoopTests(_RealProducerLoopTestCase):
