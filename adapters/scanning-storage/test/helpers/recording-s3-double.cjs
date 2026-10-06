@@ -1,19 +1,19 @@
 'use strict';
 
 // A recording S3 double, run inside a container from
-// the Ghost image (which carries node) so Ghost reaches both by container name
+// the Ghost image (which carries node) so Ghost reaches it by container name
 // over a user-defined network.
-//
+
 // S3 side (port 9090, path-style): stores objects in memory, answers the
 // calls Ghost's S3Storage makes, and records every request it receives as a
 // "shape" plus the signing facts a gateway would judge. It never checks a
 // signature. Any request it cannot classify is recorded as UNKNOWN, never
 // refused, so the test sees what Ghost really sent.
-//
+
 // Control endpoints live under /__control/ on the S3 port, outside any bucket:
 //   GET  /__control/requests          the recorded requests, as JSON
 //   POST /__control/fail-parts/on|off  make UploadPart answer 500 (abort path)
-//
+
 
 const http = require('node:http');
 const crypto = require('node:crypto');
