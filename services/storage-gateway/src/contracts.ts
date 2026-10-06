@@ -87,16 +87,6 @@ export interface SignatureVerifier {
   verify(request: GatewayRequest): Promise<VerifyResult>;
 }
 
-/**
- * Supplies the SigV4 secret for a key id, typically by deriving it from a
- * master secret so nothing per tenant is stored in clear. Resolves to
- * `undefined` for a key id it has never issued; rejects only when it cannot
- * answer, which the verifier treats as a failure, never as a pass.
- */
-export interface TenantSecretSource {
-  secretFor(keyId: string): Promise<string | undefined>;
-}
-
 /** Whether a tenant credential may currently be used. */
 export type CredentialState =
   /** Normal operation. */
@@ -149,3 +139,13 @@ export const ALLOWED_OPERATIONS = [
 ] as const;
 
 export type AllowedOperation = (typeof ALLOWED_OPERATIONS)[number];
+
+/**
+ * Gives the signature check a tenant's SigV4 secret for a key id. Resolves
+ * to `undefined` for a key id that was never issued or is not active, so
+ * a disabled credential fails at the signature as well as at the store.
+ * The secret is derived on each call and never cached or stored.
+ */
+export interface SigningSecretSource {
+  signingSecret(keyId: string): Promise<string | undefined>;
+}

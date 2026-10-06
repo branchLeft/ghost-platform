@@ -3,7 +3,7 @@ import type {
   GatewayRequest,
   Refusal,
   SignatureVerifier,
-  TenantSecretSource,
+  SigningSecretSource,
   VerifyResult,
 } from './contracts.js';
 
@@ -90,7 +90,7 @@ export interface SigV4VerifierOptions {
   /** Allowed distance between `x-amz-date` and now, either way. Defaults to {@link DEFAULT_CLOCK_WINDOW_MS}. */
   readonly clockWindowMs?: number;
   /** Supplies each tenant's secret. */
-  readonly secrets: TenantSecretSource;
+  readonly secrets: SigningSecretSource;
   /** Milliseconds since the epoch; injectable for tests. Defaults to `Date.now`. */
   readonly now?: () => number;
 }
@@ -336,7 +336,7 @@ export class SigV4Verifier implements SignatureVerifier {
   private readonly region: string;
   private readonly service: string;
   private readonly clockWindowMs: number;
-  private readonly secrets: TenantSecretSource;
+  private readonly secrets: SigningSecretSource;
   private readonly now: () => number;
 
   constructor(options: SigV4VerifierOptions) {
@@ -418,7 +418,7 @@ export class SigV4Verifier implements SignatureVerifier {
       payloadHash,
     });
 
-    const secret = await this.secrets.secretFor(keyId);
+    const secret = await this.secrets.signingSecret(keyId);
     if (secret === undefined || secret === '') refuse('key-unknown');
     const scope = `${scopeDate}/${region}/${service}/${SCOPE_TERMINATOR}`;
     const expected = signatureHex(

@@ -1,4 +1,4 @@
-import type { GatewayRequest, TenantSecretSource } from '../../src/contracts.js';
+import type { GatewayRequest, SigningSecretSource } from '../../src/contracts.js';
 import { SigV4Verifier, type SigV4VerifierOptions } from '../../src/sigv4-verifier.js';
 import type { SignerIdentity } from './reference-signer.js';
 
@@ -19,8 +19,8 @@ export const IDENTITY: SignerIdentity = {
 /** A test double for the key-derivation source: a fixed table of two tenants. */
 export function secretTable(
   table: Readonly<Record<string, string>> = { [KEY_ID]: SECRET, [OTHER_KEY_ID]: OTHER_SECRET }
-): TenantSecretSource {
-  return { secretFor: (keyId) => Promise.resolve(table[keyId]) };
+): SigningSecretSource {
+  return { signingSecret: (keyId) => Promise.resolve(table[keyId]) };
 }
 
 export function makeVerifier(overrides: Partial<SigV4VerifierOptions> = {}): SigV4Verifier {

@@ -462,6 +462,16 @@ describe('the tenant secret', () => {
     expect(await reasonFor(await sign(), v)).toBe('key-unknown');
   });
 
+  it('gives an unknown, disabled or revoked key the same refusal as a bad signature', async () => {
+    const request = await sign();
+    const noKey = await makeVerifier({ secrets: secretTable({}) }).verify(request);
+    const wrongKey = await makeVerifier({
+      secrets: secretTable({ [KEY_ID]: 'NOT_THE_SECRET' }),
+    }).verify(request);
+    expect(noKey).toEqual(wrongKey);
+    expect(noKey).toMatchObject({ ok: false, refusal: { code: 'signature-refused', status: 403 } });
+  });
+
   it('refuses when the source answers with an empty secret', async () => {
     const v = makeVerifier({ secrets: secretTable({ [KEY_ID]: '' }) });
     expect(await reasonFor(await sign(), v)).toBe('key-unknown');
@@ -474,7 +484,7 @@ describe('the tenant secret', () => {
 
   it('fails closed with an internal error when the source rejects', async () => {
     const v = makeVerifier({
-      secrets: { secretFor: () => Promise.reject(new Error('derivation unavailable')) },
+      secrets: { signingSecret: () => Promise.reject(new Error('derivation unavailable')) },
     });
     expect(await v.verifyDetailed(await sign())).toEqual({
       ok: false,
@@ -491,7 +501,7 @@ describe('the tenant secret', () => {
     let asked = 0;
     const v = makeVerifier({
       secrets: {
-        secretFor: () => {
+        signingSecret: () => {
           asked += 1;
           return Promise.resolve(undefined);
         },

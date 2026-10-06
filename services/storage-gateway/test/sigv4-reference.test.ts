@@ -354,7 +354,7 @@ describe('the official AWS SigV4 test suite', () => {
         region: c.context.region,
         service: c.context.service,
         secrets: {
-          secretFor: (k) =>
+          signingSecret: (k) =>
             Promise.resolve(
               k === c.context.credentials.access_key_id
                 ? c.context.credentials.secret_access_key
