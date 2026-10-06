@@ -8,7 +8,8 @@
 /**
  * One inbound HTTP request, exactly as the gateway received it, before any
  * decoding or normalisation. Both the verifier and the router read this
- * model; neither may rely on the other having cleaned it up.
+ * model; neither may rely on the other having cleaned it up. The upstream
+ * request is rebuilt from the routed request, never from `rawTarget`.
  */
 export interface GatewayRequest {
   /** Upper-case HTTP method, for example `PUT`. */
@@ -24,16 +25,18 @@ export interface GatewayRequest {
 
   /**
    * Request headers with lower-cased names. A repeated header is carried as
-   * an array in arrival order, never merged or dropped.
+   * an array in arrival order, never merged or dropped. The HTTP adapter must
+   * build this from `headersDistinct` (or `rawHeaders`): Node's `headers`
+   * merges repeated headers and would break that promise.
    */
   readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>;
 
   /**
-   * Lower-case hex SHA-256 of the complete request body as received, the
-   * empty-body digest for no body. Set by whatever reads the body; absent
-   * until it has been read. The verifier refuses a request without it,
-   * because a signed payload hash proves nothing until it is compared with
-   * the body that actually arrived.
+   * Lower-case hex SHA-256 of the body as received, computed by the body
+   * stage while it spools the body. Absent only for a request with no body.
+   * The signature check compares it with the signed `x-amz-content-sha256`
+   * header and refuses when it is absent for a body-bearing method, or when
+   * the two differ.
    */
   readonly bodySha256?: string;
 }
@@ -113,6 +116,12 @@ export interface CredentialRecord {
   /** The one shared bucket this tenant's folder lives in. */
   readonly bucket: string;
   readonly state: CredentialState;
+  /**
+   * When the credential was minted, as an ISO 8601 UTC timestamp. A key id is
+   * never reissued, not even after revocation: the secret is derived from the
+   * master secret and the key id, so a reissued id brings the old secret back.
+   */
+  readonly createdAt: string;
 }
 
 /**
