@@ -130,7 +130,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // delete, and the one place Ghost deletes is replacing a same-name
     // thumbnail (delete, then save). The request is remembered for a short
     // window instead, and the next save() of that name overwrites the key.
-    // The superseded object stays recoverable through bucket versioning.
+    // The previous version of the object stays recoverable through bucket versioning.
     async delete(fileName, targetDir) {
       const now = Date.now();
       for (const [key, expiresAt] of this.pendingOverwrites) {

@@ -322,6 +322,18 @@ describe('replacing a same-name thumbnail (Ghost deletes, then saves)', () => {
     expect(buildAdapter({}).instance.overwriteWindowMs).toBe(60000);
   });
 
+  it('treats a save with no usable file name as an ordinary save, never an overwrite', async () => {
+    const { instance: adapter } = buildAdapter({ wrappedConfig: BACKENDS['local disk'] });
+    await adapter.delete('thumb.png', 'dir');
+    const file = await writeTempFile(NEW_BYTES, '');
+
+    await adapter.save(file, 'dir');
+
+    expect(adapter.wrapped.saved).toHaveLength(1);
+    expect(adapter.wrapped.savedRaw).toEqual([]);
+    expect(adapter.pendingOverwrites.size).toBe(1);
+  });
+
   it('handles a name with no directory', async () => {
     const { instance: adapter } = buildAdapter({ wrappedConfig: BACKENDS['local disk'] });
     await adapter.wrapped.saveRaw(CLEAN_BYTES, 'thumb.png');

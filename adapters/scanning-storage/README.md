@@ -67,7 +67,7 @@ with the same name. The storage gateway refuses every delete, and a `save()`
 that finds the name taken would pick a new one. So `delete()` is never
 forwarded: it is remembered for `overwriteWindowMs` (default 60000), and the
 next `save()` of that name writes the same key, scanned like any upload. The
-superseded object stays recoverable through bucket versioning. A refused
+previous version of the object stays recoverable through bucket versioning. A refused
 replacement leaves the old thumbnail in place. The write goes through
 `saveRaw`, which sets no content type on object storage.
 
