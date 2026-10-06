@@ -123,13 +123,22 @@ site. No role may `DELETE`, and the owner role may not `UPDATE` the register.
 2. Absent roles and logins are created; existing logins get the new password
    (sent as a SCRAM verifier). The database is created if absent.
 3. Each login tries every other database and must be refused by pg_hba
-   (`28000`).
+   (`28000`). This runs after step 2, so a refusal here names what the run
+   had already done (logins created or passwords rotated, an empty database
+   created) instead of saying nothing changed.
 4. In the portal database, one transaction: the check again, the ORM's
    pending migrations (drizzle's own loop, replayed on this transaction), the
    grants on what they created, and the check against the full manifest
    before commit.
 5. A smoke test connects as each login (`42501` permission denied, `28000` no
    tenant bound).
+
+Concurrent runs are serialised by an advisory lock. PostgreSQL scopes advisory
+locks to one database, so the session lock held on the maintenance database
+serialises only runs that name the same maintenance database; the portal
+transaction takes the same lock in the portal database and re-checks before
+it writes, so runs through different maintenance databases still cannot
+interleave there.
 
 A re-run changes nothing but the passwords. A refusal is a security event: the
 per-difference fix is a manual step for the administrator, never this command.
