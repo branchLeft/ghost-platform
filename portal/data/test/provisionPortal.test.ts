@@ -674,8 +674,11 @@ describe('against a real PostgreSQL', () => {
       await provisionPortal(config);
       expect(await state()).toEqual(afterFirst);
     } finally {
+      // Where the grantor could not be dropped, the command itself removes the
+      // memberships, so the roles can then go and no later test sees them.
+      await provisionPortal(config);
       await bootstrap.query(`DROP ROLE IF EXISTS "${grantor}"`);
-      await bootstrap.query(`DROP ROLE IF EXISTS "${extra}"`).catch(() => undefined);
+      await bootstrap.query(`DROP ROLE IF EXISTS "${extra}"`);
     }
   });
 
