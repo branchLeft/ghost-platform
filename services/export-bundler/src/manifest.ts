@@ -1,3 +1,5 @@
+import type { ExtensionName, ExtensionReport } from './extensions.js';
+
 export interface ManifestEntry {
   readonly name: string;
   readonly path: string;
@@ -23,48 +25,95 @@ export interface ExportManifest {
   readonly tenantId: string;
   readonly generatedAt: string;
   readonly encryption: ManifestEncryption;
+  /**
+   * True only when every extension in `REQUIRED_EXTENSIONS` was read and
+   * matched its authoritative count. Anything else, including an extension
+   * that was never attempted, makes it false.
+   */
+  readonly complete: boolean;
+  readonly extensions: readonly ExtensionReport[];
   readonly included: readonly ManifestEntry[];
   readonly excluded: readonly ManifestGap[];
 }
 
+export const REQUIRED_EXTENSIONS: readonly ExtensionName[] = [
+  'media',
+  'members_and_subscriptions',
+  'comments',
+];
+
 /**
- * LLD-8 §08b: "an export whose gaps are undocumented is worse than one
- * whose gaps are stated" -- so the four things a separate, later piece of
- * work closes ("export completeness") are named here as gaps rather than
- * left silently absent from the archive. This component's own two
- * `included` entries are Ghost's two existing exports, called as-is;
- * nothing here should be read as this component's opinion
- * on what a *complete* export contains.
+ * What no archive from this bundler can contain, named so the tenant finds
+ * out before they leave rather than after. These are limits of reach, not
+ * failures: they do not make a run incomplete.
  */
 export const KNOWN_EXPORT_GAPS: readonly ManifestGap[] = [
-  {
-    name: 'media',
-    reason:
-      'the content export references image and file URLs but does not contain the files (D55: a bucket-to-bucket copy or signed-link manifest, not archive bytes)',
-  },
-  {
-    name: 'members_and_subscriptions',
-    reason:
-      "Ghost exports member state; the commercial relationship (Stripe's side) cannot be handed over by this archive",
-  },
-  {
-    name: 'comments',
-    reason:
-      'member-written personal data with moderation state, not covered by either Ghost export',
-  },
   {
     name: 'analytics_beyond_post_csv',
     reason:
       'the open item named in LLD-8 §11, not closeable before the analytics backend is chosen',
   },
+  {
+    name: 'stripe_billing_relationship',
+    reason:
+      "Stripe's side of each subscription cannot be moved by this archive: the archive carries Ghost's subscription records, and the ability to keep charging those cards elsewhere is Stripe's to move",
+  },
+  {
+    name: 'portal_moderation_record',
+    reason:
+      "classifier verdicts and moderator decisions held by the portal's moderation queue are not in Ghost and not in this archive; the archive carries Ghost's own status and the member reports for each comment",
+  },
+  {
+    name: 'deleted_comments',
+    reason:
+      "Ghost's admin comment list leaves out comments with status deleted, and blanks their text, so they are not in the archive and the comment count does not include them",
+  },
+  {
+    name: 'media_bytes',
+    reason:
+      "the archive lists the public address of each media file, never the bytes; those addresses stop working on the tenant's erasure date, and a tenant keeps nothing from them after that unless they download first",
+  },
 ];
+
+function shortfalls(extensions: readonly ExtensionReport[]): ManifestGap[] {
+  const gaps: ManifestGap[] = [];
+  for (const name of REQUIRED_EXTENSIONS) {
+    const report = extensions.find((e) => e.name === name);
+    if (report === undefined) {
+      gaps.push({ name, reason: 'not attempted' });
+    } else if (report.status === 'complete' && report.expected !== report.present) {
+      // A report that says complete over a short count is a defect in the
+      // collector, and the manifest must not repeat it.
+      gaps.push({
+        name,
+        reason: `reported complete but present ${report.present} of expected ${String(report.expected)}`,
+      });
+    } else if (report.status !== 'complete') {
+      gaps.push({
+        name,
+        reason: `${report.status}: ${report.notes.join('; ')}`,
+      });
+    }
+  }
+  return gaps;
+}
 
 export function buildManifest(
   tenantId: string,
   generatedAtIso: string,
   encryption: ManifestEncryption,
   included: readonly ManifestEntry[],
-  excluded: readonly ManifestGap[] = KNOWN_EXPORT_GAPS
+  extensions: readonly ExtensionReport[] = [],
+  permanentGaps: readonly ManifestGap[] = KNOWN_EXPORT_GAPS
 ): ExportManifest {
-  return { tenantId, generatedAt: generatedAtIso, encryption, included, excluded };
+  const failed = shortfalls(extensions);
+  return {
+    tenantId,
+    generatedAt: generatedAtIso,
+    encryption,
+    complete: failed.length === 0,
+    extensions,
+    included,
+    excluded: [...failed, ...permanentGaps],
+  };
 }

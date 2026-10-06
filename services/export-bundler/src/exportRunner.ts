@@ -8,7 +8,9 @@ import type { ContainerRunner } from './containerRunner.js';
 import type { ExportFile, GhostExportClient } from './ghostExportClient.js';
 import type { GhostProbe } from './ghostProbe.js';
 import { waitUntilHealthy } from './ghostProbe.js';
-import { buildManifest, type ExportManifest } from './manifest.js';
+import { buildManifest, type ExportManifest, type ManifestEntry } from './manifest.js';
+import { collectExtensions, type ExtensionOutcome, type MediaConfig } from './extensions.js';
+import type { MediaProbe } from './mediaManifest.js';
 import { writeEncryptedArchive, writeManifestSidecar } from './archive.js';
 import type { AuditRecorder } from './auditLog.js';
 import { assertAgeRecipient, recipientFingerprint } from './ageEncryption.js';
@@ -36,6 +38,8 @@ export interface ExportRunnerDeps {
   readonly containerRunner: ContainerRunner;
   readonly probe: GhostProbe;
   readonly exportClient: GhostExportClient;
+  /** Checks that a referenced media object exists before a link to it is signed. */
+  readonly mediaProbe: MediaProbe;
   readonly auditLog: AuditRecorder;
   readonly nowIso: () => string;
   readonly healthTimeoutMs: number;
@@ -70,6 +74,8 @@ export interface ExportRequest {
   readonly colourBaseEnv: Readonly<Record<string, string>>;
   /** The tenant's live database, which the colour must never be pointed at. */
   readonly liveDatabase: DatabaseTarget;
+  /** Where this tenant's media is served from, and how links to it are signed. */
+  readonly media: MediaConfig;
 }
 
 export interface ExportResult {
@@ -149,7 +155,16 @@ export async function runExport(
           deps.exportClient.fetchContentAndSettings(baseUrl),
           deps.exportClient.fetchPostAnalytics(baseUrl),
         ]);
-        return await bundle(deps, request, grant, contentAndSettings, postAnalytics);
+        const extensions = await collectExtensions({
+          client: deps.exportClient,
+          mediaProbe: deps.mediaProbe,
+          baseUrl,
+          tenantId: request.tenantId,
+          media: request.media,
+          nowSeconds: Math.floor(Date.parse(deps.nowIso()) / 1000),
+          contentJson: contentAndSettings.body.toString('utf8'),
+        });
+        return await bundle(deps, request, grant, contentAndSettings, postAnalytics, extensions);
       } finally {
         await deps.containerRunner.stop();
       }
@@ -166,9 +181,11 @@ async function bundle(
   request: ExportRequest,
   grant: SupportGrant,
   contentAndSettings: ExportFile,
-  postAnalytics: ExportFile
+  postAnalytics: ExportFile,
+  extensions: readonly ExtensionOutcome[]
 ): Promise<ExportResult> {
   const generatedAt = deps.nowIso();
+  const extensionFiles = extensions.flatMap((e) => e.files);
   const fingerprint = recipientFingerprint(request.ageRecipient);
   const manifest = buildManifest(
     request.tenantId,
@@ -182,7 +199,12 @@ async function bundle(
     [
       { name: 'content_and_settings', path: CONTENT_ENTRY },
       { name: 'post_analytics', path: ANALYTICS_ENTRY },
-    ]
+      ...extensionFiles.map((file): ManifestEntry => ({
+        name: file.name.replace(/\.json$/, '').replace(/\.csv$/, '_csv'),
+        path: file.name,
+      })),
+    ],
+    extensions.map((e) => e.report)
   );
   const manifestJson = JSON.stringify(manifest, null, 2);
 
@@ -197,6 +219,7 @@ async function bundle(
     [
       { name: CONTENT_ENTRY, data: contentAndSettings.body },
       { name: ANALYTICS_ENTRY, data: postAnalytics.body },
+      ...extensionFiles,
       { name: 'manifest.json', data: manifestJson },
     ],
     Math.floor(Date.parse(generatedAt) / 1000),
@@ -215,6 +238,7 @@ async function bundle(
       requestedBy: request.requestedBy,
       occurredAt: generatedAt,
       contents: manifest.included.map((entry) => entry.name),
+      complete: manifest.complete,
       deliveredTo: request.deliveredTo,
       grant: { lane: grant.lane, reference: grant.reference },
       supportIdentity: request.supportIdentity,

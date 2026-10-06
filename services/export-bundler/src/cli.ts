@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createFileDrainFlag } from './drainFlag.js';
 import { createDrainFlagStore, flagPathFor } from './drainFlagStore.js';
 import { createDockerContainerRunner, type VolumeMount } from './containerRunner.js';
+import { createHttpMediaProbe } from './mediaManifest.js';
 import { createHttpGhostExportClient } from './ghostExportClient.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
 import { createFileAuditLog } from './auditLog.js';
@@ -18,6 +19,7 @@ import { isolateExportColour } from './colourIsolation.js';
 import {
   bindTenant,
   loadComposeConfig,
+  mediaBaseUrlOf,
   parseComposeConfig,
   parseDescriptorFacts,
   TenantConfigError,
@@ -48,6 +50,8 @@ export interface CliOptions {
   readonly flagDir: string;
   readonly auditLogPath: string;
   readonly loopbackPort: number;
+  /** The day after which the tenant's public media addresses stop working, YYYY-MM-DD. */
+  readonly erasureDate: string;
 }
 
 const RETIRED_FLAGS = [
@@ -96,6 +100,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     flagDir: requireFlag(argv, 'flag-dir'),
     auditLogPath: requireFlag(argv, 'audit-log'),
     loopbackPort: Number(requireFlag(argv, 'loopback-port')),
+    erasureDate: requireFlag(argv, 'erasure-date'),
   };
 }
 
@@ -179,6 +184,7 @@ async function main(argv: readonly string[]): Promise<void> {
         ),
         10_000
       ),
+      mediaProbe: createHttpMediaProbe(10_000),
       auditLog: createFileAuditLog(opts.auditLogPath),
       nowIso: () => new Date().toISOString(),
       healthTimeoutMs: 60_000,
@@ -195,12 +201,17 @@ async function main(argv: readonly string[]): Promise<void> {
       ageRecipient,
       colourBaseEnv: isolateExportColour(runtime.env),
       liveDatabase,
+      media: {
+        baseUrl: mediaBaseUrlOf(runtime.env),
+        erasureDate: opts.erasureDate,
+      },
     }
   );
 
   console.log(`export-bundler: wrote ${result.archivePath}`);
   console.log(`export-bundler: sha256 ${result.archiveSha256}`);
   console.log(`export-bundler: manifest ${result.manifestPath}`);
+  console.log(`export-bundler: complete ${String(result.manifest.complete)}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

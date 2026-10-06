@@ -206,3 +206,26 @@ export function loadComposeConfig(
     );
   });
 }
+
+/**
+ * The base every one of this tenant's media URLs starts with, read from its
+ * own rendered environment and never typed by the operator. Ghost's S3
+ * storage serves `${cdnUrl}/${tenantPrefix}/...`, and on a shared shard the
+ * prefix is the only thing that separates one tenant from the next, so the
+ * scope is the media address plus the prefix whenever a prefix is set.
+ * Returns null for a tenant with no object-storage media address.
+ */
+export function mediaBaseUrlOf(env: Readonly<Record<string, string>>): string | null {
+  const cdnUrl = env.storage__images__wrappedConfig__cdnUrl ?? env.storage__images__cdnUrl;
+  if (cdnUrl === undefined) return null;
+  const prefix = (
+    env.storage__images__wrappedConfig__tenantPrefix ??
+    env.storage__images__tenantPrefix ??
+    ''
+  ).replace(/^\/+|\/+$/g, '');
+  if (prefix === '') return cdnUrl;
+  if (/[?#\\]|(^|\/)\.{1,2}(\/|$)|\/\//.test(prefix)) {
+    throw new TenantConfigError('the rendered tenantPrefix is not a plain path');
+  }
+  return `${cdnUrl.replace(/\/+$/, '')}/${prefix}`;
+}

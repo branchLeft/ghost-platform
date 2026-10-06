@@ -19,7 +19,27 @@ export interface ExportFile {
 export interface GhostExportClient {
   fetchContentAndSettings(baseUrl: string): Promise<ExportFile>;
   fetchPostAnalytics(baseUrl: string): Promise<ExportFile>;
+  /** Ghost's own re-importable member CSV (`members.exportCSV`). */
+  fetchMembersCsv(baseUrl: string): Promise<ExportFile>;
+  /** Every member with tiers, labels, newsletters and subscriptions, with Ghost's own total. */
+  fetchMembers(baseUrl: string): Promise<Collection>;
+  /** Every comment, replies included, with its moderation status, and Ghost's own total. */
+  fetchComments(baseUrl: string): Promise<Collection>;
+  /** The member reports raised against one comment. */
+  fetchCommentReports(baseUrl: string, commentId: string): Promise<Collection>;
 }
+
+/**
+ * One whole Ghost browse, read page by page. `total` is Ghost's own count
+ * (`meta.pagination.total`), the figure `items` is checked against.
+ */
+export interface Collection {
+  readonly items: readonly Record<string, unknown>[];
+  readonly total: number;
+}
+
+const PAGE_SIZE = 100;
+const MAX_PAGES = 100_000;
 
 export class GhostExportError extends Error {
   constructor(
@@ -129,6 +149,53 @@ async function get(
   }
 }
 
+async function getCollection(
+  baseUrl: string,
+  path: string,
+  key: string,
+  cookie: string,
+  timeoutMs: number
+): Promise<Collection> {
+  const items: Record<string, unknown>[] = [];
+  let total: number | null = null;
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const sep = path.includes('?') ? '&' : '?';
+    const file = await get(
+      baseUrl,
+      `${path}${sep}limit=${PAGE_SIZE}&page=${page}`,
+      cookie,
+      `${key}.json`,
+      timeoutMs
+    );
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(file.body.toString('utf8'));
+    } catch {
+      throw new GhostExportError(path, 200, 'the response is not JSON');
+    }
+    const record = (parsed ?? {}) as {
+      meta?: { pagination?: { total?: unknown; pages?: unknown } };
+    };
+    const rows = (parsed as Record<string, unknown> | null)?.[key];
+    const pagination = record.meta?.pagination;
+    if (
+      !Array.isArray(rows) ||
+      typeof pagination?.total !== 'number' ||
+      typeof pagination.pages !== 'number'
+    ) {
+      throw new GhostExportError(
+        path,
+        200,
+        `the response has no "${key}" list and pagination total`
+      );
+    }
+    items.push(...(rows as Record<string, unknown>[]));
+    total = pagination.total;
+    if (page >= pagination.pages) return { items, total };
+  }
+  throw new GhostExportError(path, 200, `more than ${MAX_PAGES} pages`);
+}
+
 /**
  * One export, one administrator session: the cookie is opened at most
  * once per client and reused for both routes, the same way a person
@@ -155,6 +222,38 @@ export function createHttpGhostExportClient(
         '/ghost/api/admin/posts/export/',
         await session(baseUrl),
         'ghost.analytics.csv',
+        timeoutMs
+      ),
+    fetchMembersCsv: async (baseUrl) =>
+      get(
+        baseUrl,
+        '/ghost/api/admin/members/upload/?limit=all',
+        await session(baseUrl),
+        'members.csv',
+        timeoutMs
+      ),
+    fetchMembers: async (baseUrl) =>
+      getCollection(
+        baseUrl,
+        '/ghost/api/admin/members/?include=tiers',
+        'members',
+        await session(baseUrl),
+        timeoutMs
+      ),
+    fetchComments: async (baseUrl) =>
+      getCollection(
+        baseUrl,
+        '/ghost/api/admin/comments/?include_nested=true&order=created_at%20asc',
+        'comments',
+        await session(baseUrl),
+        timeoutMs
+      ),
+    fetchCommentReports: async (baseUrl, commentId) =>
+      getCollection(
+        baseUrl,
+        `/ghost/api/admin/comments/${encodeURIComponent(commentId)}/reports/`,
+        'comment_reports',
+        await session(baseUrl),
         timeoutMs
       ),
   };

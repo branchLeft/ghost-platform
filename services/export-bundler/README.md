@@ -7,11 +7,12 @@ to the tenant's own `age` recipient, plus a manifest.
 Design: `ghost-platform-docs/19-try-it-now-design/08-portal.html` §08b.
 
 `the portal does not build an exporter, it builds a bundler`: this package
-owns starting the tenant's image drained, calling the two routes, and
-stopping the image again. It does not close the four gaps §08b names
-(media, members/subscriptions, comments, analytics beyond the CSV) -- those
-are named in the manifest as gaps, not silently absent, and closing them is
-a separate piece of work.
+owns starting the tenant's image drained, calling Ghost's exports, and
+stopping the image again. Beyond Ghost's two exports it closes three of the
+four gaps §08b names (media, members and subscriptions, comments with their
+moderation state), and names everything it cannot hold. See "Export
+completeness". Analytics beyond the per-post CSV stays out until the
+analytics backend is chosen.
 
 ## An export is a support grant
 
@@ -87,6 +88,43 @@ key lives. Once the export colour is healthy it prints a prompt on stderr
 and reads one token from stdin. It asks only then because the adapter
 refuses a token issued before the Ghost process that receives it started.
 Mint with a lifetime of 600 seconds or less.
+
+## Export completeness
+
+Three extensions are read from the same colour, each checked against an
+authoritative count, and reported in the manifest's `extensions` list as
+`complete`, `partial` or `failed`. `complete: true` is claimed only when all
+three are `complete` and counted. A fetch that fails or falls short is named
+in `excluded` with the reason, the rest of the archive is still produced,
+and the audit record carries the same `complete` flag.
+
+- **Media: public addresses, never bytes.** Live media sits in shared shard
+  buckets behind the storage gateway under one opaque prefix per tenant, and a
+  tenant holds no storage key, so a bucket-to-bucket copy cannot exist
+  (ghost-platform-docs pages 20 and 21). Owner ruling on the export links
+  (option A): the export lists the ordinary public address of each file, with
+  the date after which those addresses stop working. The archive carries
+  `media_addresses.json`: one public address per object the content export
+  references, plus the tenant's erasure date (`--erasure-date`, a future
+  `YYYY-MM-DD`; no system records it yet, so the operator states it). The
+  tenant's scope is the media address plus Ghost's `tenantPrefix` from its own
+  rendered environment, never a flag; a bare address with no prefix fails
+  closed. A reference under another prefix on the same shard is another
+  tenant's object: it is listed as `refused` and never as an address. Every
+  object is checked to exist first. No signing, no secret and no download
+  route exist or are needed.
+- **Members and subscriptions.** `members.json` is every member with tiers,
+  labels, newsletters and subscription records; `members.csv` is Ghost's own
+  re-importable export. Stripe's side of each subscription is named as out of
+  reach.
+- **Comments.** `comments.json` is every comment, replies included, each with
+  `moderation`: Ghost's status (`published` or `hidden`) and the
+  member reports against it. Ghost's admin list omits `deleted` comments, so
+  they are not in the archive; the manifest names that as out of reach. Classifier verdicts and moderator decisions held
+  by the portal's queue are not in Ghost and are named as out of reach.
+
+The manifest beside the archive is plaintext, so it names failures by kind
+and route only, never by a response body.
 
 ## The archive is encrypted
 
@@ -275,6 +313,7 @@ node dist/cli.js \
   --flag-dir <where this run's own drain flag lives> \
   --audit-log <path to the audit JSONL file> \
   --loopback-port <an unused local port> \
+  --erasure-date <YYYY-MM-DD, the day the tenant's media addresses stop working> \
   [--stack-dir /opt/branchleft/<slug>] \
   [--secrets-env /etc/branchleft/<slug>.env] \
   [--image-env /etc/branchleft/<slug>.image.env]

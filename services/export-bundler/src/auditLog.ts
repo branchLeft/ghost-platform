@@ -12,6 +12,8 @@ export interface ExportAuditEntry {
   readonly requestedBy: string;
   readonly occurredAt: string;
   readonly contents: readonly string[];
+  /** Whether the manifest claimed the archive complete; false names a short archive in the record too. */
+  readonly complete: boolean;
   readonly deliveredTo: string;
   /** The support grant the export ran under. */
   readonly grant: { readonly lane: string; readonly reference: string };
