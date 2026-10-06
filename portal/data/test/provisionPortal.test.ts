@@ -16,7 +16,8 @@ import {
   verifyBoundary,
   type ProvisionConfig,
 } from '../provision/provisionPortal.js';
-import { createLogin, dropDatabase, grantRole, lockDatabase } from '../provision/provision.js';
+import { assertOnlyRole, createLogin, grantRole, lockDatabase } from '../provision/provision.js';
+import { dropDatabase } from './helpers.js';
 import { scramVerifier } from '../provision/scram.js';
 import {
   createInPublic,
@@ -652,6 +653,60 @@ describe('against a real PostgreSQL', () => {
     await bootstrap.query(`DROP ROLE "${extra}"`);
     await bootstrap.query(`DROP ROLE "${grantor}"`);
     expect(after).toEqual(afterFirst);
+  });
+
+  it('removes a membership whose grantor role was dropped, which PostgreSQL before 16 leaves orphaned', async (ctx) => {
+    const extra = `prov_oextra_${suffix}`;
+    const grantor = `prov_ograntor_${suffix}`;
+    await bootstrap.query(`CREATE ROLE "${extra}" NOLOGIN`);
+    await bootstrap.query(`CREATE ROLE "${grantor}" NOLOGIN`);
+    try {
+      await withAdmin(async (pool) => {
+        await pool.query(`GRANT "${extra}" TO "${grantor}" WITH ADMIN OPTION`);
+        await pool.query(`GRANT "${extra}" TO "${config.tenantLogin}" GRANTED BY "${grantor}"`);
+        await pool.query(`GRANT "${extra}" TO "${config.ownerLogin}" GRANTED BY "${grantor}"`);
+      });
+      const dropped = await bootstrap.query(`DROP ROLE "${grantor}"`).then(
+        () => true,
+        () => false
+      );
+      if (!dropped) ctx.skip('PostgreSQL 16 and later keep the grantor; the orphan cannot be made');
+      await provisionPortal(config);
+      expect(await state()).toEqual(afterFirst);
+    } finally {
+      await bootstrap.query(`DROP ROLE IF EXISTS "${grantor}"`);
+      await bootstrap.query(`DROP ROLE IF EXISTS "${extra}"`).catch(() => undefined);
+    }
+  });
+
+  it('fails by name when a revoke is skipped and a foreign role is still held', async () => {
+    const extra = `prov_pextra_${suffix}`;
+    await bootstrap.query(`CREATE ROLE "${extra}" NOLOGIN`);
+    await withAdmin((pool) => pool.query(`GRANT "${extra}" TO "${config.tenantLogin}"`));
+    try {
+      await expect(
+        provisionPortal(config, undefined, { revokeOtherRoles: () => Promise.resolve() })
+      ).rejects.toThrow(
+        `login ${config.tenantLogin} must be a member of portal_tenant only, but holds: portal_tenant, ${extra}`
+      );
+      await provisionPortal(config);
+      expect(await state()).toEqual(afterFirst);
+    } finally {
+      await bootstrap.query(`DROP ROLE IF EXISTS "${extra}"`).catch(() => undefined);
+    }
+  });
+
+  it('assertOnlyRole refuses a login with no role and one with the wrong role', async () => {
+    await withAdmin(async (pool) => {
+      await expect(assertOnlyRole(pool, config.tenantLogin, 'portal_owner')).rejects.toThrow(
+        `login ${config.tenantLogin} must be a member of portal_owner only, but holds: portal_tenant`
+      );
+      await pool.query(`REVOKE portal_tenant FROM "${config.tenantLogin}"`);
+      await expect(assertOnlyRole(pool, config.tenantLogin, 'portal_tenant')).rejects.toThrow(
+        'but holds: nothing'
+      );
+    });
+    await provisionPortal(config);
   });
 
   it('never takes PGPASSWORD or a .pgpass password when the file supplies none', async (ctx) => {

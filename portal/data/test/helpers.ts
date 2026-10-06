@@ -5,13 +5,7 @@ import { connect, type PortalDb } from '../src/db.js';
 import { migrateSchema } from '../src/migrate.js';
 import { tenantRegister } from '../src/schema.js';
 import { provisionPortal } from '../provision/provisionPortal.js';
-import {
-  createLogin,
-  dropDatabase,
-  grantAccess,
-  grantRole,
-  lockDatabase,
-} from '../provision/provision.js';
+import { createLogin, grantAccess, grantRole, lockDatabase } from '../provision/provision.js';
 
 const ADMIN_URL = process.env['PORTAL_TEST_DATABASE_URL'];
 
@@ -62,6 +56,19 @@ const FIXTURE_MIGRATIONS = fileURLToPath(new URL('./drizzle/', import.meta.url))
  * holding two tenants in the register. A missing URL fails the suite rather
  * than skipping it: isolation proven against nothing is not proven.
  */
+/** Retries: `Pool.end()` resolves before the server has seen every socket close. */
+export async function dropDatabase(admin: pg.Pool, name: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      return;
+    } catch (error) {
+      if (attempt >= 20) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
+
 export async function createFixture(): Promise<Fixture> {
   if (ADMIN_URL === undefined) {
     throw new Error('PORTAL_TEST_DATABASE_URL must name a PostgreSQL superuser connection');

@@ -115,19 +115,6 @@ export async function createDatabase(admin: Pool, name: string): Promise<void> {
   await admin.query(`CREATE DATABASE ${ident(name)}`);
 }
 
-/** Retries: `Pool.end()` resolves before the server has seen every socket close. */
-export async function dropDatabase(admin: Pool, name: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await admin.query(`DROP DATABASE ${ident(name)} WITH (FORCE)`);
-      return;
-    } catch (error) {
-      if (attempt >= 20) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-}
-
 /**
  * Leaves a login holding `keep` and no other role. A pre-existing login may
  * hold memberships this command never granted; any of them would widen what
@@ -137,17 +124,38 @@ export async function dropDatabase(admin: Pool, name: string): Promise<void> {
  * own grantor.
  */
 export async function revokeOtherRoles(admin: Pool, login: string, keep: string): Promise<void> {
+  // LEFT JOIN: before PostgreSQL 16 a dropped grantor leaves its id behind in
+  // the membership, so an inner join would skip exactly the row to remove.
   const held = await admin.query(
     `SELECT r.rolname AS role, g.rolname AS grantor FROM pg_auth_members a
        JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
-       JOIN pg_roles g ON g.oid = a.grantor
+       LEFT JOIN pg_roles g ON g.oid = a.grantor
       WHERE m.rolname = $1 AND r.rolname <> $2`,
     [login, keep]
   );
   const quote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
-  for (const row of held.rows as { role: string; grantor: string }[]) {
-    await admin.query(
-      `REVOKE ${quote(row.role)} FROM ${ident(login)} GRANTED BY ${quote(row.grantor)}`
+  for (const row of held.rows as { role: string; grantor: string | null }[]) {
+    const by = row.grantor === null ? '' : ` GRANTED BY ${quote(row.grantor)}`;
+    await admin.query(`REVOKE ${quote(row.role)} FROM ${ident(login)}${by}`);
+  }
+}
+
+/**
+ * The postcondition of the membership steps: the login is a member of `role`
+ * and of nothing else. A revoke that missed a row fails here, by name, instead
+ * of passing on to a boundary check that cannot see every membership.
+ */
+export async function assertOnlyRole(admin: Pool, login: string, role: string): Promise<void> {
+  const held = await admin.query(
+    `SELECT r.rolname AS role FROM pg_auth_members a
+       JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
+      WHERE m.rolname = $1 ORDER BY 1`,
+    [login]
+  );
+  const roles = [...new Set((held.rows as { role: string }[]).map((row) => row.role))];
+  if (roles.length !== 1 || roles[0] !== role) {
+    throw new Error(
+      `login ${login} must be a member of ${role} only, but holds: ${roles.join(', ') || 'nothing'}`
     );
   }
 }
