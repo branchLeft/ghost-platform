@@ -86,10 +86,21 @@ export async function admin(database: string, ...sql: string[]): Promise<pg.Quer
 export async function resetServer(): Promise<void> {
   const pool = testPool('postgres', undefined, undefined, 1);
   try {
+    // Fail with a diagnosis rather than hang until the hook times out.
+    await pool.query("SET statement_timeout = '2s'");
     for (const database of [PROV_DB, OTHER_DB]) await dropDatabase(pool, database);
     for (const role of [TENANT, OWNER, 'portal_tenant', 'portal_owner']) {
       await pool.query(`DROP ROLE IF EXISTS "${role}"`);
     }
+  } catch (error) {
+    const seen = await pool
+      .query(
+        `SELECT datname, usename, state, backend_type, wait_event_type, wait_event, left(query, 80) AS q
+           FROM pg_stat_activity WHERE pid <> pg_backend_pid()`
+      )
+      .then((r) => JSON.stringify(r.rows))
+      .catch(() => 'unreadable');
+    throw new Error(`reset failed: ${String(error)}; sessions: ${seen}`);
   } finally {
     await pool.end();
   }

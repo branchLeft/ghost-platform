@@ -179,12 +179,15 @@ describe('the provisioning lifecycle', () => {
       process.env['PGPASSWORD'] = TENANT_PW;
       process.env['PGPASSFILE'] = decoy;
       process.env['HOME'] = home;
-      const pool = poolFor(testUrl(PROV_DB, TENANT));
-      const error = await pool.connect().then(
-        (c) => (c.release(), undefined),
+      // One client, always ended: a client that gives up part-way through
+      // SCRAM must not leave a half-authenticated backend behind.
+      const client = new pg.Client(poolFor(testUrl(PROV_DB, TENANT)).options);
+      client.on('error', () => undefined);
+      const error = await client.connect().then(
+        () => undefined,
         (e: unknown) => e
       );
-      await pool.end();
+      await client.end().catch(() => undefined);
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toMatch(/password|authentication/i);
     } finally {
