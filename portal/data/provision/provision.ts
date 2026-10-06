@@ -123,14 +123,18 @@ export async function createDatabase(admin: Pool, name: string): Promise<void> {
  * the acting role, leaving the rest with a warning: each is revoked naming its
  * own grantor.
  */
-export async function revokeOtherRoles(admin: Pool, login: string, keep: string): Promise<void> {
+export async function revokeOtherRoles(
+  admin: Pool,
+  login: string,
+  keep: string | null
+): Promise<void> {
   // LEFT JOIN: before PostgreSQL 16 a dropped grantor leaves its id behind in
   // the membership, so an inner join would skip exactly the row to remove.
   const held = await admin.query(
     `SELECT r.rolname AS role, g.rolname AS grantor FROM pg_auth_members a
        JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
        LEFT JOIN pg_roles g ON g.oid = a.grantor
-      WHERE m.rolname = $1 AND r.rolname <> $2`,
+      WHERE m.rolname = $1 AND ($2::text IS NULL OR r.rolname <> $2)`,
     [login, keep]
   );
   const quote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
@@ -141,18 +145,19 @@ export async function revokeOtherRoles(admin: Pool, login: string, keep: string)
 }
 
 /**
- * The postcondition of the membership steps: the login is a member of `role`
- * and of nothing else. A revoke that missed a row fails here, by name, instead
- * of passing on to a boundary check that cannot see every membership.
+ * The postcondition of the membership steps: counting nested membership, the
+ * login is a member of itself and of `role` and of nothing else. `pg_has_role`
+ * follows the chain, so a role reached through another role (or a predefined
+ * `pg_*` role granted to a portal role) fails here, by name, instead of passing
+ * to a boundary check that cannot see it.
  */
 export async function assertOnlyRole(admin: Pool, login: string, role: string): Promise<void> {
   const held = await admin.query(
-    `SELECT r.rolname AS role FROM pg_auth_members a
-       JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
-      WHERE m.rolname = $1 ORDER BY 1`,
+    `SELECT rolname AS role FROM pg_roles
+      WHERE pg_has_role($1, oid, 'MEMBER') AND rolname <> $1 ORDER BY 1`,
     [login]
   );
-  const roles = [...new Set((held.rows as { role: string }[]).map((row) => row.role))];
+  const roles = (held.rows as { role: string }[]).map((row) => row.role);
   if (roles.length !== 1 || roles[0] !== role) {
     throw new Error(
       `login ${login} must be a member of ${role} only, but holds: ${roles.join(', ') || 'nothing'}`

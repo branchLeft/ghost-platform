@@ -16,7 +16,13 @@ import {
   verifyBoundary,
   type ProvisionConfig,
 } from '../provision/provisionPortal.js';
-import { assertOnlyRole, createLogin, grantRole, lockDatabase } from '../provision/provision.js';
+import {
+  assertOnlyRole,
+  createLogin,
+  grantRole,
+  lockDatabase,
+  revokeOtherRoles,
+} from '../provision/provision.js';
 import { dropDatabase } from './helpers.js';
 import { scramVerifier } from '../provision/scram.js';
 import {
@@ -710,6 +716,54 @@ describe('against a real PostgreSQL', () => {
       );
     });
     await provisionPortal(config);
+  });
+
+  it('strips a predefined role granted to a portal role', async () => {
+    await withAdmin((pool) => pool.query('GRANT pg_execute_server_program TO portal_tenant'));
+    await provisionPortal(config);
+    expect(await state()).toEqual(afterFirst);
+    await withAdmin((pool) =>
+      expect(assertOnlyRole(pool, config.tenantLogin, 'portal_tenant')).resolves.toBeUndefined()
+    );
+  });
+
+  /** The real revoke for the logins, and none for the portal roles. */
+  const loginsOnly: typeof revokeOtherRoles = (admin, member, keep) =>
+    member.startsWith('portal_') ? Promise.resolve() : revokeOtherRoles(admin, member, keep);
+
+  it('fails by name, through the portal role, when the strip is disabled', async () => {
+    await withAdmin((pool) => pool.query('GRANT pg_execute_server_program TO portal_tenant'));
+    try {
+      await expect(
+        provisionPortal(config, undefined, { revokeOtherRoles: loginsOnly })
+      ).rejects.toThrow(
+        `login ${config.tenantLogin} must be a member of portal_tenant only, but holds: pg_execute_server_program, portal_tenant`
+      );
+    } finally {
+      await provisionPortal(config);
+    }
+    expect(await state()).toEqual(afterFirst);
+  });
+
+  it('catches a nested chain from the login through a portal role to a predefined role', async () => {
+    const chain = `prov_chain_${suffix}`;
+    await bootstrap.query(`CREATE ROLE "${chain}" NOLOGIN`);
+    await withAdmin(async (pool) => {
+      await pool.query(`GRANT pg_read_server_files TO "${chain}"`);
+      await pool.query(`GRANT "${chain}" TO portal_owner`);
+    });
+    try {
+      await expect(
+        provisionPortal(config, undefined, { revokeOtherRoles: loginsOnly })
+      ).rejects.toThrow(
+        `login ${config.ownerLogin} must be a member of portal_owner only, but holds: pg_read_server_files, portal_owner, ${chain}`
+      );
+      await provisionPortal(config);
+      expect(await state()).toEqual(afterFirst);
+    } finally {
+      await provisionPortal(config);
+      await bootstrap.query(`DROP ROLE IF EXISTS "${chain}"`);
+    }
   });
 
   it('never takes PGPASSWORD or a .pgpass password when the file supplies none', async (ctx) => {

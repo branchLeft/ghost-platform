@@ -28,7 +28,7 @@ export async function provisionedState(
     `SELECT r.rolname AS role, m.rolname AS member FROM pg_auth_members a
        JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
       WHERE m.rolname = ANY($1) ORDER BY 1, 2`,
-    [logins]
+    [['portal_tenant', 'portal_owner', ...logins]]
   );
   const grants = await pool.query(
     `SELECT grantee, table_schema, table_name, privilege_type FROM information_schema.role_table_grants

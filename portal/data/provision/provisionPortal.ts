@@ -326,6 +326,10 @@ export async function provisionPortal(
   await withPool(urlFor(config, config.database), async (admin) => {
     await lockPublicSchema(admin);
     await createRoles(admin);
+    // The portal roles are leaf roles: whatever either was granted, a predefined
+    // pg_* role included, would reach every login that holds it.
+    await revoke(admin, 'portal_tenant', null);
+    await revoke(admin, 'portal_owner', null);
     log('roles ready');
     await migrateSchema(admin);
     log('schema migrated');
