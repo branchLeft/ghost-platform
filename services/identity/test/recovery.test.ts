@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -204,7 +206,8 @@ describe('recoverOwner, single use and audit', () => {
     expect(entries.map((e) => e['event'])).toEqual(['recovery.begin', 'recovery.end']);
     expect(entries[1]!['outcome']).toBe('recovered');
     expect(entries[0]).toMatchObject({ actor: 'operator', user: USER, at: NOW.toISOString() });
-    expect(String(entries[0]!['credential'])).toMatch(/^[0-9a-f]{8}$/);
+    expect(entries[0]!['credential']).toBeUndefined();
+    expect(String(entries[1]!['credential'])).toMatch(/^[0-9a-f]{8}$/);
     const raw = readFileSync(join(dir, 'audit.log'), 'utf8');
     expect(raw).not.toContain(TOKEN);
     expect(raw).not.toContain(result.oneTimePassword);
@@ -314,6 +317,21 @@ describe('recoverOwner, the conditions that must hold', () => {
     );
   });
 
+  it('does not remove a different regular file swapped in after the read', async () => {
+    writeFileSync(join(dir, 'other'), 'OTHER-TOKEN', { mode: 0o600 });
+    let n = 0;
+    const swapping = deps({
+      now: () => {
+        n += 1;
+        if (n === 2) renameSync(join(dir, 'other'), join(dir, 'token'));
+        return NOW;
+      },
+    });
+    expect((await refusal(() => recoverOwner(options(), swapping))).code).toBe('consume-failed');
+    expect(calls).toHaveLength(0);
+    expect(readFileSync(join(dir, 'token'), 'utf8')).toBe('OTHER-TOKEN');
+  });
+
   it('refuses a symlink to a good credential', async () => {
     stage(join(dir, 'real'));
     rmSync(join(dir, 'token'));
@@ -334,7 +352,7 @@ describe('recoverOwner, the conditions that must hold', () => {
     const result = await refusal(() => recoverOwner(options(), deps({ stdoutIsTerminal: false })));
     expect(result.code).toBe('not-a-terminal');
     expect(existsSync(join(dir, 'token'))).toBe(true);
-    expect(audit()).toEqual([]);
+    expect(audit().map((e) => e['outcome'])).toEqual([undefined, 'not-a-terminal']);
   });
 
   it('refuses a bad instance host and a bad user id', async () => {
@@ -435,7 +453,50 @@ describe('loopbackOrigin', () => {
     expect(result.code).toBe('not-loopback');
     expect(calls).toHaveLength(0);
     expect(existsSync(join(dir, 'token'))).toBe(true);
-    expect(audit()).toEqual([]);
+    expect(audit().map((e) => e['outcome'])).toEqual([undefined, 'not-loopback']);
+  });
+
+  it('audits every kind of refusal, a begin line first and an end line with its code', async () => {
+    const cases: [Partial<RecoveryOptions>, string][] = [
+      [{ instanceHost: 'bad host' }, 'bad-instance-host'],
+      [{ userId: '../x' }, 'bad-user-id'],
+      [{ maxCredentialAgeSeconds: 0 }, 'bad-max-age'],
+      [{ credentialFile: join(dir, 'absent') }, 'credential-missing'],
+    ];
+    for (const [over, code] of cases) {
+      rmSync(join(dir, 'audit.log'), { force: true });
+      await refusal(() => recoverOwner(options(over), deps()));
+      expect(audit().map((e) => e['event'])).toEqual(['recovery.begin', 'recovery.end']);
+      expect(audit()[1]!['outcome']).toBe(code);
+    }
+  });
+
+  it('truncates an oversized user id in the audit line', async () => {
+    await refusal(() => recoverOwner(options({ userId: 'x'.repeat(500) }), deps()));
+    expect(String(audit()[0]!['user'])).toHaveLength(64);
+  });
+
+  it('reads the credential from the descriptor it checked: a path swapped to a link after the open is not followed', async () => {
+    writeFileSync(join(dir, 'other'), 'OTHER-TOKEN', { mode: 0o600 });
+    let calls_ = 0;
+    const swapping = deps({
+      now: () => {
+        calls_ += 1;
+        // Call 1 is the begin audit line, call 2 is the age check on the open descriptor.
+        if (calls_ === 2) {
+          rmSync(join(dir, 'token'));
+          symlinkSync(join(dir, 'other'), join(dir, 'token'));
+        }
+        return NOW;
+      },
+    });
+    const result = await refusal(() => recoverOwner(options(), swapping));
+    expect(result.code).toBe('consume-failed');
+    expect(calls).toHaveLength(0);
+    expect(audit()[1]!['credential']).toBe(
+      createHash('sha256').update(TOKEN).digest('hex').slice(0, 8)
+    );
+    expect(readFileSync(join(dir, 'other'), 'utf8')).toBe('OTHER-TOKEN');
   });
 });
 

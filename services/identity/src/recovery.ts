@@ -129,7 +129,7 @@ function fingerprint(token: string): string {
 interface AuditEntry {
   readonly event: 'recovery.begin' | 'recovery.end';
   readonly user: string;
-  readonly credential: string;
+  readonly credential?: string;
   readonly outcome?: string;
 }
 
@@ -167,11 +167,18 @@ function appendAudit(options: RecoveryOptions, deps: RecoveryDeps, entry: AuditE
   }
 }
 
-/** Reads the staged credential after checking it is the thing the owner staged
- * moments ago: a regular file, not a link, owned by this user, closed to
- * everyone else, and fresh. A stale copy is refused so a forgotten file is
+interface StagedCredential {
+  readonly token: string;
+  readonly dev: number;
+  readonly ino: number;
+}
+
+/** Reads the staged credential through one open file descriptor: opened
+ * without following a link, then every check (type, owner, mode, age) and the
+ * read are made on that descriptor, so a path swapped after the open cannot
+ * change what was checked. A stale copy is refused so a forgotten file is
  * useless rather than a standing way in. */
-function readStagedCredential(options: RecoveryOptions, deps: RecoveryDeps): string {
+function readStagedCredential(options: RecoveryOptions, deps: RecoveryDeps): StagedCredential {
   const maxAge = options.maxCredentialAgeSeconds ?? DEFAULT_MAX_CREDENTIAL_AGE_SECONDS;
   if (!Number.isInteger(maxAge) || maxAge < 1 || maxAge > MAX_CREDENTIAL_AGE_SECONDS) {
     throw new RecoveryRefused(
@@ -179,42 +186,75 @@ function readStagedCredential(options: RecoveryOptions, deps: RecoveryDeps): str
       `the credential age limit must be a whole number of seconds from 1 to ${MAX_CREDENTIAL_AGE_SECONDS}`
     );
   }
-  let stat;
+  let fd: number;
   try {
-    stat = lstatSync(options.credentialFile);
-  } catch {
-    throw new RecoveryRefused('credential-missing', 'the staged credential file does not exist');
-  }
-  if (!stat.isFile()) {
+    fd = openSync(options.credentialFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ENOENT') {
+      throw new RecoveryRefused('credential-missing', 'the staged credential file does not exist');
+    }
     throw new RecoveryRefused(
       'credential-not-regular',
       'the staged credential must be a regular file, not a link or a directory'
     );
   }
-  if (stat.uid !== deps.uid) {
-    throw new RecoveryRefused('credential-owner', 'the staged credential is owned by another user');
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) {
+      throw new RecoveryRefused(
+        'credential-not-regular',
+        'the staged credential must be a regular file, not a link or a directory'
+      );
+    }
+    if (stat.uid !== deps.uid) {
+      throw new RecoveryRefused(
+        'credential-owner',
+        'the staged credential is owned by another user'
+      );
+    }
+    if ((stat.mode & 0o077) !== 0) {
+      throw new RecoveryRefused(
+        'credential-mode',
+        'the staged credential must be readable by its owner only'
+      );
+    }
+    const ageSeconds = (deps.now().getTime() - stat.mtimeMs) / 1000;
+    if (ageSeconds < 0) {
+      throw new RecoveryRefused(
+        'credential-future',
+        'the staged credential is dated in the future'
+      );
+    }
+    if (ageSeconds > maxAge) {
+      throw new RecoveryRefused(
+        'credential-stale',
+        'the staged credential is older than the age limit; stage it again'
+      );
+    }
+    const token = readFileSync(fd, 'utf8').trim();
+    if (token.length === 0) {
+      throw new RecoveryRefused('credential-empty', 'the staged credential file is empty');
+    }
+    return { token, dev: stat.dev, ino: stat.ino };
+  } finally {
+    closeSync(fd);
   }
-  if ((stat.mode & 0o077) !== 0) {
+}
+
+/** Removes the staged file only if the path still names the file that was
+ * read, so a swap after the read cannot make this delete something else. */
+function consumeStagedCredential(path: string, staged: StagedCredential): void {
+  try {
+    const now = lstatSync(path);
+    if (!now.isFile() || now.dev !== staged.dev || now.ino !== staged.ino)
+      throw new Error('swapped');
+    unlinkSync(path);
+  } catch {
     throw new RecoveryRefused(
-      'credential-mode',
-      'the staged credential must be readable by its owner only'
+      'consume-failed',
+      'the staged credential could not be removed, so it cannot be single-use'
     );
   }
-  const ageSeconds = (deps.now().getTime() - stat.mtimeMs) / 1000;
-  if (ageSeconds < 0) {
-    throw new RecoveryRefused('credential-future', 'the staged credential is dated in the future');
-  }
-  if (ageSeconds > maxAge) {
-    throw new RecoveryRefused(
-      'credential-stale',
-      'the staged credential is older than the age limit; stage it again'
-    );
-  }
-  const token = readFileSync(options.credentialFile, 'utf8').trim();
-  if (token.length === 0) {
-    throw new RecoveryRefused('credential-empty', 'the staged credential file is empty');
-  }
-  return token;
 }
 
 const LOWER = 'abcdefghijkmnopqrstuvwxyz';
@@ -291,41 +331,30 @@ export async function recoverOwner(
   options: RecoveryOptions,
   deps: RecoveryDeps
 ): Promise<RecoveryResult> {
-  const origin = loopbackOrigin(options.baseUrl);
-  if (hostnameProblem('instanceHost', options.instanceHost) !== null) {
-    throw new RecoveryRefused('bad-instance-host', 'the instance host is not a plain DNS name');
-  }
-  if (!USER_ID.test(options.userId)) {
-    throw new RecoveryRefused('bad-user-id', 'the user id is not a plain identifier');
-  }
-  if (!deps.stdoutIsTerminal) {
-    throw new RecoveryRefused(
-      'not-a-terminal',
-      'the one-time password is shown on a terminal only; run this from an interactive session'
-    );
-  }
-
-  const token = readStagedCredential(options, deps);
-  const credential = fingerprint(token);
-  appendAudit(options, deps, { event: 'recovery.begin', user: options.userId, credential });
-  try {
-    unlinkSync(options.credentialFile);
-  } catch {
-    const refusal = new RecoveryRefused(
-      'consume-failed',
-      'the staged credential could not be removed, so it cannot be single-use'
-    );
-    appendAudit(options, deps, {
-      event: 'recovery.end',
-      user: options.userId,
-      credential,
-      outcome: refusal.code,
-    });
-    throw refusal;
-  }
-
+  // Written first and fail-closed: a refusal of any kind leaves a begin and an
+  // end line, and nothing is checked, read or changed if the first cannot be written.
+  const user = options.userId.slice(0, 64);
+  appendAudit(options, deps, { event: 'recovery.begin', user });
+  let credential: string | undefined;
   let outcome = 'recovered';
   try {
+    const origin = loopbackOrigin(options.baseUrl);
+    if (hostnameProblem('instanceHost', options.instanceHost) !== null) {
+      throw new RecoveryRefused('bad-instance-host', 'the instance host is not a plain DNS name');
+    }
+    if (!USER_ID.test(options.userId)) {
+      throw new RecoveryRefused('bad-user-id', 'the user id is not a plain identifier');
+    }
+    if (!deps.stdoutIsTerminal) {
+      throw new RecoveryRefused(
+        'not-a-terminal',
+        'the one-time password is shown on a terminal only; run this from an interactive session'
+      );
+    }
+    const staged = readStagedCredential(options, deps);
+    const token = staged.token;
+    credential = fingerprint(token);
+    consumeStagedCredential(options.credentialFile, staged);
     const actions: string[] = [];
     const org = asRecord(
       (await api(options, deps, origin, token, 'GET', '/management/v1/orgs/me'))['org']
@@ -382,8 +411,8 @@ export async function recoverOwner(
     try {
       appendAudit(options, deps, {
         event: 'recovery.end',
-        user: options.userId,
-        credential,
+        user,
+        ...(credential === undefined ? {} : { credential }),
         outcome,
       });
     } catch {

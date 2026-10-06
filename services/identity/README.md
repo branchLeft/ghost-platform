@@ -95,9 +95,16 @@ recovery credential was staged within the age limit (30 minutes by default, 60
 at most) as a plain file owned by the running user and closed to everyone else;
 the output is a terminal; the credential and the user belong to the owner
 organisation; and the audit file can be appended to. It writes an audit line
-before acting and one at the end, consumes the staged credential on first read,
+first and one at the end of every attempt, refused or not, and acts on nothing if
+the first cannot be written. It checks and reads the staged credential through
+one file descriptor opened without following a link, consumes the staged file,
 and then unlocks or reactivates the user if needed and sets a one-time password
 that must be changed at first sign-in. It does not reset a second factor.
+
+Known limits: a process that has taken the loopback port while sign-in is down
+would receive the credential; "single use" covers the staged file only, so the
+token stays valid until it is rotated; and an organisation-owner token works
+from anywhere that can reach the sign-in service.
 
 The owner's procedure, and how the credential is stored and rotated, is in
 `ghost-platform-docs`, `owner-console-recovery-runbook.md`.
