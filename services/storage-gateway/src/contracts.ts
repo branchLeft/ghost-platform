@@ -1,14 +1,8 @@
 /**
- * The seams of the storage gateway. Three stories build on this file in
- * parallel, each owning one side of a seam:
- *
- *   - the request router and folder guard (this package's `router` and
- *     `admit` modules) produce a {@link GatewayRequest} and consume the two
- *     interfaces below;
- *   - the signature check implements {@link SignatureVerifier};
- *   - the per-tenant credential store implements {@link CredentialStore}.
- *
- * Changing a shape here changes all three, so extend rather than reshape.
+ * The seams of the storage gateway. The router and folder guard produce a
+ * {@link GatewayRequest} and consume {@link SignatureVerifier} and
+ * {@link CredentialStore}; the signature check and the credential store each
+ * implement one. Extend these shapes rather than reshaping them.
  */
 
 /**
@@ -37,6 +31,8 @@ export interface GatewayRequest {
 
 /** Why a request was refused. Stable strings: they are logged and tested. */
 export type RefusalCode =
+  /** A dependency (verifier or credential store) failed; the gateway fails closed. */
+  | 'internal-error'
   /** The signature check refused the request (unsigned, presigned, bad signature, unknown key). */
   | 'signature-refused'
   /** The credential exists but is not currently usable (see {@link CredentialState}). */
@@ -57,7 +53,7 @@ export interface Refusal {
   readonly code: RefusalCode;
   /** Safe to return to the caller: never names a folder, bucket or key. */
   readonly message: string;
-  /** The HTTP status the gateway answers with (4xx). */
+  /** The HTTP status the gateway answers with: 4xx for a refused request, 5xx for a failure. */
   readonly status: number;
 }
 
