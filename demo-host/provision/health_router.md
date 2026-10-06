@@ -28,8 +28,9 @@ no colour, so none is repaired or guessed past.
   whole in a two-entry table; it is never split, joined or turned into a path.
 - A socket path on which any link is not what the router trusts: root, slot
   or colour directory that is a symlink, not a directory, not owned by the
-  router's uid or not mode 0700; the root writable by anyone but root or the
-  router; the socket not a socket (a symlink counts) or not owned by the
+  router's uid or not mode 0700; the root, or the directory holding it,
+  writable by anyone but root or the router (whoever can write either can
+  rename the router's directory); the socket not a socket (a symlink counts) or not owned by the
   router's uid. Checked on every request, never cached.
 - A socket that is missing, refuses the connection (a stale file from a
   stopped sidecar), hangs past 1.5 s, or answers something that is not an
@@ -37,6 +38,17 @@ no colour, so none is repaired or guessed past.
 - A sidecar status other than 200.
 
 A path other than `/healthz` is 404.
+
+## How the check and the connect stay one
+
+Each directory is opened once with no symlink followed, the next one
+relative to it (the parent of the root first, then the root, the slot and
+the colour), and every check runs on the open descriptor. The connect goes
+through the colour directory's descriptor (`/proc/self/fd/<n>/health.sock`),
+so renaming or replacing any directory between the check and the connect
+cannot send the router to a different socket. The descriptors close when the
+check ends. On a machine without `/proc` (a developer's laptop) the plain
+path is used; the router only runs on the Linux demo host.
 
 ## What it never does
 

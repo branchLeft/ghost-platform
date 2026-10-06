@@ -167,6 +167,9 @@ class UnitsMatchTheInstallLayout(unittest.TestCase):
         for rel in ibw.REQUIRED_RELEASE_FILES:
             self.assertTrue((REPO_ROOT / rel).is_file(), rel)
 
+    def test_the_lock_bound_module_the_transport_loads_is_required(self) -> None:
+        self.assertIn("db/provision/bounded_snapshot.py", ibw.REQUIRED_RELEASE_FILES)
+
     def test_every_run_is_preceded_by_the_tenants_preflight(self) -> None:
         self.assertEqual(
             self.service["ExecStartPre"].split(),
@@ -358,6 +361,10 @@ class Tools(unittest.TestCase):
     def test_a_missing_tool_is_named(self) -> None:
         problems = ibw.tool_problems(FakeRun(), lambda tool: None if tool == "age" else f"/usr/bin/{tool}")
         self.assertEqual(problems, ["age is not installed"])
+
+    def test_the_mysql_client_the_lock_session_runs_on_is_required(self) -> None:
+        problems = ibw.tool_problems(FakeRun(), lambda tool: None if tool == "mysql" else f"/usr/bin/{tool}")
+        self.assertEqual(problems, ["mysql is not installed"])
 
     def test_a_newer_client_line_is_refused(self) -> None:
         for version in ("mysqldump  Ver 8.4.6 for Linux", "mysqldump from 11.8.3-MariaDB", ""):

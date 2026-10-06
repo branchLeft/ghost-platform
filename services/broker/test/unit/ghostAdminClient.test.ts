@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat, symlink, writeFile, chmod } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SlotName, TenantDescriptor } from '@branchleft/ghost-platform-render-core';
@@ -301,7 +301,7 @@ describe('the key store', () => {
 
   it('refuses to hand back a corrupted file', async () => {
     await mkdir(join(base, '0'), { recursive: true });
-    await writeFile(join(base, '0', 'ghost-admin-key'), 'garbage\n');
+    await writeFile(join(base, '0', 'ghost-admin-key'), 'garbage\n', { mode: 0o600 });
     await expect(createAdminKeyStore(base).read('0')).rejects.toThrow(
       /is not a Ghost Admin API key/
     );
@@ -325,9 +325,15 @@ describe('the key store', () => {
     expect(await readdir(elsewhere)).toEqual([]);
   });
 
-  it('surfaces a read error that is not "missing"', async () => {
+  it('refuses a directory in place of the file', async () => {
     await mkdir(join(base, '0', 'ghost-admin-key'), { recursive: true });
-    await expect(createAdminKeyStore(base).read('0')).rejects.toThrow(/EISDIR/);
+    await expect(createAdminKeyStore(base).read('0')).rejects.toThrow('not a plain file');
+  });
+
+  it('surfaces a lookup error that is not "missing"', async () => {
+    await mkdir(base, { recursive: true });
+    await writeFile(join(base, '0'), 'not a folder');
+    await expect(createAdminKeyStore(base).read('0')).rejects.toThrow(/ENOTDIR/);
   });
 
   it('removing from a slot that never had a folder is a no-op', async () => {
@@ -408,7 +414,6 @@ describe('adminApiConfigFromEnv', () => {
     BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
     BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),
     BROKER_DEMO_MAIL_DOMAIN: TEST_ZONES.demoMailDomain,
-    BROKER_MAIL_SPOOL_BASE_URL: TEST_ZONES.mailSpoolBaseUrl,
   };
 
   it('has no default for the key folder', () => {
@@ -425,5 +430,43 @@ describe('adminApiConfigFromEnv', () => {
         BROKER_GHOST_READY_TIMEOUT_MS: '1234',
       })
     ).toMatchObject({ keyDir: '/k', readyTimeoutMs: 1234 });
+  });
+});
+
+describe('the key store refuses a token it cannot trust', () => {
+  const KEY = `${'1'.repeat(24)}:${'2'.repeat(64)}`;
+  let base: string;
+  beforeEach(async () => {
+    base = join(await makeTempDir('broker-keytrust-'), 'keys');
+    await createAdminKeyStore(base).write('0', KEY);
+  });
+
+  it('reads back a 0600 file it owns', async () => {
+    expect(await createAdminKeyStore(base).read('0')).toBe(KEY);
+  });
+
+  it('refuses a file whose mode is not exactly 0600', async () => {
+    for (const mode of [0o644, 0o640, 0o400, 0o700]) {
+      await chmod(join(base, '0', 'ghost-admin-key'), mode);
+      await expect(createAdminKeyStore(base).read('0')).rejects.toThrow(
+        `mode ${mode.toString(8)}, not 600`
+      );
+    }
+  });
+
+  it('refuses a file owned by another account', async () => {
+    const own = process.getuid?.() ?? 0;
+    await expect(createAdminKeyStore(base, () => own + 1).read('0')).rejects.toThrow(
+      `owned by uid ${own}, not this service`
+    );
+  });
+
+  it('refuses a symlink in place of the file', async () => {
+    const elsewhere = join(await makeTempDir('broker-keytrust-other-'), 'k');
+    await writeFile(elsewhere, `${KEY}\n`, { mode: 0o600 });
+    const path = join(base, '0', 'ghost-admin-key');
+    await rm(path);
+    await symlink(elsewhere, path);
+    await expect(createAdminKeyStore(base).read('0')).rejects.toThrow('not a plain file');
   });
 });

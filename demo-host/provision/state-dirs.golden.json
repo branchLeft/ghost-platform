@@ -1,0 +1,13 @@
+{
+  "_comment": "The one shared fixture for who owns what under the demo host's state root. The root is root-owned and not writable by the broker, so the broker cannot rename the health router's directory; the broker's own subdirectory holds the slots file. provision_socket_dirs.py, health_router.py, demo_sidecar.py and the broker's env template and unit are each tested against it. Neither side reads this at runtime.",
+  "stateRoot": "/var/lib/branchleft",
+  "stateRootOwner": "root",
+  "stateRootMode": "0755",
+  "routerRoot": "/var/lib/branchleft/demo-router",
+  "routerRootOwner": "root",
+  "routerRootMode": "0755",
+  "brokerSlotsDir": "/var/lib/branchleft/broker-slots",
+  "brokerSlotsDirOwner": "broker",
+  "brokerSlotsDirMode": "0755",
+  "brokerSlotsFile": "/var/lib/branchleft/broker-slots/slots.json"
+}

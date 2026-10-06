@@ -66,6 +66,7 @@ because no publish path exists yet either -- see "Delivery path" below).
 1. **Pin Node.** On demo1 -- `dpkg`'s architecture name and nodejs.org's own
    tarball name disagree (`amd64` vs. `x64`), and the tarball is verified
    against Node's own published checksums before it is ever extracted:
+
    ```bash
    case "$(dpkg --print-architecture)" in
      amd64) NODE_ARCH=x64 ;;
@@ -80,6 +81,7 @@ because no publish path exists yet either -- see "Delivery path" below).
    rm "node-v26.5.0-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt
    /opt/branchleft/broker/node/bin/node --version   # expect v26.5.0
    ```
+
    Installed once per Node version, independent of the app's own release
    directory below -- an app upgrade that does not also bump `.nvmrc` never
    touches this step.
@@ -87,18 +89,21 @@ because no publish path exists yet either -- see "Delivery path" below).
 2. **Create the `broker` account**, if the host build hasn't already
    (branchLeft/workspace#1188/#1447 own the host's user/uid plan; this is
    the minimal fallback if it hasn't landed yet):
+
    ```bash
    sudo useradd --system --home-dir /var/lib/branchleft-broker --shell /usr/sbin/nologin broker
    ```
 
 3. **Install the sudoers boundary and the wrapper**, if not already done by
    the host build:
+
    ```bash
    sudo python3 demo-host/provision/render_slot_sudoers.py --install /etc/sudoers.d/branchleft-slot
    sudo install -o root -g root -m 0755 demo-host/provision/branchleft_slot.py /usr/local/sbin/branchleft-slot
    ```
 
 4. **Build and ship the bundle**, from a workstation checkout:
+
    ```bash
    cd services/broker
    npm ci
@@ -108,6 +113,7 @@ because no publish path exists yet either -- see "Delivery path" below).
    rsync -a --chown=root:root dist/bundle/ "demo1:/tmp/broker-release-${RELEASE}/"
    ssh demo1 "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current"
    ```
+
    `rsync -a` preserves the workstation's own uid/mode bits, so the `mv`
    step keeps everything under `releases/` root-owned regardless of what
    the operator's own account looked like at the source end -- the
@@ -117,19 +123,22 @@ because no publish path exists yet either -- see "Delivery path" below).
 5. **Create the directories the unit's `ReadWritePaths=`/`ReadOnlyPaths=`
    expect to already exist** -- a missing path here fails the unit with
    `226/NAMESPACE` at start, not at install:
+
    ```bash
    sudo mkdir -p /etc/branchleft
-   sudo install -d -m 0755 -o root -g root /var/lib/branchleft
-   sudo install -d -m 0755 -o broker -g broker /var/lib/branchleft/broker-slots
-   sudo install -d -m 0700 -o broker -g broker /var/lib/branchleft/broker-slots/admin-keys
+   sudo install -d -o root -g root -m 0755 /var/lib/branchleft
+   sudo install -d -o broker -g broker -m 0755 /var/lib/branchleft/broker-slots
+   sudo install -d -o broker -g broker -m 0700 /var/lib/branchleft/broker-slots/admin-keys
    ```
 
 6. **Write `/etc/branchleft/broker.env`** on demo1 from
    `systemd/broker.env.example`, root:root, mode 0600:
+
    ```bash
    sudo install -o root -g root -m 0600 /dev/null /etc/branchleft/broker.env
    sudo $EDITOR /etc/branchleft/broker.env   # fill in the real values; never echo them to a shell history
    ```
+
    Fill in a real `BROKER_VERIFY_KEY_FILE` at the path it names, 32 raw
    Ed25519 public-key bytes, owned **`root:broker`, mode 0640**. See
    `systemd/README.md` ("The verify key") for why it is group-readable
@@ -222,7 +231,8 @@ docker rm -f broker-boot-proof
   from the mail queue directly.
 - **`BROKER_SLOTS_FILE` writability.** This issue's own scope: the file and
   its containing directory (`/var/lib/branchleft/broker-slots`, broker-owned
-  inside a root-owned parent) are created by step 5 above and are in the unit's `ReadWritePaths=`, so a real `/reconcile` or
+  inside a root-owned parent) are created by step 5 above and are in the
+  unit's `ReadWritePaths=`, so a real `/reconcile` or
   `/reset` can write it. The shape is `{"slots": []}`
   (`slotsFile.ts#readSlotsFile` reads `parsed.slots` as the array itself,
   not `{}`) -- the boot proof's fixture seeds a real leased entry and

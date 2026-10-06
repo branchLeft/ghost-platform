@@ -42,6 +42,10 @@ infra/provisioning/scripts/backup_worker.py
 infra/provisioning/scripts/test_backup_worker.py
 infra/provisioning/scripts/test_pull_encrypt_store.py
 
+# Backup: the per-tenant transport's tests read back the lock session's
+# statements, which a real dump drives directly, never through the ORM.
+infra/provisioning/scripts/test_dial_in_transport.py
+
 # Backup: the nightly loop's own test fixtures fake mysqldump's output,
 # literal INSERT INTO text a real dump never runs through the ORM.
 infra/provisioning/scripts/test_nightly_dump_loop.py
@@ -64,3 +68,8 @@ adapters/sso/test/image/provision-support-account-mysql.image.test.mjs
 # Provisioning: the portal's database roles, grants and logins, and the test
 # suite's throwaway databases -- operator-run, never the portal at run time.
 portal/data/provision/*
+
+# The weekly restore drill: decrypts a backup, imports it into a throwaway
+# server and reads back what it restored.
+infra/provisioning/scripts/restore_drill.py
+infra/provisioning/scripts/test_restore_drill.py

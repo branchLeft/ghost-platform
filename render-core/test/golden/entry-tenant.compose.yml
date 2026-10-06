@@ -87,7 +87,7 @@ services:
       mail__options__secure: false
       mail__options__auth__user: 'entry-co'
       mail__from: 'hello@blog.entry-co.example'
-      bulkEmail__mailgun__baseUrl: 'http://mail-spool.internal.example.test:8080'
+      bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
       bulkEmail__mailgun__domain: 'blog.entry-co.example'
       hostSettings__limits__members__max: 500
       hostSettings__limits__staff__max: 3
@@ -106,6 +106,9 @@ services:
       storage__files__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/entry-co.env}'
       mail__options__auth__pass: '${GHOST_MAIL_PASSWORD:?set GHOST_MAIL_PASSWORD in /etc/branchleft/entry-co.env}'
       bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/entry-co.env}'
+    networks:
+      - 'default'
+      - 'branchleft-mail-30201'
     volumes:
       - 'ghost-entry-co-content:/var/lib/ghost/content'
       - 'ghost-entry-co-adapters:/var/lib/ghost/content/adapters:ro'
@@ -198,7 +201,7 @@ services:
       mail__options__secure: false
       mail__options__auth__user: 'entry-co'
       mail__from: 'hello@blog.entry-co.example'
-      bulkEmail__mailgun__baseUrl: 'http://mail-spool.internal.example.test:8080'
+      bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
       bulkEmail__mailgun__domain: 'blog.entry-co.example'
       hostSettings__limits__members__max: 500
       hostSettings__limits__staff__max: 3
@@ -217,6 +220,9 @@ services:
       storage__files__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/entry-co.env}'
       mail__options__auth__pass: '${GHOST_MAIL_PASSWORD:?set GHOST_MAIL_PASSWORD in /etc/branchleft/entry-co.env}'
       bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/entry-co.env}'
+    networks:
+      - 'default'
+      - 'branchleft-mail-30201'
     volumes:
       - 'ghost-entry-co-content:/var/lib/ghost/content'
       - 'ghost-entry-co-adapters:/var/lib/ghost/content/adapters:ro'
@@ -234,6 +240,10 @@ services:
       timeout: '5s'
       retries: 3
       start_period: '60s'
+networks:
+  branchleft-mail-30201:
+    name: 'branchleft-mail-30201'
+    external: true
 volumes:
   ghost-entry-co-content:
     external: true

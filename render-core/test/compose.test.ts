@@ -20,6 +20,7 @@ const baseArgs = {
   },
   caps: { cpus: '1.0', cpuShares: 512, pidsLimit: 256, nofile: 4096 },
   dataMount: null,
+  mailNetwork: null,
 };
 
 /** A minimal, posture-compliant service, for building sabotaged variants. */

@@ -32,29 +32,12 @@ Nine rounds:
 - `RED-6` a backup id derived from the plaintext digest -- a content
   fingerprint that survives crypto-shredding, since it needs no key to
   recompute -- must not appear in the backup bucket's listing -> reverted
-- `C-REFRESH-1` a second backup run replaces the first: a fresh random
-  key, the first generation's ciphertext genuinely gone (not merely
-  unreferenced), object count never grows across a run, and restore still
-  verifies afterwards
-- `C-REFRESH-2` an upload failing partway through a run must leave the
-  PREVIOUS generation's objects untouched and still restorable --
-  sabotage the module's own upload call to fail on the second object ->
-  reverted
-- `CONCURRENT-1` two REAL, overlapping CLI `backup` invocations against
-  the same tenant, launched as genuinely parallel OS processes against
-  the same live Ghost/MinIO sandbox -- nothing is deleted out from under
-  a still-restorable generation, and restore succeeds afterwards
-  regardless of which process actually finished last
-- `LOSSY-PUT` an object PUT that answers success without the object
-  actually landing must be caught, before this run's own manifest is
-  ever written -- so a default restore afterwards still succeeds,
-  reading the untouched previous generation
-- `MANIFEST-MISMATCH` the one failure the `LOSSY-PUT` ordering cannot
-  itself prevent: a manifest PUT that reports success but stores
-  different bytes. The torn manifest key DOES exist, so a default restore
-  must refuse it rather than invent a fallback -- and must name the
-  newest OLDER generation and the exact `--run-id` command that recovers
-  it, which this round then runs for real
+- `DATED-1` a second backup run adds a new dated generation and deletes
+  nothing: the first generation's ciphertext is still in the bucket, the
+  object count grows, and restore still verifies with two copies present
+- `DATED-2` a newer copy whose completion marker (the manifest) is missing
+  is ignored: restore reads the newest complete copy, and succeeds again
+  once a clean run writes a new one
 
 Plus one direct check outside the RED/GREEN frame: restoring with a
 different tenant's identity is refused (the crypto-shredding property).
@@ -66,13 +49,11 @@ script's own proof, not this one's); MinIO's self-signed TLS cert is
 trusted via `SSL_CERT_FILE` rather than a real CA, because
 `db/provision/objectstorage.py`'s `request_url` is deliberately hardcoded
 to `https` (Hetzner's endpoint always is) and this proof exercises that
-same unmodified code, not a plaintext-HTTP shortcut. C-refresh's own
-delete step is a plain `DELETE` against MinIO too -- MinIO turns that into
-a delete marker on a versioned bucket the same way Hetzner does, but this
-proof does not itself enable bucket versioning on `backup`/MinIO, so here
-it is a genuine removal; the noncurrent-version survival window is what
-`probe-media-lifecycle-expiration.py`'s prefix-split mode proves against
-real Hetzner Object Storage instead.
+same unmodified code, not a plaintext-HTTP shortcut. The backup job never
+deletes, so this proof exercises no deletion by it (its own `delete`
+helper only simulates a missing marker or destroys the live bucket); expiry
+of old copies is the bucket lifecycle's job, proven against real Hetzner
+Object Storage by `RUNBOOK-media-backup-lifecycle.md`.
 
 Prerequisites on the workstation running this: `docker`, `age`
 (`age-keygen`), `openssl`, `curl`, `jq`, `python3`, `comm` (present in

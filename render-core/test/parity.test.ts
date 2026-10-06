@@ -18,17 +18,17 @@ import { CURRENT_SCHEMA_VERSION, type ZoneConfig } from '../src/validate.js';
 import type { TenantDescriptor } from '../src/descriptor.js';
 import { tenantEnvironment as renderCoreTenantEnvironment } from '../src/environment.js';
 import { uploadLimits } from '../src/runtime.js';
+import { MAIL_SPOOL_BASE_URL } from '../src/spool.js';
 
 const SECRETS_FILE_PATH = '/etc/branchleft/blog.env';
 
 // Not `TEST_ZONES` from `./fixtures.js`: this fixture is tenant-zero's own
 // real domain, and `demoMailDomain` is never read for a `tenant` identity —
-// only `mailSpoolBaseUrl` matters here, and its value is deliberately not
+// the bulk base URL comes from `spool.ts`, and is deliberately not
 // `INFRA_TENANT_BLOG_ENV`'s old `mx1.branchleft.co.uk:8443` — see
 // `KNOWN_DIVERGED_KEYS`'s own comment below for why.
-const ZONES: Pick<ZoneConfig, 'demoMailDomain' | 'mailSpoolBaseUrl'> = {
+const ZONES: Pick<ZoneConfig, 'demoMailDomain'> = {
   demoMailDomain: 'demo.branchleft.co.uk',
-  mailSpoolBaseUrl: 'http://mail-spool.internal:8080',
 };
 
 // Recorded 2026-09-24 by calling infra/tenant/environment.ts#tenantEnvironment
@@ -277,9 +277,9 @@ describe('tenant-zero parity — a real key-by-key diff against infra/tenant, no
 
   it('the two named divergences are real and in the expected direction — the spool, not mx1 directly', () => {
     const core = renderCoreTenantZeroEnv();
-    // GREEN: render-core points the bulk path at the spool this package
-    // was given, never at the old snapshot's direct-to-mx1 address.
-    expect(core.bulkEmail__mailgun__baseUrl).toBe(ZONES.mailSpoolBaseUrl);
+    // GREEN: render-core points the bulk path at the host's own spool,
+    // never at the old snapshot's direct-to-mx1 address.
+    expect(core.bulkEmail__mailgun__baseUrl).toBe(MAIL_SPOOL_BASE_URL);
     expect(core.bulkEmail__mailgun__baseUrl).not.toBe(
       INFRA_TENANT_BLOG_ENV.bulkEmail__mailgun__baseUrl
     );

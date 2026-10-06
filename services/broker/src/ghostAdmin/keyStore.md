@@ -16,3 +16,8 @@ empty key.
 
 The write is atomic (`atomicFile.ts`): a reader sees the old token or the
 new one, never half of one. `remove` is what a reset calls.
+
+Reading checks the file before trusting it: it must be a plain file (not a
+symlink), mode exactly 0600, and owned by the account the broker runs as.
+Anything else is refused as an error, so a token another account could
+have read, rewritten or planted is never used.

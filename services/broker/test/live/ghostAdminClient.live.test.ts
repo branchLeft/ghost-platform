@@ -23,6 +23,7 @@ const IMAGE =
 const SLOT = '0' as SlotName;
 const RUN = randomBytes(4).toString('hex');
 const VOLUME = `broker-admin-live-${RUN}`;
+const LABEL = `broker-admin-live-${RUN}`;
 
 function docker(args: string[]): { status: number | null; out: string } {
   const r = spawnSync('docker', args, { encoding: 'utf-8', timeout: 120_000 });
@@ -34,12 +35,20 @@ const canRun = docker(['info']).status === 0 && docker(['image', 'inspect', IMAG
 const descriptor = demoDescriptor();
 const siteHost = new URL(descriptor.siteUrl).host;
 
+function ensureVolume(): void {
+  const r = docker(['volume', 'create', '--label', `branchleft.test=${LABEL}`, VOLUME]);
+  if (r.status !== 0) throw new Error(`could not create ${VOLUME}: ${r.out}`);
+}
+
 function startColour(name: string, port: number): void {
   const r = docker([
     'run',
     '-d',
+    '--rm',
     '--name',
     name,
+    '--label',
+    `branchleft.test=${LABEL}`,
     '-p',
     `127.0.0.1:${port}:2368`,
     '-v',
@@ -106,11 +115,12 @@ describe.skipIf(!canRun)('LIVE — the admin client against Ghost 6.55.0', () =>
     keyDir = join(await makeTempDir('broker-admin-live-'), 'admin-keys');
     portA = await findFreePort();
     portB = await findFreePort();
+    ensureVolume();
     startColour(colourA, portA);
   }, 120_000);
 
   afterAll(() => {
-    docker(['rm', '-f', colourA, colourB]);
+    docker(['rm', '-f', '-v', colourA, colourB]);
     docker(['volume', 'rm', '-f', VOLUME]);
   });
 

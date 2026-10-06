@@ -1,0 +1,79 @@
+{
+  "_comment": "The one shared fixture the broker's BROKER_DRAIN_FLAG_DIR (services/broker/systemd/broker.env.example), drain_flag_dir.py's DEFAULT_FLAG_DIR and demo_sidecar.py's FLAG_DIR are each tested against, so the directory the broker writes flags into and the directory the sidecars mount cannot diverge. The directory sits under the broker unit's StateDirectory, so it is on disk and survives a reboot. Neither side reads this at runtime.",
+  "dir": "/var/lib/branchleft-broker/drain-flags",
+  "parent": "/var/lib/branchleft-broker",
+  "parentMode": "0750",
+  "stateDirectory": "branchleft-broker",
+  "files": [
+    {
+      "slot": "0",
+      "colour": "a",
+      "name": "0-a.drain"
+    },
+    {
+      "slot": "0",
+      "colour": "b",
+      "name": "0-b.drain"
+    },
+    {
+      "slot": "1",
+      "colour": "a",
+      "name": "1-a.drain"
+    },
+    {
+      "slot": "1",
+      "colour": "b",
+      "name": "1-b.drain"
+    },
+    {
+      "slot": "2",
+      "colour": "a",
+      "name": "2-a.drain"
+    },
+    {
+      "slot": "2",
+      "colour": "b",
+      "name": "2-b.drain"
+    },
+    {
+      "slot": "3",
+      "colour": "a",
+      "name": "3-a.drain"
+    },
+    {
+      "slot": "3",
+      "colour": "b",
+      "name": "3-b.drain"
+    },
+    {
+      "slot": "4",
+      "colour": "a",
+      "name": "4-a.drain"
+    },
+    {
+      "slot": "4",
+      "colour": "b",
+      "name": "4-b.drain"
+    },
+    {
+      "slot": "5",
+      "colour": "a",
+      "name": "5-a.drain"
+    },
+    {
+      "slot": "5",
+      "colour": "b",
+      "name": "5-b.drain"
+    },
+    {
+      "slot": "6",
+      "colour": "a",
+      "name": "6-a.drain"
+    },
+    {
+      "slot": "6",
+      "colour": "b",
+      "name": "6-b.drain"
+    }
+  ]
+}

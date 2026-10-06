@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { EmailAddress, SlotName } from '@branchleft/ghost-platform-render-core';
 import type { AdminApiClient } from '../../src/adminApi.js';
 import { makeTempDir } from '../../src/atomicFile.js';
+import { writeLeaseAndHash } from '../../src/leaseStore.js';
 import { createGhostAdminClient } from '../../src/ghostAdmin/client.js';
 import { createAdminKeyStore } from '../../src/ghostAdmin/keyStore.js';
 import { demoDescriptor, TEST_ZONES } from '../helpers/fixtures.js';
@@ -161,7 +162,6 @@ describe('the shipped plugin module', () => {
       BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
       BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),
       BROKER_DEMO_MAIL_DOMAIN: TEST_ZONES.demoMailDomain,
-      BROKER_MAIL_SPOOL_BASE_URL: TEST_ZONES.mailSpoolBaseUrl,
     });
     try {
       const mod = (await import('../../src/plugins/ghostAdminApi.js')).default;
@@ -171,5 +171,47 @@ describe('the shipped plugin module', () => {
     } finally {
       process.env = saved;
     }
+  });
+});
+
+describe('the host-conflict teardown forgets the token too', () => {
+  let broker: TestBroker | undefined;
+  afterEach(async () => {
+    await broker?.close();
+    broker = undefined;
+  });
+
+  // Another slot takes the host inside configure, so this slot's own lease
+  // write hits the atomic host-conflict backstop.
+  async function conflict(forgetFails: boolean): Promise<{ status: number; forgotten: string[] }> {
+    const forgotten: string[] = [];
+    const descriptor = demoDescriptor();
+    const host = new URL(descriptor.siteUrl).host;
+    broker = await startTestBroker({
+      wrapDeps: (deps) => ({
+        ...deps,
+        adminApi: {
+          configure: async () => {
+            await writeLeaseAndHash(deps.leaseStoreConfig, host, '1' as SlotName, '$argon2id$x');
+          },
+          forget: async (slot) => {
+            if (forgetFails) throw new Error('disk gone');
+            forgotten.push(slot);
+          },
+        },
+      }),
+    });
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor });
+    return { status: res.status, forgotten };
+  }
+
+  it('forgets the slot before the wipe and frees it', async () => {
+    expect(await conflict(false)).toEqual({ status: 409, forgotten: ['0'] });
+  });
+
+  it('a failed forget leaves the slot in error, never free', async () => {
+    expect((await conflict(true)).status).toBe(503);
+    const state = JSON.parse(await readFile(join(broker!.stateDir, '0.json'), 'utf8'));
+    expect(state.phase).toBe('error');
   });
 });

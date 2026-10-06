@@ -829,15 +829,6 @@ export interface ZoneConfig {
    * checked by name (`validateMailIdentity`'s own tenant branch).
    */
   readonly demoMailDomain: string;
-  /**
-   * Where every host's Ghost reaches its own mail spool's Mailgun-shaped
-   * bulk API (LLD-6 §03: "one mail spool per host, serving both SMTP and
-   * the Mailgun-shaped API"). A caller supplies the real address; this
-   * package has no opinion on the network path between a Ghost container
-   * and its spool, and never will — that path is the mail spool
-   * component's own contract, not a tenant descriptor's.
-   */
-  readonly mailSpoolBaseUrl: string;
 }
 
 function normalizeDomain(value: string): string {

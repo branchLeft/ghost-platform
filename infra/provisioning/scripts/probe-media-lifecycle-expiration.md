@@ -38,7 +38,7 @@ rule count that quietly stops matching what actually ships — and a probe
 testing its own drifted copy proves nothing about what
 `configure_backup_bucket.py` will apply to the real bucket. This now
 carries all FOUR of that generator's rules (`dumps/`, `binlogs/`, `media/`
-— with `ExpiredObjectDeleteMarker` — and `fence-probe/`), byte for byte and
+and `fence-probe/`), byte for byte and
 in the same order, even though `setup_prefix_split` below only ever
 uploads canaries under two of them (`media/` and `dumps/`, the latter
 standing in for `dumps/`+`binlogs/` since they carry an identical rule —
@@ -52,12 +52,13 @@ closest-effort stand-in for it.
 `control_survives` and `current_of_noncurrent_present` must hold for BOTH
 prefixes unconditionally — neither rule's element set predicts removing a
 live current object. `delete_marker_present` is different for media/
-specifically now that its real rule also carries
-`ExpiredObjectDeleteMarker` (see the module overview and
-`configure_backup_bucket.py`'s own): once the noncurrent version under a
-deleted key is pruned, that element makes the now-sole delete marker
-itself eligible for removal on a later pass. The db-style prefix carries
-no such element, so its own delete marker surviving is still unconditional
+only on a bucket set up with the earlier document, whose media/ rule
+carried `ExpiredObjectDeleteMarker`: once the noncurrent version under a
+deleted key was pruned, that element made the now-sole delete marker
+itself eligible for removal on a later pass. The document now shipped has
+no such element on any rule (a Days expiry cannot share an element with
+it), so on a fresh bucket both delete markers survive. The db-style prefix
+never carried it, so its own delete marker surviving is unconditional
 — its disappearance is not predicted by any reading and is treated as a
 missing current object, same as before.
 

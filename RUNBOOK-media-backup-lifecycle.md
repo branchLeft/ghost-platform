@@ -1,4 +1,4 @@
-# Runbook — apply the backup bucket's lifecycle (with current-version expiry), prove it, retire the probe bucket
+# Runbook — apply the backup bucket's lifecycle (db and media current-version expiry), prove it, retire the probe bucket
 
 Target: bucket `branchleft-tenant-backups`, `fsn1`, Hetzner project `16139785`.
 The earlier hel1 target was ruled out by the owner on 2026-09-29 (hel1 drops
@@ -27,15 +27,28 @@ hel1 except the throwaway probe bucket in step 9 and its deletion in step 10.
   version for 35 days and can be restored with the read-only key. The real
   protection is the merged per-tenant 36-hour dump freshness alert.
 - **Delete markers accumulate.** Each expiry leaves a zero-byte delete marker
-  under `dumps/` and `binlogs/`. The existing `ExpiredObjectDeleteMarker`
-  element is on the `media/` rule only, so it does not cover them. They cost
-  nothing but clutter listings; adding the element there is a separate change.
-- **Not changed, and still open:** `media/` has no current-version expiry. The
-  media backup worker's own delete-the-previous-generation step needs a key
-  that can read and delete, which the put-only key is not. See "What this does
-  not unblock" at the end.
+  under `dumps/`, `binlogs/` and, after this change, `media/`. No rule carries
+  `ExpiredObjectDeleteMarker`. They cost nothing but clutter listings; adding
+  the element in a rule of its own is a separate change, once overlapping rules
+  are proven on this engine.
+- **Media, by the owner's ruling (branchLeft/workspace#1325):** the media backup job never
+  deletes. Each run writes a new dated copy under
+  `media/<tenant>/generations/<UTC run id>/` and the job keeps the put-only
+  key. This applies the bucket's half: a current-version expiry on `media/`
+  so old copies leave by themselves, in the same single rule as the
+  1-day noncurrent expiry. The `media/` rule no longer carries
+  `ExpiredObjectDeleteMarker`: a Days expiry cannot share an element with it,
+  and a second rule on the same prefix is unproven on this engine. The cost is
+  one zero-byte delete marker left per expired object, as on `dumps/`.
+- **The retention figure is the owner's, and none is ruled.** Dated full copies
+  cost the retention in days times the tenant's media size. The owner withdrew
+  the earlier ten-day figure on cost, and the 1-day figure belonged to the
+  design that deleted. Do not run step 5 until step 2b has a figure.
 
 ## Prerequisite
+
+The owner has ruled a retention figure, in days, for dated media copies. If
+not, stop here: step 5 would leave `media/` unbounded.
 
 The per-tenant 36-hour dump freshness alert must be live on edge1 before, or
 with, the worker writing to this bucket. Confirm it is firing-capable before
@@ -45,13 +58,13 @@ noncurrent tail runs out.
 ## 1. Confirm the checkout
 
 From a checkout of `branchLeft/ghost-platform` on `main`, current enough that
-`db/provision/configure_backup_bucket.py` accepts `--db-expiration-days`:
+`db/provision/configure_backup_bucket.py` accepts `--media-expiration-days`:
 
 ```bash
-python3 db/provision/configure_backup_bucket.py --help | grep -c db-expiration-days
+python3 db/provision/configure_backup_bucket.py --help | grep -c media-expiration-days
 ```
 
-Expected: `1`. Anything else means the checkout is stale: stop.
+Expected: `2` (the usage line and the option line). Anything else means the checkout is stale: stop.
 
 ## 2. Read the credentials into the shell
 
@@ -85,6 +98,15 @@ The writer is the put-only backup key (the db-backups key, which media backups
 also use per the owner's 2026-09-28 decision). The reader is the restore
 drill's read-only key. Expected each time: a non-zero count.
 
+### 2b. Read the media retention figure
+
+Type the number of days the owner ruled (a whole number, 1 or more), then check
+it echoed back as that number:
+
+```bash
+read -r MEDIA_RETENTION_DAYS; export MEDIA_RETENTION_DAYS; echo "media copies expire after $MEDIA_RETENTION_DAYS days"
+```
+
 ## 3. Save the live lifecycle for rollback
 
 ```bash
@@ -92,7 +114,8 @@ ROLLBACK_DIR="$HOME/branchleft-runbook-backup-lifecycle-rollback"; mkdir -p "$RO
 ```
 
 Expected: four rules; `dumps/` and `binlogs/` show `NoncurrentVersionExpiration`
-35 days and no `Expiration.Days`.
+35 days and `Expiration.Days` 10 (already applied) or none; `media/` shows
+`ExpiredObjectDeleteMarker`.
 
 ## 4. Render the fence policy
 
@@ -116,10 +139,11 @@ Run as the operator. This pauses about two minutes between its two policy PUTs;
 that pause is the lockout check, so do not interrupt it.
 
 ```bash
-AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" python3 db/provision/configure_backup_bucket.py --bucket branchleft-tenant-backups --endpoint fsn1.your-objectstorage.com --region fsn1 --policy-file "$POLICY_FILE" --engine-diagnostic-passed
+AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" python3 db/provision/configure_backup_bucket.py --bucket branchleft-tenant-backups --endpoint fsn1.your-objectstorage.com --region fsn1 --policy-file "$POLICY_FILE" --media-expiration-days "$MEDIA_RETENTION_DAYS" --engine-diagnostic-passed
 ```
 
-Expected last line: `configure_backup_bucket: versioning enabled, 35-day noncurrent expiry and 10-day current-version expiry set on dumps/ and binlogs/, 1-day noncurrent expiry set on media/ ...`.
+Expected last line: `configure_backup_bucket: versioning enabled, 35-day noncurrent expiry and 10-day current-version expiry set on dumps/ and binlogs/, <MEDIA_RETENTION_DAYS>-day current-version expiry and 1-day noncurrent expiry set on media/, ...` with your number in place of `<MEDIA_RETENTION_DAYS>`.
+If it says `NO current-version expiry` for `media/`, step 2b was skipped: stop.
 An HTTP 503 on the policy PUT is a fence the engine could not store: stop and report it.
 
 ## 6. Read the lifecycle back
@@ -134,10 +158,10 @@ AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_
 |---|---|---|---|
 | `branchleft-db-backups-dumps-noncurrent-expiry` | `dumps/` | 35 | `Days: 10` |
 | `branchleft-db-backups-binlogs-noncurrent-expiry` | `binlogs/` | 35 | `Days: 10` |
-| `branchleft-db-backups-media-noncurrent-expiry` | `media/` | 1 | `ExpiredObjectDeleteMarker: true` |
+| `branchleft-db-backups-media-noncurrent-expiry` | `media/` | 1 | `Days:` your figure from step 2b |
 | `branchleft-db-backups-fence-probe-noncurrent-expiry` | `fence-probe/` | 1 | none |
 
-Any other shape: roll back (below) and report.
+Any other shape, or any `ExpiredObjectDeleteMarker`: roll back (below) and report.
 
 ## 7. Re-run the fence probe
 
@@ -164,40 +188,66 @@ read -rs LAB_SECRET_ACCESS_KEY; export LAB_SECRET_ACCESS_KEY; echo "${#LAB_SECRE
 
 ---
 
-## 9. Prove current-version expiry actually expires on this engine
+## 9. Prove current-version expiry, and the media/ rule shape, on this engine
 
 Hetzner honoured noncurrent expiry and `ExpiredObjectDeleteMarker` in the 2026-09-27
-probe. Current-version `Expiration/Days` has not been proven. It is the one
-element here that deletes the only copy of something, so prove it on the
-throwaway bucket (step 10 deletes it afterwards), with the lab credential from
-step 8, not on the real one. The bucket is in hel1, so retry any
-dropped connection.
+probe. Current-version `Expiration/Days` has not been proven, and neither has
+the shape `media/` now has: ONE rule holding both `Expiration/Days` and
+`NoncurrentVersionExpiration`, beside another prefix's Days rule and a control
+rule. Current-version expiry is the one element here that deletes the only copy
+of something, so prove it on the throwaway bucket (step 10 deletes it
+afterwards), with the lab credential from step 8, not on the real one. The
+bucket is in hel1, so retry any dropped connection.
+
+The three probe prefixes share no leading text, and none of them is the real
+bucket's `media/`, so the rule set mirrors the real one without overlapping
+itself:
+
+- `expiry-probe/`: a Days rule alone, as on `dumps/` and `binlogs/`.
+- `media-probe/`: the `media/` shape, `Expiration/Days` 1 and `NoncurrentDays` 1 in one rule.
+- `control-keep/`: a long noncurrent rule only, which must never act.
 
 ```bash
-printf 'expiry probe\n' > "$HOME/expiry-probe-body.txt"; export AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1; aws --endpoint-url https://hel1.your-objectstorage.com s3api put-bucket-lifecycle-configuration --bucket branchleft-lifecycle-probe-20260924 --lifecycle-configuration '{"Rules":[{"ID":"expiry-probe","Status":"Enabled","Filter":{"Prefix":"expiry-probe/"},"Expiration":{"Days":1}},{"ID":"keep-control","Status":"Enabled","Filter":{"Prefix":"control-keep/"},"NoncurrentVersionExpiration":{"NoncurrentDays":35}}]}'
+printf 'expiry probe\n' > "$HOME/expiry-probe-body.txt"; export AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=hel1; aws --endpoint-url https://hel1.your-objectstorage.com s3api put-bucket-lifecycle-configuration --bucket branchleft-lifecycle-probe-20260924 --lifecycle-configuration '{"Rules":[{"ID":"expiry-probe","Status":"Enabled","Filter":{"Prefix":"expiry-probe/"},"Expiration":{"Days":1}},{"ID":"media-probe","Status":"Enabled","Filter":{"Prefix":"media-probe/"},"Expiration":{"Days":1},"NoncurrentVersionExpiration":{"NoncurrentDays":1}},{"ID":"keep-control","Status":"Enabled","Filter":{"Prefix":"control-keep/"},"NoncurrentVersionExpiration":{"NoncurrentDays":35}}]}'
 ```
 
+The `media-probe/` canary is written twice, so it starts with one noncurrent
+version as well as a current one, which is the state a real media copy reaches
+once its expiry has acted:
+
 ```bash
-aws --endpoint-url https://hel1.your-objectstorage.com s3api put-object --bucket branchleft-lifecycle-probe-20260924 --key expiry-probe/canary --body "$HOME/expiry-probe-body.txt"; aws --endpoint-url https://hel1.your-objectstorage.com s3api put-object --bucket branchleft-lifecycle-probe-20260924 --key control-keep/canary --body "$HOME/expiry-probe-body.txt"; date -u
+for key in expiry-probe/canary media-probe/canary media-probe/canary control-keep/canary; do aws --endpoint-url https://hel1.your-objectstorage.com s3api put-object --bucket branchleft-lifecycle-probe-20260924 --key "$key" --body "$HOME/expiry-probe-body.txt"; done; date -u
 ```
 
 This overwrites the lifecycle on the probe bucket, which is fine: it holds only
-canaries and its earlier PASS is already recorded. Wait 48 hours, then check with the versions listing, which cannot confuse a hidden object with a deleted one:
+canaries and its earlier PASS is already recorded. Wait 72 hours, then check
+with the versions listing, which cannot confuse a hidden object with a deleted one:
 
 ```bash
-aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket branchleft-lifecycle-probe-20260924 --prefix expiry-probe/ --query '{versions: Versions[].[Key,IsLatest], markers: DeleteMarkers[].[Key,IsLatest]}'; aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket branchleft-lifecycle-probe-20260924 --prefix control-keep/ --query '{versions: Versions[].[Key,IsLatest], markers: DeleteMarkers[].[Key,IsLatest]}'
+for prefix in expiry-probe/ media-probe/ control-keep/; do echo "== $prefix"; aws --endpoint-url https://hel1.your-objectstorage.com s3api list-object-versions --bucket branchleft-lifecycle-probe-20260924 --prefix "$prefix" --query '{versions: Versions[].[Key,IsLatest], markers: DeleteMarkers[].[Key,IsLatest]}'; done
 ```
 
-Expected for `expiry-probe/`: exactly one version with `IsLatest` false and
-exactly one delete marker with `IsLatest` true. A listing showing no versions
-at all would mean the object was truly deleted, not expired by this rule: not a
-PASS. Expected for `control-keep/`: exactly one version with `IsLatest` true
-and no delete marker. That is the PASS: the rule acted, and only on its own
-prefix. If the probe is still current after 72 hours (the lifecycle pass can
-lag, so re-check at 72, not 48, before concluding), or the control changed,
-**step 5 must not stay applied**: roll back with the rollback below and report.
-Do the proof before step 5 if you prefer to wait before touching the real
-bucket; the result is required before dumps are relied on to age out.
+Expected, per prefix:
+
+| Prefix | Object versions | Delete markers |
+|---|---|---|
+| `expiry-probe/` | exactly one, `IsLatest` false | exactly one, `IsLatest` true |
+| `media-probe/` | at 72 hours the first (overwritten) version is gone and the expired one may remain, `IsLatest` false; by 96 hours none | exactly one, `IsLatest` true (nothing here removes it, since no rule carries `ExpiredObjectDeleteMarker`) |
+| `control-keep/` | exactly one, `IsLatest` true | none |
+
+That is the PASS for `media-probe/`: the Days expiry acted on the current
+version, the noncurrent expiry acted on the versions beneath it, and both ran
+from one rule. A `media-probe/` listing with the current version still
+`IsLatest` true after 96 hours means the combined rule is not honoured on this
+engine. A `media-probe/` delete marker that is missing is not a failure, only a
+note to send back: it means something cleaned it up. A listing for
+`expiry-probe/` showing no versions at all would mean the object was truly
+deleted, not expired by this rule: not a PASS. If either probe is still current
+after 72 hours (the lifecycle pass can lag, so re-check at 72, and again at 96
+for `media-probe/`, before concluding), or the control changed, **step 5 must
+not stay applied**: roll back with the rollback below and report. Do the proof
+before step 5 if you prefer to wait before touching the real bucket; the result
+is required before media copies or dumps are relied on to age out.
 
 Clear the shell:
 
@@ -258,9 +308,9 @@ AWS_ACCESS_KEY_ID="$LAB_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$LAB_SECRET_ACCESS
 Expected: a listing whose every `Key` is one of `media/control/canary`,
 `media/noncurrent/canary`, `media/deleted/canary`, `dumps/control/canary`,
 `dumps/noncurrent/canary`, `dumps/deleted/canary` — the six keys
-`setup_prefix_split` writes — plus the two keys step 9 writes,
-`expiry-probe/canary` (with its delete marker) and `control-keep/canary`,
-nothing else. **If any other key appears, stop
+`setup_prefix_split` writes — plus the three keys step 9 writes,
+`expiry-probe/canary` and `media-probe/canary` (each with a delete marker and
+versions) and `control-keep/canary`, nothing else. **If any other key appears, stop
 before deleting anything** — this bucket may hold something the probe did
 not write, and the guard below only checks the bucket's name, not its
 contents.
@@ -354,16 +404,18 @@ unset LAB_ACCESS_KEY_ID LAB_SECRET_ACCESS_KEY CONFIRM_BUCKET
 ## After it succeeds
 
 Close nothing from here by hand. Cite on branchLeft/workspace#1554: step 6's
-lifecycle read-back, step 7's PASS, and step 9's `0` then `1`. Cite the same on
+lifecycle read-back, step 7's PASS, and step 9's listings. Cite the same on
 branchLeft/workspace#1325 together with step 10e's `list-buckets` output.
 
 ## What this does not unblock
 
-Media backups still cannot be scheduled. The media backup worker uploads a
-generation, reads it back byte for byte, then deletes the previous generation.
-The put-only key is denied Get, List and Delete, so it fails at the read-back.
-The owner's 2026-09-28 decision that media uses the same key as db-backups
-predates the put-only role split. The two ways out are a separate read-write
-key for media, or redesigning media to add generations and let a lifecycle rule
-remove old ones. Both are the owner's, and are recorded on
-branchLeft/workspace#1554.
+The media backup job itself is now put-only and deletes nothing, but nothing
+schedules it yet, and it must not be scheduled before:
+
+1. the owner has ruled the media retention figure and step 5 has applied it;
+2. step 9's `media-probe/` result is a PASS;
+3. a restore drill with the read-only key has restored a real tenant's media
+   from the newest complete copy, since the put-only job cannot read back what
+   it wrote and the restore is where the bytes are proven.
+
+The hel1 bucket this runbook originally named is out of scope; see the top.

@@ -11,6 +11,7 @@ colour) table, idempotent and never destructive to a flag already there.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import tempfile
@@ -36,6 +37,23 @@ class ResolveBrokerIdsTests(unittest.TestCase):
 
 
 class ProvisionDrainFlagDirTests(unittest.TestCase):
+    def test_the_broker_state_directory_is_owned_by_the_broker_and_mode_0750(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "drain-flags")
+            with mock.patch.object(dfd, "STATE_DIR", tmp), mock.patch("drain_flag_dir.os.chown") as chown:
+                dfd.provision_drain_flag_dir(target, broker_uid=64200, broker_gid=64200)
+            chown.assert_any_call(tmp, 64200, 64200)
+            self.assertEqual(stat.S_IMODE(os.stat(tmp).st_mode), dfd.STATE_DIR_MODE)
+
+    def test_a_parent_that_is_not_the_broker_state_directory_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o711)
+            target = os.path.join(tmp, "drain-flags")
+            with mock.patch("drain_flag_dir.os.chown") as chown:
+                dfd.provision_drain_flag_dir(target, broker_uid=64200, broker_gid=64200)
+            chown.assert_called_once_with(target, 64200, 64200)
+            self.assertEqual(stat.S_IMODE(os.stat(tmp).st_mode), 0o711)
+
     def test_creates_the_directory_owned_by_the_broker_and_mode_0755(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = os.path.join(tmp, "drain-flags")
@@ -140,3 +158,37 @@ class MainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "drain-flag-dir.golden.json")
+
+
+class DrainFlagDirGoldenTests(unittest.TestCase):
+    """The provisioner and the sidecar launcher are each pinned to the one
+    fixture the broker's env template is also pinned to (the broker side is
+    services/broker/test/unit/drainFlagDirGolden.test.ts)."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(GOLDEN, encoding="utf-8") as handle:
+            cls.golden = json.load(handle)
+
+    def test_the_provisioner_default_is_the_golden_directory(self):
+        self.assertEqual(dfd.DEFAULT_FLAG_DIR, self.golden["dir"])
+        self.assertEqual(dfd.STATE_DIR, self.golden["parent"])
+        self.assertEqual(dfd.STATE_DIR_MODE, int(self.golden["parentMode"], 8))
+
+    def test_the_sidecar_launcher_mounts_the_golden_directory(self):
+        import demo_sidecar as ds
+
+        self.assertEqual(ds.FLAG_DIR, self.golden["dir"])
+
+    def test_the_directory_is_on_disk_so_it_survives_a_reboot(self):
+        for prefix in ("/run/", "/var/run/", "/tmp/", "/dev/shm/"):
+            self.assertFalse(self.golden["dir"].startswith(prefix), self.golden["dir"])
+
+    def test_file_names_are_the_golden_names_for_every_slot_and_colour(self):
+        expected = {(f["slot"], f["colour"]): f["name"] for f in self.golden["files"]}
+        self.assertEqual(set(expected), {(s, c) for s in rss.SLOT_NAMES for c in rss.COLOURS})
+        for (slot, colour), name in expected.items():
+            self.assertEqual(dfd.flag_file_name(slot, colour), name)

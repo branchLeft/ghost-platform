@@ -5,6 +5,7 @@ import type { AbsoluteUrl, SlotName } from '@branchleft/ghost-platform-render-co
 import { startTestBroker, type TestBroker } from '../helpers/testBroker.js';
 import { demoDescriptor } from '../helpers/fixtures.js';
 import { slotUid, slotPort, slotHealthPort } from '../../src/slotPorts.js';
+import { writeLeaseAndHash } from '../../src/leaseStore.js';
 
 // The test harness's own fixed allocation (`testBroker.ts`): uidBase 30001,
 // appPortBase 9300, healthPortBase 9100.
@@ -283,5 +284,56 @@ describe('concurrency and recycle-contract regressions', () => {
     expect(await fileExists(join(broker.leaseDir, '5.json'))).toBe(false);
     const slots = JSON.parse(await readFile(broker.slotsPath, 'utf8'));
     expect(slots.slots.find((e: { slot: string }) => e.slot === '5')).toBeUndefined();
+  });
+});
+
+describe('the host-conflict teardown fails closed', () => {
+  let broker: TestBroker | undefined;
+  afterEach(async () => {
+    await broker?.close();
+    broker = undefined;
+  });
+
+  // Another slot takes the host between the pre-check and this slot's own
+  // lease write (made deterministic by doing it inside configure), and the
+  // wipe that follows fails: the slot must end in `error`, never `free`.
+  async function conflictWith(resetFails: boolean): Promise<{ status: number; body: unknown }> {
+    const host = 'conflict-host.demo-domain.example.test';
+    broker = await startTestBroker({
+      wrapDeps: (deps) => ({
+        ...deps,
+        adminApi: {
+          configure: async () => {
+            await writeLeaseAndHash(deps.leaseStoreConfig, host, '1' as SlotName, '$argon2id$x');
+          },
+        },
+        wrapper: {
+          ...deps.wrapper,
+          reset: async (slot) => {
+            if (resetFails) throw new Error('wipe failed');
+            return deps.wrapper.reset(slot);
+          },
+        },
+      }),
+    });
+    const res = await broker.signedFetch('POST', '/reconcile', {
+      slot: '2',
+      descriptor: descFor('conflict-host', 'C', '2', { slug: 'demo-c2' }),
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  it('a failed wipe leaves the slot in error with a 503', async () => {
+    const res = await conflictWith(true);
+    expect(res).toEqual({ status: 503, body: { slot: '2', phase: 'error' } });
+    const state = JSON.parse(await readFile(join(broker!.stateDir, '2.json'), 'utf8'));
+    expect(state.phase).toBe('error');
+  });
+
+  it('a successful wipe frees the slot and refuses with 409, as before', async () => {
+    const res = await conflictWith(false);
+    expect(res.status).toBe(409);
+    const state = JSON.parse(await readFile(join(broker!.stateDir, '2.json'), 'utf8'));
+    expect(state.phase).toBe('free');
   });
 });

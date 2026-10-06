@@ -36,17 +36,36 @@ async function assertPlainDirectory(path: string): Promise<void> {
   }
 }
 
-export function createAdminKeyStore(baseDir: string): AdminKeyStore {
+export function createAdminKeyStore(
+  baseDir: string,
+  ownUid: () => number = () => process.getuid?.() ?? -1
+): AdminKeyStore {
   return {
     async read(slot) {
       const path = join(slotDir(baseDir, slot), KEY_FILE);
-      let raw: string;
+      let info;
       try {
-        raw = await readFile(path, 'utf8');
+        info = await lstat(path);
       } catch (err) {
         if ((err as { code?: unknown }).code === 'ENOENT') return null;
         throw err;
       }
+      // A token anyone else could have read, written or swapped in is not
+      // trusted: refuse it rather than use it.
+      if (!info.isFile()) {
+        throw new Error(`refusing the stored access key for slot "${slot}": not a plain file`);
+      }
+      if ((info.mode & 0o777) !== 0o600) {
+        throw new Error(
+          `refusing the stored access key for slot "${slot}": mode ${(info.mode & 0o777).toString(8)}, not 600`
+        );
+      }
+      if (info.uid !== ownUid()) {
+        throw new Error(
+          `refusing the stored access key for slot "${slot}": owned by uid ${info.uid}, not this service`
+        );
+      }
+      const raw = await readFile(path, 'utf8');
       const key = raw.trim();
       if (!isAdminApiKey(key)) {
         throw new Error(`the stored access key for slot "${slot}" is not a Ghost Admin API key`);
