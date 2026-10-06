@@ -73,3 +73,8 @@ portal/data/provision/*
 # server and reads back what it restored.
 infra/provisioning/scripts/restore_drill.py
 infra/provisioning/scripts/test_restore_drill.py
+
+# Backup and restore check for the control host's Nextcloud stack: pg_dump,
+# a restore into a throwaway server, and count queries, never row reads.
+control/provision/nextcloud_backup.py
+control/provision/test_nextcloud_backup.py
