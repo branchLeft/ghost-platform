@@ -25,7 +25,7 @@ export async function provisionedState(
     [['portal_tenant', 'portal_owner', ...logins]]
   );
   const members = await pool.query(
-    `SELECT r.rolname AS role, m.rolname AS member FROM pg_auth_members a
+    `SELECT r.rolname AS role, m.rolname AS member, a.admin_option FROM pg_auth_members a
        JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
       WHERE m.rolname = ANY($1) ORDER BY 1, 2`,
     [['portal_tenant', 'portal_owner', ...logins]]
@@ -71,6 +71,30 @@ export async function createInPublic(pool: Pool): Promise<unknown> {
   } catch (error) {
     return error;
   }
+}
+
+/** How many role-level setting rows (any database) the named roles still carry. */
+export async function roleSettingCount(pool: Pool, roles: readonly string[]): Promise<number> {
+  const found = await pool.query(
+    `SELECT count(*)::int AS n FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole
+      WHERE r.rolname = ANY($1)`,
+    [roles]
+  );
+  return (found.rows[0] as { n: number }).n;
+}
+
+/** The roles, among those named, that own the database or a function in `public`. */
+export async function owners(pool: Pool, database: string): Promise<unknown[]> {
+  const found = await pool.query(
+    `SELECT 'database' AS object, pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = $1
+     UNION ALL
+     SELECT 'schema public', pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'public'
+     UNION ALL
+     SELECT 'function ' || proname, pg_get_userbyid(proowner) FROM pg_proc
+      WHERE pronamespace = 'public'::regnamespace ORDER BY 1`,
+    [database]
+  );
+  return found.rows;
 }
 
 /** The attributes of one login, as stored. */

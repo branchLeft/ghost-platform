@@ -12,7 +12,12 @@ import {
   lockPublicSchema,
   grantAccess,
   grantRole,
+  assertHardened,
+  assertOnlyMember,
   assertOnlyRole,
+  reassignOwned,
+  resetRoleSettings,
+  revokeAdminOption,
   revokeOtherRoles,
   type TableAccess,
 } from './provision.js';
@@ -330,16 +335,25 @@ export async function provisionPortal(
     // pg_* role included, would reach every login that holds it.
     await revoke(admin, 'portal_tenant', null);
     await revoke(admin, 'portal_owner', null);
+    const roles = ['portal_tenant', 'portal_owner', config.tenantLogin, config.ownerLogin];
+    for (const role of roles) await resetRoleSettings(admin, role);
+    await reassignOwned(admin, roles);
     log('roles ready');
     await migrateSchema(admin);
     log('schema migrated');
     for (const access of PORTAL_TABLES) await grantAccess(admin, access);
     await revoke(admin, config.tenantLogin, 'portal_tenant');
     await revoke(admin, config.ownerLogin, 'portal_owner');
+    await revokeAdminOption(admin, 'portal_tenant', config.tenantLogin);
+    await revokeAdminOption(admin, 'portal_owner', config.ownerLogin);
     await grantRole(admin, 'portal_tenant', config.tenantLogin);
     await grantRole(admin, 'portal_owner', config.ownerLogin);
     await assertOnlyRole(admin, config.tenantLogin, 'portal_tenant');
     await assertOnlyRole(admin, config.ownerLogin, 'portal_owner');
+    await assertOnlyMember(admin, 'portal_tenant', config.tenantLogin);
+    await assertOnlyMember(admin, 'portal_owner', config.ownerLogin);
+    await assertHardened(admin, config.tenantLogin, null);
+    await assertHardened(admin, config.ownerLogin, 'portal_owner');
     log('grants applied');
   });
   await verifyBoundary(config);

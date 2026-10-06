@@ -131,6 +131,12 @@ export async function createFixture(): Promise<Fixture> {
     async close() {
       await Promise.all([tenant.end(), owner.end(), dual.end(), admin.end()]);
       await dropDatabase(bootstrap, database);
+      // The portal roles are shared by the whole cluster, and the provisioning
+      // command refuses a portal role held by a login it did not make, so a
+      // fixture's logins go with its database.
+      for (const login of [TENANT_LOGIN, OWNER_LOGIN, DUAL_LOGIN]) {
+        await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`);
+      }
       await bootstrap.end();
     },
   };

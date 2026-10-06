@@ -33,8 +33,48 @@ export async function createRoles(admin: Pool): Promise<void> {
     END $$`);
   // Always applied, so a role that already existed ends up with the same
   // attributes as one created here.
-  await admin.query('ALTER ROLE portal_tenant NOLOGIN NOINHERIT NOBYPASSRLS');
-  await admin.query('ALTER ROLE portal_owner NOLOGIN NOINHERIT BYPASSRLS');
+  await admin.query(`ALTER ROLE portal_tenant ${LEAF_ROLE_ATTRIBUTES} NOBYPASSRLS`);
+  // The owner console's cross-tenant reads bypass row-level policies by
+  // attribute: the one privilege any role here is meant to hold.
+  await admin.query(`ALTER ROLE portal_owner ${LEAF_ROLE_ATTRIBUTES} BYPASSRLS`);
+}
+
+const LEAF_ROLE_ATTRIBUTES = 'NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION';
+
+/**
+ * Clears every role-level setting, global and per database, so nothing preset
+ * on the role (a `search_path`, a `session_replication_role`) survives a run.
+ */
+export async function resetRoleSettings(admin: Pool, role: string): Promise<void> {
+  const quoted = ident(role);
+  const scoped = await admin.query(
+    `SELECT d.datname FROM pg_db_role_setting s
+       JOIN pg_roles r ON r.oid = s.setrole JOIN pg_database d ON d.oid = s.setdatabase
+      WHERE r.rolname = $1`,
+    [role]
+  );
+  await admin.query(`ALTER ROLE ${quoted} RESET ALL`);
+  for (const row of scoped.rows as { datname: string }[]) {
+    const database = `"${row.datname.replaceAll('"', '""')}"`;
+    await admin.query(`ALTER ROLE ${quoted} IN DATABASE ${database} RESET ALL`);
+  }
+}
+
+/**
+ * Hands anything the named roles own, in this database and the shared objects
+ * (the database itself), to the administrator running this command. A role the
+ * portal assumes must own nothing: an owner can grant itself any privilege on
+ * what it owns and replace what it owns.
+ */
+export async function reassignOwned(admin: Pool, roles: readonly string[]): Promise<void> {
+  for (const role of roles) {
+    await admin.query(`REASSIGN OWNED BY ${ident(role)} TO CURRENT_USER`);
+  }
+}
+
+/** Removes the right to pass a role on, which a plain GRANT never clears. */
+export async function revokeAdminOption(admin: Pool, role: string, login: string): Promise<void> {
+  await admin.query(`REVOKE ADMIN OPTION FOR ${ident(role)} FROM ${ident(login)}`);
 }
 
 export interface TableAccess {
@@ -161,6 +201,100 @@ export async function assertOnlyRole(admin: Pool, login: string, role: string): 
   if (roles.length !== 1 || roles[0] !== role) {
     throw new Error(
       `login ${login} must be a member of ${role} only, but holds: ${roles.join(', ') || 'nothing'}`
+    );
+  }
+}
+
+const ATTRIBUTES = [
+  ['rolsuper', 'SUPERUSER'],
+  ['rolcreaterole', 'CREATEROLE'],
+  ['rolcreatedb', 'CREATEDB'],
+  ['rolreplication', 'REPLICATION'],
+  ['rolbypassrls', 'BYPASSRLS'],
+] as const;
+
+/**
+ * The catalog postcondition over every role the login can reach (itself and
+ * every role it is a member of, nested): none holds an administrative
+ * attribute, can log in (other than the login), inherits (a portal role), has
+ * role-level settings, owns an object, has default privileges, or can pass a
+ * membership on. `allowBypass` names the one role that may bypass row-level
+ * policies. The login's own row is checked first, so a failure names it.
+ */
+export async function assertHardened(
+  admin: Pool,
+  login: string,
+  allowBypass: string | null
+): Promise<void> {
+  const reach = "SELECT oid FROM pg_roles WHERE pg_has_role($1, oid, 'MEMBER')";
+  const fail = (role: string, what: string): never => {
+    throw new Error(`login ${login}: role ${role} ${what}`);
+  };
+  const roles = await admin.query(
+    `SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls,
+            rolcanlogin, rolinherit FROM pg_roles WHERE oid IN (${reach})
+      ORDER BY (rolname = $1) DESC, rolname`,
+    [login]
+  );
+  for (const row of roles.rows as Record<string, unknown>[]) {
+    const name = String(row['rolname']);
+    for (const [column, label] of ATTRIBUTES) {
+      if (row[column] === true && !(column === 'rolbypassrls' && name === allowBypass)) {
+        fail(name, `has attribute ${label}`);
+      }
+    }
+    if (name !== login && row['rolcanlogin'] === true) fail(name, 'can log in');
+    if (name !== login && row['rolinherit'] === true) fail(name, 'inherits its members');
+  }
+  const settings = await admin.query(
+    `SELECT r.rolname FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole
+      WHERE s.setrole IN (${reach}) ORDER BY 1`,
+    [login]
+  );
+  for (const row of settings.rows as { rolname: string }[]) {
+    fail(row.rolname, 'has role-level settings');
+  }
+  const owned = await admin.query(
+    `SELECT r.rolname FROM pg_shdepend s JOIN pg_roles r ON r.oid = s.refobjid
+      WHERE s.refclassid = 'pg_authid'::regclass AND s.deptype = 'o'
+        AND s.classid <> 'pg_default_acl'::regclass
+        AND s.dbid IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
+        AND s.refobjid IN (${reach}) ORDER BY 1`,
+    [login]
+  );
+  for (const row of owned.rows as { rolname: string }[]) fail(row.rolname, 'owns an object');
+  const defaults = await admin.query(
+    `SELECT d.defaclrole::regrole::text AS rolname FROM pg_default_acl d
+      WHERE d.defaclrole IN (${reach})
+         OR EXISTS (SELECT 1 FROM aclexplode(d.defaclacl) a WHERE a.grantee IN (${reach}))
+      ORDER BY 1`,
+    [login]
+  );
+  for (const row of defaults.rows as { rolname: string }[]) {
+    fail(row.rolname, 'has default privileges');
+  }
+  const admins = await admin.query(
+    `SELECT m.rolname FROM pg_auth_members a JOIN pg_roles m ON m.oid = a.member
+      WHERE a.admin_option AND a.member IN (${reach}) ORDER BY 1`,
+    [login]
+  );
+  for (const row of admins.rows as { rolname: string }[]) fail(row.rolname, 'holds ADMIN OPTION');
+}
+
+/**
+ * Nobody but the intended login (and superusers, who reach every role) is a
+ * member of a portal role, directly or through another role.
+ */
+export async function assertOnlyMember(admin: Pool, role: string, login: string): Promise<void> {
+  const members = await admin.query(
+    `SELECT rolname FROM pg_roles
+      WHERE pg_has_role(oid, $1, 'MEMBER') AND rolname <> $1 AND NOT rolsuper ORDER BY 1`,
+    [role]
+  );
+  const names = (members.rows as { rolname: string }[]).map((row) => row.rolname);
+  if (names.length !== 1 || names[0] !== login) {
+    throw new Error(
+      `role ${role} must have the login ${login} as its only member, but has: ${names.join(', ') || 'nobody'}`
     );
   }
 }

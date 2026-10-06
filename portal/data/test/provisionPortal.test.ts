@@ -17,6 +17,7 @@ import {
   type ProvisionConfig,
 } from '../provision/provisionPortal.js';
 import {
+  assertHardened,
   assertOnlyRole,
   createLogin,
   grantRole,
@@ -28,7 +29,9 @@ import { scramVerifier } from '../provision/scram.js';
 import {
   createInPublic,
   loginAttributes,
+  owners,
   provisionedState,
+  roleSettingCount,
   storedVerifier,
 } from '../provision/inspect.js';
 
@@ -447,13 +450,13 @@ describe('against a real PostgreSQL', () => {
   it('creates the database, the schema, two logins in one role each, and the grants', () => {
     expect(firstLog[0]).toBe(`created database ${database}`);
     const s = afterFirst as {
-      members: { role: string; member: string }[];
+      members: { role: string; member: string; admin_option: boolean }[];
       tables: { tablename: string }[];
       grants: { grantee: string; table_name: string; privilege_type: string }[];
     };
     expect(s.members).toEqual([
-      { role: 'portal_owner', member: config.ownerLogin },
-      { role: 'portal_tenant', member: config.tenantLogin },
+      { role: 'portal_owner', member: config.ownerLogin, admin_option: false },
+      { role: 'portal_tenant', member: config.tenantLogin, admin_option: false },
     ]);
     expect(s.tables.map((t) => t.tablename)).toEqual(
       expect.arrayContaining(PORTAL_TABLES.map((t) => t.table))
@@ -764,6 +767,184 @@ describe('against a real PostgreSQL', () => {
       await provisionPortal(config);
       await bootstrap.query(`DROP ROLE IF EXISTS "${chain}"`);
     }
+  });
+
+  // The attack classes a role the portal assumes can be pre-armed with. Each is
+  // set by hand, then the command must put it right (convergence), and the
+  // catalog postcondition must name it when nothing has put it right.
+  type Who = 'portal_tenant' | 'portal_owner' | 'tenant login' | 'owner login';
+  const WHO: Who[] = ['portal_tenant', 'portal_owner', 'tenant login', 'owner login'];
+  const roleOf = (who: Who): string =>
+    ({
+      portal_tenant: 'portal_tenant',
+      portal_owner: 'portal_owner',
+      'tenant login': config.tenantLogin,
+      'owner login': config.ownerLogin,
+    })[who];
+  const loginOf = (who: Who): string =>
+    who === 'portal_tenant' || who === 'tenant login' ? config.tenantLogin : config.ownerLogin;
+  const allowBypassFor = (who: Who): string | null =>
+    loginOf(who) === config.ownerLogin ? 'portal_owner' : null;
+  const ATTRIBUTES = ['SUPERUSER', 'CREATEROLE', 'CREATEDB', 'REPLICATION', 'BYPASSRLS'] as const;
+  // portal_owner holds BYPASSRLS by design, so arming it with that is a no-op.
+  const attributePairs = WHO.flatMap((who) =>
+    ATTRIBUTES.filter((a) => !(who === 'portal_owner' && a === 'BYPASSRLS')).map(
+      (a) => [a, who] as const
+    )
+  );
+
+  it.each(attributePairs)('the command removes %s from %s', async (attribute, who) => {
+    await withAdmin((pool) => pool.query(`ALTER ROLE "${roleOf(who)}" ${attribute}`));
+    await provisionPortal(config);
+    expect(await state()).toEqual(afterFirst);
+  });
+
+  it.each(attributePairs)('the postcondition names %s on %s', async (attribute, who) => {
+    await withAdmin((pool) => pool.query(`ALTER ROLE "${roleOf(who)}" ${attribute}`));
+    try {
+      await withAdmin((pool) =>
+        expect(assertHardened(pool, loginOf(who), allowBypassFor(who))).rejects.toThrow(
+          `login ${loginOf(who)}: role ${roleOf(who)} has attribute ${attribute}`
+        )
+      );
+    } finally {
+      await provisionPortal(config);
+    }
+  });
+
+  it('allows BYPASSRLS on portal_owner and nowhere else', async () => {
+    await withAdmin((pool) =>
+      expect(assertHardened(pool, config.ownerLogin, 'portal_owner')).resolves.toBeUndefined()
+    );
+    await withAdmin((pool) =>
+      expect(assertHardened(pool, config.ownerLogin, null)).rejects.toThrow(
+        `login ${config.ownerLogin}: role portal_owner has attribute BYPASSRLS`
+      )
+    );
+  });
+
+  it.each(['portal_tenant', 'portal_owner'] as const)(
+    '%s cannot log in or inherit',
+    async (role) => {
+      await withAdmin((pool) => pool.query(`ALTER ROLE "${role}" LOGIN INHERIT`));
+      const login = role === 'portal_tenant' ? config.tenantLogin : config.ownerLogin;
+      try {
+        await withAdmin((pool) =>
+          expect(assertHardened(pool, login, 'portal_owner')).rejects.toThrow(
+            `login ${login}: role ${role} can log in`
+          )
+        );
+      } finally {
+        await provisionPortal(config);
+      }
+      expect(await state()).toEqual(afterFirst);
+    }
+  );
+
+  it.each(WHO)('the command clears role settings on %s, global and per database', async (who) => {
+    const role = roleOf(who);
+    await withAdmin(async (pool) => {
+      await pool.query(`ALTER ROLE "${role}" SET search_path = 'evil'`);
+      await pool.query(`ALTER ROLE "${role}" IN DATABASE "${database}" SET work_mem = '1MB'`);
+      await pool.query(`ALTER ROLE "${role}" IN DATABASE postgres SET work_mem = '1MB'`);
+    });
+    try {
+      await withAdmin((pool) =>
+        expect(assertHardened(pool, loginOf(who), allowBypassFor(who))).rejects.toThrow(
+          `login ${loginOf(who)}: role ${role} has role-level settings`
+        )
+      );
+    } finally {
+      await provisionPortal(config);
+    }
+    await withAdmin(async (pool) =>
+      expect(
+        await roleSettingCount(pool, [
+          'portal_tenant',
+          'portal_owner',
+          config.tenantLogin,
+          config.ownerLogin,
+        ])
+      ).toBe(0)
+    );
+  });
+
+  const OWNERSHIPS = [
+    ['database', 'owner', (db: string) => `ALTER DATABASE "${db}" OWNER TO portal_owner`],
+    ['schema public', 'tenant', () => 'ALTER SCHEMA public OWNER TO portal_tenant'],
+    ['function', 'owner', () => 'ALTER FUNCTION public.bound_tenant() OWNER TO portal_owner'],
+  ] as const;
+
+  it.each(OWNERSHIPS)(
+    'the command takes %s back from a portal role',
+    async (_name, side, statement) => {
+      await withAdmin((pool) => pool.query(statement(database)));
+      const login = side === 'owner' ? config.ownerLogin : config.tenantLogin;
+      try {
+        // Owning the database also makes the role a member of pg_database_owner.
+        await withAdmin((pool) =>
+          expect(assertHardened(pool, login, 'portal_owner')).rejects.toThrow(
+            /owns an object|pg_database_owner/
+          )
+        );
+      } finally {
+        await provisionPortal(config);
+      }
+      const held = await withAdmin((pool) => owners(pool, database));
+      const portal = ['portal_tenant', 'portal_owner', config.tenantLogin, config.ownerLogin];
+      expect((held as { owner: string }[]).filter((o) => portal.includes(o.owner))).toEqual([]);
+    }
+  );
+
+  it('fails by name on default privileges, which no run grants or clears', async () => {
+    await withAdmin((pool) =>
+      pool.query(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE portal_tenant GRANT SELECT ON TABLES TO portal_owner'
+      )
+    );
+    try {
+      await expect(provisionPortal(config)).rejects.toThrow(
+        `login ${config.tenantLogin}: role portal_tenant has default privileges`
+      );
+    } finally {
+      await withAdmin((pool) =>
+        pool.query(
+          'ALTER DEFAULT PRIVILEGES FOR ROLE portal_tenant REVOKE SELECT ON TABLES FROM portal_owner'
+        )
+      );
+    }
+    await provisionPortal(config);
+  });
+
+  it('the command clears ADMIN OPTION, and the postcondition names it', async () => {
+    await withAdmin(async (pool) => {
+      await pool.query(`REVOKE portal_tenant FROM "${config.tenantLogin}"`);
+      await pool.query(`GRANT portal_tenant TO "${config.tenantLogin}" WITH ADMIN OPTION`);
+    });
+    try {
+      await withAdmin((pool) =>
+        expect(assertHardened(pool, config.tenantLogin, null)).rejects.toThrow(
+          `login ${config.tenantLogin}: role ${config.tenantLogin} holds ADMIN OPTION`
+        )
+      );
+    } finally {
+      await provisionPortal(config);
+    }
+    expect(await state()).toEqual(afterFirst);
+  });
+
+  it('fails by name when another login holds a portal role', async () => {
+    const other = `prov_other_${suffix}`;
+    await createLogin(bootstrap, other, 'other-password-1');
+    await withAdmin((pool) => pool.query(`GRANT portal_tenant TO "${other}"`));
+    try {
+      await expect(provisionPortal(config)).rejects.toThrow(
+        `role portal_tenant must have the login ${config.tenantLogin} as its only member, but has: ${other}, ${config.tenantLogin}`
+      );
+    } finally {
+      await bootstrap.query(`DROP ROLE "${other}"`);
+    }
+    await provisionPortal(config);
   });
 
   it('never takes PGPASSWORD or a .pgpass password when the file supplies none', async (ctx) => {
