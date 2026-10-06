@@ -3,8 +3,7 @@
   // The shared base sets `noEmit`, because most projects extending it only
   // ever type-check. This is the one config here that has to produce output.
   "compilerOptions": {
-    "noEmit": false,
-    "declaration": true
+    "noEmit": false
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test/**/*.ts"]

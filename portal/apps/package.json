@@ -1,0 +1,29 @@
+{
+  "name": "ghost-platform-portal-apps",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "description": "The tenant portal and the owner console: two separate applications, each its own entry point, hostname and sign-in client, sharing identity and storage and no query path (see ghost-platform-docs/19-try-it-now-design/08-portal.html sections 01, 02 and 10).",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "start:tenant": "node dist/tenant/main.js",
+    "start:console": "node dist/console/main.js"
+  },
+  "dependencies": {
+    "ghost-platform-identity": "file:../../services/identity",
+    "ghost-platform-portal-data": "file:../data",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.4.0",
+    "@types/node": "^26.5.1",
+    "@types/pg": "^8.11.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
