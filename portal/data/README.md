@@ -38,7 +38,8 @@ ruling): the role switch (`SET LOCAL ROLE`, `enterRole` in `src/db.ts`), the
 binding call (`set_config`, `bind` in `src/db.ts`), and the binding functions
 (`drizzle/0000_binding_functions.sql`, called from the policy predicates in
 `src/schema.ts`). `provision/` holds the operator's role and grant statements,
-which Drizzle cannot model.
+which Drizzle cannot model, and the catalog check that compares a server with
+them.
 
 ## Health and version readings
 
@@ -54,8 +55,9 @@ takes the colours' scrape texts. Only the undrained colour answers: its version
 and match are the tenant's, a drained colour's are never read, and with no
 scrape, no undrained colour or two the reading is `unknown` (`src/reading.ts`).
 `OwnerDb.listHealth()` is the console's cross-tenant read. The collector that
-fetches the scrapes is separate work; grant `portal.health_reading` with
-`grantAccess` (tenant `SELECT`, owner `SELECT, INSERT, UPDATE, DELETE`).
+fetches the scrapes is separate work. The grants on `portal.health_reading`
+(tenant `SELECT`, owner `SELECT, INSERT, UPDATE`) are in the manifest,
+`provision/manifest.ts`.
 
 ## The owner path
 
@@ -71,12 +73,80 @@ nvm use && npm ci
 PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres npm run coverage
 ```
 
-The URL must be a superuser on a throwaway cluster (CI uses a service
-container). The suite creates and drops its own databases. After a schema edit,
-`npm run generate` writes the migration; CI fails if the committed one differs.
+The URL must be a superuser on a throwaway cluster started with
+`test/pg_hba.ci.conf` as its `hba_file` (writable by the server's user, since
+the pg_hba tests rewrite and restore it), because the provisioning command
+refuses any rule that lets a portal login reach another database. CI runs the
+suite on PostgreSQL 14 and 17. The suite creates and drops its own databases.
+After a schema edit, `npm run generate` writes the migration; CI fails if the
+committed one differs.
 
 ## Provisioning a database
 
-In order: `createRoles`, the ORM's migrations (`migrateSchema`), then
-`grantAccess` for each table and `grantRole` for each login (`provision/`). The
-roles are `NOLOGIN`; no credential lives here.
+One command, run by the operator as a database administrator and never by the
+portal. In the portal-apps image, from `/app/portal/data`:
+
+```sh
+node dist/provision/provisionMain.js   # or: npm run provision
+```
+
+Every input is a file named by an environment variable; a secret in argv or in
+the variable itself is refused.
+
+| Variable | Holds |
+| --- | --- |
+| `PORTAL_ADMIN_URL_FILE` | administrator connection URL (host and user required) |
+| `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII) |
+| `PORTAL_OWNER_PASSWORD_FILE` | password for the owner login (printable ASCII) |
+| `PORTAL_DATABASE_NAME` | optional, default `portal` |
+| `PORTAL_TENANT_LOGIN` | optional, default `portal_tenant_login` |
+| `PORTAL_OWNER_LOGIN` | optional, default `portal_owner_login` |
+
+The command creates what is absent, checks everything, and repairs nothing.
+`provision/manifest.ts` is the closed manifest: the two roles and two logins
+with their exact attributes (all `NOINHERIT`; the apps always `SET LOCAL
+ROLE`), one membership per login, and every grant, each justified by a call
+site. No role may `DELETE`, and the owner role may not `UPDATE` the register.
+
+1. **Check, before any write.** The whole privilege state of the server is
+   compared with the manifest through the closed list of mechanisms
+   (`MECHANISMS`, M01 to M29, in `provision/catalog.ts`): role attributes and
+   reach, settings, every ACL (counting implicit defaults), ownership,
+   `pg_shdepend` across every database, policies, the shape of each manifest
+   table, every catalog row created after initdb, ACL drift on initdb
+   objects, the settings that switch checks off, and pg_hba (the rules as
+   parsed, refusing on a rule that did not load or a file changed since the
+   last load, and on any rule that could let a portal login reach a database
+   other than the portal's). Any difference, missing or extra, other than an
+   absent role or database this run creates, refuses: exit 1, one line per
+   difference on stderr, nothing written.
+2. Absent roles and logins are created; existing logins get the new password
+   (sent as a SCRAM verifier). The database is created if absent.
+3. Each login tries every other database and must be refused by pg_hba
+   (`28000`). This runs after step 2, so a refusal here names what the run
+   had already done (logins created or passwords rotated, an empty database
+   created) instead of saying nothing changed.
+4. In the portal database, one transaction: the check again, the ORM's
+   pending migrations (drizzle's own loop, replayed on this transaction), the
+   grants on what they created, and the check against the full manifest
+   before commit.
+5. A smoke test connects as each login (`42501` permission denied, `28000` no
+   tenant bound).
+
+Concurrent runs are serialised by an advisory lock. PostgreSQL scopes advisory
+locks to one database, so the session lock held on the maintenance database
+serialises only runs that name the same maintenance database; the portal
+transaction takes the same lock in the portal database and re-checks before
+it writes, so runs through different maintenance databases still cannot
+interleave there.
+
+A re-run changes nothing but the passwords. A refusal is a security event: the
+per-difference fix is a manual step for the administrator, never this command.
+The server must be a PostgreSQL major version with a committed catalog
+snapshot (`SUPPORTED_MAJORS` in `provision/catalogSnapshot.ts`).
+
+What no in-database check can see, stated plainly: a superuser (who can edit
+the catalogs), files and configuration beyond pg_hba, rights hard-coded in the
+server rather than stored in a catalog, any new setting or rule a future
+server adds that the catalog snapshot cannot show, and changes made after the
+command has run: it checks at provision time and is not a monitor.

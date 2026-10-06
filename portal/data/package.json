@@ -6,9 +6,9 @@
   "description": "The portal's storage layer over PostgreSQL: a tenant-facing query cannot be expressed without a tenant bound at the session, and the owner console's cross-tenant reads sit behind a separate entry point (see ghost-platform-docs/19-try-it-now-design/08-portal.html sections 01, 10 and 10b).",
   "type": "module",
   "exports": {
-    "./tenant": "./dist/tenant/index.js",
-    "./owner": "./dist/owner/index.js",
-    "./migrate": "./dist/migrate.js"
+    "./tenant": "./dist/src/tenant/index.js",
+    "./owner": "./dist/src/owner/index.js",
+    "./migrate": "./dist/src/migrate.js"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -16,7 +16,8 @@
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "generate": "drizzle-kit generate",
-    "check:isolation": "node dist/checkIsolation.js"
+    "check:isolation": "node dist/src/checkIsolation.js",
+    "provision": "node dist/provision/provisionMain.js"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.3",

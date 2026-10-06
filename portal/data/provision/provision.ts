@@ -1,100 +1,113 @@
-import type { Pool } from 'pg';
+import type { ClientBase } from 'pg';
+import {
+  INIT,
+  MEMBERSHIPS,
+  ROLE_ATTRIBUTES,
+  type ManifestObject,
+  type Names,
+  type Principal,
+} from './manifest.js';
+import { scramVerifier } from './scram.js';
 
-// Provisioning and administration tooling, run by the operator as a database
-// administrator, never by the portal at run time. It creates the server-level
-// objects the ORM cannot model: the two roles, the privileges they hold, and
-// the throwaway databases and logins the test suite uses.
-//
-// Order for a database: `createRoles`, then the ORM's migrations
-// (`migrateSchema`), then `grantAccess` for each table.
+// The statements the command writes. Each creates something absent, or
+// grants on an object created in the same transaction; none alters an object
+// that already existed. The one exception is a login's password, an input the
+// command rotates on every run.
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
 
-function ident(value: string): string {
+export function ident(value: string): string {
   if (!IDENTIFIER.test(value)) throw new Error(`not a plain identifier: ${value}`);
   return `"${value}"`;
 }
 
-/**
- * Creates the two portal roles. `portal_owner` bypasses row security by
- * attribute, so no policy mentions it; `portal_tenant` is subject to every
- * policy. Neither can log in: a deployment grants each to its own login.
- */
-export async function createRoles(admin: Pool): Promise<void> {
-  await admin.query(`
-    DO $$ BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'portal_tenant') THEN
-        CREATE ROLE portal_tenant NOLOGIN NOINHERIT;
-      END IF;
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'portal_owner') THEN
-        CREATE ROLE portal_owner NOLOGIN NOINHERIT;
-      END IF;
-    END $$`);
-  // Always applied, so a role that already existed ends up with the same
-  // attributes as one created here.
-  await admin.query('ALTER ROLE portal_tenant NOLOGIN NOINHERIT NOBYPASSRLS');
-  await admin.query('ALTER ROLE portal_owner NOLOGIN NOINHERIT BYPASSRLS');
+const QUALIFIED = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?(\(\))?$/;
+
+/** A manifest identity, checked to be plain before it reaches SQL text. */
+function identity(value: string): string {
+  if (!QUALIFIED.test(value)) throw new Error(`not a plain manifest identity: ${value}`);
+  return value;
 }
 
-export interface TableAccess {
-  schema: string;
-  table: string;
-  /** What `portal_tenant` may do to the table, e.g. `SELECT` or `SELECT, INSERT`. */
-  tenant: 'SELECT' | 'SELECT, INSERT' | 'SELECT, INSERT, UPDATE, DELETE';
-  /** The owner role holds everything the owner console needs. */
-  owner: 'SELECT' | 'SELECT, INSERT, UPDATE, DELETE';
-}
-
-/** Grants schema usage and the table privileges for one table. */
-export async function grantAccess(admin: Pool, access: TableAccess): Promise<void> {
-  const schema = ident(access.schema);
-  const table = `${schema}.${ident(access.table)}`;
-  await admin.query(`GRANT USAGE ON SCHEMA ${schema} TO portal_tenant, portal_owner`);
-  await admin.query(`GRANT ${access.tenant} ON ${table} TO portal_tenant`);
-  await admin.query(`GRANT ${access.owner} ON ${table} TO portal_owner`);
-}
-
-/** Lets a login assume exactly one portal role. */
-export async function grantRole(
-  admin: Pool,
-  role: 'portal_tenant' | 'portal_owner',
-  login: string
+/** Creates one principal with exactly its manifest attributes (M01). */
+export async function createPrincipal(
+  client: ClientBase,
+  names: Names,
+  principal: Principal,
+  password?: string
 ): Promise<void> {
-  await admin.query(`GRANT ${role} TO ${ident(login)}`);
+  const want = ROLE_ATTRIBUTES[principal];
+  const attributes = [
+    want.canLogin ? 'LOGIN' : 'NOLOGIN',
+    'NOINHERIT',
+    'NOSUPERUSER',
+    'NOCREATEDB',
+    'NOCREATEROLE',
+    'NOREPLICATION',
+    want.bypassRls ? 'BYPASSRLS' : 'NOBYPASSRLS',
+  ];
+  // The server receives a salted verifier, never the password, so a statement
+  // that fails and is logged cannot disclose it.
+  const secret = want.canLogin ? ` PASSWORD '${scramVerifier(password ?? '')}'` : '';
+  await client.query(`CREATE ROLE ${ident(names[principal])} ${attributes.join(' ')}${secret}`);
 }
 
-export async function createLogin(
-  admin: Pool,
-  login: string,
-  password: string,
-  options: { bypassRls?: boolean } = {}
+/** Grants each login its one role, when either side was created on this run. */
+export async function grantMemberships(
+  client: ClientBase,
+  names: Names,
+  created: ReadonlySet<Principal>
 ): Promise<void> {
-  if (password.includes("'")) throw new Error('password may not contain a quote');
-  await admin.query(`
-    DO $$ BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ident(login).slice(1, -1)}') THEN
-        CREATE ROLE ${ident(login)} LOGIN PASSWORD '${password}';
-      END IF;
-    END $$`);
-  // Always applied, so a login left over from an earlier run has these attributes.
-  await admin.query(
-    `ALTER ROLE ${ident(login)} ${options.bypassRls ? 'BYPASSRLS' : 'NOBYPASSRLS'}`
-  );
-}
-
-export async function createDatabase(admin: Pool, name: string): Promise<void> {
-  await admin.query(`CREATE DATABASE ${ident(name)}`);
-}
-
-/** Retries: `Pool.end()` resolves before the server has seen every socket close. */
-export async function dropDatabase(admin: Pool, name: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await admin.query(`DROP DATABASE ${ident(name)}`);
-      return;
-    } catch (error) {
-      if (attempt >= 20) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+  for (const [login, role] of MEMBERSHIPS) {
+    if (created.has(login) || created.has(role)) {
+      await client.query(`GRANT ${ident(names[role])} TO ${ident(names[login])}`);
     }
   }
+}
+
+/** Sets a new password on a login that already existed. */
+export async function rotatePassword(
+  client: ClientBase,
+  login: string,
+  password: string
+): Promise<void> {
+  await client.query(`ALTER ROLE ${ident(login)} PASSWORD '${scramVerifier(password)}'`);
+}
+
+const OBJECT_WORD: Record<ManifestObject['kind'], string> = {
+  database: 'DATABASE',
+  schema: 'SCHEMA',
+  table: 'TABLE',
+  sequence: 'SEQUENCE',
+  function: 'FUNCTION',
+};
+
+/**
+ * The statements that give a just-created object its manifest ACL: PUBLIC's
+ * creation defaults revoked where the manifest gives PUBLIC nothing, then the
+ * grants to the principals `only` admits.
+ */
+export function grantStatements(
+  object: ManifestObject,
+  names: Names,
+  major: number,
+  only: (grantee: Principal) => boolean = () => true
+): string[] {
+  const word = OBJECT_WORD[object.kind];
+  const target = object.kind === 'database' ? ident(object.identity) : identity(object.identity);
+  const out: string[] = [];
+  if (object.since === INIT && object.kind === 'database') {
+    out.push(`REVOKE ALL ON DATABASE ${target} FROM PUBLIC`);
+  } else if (object.since === INIT && object.kind === 'schema' && major < 15) {
+    out.push(`REVOKE CREATE ON SCHEMA ${target} FROM PUBLIC`);
+  } else if (object.kind === 'function') {
+    out.push(`REVOKE ALL ON FUNCTION ${target} FROM PUBLIC`);
+  }
+  for (const grant of object.grants) {
+    if (grant.grantee === 'PUBLIC' || !only(grant.grantee)) continue;
+    out.push(
+      `GRANT ${grant.privileges.join(', ')} ON ${word} ${target} TO ${ident(names[grant.grantee])}`
+    );
+  }
+  return out;
 }
