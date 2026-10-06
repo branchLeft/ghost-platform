@@ -55,6 +55,7 @@ function buildAdapter({
   holdMaxRetryMs,
   holdMaxFailures,
   holdLogger = SILENT_LOGGER,
+  overwriteWindowMs,
 } = {}) {
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
     loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
@@ -74,6 +75,7 @@ function buildAdapter({
     holdMaxRetryMs,
     holdMaxFailures,
     holdLogger,
+    overwriteWindowMs,
   });
   return { instance, verdictClient, quarantinePath: resolvedQuarantinePath };
 }
@@ -171,10 +173,10 @@ describe('ScanningStorageAdapter construction', () => {
 });
 
 describe('delegation of everything not intercepted', () => {
-  it('delegates exists, read, delete, urlToPath and serve to the wrapped adapter untouched', async () => {
+  it('delegates exists, read, urlToPath and serve to the wrapped adapter untouched', async () => {
     // Nothing here is masked or specially handled -- a held digest is
     // simply never written to the wrapped adapter until promotion, so
-    // there is no separate "intercepted" case to test for these five;
+    // there is no separate "intercepted" case to test for these four;
     // existsResult/readResult force a deterministic answer for this
     // pure-delegation check, independent of what has or hasn't been
     // written to the fake's own virtual filesystem.
@@ -183,12 +185,163 @@ describe('delegation of everything not intercepted', () => {
     });
     await adapter.exists('a.png', 'dir');
     await adapter.read({ path: 'a.png' });
-    await adapter.delete('a.png', 'dir');
     adapter.urlToPath('https://example.test/content/images/a.png');
     const middleware = adapter.serve();
 
-    expect(adapter.wrapped.deleted).toEqual([{ fileName: 'a.png', targetDir: 'dir' }]);
     expect(typeof middleware).toBe('function');
+  });
+});
+
+describe('replacing a same-name thumbnail (Ghost deletes, then saves)', () => {
+  const NEW_BYTES = Buffer.from('replacement-thumbnail-bytes');
+  const NEW_DIGEST = digestBytes(NEW_BYTES);
+
+  // The two shapes the wrapper fronts: a local-disk adapter (no bucket) and
+  // an object-storage adapter (a bucket). Each also refuses delete and picks
+  // a new name for a taken one, as the gateway and Ghost's save() do.
+  const BACKENDS = {
+    'local disk': { storagePath: 'wrapped', refuseDelete: true, uniqueNames: true },
+    'object storage': {
+      storagePath: 'wrapped',
+      refuseDelete: true,
+      uniqueNames: true,
+      bucket: 'media',
+      cdnUrl: 'https://media.example.test',
+    },
+  };
+
+  // What Ghost's uploadThumbnail does, in order.
+  async function replaceThumbnail(adapter, file, targetDir) {
+    if (await adapter.exists(file.name, targetDir)) {
+      await adapter.delete(file.name, targetDir);
+    }
+    return adapter.save(file, targetDir);
+  }
+
+  describe.each(Object.entries(BACKENDS))('on %s', (_name, wrappedConfig) => {
+    async function seeded() {
+      const built = buildAdapter({ wrappedConfig });
+      await built.instance.wrapped.saveRaw(CLEAN_BYTES, 'dir/thumb.png');
+      return built;
+    }
+
+    it('leaves one object at the same name holding the new bytes and sends no delete', async () => {
+      const { instance: adapter } = await seeded();
+      const file = await writeTempFile(NEW_BYTES, 'thumb.png');
+
+      await replaceThumbnail(adapter, file, 'dir');
+
+      expect(adapter.wrapped.deleted).toEqual([]);
+      expect([...adapter.wrapped.files.keys()]).toEqual(['dir/thumb.png']);
+      expect(adapter.wrapped.files.get('dir/thumb.png')).toEqual(NEW_BYTES);
+      expect(adapter.wrapped.saved).toEqual([]);
+    });
+
+    it('returns the URL of the same name', async () => {
+      const { instance: adapter } = await seeded();
+      const file = await writeTempFile(NEW_BYTES, 'thumb.png');
+
+      const url = await replaceThumbnail(adapter, file, 'dir');
+
+      expect(url.endsWith('/dir/thumb.png')).toBe(true);
+    });
+
+    it('scans the replacement like any upload: a refused digest is refused and the old thumbnail stays', async () => {
+      const refuse = new Map([[NEW_DIGEST, { classification: 'csam', matchType: 'exact' }]]);
+      const { instance: adapter } = buildAdapter({ wrappedConfig, refuse });
+      await adapter.wrapped.saveRaw(CLEAN_BYTES, 'dir/thumb.png');
+      const file = await writeTempFile(NEW_BYTES, 'thumb.png');
+
+      await expect(replaceThumbnail(adapter, file, 'dir')).rejects.toThrow();
+
+      expect(adapter.wrapped.files.get('dir/thumb.png')).toEqual(CLEAN_BYTES);
+      expect(adapter.wrapped.deleted).toEqual([]);
+    });
+
+    it('holds a replacement whose verdict is unavailable and promotes it to the same name', async () => {
+      const { instance: adapter } = buildAdapter({ wrappedConfig, unavailable: [NEW_DIGEST] });
+      await adapter.wrapped.saveRaw(CLEAN_BYTES, 'dir/thumb.png');
+      const file = await writeTempFile(NEW_BYTES, 'thumb.png');
+
+      const url = await replaceThumbnail(adapter, file, 'dir');
+
+      expect(url.endsWith('/dir/thumb.png')).toBe(true);
+      expect(adapter.wrapped.files.get('dir/thumb.png')).toEqual(CLEAN_BYTES);
+    });
+  });
+
+  it('does not turn an unrelated later save of the same name into an overwrite after one use', async () => {
+    const { instance: adapter } = buildAdapter({ wrappedConfig: BACKENDS['local disk'] });
+    await adapter.wrapped.saveRaw(CLEAN_BYTES, 'dir/thumb.png');
+    await replaceThumbnail(adapter, await writeTempFile(NEW_BYTES, 'thumb.png'), 'dir');
+
+    await adapter.save(await writeTempFile(Buffer.from('another'), 'thumb.png'), 'dir');
+
+    expect([...adapter.wrapped.files.keys()].sort()).toEqual(['dir/thumb-1.png', 'dir/thumb.png']);
+  });
+
+  it('only overwrites the name that was deleted', async () => {
+    const { instance: adapter } = buildAdapter({ wrappedConfig: BACKENDS['local disk'] });
+    await adapter.delete('a.png', 'dir');
+
+    await adapter.save(await writeTempFile(NEW_BYTES, 'b.png'), 'dir');
+
+    expect(adapter.wrapped.saved).toHaveLength(1);
+    expect(adapter.wrapped.savedRaw).toEqual([]);
+  });
+
+  it('forgets a delete that no save followed once the window has passed', async () => {
+    const { instance: adapter } = buildAdapter({
+      wrappedConfig: BACKENDS['local disk'],
+      overwriteWindowMs: 1,
+    });
+    await adapter.delete('thumb.png', 'dir');
+    await settle(10);
+
+    await adapter.save(await writeTempFile(NEW_BYTES, 'thumb.png'), 'dir');
+
+    expect(adapter.wrapped.saved).toHaveLength(1);
+    expect(adapter.pendingOverwrites.size).toBe(0);
+  });
+
+  it('prunes stale delete records on the next delete', async () => {
+    const { instance: adapter } = buildAdapter({
+      wrappedConfig: BACKENDS['local disk'],
+      overwriteWindowMs: 1,
+    });
+    await adapter.delete('old.png', 'dir');
+    await settle(10);
+    await adapter.delete('new.png', 'dir');
+
+    expect([...adapter.pendingOverwrites.keys()]).toEqual(['dir/new.png']);
+  });
+
+  it('honours a configured window and falls back to a default for a bad one', () => {
+    expect(buildAdapter({ overwriteWindowMs: 5 }).instance.overwriteWindowMs).toBe(5);
+    expect(buildAdapter({ overwriteWindowMs: 'x' }).instance.overwriteWindowMs).toBe(60000);
+    expect(buildAdapter({}).instance.overwriteWindowMs).toBe(60000);
+  });
+
+  it('treats a save with no usable file name as an ordinary save, never an overwrite', async () => {
+    const { instance: adapter } = buildAdapter({ wrappedConfig: BACKENDS['local disk'] });
+    await adapter.delete('thumb.png', 'dir');
+    const file = await writeTempFile(NEW_BYTES, '');
+
+    await adapter.save(file, 'dir');
+
+    expect(adapter.wrapped.saved).toHaveLength(1);
+    expect(adapter.wrapped.savedRaw).toEqual([]);
+    expect(adapter.pendingOverwrites.size).toBe(1);
+  });
+
+  it('handles a name with no directory', async () => {
+    const { instance: adapter } = buildAdapter({ wrappedConfig: BACKENDS['local disk'] });
+    await adapter.wrapped.saveRaw(CLEAN_BYTES, 'thumb.png');
+
+    await adapter.delete('thumb.png');
+    await adapter.save(await writeTempFile(NEW_BYTES, 'thumb.png'));
+
+    expect([...adapter.wrapped.files.keys()]).toEqual(['thumb.png']);
   });
 });
 

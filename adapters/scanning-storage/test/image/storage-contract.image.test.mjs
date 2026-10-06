@@ -46,7 +46,6 @@ const EXPECTED_SHAPES = [
   'AbortMultipartUpload',
   'CompleteMultipartUpload',
   'CreateMultipartUpload',
-  'DeleteObject',
   'GetObject',
   'HeadObject',
   'PutObject',
@@ -77,7 +76,7 @@ const SCENARIOS = {
   'hold release (saveRaw from the scanning decorator)': ['PutObject'],
   'admin media inliner (saveRaw)': ['HeadObject', 'PutObject'],
   'oEmbed thumbnail and icon (saveRaw)': ['PutObject'],
-  'same-name media thumbnail (delete, then save)': ['DeleteObject', 'HeadObject', 'PutObject'],
+  'same-name media thumbnail (delete becomes an overwrite)': ['HeadObject', 'PutObject'],
 };
 
 const MULTIPART_THRESHOLD = 5 * 1024 * 1024;
@@ -337,8 +336,8 @@ describe('the storage request contract, against the real Ghost image', () => {
     );
   });
 
-  it('same-name media thumbnail: HEAD, DeleteObject, then save', async () => {
-    const name = 'same-name media thumbnail (delete, then save)';
+  it('same-name media thumbnail: HEAD, then an overwriting PUT, never a DeleteObject', async () => {
+    const name = 'same-name media thumbnail (delete becomes an overwrite)';
     const media = await ghost.upload('media/upload/', [
       { field: 'file', bytes: Buffer.alloc(2048, 3), type: 'video/mp4', filename: 'clip.mp4' },
       { field: 'thumbnail', bytes: clean, type: 'image/png', filename: 'clip_thumb.png' },
@@ -363,7 +362,7 @@ describe('the storage request contract, against the real Ghost image', () => {
     assert.deepEqual(shapesOf(list), SCENARIOS[name]);
   });
 
-  it('every request in the run is one of exactly the eight shapes, signed and buffered as the gateway expects', async () => {
+  it('every request in the run is one of exactly the seven shapes, signed and buffered as the gateway expects', async () => {
     const all = await double.requests();
 
     // The union across every caller is the contract, with nothing unexpected.
