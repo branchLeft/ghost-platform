@@ -110,6 +110,11 @@ class FakeMysqlbinlog:
 
                 if kind == "ROTATE":
                     yymmdd, _, hhmmss = rest.partition(":")
+                    if stop_datetime is not None:
+                        hour, minute_second = hhmmss.split(":", 1)
+                        rotate_at = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]} {int(hour):02d}:{minute_second}"
+                        if rotate_at > stop_datetime:
+                            continue  # real mysqlbinlog stops before the closing Rotate
                     out.append(
                         f"#{yymmdd} {hhmmss} server id 1  end_log_pos 999 CRC32 0x00000000 "
                         f"\tRotate to next-file.000000  pos: 4"
@@ -159,6 +164,7 @@ SAMPLE_EVENTS = [
     ("mysql-bin.000003", 2450, "tenant_ddl", "DDL:ALTER TABLE posts ADD COLUMN body TEXT"),
     ("mysql-bin.000003", 2500, "tenant_ddl", "DDL:CREATE TABLE tags (id INT PRIMARY KEY)"),
     ("mysql-bin.000003", 2550, "tenant_ddl", "DDL:DROP TABLE tags"),
+    ("mysql-bin.000003", 2600, None, "ROTATE:260923:11:00:00"),
     ("mysql-bin.000004", 500, "tenant_a", "ROW:A2-second-file"),
     ("mysql-bin.000004", 600, "tenant_b", "ROW:B2-second-file"),
     ("mysql-bin.000004", 700, "tenant_b", "ROW:BX-write-to-tenant_b-from-a-tenant_a-session"),
@@ -895,6 +901,75 @@ class MainTests(unittest.TestCase):
             os.unlink(path)
         self.assertEqual(rc, 0)
         self.assertEqual(stderr.getvalue(), "")
+
+
+class HorizonWarningTests(unittest.TestCase):
+    """The warning fires only when the stop is really later than the last
+    given file reaches, judged from a separate unfiltered pass over that
+    file, with the two instants compared as datetimes."""
+
+    def _run_main(self, stop, files):
+        import contextlib
+        import io
+        import unittest.mock as mock
+
+        os.environ["MYSQL_PWD"] = "pw"
+        with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
+            handle.write(DUMP_WITH_RESUME_POINT)
+            path = handle.name
+        fake = FakeMysqlbinlog(SAMPLE_EVENTS)
+        try:
+            with mock.patch("extract_tenant_binlog.subprocess.run", fake):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    rc = etb.main(
+                        ["--dump", path, "--tenant-database", "tenant_a", "--stop-datetime", stop]
+                        + ["--apply-socket", "/tmp/mysqld.sock", "--apply-user", "root"]
+                        + files
+                    )
+        finally:
+            del os.environ["MYSQL_PWD"]
+            os.unlink(path)
+        self.assertEqual(rc, 0)
+        return stdout.getvalue(), stderr.getvalue(), fake
+
+    def test_silent_on_a_complete_list_with_a_mid_file_stop(self):
+        # Stop falls inside 000004, before its closing Rotate (12:00:00): the
+        # stop-limited extract carries only 000003's Rotate (11:00:00).
+        stdout, stderr, _ = self._run_main("2026-09-23 11:59:00", ["mysql-bin.000003", "mysql-bin.000004"])
+        self.assertIn("the given binlogs end at 2026-09-23 12:00:00", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_fires_when_the_last_file_is_left_out(self):
+        stdout, stderr, _ = self._run_main("2026-09-23 11:59:00", ["mysql-bin.000003"])
+        self.assertIn("the given binlogs end at 2026-09-23 11:00:00", stdout)
+        self.assertIn("WARNING", stderr)
+
+    def test_unpadded_hour_is_compared_as_a_time_not_a_string(self):
+        # "9:05:00" sorts after "12:00:00" as a string, but is earlier.
+        _, stderr, _ = self._run_main("2026-09-23 9:05:00", ["mysql-bin.000003", "mysql-bin.000004"])
+        self.assertEqual(stderr, "")
+
+    def test_horizon_comes_from_an_unfiltered_pass_over_the_last_file_only(self):
+        _, _, fake = self._run_main("2026-09-23 11:59:00", ["mysql-bin.000003", "mysql-bin.000004"])
+        probes = [c for c in fake.calls if c[0] == "mysqlbinlog" and c[1:] == ["mysql-bin.000004"]]
+        self.assertEqual(len(probes), 1)
+
+    def test_a_failed_horizon_pass_leaves_the_horizon_unknown(self):
+        failing = FakeMysqlbinlog(SAMPLE_EVENTS, fail=True)
+        self.assertIsNone(etb.binlogs_coverage_end("mysql-bin.000004", run=failing))
+
+
+class ParseUtcDatetimeTests(unittest.TestCase):
+    def test_accepts_an_unpadded_hour(self):
+        self.assertEqual(etb.parse_utc_datetime("2026-09-23 9:05:00").hour, 9)
+
+    def test_accepts_the_t_separated_and_date_only_forms(self):
+        self.assertIsNotNone(etb.parse_utc_datetime("2026-09-23T09:05:00"))
+        self.assertIsNotNone(etb.parse_utc_datetime("2026-09-23"))
+
+    def test_none_for_garbage(self):
+        self.assertIsNone(etb.parse_utc_datetime("tomorrow-ish"))
 
 
 if __name__ == "__main__":

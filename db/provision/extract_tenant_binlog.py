@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from typing import Iterable, NamedTuple
 
 # The exact comment mysqldump's `--source-data=2` writes: an *uncommented*
@@ -263,6 +264,33 @@ def last_rotate_timestamp(sql: bytes) -> str | None:
     return f"{year:04d}-{month}-{day} {int(hh):02d}:{mm}:{ss}"
 
 
+def binlogs_coverage_end(last_binlog_path: str, *, run=subprocess.run) -> str | None:
+    """The coverage horizon of a binlog range: the closing Rotate of its
+    last file, read by a separate unfiltered mysqlbinlog pass over that one
+    file. The replay's own extract cannot supply it, because
+    `--stop-datetime` stops before the stopping file's closing Rotate, so
+    the last Rotate in a stop-limited extract belongs to an earlier file.
+    None if the pass fails or the file has no Rotate (still open): the
+    horizon is then unknown, never guessed, and the restore already applied
+    is not failed over a missing diagnostic."""
+    result = run(["mysqlbinlog", last_binlog_path], capture_output=True, check=False, env=_child_env(TZ="UTC"))
+    if result.returncode != 0:
+        return None
+    return last_rotate_timestamp(result.stdout)
+
+
+def parse_utc_datetime(text: str) -> datetime | None:
+    """Parses the "YYYY-MM-DD HH:MM:SS" shape (hour may be unpadded) or its
+    "T"-separated and date-only variants mysqlbinlog accepts. None if the
+    text is none of these, so a comparison is skipped rather than guessed."""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def extract_tenant_stream(
     binlog_paths: list[str],
     *,
@@ -323,7 +351,7 @@ class ReplayResult(NamedTuple):
     (from count_tenant_events) say what that application actually did:
     both zero means nothing in the given range belonged to the tenant, a
     legitimate outcome main() reports as an empty replay rather than a
-    failure. `binlogs_end_at` (from last_rotate_timestamp) is the given
+    failure. `binlogs_end_at` (from binlogs_coverage_end) is the given
     binlog range's own known coverage horizon, independent of whether the
     tenant wrote anything in it. `sql` is the bytes extract_tenant_stream
     produced and apply_stream applied."""
@@ -384,7 +412,10 @@ def _replay_from_resume_point(
         run=run,
     )
     return ReplayResult(
-        row_events=row_events, statements=statements, binlogs_end_at=last_rotate_timestamp(sql), sql=sql
+        row_events=row_events,
+        statements=statements,
+        binlogs_end_at=binlogs_coverage_end(ordered_paths[-1], run=run),
+        sql=sql,
     )
 
 
@@ -470,7 +501,9 @@ def main(argv: list[str]) -> int:
         )
     if result.binlogs_end_at is not None:
         print(f"extract_tenant_binlog: the given binlogs end at {result.binlogs_end_at}")
-        if args.stop_datetime is not None and args.stop_datetime > result.binlogs_end_at:
+        stop = parse_utc_datetime(args.stop_datetime) if args.stop_datetime is not None else None
+        end = parse_utc_datetime(result.binlogs_end_at)
+        if stop is not None and end is not None and stop > end:
             print(
                 f"extract_tenant_binlog: WARNING: --stop-datetime {args.stop_datetime!r} is later than "
                 f"the given binlogs' end ({result.binlogs_end_at}) -- a binlog covering the rest of the "

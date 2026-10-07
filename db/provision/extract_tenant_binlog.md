@@ -89,9 +89,13 @@ tenant -- a stream of nothing but session setup is harmless to apply, and
 there is no second code path to keep in sync with what gets counted (see
 `count_tenant_events`). Every run also reports the given binlog range's own
 coverage horizon: the last binlog file's closing `Rotate` event carries a
-timestamp (`last_rotate_timestamp`), and `main()` warns on stderr when
-`--stop-datetime` asks for an instant later than it -- the given file list
-may be short a binlog. This is the only case a coverage gap can be told
+timestamp, read by `binlogs_coverage_end` from a separate unfiltered
+`mysqlbinlog` pass over that one file (the replay's own extract stops before
+that Rotate whenever `--stop-datetime` falls inside the file, so it cannot
+supply the horizon). `main()` compares the two instants as parsed datetimes
+(`parse_utc_datetime`, unpadded hours accepted, never as strings) and warns
+on stderr when `--stop-datetime` asks for an instant later than the horizon
+-- the given file list may be short a binlog. This is the only case a coverage gap can be told
 apart from a tenant that genuinely wrote nothing: it has no bearing on the
 row/statement counts themselves, which stay legitimately zero either way.
 
