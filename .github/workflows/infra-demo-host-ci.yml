@@ -2,7 +2,7 @@ name: Demo host stack CI
 
 # infra-hosts-ci.yml's merge-is-deploy path, for infra/demo-host/ and the
 # demos project's own token. Pull requests: typecheck and unit tests, no
-# cloud credential. main: plan, then an apply held by the `production`
+# cloud credential. main: plan, then an apply held by the `production-demo-host`
 # environment's required reviewer. See infra-hosts-ci.yml for each step.
 on:
   push:
@@ -155,7 +155,14 @@ jobs:
     needs: [plan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-    environment: production
+    # Its own environment, not `production`: the hosts stack's apply job
+    # (infra-hosts-ci.yml) is held by `production`, and a deployment protection
+    # rule is per environment, so sharing one would put the hosts stack behind
+    # whatever gates this stack. The secrets above are repository-level, so
+    # none moves with the name. A job naming an environment that does not
+    # exist makes GitHub create it with NO protection; the first step below
+    # fails the job closed in that case.
+    environment: production-demo-host
 
     concurrency:
       group: pulumi-demo-host-deploy
@@ -179,10 +186,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          reviewers=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production" \
+          reviewers=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production-demo-host" \
             --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')
           if [ "${reviewers:-0}" -eq 0 ]; then
-            echo "::error::the production environment has no required-reviewer rule -- the plan-approval gate is not real. Configure it in repo settings before any CI apply." >&2
+            echo "::error::the production-demo-host environment has no required-reviewer rule -- the plan-approval gate is not real. Configure it in repo settings before any CI apply." >&2
             exit 1
           fi
 
