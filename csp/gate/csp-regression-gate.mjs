@@ -22,7 +22,9 @@ export function judgeRegression(run) {
     failures.push("Portal's sign-in form did not render");
   }
   const violations = Array.isArray(run.cspViolations) ? run.cspViolations : [];
-  const isAttack = (v) => /^script-src/.test(v.directive) && v.blockedURI === 'inline';
+  // Exactly the attack's signature: an inline script refused by script-src-elem.
+  // Any other directive or blocked URI is some other violation, never the attack.
+  const isAttack = (v) => v.directive === 'script-src-elem' && v.blockedURI === 'inline';
   if (violations.length !== 1 || !isAttack(violations[0])) {
     failures.push(
       `expected exactly one violation, the attack; got ${violations.length}: ${JSON.stringify(violations)}` +

@@ -45,3 +45,27 @@ test('red when the one violation is not the attack', () => {
 test('red when the run is malformed (missing fields)', () => {
   assert.ok(judgeRegression({}).length >= 2);
 });
+
+test('red when a lone violation has the wrong directive (same blocked URI)', () => {
+  const f = judgeRegression({
+    ...rowB,
+    cspViolations: [{ directive: 'script-src-attr', blockedURI: 'inline' }],
+  });
+  assert.equal(f.length, 1);
+});
+
+test('red when a lone violation has the wrong blocked URI (same directive)', () => {
+  const f = judgeRegression({
+    ...rowB,
+    cspViolations: [{ directive: 'script-src-elem', blockedURI: 'https://evil.example/x.js' }],
+  });
+  assert.equal(f.length, 1);
+});
+
+test('red when Portal reports rendered but found no email field', () => {
+  assert.equal(judgeRegression({ ...rowB, emailFields: 0 }).length, 1);
+});
+
+test('green with more than one email field', () => {
+  assert.deepEqual(judgeRegression({ ...rowB, emailFields: 2 }), []);
+});

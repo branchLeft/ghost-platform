@@ -75,3 +75,18 @@ test('the gate goes red when a recorded hash is missing from the rendered policy
   const failures = verifyAdmission(admission, render({ kind: 'computed', hashes: [] }));
   assert.ok(failures.length >= 1);
 });
+
+test('the gate goes red when a report-only record carries no flag', async () => {
+  const admission = await admitTheme('http://ghost', ['/'], badFetch);
+  admission.record.flag = null;
+  const failures = verifyAdmission(admission, render(admission.themeCsp));
+  assert.deepEqual(failures, ['report-only record carries no flag']);
+});
+
+test('the gate goes red when computed hashes are rendered report-only', async () => {
+  const admission = await admitTheme('http://ghost', ['/'], okFetch);
+  const wrong = { ...render(admission.themeCsp), contentSecurityPolicyMode: 'report-only' };
+  const failures = verifyAdmission(admission, wrong);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /hashes computed but the edge renders report-only/);
+});

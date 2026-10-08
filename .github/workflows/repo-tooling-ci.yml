@@ -97,6 +97,8 @@ jobs:
       # first. Their live-browser run (csp/gate/csp-regression-gate.sh) needs
       # Docker and Chromium and stays out of CI, like csp/proof/.
       - name: CSP gate tests and sabotage proof
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           (cd render-core && npm ci --ignore-scripts && npm run build)
           node --test csp/gate/
