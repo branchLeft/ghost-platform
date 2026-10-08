@@ -29,7 +29,9 @@ test('the demo-host apply job declares its own environment', () => {
 
 test('the ungated-environment check reads the environment the job declares', () => {
   const text = fs.readFileSync(path.join(WORKFLOWS, 'infra-demo-host-ci.yml'), 'utf8');
-  assert.deepEqual(environmentsQueried(text), [EXPECTED]);
+  // Two reads, both of this environment: the environment itself and its
+  // deployment_protection_rules. Exactly two pins that neither is dropped.
+  assert.deepEqual(environmentsQueried(text), [EXPECTED, EXPECTED]);
 });
 
 test('the hosts stack keeps `production` and shares nothing with the demo host', () => {

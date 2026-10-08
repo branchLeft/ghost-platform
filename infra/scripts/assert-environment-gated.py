@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""Fail closed unless a GitHub environment really gates its deploy job.
+"""Exit 0 only if a GitHub environment really gates its deploy job.
 
-An environment is gated when either of these holds:
-  - environments/{env} -> protection_rules[] has an entry with
-    type == "required_reviewers"; or
-  - environments/{env}/deployment_protection_rules ->
-    custom_deployment_protection_rules[] has an entry with enabled == true
-    and app.id == 5090756 and app.slug == "branchleft-reviewer".
-
-A custom deployment protection rule does NOT appear in protection_rules[]
-(recorded from the live API), so the second endpoint must be read.
-
-Usage:  assert-environment-gated.py ENV_JSON RULES_JSON
-        assert-environment-gated.py --self-test
-Exit 0 gated, 1 not gated or unreadable input.
+Usage: assert-environment-gated.py ENV_JSON RULES_JSON | --self-test
+Rules and recorded API shapes: assert-environment-gated.md
 """
 import json
 import sys
@@ -69,6 +58,10 @@ RULES_OTHER = {"total_count": 1, "custom_deployment_protection_rules": [
     {"id": 7, "enabled": True, "app": {
         "id": 5, "slug": "example-app",
         "integration_url": "https://api.github.com/apps/example-app"}}]}
+RULES_WRONG_ID = {"total_count": 1, "custom_deployment_protection_rules": [
+    {"id": 8, "enabled": True, "app": {"id": 5, "slug": APP_SLUG}}]}
+RULES_WRONG_SLUG = {"total_count": 1, "custom_deployment_protection_rules": [
+    {"id": 9, "enabled": True, "app": {"id": APP_ID, "slug": "example-app"}}]}
 RULES_NONE = {"total_count": 0, "custom_deployment_protection_rules": []}
 
 CASES = [
@@ -76,6 +69,8 @@ CASES = [
     ("app-rule-only passes", ENV_NONE, RULES_APP, True),
     ("both pass", ENV_REVIEWER, RULES_APP, True),
     ("other-app-only fails", ENV_NONE, RULES_OTHER, False),
+    ("right slug, wrong id fails", ENV_NONE, RULES_WRONG_ID, False),
+    ("right id, wrong slug fails", ENV_NONE, RULES_WRONG_SLUG, False),
     ("disabled app rule fails", ENV_NONE, RULES_APP_DISABLED, False),
     ("branch policy only fails", ENV_BRANCH_ONLY, RULES_NONE, False),
     ("nothing fails", ENV_NONE, RULES_NONE, False),
