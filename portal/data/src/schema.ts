@@ -116,17 +116,12 @@ export interface SubprocessorEntry {
 }
 
 /**
- * The portal's versioned documents, one row per published version, shared by
- * every tenant (no tenant column: a document is the platform's, not a
- * tenant's). A row is never updated or deleted -- the roles hold no such
- * privilege -- so what a tenant accepted stays exactly what it was. A version
- * is current once `effective_at` has passed; for the sub-processor list the
- * table itself refuses an effective date earlier than `published_at` plus the
- * notice period, and `published_at` is the database's own clock (a column
- * default, never supplied by a caller), so a new entry cannot go live inside
- * its notice. It holds no tenant's data, so it has no row-level policy (one that raises on an unbound
- * tenant only fires per row, and would assure nothing on an empty table);
- * `TenantDb` still takes a scope for every read of it.
+ * The portal's versioned documents: one immutable row per published version,
+ * shared by every tenant (no tenant column). A version is current once
+ * `effective_at` has passed. For the sub-processor list the table refuses an
+ * effective date earlier than `published_at` plus the notice, and
+ * `published_at` is the database's own clock, so no entry goes live inside its
+ * notice. It holds no tenant's data, so it has no row policy: see the README.
  */
 export const documentVersion = portal.table(
   'document_version',

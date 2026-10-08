@@ -61,6 +61,10 @@ fetches the scrapes is separate work. The grants on `portal.health_reading`
 
 ## Versioned documents and acceptance
 
+`document_version` has no row-level policy: it holds no tenant's data, and a
+policy that raises on an unbound tenant fires per row, so on an empty table it
+would assure nothing. `TenantDb` still takes a scope for every read of it.
+
 `portal.document_version` holds the published versions of three documents
 (`terms`, `usage`, `subprocessors`), shared by every tenant. A version is never
 updated or deleted (no role holds the privilege), and it is in force once its
