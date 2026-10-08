@@ -318,14 +318,32 @@ describe(
     });
 
     it('the minter refuses a key any other user could read', () => {
-      fs.chmodSync(path.join(keyDirs.a, 'signing-key.pem'), 0o644);
-      try {
-        const r = mintCli('a', 'mint', '--tenant', TENANT, '--identity', SUPPORT, '--reason', 'r');
-        assert.equal(r.code, 2);
-        assert.match(r.stderr, /readable by its owner only/);
-      } finally {
-        fs.chmodSync(path.join(keyDirs.a, 'signing-key.pem'), 0o600);
-      }
+      // The key is copied onto the container's own filesystem and its mode set
+      // there: a desktop Docker's file sharing can cache a bind mount's modes.
+      const r = spawnSync(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--network',
+          'none',
+          '-v',
+          `${keyDirs.a}:/src:ro`,
+          '-v',
+          `${SCRIPTS}:/usr/local/lib/branchleft/break-glass:ro`,
+          NODE_IMAGE,
+          'sh',
+          '-c',
+          'install -d -m 700 /etc/branchleft/break-glass /var/log/branchleft && ' +
+            'install -m 644 /src/signing-key.pem /etc/branchleft/break-glass/ && ' +
+            'node /usr/local/lib/branchleft/break-glass/break-glass-mint.mjs mint ' +
+            `--tenant ${TENANT} --identity ${SUPPORT} --reason r`,
+        ],
+        { encoding: 'utf8' }
+      );
+      assert.equal(r.status, 2, r.stderr);
+      assert.match(r.stderr, /readable by its owner only/);
+      assert.equal(r.stdout, '', 'nothing was minted');
     });
 
     it('suspended at rest: a minted token opens nothing', async () => {
