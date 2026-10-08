@@ -268,6 +268,19 @@ describe('grant', () => {
     await expect(grant(request(), deps)).rejects.toThrow(/already open until/);
   });
 
+  it('never overwrites a grant another run wrote between the check and the write', async () => {
+    const deps = fakeDeps();
+    const theirs = '{"tenant":"tenant-zero","deadline":"2026-10-08T20:00:00.000Z"}\n';
+    deps.findContainer = (tenant) => {
+      fs.mkdirSync(deps.stateDir, { recursive: true });
+      fs.writeFileSync(stateFile(deps), theirs);
+      return `${tenant}-ghost-a-1`;
+    };
+    await expect(grant(request(), deps)).rejects.toThrow(/EEXIST/);
+    expect(fs.readFileSync(stateFile(deps), 'utf8')).toBe(theirs);
+    expect(fs.readdirSync(deps.stateDir)).toEqual(['tenant-zero.json']);
+  });
+
   it('refuses while an unreadable grant state exists, and says to revoke', async () => {
     const deps = fakeDeps();
     fs.mkdirSync(deps.stateDir, { recursive: true });
