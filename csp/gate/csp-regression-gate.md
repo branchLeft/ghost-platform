@@ -38,5 +38,5 @@ demo host.
 
 ## Tests
 
-`node --test csp/gate/` (needs `render-core` built). `csp/gate/prove-gates.sh`
+`node --test csp/gate/*.test.mjs` (needs `render-core` built). `csp/gate/prove-gates.sh`
 mutates each verdict rule and requires the tests to go red, then green.

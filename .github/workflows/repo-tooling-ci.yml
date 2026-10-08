@@ -101,7 +101,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           (cd render-core && npm ci --ignore-scripts && npm run build)
-          node --test csp/gate/
+          node --test csp/gate/*.test.mjs
           ./csp/gate/prove-gates.sh
 
       # Self-test first: a matcher that has quietly stopped matching passes

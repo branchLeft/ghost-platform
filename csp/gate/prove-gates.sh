@@ -25,21 +25,21 @@ prove() { # label, file, from, to
     cp "$file" "$file.orig"
     trap 'mv -f "$file.orig" "$file"' EXIT INT TERM
     mutate "$file" "$from" "$to" || { mv -f "$file.orig" "$file"; exit 3; }
-    if node --test "$HERE" >/dev/null 2>&1; then
+    if node --test "$HERE"/*.test.mjs >/dev/null 2>&1; then
         echo "SABOTAGE $label: NOT DETECTED (tests stayed green)"; FAIL=1
     else
         echo "SABOTAGE $label: RED"
     fi
     mv -f "$file.orig" "$file"
     trap - EXIT INT TERM
-    if node --test "$HERE" >/dev/null 2>&1; then
+    if node --test "$HERE"/*.test.mjs >/dev/null 2>&1; then
         echo "RESTORED $label: GREEN"
     else
         echo "RESTORED $label: STILL RED"; FAIL=1
     fi
 }
 
-node --test "$HERE" >/dev/null 2>&1 && echo "BASELINE: GREEN" || { echo "BASELINE: RED"; exit 1; }
+node --test "$HERE"/*.test.mjs >/dev/null 2>&1 && echo "BASELINE: GREEN" || { echo "BASELINE: RED"; exit 1; }
 
 prove "theme-hash/report-only-not-checked" theme-hash-gate.mjs \
     "if (edge.contentSecurityPolicyMode !== 'report-only') {" "if (false) {"
