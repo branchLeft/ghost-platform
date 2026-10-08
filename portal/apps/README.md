@@ -50,7 +50,9 @@ CONSOLE_ISSUER_URL, CONSOLE_PUBLIC_ORIGIN, CONSOLE_OUTPUTS_FILE, CONSOLE_DATABAS
 allowed organisations are read from it at start, so a tenant added later needs a
 restart. `*_DATABASE_URL_FILE` holds the connection URL of a login that is a
 member of `portal_tenant` alone (portal) or `portal_owner` alone (console).
-Plain HTTP is accepted only for a loopback origin.
+The URL may omit the password (`postgres://LOGIN@HOST:PORT/portal`): the `pg`
+driver then reads `PGPASSWORD` from the process environment, so the password
+need not appear in the URL file. Plain HTTP is accepted only for a loopback origin.
 
 Sessions live in this process's memory, so a restart signs everyone out and
 there is one instance per application. Build the data layer and the identity

@@ -1,4 +1,8 @@
-import { createTokenVerifier, ROLE_OWNER } from 'ghost-platform-identity/dist/index.js';
+import {
+  CALLBACK_PATH,
+  createTokenVerifier,
+  ROLE_OWNER,
+} from 'ghost-platform-identity/dist/index.js';
 import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js';
 import { OwnerDb } from 'ghost-platform-portal-data/owner';
 import { renderHealth } from '../shell/healthHtml.js';
@@ -41,7 +45,7 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     issuer: options.issuer,
     clientId: options.clientId,
     projectId: options.projectId,
-    redirectUri: `${options.publicOrigin}/callback`,
+    redirectUri: `${options.publicOrigin}${CALLBACK_PATH}`,
     publicOrigin: options.publicOrigin,
     verifier,
     secureCookies: options.secureCookies,
