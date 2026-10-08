@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { ConfigError, parseOrigin, parseOutputs, parsePort } from '../src/shell/config.js';
 import { cookieName, parseCookies, setCookie } from '../src/shell/cookies.js';
 import { escapeHtml, renderPage } from '../src/shell/html.js';
+import { renderDocuments } from '../src/shell/documentsHtml.js';
 import { expiryOf } from '../src/shell/oidc.js';
 import { ExpiringStore } from '../src/shell/sessions.js';
 import { loadConsoleConfig } from '../src/console/config.js';
@@ -204,5 +205,28 @@ describe('the two applications stay separate', () => {
     const control = importsOf(join(SRC, 'console', 'app.ts')).join(' ');
     expect(control).toContain('portal-data/owner');
     expect(importsOf(join(SRC, 'tenant', 'app.ts')).join(' ')).toContain('portal-data/tenant');
+  });
+});
+
+describe('renderDocuments', () => {
+  it('says so when no document is in force, and escapes what a document holds', () => {
+    expect(renderDocuments([], new Set(), [])).toContain('NO_DOCUMENTS_IN_FORCE');
+    const page = renderDocuments(
+      [
+        {
+          kind: 'terms',
+          version: 1,
+          title: '<b>T</b>',
+          body: 'A & B',
+          entries: [],
+          effectiveAt: new Date('2026-10-01T00:00:00Z'),
+        },
+      ],
+      new Set(['terms:1']),
+      []
+    );
+    expect(page).toContain('&lt;b&gt;T&lt;/b&gt;');
+    expect(page).toContain('A &amp; B');
+    expect(page).toContain('ACCEPT_THIS_VERSION');
   });
 });

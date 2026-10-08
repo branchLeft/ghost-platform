@@ -68,6 +68,7 @@ export const INIT = 'init';
 const FIRST = '0000_binding_functions';
 const REGISTER = '0001_tenant_register';
 const HEALTH = '0002_health_reading';
+const DOCUMENTS = '0003_versioned_documents';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -157,6 +158,29 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
       ],
     },
+    // TenantDb reads the published versions; OwnerDb.publishDocument inserts
+    // and reads. Nothing updates or deletes a version, so what a tenant
+    // accepted cannot change under it.
+    {
+      kind: 'table',
+      identity: 'portal.document_version',
+      since: DOCUMENTS,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['SELECT'] },
+        { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT'] },
+      ],
+    },
+    // TenantDb.acceptDocument inserts and reads the tenant's own acceptances;
+    // the owner reads. Nothing updates or deletes an acceptance.
+    {
+      kind: 'table',
+      identity: 'portal.document_acceptance',
+      since: DOCUMENTS,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT'] },
+      ],
+    },
   ];
 }
 
@@ -164,6 +188,8 @@ export function manifest(major: number, database: string): readonly ManifestObje
 export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }> = {
   'portal.tenant_register': { enabled: true, forced: false },
   'portal.health_reading': { enabled: true, forced: false },
+  'portal.document_version': { enabled: false, forced: false },
+  'portal.document_acceptance': { enabled: true, forced: false },
   'drizzle.__drizzle_migrations': { enabled: false, forced: false },
 };
 
@@ -223,6 +249,14 @@ export const POLICIES: readonly PolicyEntry[] = [
     'null'
   ),
   policy('portal.health_reading', 'tenant_isolation', HEALTH, '*', `(${BOUND})`, `(${BOUND})`),
+  policy(
+    'portal.document_acceptance',
+    'tenant_isolation',
+    DOCUMENTS,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
 ];
 
 /**
@@ -282,6 +316,54 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         'REFERENCES portal.tenant_register(tenant_id)',
       'index portal.health_reading_pkey CREATE UNIQUE INDEX health_reading_pkey ' +
         'ON portal.health_reading USING btree (tenant_id)',
+    ],
+  },
+  'portal.document_version': {
+    since: DOCUMENTS,
+    lines: [
+      `column kind text notnull=true ${PLAIN}`,
+      `column version integer notnull=true ${PLAIN}`,
+      `column title text notnull=true ${PLAIN}`,
+      `column body text notnull=true ${PLAIN}`,
+      `column entries jsonb notnull=true ${PLAIN}`,
+      `column published_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column effective_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column notice_days integer notnull=true ${PLAIN}`,
+      "default entries '[]'::jsonb",
+      'default published_at now()',
+      'default notice_days 0',
+      "constraint document_version_kind_known CHECK ((kind = ANY (ARRAY['terms'::text, " +
+        "'usage'::text, 'subprocessors'::text])))",
+      'constraint document_version_kind_version_pk PRIMARY KEY (kind, version)',
+      "constraint document_version_notice_elapsed CHECK (((kind <> 'subprocessors'::text) OR " +
+        '(effective_at >= (published_at + make_interval(hours => (notice_days * 24))))))',
+      'constraint document_version_notice_not_negative CHECK ((notice_days >= 0))',
+      "constraint document_version_subprocessors_noticed CHECK (((kind <> 'subprocessors'::text) " +
+        'OR (notice_days >= 30)))',
+      'constraint document_version_version_positive CHECK ((version >= 1))',
+      'index portal.document_version_kind_version_pk CREATE UNIQUE INDEX ' +
+        'document_version_kind_version_pk ON portal.document_version USING btree (kind, version)',
+    ],
+  },
+  'portal.document_acceptance': {
+    since: DOCUMENTS,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column kind text notnull=true ${PLAIN}`,
+      `column version integer notnull=true ${PLAIN}`,
+      `column accepted_by text notnull=true ${PLAIN}`,
+      `column accepted_at timestamp with time zone notnull=true ${PLAIN}`,
+      "constraint document_acceptance_kind_acceptable CHECK ((kind = ANY (ARRAY['terms'::text, " +
+        "'usage'::text])))",
+      'constraint document_acceptance_kind_version_document_version_kind_version_ FOREIGN KEY ' +
+        '(kind, version) REFERENCES portal.document_version(kind, version)',
+      'constraint document_acceptance_tenant_id_kind_version_pk PRIMARY KEY ' +
+        '(tenant_id, kind, version)',
+      'constraint document_acceptance_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.document_acceptance_tenant_id_kind_version_pk CREATE UNIQUE INDEX ' +
+        'document_acceptance_tenant_id_kind_version_pk ON portal.document_acceptance ' +
+        'USING btree (tenant_id, kind, version)',
     ],
   },
 };
