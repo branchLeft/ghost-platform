@@ -27,7 +27,10 @@ exact attack a prior spike measured.
    but Ghost's own inline blocks (the theme helper, the JSON-LD block) are
    now blocked too: MORE than one violation fires, and the "exactly one"
    assertion goes red.
-8. ROW B again — the correct wiring restored: back to exactly one
+8. ROW E (SABOTAGE) -- each hash the home page carries dropped from the derived
+   set in turn: at least one drop makes an inline block of Ghost's own go
+   unhashed, so it is refused and more than one violation fires (red).
+9. ROW B again — the correct wiring restored: back to exactly one
    violation, proving the sabotage is what broke it.
 
 ## Usage

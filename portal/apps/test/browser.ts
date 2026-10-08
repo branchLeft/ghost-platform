@@ -1,3 +1,4 @@
+import { CALLBACK_PATH } from 'ghost-platform-identity/dist/index.js';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -82,6 +83,6 @@ export class Browser {
   /** Completes the sign-in the application started, presenting `code`. */
   async finish(code: string, state?: string): Promise<Reply> {
     const issued = await this.begin();
-    return this.request(`/callback?code=${code}&state=${state ?? issued}`);
+    return this.request(`${CALLBACK_PATH}?code=${code}&state=${state ?? issued}`);
   }
 }

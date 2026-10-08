@@ -1,4 +1,8 @@
-import { createTokenVerifier, ROLE_TENANT_ADMIN } from 'ghost-platform-identity/dist/index.js';
+import {
+  CALLBACK_PATH,
+  createTokenVerifier,
+  ROLE_TENANT_ADMIN,
+} from 'ghost-platform-identity/dist/index.js';
 import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js';
 import { TenantDb, type DocumentKind, type TenantScope } from 'ghost-platform-portal-data/tenant';
 import { renderDocuments } from '../shell/documentsHtml.js';
@@ -45,7 +49,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     issuer: options.issuer,
     clientId: options.clientId,
     projectId: options.projectId,
-    redirectUri: `${options.publicOrigin}/callback`,
+    redirectUri: `${options.publicOrigin}${CALLBACK_PATH}`,
     publicOrigin: options.publicOrigin,
     verifier,
     secureCookies: options.secureCookies,

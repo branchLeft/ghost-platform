@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CALLBACK_PATH } from 'ghost-platform-identity/dist/index.js';
 import { OwnerDb } from 'ghost-platform-portal-data/owner';
 import { TenantDb } from 'ghost-platform-portal-data/tenant';
 import {
@@ -84,7 +85,7 @@ describe('the tenant portal sign-in', () => {
     expect(`${target.origin}${target.pathname}`).toBe(`${ISSUER}/oauth/v2/authorize`);
     expect(target.searchParams.get('client_id')).toBe(CLIENT_PORTAL);
     expect(target.searchParams.get('code_challenge_method')).toBe('S256');
-    expect(target.searchParams.get('redirect_uri')).toBe(`${app.origin}/callback`);
+    expect(target.searchParams.get('redirect_uri')).toBe(`${app.origin}${CALLBACK_PATH}`);
     expect(target.searchParams.get('scope')).toContain(`org:project:id:${PROJECT_ID}:aud`);
   });
 
@@ -187,7 +188,8 @@ describe('the tenant portal sign-in', () => {
   it('refuses a callback that did not start here, or whose state differs, or that repeats', async () => {
     const lone = new Browser(app.origin);
     expect(
-      (await lone.request(`/callback?code=${issuer.issue(tenantToken(ORG_A))}&state=x`)).status
+      (await lone.request(`${CALLBACK_PATH}?code=${issuer.issue(tenantToken(ORG_A))}&state=x`))
+        .status
     ).toBe(400);
 
     const browser = new Browser(app.origin);
@@ -197,15 +199,18 @@ describe('the tenant portal sign-in', () => {
     const again = new Browser(app.origin);
     const state = await again.begin();
     const good = issuer.issue(tenantToken(ORG_A));
-    expect((await again.request(`/callback?code=${good}&state=${state}`)).status).toBe(302);
+    expect((await again.request(`${CALLBACK_PATH}?code=${good}&state=${state}`)).status).toBe(302);
     expect(
-      (await again.request(`/callback?code=${issuer.issue(tenantToken(ORG_A))}&state=${state}`))
-        .status
+      (
+        await again.request(
+          `${CALLBACK_PATH}?code=${issuer.issue(tenantToken(ORG_A))}&state=${state}`
+        )
+      ).status
     ).toBe(400);
 
     const empty = new Browser(app.origin);
     const emptyState = await empty.begin();
-    expect((await empty.request(`/callback?state=${emptyState}`)).status).toBe(400);
+    expect((await empty.request(`${CALLBACK_PATH}?state=${emptyState}`)).status).toBe(400);
   });
 
   it('refuses when the token endpoint fails, refuses the code, or returns no token', async () => {

@@ -3,19 +3,24 @@ name: Demo host stack CI
 # infra-hosts-ci.yml's merge-is-deploy path, for infra/demo-host/ and the
 # demos project's own token. Pull requests: typecheck and unit tests, no
 # cloud credential. main: plan, then an apply held by the `production-demo-host`
-# environment's required reviewer. See infra-hosts-ci.yml for each step.
+# environment's gate (a required reviewer, or the branchleft-reviewer App's
+# rule). See infra-hosts-ci.yml for each step.
 on:
   push:
     branches: [main]
     paths:
       - 'infra/demo-host/**'
       - 'infra/scripts/assert-no-hetzner-deletes.py'
+      - 'infra/scripts/assert-environment-gated.py'
+      - 'infra/scripts/test_assert_environment_gated.py'
       - '.github/workflows/infra-demo-host-ci.yml'
   pull_request:
     branches: [main]
     paths:
       - 'infra/demo-host/**'
       - 'infra/scripts/assert-no-hetzner-deletes.py'
+      - 'infra/scripts/assert-environment-gated.py'
+      - 'infra/scripts/test_assert_environment_gated.py'
       - '.github/workflows/infra-demo-host-ci.yml'
 
 # `packages: read` because @branchleft/hetzner-host and
@@ -56,6 +61,12 @@ jobs:
 
       - name: Type check
         run: npm run typecheck
+
+      - name: Environment-gate guard tests
+        working-directory: .
+        run: |
+          python3 infra/scripts/assert-environment-gated.py --self-test
+          python3 infra/scripts/test_assert_environment_gated.py
 
       - name: Test
         run: npm run test:unit
@@ -181,22 +192,33 @@ jobs:
       AWS_REGION: hel1
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # After checkout: the guard script lives in the repo. Checkout reads no
+      # environment secret, so the gate still precedes every credentialed step.
       - name: Refuse to apply through an ungated environment
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          reviewers=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production-demo-host" \
-            --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')
-          if [ "${reviewers:-0}" -eq 0 ]; then
-            echo "::error::the production-demo-host environment has no required-reviewer rule -- the plan-approval gate is not real. Configure it in repo settings before any CI apply." >&2
+          set -eu
+          env_json=$(mktemp)
+          rules_json=$(mktemp)
+          # Two reads, both required: a custom deployment protection rule
+          # (the branchleft-reviewer App) is NOT listed in protection_rules,
+          # only in deployment_protection_rules. Any API error fails closed.
+          gh api "repos/${GITHUB_REPOSITORY}/environments/production-demo-host" > "$env_json" \
+            || { echo "::error::could not read the production-demo-host environment" >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/environments/production-demo-host/deployment_protection_rules" > "$rules_json" \
+            || { echo "::error::could not read the production-demo-host deployment protection rules" >&2; exit 1; }
+          python3 infra/scripts/assert-environment-gated.py --self-test > /dev/null
+          if ! python3 infra/scripts/assert-environment-gated.py "$env_json" "$rules_json"; then
+            echo "::error::the production-demo-host environment has neither a required-reviewer rule nor an enabled branchleft-reviewer deployment protection rule -- the plan-approval gate is not real. Configure it in repo settings before any CI apply." >&2
             exit 1
           fi
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
