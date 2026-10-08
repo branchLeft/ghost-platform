@@ -55,22 +55,27 @@ const showsB = (body: string): boolean =>
  * The sabotage, kept as a control case: the health read taken from the owner's
  * cross-tenant query (the latest reading across every tenant, no tenant key).
  */
-const crossTenantDb = (): TenantDb =>
-  ({
-    scopeForOrganisation: (orgId: string) =>
-      new TenantDb(fixture.tenant).scopeForOrganisation(orgId),
-    ownRegistration: (scope: Parameters<TenantDb['ownRegistration']>[0]) =>
-      new TenantDb(fixture.tenant).ownRegistration(scope),
-    ownHealth: async () => {
-      const all = await ownerDb.listHealth();
-      return (
-        all
-          .map((t) => t.health)
-          .filter((h) => h !== null)
-          .at(-1) ?? null
-      );
+const crossTenantDb = (): TenantDb => {
+  const real = new TenantDb(fixture.tenant);
+  const leakyHealth = async () => {
+    const all = await ownerDb.listHealth();
+    return (
+      all
+        .map((t) => t.health)
+        .filter((h) => h !== null)
+        .at(-1) ?? null
+    );
+  };
+  // Everything but the health read is the real tenant data layer, so the
+  // landing page keeps working whenever the portal reads something new.
+  return new Proxy(real, {
+    get(target, prop) {
+      if (prop === 'ownHealth') return leakyHealth;
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
     },
-  }) as unknown as TenantDb;
+  });
+};
 const issuer = new FakeIssuer();
 
 const tenantToken = (org: string, client = CLIENT_PORTAL, role = 'tenant-admin'): string =>
