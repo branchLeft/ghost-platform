@@ -90,6 +90,21 @@ function mintCli(keyName, ...args) {
   return { code: r.status, stdout: r.stdout.trim(), stderr: r.stderr.trim() };
 }
 
+/** The audit file is root's and 0600, as on ops1, so it is read as root too. */
+function readMintAudit() {
+  return docker(
+    'run',
+    '--rm',
+    '--network',
+    'none',
+    '-v',
+    `${auditDir}:/var/log/branchleft:ro`,
+    NODE_IMAGE,
+    'cat',
+    '/var/log/branchleft/break-glass-mint.jsonl'
+  );
+}
+
 function mintToken(keyName = 'a', ttl = '600') {
   const r = mintCli(
     keyName,
@@ -312,7 +327,7 @@ describe(
       const token = mintToken('a', '600');
       const claims = JSON.parse(Buffer.from(token.split('.')[0], 'base64url').toString('utf8'));
       assert.equal(claims.exp - claims.iat, 600);
-      const audit = fs.readFileSync(path.join(auditDir, 'break-glass-mint.jsonl'), 'utf8');
+      const audit = readMintAudit();
       assert.ok(audit.includes(claims.jti), 'the mint is recorded by jti');
       assert.ok(!audit.includes(token.split('.')[1]), 'the record never holds the token');
     });
