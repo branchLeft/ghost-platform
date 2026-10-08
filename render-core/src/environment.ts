@@ -23,15 +23,19 @@ import { databaseAndUserName, validateDatabaseIdentity } from './naming.js';
 import type { UploadLimits } from './runtime.js';
 import type { ZoneConfig } from './validate.js';
 
-/** Names of the secrets a rendered `mysql`/`s3` Compose file expects in the
- * process environment, i.e. the keys of `/etc/branchleft/<slug>.env`. A
- * `sqlite`/`local` tenant (every demo) never references any of these. */
+/** The keys of `/etc/branchleft/<slug>.env`. Every key but `ownerEmail` is a
+ * secret a rendered `mysql`/`s3` Compose file expects in the process
+ * environment; a `sqlite`/`local` tenant (every demo) references none of
+ * them. `ownerEmail` is a paying tenant's owner address, which Compose never
+ * references, so it stays in that root-only file and never reaches a
+ * container. See descriptor.md#tenant-stack-descriptor. */
 export const SECRET_ENV_KEYS = {
   databasePassword: 'GHOST_DB_PASSWORD',
   s3AccessKeyId: 'GHOST_S3_ACCESS_KEY_ID',
   s3SecretAccessKey: 'GHOST_S3_SECRET_ACCESS_KEY',
   mailPassword: 'GHOST_MAIL_PASSWORD',
   bulkEmailApiKey: 'GHOST_BULK_EMAIL_API_KEY',
+  ownerEmail: 'GHOST_OWNER_EMAIL',
 } as const;
 
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = 10485760; // 10 MiB

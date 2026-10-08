@@ -35,3 +35,20 @@ construct). `disabled` for every demo: a demo visitor already holds admin on
 their own disposable slot, so there is nothing for a support identity to
 reach that they cannot already reach — see `checkTierVariants` in
 `./validate.ts`.
+
+## Tenant stack descriptor
+
+`TenantDescriptor` without `ownerEmail`: the shape a paying tenant's own
+repository commits and the Pulumi component validates, with
+`validateTenantStack()` in `./validate.ts`. The owner's address is a
+person's, and a tenant repository holds no personal data, so for a paying
+tenant it travels as a secret beside the descriptor. `render()` names it in
+the `secrets.env` template as `GHOST_OWNER_EMAIL`, and it reaches the host
+only in `/etc/branchleft/<slug>.env`. Nothing renders its value, for any
+kind: no artefact contains it, which `test/owner-email.test.ts` checks with a
+sentinel address.
+
+A demo keeps `ownerEmail` inline. The broker holds it in its own store and
+never commits it, and it creates the owner from it. A promotion's
+`transform()` still returns a full `TenantDescriptor`, and the caller removes
+`ownerEmail` before the result goes into a tenant repository.
