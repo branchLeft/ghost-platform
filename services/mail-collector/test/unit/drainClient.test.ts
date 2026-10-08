@@ -131,4 +131,30 @@ describe('drainClient', () => {
     expect(result.unknown).toEqual(['m1']);
     expect(result.acked).toEqual([]);
   });
+
+  it('reportOutcomes() posts the outcomes with the bearer token and returns the shim answer', async () => {
+    shim.outcomesEnabled = true;
+    const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
+    const result = await client.reportOutcomes({ id: 'tenant-a', baseUrl }, [
+      { id: 'm1', drainCount: 1, outcome: 'delivered' },
+    ]);
+    expect(result.recorded).toEqual(['m1']);
+    expect(shim.outcomeRequests).toEqual([[{ id: 'm1', drainCount: 1, outcome: 'delivered' }]]);
+  });
+
+  it('reportOutcomes() rejects (404) against a spool that has not opted in, and (401) on the wrong token', async () => {
+    const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
+    await expect(
+      client.reportOutcomes({ id: 'tenant-a', baseUrl }, [
+        { id: 'm1', drainCount: 1, outcome: 'delivered' },
+      ])
+    ).rejects.toThrow('404');
+    shim.outcomesEnabled = true;
+    const bad = createDrainClient({ drainToken: 'wrong', drainTimeoutMs: 5000 });
+    await expect(
+      bad.reportOutcomes({ id: 'tenant-a', baseUrl }, [
+        { id: 'm1', drainCount: 1, outcome: 'delivered' },
+      ])
+    ).rejects.toThrow('401');
+  });
 });

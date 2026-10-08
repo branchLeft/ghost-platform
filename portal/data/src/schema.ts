@@ -2,9 +2,13 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  integer,
+  jsonb,
   pgPolicy,
   pgRole,
   pgSchema,
+  primaryKey,
+  foreignKey,
   text,
   timestamp,
   uuid,
@@ -80,6 +84,100 @@ export const healthReading = portal
         'health_reading_health_known',
         sql`${table.health} IN ('healthy', 'unhealthy', 'unknown')`
       ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/** The kinds of versioned document the portal serves. */
+export const DOCUMENT_KINDS = ['terms', 'usage', 'subprocessors'] as const;
+export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
+
+/** The kinds a tenant accepts; the sub-processor list is notified, not accepted. */
+export const ACCEPTABLE_KINDS = ['terms', 'usage'] as const;
+export type AcceptableKind = (typeof ACCEPTABLE_KINDS)[number];
+
+/**
+ * The notice, in days, before a new sub-processor list version goes live:
+ * owner ruling, 2026-10-08. The table refuses any list version with less.
+ */
+export const SUBPROCESSOR_NOTICE_DAYS = 30;
+
+/** One entry of a sub-processor list version; the text is placeholder until the owner supplies it. */
+export interface SubprocessorEntry {
+  name: string;
+  purpose: string;
+}
+
+/**
+ * The portal's versioned documents: one immutable row per published version,
+ * shared by every tenant (no tenant column). A version is current once
+ * `effective_at` has passed. For the sub-processor list the table refuses an
+ * effective date earlier than `published_at` plus the notice, and
+ * `published_at` is the database's own clock, so no entry goes live inside its
+ * notice. It holds no tenant's data, so it has no row policy: see the README.
+ */
+export const documentVersion = portal.table(
+  'document_version',
+  {
+    kind: text('kind').notNull(),
+    version: integer('version').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    entries: jsonb('entries')
+      .$type<SubprocessorEntry[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    publishedAt: timestamp('published_at', { withTimezone: true }).notNull().defaultNow(),
+    effectiveAt: timestamp('effective_at', { withTimezone: true }).notNull(),
+    noticeDays: integer('notice_days').notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ columns: [table.kind, table.version] }),
+    check('document_version_kind_known', sql`${table.kind} IN ('terms', 'usage', 'subprocessors')`),
+    check('document_version_version_positive', sql`${table.version} >= 1`),
+    check('document_version_notice_not_negative', sql`${table.noticeDays} >= 0`),
+    check(
+      'document_version_notice_elapsed',
+      sql`${table.kind} <> 'subprocessors' OR ${table.effectiveAt} >= ${table.publishedAt} + make_interval(hours => ${table.noticeDays} * 24)`
+    ),
+    check(
+      'document_version_subprocessors_noticed',
+      sql`${table.kind} <> 'subprocessors' OR ${table.noticeDays} >= ${sql.raw(String(SUBPROCESSOR_NOTICE_DAYS))}`
+    ),
+  ]
+);
+
+/**
+ * Which tenant accepted which version of which document, who for, and when.
+ * Insert-only and tenant-isolated like every tenant table; it points at an
+ * immutable version row, so a later document change cannot alter it.
+ */
+export const documentAcceptance = portal
+  .table(
+    'document_acceptance',
+    {
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      kind: text('kind').notNull(),
+      version: integer('version').notNull(),
+      acceptedBy: text('accepted_by').notNull(),
+      acceptedAt: timestamp('accepted_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      primaryKey({ columns: [table.tenantId, table.kind, table.version] }),
+      foreignKey({
+        columns: [table.kind, table.version],
+        foreignColumns: [documentVersion.kind, documentVersion.version],
+      }),
+      check('document_acceptance_kind_acceptable', sql`${table.kind} IN ('terms', 'usage')`),
       pgPolicy('tenant_isolation', {
         as: 'permissive',
         for: 'all',

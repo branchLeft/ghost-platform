@@ -3,6 +3,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
+    // Builds dist/ once for the server-startup tests; see test/globalSetup.ts.
+    globalSetup: ['test/globalSetup.ts'],
     testTimeout: 15000,
     // --expose-gc backs the memory-bound streaming test
     // (smtpFrontDoor.test.ts's "does not retain a message past its size

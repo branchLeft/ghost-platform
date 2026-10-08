@@ -4,3 +4,11 @@ export { InvalidTenantIdError, type TenantId } from '../tenantId.js';
 export { assertTenantTablesIsolated, UnisolatedTableError } from '../isolation.js';
 export type { Tx } from '../db.js';
 export type { HealthView } from '../reading.js';
+export {
+  NotCurrentVersionError,
+  TermsNotAcceptedError,
+  type AcceptanceView,
+  type DocumentKind,
+  type DocumentView,
+  type UpcomingView,
+} from '../documents.js';

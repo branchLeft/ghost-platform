@@ -59,6 +59,38 @@ fetches the scrapes is separate work. The grants on `portal.health_reading`
 (tenant `SELECT`, owner `SELECT, INSERT, UPDATE`) are in the manifest,
 `provision/manifest.ts`.
 
+## Versioned documents and acceptance
+
+`document_version` has no row-level policy: it holds no tenant's data, and a
+policy that raises on an unbound tenant fires per row, so on an empty table it
+would assure nothing. `TenantDb` still takes a scope for every read of it.
+
+`portal.document_version` holds the published versions of three documents
+(`terms`, `usage`, `subprocessors`), shared by every tenant. A version is never
+updated or deleted (no role holds the privilege), and it is in force once its
+`effective_at` has passed: `TenantDb.currentDocument(scope, kind, now)` returns
+the highest such version, so a version published but not yet effective is
+stored and not shown as in force. For the sub-processor list the table itself
+refuses an effective date earlier than `published_at` plus the notice period,
+and a notice of under `SUBPROCESSOR_NOTICE_DAYS` (30, an owner ruling). `published_at` is the database's own clock (the
+column default): `OwnerDb.publishDocument` takes no publication time from its
+caller, so a call cannot backdate itself out of the notice.
+
+During the notice a tenant is told, not surprised:
+`TenantDb.upcomingSubprocessors(scope, now)` returns each announced list
+version with its effective date and the entries it adds or drops against the
+list in force, and the tenant portal shows it as upcoming (with an objection
+text that is a placeholder), apart from the live list. An upcoming version is
+in no current list and cannot be accepted.
+
+`portal.document_acceptance` records which tenant accepted which version, by
+whom and when. It is isolated like every tenant table and insert-only.
+Acceptance belongs to a version, so a new version is pending again for a tenant
+that accepted the last (`pendingAcceptances`, and `assertAccepted` as the
+gate; its caller will be the step that turns a demo user into a paying tenant,
+not built here). Only the version in force can be accepted. Text in this layer is
+placeholder only; the real wording is supplied by the owner.
+
 ## The owner path
 
 `portal/data` exports `./tenant` and `./owner` separately. Tenant-facing code
@@ -93,14 +125,14 @@ node dist/provision/provisionMain.js   # or: npm run provision
 Every input is a file named by an environment variable; a secret in argv or in
 the variable itself is refused.
 
-| Variable | Holds |
-| --- | --- |
-| `PORTAL_ADMIN_URL_FILE` | administrator connection URL (host and user required) |
-| `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII) |
-| `PORTAL_OWNER_PASSWORD_FILE` | password for the owner login (printable ASCII) |
-| `PORTAL_DATABASE_NAME` | optional, default `portal` |
-| `PORTAL_TENANT_LOGIN` | optional, default `portal_tenant_login` |
-| `PORTAL_OWNER_LOGIN` | optional, default `portal_owner_login` |
+| Variable                      | Holds                                                 |
+| ----------------------------- | ----------------------------------------------------- |
+| `PORTAL_ADMIN_URL_FILE`       | administrator connection URL (host and user required) |
+| `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII)       |
+| `PORTAL_OWNER_PASSWORD_FILE`  | password for the owner login (printable ASCII)        |
+| `PORTAL_DATABASE_NAME`        | optional, default `portal`                            |
+| `PORTAL_TENANT_LOGIN`         | optional, default `portal_tenant_login`               |
+| `PORTAL_OWNER_LOGIN`          | optional, default `portal_owner_login`                |
 
 The command creates what is absent, checks everything, and repairs nothing.
 `provision/manifest.ts` is the closed manifest: the two roles and two logins

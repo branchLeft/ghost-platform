@@ -25,6 +25,8 @@ export interface ShimConfig {
   drainLeaseSeconds: number;
   drainBatchLimit: number;
   drainPollIntervalMs: number;
+  /** SHIM_DRAIN_OUTCOMES=true serves POST /drain/outcomes; anything else (the default) leaves it off. */
+  drainOutcomesEnabled: boolean;
   // The SMTP front door's RCPT cap only. Ghost's SMTP transactional sender
   // (magic links, password resets, staff invites) addresses exactly one
   // recipient per message (LLD-6), so this bounds that channel alone — the
@@ -154,6 +156,7 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
     drainLeaseSeconds: positiveIntEnv(env, 'SHIM_DRAIN_LEASE_SECONDS', 30),
     drainBatchLimit: positiveIntEnv(env, 'SHIM_DRAIN_BATCH_LIMIT', 25),
     drainPollIntervalMs: positiveIntEnv(env, 'SHIM_DRAIN_POLL_INTERVAL_MS', 250),
+    drainOutcomesEnabled: env.SHIM_DRAIN_OUTCOMES === 'true',
     maxRecipientsPerMessage:
       Number(env.SHIM_MAX_RECIPIENTS_PER_MESSAGE) || DEFAULT_MAX_RECIPIENTS_PER_MESSAGE,
     smtpFrontDoor: {

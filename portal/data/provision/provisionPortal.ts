@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { bind, connect, enterRole, type Tx } from '../src/db.js';
-import { healthReading, tenantRegister } from '../src/schema.js';
+import { documentAcceptance, healthReading, tenantRegister } from '../src/schema.js';
 import {
   checkAgainstManifest,
   formatDifference,
@@ -311,9 +311,13 @@ export async function verifyBoundary(
 }
 
 /** The portal's tables by manifest identity, for the boundary smoke test. */
-const PORTAL_TABLES: Record<string, typeof tenantRegister | typeof healthReading> = {
+const PORTAL_TABLES: Record<
+  string,
+  typeof tenantRegister | typeof healthReading | typeof documentAcceptance
+> = {
   'portal.tenant_register': tenantRegister,
   'portal.health_reading': healthReading,
+  'portal.document_acceptance': documentAcceptance,
 };
 
 /**

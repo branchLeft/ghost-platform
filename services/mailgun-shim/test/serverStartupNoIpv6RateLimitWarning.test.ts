@@ -1,11 +1,11 @@
-import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 /**
  * Runs the real entrypoint and checks express-rate-limit's IPv6 key
@@ -31,10 +31,6 @@ function findFreePort(): Promise<number> {
     });
     srv.on('error', reject);
   });
-}
-
-function build(): void {
-  execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
 }
 
 async function runServerAndCollectOutput(
@@ -113,10 +109,6 @@ async function runServerAndCollectOutput(
 
 describe('src/server.ts — no ERR_ERL_KEY_GEN_IPV6 warning at startup', () => {
   let dir: string;
-
-  beforeAll(() => {
-    build();
-  });
 
   afterEach(() => {
     if (dir) {

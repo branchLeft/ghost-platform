@@ -49,12 +49,13 @@ export class Browser {
 
   async request(
     path: string,
-    init: { method?: string; headers?: Record<string, string> } = {}
+    init: { method?: string; headers?: Record<string, string>; body?: string } = {}
   ): Promise<Reply> {
     const cookies = [...this.#jar].map(([k, v]) => `${k}=${v}`).join('; ');
     const response = await fetch(`${this.#origin}${path}`, {
       method: init.method ?? 'GET',
       redirect: 'manual',
+      ...(init.body === undefined ? {} : { body: init.body }),
       headers: { ...(cookies ? { cookie: cookies } : {}), ...init.headers },
     });
     for (const line of response.headers.getSetCookie()) {

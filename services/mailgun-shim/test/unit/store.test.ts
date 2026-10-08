@@ -971,3 +971,141 @@ describe('createSqliteStore — WAL is genuinely enabled for a file-backed datab
     }
   });
 });
+
+describe('createSqliteStore — outcomes come back after the ack (recordOutcomes)', () => {
+  let store: ShimStore;
+
+  function acked(recipient = 'member@example.com') {
+    store.enqueueBatch({
+      batchId: `b-${recipient}`,
+      domain: DOMAIN,
+      emailId: 'email-1',
+      payload: {
+        from: 'noreply@tenant.example.com',
+        subject: 'Hi',
+        html: '<p>hi</p>',
+        text: 'hi',
+        headers: {},
+        recipientVariables: {},
+      },
+      recipients: [recipient],
+      now: 0,
+    });
+    const [row] = store.claimForDrain(0, 30, 10);
+    store.ackDrain([{ id: row!.id, drainCount: row!.drainCount }], 1);
+    return { id: row!.id, drainCount: row!.drainCount };
+  }
+
+  function types(): string[] {
+    return store.listEvents(DOMAIN, { limit: 100, offset: 0 }).events.map((e) => e.type);
+  }
+
+  beforeEach(() => {
+    store = createSqliteStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('an ack alone records no delivered event: accepted is not delivered', () => {
+    acked();
+    expect(types()).toEqual([]);
+  });
+
+  it('a delivered outcome records exactly one delivered event, carrying the email id', () => {
+    const { id, drainCount } = acked();
+    const result = store.recordOutcomes([{ id, drainCount, outcome: 'delivered' }], 5);
+    expect(result).toEqual({ recorded: [id], alreadyHandled: [], unknown: [] });
+    const events = store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'delivered',
+      recipient: 'member@example.com',
+      emailId: 'email-1',
+    });
+  });
+
+  it('a repeated outcome is alreadyHandled and records no second event', () => {
+    const { id, drainCount } = acked();
+    store.recordOutcomes([{ id, drainCount, outcome: 'delivered' }], 5);
+    const again = store.recordOutcomes([{ id, drainCount, outcome: 'delivered' }], 6);
+    expect(again.alreadyHandled).toEqual([id]);
+    expect(types()).toEqual(['delivered']);
+  });
+
+  it('a permanent failure records a failed event and suppresses the address as a bounce', () => {
+    const { id, drainCount } = acked();
+    const result = store.recordOutcomes(
+      [
+        {
+          id,
+          drainCount,
+          outcome: 'failed',
+          severity: 'permanent',
+          code: 550,
+          message: 'no such user',
+        },
+      ],
+      5
+    );
+    expect(result.recorded).toEqual([id]);
+    const [event] = store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events;
+    expect(event).toMatchObject({
+      type: 'failed',
+      severity: 'permanent',
+      errorCode: 550,
+      errorMessage: 'no such user',
+    });
+    expect(store.isSuppressed(DOMAIN, 'bounces', 'member@example.com')).toBe(true);
+    // And a late delivered report cannot overturn it.
+    expect(
+      store.recordOutcomes([{ id, drainCount, outcome: 'delivered' }], 6).alreadyHandled
+    ).toEqual([id]);
+  });
+
+  it('a temporary failure records an event but neither suppresses nor ends the message', () => {
+    const { id, drainCount } = acked();
+    store.recordOutcomes([{ id, drainCount, outcome: 'failed', severity: 'temporary' }], 5);
+    expect(store.isSuppressed(DOMAIN, 'bounces', 'member@example.com')).toBe(false);
+    const final = store.recordOutcomes([{ id, drainCount, outcome: 'delivered' }], 6);
+    expect(final.recorded).toEqual([id]);
+    expect(types()).toEqual(['failed', 'delivered']);
+  });
+
+  it('refuses an outcome for an unknown id, a stale generation, or a message not yet acked', () => {
+    const { id, drainCount } = acked();
+    store.enqueueBatch({
+      batchId: 'held-batch',
+      domain: DOMAIN,
+      emailId: null,
+      payload: {
+        from: 'a@tenant.example.com',
+        subject: 's',
+        html: '',
+        text: '',
+        headers: {},
+        recipientVariables: {},
+      },
+      recipients: ['held@example.com'],
+      now: 0,
+    });
+    const [held] = store.claimForDrain(2, 30, 10);
+    const result = store.recordOutcomes(
+      [
+        { id: 'nope', drainCount: 1, outcome: 'delivered' },
+        { id, drainCount: drainCount + 1, outcome: 'delivered' },
+        { id: held!.id, drainCount: held!.drainCount, outcome: 'delivered' },
+      ],
+      5
+    );
+    expect(result.unknown).toEqual(['nope', id, held!.id]);
+    expect(types()).toEqual([]);
+  });
+
+  it('a late ack of an already-delivered message is alreadyHandled, not unknown', () => {
+    const { id, drainCount } = acked();
+    store.recordOutcomes([{ id, drainCount, outcome: 'delivered' }], 5);
+    expect(store.ackDrain([{ id, drainCount }], 6).alreadyHandled).toEqual([id]);
+  });
+});

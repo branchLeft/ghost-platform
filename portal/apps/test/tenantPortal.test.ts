@@ -29,6 +29,48 @@ const ORG_UNREGISTERED = 'org-not-in-register';
 let fixture: Fixture;
 let app: Running;
 let now = NOW;
+
+let ownerDb: OwnerDb;
+
+const portalOn = (origin: string, db: TenantDb) =>
+  createTenantPortal({
+    issuer: ISSUER,
+    clientId: CLIENT_PORTAL,
+    projectId: PROJECT_ID,
+    publicOrigin: origin,
+    allowedOrgIds: new Set([ORG_A, ORG_B, ORG_UNREGISTERED]),
+    db,
+    secureCookies: false,
+    clock: () => now,
+    fetch: issuer.fetch,
+    fetchKeys: async () => jwks,
+    sessionSeconds: 600,
+  });
+
+/** What only tenant B's reading can put on a page: its version, its check and its dated mismatch. */
+const showsB = (body: string): boolean =>
+  ['6.54.0', 'VERSION_MISMATCH', '2026-10-02'].some((marker) => body.includes(marker));
+
+/**
+ * The sabotage, kept as a control case: the health read taken from the owner's
+ * cross-tenant query (the latest reading across every tenant, no tenant key).
+ */
+const crossTenantDb = (): TenantDb =>
+  ({
+    scopeForOrganisation: (orgId: string) =>
+      new TenantDb(fixture.tenant).scopeForOrganisation(orgId),
+    ownRegistration: (scope: Parameters<TenantDb['ownRegistration']>[0]) =>
+      new TenantDb(fixture.tenant).ownRegistration(scope),
+    ownHealth: async () => {
+      const all = await ownerDb.listHealth();
+      return (
+        all
+          .map((t) => t.health)
+          .filter((h) => h !== null)
+          .at(-1) ?? null
+      );
+    },
+  }) as unknown as TenantDb;
 const issuer = new FakeIssuer();
 
 const tenantToken = (org: string, client = CLIENT_PORTAL, role = 'tenant-admin'): string =>
@@ -55,21 +97,8 @@ beforeAll(async () => {
     ],
     new Date('2026-10-02T10:00:00Z')
   );
-  app = await serve((origin) =>
-    createTenantPortal({
-      issuer: ISSUER,
-      clientId: CLIENT_PORTAL,
-      projectId: PROJECT_ID,
-      publicOrigin: origin,
-      allowedOrgIds: new Set([ORG_A, ORG_B, ORG_UNREGISTERED]),
-      db: new TenantDb(fixture.tenant),
-      secureCookies: false,
-      clock: () => now,
-      fetch: issuer.fetch,
-      fetchKeys: async () => jwks,
-      sessionSeconds: 600,
-    })
-  );
+  ownerDb = owner;
+  app = await serve((origin) => portalOn(origin, new TenantDb(fixture.tenant)));
 });
 
 afterAll(async () => {
@@ -114,9 +143,7 @@ describe('the tenant portal sign-in', () => {
     expect(page.body).toContain('HEALTHY');
     expect(page.body).toContain('6.55.0');
     expect(page.body).toContain('VERSION_MATCHES');
-    expect(page.body).not.toContain('6.54.0');
-    expect(page.body).not.toContain('VERSION_MISMATCH');
-    expect(page.body).not.toContain('2026-10-02');
+    expect(showsB(page.body)).toBe(false);
   });
 
   it("shows tenant B its own dated mismatch, and nothing of A's reading", async () => {
@@ -227,6 +254,21 @@ describe('the tenant portal sign-in', () => {
     const browser = new Browser(app.origin);
     const [header, payload] = tenantToken(ORG_A).split('.');
     expect((await signIn(browser, `${header}.${payload}.AAAA`)).status).toBe(403);
+  });
+});
+
+describe('the control case for the tenant health page', () => {
+  it("goes red when the page is rendered from the owner's cross-tenant query", async () => {
+    const leaky = await serve((origin) => portalOn(origin, crossTenantDb()));
+    try {
+      const browser = new Browser(leaky.origin);
+      await signIn(browser, tenantToken(ORG_A));
+      const page = await browser.request('/');
+      // The same detector the real test uses for "A never sees B" fires here.
+      expect(showsB(page.body)).toBe(true);
+    } finally {
+      await leaky.close();
+    }
   });
 });
 

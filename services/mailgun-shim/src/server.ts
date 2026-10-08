@@ -27,6 +27,7 @@ const app = createApp(
     leaseSeconds: config.drainLeaseSeconds,
     batchLimit: config.drainBatchLimit,
     pollIntervalMs: config.drainPollIntervalMs,
+    outcomesEnabled: config.drainOutcomesEnabled,
   },
   throttle,
   log

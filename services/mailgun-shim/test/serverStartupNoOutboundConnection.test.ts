@@ -1,11 +1,11 @@
-import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import nodemailer from 'nodemailer';
 import { createSqliteStore } from '../src/store.js';
 
@@ -38,10 +38,6 @@ function findFreePort(): Promise<number> {
     });
     srv.on('error', reject);
   });
-}
-
-function build(): void {
-  execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
 }
 
 interface RunResult {
@@ -216,10 +212,6 @@ async function runServerLifecycle(opts: RunOptions): Promise<RunResult> {
 describe('src/server.ts — the real entrypoint, with real queued mail, makes no outbound connection of any kind', () => {
   let dir: string;
   let dbPath: string;
-
-  beforeAll(() => {
-    build();
-  });
 
   afterEach(() => {
     if (dir) {

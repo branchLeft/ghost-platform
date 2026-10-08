@@ -88,6 +88,18 @@ export interface CollectorConfig {
    * paging immediately rather than waiting out a cooldown.
    */
   heartbeatFailureThreshold: number;
+  /**
+   * Opt-in outcome path; absent unless BOTH COLLECTOR_OUTCOMES_RETURN_PATH
+   * and COLLECTOR_OUTCOMES_DSN_DIR are set (one without the other throws).
+   * Absent, submissions and the drain loop are exactly as before.
+   */
+  outcomes?: {
+    /** Envelope sender mx1 returns delivery status notifications to. */
+    returnPath: string;
+    /** Directory the notifications arrive in, one .eml file each. */
+    dsnDir: string;
+    pollMs: number;
+  };
 }
 
 export type CollectorEnv = Record<string, string | undefined>;
@@ -113,6 +125,7 @@ const DEFAULT_DRAIN_RETRY_BACKOFF_MS = 2_000;
 const DEFAULT_EMPTY_POLL_BACKOFF_MS = 250;
 const DEFAULT_MESSAGES_PER_HOUR = 50;
 const DEFAULT_DEDUPE_TTL_MS = 60 * 60 * 1000;
+const DEFAULT_OUTCOMES_POLL_MS = 30_000;
 const DEFAULT_SHIM_SCHEME = 'http';
 const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD = 5;
 
@@ -125,6 +138,24 @@ function shimSchemeEnv(env: CollectorEnv): string {
     throw new Error(`COLLECTOR_SHIM_SCHEME must be "http" or "https", got "${raw}"`);
   }
   return raw;
+}
+
+function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
+  const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
+  const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
+  if (!returnPath && !dsnDir) {
+    return undefined;
+  }
+  if (!returnPath || !dsnDir) {
+    throw new Error(
+      'COLLECTOR_OUTCOMES_RETURN_PATH and COLLECTOR_OUTCOMES_DSN_DIR must be set together'
+    );
+  }
+  return {
+    returnPath,
+    dsnDir,
+    pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
+  };
 }
 
 export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
@@ -174,5 +205,6 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       'COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD',
       DEFAULT_HEARTBEAT_FAILURE_THRESHOLD
     ),
+    outcomes: outcomesEnv(env),
   };
 }

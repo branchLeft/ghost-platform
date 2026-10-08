@@ -66,7 +66,8 @@ export interface ListEventsResult {
 }
 
 /** 'held' is a lease: drained but not yet acknowledged. See claimForDrain. */
-export type QueueRecipientStatus = 'pending' | 'held' | 'sent' | 'failed' | 'suppressed';
+export type QueueRecipientStatus =
+  'pending' | 'held' | 'sent' | 'delivered' | 'failed' | 'suppressed';
 
 /** The parts of a parsed Mailgun send request a queued recipient still needs at drain time. */
 export interface QueueBatchPayload {
@@ -119,6 +120,30 @@ export interface AckDrainResult {
 }
 
 /**
+ * What the drainer reports back about a message it has already acked, from
+ * the receiving MTA's own outcome. 'delivered' means the receiving MTA
+ * accepted it for the recipient; 'failed' carries a severity.
+ */
+export interface OutcomeRequest {
+  id: string;
+  drainCount: number;
+  outcome: 'delivered' | 'failed';
+  /** Required for 'failed'. Only 'permanent' ends the message and suppresses the address. */
+  severity?: 'permanent' | 'temporary';
+  code?: number;
+  message?: string;
+}
+
+export interface RecordOutcomesResult {
+  /** ids whose outcome this call recorded (a temporary failure is recorded as an event but leaves the row 'sent'). */
+  recorded: string[];
+  /** ids already carrying a final outcome: a duplicate report, not an error. */
+  alreadyHandled: string[];
+  /** ids not acked at the named generation: unknown, stale, superseded or not yet acked. */
+  unknown: string[];
+}
+
+/**
  * Storage seam for tenant keys, delivery events, suppressions and the durable
  * send queue: one SQLite file, single-instance by design. See store.md.
  */
@@ -167,6 +192,15 @@ export interface ShimStore {
   ackDrain(acks: AckRequest[], now: number): AckDrainResult;
 
   /**
+   * Records the receiving MTA's outcome for messages already acked ('sent').
+   * Only this method ever records a 'delivered' event; an ack never does.
+   * A permanent failure ends the row 'failed' and suppresses the address as a
+   * bounce; a temporary one is recorded as an event only. See
+   * store.md#outcomes-come-back-after-the-ack.
+   */
+  recordOutcomes(outcomes: OutcomeRequest[], now: number): RecordOutcomesResult;
+
+  /**
    * Seconds since the oldest pending or held recipient was enqueued, or null.
    * Held counts, so a drainer that polls but never acks still shows here.
    */
@@ -186,7 +220,7 @@ export interface ShimStore {
 type Db = BetterSQLite3Database;
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
-const TERMINAL_STATUSES: QueueRecipientStatus[] = ['sent', 'failed', 'suppressed'];
+const TERMINAL_STATUSES: QueueRecipientStatus[] = ['sent', 'delivered', 'failed', 'suppressed'];
 const UNDRAINED_STATUSES: QueueRecipientStatus[] = ['pending', 'held'];
 
 // The type is compile-time only, and a typo'd string stored under a real
@@ -477,7 +511,7 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
             .get();
           if (!row) {
             unknown.push(id);
-          } else if (row.status === 'sent') {
+          } else if (row.status === 'sent' || row.status === 'delivered') {
             alreadyHandled.push(id);
           } else if (row.status !== 'held' || row.drainCount !== drainCount) {
             // Lapsed and reclaimed, resolved otherwise, or re-offered to a newer claim.
@@ -493,6 +527,92 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
         }
 
         return { acked, alreadyHandled, unknown };
+      });
+    },
+
+    recordOutcomes(outcomes, now) {
+      return db.transaction((tx) => {
+        const recorded: string[] = [];
+        const alreadyHandled: string[] = [];
+        const unknown: string[] = [];
+
+        for (const report of outcomes) {
+          const row = tx
+            .select({
+              status: queueRecipients.status,
+              drainCount: queueRecipients.drainCount,
+              recipient: queueRecipients.recipient,
+              domain: queueBatches.domain,
+              emailId: queueBatches.emailId,
+            })
+            .from(queueRecipients)
+            .innerJoin(queueBatches, eq(queueBatches.batchId, queueRecipients.batchId))
+            .where(eq(queueRecipients.id, report.id))
+            .get();
+          if (!row || row.drainCount !== report.drainCount) {
+            unknown.push(report.id);
+            continue;
+          }
+          if (row.status === 'delivered' || (row.status === 'failed' && row.drainCount > 0)) {
+            alreadyHandled.push(report.id);
+            continue;
+          }
+          if (row.status !== 'sent') {
+            // Not acked yet (or never drained): the drainer has no outcome to give.
+            unknown.push(report.id);
+            continue;
+          }
+
+          const base = {
+            domain: row.domain,
+            recipient: row.recipient,
+            emailId: row.emailId,
+            providerMessageId: null,
+            timestamp: now,
+          };
+          if (report.outcome === 'delivered') {
+            tx.update(queueRecipients)
+              .set({ status: 'delivered' })
+              .where(eq(queueRecipients.id, report.id))
+              .run();
+            insertEvent(tx, {
+              ...base,
+              type: 'delivered',
+              severity: null,
+              errorCode: null,
+              errorMessage: null,
+            });
+          } else if (report.severity === 'permanent') {
+            tx.update(queueRecipients)
+              .set({ status: 'failed', lastError: report.message ?? 'Permanent delivery failure' })
+              .where(eq(queueRecipients.id, report.id))
+              .run();
+            insertEvent(tx, {
+              ...base,
+              type: 'failed',
+              severity: 'permanent',
+              errorCode: report.code ?? null,
+              errorMessage: report.message ?? null,
+            });
+            tx.insert(suppressions)
+              .values({ domain: row.domain, type: 'bounces', email: row.recipient })
+              .onConflictDoNothing()
+              .run();
+          } else {
+            // Temporary: the receiving MTA may still deliver, so the row stays 'sent'
+            // (accepted) and a later final outcome can still arrive.
+            insertEvent(tx, {
+              ...base,
+              type: 'failed',
+              severity: 'temporary',
+              errorCode: report.code ?? null,
+              errorMessage: report.message ?? null,
+            });
+          }
+          recorded.push(report.id);
+        }
+
+        return { recorded, alreadyHandled, unknown };
       });
     },
 

@@ -27,10 +27,35 @@ export interface AckResult {
   unknown: string[];
 }
 
+export interface OutcomeReport {
+  id: string;
+  drainCount: number;
+  outcome: 'delivered' | 'failed';
+  severity?: 'permanent' | 'temporary';
+  code?: number;
+  message?: string;
+}
+
+export interface OutcomeResult {
+  recorded: string[];
+  alreadyHandled: string[];
+  unknown: string[];
+}
+
 export interface DrainClient {
   /** One GET /drain call against `target`, held open server-side for up to that shim's own holdMs. */
   drain(target: DrainTarget, signal?: AbortSignal): Promise<WireMessage[]>;
   ack(target: DrainTarget, acks: DrainAck[], signal?: AbortSignal): Promise<AckResult>;
+}
+
+/** Kept apart from DrainClient so the drain loop's own doubles never need it. */
+export interface OutcomeClient {
+  /** POST /drain/outcomes: the receiving MTA's final word on messages already acked. The spool serves it only when opted in; otherwise this rejects (404) and the caller retries later. */
+  reportOutcomes(
+    target: DrainTarget,
+    outcomes: OutcomeReport[],
+    signal?: AbortSignal
+  ): Promise<OutcomeResult>;
 }
 
 export interface DrainClientOptions {
@@ -47,7 +72,7 @@ export interface DrainClientOptions {
  * is an independent package, and this client is proven against it by
  * running the real thing (docker-proof/), not by sharing code with it.
  */
-export function createDrainClient(opts: DrainClientOptions): DrainClient {
+export function createDrainClient(opts: DrainClientOptions): DrainClient & OutcomeClient {
   const doFetch = opts.fetchImpl ?? fetch;
 
   async function drain(target: DrainTarget, signal?: AbortSignal): Promise<WireMessage[]> {
@@ -84,7 +109,27 @@ export function createDrainClient(opts: DrainClientOptions): DrainClient {
     return (await res.json()) as AckResult;
   }
 
-  return { drain, ack };
+  async function reportOutcomes(
+    target: DrainTarget,
+    outcomes: OutcomeReport[],
+    signal?: AbortSignal
+  ): Promise<OutcomeResult> {
+    const res = await doFetch(`${target.baseUrl}/drain/outcomes`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${opts.drainToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ outcomes }),
+      signal: signal ?? AbortSignal.timeout(opts.drainTimeoutMs),
+    });
+    if (!res.ok) {
+      throw new Error(`POST ${target.baseUrl}/drain/outcomes -> ${res.status}`);
+    }
+    return (await res.json()) as OutcomeResult;
+  }
+
+  return { drain, ack, reportOutcomes };
 }
 
 /**

@@ -5,7 +5,7 @@ import { requireDrainToken } from '../drainAuth.js';
 import type { DrainWake } from '../drainWake.js';
 import { resolveRecipientTokens } from '../mailgunFields.js';
 import type { Logger } from '../log.js';
-import type { AckRequest, DrainedRecipient, ShimStore } from '../store.js';
+import type { AckRequest, DrainedRecipient, OutcomeRequest, ShimStore } from '../store.js';
 import type { Throttle } from '../throttle.js';
 
 export interface DrainRouterOptions {
@@ -17,6 +17,12 @@ export interface DrainRouterOptions {
   batchLimit: number;
   /** How often a held GET /drain re-checks the store while waiting for something to become due — bounds the wake-to-response latency for anything drainWake.notify() alone doesn't cover (e.g. a lease lapsing while no new enqueue happens). */
   pollIntervalMs: number;
+  /**
+   * Serves POST /drain/outcomes. Off unless explicitly true: an unset value
+   * leaves the route unregistered (404), so a shim that has not opted in
+   * behaves exactly as before this route existed. See drain.md#outcomes.
+   */
+  outcomesEnabled?: boolean;
 }
 
 interface WireMessage {
@@ -103,6 +109,55 @@ function parseAcks(body: unknown): AckRequest[] | null {
       return null;
     }
     parsed.push({ id, drainCount });
+  }
+  return parsed;
+}
+
+const MAX_OUTCOMES_PER_REQUEST = 200;
+
+/**
+ * `{ outcomes: [{ id, drainCount, outcome: 'delivered' | 'failed',
+ * severity?: 'permanent' | 'temporary', code?, message? }] }`. A 'failed'
+ * outcome must name its severity: defaulting one would either suppress an
+ * address on a transient fault or hide a real bounce.
+ */
+function parseOutcomes(body: unknown): OutcomeRequest[] | null {
+  if (typeof body !== 'object' || body === null) {
+    return null;
+  }
+  const list = (body as Record<string, unknown>).outcomes;
+  if (!Array.isArray(list) || list.length === 0 || list.length > MAX_OUTCOMES_PER_REQUEST) {
+    return null;
+  }
+  const parsed: OutcomeRequest[] = [];
+  for (const entry of list) {
+    if (typeof entry !== 'object' || entry === null) {
+      return null;
+    }
+    const { id, drainCount, outcome, severity, code, message } = entry as Record<string, unknown>;
+    if (typeof id !== 'string' || id.length === 0 || !isPositiveInteger(drainCount)) {
+      return null;
+    }
+    if (outcome !== 'delivered' && outcome !== 'failed') {
+      return null;
+    }
+    if (outcome === 'failed' && severity !== 'permanent' && severity !== 'temporary') {
+      return null;
+    }
+    if (code !== undefined && (typeof code !== 'number' || !Number.isInteger(code))) {
+      return null;
+    }
+    if (message !== undefined && typeof message !== 'string') {
+      return null;
+    }
+    parsed.push({
+      id,
+      drainCount,
+      outcome,
+      ...(outcome === 'failed' ? { severity: severity as 'permanent' | 'temporary' } : {}),
+      ...(code !== undefined ? { code } : {}),
+      ...(message !== undefined ? { message: message.slice(0, 500) } : {}),
+    });
   }
   return parsed;
 }
@@ -196,6 +251,30 @@ export function createDrainRouter(
       res.status(200).json(result);
     })
   );
+
+  if (options.outcomesEnabled === true) {
+    router.post(
+      '/drain/outcomes',
+      auth,
+      express.json({ limit: '256kb' }),
+      asyncHandler(log, async (req: Request, res: Response) => {
+        const outcomes = parseOutcomes(req.body);
+        if (!outcomes) {
+          res.status(400).json({
+            message: `Body must be { outcomes: [{ id, drainCount, outcome: 'delivered' | 'failed', severity (required for failed) }] } with 1 to ${MAX_OUTCOMES_PER_REQUEST} entries`,
+          });
+          return;
+        }
+        const result = store.recordOutcomes(outcomes, now());
+        log.info('drain_outcomes', {
+          recorded: result.recorded.length,
+          alreadyHandled: result.alreadyHandled.length,
+          unknown: result.unknown.length,
+        });
+        res.status(200).json(result);
+      })
+    );
+  }
 
   return router;
 }
