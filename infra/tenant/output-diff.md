@@ -38,7 +38,10 @@ decision.
 - **`mail-spool`**: one mail spool per host serves the Mailgun-shaped API
   (LLD-6 §03), and member mail is sent as the tenant's own sending identity.
   `bulkEmail__mailgun__baseUrl` points at the host spool, not the central
-  mail host, and `mail__from` is the render core's sending address. The owner
+  mail host, and `mail__from` is the render core's sending address. Since
+  render core 0.1.1, both colours also join the tenant's own internal network
+  to the spool, `branchleft-mail-<uid>`, declared external, and the base URL
+  is the spool's service name on it. The owner
   ruled that tenant zero's live switch-over waits until its per-host spool is
   live.
 - **`single-renderer`**: the component renders nothing itself (this story's
@@ -48,20 +51,22 @@ decision.
   returns seven artefacts, not three: `provisionScript` replaces
   `hostProvisioningCommand`, and `imageEnvFile`, `edgeSiteBlock` and
   `ghostSettings` are new.
+- **`owner-address-secret`**: the owner's email address is a person's, so it
+  is never a descriptor field a tenant repository commits; it reaches the
+  host only in the secrets file (index.md#the-owner-address). The secrets
+  file gains `GHOST_OWNER_EMAIL`. 4.0.0 took no owner address at all.
 
 ## The slug
 
-The fixture's slug is `zero`, not tenant zero's own. **Render core 0.1.0
-reserves tenant zero's slug** in `RESERVED_STACK_NAMES`, so `validate()` and
-`render()` both refuse it, and this component cannot render tenant zero at
-all until a render core release stops reserving it. `naming.md` in this
-package records why that slug must stay unreserved: it is `GhostTenant`'s own
-tenant-zero slug, and reserving it makes tenant zero's stack throw at
-construction. The last test in `output-diff.test.ts` pins the current
-refusal, so the release that fixes it fails that test and the fixture can move
-to the real slug.
+The fixture's slug is `zero`, not tenant zero's own. Render core 0.1.0
+reserved tenant zero's slug in `RESERVED_STACK_NAMES`, so this component
+could not render tenant zero at all; 0.1.1 stopped reserving it, and the
+last test in `output-diff.test.ts` now checks that `validateTenantStack()`
+accepts it. `naming.md` in this package records why that slug must stay
+unreserved. The fixture stays on `zero` because the 4.0.0 baseline was
+recorded with it, and the sending domain below still differs.
 
-**The sending domain is a second difference.** Render core 0.1.0 refuses a
+**The sending domain is a second difference.** The render core refuses a
 tenant whose sending domain lies inside a domain the platform owns ("a tenant
 signs its own domain"), so the fixture signs `zero-mail.example.test`, and the
 4.0.0 baseline was recorded with the same bulk-mail domain. Tenant zero's

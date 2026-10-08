@@ -1,6 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { validate, type TenantDescriptor } from '@branchleft/ghost-platform-render-core';
+import {
+  validateTenantStack,
+  type TenantStackDescriptor,
+} from '@branchleft/ghost-platform-render-core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { GhostTenant as GhostTenantClass } from './index';
 import { composePaths, diff, envFilePaths, flatten, type DiffEntry } from './test/diff';
@@ -26,6 +29,7 @@ const DECISIONS = new Set([
   'mail-spool',
   'single-renderer',
   'render-core-artefact',
+  'owner-address-secret',
 ]);
 
 interface ReviewedEntry extends DiffEntry {
@@ -166,9 +170,8 @@ describe('the reviewed output diff against tenant 4.0.0', () => {
 });
 
 describe('tenant zero itself', () => {
-  // See output-diff.md#the-slug. When a render core release stops reserving
-  // tenant zero's slug, this fails, and the fixture moves to the real slug.
-  it('is refused by render core 0.1.0, which reserves its slug', () => {
+  // See output-diff.md#the-slug.
+  it('is accepted by the render core since 0.1.1, which stopped reserving its slug', () => {
     const tenantZero = {
       ...tenantZeroEquivalent(),
       slug: 'blog',
@@ -176,7 +179,7 @@ describe('tenant zero itself', () => {
       hostname: { kind: 'ours', sub: 'blog', gated: false },
       database: { ...tenantZeroEquivalent().database, name: 'ghost_blog', user: 'ghost_blog' },
       media: { ...tenantZeroEquivalent().media, bucket: 'branchleft-media-blog' },
-    } as unknown as TenantDescriptor;
-    expect(() => validate(tenantZero, TEST_ZONES)).toThrow(/reserved/);
+    } as unknown as TenantStackDescriptor;
+    expect(validateTenantStack(tenantZero, TEST_ZONES)).toBe(tenantZero);
   });
 });

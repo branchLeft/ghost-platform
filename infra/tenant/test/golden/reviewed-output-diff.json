@@ -62,6 +62,18 @@
     "decision": "single-renderer"
   },
   {
+    "change": "added",
+    "path": "compose.networks.branchleft-mail-30001.external",
+    "after": true,
+    "decision": "mail-spool"
+  },
+  {
+    "change": "added",
+    "path": "compose.networks.branchleft-mail-30001.name",
+    "after": "branchleft-mail-30001",
+    "decision": "mail-spool"
+  },
+  {
     "change": "changed",
     "path": "compose.serviceNames",
     "before": "ghost",
@@ -72,7 +84,7 @@
     "change": "changed",
     "path": "compose.services.ghost.environment.bulkEmail__mailgun__baseUrl",
     "before": "https://mx.example.test:8443",
-    "after": "http://mail-spool.example.test:8080",
+    "after": "http://mail-spool:8080",
     "decision": "mail-spool"
   },
   {
@@ -384,6 +396,18 @@
   },
   {
     "change": "added",
+    "path": "compose.services.ghost.networks.0",
+    "after": "default",
+    "decision": "mail-spool"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.networks.1",
+    "after": "branchleft-mail-30001",
+    "decision": "mail-spool"
+  },
+  {
+    "change": "added",
     "path": "output.edgeSiteBlock",
     "after": "{\n  \"displayHostname\": \"zero.platform-domain.example.test\",\n  \"admittedHostname\": \"zero.platform-domain.example.test\",\n  \"gate\": {\n    \"kind\": \"none\"\n  },\n  \"requestBodyMaxSize\": \"64MiB\",\n  \"contentSecurityPolicy\": \"default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'\",\n  \"contentSecurityPolicyMode\": \"report-only\"\n}\n",
     "decision": "render-core-artefact"
@@ -429,7 +453,7 @@
   {
     "change": "added",
     "path": "secrets.comment.2",
-    "after": "# rewrite this file. render() names the keys this tenant needs below \u2014",
+    "after": "# rewrite this file. render() names the keys this tenant needs below —",
     "decision": "single-renderer"
   },
   {
@@ -437,5 +461,11 @@
     "path": "secrets.comment.3",
     "after": "# it never has a value to put here.",
     "decision": "single-renderer"
+  },
+  {
+    "change": "added",
+    "path": "secrets.GHOST_OWNER_EMAIL",
+    "after": "owner@zero.platform-domain.example.test",
+    "decision": "owner-address-secret"
   }
 ]

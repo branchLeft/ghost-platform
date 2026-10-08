@@ -6,7 +6,7 @@ One paying Ghost tenant on a shared Hetzner app host, configured rather than
 created.
 
 **Every artefact comes from the render core.** The component validates the
-descriptor with `validate()`, calls `render()` from
+descriptor with `validateTenantStack()`, calls `render()` from
 `@branchleft/ghost-platform-render-core`, and exposes the seven artefacts it
 returns as stack outputs. It renders nothing itself. The broker renders demos
 from the same function, so the two reconcilers cannot drift apart. The render
@@ -29,10 +29,29 @@ operator).
 
 ## GhostTenantSecrets
 
-The descriptor carries no secret by design, so the five secret values arrive
-beside it. Which ones a tenant needs is not decided here: the render core's
+The descriptor carries no secret by design, so the five secret values and
+the owner address arrive beside it. Which ones a tenant needs is not decided here: the render core's
 `secrets.env` template names them, from the descriptor's database, media,
 transport and mail choices.
+
+## The owner address
+
+The owner's email address is a person's, and a tenant repository holds no
+personal data, so it is not in the descriptor this component takes
+(`TenantStackDescriptor`). It arrives as `secrets.ownerEmail`, which a tenant
+program reads with `config.requireSecret`. The render core's template names
+it as `GHOST_OWNER_EMAIL` for every paying tenant, so it is required like any
+other secret, and it reaches the host only in `secretsEnvFile`, a Pulumi
+secret. Compose never references the key, so no container receives it.
+
+Its shape is checked by `validateOwnerEmailSecret` inside the secret
+`Output`, at deploy time, and a refusal withholds the value. A descriptor
+that still carries `ownerEmail` is refused by `validateTenantStack` before
+anything is registered.
+
+On the host, it is the address `provision-owner.mjs --email` takes
+(`adapters/sso/scripts/provision-owner.md`) when the owner account is
+created.
 
 ## Secret coverage
 
@@ -63,7 +82,7 @@ the descriptor does not carry it.
 
 ## Constructor order
 
-The kind check, `validate()`, `render()` and the secret-coverage check all run
+The kind check, `validateTenantStack()`, `render()` and the secret-coverage check all run
 before `super()`, so an invalid descriptor never reaches the engine,
 registered or not.
 

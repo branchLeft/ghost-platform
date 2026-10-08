@@ -1,5 +1,9 @@
 import * as pulumi from '@pulumi/pulumi';
-import { render, validate, type TenantDescriptor } from '@branchleft/ghost-platform-render-core';
+import {
+  render,
+  validateTenantStack,
+  type TenantStackDescriptor,
+} from '@branchleft/ghost-platform-render-core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   assertSecretCoverage,
@@ -32,15 +36,15 @@ beforeAll(async () => {
 
 function build(
   name: string,
-  descriptor: TenantDescriptor = tenantZeroEquivalent(),
+  descriptor: TenantStackDescriptor = tenantZeroEquivalent(),
   secrets: GhostTenantSecrets = tenantZeroSecrets()
 ): GhostTenantClass {
   return new GhostTenant(name, { descriptor, zones: TEST_ZONES, secrets });
 }
 
-function rendered(descriptor: TenantDescriptor = tenantZeroEquivalent()): Map<string, string> {
+function rendered(descriptor: TenantStackDescriptor = tenantZeroEquivalent()): Map<string, string> {
   return new Map(
-    render(validate(descriptor, TEST_ZONES), TEST_ZONES).map((a) => [a.path, a.content])
+    render(validateTenantStack(descriptor, TEST_ZONES), TEST_ZONES).map((a) => [a.path, a.content])
   );
 }
 
@@ -138,6 +142,7 @@ describe('GhostTenant renders nothing itself', () => {
     });
     expect(filled).toContain('GHOST_DB_PASSWORD=PLACEHOLDER_DB_PASSWORD\n');
     expect(filled).toContain('GHOST_BULK_EMAIL_API_KEY=PLACEHOLDER_BULK_KEY\n');
+    expect(filled).toContain('GHOST_OWNER_EMAIL=owner@zero.platform-domain.example.test\n');
   });
 
   it('marks the secrets file as a Pulumi secret', async () => {
@@ -176,14 +181,15 @@ describe('GhostTenant refusals, all before anything is registered', () => {
   }
 
   it('refuses a demo descriptor', () => {
-    refusesUnregistered('demo', () => build('demo', demoDescriptor(), {}), /must be "tenant"/);
+    const { ownerEmail: _ownerEmail, ...demo } = demoDescriptor();
+    refusesUnregistered('demo', () => build('demo', demo, {}), /must be "tenant"/);
   });
 
   it('refuses a descriptor the render core does not validate', () => {
     const invalid = {
       ...tenantZeroEquivalent(),
       slug: 'Not A Slug',
-    } as unknown as TenantDescriptor;
+    } as unknown as TenantStackDescriptor;
     refusesUnregistered('invalid', () => build('invalid', invalid), /slug/);
   });
 
@@ -196,11 +202,29 @@ describe('GhostTenant refusals, all before anything is registered', () => {
     );
   });
 
+  it('refuses a descriptor that still carries ownerEmail, without echoing it', () => {
+    const inline = {
+      ...tenantZeroEquivalent(),
+      ownerEmail: 'inline-owner-3d8f@example.test',
+    } as unknown as TenantStackDescriptor;
+    expect(() => build('inline-owner', inline)).not.toThrow(/inline-owner-3d8f/);
+    refusesUnregistered('inline-owner', () => build('inline-owner', inline), /must not carry/);
+  });
+
+  it('refuses a missing owner address', () => {
+    const { ownerEmail: _omitted, ...rest } = tenantZeroSecrets();
+    refusesUnregistered(
+      'no-owner',
+      () => build('no-owner', tenantZeroEquivalent(), rest),
+      /ownerEmail \(GHOST_OWNER_EMAIL\)/
+    );
+  });
+
   it('refuses a secret the descriptor does not need', () => {
     const queue = {
       ...tenantZeroEquivalent(),
       transport: { kind: 'queue', path: '/var/spool/zero' },
-    } as unknown as TenantDescriptor;
+    } as unknown as TenantStackDescriptor;
     refusesUnregistered('orphan', () => build('orphan', queue), /mailPassword was supplied/);
   });
 });

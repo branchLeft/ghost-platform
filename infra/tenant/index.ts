@@ -12,9 +12,10 @@ import {
   secretsEnvPath,
   stackDirectory,
   stackName,
-  validate,
+  validateOwnerEmailSecret,
+  validateTenantStack,
   type Artefact,
-  type TenantDescriptor,
+  type TenantStackDescriptor,
   type ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
 
@@ -34,13 +35,17 @@ export interface GhostTenantSecrets {
   mailPassword?: pulumi.Input<string>;
   /** The bulk-mail API key, when the descriptor enables mail. */
   bulkEmailApiKey?: pulumi.Input<string>;
+  /** The owner's email address. A person's address, so never a descriptor
+   * field: see index.md#the-owner-address. */
+  ownerEmail?: pulumi.Input<string>;
 }
 
 export interface GhostTenantArgs {
-  /** The paying tenant's descriptor, as the render core defines it. A demo
-   * descriptor is refused: demos are reconciled by the broker. */
-  descriptor: TenantDescriptor;
-  /** The zones `validate()` and `render()` check hostnames and mail against. */
+  /** The paying tenant's descriptor, as the render core defines it, without
+   * `ownerEmail`: that arrives in `secrets`. A demo descriptor is refused:
+   * demos are reconciled by the broker. */
+  descriptor: TenantStackDescriptor;
+  /** The zones `validateTenantStack()` and `render()` check hostnames and mail against. */
   zones: ZoneConfig;
   secrets: GhostTenantSecrets;
   /** Applied on `db1` by the provisioning script; recorded in the identity so
@@ -208,7 +213,7 @@ export class GhostTenant extends pulumi.ComponentResource {
           `is reconciled by the broker, never by this component.`
       );
     }
-    const descriptor = validate(args.descriptor, args.zones);
+    const descriptor = validateTenantStack(args.descriptor, args.zones);
     const artefacts = render(descriptor, args.zones);
     const slug = descriptor.slug;
 
@@ -264,16 +269,20 @@ export class GhostTenant extends pulumi.ComponentResource {
         args.secrets[SECRET_FIELD_BY_KEY.get(key) as SecretField] as pulumi.Input<string>
       )
     );
+    // Checked on the resolved value, inside the secret, at deploy time:
+    // the refusal withholds the value. See index.md#the-owner-address.
+    const ownerIndex = required.indexOf(SECRET_ENV_KEYS.ownerEmail);
     this.secretsEnvFile = pulumi.secret(
-      pulumi
-        .all(values)
-        .apply((resolved) =>
-          fillSecretsTemplate(
-            slug,
-            secretsTemplate,
-            new Map(required.map((key, index) => [key, resolved[index]]))
-          )
-        )
+      pulumi.all(values).apply((resolved) => {
+        if (ownerIndex !== -1) {
+          validateOwnerEmailSecret(resolved[ownerIndex]);
+        }
+        return fillSecretsTemplate(
+          slug,
+          secretsTemplate,
+          new Map(required.map((key, index) => [key, resolved[index]]))
+        );
+      })
     );
 
     this.identity = pulumi.output(identity);
@@ -300,6 +309,7 @@ export class GhostTenant extends pulumi.ComponentResource {
 export type {
   Artefact,
   TenantDescriptor,
+  TenantStackDescriptor,
   ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
 export { SECRET_ENV_KEYS };

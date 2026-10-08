@@ -57,6 +57,9 @@ function artefacts(descriptor: TenantDescriptor): Map<string, string> {
 describe('the falsifying test against the rewired component', () => {
   const demo = validate(demoDescriptor(), TEST_ZONES);
   const promoted = transform(demo, TEST_ZONES, TARGETS);
+  // A promotion moves the demo's inline owner address to the secret path.
+  const { ownerEmail, ...promotedStack } = promoted;
+  const secrets = { ...SECRETS, ownerEmail };
 
   it('transform() moves only the attributable fields', () => {
     expect(() => assertAttributablePromotionDiff(demo, promoted)).not.toThrow();
@@ -64,9 +67,9 @@ describe('the falsifying test against the rewired component', () => {
 
   it('the component accepts the promoted descriptor and outputs exactly its render', () => {
     const tenant = new GhostTenant('promoted', {
-      descriptor: promoted,
+      descriptor: promotedStack,
       zones: TEST_ZONES,
-      secrets: SECRETS,
+      secrets,
     });
     const expected = artefacts(promoted);
     expect(tenant.composeFile).toBe(expected.get('compose.yml'));
@@ -77,9 +80,9 @@ describe('the falsifying test against the rewired component', () => {
 
   it('keeps every slug- and placement-derived value of the demo', async () => {
     const tenant = new GhostTenant('placement', {
-      descriptor: promoted,
+      descriptor: promotedStack,
       zones: TEST_ZONES,
-      secrets: SECRETS,
+      secrets,
     });
     const demoIdentity = JSON.parse(artefacts(demo).get('identity.json') as string) as Record<
       string,

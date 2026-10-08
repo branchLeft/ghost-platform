@@ -58,7 +58,11 @@ Each fails loudly rather than silently when it has not been done:
    rather than a free UID.
 3. **The secrets file.** Written by an operator from `secretsEnvFile`. No
    automated path may write it; `branchleft-deploy` writes only
-   `/etc/branchleft/<slug>.image.env`.
+   `/etc/branchleft/<slug>.image.env`. Since 7.0.0 it also carries the
+   owner's email address as `GHOST_OWNER_EMAIL`, the only place that address
+   reaches the host: a tenant program passes it as `secrets.ownerEmail` from
+   `config.requireSecret`, never as a descriptor field. See
+   `index.md#the-owner-address`.
 
 ## The runtime posture
 
