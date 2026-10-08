@@ -25,6 +25,9 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_SMTP_SECURE` | no (default `false`) | `true` for implicit TLS. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
+| `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. With both unset, submissions and the drain loop are exactly as before. |
+| `COLLECTOR_OUTCOMES_DSN_DIR` | no (off) | Directory the notifications for that return path arrive in, one `.eml` file each. Handled files move to `processed/` beside them, never deleted. |
+| `COLLECTOR_OUTCOMES_POLL_MS` | no (default `30000`) | How often the directory is read. |
 
 ## Design
 
@@ -37,6 +40,34 @@ live where it can't drift from the code that implements it.
 `src/heartbeat.ts` against a real local Healthchecks instance rather than
 a mock — see its own header comment and the delivering PR's body for a
 recorded run.
+
+## Outcomes carried back to the spool
+
+"Delivered" has to mean the receiving MTA delivered it, not that mx1 accepted
+the submission. With `COLLECTOR_OUTCOMES_RETURN_PATH` and
+`COLLECTOR_OUTCOMES_DSN_DIR` set (off otherwise), the collector:
+
+1. submits each message with a Message-ID that encodes the message id, its claim
+   generation and its spool (`outcomeId.ts`, under the reserved `.invalid` TLD),
+   an envelope sender of the return path, and a DSN request for success, failure
+   and delay. Nothing about an in-flight message is held in memory, so a restart
+   loses nothing;
+2. acks as before. At this point the spool holds the message as `sent`
+   (accepted), and no `delivered` event exists;
+3. reads delivery status notifications from the directory (`dsnMailbox.ts`),
+   parses the RFC 3464 report (`dsn.ts`) and reports the outcome to the spool the
+   Message-ID names, over the same authenticated connection
+   (`POST /drain/outcomes`, `outcomeRunner.ts`).
+
+Only `Action: delivered` with a `2.x.x` status is delivered. `relayed` and
+`expanded` hand the message to a system that will not report back, so they yield
+no outcome. `failed` is permanent unless the status is `4.x.x`; `delayed` is
+temporary. A notification is retired only after the spool answered for it, so an
+unreachable spool, or one that has not opted in (404), keeps it for the next
+pass. A notification for a spool the descriptor no longer names is left, never
+sent to a guessed address. How notifications get into the directory, and whether
+mx1 honours the DSN request at all, is the mx1-side half and is unproven; see
+the delivering PR's runbook.
 
 ## Source notes
 

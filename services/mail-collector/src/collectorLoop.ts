@@ -5,6 +5,7 @@ import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
 import type { HealthState } from './health.js';
 import type { Logger } from './log.js';
+import type { OutcomeRunner } from './outcomeRunner.js';
 import type { Throttle } from './throttle.js';
 
 export interface CollectorLoopDeps {
@@ -25,6 +26,8 @@ export interface CollectorLoopDeps {
   drainRetryBackoffMs: number;
   emptyPollBackoffMs: number;
   dedupeSweepMs?: number;
+  /** Optional, off unless supplied: carries mx1's outcomes back to the spools on a timer. */
+  outcomes?: { runner: OutcomeRunner; intervalMs: number };
 }
 
 export interface CollectorRuntime {
@@ -46,6 +49,9 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let globalStop = false;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let sweepTimer: ReturnType<typeof setTimeout> | undefined;
+  let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
+  let outcomeInFlight: Promise<unknown> = Promise.resolve();
+  let outcomeRunning = false;
 
   function findTarget(id: string): DrainTarget | undefined {
     return deps.store.targets.find((t) => t.id === id);
@@ -124,7 +130,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         if (!deps.dedupe.has(message.id)) {
           await deps.throttle.waitForToken();
           try {
-            await deps.deliveryClient.deliver(message);
+            await deps.deliveryClient.deliver(message, initialTarget.id);
           } catch (error) {
             deps.health.recordFailure();
             deps.log.warn('submission_failed', {
@@ -196,6 +202,20 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS
       );
       sweepTimer.unref?.();
+
+      const outcomes = deps.outcomes;
+      if (outcomes) {
+        outcomeTimer = setInterval(() => {
+          if (outcomeRunning || globalStop) {
+            return;
+          }
+          outcomeRunning = true;
+          outcomeInFlight = outcomes.runner.runOnce().finally(() => {
+            outcomeRunning = false;
+          });
+        }, outcomes.intervalMs);
+        outcomeTimer.unref?.();
+      }
     },
     async stop(): Promise<void> {
       globalStop = true;
@@ -205,10 +225,14 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       if (sweepTimer) {
         clearInterval(sweepTimer);
       }
+      if (outcomeTimer) {
+        clearInterval(outcomeTimer);
+      }
       for (const state of running.values()) {
         state.stopped = true;
       }
       await Promise.allSettled([...running.values()].map((s) => s.done));
+      await Promise.allSettled([outcomeInFlight]);
     },
   };
 }

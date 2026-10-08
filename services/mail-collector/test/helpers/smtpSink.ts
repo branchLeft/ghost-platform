@@ -9,6 +9,10 @@ import { simpleParser, type ParsedMail } from 'mailparser';
 
 export interface ReceivedMessage {
   envelopeTo: string[];
+  /** The SMTP MAIL FROM address (the return path), as opposed to the From header. */
+  envelopeFrom: string | false;
+  /** The DSN NOTIFY keywords requested for the first recipient, when any were. */
+  dsnNotify: string[] | undefined;
   parsed: ParsedMail;
   /** Wall-clock time this sink accepted the message -- lets a test measure spacing between deliveries (e.g. proving a shared rate limit serializes them), not just their count. */
   receivedAt: number;
@@ -33,6 +37,8 @@ export function startSmtpSink(authUser: string, authPass: string): Promise<SmtpS
 
   const server = new SMTPServer({
     authOptional: false,
+    // smtp-server hides the DSN extension by default; mx1 is expected to advertise it.
+    hideDSN: false,
     disabledCommands: ['STARTTLS'],
     onAuth(
       auth: SMTPServerAuthentication,
@@ -57,6 +63,9 @@ export function startSmtpSink(authUser: string, authPass: string): Promise<SmtpS
           .then((parsed) => {
             messages.push({
               envelopeTo: session.envelope.rcptTo.map((r) => r.address),
+              envelopeFrom: session.envelope.mailFrom && session.envelope.mailFrom.address,
+              dsnNotify: (session.envelope.rcptTo[0] as { dsn?: { notify?: string[] } } | undefined)
+                ?.dsn?.notify,
               parsed,
               receivedAt: Date.now(),
             });

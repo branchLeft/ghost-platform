@@ -32,6 +32,10 @@ export class FakeShimServer {
   private server: Server | undefined;
   readonly drainRequests: number[] = [];
   readonly ackRequests: Array<{ id: string; drainCount: number }[]> = [];
+  /** Every POST /drain/outcomes body's list, in order. */
+  readonly outcomeRequests: Array<Array<Record<string, unknown>>> = [];
+  /** Off by default, like the real shim: POST /drain/outcomes then answers 404. */
+  outcomesEnabled = false;
 
   constructor(private readonly drainToken: string) {}
 
@@ -102,6 +106,20 @@ export class FakeShimServer {
         }
       }
       res.status(200).json({ acked, alreadyHandled, unknown });
+    });
+
+    app.post('/drain/outcomes', requireAuth, express.json(), (req, res) => {
+      if (!this.outcomesEnabled) {
+        res.status(404).json({ message: 'Not found' });
+        return;
+      }
+      const outcomes = (req.body as { outcomes: Array<Record<string, unknown>> }).outcomes;
+      this.outcomeRequests.push(outcomes);
+      res.status(200).json({
+        recorded: outcomes.map((o) => o.id),
+        alreadyHandled: [],
+        unknown: [],
+      });
     });
 
     return new Promise((resolve, reject) => {

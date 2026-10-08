@@ -31,7 +31,19 @@ re-deriving it. This is that place, for mail:
   receiving a batch and acking it can find out what actually landed rather
   than guessing.
 
-Both routes require requireDrainToken — the collector's only credential.
+- **`POST /drain/outcomes`** — opt-in, off by default
+  (`SHIM_DRAIN_OUTCOMES=true`; when off the route is not registered and answers
+  404, so a shim that has not opted in behaves exactly as it did before). Body
+  `{ outcomes: [{ id, drainCount, outcome: "delivered" | "failed", severity?,
+  code?, message? }] }`, 1 to 200 entries. The drainer reports what the
+  receiving MTA finally did with messages it already acked. `severity`
+  (`permanent` | `temporary`) is required for `failed` and never defaulted,
+  since a default would either suppress an address on a transient fault or hide
+  a real bounce. The answer is `{ recorded, alreadyHandled, unknown }`; what each
+  outcome does to the row, the events and the suppression list is in
+  [store.md](../store.md#outcomes-come-back-after-the-ack).
+
+Every route here requires requireDrainToken — the collector's only credential.
 Neither route ever opens an outbound connection: this module only reads
 from and writes to `store`, and answers the request already open. Making
 that true is what the rest of this story's changes (removing worker.ts
