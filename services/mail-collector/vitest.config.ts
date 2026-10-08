@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     testTimeout: 20000,
+    // Builds dist/ once for the entrypoint tests; see test/globalSetup.ts.
+    globalSetup: ['test/globalSetup.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

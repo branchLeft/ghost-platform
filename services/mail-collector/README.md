@@ -61,8 +61,9 @@ the submission. With `COLLECTOR_OUTCOMES_RETURN_PATH` and
 
 Only `Action: delivered` with a `2.x.x` status is delivered. `relayed` and
 `expanded` hand the message to a system that will not report back, so they yield
-no outcome. `failed` is permanent unless the status is `4.x.x`; `delayed` is
-temporary. A notification is retired only after the spool answered for it, so an
+no outcome. `failed` is permanent only with an explicit `5.x.x` status, so a malformed
+notice can never suppress an address; `failed` with `4.x.x` and `delayed` are
+temporary; any other status yields no outcome. A notice the spool calls `unknown` (usually because it arrived before the ack) is kept and retried, and only retired as unplaceable after an hour. A notification is otherwise retired only after the spool answered for it, so an
 unreachable spool, or one that has not opted in (404), keeps it for the next
 pass. A notification for a spool the descriptor no longer names is left, never
 sent to a guessed address. How notifications get into the directory, and whether

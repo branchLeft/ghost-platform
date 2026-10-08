@@ -36,6 +36,8 @@ export class FakeShimServer {
   readonly outcomeRequests: Array<Array<Record<string, unknown>>> = [];
   /** Off by default, like the real shim: POST /drain/outcomes then answers 404. */
   outcomesEnabled = false;
+  /** Outcome ids answered as `unknown`, as the real spool does for a report that beat the ack. */
+  readonly unknownOutcomeIds = new Set<string>();
 
   constructor(private readonly drainToken: string) {}
 
@@ -115,10 +117,11 @@ export class FakeShimServer {
       }
       const outcomes = (req.body as { outcomes: Array<Record<string, unknown>> }).outcomes;
       this.outcomeRequests.push(outcomes);
+      const ids = outcomes.map((o) => o.id as string);
       res.status(200).json({
-        recorded: outcomes.map((o) => o.id),
+        recorded: ids.filter((id) => !this.unknownOutcomeIds.has(id)),
         alreadyHandled: [],
-        unknown: [],
+        unknown: ids.filter((id) => this.unknownOutcomeIds.has(id)),
       });
     });
 

@@ -81,8 +81,9 @@ export function parseDsn(raw: string): ParsedDsn | null {
 /**
  * What a DSN means for the spool. `relayed` and `expanded` hand the message
  * to a system that will not report back: they are NOT delivery and yield
- * no outcome. 'delivered' needs a 2.x.x status, so a malformed report can
- * never mark a message delivered.
+ * no outcome. 'delivered' needs a 2.x.x status and a permanent failure a
+ * 5.x.x one, so a malformed report can neither mark a message delivered nor
+ * suppress an address.
  */
 export function toOutcome(dsn: ParsedDsn): MtaOutcome | null {
   const smtpCode = dsn.diagnostic ? /\b([2-5][0-9]{2})\b/.exec(dsn.diagnostic)?.[1] : undefined;
@@ -94,11 +95,12 @@ export function toOutcome(dsn: ParsedDsn): MtaOutcome | null {
     return /^2\./.test(dsn.status) ? { outcome: 'delivered' } : null;
   }
   if (dsn.action === 'failed') {
-    return {
-      outcome: 'failed',
-      severity: /^4\./.test(dsn.status) ? 'temporary' : 'permanent',
-      ...base,
-    };
+    // Permanent only on an explicit 5.x.x: a malformed status must never be
+    // able to suppress an address. 4.x.x is a failure that may still resolve.
+    if (/^5\./.test(dsn.status)) {
+      return { outcome: 'failed', severity: 'permanent', ...base };
+    }
+    return /^4\./.test(dsn.status) ? { outcome: 'failed', severity: 'temporary', ...base } : null;
   }
   if (dsn.action === 'delayed') {
     return { outcome: 'failed', severity: 'temporary', ...base };

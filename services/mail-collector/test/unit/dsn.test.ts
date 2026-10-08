@@ -107,6 +107,15 @@ describe('toOutcome', () => {
     });
   });
 
+  it('failed is permanent ONLY with an explicit 5.x.x: a malformed status cannot suppress an address', () => {
+    for (const status of ['', 'garbage', '2.0.0', '3.1.1', '55.1', '5']) {
+      expect(toOutcome({ ...base, action: 'failed', status })).toBeNull();
+    }
+    expect(toOutcome({ ...base, action: 'failed', status: '5.7.1' })).toMatchObject({
+      severity: 'permanent',
+    });
+  });
+
   it('failed 4.x.x and delayed are temporary', () => {
     expect(toOutcome({ ...base, action: 'failed', status: '4.2.2' })).toMatchObject({
       outcome: 'failed',

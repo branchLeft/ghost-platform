@@ -1,10 +1,12 @@
-import { mkdir, readdir, readFile, rename } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface RawDsn {
   /** Opaque handle for markProcessed. */
   ref: string;
   raw: string;
+  /** When the notification arrived, ms since the epoch. */
+  receivedAtMs: number;
 }
 
 /** Where mx1's delivery status notifications for the collector's return path land. */
@@ -34,9 +36,15 @@ export function createDirectoryDsnMailbox(dir: string): DsnMailbox {
         .slice(0, MAX_PER_LIST);
       const out: RawDsn[] = [];
       for (const name of names) {
-        const buf = await readFile(join(dir, name));
+        const path = join(dir, name);
+        const buf = await readFile(path);
+        const receivedAtMs = (await stat(path)).mtimeMs;
         // An oversized file is not a DSN; it is retired unread by returning empty text.
-        out.push({ ref: name, raw: buf.length > MAX_FILE_BYTES ? '' : buf.toString('utf8') });
+        out.push({
+          ref: name,
+          raw: buf.length > MAX_FILE_BYTES ? '' : buf.toString('utf8'),
+          receivedAtMs,
+        });
       }
       return out;
     },

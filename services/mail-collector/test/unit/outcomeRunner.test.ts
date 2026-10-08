@@ -75,9 +75,10 @@ describe('outcomeRunner', () => {
 
   it('reports a delivered and a permanent failure to the spool that handed the message over, then retires both', async () => {
     const { mailbox, processed } = memoryMailbox([
-      { ref: '1.eml', raw: dsnFor(idFor(1), 'delivered', '2.0.0') },
+      { ref: '1.eml', receivedAtMs: Date.now(), raw: dsnFor(idFor(1), 'delivered', '2.0.0') },
       {
         ref: '2.eml',
+        receivedAtMs: Date.now(),
         raw: dsnFor(idFor(2), 'failed', '5.1.1', 'smtp; 550 5.1.1 no such user'),
       },
     ]);
@@ -102,9 +103,13 @@ describe('outcomeRunner', () => {
 
   it('reports nothing for a relayed notice, mail that is not a DSN, or a DSN for a Message-ID it did not mint, but retires them', async () => {
     const { mailbox, processed } = memoryMailbox([
-      { ref: 'relayed.eml', raw: dsnFor(idFor(1), 'relayed', '2.0.0') },
-      { ref: 'plain.eml', raw: 'Subject: hello\r\n\r\nhi' },
-      { ref: 'foreign.eml', raw: dsnFor('<x@example.com>', 'failed', '5.1.1') },
+      { ref: 'relayed.eml', receivedAtMs: Date.now(), raw: dsnFor(idFor(1), 'relayed', '2.0.0') },
+      { ref: 'plain.eml', receivedAtMs: Date.now(), raw: 'Subject: hello\r\n\r\nhi' },
+      {
+        ref: 'foreign.eml',
+        receivedAtMs: Date.now(),
+        raw: dsnFor('<x@example.com>', 'failed', '5.1.1'),
+      },
     ]);
     const result = await runnerFor(mailbox).runOnce();
     expect(result).toEqual({ reported: 0, retired: 3, left: 0 });
@@ -115,7 +120,7 @@ describe('outcomeRunner', () => {
   it('leaves a notification in place when the spool has not opted in (404), so a later pass can still report it', async () => {
     shim.outcomesEnabled = false;
     const { mailbox, processed } = memoryMailbox([
-      { ref: '1.eml', raw: dsnFor(idFor(1), 'delivered', '2.0.0') },
+      { ref: '1.eml', receivedAtMs: Date.now(), raw: dsnFor(idFor(1), 'delivered', '2.0.0') },
     ]);
     const runner = runnerFor(mailbox);
     expect(await runner.runOnce()).toEqual({ reported: 0, retired: 0, left: 1 });
@@ -127,7 +132,11 @@ describe('outcomeRunner', () => {
 
   it('leaves a notification for a spool the descriptor no longer names, and never invents an address for it', async () => {
     const { mailbox, processed } = memoryMailbox([
-      { ref: '1.eml', raw: dsnFor(idFor(1, 'gone-tenant'), 'delivered', '2.0.0') },
+      {
+        ref: '1.eml',
+        receivedAtMs: Date.now(),
+        raw: dsnFor(idFor(1, 'gone-tenant'), 'delivered', '2.0.0'),
+      },
     ]);
     expect(await runnerFor(mailbox).runOnce()).toEqual({ reported: 0, retired: 0, left: 1 });
     expect(shim.outcomeRequests).toEqual([]);
@@ -147,7 +156,9 @@ describe('outcomeRunner', () => {
   it('counts a notification as left when retiring it fails after the spool took the report', async () => {
     const mailbox: DsnMailbox = {
       async list() {
-        return [{ ref: '1.eml', raw: dsnFor(idFor(1), 'delivered', '2.0.0') }];
+        return [
+          { ref: '1.eml', receivedAtMs: Date.now(), raw: dsnFor(idFor(1), 'delivered', '2.0.0') },
+        ];
       },
       async markProcessed() {
         throw new Error('read-only');
@@ -156,13 +167,58 @@ describe('outcomeRunner', () => {
     expect(await runnerFor(mailbox).runOnce()).toEqual({ reported: 1, retired: 0, left: 1 });
   });
 
+  it('keeps a notice the spool does not know yet (it beat the ack) and reports it on a later pass', async () => {
+    shim.unknownOutcomeIds.add(MSG);
+    const { mailbox, processed } = memoryMailbox([
+      { ref: '1.eml', receivedAtMs: Date.now(), raw: dsnFor(idFor(1), 'delivered', '2.0.0') },
+    ]);
+    const runner = runnerFor(mailbox);
+
+    expect(await runner.runOnce()).toEqual({ reported: 0, retired: 0, left: 1 });
+    expect(processed).toEqual([]);
+
+    shim.unknownOutcomeIds.clear();
+    expect(await runner.runOnce()).toEqual({ reported: 1, retired: 1, left: 0 });
+    expect(processed).toEqual(['1.eml']);
+  });
+
+  it('retires a notice the spool still calls unknown once it is older than the grace, so a stale generation cannot pile up forever', async () => {
+    shim.unknownOutcomeIds.add(MSG);
+    const arrived = Date.now();
+    let clock = arrived;
+    const { mailbox, processed } = memoryMailbox([
+      { ref: '1.eml', receivedAtMs: arrived, raw: dsnFor(idFor(1), 'delivered', '2.0.0') },
+    ]);
+    const runner = createOutcomeRunner({
+      mailbox,
+      store: createFakeTargetStore([{ id: 'tenant-a', baseUrl }]),
+      drainClient: createDrainClient({ drainToken: TOKEN, drainTimeoutMs: 5000 }),
+      log: createLogger(() => {}),
+      unknownGraceMs: 1000,
+      now: () => clock,
+    });
+
+    expect((await runner.runOnce()).left).toBe(1);
+    clock = arrived + 1001;
+    expect(await runner.runOnce()).toEqual({ reported: 0, retired: 1, left: 0 });
+    expect(processed).toEqual(['1.eml']);
+  });
+
   it('batches per spool: two spools get one request each', async () => {
     const other = new FakeShimServer(TOKEN);
     other.outcomesEnabled = true;
     const otherUrl = await other.listen();
     const { mailbox } = memoryMailbox([
-      { ref: '1.eml', raw: dsnFor(idFor(1, 'tenant-a'), 'delivered', '2.0.0') },
-      { ref: '2.eml', raw: dsnFor(idFor(1, 'tenant-b'), 'delivered', '2.0.0') },
+      {
+        ref: '1.eml',
+        receivedAtMs: Date.now(),
+        raw: dsnFor(idFor(1, 'tenant-a'), 'delivered', '2.0.0'),
+      },
+      {
+        ref: '2.eml',
+        receivedAtMs: Date.now(),
+        raw: dsnFor(idFor(1, 'tenant-b'), 'delivered', '2.0.0'),
+      },
     ]);
     await runnerFor(mailbox, [
       { id: 'tenant-a', baseUrl },

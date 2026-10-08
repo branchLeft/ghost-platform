@@ -15,7 +15,17 @@ export interface OutcomeRunnerDeps {
   store: TargetStore;
   drainClient: OutcomeClient;
   log: Logger;
+  /**
+   * How long a notice the spool calls `unknown` is kept and retried before
+   * it is retired as unplaceable. `unknown` is usually a race (the notice
+   * beat the ack, or the spool has not caught up), so it must not be lost;
+   * but a stale generation never resolves, so it cannot be kept forever.
+   */
+  unknownGraceMs?: number;
+  now?: () => number;
 }
+
+const DEFAULT_UNKNOWN_GRACE_MS = 60 * 60 * 1000;
 
 /**
  * Carries mx1's per-message outcome back to the spool that handed the
@@ -27,6 +37,8 @@ export interface OutcomeRunnerDeps {
  * See ../README.md#outcomes-carried-back-to-the-spool.
  */
 export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
+  const unknownGraceMs = deps.unknownGraceMs ?? DEFAULT_UNKNOWN_GRACE_MS;
+  const now = deps.now ?? Date.now;
   async function runOnce(): Promise<{ reported: number; retired: number; left: number }> {
     let reported = 0;
     let retired = 0;
@@ -40,7 +52,10 @@ export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
       return { reported, retired, left };
     }
 
-    const byTarget = new Map<string, Array<{ ref: string; report: OutcomeReport }>>();
+    const byTarget = new Map<
+      string,
+      Array<{ ref: string; receivedAtMs: number; report: OutcomeReport }>
+    >();
     const retire = async (ref: string): Promise<void> => {
       try {
         await deps.mailbox.markProcessed(ref);
@@ -64,7 +79,11 @@ export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
         continue;
       }
       const list = byTarget.get(key.targetId) ?? [];
-      list.push({ ref: item.ref, report: { id: key.id, drainCount: key.drainCount, ...outcome } });
+      list.push({
+        ref: item.ref,
+        receivedAtMs: item.receivedAtMs,
+        report: { id: key.id, drainCount: key.drainCount, ...outcome },
+      });
       byTarget.set(key.targetId, list);
     }
 
@@ -76,8 +95,9 @@ export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
         deps.log.warn('outcome_target_unknown', { target: targetId, count: entries.length });
         continue;
       }
+      let result;
       try {
-        const result = await deps.drainClient.reportOutcomes(
+        result = await deps.drainClient.reportOutcomes(
           target,
           entries.map((e) => e.report)
         );
@@ -96,7 +116,15 @@ export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
         });
         continue;
       }
+      const unknownIds = new Set(result.unknown);
       for (const entry of entries) {
+        if (unknownIds.has(entry.report.id) && now() - entry.receivedAtMs < unknownGraceMs) {
+          // The spool does not know this generation yet: most likely the
+          // notice beat the ack. Keep it; the next pass asks again.
+          left += 1;
+          deps.log.info('outcome_unknown_kept', { target: targetId, message: entry.report.id });
+          continue;
+        }
         await retire(entry.ref);
       }
     }
