@@ -1,19 +1,7 @@
 #!/bin/sh
-# The standing content-policy regression gate (
-# LLD-5 05-gate-and-edge.html §04): a real headless Chromium loads a real
-# Ghost through the edge policy with a hostile codeinjection_head, and the
-# verdict (csp-regression-gate.mjs) must be GREEN: injected script did not
-# run, Portal's sign-in form rendered, the only violation is the attack.
-#
-# Usage (Docker, and csp/proof's own npm install for Playwright):
-#   ./csp/gate/csp-regression-gate.sh [--sabotage=no-policy|no-hashes] [IMAGE]
-# IMAGE is a built platform image; omitted, one is built from the repo root.
-# --sabotage serves the policy broken on purpose; the gate must exit non-zero:
-#   no-policy  -> no Content-Security-Policy header: the injected script runs
-#   no-hashes  -> script-src 'self' enforced with no hash allowance: Ghost's
-#                 own inline blocks are blocked as well as the attack
-# Prints one GATE_TIMING line (seconds) so LLD-4's release-timing claim can
-# rest on a measured figure. Needs render-core built (npm run build there).
+# The standing content-policy regression gate: a real headless Chromium loads a
+# real Ghost through the edge policy with a hostile codeinjection_head.
+# Usage and the two --sabotage modes: csp-regression-gate.md.
 set -e
 
 SABOTAGE=""

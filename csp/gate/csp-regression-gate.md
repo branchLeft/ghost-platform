@@ -40,3 +40,18 @@ demo host.
 
 `node --test csp/gate/*.test.mjs` (needs `render-core` built). `csp/gate/prove-gates.sh`
 mutates each verdict rule and requires the tests to go red, then green.
+
+## Running the live gate
+
+Needs Docker, `csp/proof`'s own `npm install` for Playwright, and render-core built.
+
+```sh
+./csp/gate/csp-regression-gate.sh [--sabotage=no-policy|no-hashes] [IMAGE]
+```
+
+IMAGE is a built platform image; omitted, one is built from the repo root.
+`--sabotage` serves the policy broken on purpose and the gate must exit non-zero:
+
+- `no-policy`: no Content-Security-Policy header, so the injected script runs.
+- `no-hashes`: `script-src 'self'` enforced with no hash allowance, so Ghost's
+  own inline blocks are blocked as well as the attack.
