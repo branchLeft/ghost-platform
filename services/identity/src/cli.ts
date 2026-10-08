@@ -4,12 +4,16 @@ import { validateConfig } from './config.js';
 import { desiredState } from './desired.js';
 import { managementClient } from './management.js';
 import { reconcile } from './reconcile.js';
+import { readSmtpPassword } from './smtp.js';
 
 /** Usage: `node dist/cli.js <config.json> [outputs.json]`.
  *
  * `ZITADEL_URL` names the instance. The service-account token is read from
  * the file `ZITADEL_TOKEN_FILE` names, never from argv or the environment, so
- * it appears in neither `ps` nor a process dump. */
+ * it appears in neither `ps` nor a process dump. When the configuration holds
+ * an `smtp` block, `ZITADEL_SMTP_PASSWORD_FILE` names the file holding the
+ * mail password, read the same way; with no `smtp` block that variable must be
+ * unset, so a password is never silently ignored. */
 async function main(argv: readonly string[]): Promise<number> {
   const flags = argv.filter((a) => a.startsWith('--'));
   const [configPath, outputsPath] = argv.filter((a) => !a.startsWith('--'));
@@ -36,6 +40,15 @@ async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
   const config = validateConfig(JSON.parse(readFileSync(configPath, 'utf8')));
+  const smtpPasswordFile = process.env['ZITADEL_SMTP_PASSWORD_FILE'];
+  if ((config.smtp !== undefined) !== (smtpPasswordFile !== undefined && smtpPasswordFile !== '')) {
+    process.stderr.write(
+      config.smtp !== undefined
+        ? 'the configuration has an smtp block: set ZITADEL_SMTP_PASSWORD_FILE to the file holding its password\n'
+        : 'ZITADEL_SMTP_PASSWORD_FILE is set but the configuration has no smtp block\n'
+    );
+    return 2;
+  }
   const client = managementClient({
     baseUrl: url,
     token: () => readFileSync(tokenFile, 'utf8').trim(),
@@ -48,7 +61,8 @@ async function main(argv: readonly string[]): Promise<number> {
       devConsole !== undefined && devPortal !== undefined
         ? { console: devConsole, portal: devPortal }
         : undefined
-    )
+    ),
+    smtpPasswordFile ? { smtpPassword: readSmtpPassword(smtpPasswordFile) } : {}
   );
   for (const action of result.actions) {
     const detail = action.detail ? ` (${action.detail})` : '';

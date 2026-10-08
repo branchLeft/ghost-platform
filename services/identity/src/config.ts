@@ -17,9 +17,26 @@ export interface Hostnames {
   readonly identity: string;
 }
 
+/** The mail provider the sign-in service sends its codes and links through.
+ * The password is deliberately not here: it is read from a file the operator
+ * names (`smtp.ts`), so this document can be committed and logged. The
+ * account name Zitadel authenticates as is always the sender address, because
+ * the mail host refuses a sender that is not the account's own address. */
+export interface SmtpConfig {
+  readonly host: string;
+  readonly port: number;
+  readonly senderAddress: string;
+  readonly senderName: string;
+  /** STARTTLS is required of the mail host. False is accepted only for a
+   * single-label host (a container name or localhost), which can never be a
+   * real mail host, so a plaintext submission to the internet is unwritable. */
+  readonly tls: boolean;
+}
+
 export interface IdentityConfig {
   readonly hostnames: Hostnames;
   readonly tenants: readonly TenantEntry[];
+  readonly smtp?: SmtpConfig;
 }
 
 /** Matches the tenant descriptor's own slug grammar. */
@@ -149,6 +166,85 @@ function validateTenants(raw: unknown, problems: string[]): TenantEntry[] {
   return tenants;
 }
 
+export const SMTP_SUBMISSION_PORT = 587;
+const SINGLE_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+const LOCAL_PART = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const SMTP_KEYS = new Set(['host', 'port', 'senderAddress', 'senderName', 'tls']);
+
+function validateSmtp(raw: unknown, problems: string[]): SmtpConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) {
+    problems.push('smtp must be an object with host, port, senderAddress and senderName');
+    return undefined;
+  }
+  const before = problems.length;
+  for (const key of Object.keys(raw)) {
+    if (/pass|secret|token|credential|user/i.test(key)) {
+      problems.push(
+        `smtp.${key} is not accepted here: the account name is the sender address and the password is read from a file`
+      );
+    } else if (!SMTP_KEYS.has(key)) {
+      problems.push(`smtp.${key} is not a known setting`);
+    }
+  }
+  const tlsRaw = raw['tls'];
+  if (tlsRaw !== undefined && typeof tlsRaw !== 'boolean')
+    problems.push('smtp.tls must be true or false');
+  const tls = tlsRaw !== false;
+  const host = raw['host'];
+  if (typeof host !== 'string' || host.length === 0) {
+    problems.push('smtp.host must be a non-empty string');
+  } else if (tls) {
+    const problem = hostnameProblem('smtp.host', host);
+    if (problem) problems.push(problem);
+  } else if (!SINGLE_LABEL.test(host)) {
+    problems.push(
+      'smtp.host "' +
+        host +
+        '" must be a single-label name (a container name or localhost) while tls is off; a real mail host needs tls'
+    );
+  }
+  const port = raw['port'] ?? SMTP_SUBMISSION_PORT;
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+    problems.push('smtp.port must be a whole number from 1 to 65535');
+  } else if (tls && port !== SMTP_SUBMISSION_PORT) {
+    problems.push(`smtp.port must be ${SMTP_SUBMISSION_PORT} (STARTTLS submission) when tls is on`);
+  }
+  const address = raw['senderAddress'];
+  const at = typeof address === 'string' ? address.indexOf('@') : -1;
+  if (typeof address !== 'string' || at < 1 || address.indexOf('@', at + 1) !== -1) {
+    problems.push('smtp.senderAddress must be a single address, local@domain');
+  } else {
+    if (!LOCAL_PART.test(address.slice(0, at))) {
+      problems.push(
+        'smtp.senderAddress local part must be lower-case letters, digits, dots, hyphens or underscores'
+      );
+    }
+    const domainProblem = hostnameProblem('smtp.senderAddress domain', address.slice(at + 1));
+    if (domainProblem) problems.push(domainProblem);
+  }
+  const name = raw['senderName'];
+  if (
+    typeof name !== 'string' ||
+    name.trim().length === 0 ||
+    name.length > MAX_DISPLAY_NAME_LENGTH ||
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f<>"]/.test(name)
+  ) {
+    problems.push(
+      `smtp.senderName must be a non-empty string of at most ${MAX_DISPLAY_NAME_LENGTH} characters with no control characters, quotes or angle brackets`
+    );
+  }
+  if (problems.length > before) return undefined;
+  return {
+    host: host as string,
+    port: port as number,
+    senderAddress: address as string,
+    senderName: name as string,
+    tls,
+  };
+}
+
 /** Validates untrusted parsed JSON. Every problem is collected; any problem
  * throws, so nothing is reconciled from a partly valid list. */
 export function validateConfig(raw: unknown): IdentityConfig {
@@ -158,8 +254,9 @@ export function validateConfig(raw: unknown): IdentityConfig {
   const problems: string[] = [];
   const hostnames = validateHostnames(raw['hostnames'], problems);
   const tenants = validateTenants(raw['tenants'], problems);
+  const smtp = validateSmtp(raw['smtp'], problems);
   if (problems.length > 0 || hostnames === null) {
     throw new ConfigError(problems);
   }
-  return { hostnames, tenants };
+  return smtp === undefined ? { hostnames, tenants } : { hostnames, tenants, smtp };
 }

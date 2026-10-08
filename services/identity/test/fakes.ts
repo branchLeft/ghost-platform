@@ -1,4 +1,10 @@
-import type { ExistingApplication, ExistingGrant, ZitadelClient } from '../src/client.js';
+import type {
+  ExistingApplication,
+  ExistingGrant,
+  ExistingSmtp,
+  ZitadelClient,
+} from '../src/client.js';
+import type { SmtpConfig } from '../src/config.js';
 import type { DesiredApplication } from '../src/desired.js';
 
 /** An in-memory stand-in with the one behaviour the reconciler depends on:
@@ -9,6 +15,7 @@ export class FakeZitadel implements ZitadelClient {
   roles = new Set<string>();
   apps = new Map<string, ExistingApplication>();
   grants = new Map<string, ExistingGrant>();
+  smtp = new Map<string, ExistingSmtp & { password: string }>();
   writes = 0;
   private counter = 0;
 
@@ -70,6 +77,37 @@ export class FakeZitadel implements ZitadelClient {
   ) {
     this.writes += 1;
     this.grants.set(grantedOrgId, { id: this.next('grant'), roleKeys });
+  }
+
+  /** Behaves as Zitadel v4.19.4 does: a provider's password is fixed when it is
+   * created, one provider is active at a time, and the password is never read
+   * back. */
+  async listSmtp() {
+    return [...this.smtp.values()].map(({ password: _password, ...rest }) => rest);
+  }
+  async createSmtp(smtp: SmtpConfig, password: string, description: string) {
+    this.writes += 1;
+    const id = this.next('smtp');
+    this.smtp.set(id, {
+      id,
+      host: `${smtp.host}:${smtp.port}`,
+      senderAddress: smtp.senderAddress,
+      senderName: smtp.senderName,
+      user: smtp.senderAddress,
+      tls: smtp.tls,
+      description,
+      active: false,
+      password,
+    });
+    return { id };
+  }
+  async activateSmtp(id: string) {
+    this.writes += 1;
+    for (const [key, entry] of this.smtp) this.smtp.set(key, { ...entry, active: key === id });
+  }
+  async deleteSmtp(id: string) {
+    this.writes += 1;
+    this.smtp.delete(id);
   }
 }
 

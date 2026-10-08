@@ -1,11 +1,13 @@
-import type { ZitadelClient } from './client.js';
+import type { ExistingSmtp, ZitadelClient } from './client.js';
 import { assertInvariants } from './desired.js';
+import { ConfigError } from './errors.js';
+import { isManaged, smtpDescription } from './smtp.js';
 import type { ApplicationKey, DesiredState } from './desired.js';
 
-export type ActionStatus = 'created' | 'unchanged' | 'drift';
+export type ActionStatus = 'created' | 'updated' | 'unchanged' | 'drift';
 
 export interface Action {
-  readonly kind: 'organisation' | 'project' | 'role' | 'application' | 'grant';
+  readonly kind: 'organisation' | 'project' | 'role' | 'application' | 'grant' | 'smtp';
   readonly name: string;
   readonly status: ActionStatus;
   readonly detail?: string;
@@ -34,13 +36,25 @@ function sameSet(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value) => right.includes(value));
 }
 
+/** Values that must never sit in the configuration. */
+export interface ReconcileSecrets {
+  readonly smtpPassword?: string;
+}
+
 /** Creates what is missing and leaves what exists alone. A second run against
  * an unchanged list performs no write. */
 export async function reconcile(
   client: ZitadelClient,
-  desired: DesiredState
+  desired: DesiredState,
+  secrets: ReconcileSecrets = {}
 ): Promise<ReconcileResult> {
   assertInvariants(desired);
+  if (desired.smtp && secrets.smtpPassword === undefined) {
+    throw new ConfigError(['smtp is configured but no password was supplied']);
+  }
+  if (!desired.smtp && secrets.smtpPassword !== undefined) {
+    throw new ConfigError(['a password was supplied but smtp is not configured']);
+  }
   const actions: Action[] = [];
   const record = (action: Action): void => {
     actions.push(action);
@@ -120,6 +134,10 @@ export async function reconcile(
     }
   }
 
+  if (desired.smtp && secrets.smtpPassword !== undefined) {
+    record(await ensureSmtp(client, desired.smtp, secrets.smtpPassword));
+  }
+
   const console_ = clientIds.console;
   const portal = clientIds.portal;
   if (console_ === undefined || portal === undefined) {
@@ -145,4 +163,68 @@ async function ensureOrg(
   const created = await client.createOrg(name);
   record({ kind: 'organisation', name, status: 'created' });
   return created;
+}
+
+function sameProvider(existing: ExistingSmtp, smtp: SmtpConfigLike): boolean {
+  return (
+    existing.host === `${smtp.host}:${smtp.port}` &&
+    existing.senderAddress === smtp.senderAddress &&
+    existing.senderName === smtp.senderName &&
+    existing.user === smtp.senderAddress &&
+    existing.tls === smtp.tls
+  );
+}
+
+type SmtpConfigLike = NonNullable<DesiredState['smtp']>;
+
+/** Zitadel does not apply a changed password to an existing provider, so a
+ * change of anything, the password included, is a replacement: a new provider
+ * is created, made active, and only then are this reconciler's superseded
+ * providers removed. A run that stops half way leaves an inactive provider with
+ * the right description, which the next run adopts instead of creating a
+ * second. A provider an operator added by hand is never touched: if one is
+ * active, that is drift, reported and left in place. */
+async function ensureSmtp(
+  client: ZitadelClient,
+  smtp: SmtpConfigLike,
+  password: string
+): Promise<Action> {
+  const name = smtp.senderAddress;
+  const wanted = smtpDescription(smtp, password);
+  const all = await client.listSmtp();
+  const active = all.find((entry) => entry.active);
+  if (active && !isManaged(active.description)) {
+    return {
+      kind: 'smtp',
+      name,
+      status: 'drift',
+      detail: 'a mail provider that this reconciler did not create is active',
+    };
+  }
+  const managed = all.filter((entry) => isManaged(entry.description));
+  const current = managed.find(
+    (entry) => entry.description === wanted && sameProvider(entry, smtp)
+  );
+  if (current?.active) {
+    // A run that stopped after activating leaves superseded providers behind.
+    const leftovers = managed.filter((entry) => entry.id !== current.id);
+    for (const stale of leftovers) await client.deleteSmtp(stale.id);
+    return { kind: 'smtp', name, status: leftovers.length === 0 ? 'unchanged' : 'updated' };
+  }
+
+  let id: string;
+  if (current) {
+    id = current.id;
+  } else {
+    id = (await client.createSmtp(smtp, password, wanted)).id;
+  }
+  await client.activateSmtp(id);
+  for (const stale of managed) {
+    if (stale.id !== id) await client.deleteSmtp(stale.id);
+  }
+  return {
+    kind: 'smtp',
+    name,
+    status: managed.length === 0 ? 'created' : 'updated',
+  };
 }
