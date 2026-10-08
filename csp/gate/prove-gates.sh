@@ -1,5 +1,5 @@
 #!/bin/sh
-# Sabotage proof for the two #1251 gates' verdict logic: for each gate,
+# Sabotage proof for the two gates' verdict logic: for each gate,
 # mutate the real source in place, require the gate's tests to go RED, restore
 # it, require them GREEN. A mutation whose target string is not found aborts
 # (a sabotage that changed nothing proves nothing). Needs render-core built.

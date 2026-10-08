@@ -4,8 +4,8 @@
 // this module is the verdict on what it observed. Observation lives in
 // csp/proof/capture-csp.mjs; the live runner is csp-regression-gate.sh.
 //
-// Standalone check (branchLeft/workspace#1251): the slot 0 gate-set runner
-// (branchLeft/workspace#1188) has no code yet.
+// Standalone check: the slot 0 gate-set runner
+// has no code yet.
 
 /**
  * `run` is capture-csp.mjs's JSON. Returns failure strings; empty = holds.

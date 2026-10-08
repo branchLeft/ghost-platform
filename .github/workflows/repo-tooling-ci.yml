@@ -93,7 +93,7 @@ jobs:
       - name: CSP script-hash derivation tests
         run: node --test --experimental-test-coverage csp/derive/derive-script-hashes.test.mjs
 
-      # The #1251 gates' verdict logic. Needs render-core built, so build it
+      # The CSP gates' verdict logic. Needs render-core built, so build it
       # first. Their live-browser run (csp/gate/csp-regression-gate.sh) needs
       # Docker and Chromium and stays out of CI, like csp/proof/.
       - name: CSP gate tests and sabotage proof

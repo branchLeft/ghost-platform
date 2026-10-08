@@ -1,5 +1,5 @@
 #!/bin/sh
-# The standing content-policy regression gate (branchLeft/workspace#1251,
+# The standing content-policy regression gate (
 # LLD-5 05-gate-and-edge.html §04): a real headless Chromium loads a real
 # Ghost through the edge policy with a hostile codeinjection_head, and the
 # verdict (csp-regression-gate.mjs) must be GREEN: injected script did not
@@ -94,7 +94,7 @@ start_origin() { # header name, header value
 start_origin "X-Csp-Gate-Marker" "none"
 eval "$(PROOF_ORIGIN="$ORIGIN" node csp/proof/setup-content.mjs)"
 
-# Gate 1 of #1251, the theme hashes: derived from the CLEAN pages, before the attack.
+# The theme-hash gate: derived from the CLEAN pages, before the attack.
 PATHS="/,/${POST_SLUG}/,/tag/${TAG_SLUG}/,/author/${AUTHOR_SLUG}/"
 GHOST_ORIGIN="$ORIGIN" CSP_DERIVE_PATHS="$PATHS" node csp/gate/theme-hash-gate.mjs >/dev/null \
     || { echo "THEME HASH GATE RED" >&2; exit 1; }

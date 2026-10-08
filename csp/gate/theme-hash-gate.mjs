@@ -4,8 +4,8 @@
 // report-only flag. The control case: a theme whose hashes cannot be computed
 // must NOT produce an enforcing policy, because that blocks the reader's page.
 //
-// Standalone check (branchLeft/workspace#1251): the slot 0 gate-set runner
-// (branchLeft/workspace#1188) has no code yet, so this exports pure
+// Standalone check: the slot 0 gate-set runner
+// has no code yet, so this exports pure
 // functions plus a CLI whose exit code is the verdict.
 import { deriveThemeCsp } from '../derive/derive-script-hashes.mjs';
 
@@ -16,7 +16,7 @@ export const REPORT_ONLY_FLAG = 'csp-hashes-unavailable';
  * An empty computed set is treated as uncomputable: Ghost always emits inline
  * blocks of its own (JSON-LD), so zero found means the derivation saw
  * something other than a rendered theme, and an enforcing `script-src 'self'`
- * would block the theme's own scripts. (Incidental choice, #1251.)
+ * would block the theme's own scripts. (Incidental choice.)
  */
 export async function admitTheme(origin, paths, fetchImpl = fetch) {
   const derived = await deriveThemeCsp(origin, paths, fetchImpl);
