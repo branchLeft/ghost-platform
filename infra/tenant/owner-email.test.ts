@@ -1,5 +1,5 @@
 import * as pulumi from '@pulumi/pulumi';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { GhostTenant as GhostTenantClass } from './index';
 import { TEST_ZONES, tenantZeroEquivalent, tenantZeroSecrets } from './test/fixtures';
 import { created, installMocks, settle, unwrap } from './test/harness';
@@ -82,7 +82,50 @@ describe.each([
     expect(registered).toHaveLength(1);
     expect(contains(registered[0].inputs)).toBe(false);
   });
+
+  // Pulumi's mocks never show a test what `registerOutputs()` records, yet
+  // that map is what the stack state stores. Capture it at the call.
+  it('appears in no recorded output except the secrets file, as a secret', async () => {
+    const recorded = await recordedOutputs(`${name}-recorded`, ownerEmail());
+    expect(recorded.size).toBeGreaterThan(10);
+    const carriers: string[] = [];
+    for (const [key, { secret, value }] of recorded) {
+      if (contains(value)) {
+        carriers.push(key);
+        expect(secret, `${key} records the owner address in plain`).toBe(true);
+      }
+    }
+    expect(carriers).toEqual(['secretsEnvFile']);
+  });
 });
+
+/** The map the component passed to `registerOutputs()`, each entry resolved
+ * and marked with whether Pulumi would store it as a secret. */
+async function recordedOutputs(
+  name: string,
+  ownerEmail: pulumi.Input<string>
+): Promise<Map<string, { secret: boolean; value: unknown }>> {
+  const calls: Record<string, unknown>[] = [];
+  // `registerOutputs` is protected, so it is reached through a structural view.
+  const prototype = pulumi.ComponentResource.prototype as unknown as {
+    registerOutputs(outputs?: unknown): void;
+  };
+  const spy = vi.spyOn(prototype, 'registerOutputs').mockImplementation((outputs?: unknown) => {
+    calls.push(outputs as Record<string, unknown>);
+  });
+  try {
+    build(name, ownerEmail);
+  } finally {
+    spy.mockRestore();
+  }
+  expect(calls).toHaveLength(1);
+  const recorded = new Map<string, { secret: boolean; value: unknown }>();
+  for (const [key, raw] of Object.entries(calls[0])) {
+    const output = pulumi.output(raw as pulumi.Input<unknown>);
+    recorded.set(key, { secret: await pulumi.isSecret(output), value: await unwrap(output) });
+  }
+  return recorded;
+}
 
 /**
  * Pulumi registers the component's outputs without awaiting them, so a
