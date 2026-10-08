@@ -184,11 +184,12 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   return async (request, response) => {
     const method = request.method ?? 'GET';
     const path = new URL(request.url ?? '/', options.publicOrigin).pathname;
+    const callbackPath = new URL(options.redirectUri).pathname;
     const routes: Readonly<Record<string, { method: string; run: () => void | Promise<void> }>> = {
       '/healthz': { method: 'GET', run: () => text(response, 200, 'ok') },
       '/shell.css': { method: 'GET', run: () => send(response, 200, 'text/css', STYLESHEET) },
       '/login': { method: 'GET', run: () => beginLogin(response) },
-      '/callback': { method: 'GET', run: () => signIn(request, response) },
+      [callbackPath]: { method: 'GET', run: () => signIn(request, response) },
       '/logout': { method: 'POST', run: () => signOut(request, response) },
       '/': { method: 'GET', run: () => landing(request, response) },
     };
