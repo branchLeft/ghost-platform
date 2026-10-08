@@ -35,10 +35,16 @@ def fetch_status(broker_url: str, slot: str) -> object:
 
 
 def clock_is_synchronised() -> bool:
-    result = subprocess.run(
-        ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
-        capture_output=True, text=True, timeout=10, check=False,
-    )
+    """True only when `timedatectl` runs, exits 0 and prints exactly `yes`.
+    A missing or hung `timedatectl` is "not synchronised", never an error
+    that could be mistaken for a pass."""
+    try:
+        result = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
     return result.returncode == 0 and result.stdout.strip() == "yes"
 
 

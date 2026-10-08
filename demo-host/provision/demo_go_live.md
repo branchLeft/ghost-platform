@@ -25,3 +25,23 @@ assumes clean.
 
 `sabotage_demo_go_live.py` drops each refusal in a scratch copy; the suite must
 go red for every one, and green on the real copy.
+
+## What it does not cover
+
+- **Only this step may place the live Caddyfile.** `render_demo_site.py` can
+  write a rendered file with `--out`, unchecked, so its output is a candidate
+  to hand to this step as `--caddyfile`, never a file to put in the edge's
+  directory. Nothing mechanical stops a hand-copy; that is a runbook rule.
+- **A broker restarted with stand-ins after the demo is open is not
+  re-checked.** The owner's ruling covers the go-live step only; a recurring
+  check is a separate piece of work.
+- **The optional `BROKER_EMAIL_BATCH_CHECKER_MODULE` plugin is outside
+  `seamReadiness`**, so a stand-in loaded there is not reported. The ruling
+  names the admin and drain stand-ins only.
+
+## How the real readers are tested
+
+`fetch_status` runs against a real loopback HTTP listener serving the body
+`app.ts`'s `handleStatus` sends. `clock_is_synchronised` runs against a stub
+`timedatectl` first on PATH that prints `yes`, `no`, exits non-zero, or is
+absent, matching `timedatectl show -p NTPSynchronized --value`.
