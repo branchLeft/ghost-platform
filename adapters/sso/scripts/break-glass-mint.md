@@ -42,7 +42,7 @@ Each refusal exits 2 with a `refused:` line and mints nothing.
 |---|---|
 | `--ttl` above 600 | The adapter caps at 900 seconds from `iat` and allows 60 seconds of forward skew. A token minted near that cap is refused whenever the `ops1` clock runs ahead (adapter review, requirement 4). |
 | `--site` with a path, query, login or `http:` | The adapter is mounted on `/ghost/` only. A token sent anywhere else is logged by Ghost but never consumed, so it stays usable until it expires (requirement 3). The only URL this script builds is `<origin>/ghost/?bl_break_glass=…`. |
-| A key file readable by group or others | The key opens an Administrator session on every tenant. |
+| A key file readable by group or others, owned by another user, a symlink, or not a regular file | The key opens an Administrator session on every tenant. The file is opened with `O_NOFOLLOW`, and its type, mode and owner are checked on the opened descriptor, so nothing can be swapped in between the check and the read. |
 | A key that is not Ed25519, or a file that is not a key | The adapter verifies Ed25519 only. |
 | The audit record cannot be written | A token never exists without its record (below). |
 

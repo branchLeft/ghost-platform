@@ -16,7 +16,7 @@ stop on the owner's behalf. The host steps are in `ghost-platform-docs`,
 
 ```sh
 node break-glass-grant.mjs grant --lane consented|incident --tenant <slug> \
-  --identity <support email> --reason <one line> --reference <one line>
+  --reason <one line> --reference <one line> [--identity <support email>]
 node break-glass-grant.mjs revoke --tenant <slug> --reason <one line>
 node break-glass-grant.mjs status
 node break-glass-grant.mjs expire        # what the timer runs
@@ -26,6 +26,21 @@ It reaches the tenant's database through the tenant's running Ghost container,
 either colour (Compose labels `com.docker.compose.project=<slug>`, service
 `ghost-a` or `ghost-b`), with Ghost's own knex. That is the same route
 `provision-support-account.mjs` takes, so it holds no driver and no credential.
+
+## The account
+
+The only account this tool reads or writes is the one in the tenant's own
+config: `adapters:sso:BreakGlassSSO:supportIdentity`, the value the renderer
+emits from the descriptor's break-glass triple. It is the same value the
+adapter treats as the only valid token subject. The script inside the
+container reads it through Ghost's own config module. Nothing from outside
+names the account.
+
+`--identity` is an optional cross-check. If it is given and differs from the
+configured value, `grant` refuses before it writes anything, so a mistyped or
+wrong email can never activate or suspend a tenant's own staff, the Owner or
+any other account. A tenant with no configured `supportIdentity` is refused
+outright. `revoke` and `expire` take no identity at all.
 
 ## The lanes
 
@@ -40,14 +55,16 @@ either colour (Compose labels `com.docker.compose.project=<slug>`, service
   `grant` sets the account active. If anything fails part-way, the clock stays,
   so the timer still closes whatever may have opened.
 
-Both lanes refuse an account that does not hold exactly the Administrator
-role, so a grant can never activate the Owner or any other staff account.
+Both lanes also refuse the configured account if it does not hold exactly the
+Administrator role, for example after the tenant moved it to Editor.
 
 ## The clock
 
 `grant` writes `/var/lib/branchleft/break-glass-grants/<slug>.json` (mode 0600)
 with a deadline four hours ahead. It writes that file **before** it touches the
-account. One grant per tenant can be open at a time.
+account. The file is written under a temporary name and then hard-linked into
+place, so it is never half-written and never overwrites another grant. One
+grant per tenant can be open at a time.
 
 `branchleft-break-glass-expire.timer` (`systemd/` beside this file) runs
 `expire` every minute, and runs a missed minute at boot (`Persistent=true`). A
@@ -55,13 +72,21 @@ clock kept in a file and checked every minute survives a host reboot, which a
 transient timer would not. `grant` refuses to open anything unless that timer
 is active.
 
-If `expire` cannot close a grant, for example because the container is down,
-the state file stays, the run exits 1 so systemd marks it failed, and the next
-minute retries.
+`expire` handles each state file on its own, so one failure never stops the
+rest. It logs a file it cannot read, or one with no valid deadline, and closes
+that tenant at once instead of skipping it. If it cannot close a grant, for
+example because the container is down, the state file stays, the run exits 1
+so systemd marks it failed, and the next minute retries.
+
+Every docker call has a 60-second timeout, and the service has a 10-minute
+start timeout. A wedged `docker exec` or a database lock therefore ends the run
+rather than holding it open, which would stop the timer firing again.
 
 ## Revoke: suspend, purge, wait, again
 
-`revoke` (explicit, or `expire` at the deadline):
+`revoke` (explicit, or `expire` at the deadline) needs no state file. A lost
+or unreadable file still closes the configured account, and the closing record
+says so:
 
 1. Sets the account to `inactive` and deletes all of its rows in `sessions`.
 2. Waits five seconds.
@@ -81,4 +106,6 @@ Owner role.
 grant opens and one when it closes. The closing record carries the lane, the
 reference, the reasons, the grant and close times, the cause (`timer` or
 `explicit`), whether the account was found, its status before the revoke, and
-the sessions purged on each pass.
+the sessions purged on each pass. It also records whether the state file was
+found, whether it was unreadable, and whether the configured identity changed
+during the window.

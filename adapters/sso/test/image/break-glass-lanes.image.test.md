@@ -21,7 +21,11 @@ pinned version. Each case below runs the real code:
 | incident | a deleted account is recreated; at the deadline the timer's `expire` kills the open session, and a fresh token is refused |
 | requirement 2 | the timer purges a session left behind when the tenant re-suspended early, so nothing wakes when they un-suspend |
 | requirement 1 | a session written between the two purges is removed |
-| Owner | a grant naming the Owner is refused, and the Owner stays active |
+| Owner | a grant naming the Owner is refused before anything is written, and the Owner stays active |
+| staff Administrator | a typed staff email is refused in both lanes, whether that account is suspended or active; with no identity typed, the lanes act on the configured support account and leave the staff account as it was |
+| role changed | `activate` refuses the support account once the tenant moves it to Editor |
+| corrupt state | `expire` closes a grant whose state file is truncated: suspended, sessions purged, cookie dead |
+| no state | `revoke` closes the support account with its state file deleted |
 | requirement 5 | a token minted before a Ghost restart is refused after it |
 | key rotation | after the public half in the config changes, the old key's token is refused and the new key's is accepted |
 
