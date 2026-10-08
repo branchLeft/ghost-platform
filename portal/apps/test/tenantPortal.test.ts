@@ -70,7 +70,6 @@ const crossTenantDb = (): TenantDb => {
   // landing page keeps working whenever the portal reads something new.
   return new Proxy(real, {
     get(target, prop) {
-      if (prop === 'ownHealth') return leakyHealth;
       const value = Reflect.get(target, prop, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },
