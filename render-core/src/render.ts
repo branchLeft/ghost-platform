@@ -14,7 +14,7 @@ import {
   validateTenantUid,
 } from './brand.js';
 import { renderComposeStack, type DemoDataMount } from './compose.js';
-import type { TenantDescriptor } from './descriptor.js';
+import type { TenantStackDescriptor } from './descriptor.js';
 import { renderEdgeSiteBlock, THEME_CSP_UNAVAILABLE, type ThemeCsp } from './edge.js';
 import { tenantEnvironment, SECRET_ENV_KEYS } from './environment.js';
 import { renderIdentity } from './identity.js';
@@ -42,7 +42,7 @@ const REQUIRED_SECRET_KEYS: Record<'sqlite' | 'mysql', readonly string[]> = {
   mysql: [SECRET_ENV_KEYS.databasePassword],
 };
 
-function requiredSecretKeys(descriptor: TenantDescriptor): string[] {
+function requiredSecretKeys(descriptor: TenantStackDescriptor): string[] {
   const keys: string[] = [...REQUIRED_SECRET_KEYS[descriptor.database.kind]];
   if (descriptor.media.kind === 's3') {
     keys.push(SECRET_ENV_KEYS.s3AccessKeyId, SECRET_ENV_KEYS.s3SecretAccessKey);
@@ -53,6 +53,11 @@ function requiredSecretKeys(descriptor: TenantDescriptor): string[] {
   if (descriptor.mail.enabled) {
     keys.push(SECRET_ENV_KEYS.bulkEmailApiKey);
   }
+  // A demo's owner address is the broker's; a paying tenant's arrives here.
+  // See descriptor.md#tenant-stack-descriptor.
+  if (descriptor.kind === 'tenant') {
+    keys.push(SECRET_ENV_KEYS.ownerEmail);
+  }
   return keys;
 }
 
@@ -62,7 +67,7 @@ function requiredSecretKeys(descriptor: TenantDescriptor): string[] {
  * the module doc comment). A demo (`sqlite` + `local`) needs none, so its
  * template carries only the header comment.
  */
-export function renderSecretsTemplate(descriptor: TenantDescriptor): string {
+export function renderSecretsTemplate(descriptor: TenantStackDescriptor): string {
   const path = secretsEnvPath(descriptor.slug);
   const keys = requiredSecretKeys(descriptor);
   const lines = [
@@ -92,7 +97,7 @@ const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
  * in `IMAGE=<value>` would otherwise start a second `EnvironmentFile`
  * variable systemd reads as if this tenant had declared it.
  */
-function renderImageEnv(descriptor: TenantDescriptor): string {
+function renderImageEnv(descriptor: TenantStackDescriptor): string {
   if (CONTROL_CHARACTER.test(descriptor.image)) {
     throw new FieldValidationError(
       'image',
@@ -117,7 +122,7 @@ function shellQuote(value: string): string {
  * volumes, owned to its uid, before its unit can start. A demo renders no
  * equivalent command. See render.md#provision-script.
  */
-function renderProvisionScript(descriptor: TenantDescriptor): string {
+function renderProvisionScript(descriptor: TenantStackDescriptor): string {
   const lines = ['#!/bin/sh', 'set -eu'];
   if (descriptor.kind === 'demo') {
     lines.push(
@@ -155,7 +160,7 @@ function dirname(path: string): string {
  * not one volume per path. Named by `uid` (the stable per-slot identity),
  * never `slug` — see `compose.ts`'s own `DemoDataMount` doc comment.
  */
-function demoDataMount(descriptor: TenantDescriptor): DemoDataMount | null {
+function demoDataMount(descriptor: TenantStackDescriptor): DemoDataMount | null {
   if (descriptor.database.kind !== 'sqlite' || descriptor.media.kind !== 'local') {
     return null;
   }
@@ -177,7 +182,7 @@ function demoDataMount(descriptor: TenantDescriptor): DemoDataMount | null {
  * function is safe to call directly by a caller with no `validate()` of its
  * own. See render.md#assertallocationshape.
  */
-function assertAllocationShape(descriptor: TenantDescriptor): void {
+function assertAllocationShape(descriptor: TenantStackDescriptor): void {
   validateTenantUid(descriptor.uid);
   validatePort(descriptor.ports.a, 'ports.a');
   validatePort(descriptor.ports.b, 'ports.b');
@@ -195,7 +200,7 @@ function assertAllocationShape(descriptor: TenantDescriptor): void {
  * artefacts directly. See render.md#render.
  */
 export function render(
-  descriptor: TenantDescriptor,
+  descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
   themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE
 ): readonly Artefact[] {

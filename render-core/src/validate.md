@@ -116,3 +116,23 @@ same descriptor on success so a caller can chain it into `render()`; throws
 on the first violation found rather than collecting every one, because both
 callers reject before any side effect regardless of how many things are
 wrong.
+
+## validateTenantStack
+
+`validate()` for a paying tenant's `TenantStackDescriptor`: the same checks
+in the same order, except the owner address, which is not in the
+descriptor. It refuses a descriptor that still carries an `ownerEmail` key,
+with a message that never echoes the value, so a tenant repository cannot
+keep committing the address and have it silently ignored. It also refuses
+any kind but `tenant`, because a demo carries its owner address inline and
+goes through `validate()`.
+
+## validateOwnerEmailSecret
+
+The owner address's shape check, for a value that arrives as a secret. It
+runs `validateEmailAddress`, and on a refusal throws a new
+`FieldValidationError` that names the secrets-file key and withholds the
+value. `validateEmailAddress`'s own messages quote the value, and a deploy
+log prints a refusal in plain text. The Pulumi component calls it inside the
+secret `Output`'s `apply`, so the check runs at deploy time and the value
+never leaves the secret.

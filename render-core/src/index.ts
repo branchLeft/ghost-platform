@@ -47,6 +47,7 @@ export type {
   SendingIdentitySpec,
   TenantDescriptor,
   TenantKind,
+  TenantStackDescriptor,
   TransportSpec,
 } from './descriptor.js';
 
@@ -60,6 +61,8 @@ export {
   UnknownDiscriminantError,
   UnknownSchemaVersionError,
   validate,
+  validateOwnerEmailSecret,
+  validateTenantStack,
 } from './validate.js';
 
 export type { HashId, LeaseId, SlotLeaseRecord, SlotName } from './lease.js';

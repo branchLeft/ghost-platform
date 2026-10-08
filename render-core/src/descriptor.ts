@@ -224,3 +224,10 @@ export interface TenantDescriptor {
   readonly breakGlass: BreakGlassSpec;
   readonly expiresAt: Instant | null;
 }
+
+/**
+ * A paying tenant's descriptor as its own repository may commit it: every
+ * field but `ownerEmail`, which is a person's address and reaches the host
+ * only through the secrets file. See descriptor.md#tenant-stack-descriptor.
+ */
+export type TenantStackDescriptor = Omit<TenantDescriptor, 'ownerEmail'>;
