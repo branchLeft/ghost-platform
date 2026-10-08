@@ -1,6 +1,6 @@
 {
   "name": "@branchleft/ghost-platform-tenant",
-  "version": "6.0.0",
+  "version": "7.0.0",
   "license": "SEE LICENSE IN LICENSE",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,7 +24,7 @@
     "test:unit": "vitest --run"
   },
   "dependencies": {
-    "@branchleft/ghost-platform-render-core": "0.1.0",
+    "@branchleft/ghost-platform-render-core": "0.2.0",
     "@pulumi/pulumi": "^3.262.0"
   },
   "devDependencies": {

@@ -2,6 +2,41 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## 7.0.0
+
+**The owner's email address is no longer a descriptor field. It arrives as a
+secret and reaches the host only in the secrets file.**
+
+- **Breaking: the descriptor has no `ownerEmail`.** `GhostTenantArgs.descriptor`
+  is now the render core's `TenantStackDescriptor`, and `validateTenantStack()`
+  refuses a descriptor that still carries `ownerEmail`, without echoing the
+  value. A 6.x program that builds its descriptor with `ownerEmail` from plain
+  stack config compiles against 7.0.0 when it passes a typed variable, and
+  then throws at construction.
+- **Breaking: new required secret `secrets.ownerEmail`.** Read it with
+  `config.requireSecret('ownerEmail')` (set with `pulumi config set --secret
+  ownerEmail`). The render core's template names it as `GHOST_OWNER_EMAIL`
+  for every paying tenant, so a missing one is refused like any other missing
+  secret. It is written only into `secretsEnvFile`, which stays a Pulumi
+  secret; Compose never references it, so no container receives it. On the
+  host it is the address `provision-owner.mjs --email` takes.
+- **Its shape is checked at deploy time,** inside the secret `Output`, by the
+  render core's `validateOwnerEmailSecret`, whose refusal withholds the value.
+- **New dependency pin:** `@branchleft/ghost-platform-render-core` `0.2.0`
+  (was `0.1.0`). This also brings in 0.1.1:
+  - tenant zero's own slug is no longer reserved, so its descriptor validates;
+  - **breaking:** `ZoneConfig` no longer has `mailSpoolBaseUrl`. Ghost's
+    bulk-mail base URL is the host spool's service name, `http://mail-spool:8080`,
+    and both colours join the tenant's own internal network to it,
+    `branchleft-mail-<uid>`, declared external. A 6.x caller passing
+    `mailSpoolBaseUrl` does not compile.
+- Output changes against 6.0.0: `secretsEnvFile` gains `GHOST_OWNER_EMAIL`,
+  and `composeFile` gains the mail network and the spool base URL above.
+  `test/golden/reviewed-output-diff.json` lists each one with its decision.
+- A sentinel test (`owner-email.test.ts`) checks that the owner address
+  appears in no plain output, no registered input and no refusal, and only in
+  `secretsEnvFile`.
+
 ## 6.0.0
 
 **`GhostTenant` now takes a tenant descriptor and builds every output by
