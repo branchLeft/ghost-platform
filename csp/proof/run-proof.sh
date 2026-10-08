@@ -21,6 +21,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+echo "== Building render-core (the proof renders through its built output) =="
+( cd render-core && ${NPM:-npm} ci >/dev/null && ${NPM:-npm} run build >/dev/null )
+
 echo "== Building images =="
 docker build -q -t csp-proof-ghost:local . >/dev/null
 docker build -q -f csp/proof/Dockerfile -t csp-proof-origin:local . >/dev/null
@@ -100,6 +103,9 @@ CLEAN_HASHES_JSON="$(GHOST_ORIGIN="$ORIGIN" CSP_DERIVE_PATHS="/,/${POST_SLUG}/,/
 echo "$CLEAN_HASHES_JSON"
 echo "$CLEAN_HASHES_JSON" | grep -q '"kind": "computed"' || { echo "FAILED: derivation did not compute a hash set" >&2; exit 1; }
 
+# Home page only, derived from the CLEAN page (before the attack exists), for ROW E.
+HOME_HASHES_JSON="$(GHOST_ORIGIN="$ORIGIN" CSP_DERIVE_PATHS="/" node csp/derive/derive-script-hashes.mjs)"
+
 echo "== Rendering the real enforcing header through render-core's own build =="
 ROW_B_RENDERED="$(printf '%s' "$CLEAN_HASHES_JSON" | node csp/proof/render-header.mjs)"
 ROW_B_MODE="$(printf '%s' "$ROW_B_RENDERED" | cut -f1)"
@@ -158,6 +164,36 @@ else
 fi
 
 echo
+echo "== ROW E (SABOTAGE): one of the theme's derived hashes dropped -- an unhashed inline script must be refused =="
+# The capture page is the home page, so drop, one at a time, each hash that
+# page carries (some hashes cover blocks that never execute there, e.g. the
+# JSON-LD). At least one drop must surface an extra violation: that block is
+# an inline script the policy now refuses because it is no longer hashed.
+HOME_COUNT="$(printf '%s' "$HOME_HASHES_JSON" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).hashes.length)')"
+ROW_E_VIOLATIONS=0
+ROW_E_JSON=""
+i=0
+while [ "$i" -lt "$HOME_COUNT" ]; do
+    DROPPED_JSON="$(printf '%s' "$HOME_HASHES_JSON" | node -e 'const t=JSON.parse(require("fs").readFileSync(0,"utf8"));t.hashes.splice(Number(process.argv[1]),1);process.stdout.write(JSON.stringify(t))' "$i")"
+    ROW_E_VALUE="$(printf '%s' "$DROPPED_JSON" | node csp/proof/render-header.mjs | cut -f2)"
+    start_origin "Content-Security-Policy" "$ROW_E_VALUE"
+    CUR_JSON="$(run_capture ROW-E-SABOTAGE-drop-$i)"
+    CUR_V="$(printf '%s' "$CUR_JSON" | grep -c '"directive"' || true)"
+    echo "drop hash #$i: $CUR_V violation(s)"
+    if [ "$CUR_V" -gt "$ROW_E_VIOLATIONS" ]; then ROW_E_VIOLATIONS="$CUR_V"; ROW_E_JSON="$CUR_JSON"; fi
+    i=$((i + 1))
+done
+echo "$ROW_E_JSON"
+ROW_E_VIOLATIONS="$(printf '%s' "$ROW_E_JSON" | grep -c '"directive"' || true)"
+if [ "$ROW_E_VIOLATIONS" -gt 1 ]; then
+    echo "ROW E: RED as expected ($ROW_E_VIOLATIONS violations -- the inline script whose hash was dropped is refused; control proven)"
+    ROW_E_CAUGHT=1
+else
+    echo "ROW E: FAIL -- WRONG, an unhashed inline script was not refused ($ROW_E_VIOLATIONS violation)"
+    ROW_E_CAUGHT=0
+fi
+
+echo
 echo "== ROW B again: correct wiring restored =="
 start_origin "Content-Security-Policy" "$ROW_B_VALUE"
 ROW_B2_JSON="$(run_capture ROW-B-RESTORED)"
@@ -175,9 +211,10 @@ echo "== Summary =="
 echo "ROW A (control, no policy):            $([ "$ROW_A_OK" -eq 1 ] && echo PASS || echo FAIL)"
 echo "ROW B (enforcing, derived hashes):      $([ "$ROW_B_OK" -eq 1 ] && echo PASS || echo FAIL)"
 echo "ROW D (sabotage: mode flag ignored):    $([ "$ROW_D_CAUGHT" -eq 1 ] && echo 'RED as expected' || echo 'FAIL -- sabotage undetected')"
+echo "ROW E (sabotage: hash dropped):      $([ "$ROW_E_CAUGHT" -eq 1 ] && echo 'RED as expected' || echo 'FAIL -- sabotage undetected')"
 echo "ROW B restored:                         $([ "$ROW_B2_OK" -eq 1 ] && echo PASS || echo FAIL)"
 
-if [ "$ROW_A_OK" -eq 1 ] && [ "$ROW_B_OK" -eq 1 ] && [ "$ROW_D_CAUGHT" -eq 1 ] && [ "$ROW_B2_OK" -eq 1 ]; then
+if [ "$ROW_A_OK" -eq 1 ] && [ "$ROW_B_OK" -eq 1 ] && [ "$ROW_D_CAUGHT" -eq 1 ] && [ "$ROW_E_CAUGHT" -eq 1 ] && [ "$ROW_B2_OK" -eq 1 ]; then
     echo
     echo "PROOF OK: the strict content policy render-core renders, with a real derived hash set, blocks the injected script while Portal's sign-in form still renders -- and dropping the hashes (or ignoring the fail-soft mode flag) is independently caught."
     exit 0
