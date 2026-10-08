@@ -14,7 +14,7 @@
 # The shared line above stays. SYNC-1 is `contains`, not `identical`: a repo may
 # add to this file and may never drop a shared line, and rewriting that line in
 # place is dropping it.
-* @reviewer-agent-branchLeft @branchLeft/branchleft-admin
+* @branchLeft/branchleft-admin
 
 # branchLeft/standards templates/codeowners, synced whole (SYNC-1: these six
 # lines must be this file's final lines, in this order — GitHub applies the
