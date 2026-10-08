@@ -17,6 +17,10 @@ on:
       - services/demo-gate/**
       - render-core/**
       - scripts/test-demo-gate.sh
+      - scripts/test-demo-edge.sh
+      - scripts/demo-edge-proof/**
+      - demo-host/provision/render_demo_site.py
+      - demo-host/provision/render_demo_edge.py
       - .github/workflows/demo-gate-image.yml
   pull_request:
     branches: [main]
@@ -24,6 +28,10 @@ on:
       - services/demo-gate/**
       - render-core/**
       - scripts/test-demo-gate.sh
+      - scripts/test-demo-edge.sh
+      - scripts/demo-edge-proof/**
+      - demo-host/provision/render_demo_site.py
+      - demo-host/provision/render_demo_edge.py
       - .github/workflows/demo-gate-image.yml
 
 # `packages: read` because the image's build stage installs
@@ -63,3 +71,26 @@ jobs:
 
       - name: Real-Caddy proof (no cookie, wrong/right passphrase, cross-slot, tamper/expiry, lease recycle, per-source ceiling, failures deny)
         run: ./scripts/test-demo-gate.sh demo-gate:ci
+
+      - name: Real-Caddy proof of the rendered demo edge (every path gated, members import refused, noindex, policy, per-colour drain)
+        run: ./scripts/test-demo-edge.sh demo-gate:ci
+
+      # The sabotage of the same proof: with /ghost/* exempted from
+      # forward_auth the script must fail. A pass here means the probes
+      # cannot see the hole.
+      - name: Sabotage - exempt /ghost/* from forward_auth, proof must go red
+        run: |
+          if DEMO_EDGE_PROOF_SABOTAGE=exempt-ghost ./scripts/test-demo-edge.sh demo-gate:ci; then
+            echo "::error::the every-path-gated probe stayed green with /ghost/* exempted"
+            exit 1
+          fi
+
+      # And the narrow members-import matcher the first review broke: one
+      # literal path. Ghost also routes the no-slash and versioned spellings
+      # to the import handler, so the proof must go red.
+      - name: Sabotage - narrow the members-import matcher, proof must go red
+        run: |
+          if DEMO_EDGE_PROOF_SABOTAGE=narrow-import ./scripts/test-demo-edge.sh demo-gate:ci; then
+            echo "::error::the members-import probes stayed green with only the literal path refused"
+            exit 1
+          fi
