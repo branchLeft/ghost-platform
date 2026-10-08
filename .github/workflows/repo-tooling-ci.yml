@@ -93,6 +93,17 @@ jobs:
       - name: CSP script-hash derivation tests
         run: node --test --experimental-test-coverage csp/derive/derive-script-hashes.test.mjs
 
+      # The CSP gates' verdict logic. Needs render-core built, so build it
+      # first. Their live-browser run (csp/gate/csp-regression-gate.sh) needs
+      # Docker and Chromium and stays out of CI, like csp/proof/.
+      - name: CSP gate tests and sabotage proof
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          (cd render-core && npm ci --ignore-scripts && npm run build)
+          node --test csp/gate/*.test.mjs
+          ./csp/gate/prove-gates.sh
+
       # Self-test first: a matcher that has quietly stopped matching passes
       # every file, so prove it still works before trusting a pass. The scan
       # then walks the tree rather than taking a list of changed files --
