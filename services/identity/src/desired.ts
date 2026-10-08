@@ -1,4 +1,4 @@
-import type { IdentityConfig } from './config.js';
+import type { IdentityConfig, SmtpConfig } from './config.js';
 import { ConfigError } from './errors.js';
 
 /** The owner's own organisation: home of the project and of the console's
@@ -54,6 +54,8 @@ export interface DesiredState {
   readonly roles: readonly DesiredRole[];
   readonly applications: readonly DesiredApplication[];
   readonly grants: readonly DesiredGrant[];
+  /** The instance's mail provider; absent when the configuration names none. */
+  readonly smtp?: SmtpConfig;
 }
 
 /** The one sign-in return path. The reconciler registers it and both
@@ -135,6 +137,9 @@ export function assertInvariants(state: DesiredState): void {
       problems.push(`the two applications share a hostname: ${sharedHost.join(', ')}`);
     }
   }
+  if (state.smtp && state.smtp.tls && !state.smtp.host.includes('.')) {
+    problems.push('smtp.host must be a DNS name when tls is on');
+  }
   const knownRoles = new Set(state.roles.map((role) => role.key));
   for (const application of state.applications) {
     if (!knownRoles.has(application.requiredRole)) {
@@ -212,6 +217,7 @@ export function desiredState(config: IdentityConfig, localDev?: LocalDevOrigins)
       orgName: tenantOrgName(tenant.slug),
       roleKeys: [ROLE_TENANT_ADMIN],
     })),
+    ...(config.smtp ? { smtp: config.smtp } : {}),
   };
   assertInvariants(state);
   return state;
