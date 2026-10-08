@@ -1,11 +1,20 @@
-import { asc, eq } from 'drizzle-orm';
+import { asc, desc, eq } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { deriveHealthView } from '../healthView.js';
 import { deriveReading, type HealthView } from '../reading.js';
-import { healthReading, tenantRegister } from '../schema.js';
+import {
+  InvalidPublicationError,
+  SUBPROCESSOR_NOTICE_DAYS,
+  deriveDocumentView,
+  type DocumentKind,
+  type DocumentView,
+  type SubprocessorEntry,
+} from '../documents.js';
+import { documentVersion, healthReading, tenantRegister } from '../schema.js';
 
 export { MalformedScrapeError, type HealthView } from '../reading.js';
+export { InvalidPublicationError, SUBPROCESSOR_NOTICE_DAYS } from '../documents.js';
 import { parseTenantId } from '../tenantId.js';
 import type { TenantRegistration } from '../tenant/session.js';
 
@@ -98,6 +107,67 @@ export class OwnerDb {
         tenantId: row.register.tenantId,
         health: row.reading ? deriveHealthView(row.reading) : null,
       }));
+    });
+  }
+
+  /**
+   * Publishes the next version of a document. The version number is the
+   * previous one plus one. A sub-processor list version must name at least one
+   * entry and carries a notice period of at least one day (default
+   * `SUBPROCESSOR_NOTICE_DAYS`); it takes effect no earlier than `publishedAt`
+   * plus that notice, so a new entry is not in force inside its notice. The
+   * table refuses the same, whoever writes.
+   */
+  async publishDocument(
+    input: {
+      kind: DocumentKind;
+      title: string;
+      body: string;
+      entries?: SubprocessorEntry[];
+      effectiveAt: Date;
+      noticeDays?: number;
+    },
+    publishedAt: Date
+  ): Promise<DocumentView> {
+    const entries = input.entries ?? [];
+    const isList = input.kind === 'subprocessors';
+    const noticeDays = input.noticeDays ?? (isList ? SUBPROCESSOR_NOTICE_DAYS : 0);
+    if (isList && entries.length === 0) {
+      throw new InvalidPublicationError('a sub-processor list version names its entries');
+    }
+    if (!isList && entries.length > 0) {
+      throw new InvalidPublicationError('only the sub-processor list carries entries');
+    }
+    if (isList && noticeDays < 1) {
+      throw new InvalidPublicationError('a sub-processor list version carries a notice period');
+    }
+    const earliest = publishedAt.getTime() + noticeDays * 86_400_000;
+    if (isList && input.effectiveAt.getTime() < earliest) {
+      throw new InvalidPublicationError(
+        'a new sub-processor entry is not effective inside its notice period'
+      );
+    }
+    return this.run(async (tx) => {
+      const [latest] = await tx
+        .select({ version: documentVersion.version })
+        .from(documentVersion)
+        .where(eq(documentVersion.kind, input.kind))
+        .orderBy(desc(documentVersion.version))
+        .limit(1);
+      const [row] = await tx
+        .insert(documentVersion)
+        .values({
+          kind: input.kind,
+          version: (latest?.version ?? 0) + 1,
+          title: input.title,
+          body: input.body,
+          entries,
+          publishedAt,
+          effectiveAt: input.effectiveAt,
+          noticeDays,
+        })
+        .returning();
+      return deriveDocumentView(row!);
     });
   }
 }

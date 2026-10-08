@@ -76,6 +76,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0000_binding_functions',
       'applied migration 0001_tenant_register',
       'applied migration 0002_health_reading',
+      'applied migration 0003_versioned_documents',
       'post-check passed: the server matches the manifest',
       'boundary verified',
       'portal database provisioned',
@@ -85,6 +86,15 @@ describe('the provisioning lifecycle', () => {
     expect(await privilege('portal_owner', 'portal.tenant_register', 'UPDATE')).toBe(false);
     expect(await privilege('portal_owner', 'portal.health_reading', 'DELETE')).toBe(false);
     expect(await privilege('portal_owner', 'portal.health_reading', 'UPDATE')).toBe(true);
+    // A published version and an acceptance are never changed or removed.
+    for (const table of ['portal.document_version', 'portal.document_acceptance']) {
+      for (const role of ['portal_owner', 'portal_tenant']) {
+        expect(await privilege(role, table, 'UPDATE')).toBe(false);
+        expect(await privilege(role, table, 'DELETE')).toBe(false);
+      }
+    }
+    expect(await privilege('portal_tenant', 'portal.document_version', 'INSERT')).toBe(false);
+    expect(await privilege('portal_owner', 'portal.document_acceptance', 'INSERT')).toBe(false);
     // A bare login session, with no SET ROLE, holds nothing in the portal schema.
     expect(await privilege(TENANT, 'portal.tenant_register', 'SELECT')).toBe(false);
   });
@@ -137,7 +147,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 4 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 5 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 

@@ -59,6 +59,26 @@ fetches the scrapes is separate work. The grants on `portal.health_reading`
 (tenant `SELECT`, owner `SELECT, INSERT, UPDATE`) are in the manifest,
 `provision/manifest.ts`.
 
+## Versioned documents and acceptance
+
+`portal.document_version` holds the published versions of three documents
+(`terms`, `usage`, `subprocessors`), shared by every tenant. A version is never
+updated or deleted (no role holds the privilege), and it is in force once its
+`effective_at` has passed: `TenantDb.currentDocument(scope, kind, now)` returns
+the highest such version, so a version published but not yet effective is
+stored and not shown. For the sub-processor list the table itself refuses an
+effective date earlier than `published_at` plus the notice period, and a
+notice of under one day; `OwnerDb.publishDocument` checks the same first.
+`SUBPROCESSOR_NOTICE_DAYS` (30) is a placeholder default until the owner
+rules the period.
+
+`portal.document_acceptance` records which tenant accepted which version, by
+whom and when. It is isolated like every tenant table and insert-only.
+Acceptance belongs to a version, so a new version is pending again for a tenant
+that accepted the last (`pendingAcceptances`, and `assertAccepted` as the
+gate). Only the version in force can be accepted. Text in this layer is
+placeholder only; the real wording is supplied by the owner.
+
 ## The owner path
 
 `portal/data` exports `./tenant` and `./owner` separately. Tenant-facing code

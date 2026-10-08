@@ -10,6 +10,8 @@ const LOGIN_TTL_SECONDS = 600;
 const DEFAULT_SESSION_SECONDS = 3600;
 const TOKEN_EXCHANGE_TIMEOUT_MS = 5000;
 
+const MAX_FORM_BYTES = 4096;
+
 const SESSION_COOKIE = 'portal_session';
 const LOGIN_COOKIE = 'portal_login';
 
@@ -42,6 +44,20 @@ export interface ShellOptions<S> extends OidcClient {
   readonly bind: (identity: Signed) => Promise<S | null>;
   /** Renders the landing area from the session alone; the request is not an argument. */
   readonly landing: (bound: S, identity: Signed) => Promise<string>;
+  /**
+   * Further signed-in pages by path, rendered like the landing area from the
+   * session alone. A path outside this set, or any that shadows the shell's
+   * own, is not served.
+   */
+  readonly pages?: Readonly<Record<string, (bound: S, identity: Signed) => Promise<string>>>;
+  /**
+   * Signed-in form posts by path. Each runs with the session's bound value and
+   * the posted fields, and returns the path to redirect to. A post from any
+   * origin but this application's is refused, as is a missing origin.
+   */
+  readonly actions?: Readonly<
+    Record<string, (bound: S, identity: Signed, form: URLSearchParams) => Promise<string>>
+  >;
   readonly clock?: () => number;
   readonly fetch?: typeof fetch;
   readonly sessionSeconds?: number;
@@ -138,7 +154,11 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     response.end();
   }
 
-  async function landing(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  async function landing(
+    request: IncomingMessage,
+    response: ServerResponse,
+    render: (bound: S, identity: Signed) => Promise<string> = options.landing
+  ): Promise<void> {
     const cookies = parseCookies(request.headers.cookie);
     const session = sessions.get(cookies.get(sessionName));
     if (!session) {
@@ -148,7 +168,7 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     }
     let body: string;
     try {
-      body = await options.landing(session.bound, {
+      body = await render(session.bound, {
         subject: session.subject,
         orgId: session.orgId,
       });
@@ -168,6 +188,41 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     );
   }
 
+  async function readForm(request: IncomingMessage): Promise<URLSearchParams | null> {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      size += (chunk as Buffer).length;
+      if (size > MAX_FORM_BYTES) return null;
+      chunks.push(chunk as Buffer);
+    }
+    return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+  }
+
+  async function act(
+    request: IncomingMessage,
+    response: ServerResponse,
+    run: (bound: S, identity: Signed, form: URLSearchParams) => Promise<string>
+  ): Promise<void> {
+    if (request.headers.origin !== options.publicOrigin) return text(response, 403, 'REFUSED');
+    const session = sessions.get(parseCookies(request.headers.cookie).get(sessionName));
+    if (!session) {
+      response.writeHead(302, { ...SECURITY_HEADERS, location: '/login' });
+      response.end();
+      return;
+    }
+    const form = await readForm(request);
+    if (form === null) return text(response, 413, 'TOO_LARGE');
+    let location: string;
+    try {
+      location = await run(session.bound, { subject: session.subject, orgId: session.orgId }, form);
+    } catch {
+      return text(response, 400, 'REFUSED');
+    }
+    response.writeHead(303, { ...SECURITY_HEADERS, location });
+    response.end();
+  }
+
   function signOut(request: IncomingMessage, response: ServerResponse): void {
     const origin = request.headers.origin;
     if (origin !== undefined && origin !== options.publicOrigin)
@@ -184,7 +239,7 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   return async (request, response) => {
     const method = request.method ?? 'GET';
     const path = new URL(request.url ?? '/', options.publicOrigin).pathname;
-    const routes: Readonly<Record<string, { method: string; run: () => void | Promise<void> }>> = {
+    const routes: Record<string, { method: string; run: () => void | Promise<void> }> = {
       '/healthz': { method: 'GET', run: () => text(response, 200, 'ok') },
       '/shell.css': { method: 'GET', run: () => send(response, 200, 'text/css', STYLESHEET) },
       '/login': { method: 'GET', run: () => beginLogin(response) },
@@ -192,6 +247,16 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
       '/logout': { method: 'POST', run: () => signOut(request, response) },
       '/': { method: 'GET', run: () => landing(request, response) },
     };
+    for (const [extra, render] of Object.entries(options.pages ?? {})) {
+      if (!Object.hasOwn(routes, extra)) {
+        routes[extra] = { method: 'GET', run: () => landing(request, response, render) };
+      }
+    }
+    for (const [extra, run] of Object.entries(options.actions ?? {})) {
+      if (!Object.hasOwn(routes, extra)) {
+        routes[extra] = { method: 'POST', run: () => act(request, response, run) };
+      }
+    }
     const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
     if (!route) return text(response, 404, 'NOT_FOUND');
     if (route.method !== method) return text(response, 405, 'METHOD_NOT_ALLOWED');

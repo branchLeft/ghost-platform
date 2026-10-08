@@ -1,6 +1,7 @@
 import { createTokenVerifier, ROLE_TENANT_ADMIN } from 'ghost-platform-identity/dist/index.js';
 import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js';
-import { TenantDb, type TenantScope } from 'ghost-platform-portal-data/tenant';
+import { TenantDb, type DocumentKind, type TenantScope } from 'ghost-platform-portal-data/tenant';
+import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
@@ -38,6 +39,8 @@ export function createTenantPortal(options: TenantPortalOptions) {
     clock: options.clock,
     fetchKeys: options.fetchKeys,
   });
+  const now = (): Date =>
+    new Date((options.clock ?? (() => Math.floor(Date.now() / 1000)))() * 1000);
   return createShell<TenantScope>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -47,7 +50,10 @@ export function createTenantPortal(options: TenantPortalOptions) {
     verifier,
     secureCookies: options.secureCookies,
     title: 'TENANT_PORTAL',
-    nav: [{ label: 'NAV_HOME', href: '/' }],
+    nav: [
+      { label: 'NAV_HOME', href: '/' },
+      { label: 'NAV_DOCUMENTS', href: '/documents' },
+    ],
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
     fetch: options.fetch,
@@ -57,7 +63,37 @@ export function createTenantPortal(options: TenantPortalOptions) {
       const own = await options.db.ownRegistration(scope);
       const id = own ? escapeHtml(own.tenantId) : 'NO_TENANT';
       const health = await options.db.ownHealth(scope);
-      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${renderHealth(health)}`;
+      const pending = await options.db.pendingAcceptances(scope, now());
+      const notice =
+        pending.length === 0 ? '' : '<p><a href="/documents">DOCUMENTS_AWAIT_ACCEPTANCE</a></p>';
+      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${renderHealth(health)}`;
+    },
+    pages: {
+      '/documents': async (scope) => {
+        const at = now();
+        const [documents, pending, accepted] = await Promise.all([
+          options.db.currentDocuments(scope, at),
+          options.db.pendingAcceptances(scope, at),
+          options.db.acceptances(scope),
+        ]);
+        return renderDocuments(
+          documents,
+          new Set(pending.map((d) => `${d.kind}:${d.version}`)),
+          accepted
+        );
+      },
+    },
+    actions: {
+      '/documents/accept': async (scope, identity, form) => {
+        const kind = form.get('kind') ?? '';
+        const version = Number(form.get('version'));
+        await options.db.acceptDocument(
+          scope,
+          { kind: kind as DocumentKind, version, acceptedBy: identity.subject },
+          now()
+        );
+        return '/documents';
+      },
     },
   });
 }
