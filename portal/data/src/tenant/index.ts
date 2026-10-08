@@ -10,4 +10,5 @@ export {
   type AcceptanceView,
   type DocumentKind,
   type DocumentView,
+  type UpcomingView,
 } from '../documents.js';

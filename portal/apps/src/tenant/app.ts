@@ -71,15 +71,17 @@ export function createTenantPortal(options: TenantPortalOptions) {
     pages: {
       '/documents': async (scope) => {
         const at = now();
-        const [documents, pending, accepted] = await Promise.all([
+        const [documents, pending, accepted, upcoming] = await Promise.all([
           options.db.currentDocuments(scope, at),
           options.db.pendingAcceptances(scope, at),
           options.db.acceptances(scope),
+          options.db.upcomingSubprocessors(scope, at),
         ]);
         return renderDocuments(
           documents,
           new Set(pending.map((d) => `${d.kind}:${d.version}`)),
-          accepted
+          accepted,
+          upcoming
         );
       },
     },

@@ -103,7 +103,13 @@ export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
 export const ACCEPTABLE_KINDS = ['terms', 'usage'] as const;
 export type AcceptableKind = (typeof ACCEPTABLE_KINDS)[number];
 
-/** One entry of a sub-processor list version; the text is placeholder until Rob supplies it. */
+/**
+ * The notice, in days, before a new sub-processor list version goes live:
+ * owner ruling, 2026-10-08. The table refuses any list version with less.
+ */
+export const SUBPROCESSOR_NOTICE_DAYS = 30;
+
+/** One entry of a sub-processor list version; the text is placeholder until the owner supplies it. */
 export interface SubprocessorEntry {
   name: string;
   purpose: string;
@@ -116,8 +122,9 @@ export interface SubprocessorEntry {
  * privilege -- so what a tenant accepted stays exactly what it was. A version
  * is current once `effective_at` has passed; for the sub-processor list the
  * table itself refuses an effective date earlier than `published_at` plus the
- * notice period, so a new entry cannot go live inside its notice. It holds no
- * tenant's data, so it has no row-level policy (one that raises on an unbound
+ * notice period, and `published_at` is the database's own clock (a column
+ * default, never supplied by a caller), so a new entry cannot go live inside
+ * its notice. It holds no tenant's data, so it has no row-level policy (one that raises on an unbound
  * tenant only fires per row, and would assure nothing on an empty table);
  * `TenantDb` still takes a scope for every read of it.
  */
@@ -132,7 +139,7 @@ export const documentVersion = portal.table(
       .$type<SubprocessorEntry[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
-    publishedAt: timestamp('published_at', { withTimezone: true }).notNull(),
+    publishedAt: timestamp('published_at', { withTimezone: true }).notNull().defaultNow(),
     effectiveAt: timestamp('effective_at', { withTimezone: true }).notNull(),
     noticeDays: integer('notice_days').notNull().default(0),
   },
@@ -143,11 +150,11 @@ export const documentVersion = portal.table(
     check('document_version_notice_not_negative', sql`${table.noticeDays} >= 0`),
     check(
       'document_version_notice_elapsed',
-      sql`${table.effectiveAt} >= ${table.publishedAt} + make_interval(hours => ${table.noticeDays} * 24)`
+      sql`${table.kind} <> 'subprocessors' OR ${table.effectiveAt} >= ${table.publishedAt} + make_interval(hours => ${table.noticeDays} * 24)`
     ),
     check(
       'document_version_subprocessors_noticed',
-      sql`${table.kind} <> 'subprocessors' OR ${table.noticeDays} >= 1`
+      sql`${table.kind} <> 'subprocessors' OR ${table.noticeDays} >= ${sql.raw(String(SUBPROCESSOR_NOTICE_DAYS))}`
     ),
   ]
 );

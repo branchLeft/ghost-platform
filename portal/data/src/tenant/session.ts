@@ -1,4 +1,4 @@
-import { and, desc, eq, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lte } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { deriveHealthView } from '../healthView.js';
@@ -13,6 +13,7 @@ import {
   type AcceptanceView,
   type DocumentKind,
   type DocumentView,
+  type UpcomingView,
 } from '../documents.js';
 import { documentAcceptance, documentVersion, healthReading, tenantRegister } from '../schema.js';
 import { parseTenantId } from '../tenantId.js';
@@ -92,6 +93,39 @@ export class TenantDb {
       if (current) found.push(current);
     }
     return found;
+  }
+
+  /**
+   * The sub-processor list versions published but not yet in force at `now`:
+   * the notice tenants are given of a coming change, with the entries that
+   * would be added or removed against the list in force. Never part of the
+   * current list, and never acceptable.
+   */
+  async upcomingSubprocessors(scope: TenantScope, now: Date): Promise<UpcomingView[]> {
+    const current = await this.currentDocument(scope, 'subprocessors', now);
+    const inForce = new Set((current?.entries ?? []).map((entry) => entry.name));
+    const rows = await this.run(scope, (tx) =>
+      tx
+        .select()
+        .from(documentVersion)
+        .where(
+          and(
+            eq(documentVersion.kind, 'subprocessors'),
+            gt(documentVersion.effectiveAt, now),
+            lte(documentVersion.publishedAt, now)
+          )
+        )
+        .orderBy(asc(documentVersion.version))
+    );
+    return rows.map((row) => {
+      const document = deriveDocumentView(row);
+      const coming = new Set(document.entries.map((entry) => entry.name));
+      return {
+        document,
+        added: document.entries.filter((entry) => !inForce.has(entry.name)),
+        removed: (current?.entries ?? []).filter((entry) => !coming.has(entry.name)),
+      };
+    });
   }
 
   /** What the bound tenant has accepted, newest first. Past rows never change. */

@@ -1,5 +1,5 @@
 {
-  "id": "897abe50-94d1-4519-9e00-536076923465",
+  "id": "55f303be-0c70-4935-86b2-7598a7038263",
   "prevId": "288af632-f1a5-4f83-9307-f0f932477a0e",
   "version": "7",
   "dialect": "postgresql",
@@ -126,7 +126,8 @@
           "name": "published_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "now()"
         },
         "effective_at": {
           "name": "effective_at",
@@ -167,11 +168,11 @@
         },
         "document_version_notice_elapsed": {
           "name": "document_version_notice_elapsed",
-          "value": "\"portal\".\"document_version\".\"effective_at\" >= \"portal\".\"document_version\".\"published_at\" + make_interval(hours => \"portal\".\"document_version\".\"notice_days\" * 24)"
+          "value": "\"portal\".\"document_version\".\"kind\" <> 'subprocessors' OR \"portal\".\"document_version\".\"effective_at\" >= \"portal\".\"document_version\".\"published_at\" + make_interval(hours => \"portal\".\"document_version\".\"notice_days\" * 24)"
         },
         "document_version_subprocessors_noticed": {
           "name": "document_version_subprocessors_noticed",
-          "value": "\"portal\".\"document_version\".\"kind\" <> 'subprocessors' OR \"portal\".\"document_version\".\"notice_days\" >= 1"
+          "value": "\"portal\".\"document_version\".\"kind\" <> 'subprocessors' OR \"portal\".\"document_version\".\"notice_days\" >= 30"
         }
       },
       "isRLSEnabled": false

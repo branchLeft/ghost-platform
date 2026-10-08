@@ -330,15 +330,16 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       `column effective_at timestamp with time zone notnull=true ${PLAIN}`,
       `column notice_days integer notnull=true ${PLAIN}`,
       "default entries '[]'::jsonb",
+      'default published_at now()',
       'default notice_days 0',
       "constraint document_version_kind_known CHECK ((kind = ANY (ARRAY['terms'::text, " +
         "'usage'::text, 'subprocessors'::text])))",
       'constraint document_version_kind_version_pk PRIMARY KEY (kind, version)',
-      'constraint document_version_notice_elapsed CHECK ((effective_at >= ' +
-        '(published_at + make_interval(hours => (notice_days * 24)))))',
+      "constraint document_version_notice_elapsed CHECK (((kind <> 'subprocessors'::text) OR " +
+        '(effective_at >= (published_at + make_interval(hours => (notice_days * 24))))))',
       'constraint document_version_notice_not_negative CHECK ((notice_days >= 0))',
       "constraint document_version_subprocessors_noticed CHECK (((kind <> 'subprocessors'::text) " +
-        'OR (notice_days >= 1)))',
+        'OR (notice_days >= 30)))',
       'constraint document_version_version_positive CHECK ((version >= 1))',
       'index portal.document_version_kind_version_pk CREATE UNIQUE INDEX ' +
         'document_version_kind_version_pk ON portal.document_version USING btree (kind, version)',

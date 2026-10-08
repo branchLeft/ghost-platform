@@ -4,12 +4,7 @@ import type { AcceptableKind, DocumentKind, SubprocessorEntry } from './schema.j
 export { ACCEPTABLE_KINDS, DOCUMENT_KINDS } from './schema.js';
 export type { AcceptableKind, DocumentKind, SubprocessorEntry } from './schema.js';
 
-/**
- * The shortest notice, in days, before a new sub-processor list version goes
- * live. PLACEHOLDER: the real period is the owner's to rule, and the table
- * only refuses a notice of less than one day.
- */
-export const SUBPROCESSOR_NOTICE_DAYS = 30;
+export { SUBPROCESSOR_NOTICE_DAYS } from './schema.js';
 
 /** A published version as the portals show it. */
 export interface DocumentView {
@@ -58,6 +53,17 @@ export function deriveAcceptanceView(
     title: version.title,
     effectiveAt: version.effectiveAt,
   };
+}
+
+/**
+ * A sub-processor list version announced but not yet in force: what tenants
+ * are given notice of. It is never the current version; `added` and `removed`
+ * name the entries that differ from the list in force.
+ */
+export interface UpcomingView {
+  document: DocumentView;
+  added: SubprocessorEntry[];
+  removed: SubprocessorEntry[];
 }
 
 /** Acceptance of a version that is not the current one for its kind. */

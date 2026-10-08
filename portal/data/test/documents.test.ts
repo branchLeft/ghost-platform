@@ -6,12 +6,16 @@ import {
   TermsNotAcceptedError,
   bindTenant,
 } from '../src/tenant/index.js';
+import { connect, enterRole } from '../src/db.js';
 import { assertTenantTablesIsolated } from '../src/isolation.js';
 import * as schema from '../src/schema.js';
 import { TENANT_A, TENANT_B, createFixture, type Fixture } from './helpers.js';
 
 const DAY = 86_400_000;
-const at = (iso: string): Date => new Date(iso);
+// The database stamps a version's publication time from its own clock, so the
+// timeline is built from the real time now; reads pass a clock of their own.
+const BASE = Date.now();
+const day = (n: number): Date => new Date(BASE + n * DAY);
 
 // The list names the three recorded suppliers; every prose field is a placeholder.
 const LIST_V1 = [
@@ -20,9 +24,9 @@ const LIST_V1 = [
   { name: 'STRIPE', purpose: 'PURPOSE_PLACEHOLDER' },
 ];
 
-const T_PUBLISHED = at('2026-09-01T09:00:00Z');
-const T_EFFECTIVE = at('2026-10-01T09:00:00Z');
-const NOW = at('2026-10-05T12:00:00Z');
+const T_EFFECTIVE = day(-40);
+const T_LIST = day(31);
+const NOW = day(32);
 
 let fixture: Fixture;
 let owner: OwnerDb;
@@ -34,24 +38,25 @@ beforeAll(async () => {
   fixture = await createFixture();
   owner = new OwnerDb(fixture.owner);
   tenant = new TenantDb(fixture.tenant);
-  await owner.publishDocument(
-    { kind: 'terms', title: 'TERMS_TITLE', body: 'TERMS_BODY_V1', effectiveAt: T_EFFECTIVE },
-    T_PUBLISHED
-  );
-  await owner.publishDocument(
-    { kind: 'usage', title: 'USAGE_TITLE', body: 'USAGE_BODY_V1', effectiveAt: T_EFFECTIVE },
-    T_PUBLISHED
-  );
-  await owner.publishDocument(
-    {
-      kind: 'subprocessors',
-      title: 'SUBPROCESSORS_TITLE',
-      body: 'SUBPROCESSORS_BODY',
-      entries: LIST_V1,
-      effectiveAt: T_EFFECTIVE,
-    },
-    T_PUBLISHED
-  );
+  await owner.publishDocument({
+    kind: 'terms',
+    title: 'TERMS_TITLE',
+    body: 'TERMS_BODY_V1',
+    effectiveAt: T_EFFECTIVE,
+  });
+  await owner.publishDocument({
+    kind: 'usage',
+    title: 'USAGE_TITLE',
+    body: 'USAGE_BODY_V1',
+    effectiveAt: T_EFFECTIVE,
+  });
+  await owner.publishDocument({
+    kind: 'subprocessors',
+    title: 'SUBPROCESSORS_TITLE',
+    body: 'SUBPROCESSORS_BODY',
+    entries: LIST_V1,
+    effectiveAt: T_LIST,
+  });
 });
 
 afterAll(async () => {
@@ -76,19 +81,16 @@ describe('the versioned document set', () => {
   });
 
   it('serves nothing before the first version is effective', async () => {
-    expect(await tenant.currentDocuments(scopeA, at('2026-09-15T00:00:00Z'))).toEqual([]);
+    expect(await tenant.currentDocuments(scopeA, day(-50))).toEqual([]);
   });
 
   it('numbers versions one after another per kind', async () => {
-    const view = await owner.publishDocument(
-      {
-        kind: 'usage',
-        title: 'USAGE_TITLE',
-        body: 'USAGE_BODY_V2',
-        effectiveAt: at('2027-01-01T00:00:00Z'),
-      },
-      NOW
-    );
+    const view = await owner.publishDocument({
+      kind: 'usage',
+      title: 'USAGE_TITLE',
+      body: 'USAGE_BODY_V2',
+      effectiveAt: day(400),
+    });
     expect(view.version).toBe(2);
     // v2 is far in the future and is read again by later tests only at later times.
     expect((await tenant.currentDocument(scopeA, 'usage', NOW))?.version).toBe(1);
@@ -96,93 +98,120 @@ describe('the versioned document set', () => {
 });
 
 describe('the notice period on a sub-processor entry', () => {
-  const LIST_V2 = [
-    ...LIST_V1,
-    { name: 'NEW_SUBPROCESSOR_PLACEHOLDER', purpose: 'PURPOSE_PLACEHOLDER' },
-  ];
+  const NEW_ENTRY = { name: 'NEW_SUBPROCESSOR_PLACEHOLDER', purpose: 'PURPOSE_PLACEHOLDER' };
+  const LIST_V2 = [...LIST_V1, NEW_ENTRY];
+  const LIST = { kind: 'subprocessors', title: 'T', body: 'B' } as const;
 
   it('keeps a new entry out of the live list until its notice has elapsed', async () => {
-    const published = await owner.publishDocument(
-      {
-        kind: 'subprocessors',
-        title: 'SUBPROCESSORS_TITLE',
-        body: 'SUBPROCESSORS_BODY',
-        entries: LIST_V2,
-        effectiveAt: new Date(NOW.getTime() + 30 * DAY),
-      },
-      NOW
-    );
+    const published = await owner.publishDocument({
+      ...LIST,
+      title: 'SUBPROCESSORS_TITLE',
+      body: 'SUBPROCESSORS_BODY',
+      entries: LIST_V2,
+      effectiveAt: day(62),
+    });
     expect(published.version).toBe(2);
 
     // Published and stored, but not live: the tenant still sees the old list.
-    for (const offset of [0, 1, 29]) {
-      const live = await tenant.currentDocument(
-        scopeA,
-        'subprocessors',
-        new Date(NOW.getTime() + offset * DAY)
-      );
+    for (const offset of [32, 40, 61]) {
+      const live = await tenant.currentDocument(scopeA, 'subprocessors', day(offset));
       expect(live?.version).toBe(1);
-      expect(live?.entries.map((e) => e.name)).not.toContain('NEW_SUBPROCESSOR_PLACEHOLDER');
+      expect(live?.entries.map((e) => e.name)).not.toContain(NEW_ENTRY.name);
     }
-    const live = await tenant.currentDocument(
-      scopeA,
-      'subprocessors',
-      new Date(NOW.getTime() + 30 * DAY)
-    );
+    const justBefore = new Date(day(62).getTime() - 1);
+    expect((await tenant.currentDocument(scopeA, 'subprocessors', justBefore))?.version).toBe(1);
+    const live = await tenant.currentDocument(scopeA, 'subprocessors', day(62));
     expect(live?.version).toBe(2);
-    expect(live?.entries.map((e) => e.name)).toContain('NEW_SUBPROCESSOR_PLACEHOLDER');
+    expect(live?.entries.map((e) => e.name)).toContain(NEW_ENTRY.name);
+  });
+
+  it('announces the coming version as upcoming, apart from the live list, until it is live', async () => {
+    const upcoming = await tenant.upcomingSubprocessors(scopeA, day(40));
+    expect(upcoming).toHaveLength(1);
+    expect(upcoming[0]?.document).toMatchObject({ version: 2, effectiveAt: day(62) });
+    expect(upcoming[0]?.added).toEqual([NEW_ENTRY]);
+    expect(upcoming[0]?.removed).toEqual([]);
+    // Announcing is not going live: it is in no current list and cannot be accepted.
+    const current = await tenant.currentDocuments(scopeA, day(40));
+    expect(current.find((d) => d.kind === 'subprocessors')?.version).toBe(1);
+    expect(await tenant.upcomingSubprocessors(scopeB, day(40))).toHaveLength(1);
+    // Before it was published there was nothing to announce; once live, nothing is upcoming.
+    expect(await tenant.upcomingSubprocessors(scopeA, day(-5))).toEqual([]);
+    expect(await tenant.upcomingSubprocessors(scopeA, day(62))).toEqual([]);
+  });
+
+  it('names an entry dropped from the list as well as one added', async () => {
+    await owner.publishDocument({
+      ...LIST,
+      entries: [{ name: 'HETZNER', purpose: 'PURPOSE_PLACEHOLDER' }, NEW_ENTRY],
+      effectiveAt: day(95),
+    });
+    const upcoming = await tenant.upcomingSubprocessors(scopeA, day(70));
+    expect(upcoming).toHaveLength(1);
+    expect(upcoming[0]?.added).toEqual([]);
+    expect(upcoming[0]?.removed.map((e) => e.name)).toEqual(['OVHCLOUD', 'STRIPE']);
   });
 
   it('refuses a publication effective inside its notice, and the table refuses it too', async () => {
     await expect(
-      owner.publishDocument(
-        {
-          kind: 'subprocessors',
-          title: 'T',
-          body: 'B',
-          entries: LIST_V1,
-          noticeDays: 30,
-          effectiveAt: new Date(NOW.getTime() + 29 * DAY),
-        },
-        NOW
-      )
+      owner.publishDocument({ ...LIST, entries: LIST_V1, noticeDays: 30, effectiveAt: day(29) })
     ).rejects.toBeInstanceOf(InvalidPublicationError);
     await expect(
       fixture.adminDb.insert(schema.documentVersion).values({
-        kind: 'subprocessors',
+        ...LIST,
         version: 9,
-        title: 'T',
-        body: 'B',
         entries: LIST_V1,
-        publishedAt: NOW,
-        effectiveAt: new Date(NOW.getTime() + 29 * DAY),
+        effectiveAt: day(29),
         noticeDays: 30,
       })
     ).rejects.toThrow();
   });
 
+  it('takes the publication time from the database, never from the caller', async () => {
+    // A caller that reports a publication 30 days ago, to take effect at once.
+    const backdated = {
+      ...LIST,
+      entries: LIST_V2,
+      noticeDays: 30,
+      effectiveAt: new Date(Date.now() + DAY),
+      publishedAt: new Date(Date.now() - 30 * DAY),
+    };
+    await expect(owner.publishDocument(backdated as never)).rejects.toBeInstanceOf(
+      InvalidPublicationError
+    );
+    const rows = await fixture.adminDb.select().from(schema.documentVersion);
+    expect(rows.every((row) => row.publishedAt.getTime() >= BASE - 1000)).toBe(true);
+  });
+
   it('refuses a sub-processor version with no notice, no entries, or entries on other kinds', async () => {
     const base = { title: 'T', body: 'B', effectiveAt: NOW };
     await expect(
-      owner.publishDocument(
-        { ...base, kind: 'subprocessors', entries: LIST_V1, noticeDays: 0 },
-        NOW
-      )
+      owner.publishDocument({ ...base, kind: 'subprocessors', entries: LIST_V1, noticeDays: 0 })
     ).rejects.toBeInstanceOf(InvalidPublicationError);
+    await expect(owner.publishDocument({ ...base, kind: 'subprocessors' })).rejects.toBeInstanceOf(
+      InvalidPublicationError
+    );
     await expect(
-      owner.publishDocument({ ...base, kind: 'subprocessors' }, NOW)
+      owner.publishDocument({ ...base, kind: 'terms', entries: LIST_V1 })
     ).rejects.toBeInstanceOf(InvalidPublicationError);
+    // The ruled notice is the floor: a shorter one is refused here and by the table.
     await expect(
-      owner.publishDocument({ ...base, kind: 'terms', entries: LIST_V1 }, NOW)
+      owner.publishDocument({ ...base, kind: 'subprocessors', entries: LIST_V1, noticeDays: 29 })
     ).rejects.toBeInstanceOf(InvalidPublicationError);
     await expect(
       fixture.adminDb.insert(schema.documentVersion).values({
-        kind: 'subprocessors',
+        ...LIST,
         version: 9,
-        title: 'T',
-        body: 'B',
         entries: LIST_V1,
-        publishedAt: NOW,
+        effectiveAt: day(400),
+        noticeDays: 29,
+      })
+    ).rejects.toThrow();
+    await expect(
+      fixture.adminDb.insert(schema.documentVersion).values({
+        ...LIST,
+        version: 9,
+        entries: LIST_V1,
         effectiveAt: NOW,
         noticeDays: 0,
       })
@@ -203,7 +232,6 @@ describe('published versions are immutable', () => {
           version: 7,
           title: 'T',
           body: 'B',
-          publishedAt: NOW,
           effectiveAt: NOW,
         })
       )
@@ -224,7 +252,7 @@ describe('per-tenant acceptance', () => {
   });
 
   it('records who accepted which version and when, for that tenant only', async () => {
-    const when = at('2026-10-05T12:30:00Z');
+    const when = new Date(NOW.getTime() + 30 * 60_000);
     await tenant.acceptDocument(
       scopeA,
       { kind: 'terms', version: 1, acceptedBy: 'SESSION_SUBJECT_A' },
@@ -251,7 +279,7 @@ describe('per-tenant acceptance', () => {
   });
 
   it('opens the gate once every current document is accepted, and records a repeat once', async () => {
-    const first = at('2026-10-05T12:31:00Z');
+    const first = new Date(NOW.getTime() + 31 * 60_000);
     await tenant.acceptDocument(
       scopeA,
       { kind: 'usage', version: 1, acceptedBy: 'SESSION_SUBJECT_A' },
@@ -260,7 +288,7 @@ describe('per-tenant acceptance', () => {
     await tenant.acceptDocument(
       scopeA,
       { kind: 'usage', version: 1, acceptedBy: 'SESSION_SUBJECT_OTHER' },
-      at('2026-10-05T13:00:00Z')
+      new Date(NOW.getTime() + 60 * 60_000)
     );
     await expect(tenant.assertAccepted(scopeA, NOW)).resolves.toBeUndefined();
     const usage = (await tenant.acceptances(scopeA)).filter((a) => a.kind === 'usage');
@@ -315,33 +343,31 @@ describe('per-tenant acceptance', () => {
   });
 
   it('refuses an acceptance read with no tenant bound', async () => {
-    await expect(
-      fixture.tenant.query('BEGIN').then(async () => {
-        try {
-          await fixture.tenant.query('SET LOCAL ROLE portal_tenant');
-          return await fixture.tenant.query('SELECT * FROM portal.document_acceptance');
-        } finally {
-          await fixture.tenant.query('ROLLBACK');
-        }
-      })
-    ).rejects.toThrow(/no tenant bound/);
+    let message = 'did not fail';
+    try {
+      await connect(fixture.tenant).transaction(async (tx) => {
+        await enterRole(tx, 'portal_tenant');
+        return tx.select().from(schema.documentAcceptance);
+      });
+    } catch (error) {
+      const cause = (error as { cause?: { message?: string } }).cause;
+      message = cause?.message ?? (error as Error).message;
+    }
+    expect(message).toMatch(/no tenant bound to the session/);
   });
 });
 
 describe('re-acceptance on a new version', () => {
-  const TERMS_V2_EFFECTIVE = at('2026-10-10T00:00:00Z');
-  const LATER = at('2026-10-12T00:00:00Z');
+  const TERMS_V2_EFFECTIVE = day(40);
+  const LATER = day(42);
 
   it('asks again once a new version is in force, and leaves what was accepted as it was', async () => {
-    await owner.publishDocument(
-      {
-        kind: 'terms',
-        title: 'TERMS_TITLE_V2',
-        body: 'TERMS_BODY_V2',
-        effectiveAt: TERMS_V2_EFFECTIVE,
-      },
-      NOW
-    );
+    await owner.publishDocument({
+      kind: 'terms',
+      title: 'TERMS_TITLE_V2',
+      body: 'TERMS_BODY_V2',
+      effectiveAt: TERMS_V2_EFFECTIVE,
+    });
     const before = await tenant.acceptances(scopeA);
 
     // Published, not yet in force: A is still square, and cannot accept it early.

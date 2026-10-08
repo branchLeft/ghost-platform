@@ -19,6 +19,13 @@ export interface AcceptanceShown {
   readonly acceptedAt: Date;
 }
 
+/** A sub-processor list version announced and not yet in force. */
+export interface UpcomingShown {
+  readonly document: DocumentShown;
+  readonly added: readonly { readonly name: string; readonly purpose: string }[];
+  readonly removed: readonly { readonly name: string; readonly purpose: string }[];
+}
+
 const day = (date: Date): string => date.toISOString().slice(0, 10);
 
 /**
@@ -53,11 +60,35 @@ export function renderDocument(document: DocumentShown, pending: boolean): strin
   );
 }
 
+const names = (entries: readonly { readonly name: string }[]): string =>
+  entries.length === 0
+    ? '<p>NONE</p>'
+    : `<ul>${entries.map((entry) => `<li>${escapeHtml(entry.name)}</li>`).join('')}</ul>`;
+
+/**
+ * An announced change, set apart from what is in force: it says it is not yet
+ * live, when it takes effect, which entries are added or dropped, and how to
+ * object. It carries no accept form.
+ */
+export function renderUpcoming(upcoming: UpcomingShown): string {
+  const { document } = upcoming;
+  return (
+    `<section class="upcoming"><h3>${escapeHtml(document.title)}</h3>` +
+    `<p><strong>UPCOMING_NOT_YET_LIVE</strong> <strong>${BEST_EFFORT_MARKING}</strong></p>` +
+    `<dl><dt>VERSION</dt><dd>${document.version}</dd>` +
+    `<dt>TAKES_EFFECT</dt><dd><time datetime="${document.effectiveAt.toISOString()}">${day(document.effectiveAt)}</time></dd></dl>` +
+    `<h4>ENTRIES_ADDED</h4>${names(upcoming.added)}` +
+    `<h4>ENTRIES_REMOVED</h4>${names(upcoming.removed)}` +
+    `<p>HOW_TO_OBJECT_PLACEHOLDER</p></section>`
+  );
+}
+
 /** The whole documents page: each document in force, then what the tenant has accepted. */
 export function renderDocuments(
   documents: readonly DocumentShown[],
   pending: ReadonlySet<string>,
-  accepted: readonly AcceptanceShown[]
+  accepted: readonly AcceptanceShown[],
+  upcoming: readonly UpcomingShown[] = []
 ): string {
   const key = (kind: string, version: number): string => `${kind}:${version}`;
   const sections =
@@ -74,5 +105,9 @@ export function renderDocuments(
               `${escapeHtml(a.acceptedBy)} ON <time datetime="${a.acceptedAt.toISOString()}">${day(a.acceptedAt)}</time></li>`
           )
           .join('')}</ul>`;
-  return `<h1>DOCUMENTS_HEADING</h1>${sections}<h2>ACCEPTED_HEADING</h2>${history}`;
+  const coming =
+    upcoming.length === 0
+      ? ''
+      : `<h2>UPCOMING_HEADING</h2>${upcoming.map(renderUpcoming).join('')}`;
+  return `<h1>DOCUMENTS_HEADING</h1>${sections}${coming}<h2>ACCEPTED_HEADING</h2>${history}`;
 }

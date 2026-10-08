@@ -4,7 +4,7 @@ import { TenantDb } from 'ghost-platform-portal-data/tenant';
 import { createFixture, ORG_A, ORG_B, type Fixture } from '../../data/test/helpers.js';
 import { createTenantPortal } from '../src/tenant/app.js';
 import { Browser, serve, type Running } from './browser.js';
-import { CLIENT_PORTAL, FakeIssuer, ISSUER, jwks, mint, NOW, PROJECT_ID } from './idp.js';
+import { CLIENT_PORTAL, FakeIssuer, ISSUER, jwks, mint, PROJECT_ID } from './idp.js';
 
 const at = (seconds: number): Date => new Date(seconds * 1000);
 const DAY = 86_400;
@@ -12,11 +12,15 @@ const DAY = 86_400;
 let fixture: Fixture;
 let owner: OwnerDb;
 let app: Running;
-let now = NOW;
+// The database stamps each version's publication time from its own clock, so the
+// timeline starts from the real time; the portal's clock is moved from there.
+const BASE = Math.floor(Date.now() / 1000);
+const START = BASE + 40 * DAY;
+let now = START;
 const issuer = new FakeIssuer();
 
 const token = (org: string, subject: string): string =>
-  mint({ org, client: CLIENT_PORTAL, role: 'tenant-admin', subject, exp: NOW + 60 * DAY });
+  mint({ org, client: CLIENT_PORTAL, role: 'tenant-admin', subject, exp: BASE + 200 * DAY });
 
 async function signedIn(org: string, subject: string): Promise<Browser> {
   const browser = new Browser(app.origin);
@@ -35,26 +39,23 @@ function accept(browser: Browser, fields: string, origin = app.origin) {
 beforeAll(async () => {
   fixture = await createFixture();
   owner = new OwnerDb(fixture.owner);
-  const effective = at(NOW - 40 * DAY);
-  const published = at(NOW - 80 * DAY);
-  await owner.publishDocument(
-    { kind: 'terms', title: 'TERMS_TITLE', body: 'TERMS_BODY_V1', effectiveAt: effective },
-    published
-  );
-  await owner.publishDocument(
-    {
-      kind: 'subprocessors',
-      title: 'SUBPROCESSORS_TITLE',
-      body: 'SUBPROCESSORS_BODY',
-      entries: [
-        { name: 'HETZNER', purpose: 'PURPOSE_PLACEHOLDER' },
-        { name: 'OVHCLOUD', purpose: 'PURPOSE_PLACEHOLDER' },
-        { name: 'STRIPE', purpose: 'PURPOSE_PLACEHOLDER' },
-      ],
-      effectiveAt: effective,
-    },
-    published
-  );
+  await owner.publishDocument({
+    kind: 'terms',
+    title: 'TERMS_TITLE',
+    body: 'TERMS_BODY_V1',
+    effectiveAt: at(BASE - 40 * DAY),
+  });
+  await owner.publishDocument({
+    kind: 'subprocessors',
+    title: 'SUBPROCESSORS_TITLE',
+    body: 'SUBPROCESSORS_BODY',
+    entries: [
+      { name: 'HETZNER', purpose: 'PURPOSE_PLACEHOLDER' },
+      { name: 'OVHCLOUD', purpose: 'PURPOSE_PLACEHOLDER' },
+      { name: 'STRIPE', purpose: 'PURPOSE_PLACEHOLDER' },
+    ],
+    effectiveAt: at(BASE + 31 * DAY),
+  });
   app = await serve((origin) =>
     createTenantPortal({
       issuer: ISSUER,
@@ -73,7 +74,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  now = NOW;
+  now = START;
 });
 
 afterAll(async () => {
@@ -95,7 +96,11 @@ describe('the documents page', () => {
     expect(page.body).toContain('TERMS_TITLE');
     expect(page.body).toContain('BEST_EFFORT_NOT_PROFESSIONALLY_REVIEWED');
     expect(page.body.match(/BEST_EFFORT_NOT_PROFESSIONALLY_REVIEWED/g)).toHaveLength(2);
-    expect(page.body).toContain('2026-12-06');
+    expect(page.body).toContain(
+      at(BASE - 40 * DAY)
+        .toISOString()
+        .slice(0, 10)
+    );
     for (const name of ['HETZNER', 'OVHCLOUD', 'STRIPE']) expect(page.body).toContain(name);
     expect(page.body).toContain('ACCEPT_THIS_VERSION');
     expect(page.body).toContain('NOTHING_ACCEPTED_YET');
@@ -156,20 +161,17 @@ describe('accepting a document', () => {
 describe('a new version', () => {
   it('asks the tenant again once it is in force, and shows the earlier acceptance unchanged', async () => {
     const a = await signedIn(ORG_A, 'user-a');
-    await owner.publishDocument(
-      {
-        kind: 'terms',
-        title: 'TERMS_TITLE_V2',
-        body: 'TERMS_BODY_V2',
-        effectiveAt: at(NOW + 10 * DAY),
-      },
-      at(NOW)
-    );
+    await owner.publishDocument({
+      kind: 'terms',
+      title: 'TERMS_TITLE_V2',
+      body: 'TERMS_BODY_V2',
+      effectiveAt: at(START + 10 * DAY),
+    });
     // Published, not in force: A is not asked yet.
     expect((await a.request('/')).body).not.toContain('DOCUMENTS_AWAIT_ACCEPTANCE');
     expect((await a.request('/documents')).body).not.toContain('TERMS_TITLE_V2');
 
-    now = NOW + 11 * DAY;
+    now = START + 11 * DAY;
     const landing = await a.request('/');
     expect(landing.body).toContain('DOCUMENTS_AWAIT_ACCEPTANCE');
     const page = await a.request('/documents');
@@ -185,25 +187,40 @@ describe('a new version', () => {
     expect(after.body).toContain('TERMS VERSION 2 ACCEPTED_BY');
   });
 
-  it('keeps a new sub-processor entry off the page until its notice has elapsed', async () => {
+  it('shows a new sub-processor entry as upcoming during its notice, and live only after', async () => {
     const a = await signedIn(ORG_A, 'user-a');
-    await owner.publishDocument(
-      {
-        kind: 'subprocessors',
-        title: 'SUBPROCESSORS_TITLE',
-        body: 'SUBPROCESSORS_BODY',
-        entries: [
-          { name: 'HETZNER', purpose: 'PURPOSE_PLACEHOLDER' },
-          { name: 'NEWLY_ADDED_PLACEHOLDER', purpose: 'PURPOSE_PLACEHOLDER' },
-        ],
-        effectiveAt: at(NOW + 30 * DAY),
-      },
-      at(NOW)
+    await owner.publishDocument({
+      kind: 'subprocessors',
+      title: 'SUBPROCESSORS_TITLE',
+      body: 'SUBPROCESSORS_BODY',
+      entries: [
+        { name: 'HETZNER', purpose: 'PURPOSE_PLACEHOLDER' },
+        { name: 'NEWLY_ADDED_PLACEHOLDER', purpose: 'PURPOSE_PLACEHOLDER' },
+      ],
+      effectiveAt: at(START + 30 * DAY),
+    });
+    const during = (await a.request('/documents')).body;
+    const [live = '', upcoming = ''] = during.split('UPCOMING_HEADING');
+    // Announced, with its date and how to object, and apart from the live list.
+    expect(upcoming).toContain('UPCOMING_NOT_YET_LIVE');
+    expect(upcoming).toContain('NEWLY_ADDED_PLACEHOLDER');
+    expect(upcoming).toContain(
+      at(START + 30 * DAY)
+        .toISOString()
+        .slice(0, 10)
     );
-    expect((await a.request('/documents')).body).not.toContain('NEWLY_ADDED_PLACEHOLDER');
-    now = NOW + 31 * DAY;
-    const later = await a.request('/documents');
-    expect(later.body).toContain('NEWLY_ADDED_PLACEHOLDER');
+    expect(upcoming).toContain('HOW_TO_OBJECT_PLACEHOLDER');
+    expect(upcoming).not.toContain('ACCEPT_THIS_VERSION');
+    // Not live: the live list has the old entries and not the new one.
+    expect(live).not.toContain('NEWLY_ADDED_PLACEHOLDER');
+    expect(live).toContain('STRIPE');
+    expect((await a.request('/')).body).not.toContain('NEWLY_ADDED_PLACEHOLDER');
+
+    now = START + 31 * DAY;
+    const later = (await a.request('/documents')).body;
+    expect(later).not.toContain('UPCOMING_HEADING');
+    expect(later).toContain('NEWLY_ADDED_PLACEHOLDER');
+    expect(later).not.toContain('STRIPE');
   });
 });
 

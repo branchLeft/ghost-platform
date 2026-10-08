@@ -113,22 +113,21 @@ export class OwnerDb {
   /**
    * Publishes the next version of a document. The version number is the
    * previous one plus one. A sub-processor list version must name at least one
-   * entry and carries a notice period of at least one day (default
-   * `SUBPROCESSOR_NOTICE_DAYS`); it takes effect no earlier than `publishedAt`
-   * plus that notice, so a new entry is not in force inside its notice. The
-   * table refuses the same, whoever writes.
+   * entry and carries a notice period of at least `SUBPROCESSOR_NOTICE_DAYS`
+   * (the default); it takes effect no earlier than the moment
+   * of publication plus that notice. The moment of publication is the
+   * database's own clock, set by the column default and never taken from the
+   * caller, and the table refuses an earlier effective date, so a new entry is
+   * not in force inside its notice however the call is made.
    */
-  async publishDocument(
-    input: {
-      kind: DocumentKind;
-      title: string;
-      body: string;
-      entries?: SubprocessorEntry[];
-      effectiveAt: Date;
-      noticeDays?: number;
-    },
-    publishedAt: Date
-  ): Promise<DocumentView> {
+  async publishDocument(input: {
+    kind: DocumentKind;
+    title: string;
+    body: string;
+    entries?: SubprocessorEntry[];
+    effectiveAt: Date;
+    noticeDays?: number;
+  }): Promise<DocumentView> {
     const entries = input.entries ?? [];
     const isList = input.kind === 'subprocessors';
     const noticeDays = input.noticeDays ?? (isList ? SUBPROCESSOR_NOTICE_DAYS : 0);
@@ -138,13 +137,9 @@ export class OwnerDb {
     if (!isList && entries.length > 0) {
       throw new InvalidPublicationError('only the sub-processor list carries entries');
     }
-    if (isList && noticeDays < 1) {
-      throw new InvalidPublicationError('a sub-processor list version carries a notice period');
-    }
-    const earliest = publishedAt.getTime() + noticeDays * 86_400_000;
-    if (isList && input.effectiveAt.getTime() < earliest) {
+    if (isList && noticeDays < SUBPROCESSOR_NOTICE_DAYS) {
       throw new InvalidPublicationError(
-        'a new sub-processor entry is not effective inside its notice period'
+        `a sub-processor list version carries a notice of at least ${SUBPROCESSOR_NOTICE_DAYS} days`
       );
     }
     return this.run(async (tx) => {
@@ -154,7 +149,7 @@ export class OwnerDb {
         .where(eq(documentVersion.kind, input.kind))
         .orderBy(desc(documentVersion.version))
         .limit(1);
-      const [row] = await tx
+      const inserted = await tx
         .insert(documentVersion)
         .values({
           kind: input.kind,
@@ -162,12 +157,25 @@ export class OwnerDb {
           title: input.title,
           body: input.body,
           entries,
-          publishedAt,
           effectiveAt: input.effectiveAt,
           noticeDays,
         })
-        .returning();
-      return deriveDocumentView(row!);
+        .returning()
+        .catch((error: unknown) => {
+          if (isNoticeRefusal(error)) {
+            throw new InvalidPublicationError(
+              'a new sub-processor entry is not effective inside its notice period'
+            );
+          }
+          throw error;
+        });
+      return deriveDocumentView(inserted[0]!);
     });
   }
+}
+
+/** Whether the database refused a row for taking effect inside its notice. */
+function isNoticeRefusal(error: unknown): boolean {
+  const cause = (error as { cause?: { code?: string; constraint?: string } } | null)?.cause;
+  return cause?.code === '23514' && cause.constraint === 'document_version_notice_elapsed';
 }
