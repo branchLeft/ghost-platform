@@ -37,6 +37,7 @@ const SCRIPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.
 const TENANT = `bg-lanes-${crypto.randomBytes(3).toString('hex')}`;
 const SUPPORT = 'support@platform.example';
 const OWNER = 'owner@example.com';
+const STAFF = 'staff-admin@tenant.example';
 const BOOT_TIMEOUT_MS = 90_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -220,6 +221,43 @@ class Tenant {
 
   setStatus(value) {
     this.sql('update users set status = ? where email = ?', value, SUPPORT);
+  }
+
+  statusOf(email) {
+    return this.sql('select status from users where email = ?', email)[0]?.status ?? null;
+  }
+
+  setStatusOf(email, value) {
+    this.sql('update users set status = ? where email = ?', value, email);
+  }
+
+  /** A staff Administrator of the tenant's own, with a password hash nobody holds. */
+  addStaffAdministrator(email, status) {
+    const id = crypto.randomBytes(12).toString('hex');
+    this.sql(
+      `insert into users (id, name, slug, password, email, status, visibility, comment_notifications,
+        free_member_signup_notification, paid_subscription_started_notification,
+        paid_subscription_canceled_notification, mention_notifications, recommendation_notifications,
+        milestone_notifications, donation_notifications, gift_subscription_notifications, created_at)
+       values (?, 'Staff', 'staff', ?, ?, ?, 'public', 1, 1, 1, 1, 1, 1, 1, 1, 1, ?)`,
+      id,
+      `$2a$10$${crypto.randomBytes(30).toString('hex').slice(0, 53)}`,
+      email,
+      status,
+      new Date().toISOString().replace('T', ' ').slice(0, 19)
+    );
+    const [{ id: roleId }] = this.sql(`select id from roles where name = 'Administrator'`);
+    this.sql(
+      'insert into roles_users (id, role_id, user_id) values (?, ?, ?)',
+      crypto.randomBytes(12).toString('hex'),
+      roleId,
+      id
+    );
+  }
+
+  setSupportRole(name) {
+    const [{ id: roleId }] = this.sql('select id from roles where name = ?', name);
+    this.sql('update roles_users set role_id = ? where user_id = ?', roleId, this.support().id);
   }
 
   deleteSupport() {
@@ -488,21 +526,87 @@ describe(
       assert.equal(tenant.sessions(), 0);
     });
 
-    it('a grant never activates the Owner, whatever identity it is given', async () => {
+    it('a grant never acts on the Owner: a typed Owner email is refused and nothing is written', async () => {
       await assert.rejects(
         grant(
           { lane: 'incident', tenant: TENANT, identity: OWNER, reason: 'r', reference: 'ref' },
           deps
         ),
-        /not the support Administrator|does not match an interrupted create/
+        /is not this tenant's configured support identity/
       );
-      // An incident grant that fails keeps its clock; closing it must leave the Owner untouched.
-      await assert.rejects(revoke({ tenant: TENANT, reason: 'tidy' }, deps), /Owner role/);
+      assert.deepEqual(status(deps), []);
+      assert.equal(tenant.statusOf(OWNER), 'active');
+    });
+
+    it("a grant never acts on the tenant's own staff Administrator, whichever lane", async () => {
+      tenant.addStaffAdministrator(STAFF, 'inactive'); // a departed colleague, suspended by the tenant
+      await assert.rejects(
+        grant(
+          { lane: 'incident', tenant: TENANT, identity: STAFF, reason: 'r', reference: 'ref' },
+          deps
+        ),
+        /is not this tenant's configured support identity/
+      );
+      assert.equal(tenant.statusOf(STAFF), 'inactive', 'STAFF NOT ACTIVATED');
+      assert.deepEqual(status(deps), []);
+
+      tenant.setStatusOf(STAFF, 'active'); // a working colleague
+      await assert.rejects(
+        grant(
+          { lane: 'consented', tenant: TENANT, identity: STAFF, reason: 'r', reference: 'ref' },
+          deps
+        ),
+        /is not this tenant's configured support identity/
+      );
+      // With no identity typed, the lanes act on the configured support account only.
+      tenant.setStatus('active');
+      await grant({ lane: 'consented', tenant: TENANT, reason: 'r', reference: 'ref' }, deps);
+      const closing = await revoke({ tenant: TENANT, reason: 'done' }, deps);
+      assert.equal(closing.identity, SUPPORT);
+      assert.equal(tenant.statusOf(STAFF), 'active', 'STAFF NOT SUSPENDED');
+      assert.equal(tenant.support().status, 'inactive');
+    });
+
+    it('activate refuses a support account the tenant moved to another role', async () => {
+      tenant.setSupportRole('Editor');
+      try {
+        await assert.rejects(
+          grant({ lane: 'incident', tenant: TENANT, reason: 'r', reference: 'ref' }, deps),
+          /not the support Administrator/
+        );
+        assert.equal(tenant.support().status, 'inactive', 'ROLE-CHANGED ACCOUNT NOT ACTIVATED');
+      } finally {
+        // An incident grant that fails keeps its clock; revoke closes it.
+        await revoke({ tenant: TENANT, reason: 'tidy' }, deps);
+        tenant.setSupportRole('Administrator');
+      }
+    });
+
+    it('expire closes a grant whose state file is corrupt: suspended and purged', async () => {
+      tenant.setStatus('active');
+      await grant({ lane: 'consented', tenant: TENANT, reason: 'r', reference: 'ref' }, deps);
+      const session = await tenant.open(mintToken());
+      assert.equal(session.status, 200, JSON.stringify(session.adapter));
+      fs.writeFileSync(path.join(deps.stateDir, `${TENANT}.json`), '{"tenant":"trunc');
+      const { closed, failed } = await expire(deps);
+      assert.deepEqual(failed, []);
+      assert.equal(closed.length, 1, 'CORRUPT STATE CLOSED');
+      assert.match(closed[0].stateUnreadable, /not JSON/);
+      assert.equal(tenant.support().status, 'inactive');
+      assert.equal(tenant.sessions(), 0);
+      assert.equal((await tenant.me(session.cookie)).status, 403);
+    });
+
+    it('revoke closes the support account with no state file at all', async () => {
+      tenant.setStatus('active');
+      await grant({ lane: 'consented', tenant: TENANT, reason: 'r', reference: 'ref' }, deps);
+      const session = await tenant.open(mintToken());
+      assert.equal(session.status, 200, JSON.stringify(session.adapter));
       fs.rmSync(path.join(deps.stateDir, `${TENANT}.json`));
-      assert.equal(
-        tenant.sql('select status from users where email = ?', OWNER)[0].status,
-        'active'
-      );
+      const closing = await revoke({ tenant: TENANT, reason: 'state lost' }, deps);
+      assert.equal(closing.stateFound, false);
+      assert.equal(tenant.support().status, 'inactive', 'CLOSED WITHOUT STATE');
+      assert.equal(tenant.sessions(), 0);
     });
 
     it('requirement 5: a Ghost restart voids every outstanding token; a fresh mint works', async () => {

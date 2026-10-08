@@ -8,3 +8,5 @@ Wants=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/env node /usr/local/lib/branchleft/break-glass/break-glass-grant.mjs expire
+# Each docker call times out after 60s; this bounds a run of many tenants.
+TimeoutStartSec=10min

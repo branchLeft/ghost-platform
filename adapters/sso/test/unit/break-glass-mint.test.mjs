@@ -169,6 +169,12 @@ describe('mintToken', () => {
     expect(a.claims.jti).not.toBe(b.claims.jti);
   });
 
+  it.each([0, -1, -600, 1.5])('refuses a lifetime of %s even when called directly', (ttl) => {
+    expect(() => mintToken({ privateKey, ...request({ ttlSeconds: ttl }), nowMs })).toThrow(
+      MintRefusedError
+    );
+  });
+
   it(`refuses a lifetime above ${MINT_MAX_TTL_SECONDS} seconds even when called directly`, () => {
     expect(() => mintToken({ privateKey, ...request({ ttlSeconds: 601 }), nowMs })).toThrow(
       MintRefusedError
@@ -181,10 +187,34 @@ describe('loadSigningKey', () => {
     expect(() => loadSigningKey(keyFile)).toThrow(/no signing key/);
   });
 
-  it('refuses a key readable by group or others', () => {
+  it.each([0o640, 0o604, 0o644, 0o606, 0o660])('refuses a key with mode %o', (mode) => {
     keygen({ keyFile });
-    fs.chmodSync(keyFile, 0o640);
+    fs.chmodSync(keyFile, mode);
     expect(() => loadSigningKey(keyFile)).toThrow(/0600/);
+  });
+
+  it('refuses a symlink to a valid key, even one inside the key directory', () => {
+    const real = path.join(dir, 'real.pem');
+    keygen({ keyFile: real });
+    fs.symlinkSync(real, keyFile);
+    expect(() => loadSigningKey(keyFile)).toThrow(/is a symlink/);
+  });
+
+  it('refuses a key owned by another user, checked on the opened file', () => {
+    keygen({ keyFile });
+    const fsImpl = {
+      ...fs,
+      fstatSync: (fd) => {
+        const real = fs.fstatSync(fd);
+        return { isFile: () => true, mode: real.mode, uid: real.uid + 1 };
+      },
+    };
+    expect(() => loadSigningKey(keyFile, fsImpl)).toThrow(/owned by this user/);
+  });
+
+  it('refuses something that is not a regular file', () => {
+    fs.mkdirSync(keyFile, { mode: 0o700 });
+    expect(() => loadSigningKey(keyFile)).toThrow(/regular file/);
   });
 
   it('refuses a key that is not Ed25519', () => {

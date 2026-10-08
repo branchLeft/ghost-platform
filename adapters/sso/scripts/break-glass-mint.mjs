@@ -97,29 +97,40 @@ export function breakGlassUrl(origin, token) {
   return `${origin}/ghost/?${QUERY_PARAM}=${encodeURIComponent(token)}`;
 }
 
-/** Loads the private key, refusing one any other local user could read. */
+/**
+ * Loads the private key. It is opened without following a symlink, and the
+ * checks run on the opened file itself, so nothing can swap it in between.
+ */
 export function loadSigningKey(keyFile, fsImpl = fs) {
-  let stat;
+  let fd;
   try {
-    stat = fsImpl.statSync(keyFile);
-  } catch {
+    fd = fsImpl.openSync(keyFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch (error) {
+    if (error.code === 'ELOOP') {
+      throw new MintRefusedError(`${keyFile} is a symlink; the key must be the file itself`);
+    }
     throw new MintRefusedError(`no signing key at ${keyFile}`);
   }
-  if (!stat.isFile() || (stat.mode & 0o077) !== 0) {
-    throw new MintRefusedError(
-      `${keyFile} must be a regular file readable by its owner only (0600)`
-    );
-  }
-  let key;
   try {
-    key = crypto.createPrivateKey(fsImpl.readFileSync(keyFile));
-  } catch {
-    throw new MintRefusedError(`${keyFile} is not a readable private key`);
+    const stat = fsImpl.fstatSync(fd);
+    if (!stat.isFile() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid()) {
+      throw new MintRefusedError(
+        `${keyFile} must be a regular file owned by this user and readable by its owner only (0600)`
+      );
+    }
+    let key;
+    try {
+      key = crypto.createPrivateKey(fsImpl.readFileSync(fd));
+    } catch {
+      throw new MintRefusedError(`${keyFile} is not a readable private key`);
+    }
+    if (key.asymmetricKeyType !== 'ed25519') {
+      throw new MintRefusedError(`${keyFile} is not an Ed25519 key`);
+    }
+    return key;
+  } finally {
+    fsImpl.closeSync(fd);
   }
-  if (key.asymmetricKeyType !== 'ed25519') {
-    throw new MintRefusedError(`${keyFile} is not an Ed25519 key`);
-  }
-  return key;
 }
 
 /** The public half as the tenant's config carries it: base64 SPKI DER. */
