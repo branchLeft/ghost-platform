@@ -25,17 +25,7 @@ GATE_UPSTREAM = "127.0.0.1:8080"
 GATE_VERIFY_URI = "/__gate/verify"
 GATE_LOGIN_PATH = "/__gate/login"
 
-# HLD F1: the members import is refused at the edge; the GET (the export)
-# is the prospect's and stays open behind the gate.
-#
-# The refusal follows what Ghost resolves, not one literal path. Ghost 6.55.0
-# (services/api-version-compatibility) accepts `/ghost/api/<version>/admin/...`
-# for version v2|v3|v4|canary and strips it; express does not require the
-# trailing slash. So every one of these reaches the import handler:
-#   /ghost/api/admin/members/upload[/]
-#   /ghost/api/{v2,v3,v4,canary}/admin/members/upload[/]
-# The version list is Ghost's and can grow, so any `v<digits>` or `canary`
-# prefix is refused, and the two matchers below overlap on purpose.
+# Why the members-import refusal is not one literal path: render_demo_site.md.
 MEMBERS_UPLOAD_PATH = "/ghost/api/admin/members/upload/"
 # Caddy's `path` matcher cleans and unescapes, and is case-insensitive; a `*`
 # spans any segment(s), so an unknown version prefix is still caught (it only

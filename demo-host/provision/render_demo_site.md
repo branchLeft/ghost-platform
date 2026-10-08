@@ -63,3 +63,25 @@ Caddyfile; treat this output as a candidate for its `--caddyfile`.
 The content policy is report-only in the only demo fixture, because render-core
 has no caller yet that supplies a computed script-hash set. #1254's
 "enforcing policy on the demo host" waits on #1238's hash wiring.
+
+## Why the members-import refusal is not one literal path
+
+(Moved from a code comment.)
+
+HLD F1: the members import is refused at the edge; the GET (the export)
+is the prospect's and stays open behind the gate.
+
+The refusal follows what Ghost resolves, not one literal path. Ghost 6.55.0
+(services/api-version-compatibility) accepts `/ghost/api/<version>/admin/...`
+for version v2|v3|v4|canary and strips it; express does not require the
+trailing slash. So every one of these reaches the import handler:
+
+```text
+/ghost/api/admin/members/upload[/]
+/ghost/api/{v2,v3,v4,canary}/admin/members/upload[/]
+```
+
+The version list is Ghost's and can grow, so any `v<digits>` or `canary`
+prefix is refused, and the two matchers in `render_demo_site.py` overlap on purpose. Caddy's `path` matcher cleans and unescapes and is
+case-insensitive; a `*` spans any segment(s), so an unknown version prefix is
+still caught (it only ever over-refuses a POST, the safe direction).
