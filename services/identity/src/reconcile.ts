@@ -179,7 +179,7 @@ type SmtpConfigLike = NonNullable<DesiredState['smtp']>;
 
 /** Zitadel does not apply a changed password to an existing provider, so a
  * change of anything, the password included, is a replacement: a new provider
- * is created, made active, and only then are this reconciler's superseded
+ * is created, made active, and only then are this reconciler's old
  * providers removed. A run that stops half way leaves an inactive provider with
  * the right description, which the next run adopts instead of creating a
  * second. A provider an operator added by hand is never touched: if one is
@@ -206,7 +206,7 @@ async function ensureSmtp(
     (entry) => entry.description === wanted && sameProvider(entry, smtp)
   );
   if (current?.active) {
-    // A run that stopped after activating leaves superseded providers behind.
+    // A run that stopped after activating leaves old providers behind.
     const leftovers = managed.filter((entry) => entry.id !== current.id);
     for (const stale of leftovers) await client.deleteSmtp(stale.id);
     return { kind: 'smtp', name, status: leftovers.length === 0 ? 'unchanged' : 'updated' };

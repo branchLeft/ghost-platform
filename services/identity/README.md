@@ -156,7 +156,7 @@ ZITADEL_SMTP_PASSWORD_FILE=/path/to/password \
   password change on an existing provider and then keeps authenticating with the
   old one, which the local proof showed. So any change (the password included)
   creates a new provider, activates it, and then removes this reconciler's
-  superseded ones. Zitadel never returns a stored password, so the change is
+  old ones. Zitadel never returns a stored password, so the change is
   noticed from a digest of every setting plus the password, written into the
   provider's description next to a `branchleft-managed` marker. A provider
   without the marker is never replaced or deleted: if one is active the run
@@ -200,3 +200,5 @@ verification code is delivered authenticated as, and sent as, the sender; a
 rotated password is applied; and a request that sends mail is answered within a
 few seconds while the mail host hangs or refuses, with a control showing the
 hung host does hold a client that waits on it.
+
+The sink reads its behaviour from `/state/mode` on every connection (`ok` accepts and records, `stall` accepts and never speaks, `refuse` answers 421) and logs each connection and message to `/state/sink.ndjson`; it checks the password but never records it.

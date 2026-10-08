@@ -278,7 +278,7 @@ describe('reconciling the mail provider', () => {
     expect(fake.smtp.get(created.id)?.active).toBe(true);
   });
 
-  it('cleans up superseded providers left by a run that stopped after activating', async () => {
+  it('cleans up old providers left by a run that stopped after activating', async () => {
     const fake = new FakeZitadel();
     const state = withSmtp();
     await fake.createSmtp(state.smtp!, 'old', smtpDescription(state.smtp!, 'old'));

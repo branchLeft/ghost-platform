@@ -1,16 +1,5 @@
-// A dependency-free SMTP listener standing in for mx1, for the local proof only.
-// It speaks just enough SMTP for Zitadel's notification channel: greeting, EHLO
-// with AUTH PLAIN and LOGIN, MAIL, RCPT, DATA, QUIT. It never relays anything.
-//
-// Behaviour is read from the file /state/mode on every connection, so a test
-// can change it between sends:
-//   ok      accept and record the message (the default)
-//   stall   accept the connection and never speak: a mail host that hangs
-//   refuse  answer the greeting with 421 and close: a mail host that refuses
-// Every connection and every accepted message is appended to /state/sink.ndjson
-// as one JSON line. A message line carries the authenticated user, the
-// envelope, the Subject and the body, which the proof reads back; the
-// password is checked and never written down.
+// A dependency-free SMTP listener standing in for the mail host, local proof
+// only. Behaviour comes from /state/mode (ok, stall, refuse); see README.md.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 
