@@ -18,7 +18,9 @@ import {
   validateSlug,
   validateTenantUid,
 } from './brand.js';
-import type { TenantDescriptor } from './descriptor.js';
+import type { EmailAddress } from './brand.js';
+import type { TenantDescriptor, TenantStackDescriptor } from './descriptor.js';
+import { SECRET_ENV_KEYS } from './environment.js';
 import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
 import { mediaPublicBaseUrl, validateMediaBucket } from './media.js';
 
@@ -125,7 +127,7 @@ export class UnknownSchemaVersionError extends Error {
   }
 }
 
-function checkVersion(descriptor: TenantDescriptor): void {
+function checkVersion(descriptor: TenantStackDescriptor): void {
   if (!KNOWN_SCHEMA_VERSIONS.includes(descriptor.version)) {
     throw new UnknownSchemaVersionError(descriptor.version);
   }
@@ -192,6 +194,8 @@ const DESCRIPTOR_KEYS = [
   'breakGlass',
   'expiresAt',
 ] as const;
+/** `DESCRIPTOR_KEYS` without `ownerEmail`: see validateTenantStack. */
+const STACK_DESCRIPTOR_KEYS = DESCRIPTOR_KEYS.filter((key) => key !== 'ownerEmail');
 const PORTS_KEYS = ['a', 'b', 'health'] as const;
 const DATABASE_SQLITE_KEYS = ['kind', 'path'] as const;
 const DATABASE_MYSQL_KEYS = ['kind', 'host', 'port', 'name', 'user'] as const;
@@ -313,14 +317,20 @@ function validateCpus(value: string): void {
  * for the whole descriptor at once, and rejects any key nothing declared.
  * See validate.md#assertshape.
  */
-function assertShape(descriptor: TenantDescriptor): void {
-  assertNoUnknownKeys(descriptor, DESCRIPTOR_KEYS, 'descriptor');
+function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlacement): void {
+  assertNoUnknownKeys(
+    descriptor,
+    owner === 'inline' ? DESCRIPTOR_KEYS : STACK_DESCRIPTOR_KEYS,
+    'descriptor'
+  );
 
   assertNumber(descriptor.version, 'version');
   assertString(descriptor.slug, 'slug');
   assertString(descriptor.siteUrl, 'siteUrl');
   assertString(descriptor.image, 'image');
-  assertString(descriptor.ownerEmail, 'ownerEmail');
+  if (owner === 'inline') {
+    assertString((descriptor as TenantDescriptor).ownerEmail, 'ownerEmail');
+  }
   assertNumber(descriptor.uid, 'uid');
   assertString(descriptor.appHostIp, 'appHostIp');
 
@@ -475,7 +485,7 @@ const MAX_STAFF_CAP = 10_000;
  * checked there; numeric bounds — including the safe-integer-ness and the
  * upper ceilings below — are checked here.
  */
-function checkRanges(descriptor: TenantDescriptor): void {
+function checkRanges(descriptor: TenantStackDescriptor): void {
   assertNonNegativeIntegerOrNull(
     descriptor.limits.membersCap,
     'limits.membersCap',
@@ -758,7 +768,7 @@ function validateBreakGlass(breakGlass: TenantDescriptor['breakGlass']): void {
  * caller-chosen value is what makes a copy-paste mistake between two
  * tenants' descriptors a refusal rather than an audience mix-up.
  */
-function checkBreakGlassIdentity(descriptor: TenantDescriptor): void {
+function checkBreakGlassIdentity(descriptor: TenantStackDescriptor): void {
   if (descriptor.breakGlass.kind !== 'enabled') {
     return;
   }
@@ -780,7 +790,7 @@ function checkBreakGlassIdentity(descriptor: TenantDescriptor): void {
  * history) is what this checks against instead — see that field's own doc
  * comment for why the check has to live there.
  */
-function checkBreakGlassImageOrdering(descriptor: TenantDescriptor, zones: ZoneConfig): void {
+function checkBreakGlassImageOrdering(descriptor: TenantStackDescriptor, zones: ZoneConfig): void {
   if (descriptor.breakGlass.kind !== 'enabled') {
     return;
   }
@@ -980,7 +990,7 @@ function validateHostname(hostname: TenantDescriptor['hostname'], zones: ZoneCon
  * because it is what rejects a port, a path, userinfo, a query, a
  * fragment or an uppercase host all at once, with no separate case to miss.
  */
-function checkSiteUrlMatchesHostname(descriptor: TenantDescriptor, zones: ZoneConfig): void {
+function checkSiteUrlMatchesHostname(descriptor: TenantStackDescriptor, zones: ZoneConfig): void {
   const expectedHost =
     descriptor.hostname.kind === 'ours'
       ? `${descriptor.hostname.sub}.${descriptor.kind === 'demo' ? zones.demoZone : zones.platformZone}`
@@ -1023,7 +1033,7 @@ export function servedHostnameOf(
 }
 
 /** Both flags are on for every tenant today — see SafetySpec's own doc comment. */
-function checkSafety(descriptor: TenantDescriptor): void {
+function checkSafety(descriptor: TenantStackDescriptor): void {
   if (!descriptor.safety.near || !descriptor.safety.exact) {
     throw new FieldValidationError(
       'safety',
@@ -1062,7 +1072,7 @@ function validateCodeInjection(codeInjection: TenantDescriptor['codeInjection'])
  * non-object `codeInjection` (`null`, `undefined`), which fails here with a
  * named error rather than a raw `TypeError` from reading `.kind` off it.
  */
-function checkInv1(descriptor: TenantDescriptor): void {
+function checkInv1(descriptor: TenantStackDescriptor): void {
   const allowed = ['blocked', 'granted', 'managed'];
   const raw = descriptor.codeInjection as unknown;
   const kind =
@@ -1077,7 +1087,7 @@ function checkInv1(descriptor: TenantDescriptor): void {
 }
 
 /** INV-2 — `gate = "passphrase"` if and only if `kind = "demo"`. */
-function checkInv2(descriptor: TenantDescriptor): void {
+function checkInv2(descriptor: TenantStackDescriptor): void {
   const gated = descriptor.gate.kind === 'passphrase';
   const isDemo = descriptor.kind === 'demo';
   if (isDemo && !gated) {
@@ -1097,7 +1107,7 @@ function checkInv2(descriptor: TenantDescriptor): void {
 }
 
 /** INV-3 — `media.kind = "s3"` implies `backup.kind = "bucket-native"`. */
-function checkInv3(descriptor: TenantDescriptor): void {
+function checkInv3(descriptor: TenantStackDescriptor): void {
   if (descriptor.media.kind === 's3' && descriptor.backup.kind !== 'bucket-native') {
     throw new InvariantViolationError(
       'INV-3',
@@ -1113,7 +1123,7 @@ function checkInv3(descriptor: TenantDescriptor): void {
  * script on the platform's own registrable domain, so this precondition
  * keeps the blast radius on the customer's own name.
  */
-function checkCodeInjectionHostnamePrecondition(descriptor: TenantDescriptor): void {
+function checkCodeInjectionHostnamePrecondition(descriptor: TenantStackDescriptor): void {
   const needsCustomDomain =
     descriptor.codeInjection.kind === 'granted' || descriptor.codeInjection.kind === 'managed';
   if (needsCustomDomain && descriptor.hostname.kind !== 'theirs') {
@@ -1134,7 +1144,7 @@ function checkCodeInjectionHostnamePrecondition(descriptor: TenantDescriptor): v
  * carries an expiry: a demo that never expires is a paying tenant's
  * capacity a demo is silently holding.
  */
-function checkTierVariants(descriptor: TenantDescriptor): void {
+function checkTierVariants(descriptor: TenantStackDescriptor): void {
   if (descriptor.kind === 'tenant') {
     if (descriptor.database.kind !== 'mysql') {
       throw new TierMismatchError(
@@ -1213,7 +1223,7 @@ function checkTierVariants(descriptor: TenantDescriptor): void {
  * itself is rejected rather than left to whichever field a renderer happens
  * to read.
  */
-function checkHostnameGateConsistency(descriptor: TenantDescriptor): void {
+function checkHostnameGateConsistency(descriptor: TenantStackDescriptor): void {
   if (descriptor.hostname.kind === 'ours') {
     const expectedGated = descriptor.gate.kind === 'passphrase';
     if (descriptor.hostname.gated !== expectedGated) {
@@ -1233,6 +1243,65 @@ function checkHostnameGateConsistency(descriptor: TenantDescriptor): void {
  * validate.md#validate.
  */
 export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): TenantDescriptor {
+  validateFields(descriptor, zones, 'inline');
+  return descriptor;
+}
+
+/**
+ * Validates a paying tenant's descriptor as its own repository commits it:
+ * everything `validate()` checks, but with no `ownerEmail`, which arrives
+ * through the secrets file instead. A descriptor that still carries one is
+ * refused, without echoing it. See validate.md#validatetenantstack.
+ */
+export function validateTenantStack(
+  descriptor: TenantStackDescriptor,
+  zones: ZoneConfig
+): TenantStackDescriptor {
+  if (typeof descriptor === 'object' && descriptor !== null && 'ownerEmail' in descriptor) {
+    throw new FieldValidationError(
+      'ownerEmail',
+      "a tenant stack descriptor must not carry ownerEmail: it is a person's address, and " +
+        `it reaches the host only as ${SECRET_ENV_KEYS.ownerEmail} in the secrets file.`
+    );
+  }
+  if (descriptor.kind !== 'tenant') {
+    throw new FieldValidationError(
+      'kind',
+      `a tenant stack descriptor must have kind "tenant", got "${String(descriptor.kind)}". A ` +
+        'demo carries its owner address inline and is validated by validate().'
+    );
+  }
+  validateFields(descriptor, zones, 'secret');
+  return descriptor;
+}
+
+/**
+ * Checks a secret owner address's shape without ever putting the value in
+ * the error, because a refusal is printed to a deploy log in plain text.
+ * See validate.md#validateowneremailsecret.
+ */
+export function validateOwnerEmailSecret(value: string): EmailAddress {
+  try {
+    return validateEmailAddress(value, 'ownerEmail');
+  } catch (error) {
+    if (error instanceof FieldValidationError) {
+      throw new FieldValidationError(
+        'ownerEmail',
+        `${SECRET_ENV_KEYS.ownerEmail} is not a valid email address (value withheld).`
+      );
+    }
+    throw error;
+  }
+}
+
+/** Where a descriptor's owner address lives: inline, or in the secrets file. */
+type OwnerEmailPlacement = 'inline' | 'secret';
+
+function validateFields(
+  descriptor: TenantStackDescriptor,
+  zones: ZoneConfig,
+  owner: OwnerEmailPlacement
+): void {
   // The caller's own input, checked before anything below trusts it to mean
   // what its fields say — see validateZoneConfig's own doc comment.
   validateZoneConfig(zones);
@@ -1256,7 +1325,7 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   // Presence, type, range and unknown-key checks for every remaining field,
   // all at once, before any format validator or cross-field rule below
   // reads one — see assertShape's own doc comment.
-  assertShape(descriptor);
+  assertShape(descriptor, owner);
   checkRanges(descriptor);
 
   checkVersion(descriptor);
@@ -1265,7 +1334,9 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   validateSlugAvailability(descriptor.slug);
   validateAbsoluteUrl(descriptor.siteUrl);
   validateDigestPinnedRef(descriptor.image);
-  validateEmailAddress(descriptor.ownerEmail, 'ownerEmail');
+  if (owner === 'inline') {
+    validateEmailAddress((descriptor as TenantDescriptor).ownerEmail, 'ownerEmail');
+  }
   validateTenantUid(descriptor.uid);
   validatePortTriple(descriptor.ports);
   validatePrivateIpV4(descriptor.appHostIp);
@@ -1291,6 +1362,4 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
   checkHostnameGateConsistency(descriptor);
   checkBreakGlassIdentity(descriptor);
   checkBreakGlassImageOrdering(descriptor, zones);
-
-  return descriptor;
 }

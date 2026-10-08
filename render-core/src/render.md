@@ -20,6 +20,13 @@ is rendered as a `${VAR:?…}` reference into a file this package never
 touches (`environment.ts`) or as a blank key name in a template an operator
 fills in by hand (`secrets.env` below, from `renderSecretsTemplate`).
 
+**No owner address appears in an artefact either.** A paying tenant's
+template also names `GHOST_OWNER_EMAIL`, the owner's address, which is
+personal rather than secret but must stay out of a tenant repository all the
+same (descriptor.md#tenant-stack-descriptor). `render()` never reads
+`ownerEmail` for any kind; `test/owner-email.test.ts` renders a sentinel
+address and checks every artefact for it.
+
 **The seven artefacts:**
 
 1. `compose.yml` — `compose.ts`
