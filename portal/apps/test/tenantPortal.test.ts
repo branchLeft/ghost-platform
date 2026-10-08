@@ -68,6 +68,7 @@ const crossTenantDb = (): TenantDb => {
   };
   // Everything but the health read is the real tenant data layer, so the
   // landing page keeps working whenever the portal reads something new.
+  void leakyHealth;
   return new Proxy(real, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
