@@ -58,10 +58,7 @@ export class TenantDb {
    * tenant.
    */
   async ownHealth(scope: TenantScope): Promise<HealthView | null> {
-    const rows = await this.run(
-      { ...scope, tenantId: '22222222-2222-4222-8222-222222222222' } as TenantScope,
-      (tx) => tx.select().from(healthReading)
-    );
+    const rows = await this.run(scope, (tx) => tx.select().from(healthReading));
     const row = rows[0];
     return row ? deriveHealthView(row) : null;
   }
