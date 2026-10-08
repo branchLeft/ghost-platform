@@ -8,6 +8,8 @@ import { createDeliveryClient } from './deliveryClient.js';
 import { createHealthState } from './health.js';
 import { createDeadMansSwitch } from './heartbeat.js';
 import { createLogger } from './log.js';
+import { createDirectoryDsnMailbox } from './dsnMailbox.js';
+import { createOutcomeRunner } from './outcomeRunner.js';
 import { createThrottle } from './throttle.js';
 
 const config = loadConfig();
@@ -32,7 +34,10 @@ const drainClient = createDrainClient({
   drainTimeoutMs: config.drainTimeoutMs,
 });
 
-const deliveryClient = createDeliveryClient(config.smtp);
+const deliveryClient = createDeliveryClient({
+  ...config.smtp,
+  ...(config.outcomes ? { outcomes: { returnPath: config.outcomes.returnPath } } : {}),
+});
 
 const dedupe = createSubmittedTracker(config.dedupeTtlMs);
 
@@ -54,7 +59,20 @@ const heartbeat = createDeadMansSwitch({
   getExpectedTargetIds: () => store.targets.map((t) => t.id),
 });
 
+const outcomes = config.outcomes
+  ? {
+      runner: createOutcomeRunner({
+        mailbox: createDirectoryDsnMailbox(config.outcomes.dsnDir),
+        store,
+        drainClient,
+        log,
+      }),
+      intervalMs: config.outcomes.pollMs,
+    }
+  : undefined;
+
 const runtime = createCollectorRuntime({
+  outcomes,
   store,
   drainClient,
   deliveryClient,

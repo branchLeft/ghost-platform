@@ -1,4 +1,4 @@
-import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,7 @@ import type { Readable } from 'node:stream';
 import Database from 'better-sqlite3';
 import { count, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { queueBatches } from '../src/schema.js';
 import { createSqliteStore } from '../src/store.js';
 
@@ -39,10 +39,6 @@ function findFreePort(): Promise<number> {
     });
     srv.on('error', reject);
   });
-}
-
-function build(): void {
-  execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
 }
 
 function payload() {
@@ -170,10 +166,6 @@ async function runServerAndWaitForListening(
 
 describe('src/server.ts — actually starts the cleanup scheduler (not just imports it)', () => {
   let dir: string;
-
-  beforeAll(() => {
-    build();
-  });
 
   afterEach(() => {
     if (dir) {

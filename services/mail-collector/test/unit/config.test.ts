@@ -29,6 +29,26 @@ describe('loadConfig', () => {
     });
     expect(config.shimScheme).toBe('http');
     expect(config.heartbeatFailureThreshold).toBe(5);
+    expect(config.outcomes).toBeUndefined();
+  });
+
+  describe('outcomes', () => {
+    it('turns on only when both the return path and the notification directory are set', () => {
+      expect(
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+        }).outcomes
+      ).toEqual({ returnPath: 'outcomes@collector.example', dsnDir: '/var/dsn', pollMs: 30000 });
+    });
+
+    it.each([
+      ['COLLECTOR_OUTCOMES_RETURN_PATH', 'outcomes@collector.example'],
+      ['COLLECTOR_OUTCOMES_DSN_DIR', '/var/dsn'],
+    ])('refuses %s without its partner', (name, value) => {
+      expect(() => loadConfig({ ...BASE_ENV, [name]: value })).toThrow(/set together/);
+    });
   });
 
   it.each([

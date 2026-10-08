@@ -257,6 +257,33 @@ took responsibility for the message, not that anyone received it. That
 distinction is why the old worker's premature "delivered" event was a defect,
 and synthesizing one here would be the same defect one hop later.
 
+## Outcomes come back after the ack
+
+`sent` means one thing: the drainer took the message and the receiving MTA
+accepted it for onward delivery. It does not mean delivered, because an MTA that
+accepts on submission and delivers afterwards can still bounce.
+`recordOutcomes` is the only writer of the final word, and the only place a
+`delivered` event is ever recorded.
+
+- **delivered**: a `sent` row at the named generation becomes `delivered`, with
+  one `delivered` event.
+- **failed, permanent**: the row becomes `failed`, a `failed` event with
+  severity `permanent` is recorded, and the address joins the tenant's `bounces`
+  suppressions, so the next send resolves it at drain time instead of trying
+  again.
+- **failed, temporary**: an event only. The row stays `sent`, because the
+  receiving MTA may still deliver and a later final outcome must still land.
+
+A report is checked against the row exactly as an ack is: an unknown id, a stale
+generation, or a row not yet acked is `unknown`; a row already `delivered` or
+`failed` is `alreadyHandled`, so a drainer that repeats a report cannot record a
+second event or overturn a final one. A late `ack` of a `delivered` row is
+`alreadyHandled` too.
+
+`delivered` is terminal for batch completion like `sent`, so a batch can be
+cleaned up (30 days) before a very late outcome arrives; that outcome is then
+`unknown`. The status column is plain text, so this needs no migration.
+
 ## Queue metrics
 
 `oldestUndrainedAgeSeconds` is the time since the oldest recipient still owed a

@@ -36,7 +36,16 @@ describe('loadConfig', () => {
     expect(config.drainLeaseSeconds).toBe(30);
     expect(config.drainBatchLimit).toBe(25);
     expect(config.drainPollIntervalMs).toBe(250);
+    expect(config.drainOutcomesEnabled).toBe(false);
     expect(config.maxRecipientsPerMessage).toBe(50);
+  });
+
+  it('turns the outcome route on only for the exact string true', () => {
+    const base = { ...baseEnv, SHIM_ALLOW_EPHEMERAL_DB: 'true' };
+    expect(loadConfig({ ...base, SHIM_DRAIN_OUTCOMES: 'true' }).drainOutcomesEnabled).toBe(true);
+    for (const v of ['1', 'TRUE', 'yes', '']) {
+      expect(loadConfig({ ...base, SHIM_DRAIN_OUTCOMES: v }).drainOutcomesEnabled).toBe(false);
+    }
   });
 
   it('reads SHIM_MAX_RECIPIENTS_PER_MESSAGE', () => {

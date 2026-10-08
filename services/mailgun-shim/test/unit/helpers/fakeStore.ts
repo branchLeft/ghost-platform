@@ -3,6 +3,7 @@ import { isSafeRecipientAddress } from '../../../src/recipientSafety.js';
 import { SUPPRESSION_TYPES } from '../../../src/store.js';
 import type {
   AckDrainResult,
+  OutcomeRequest,
   DrainedRecipient,
   QueueBatchPayload,
   QueueRecipientStatus,
@@ -13,6 +14,8 @@ import type {
 export interface FakeShimStore extends ShimStore {
   events: StoredEvent[];
   suppressionKeys: Set<string>;
+  /** Every recordOutcomes call, in order. The fake does not model outcome semantics: store.test.ts covers the real store. */
+  outcomeCalls: OutcomeRequest[][];
 }
 
 interface RecipientRow {
@@ -56,6 +59,7 @@ export function createFakeStore(): FakeShimStore {
   const tenants = new Map<string, FakeTenant>();
   const suppressionKeys = new Set<string>();
   const events: StoredEvent[] = [];
+  const outcomeCalls: OutcomeRequest[][] = [];
   const batches = new Map<string, BatchRow>();
   const recipientIndex = new Map<string, { batchId: string; recipient: string }>();
   let nextId = 0;
@@ -82,6 +86,7 @@ export function createFakeStore(): FakeShimStore {
   return {
     events,
     suppressionKeys,
+    outcomeCalls,
 
     registerTenant(domain, apiKey, senderDomain) {
       tenants.set(domain, { apiKey, senderDomain });
@@ -224,6 +229,11 @@ export function createFakeStore(): FakeShimStore {
       return drained;
     },
 
+    recordOutcomes(outcomes) {
+      outcomeCalls.push(outcomes);
+      return { recorded: outcomes.map((o) => o.id), alreadyHandled: [], unknown: [] };
+    },
+
     ackDrain(acks, now) {
       const result: AckDrainResult = { acked: [], alreadyHandled: [], unknown: [] };
       for (const { id, drainCount } of acks) {
@@ -235,7 +245,7 @@ export function createFakeStore(): FakeShimStore {
           result.unknown.push(id);
           continue;
         }
-        if (row.status === 'sent') {
+        if (row.status === 'sent' || row.status === 'delivered') {
           result.alreadyHandled.push(id);
           continue;
         }

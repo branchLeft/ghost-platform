@@ -1,5 +1,6 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import type { WireMessage } from './drainClient.js';
+import { encodeOutcomeMessageId } from './outcomeId.js';
 
 export interface DeliveryClientOptions {
   host: string;
@@ -7,11 +8,20 @@ export interface DeliveryClientOptions {
   secure: boolean;
   user: string;
   pass: string;
+  /**
+   * Opt-in. When set, each submission carries a Message-ID that names the
+   * message, its claim generation and its spool, an envelope sender of
+   * `returnPath` (where mx1 sends delivery status notifications) and a DSN
+   * request for success, failure and delay. Unset, a submission is exactly
+   * what it was before this option existed.
+   */
+  outcomes?: { returnPath: string };
   transporterFactory?: (opts: DeliveryClientOptions) => Transporter;
 }
 
 export interface DeliveryClient {
-  deliver(message: WireMessage): Promise<void>;
+  /** `targetId` names the spool the message came from; only used when outcomes are on. */
+  deliver(message: WireMessage, targetId?: string): Promise<void>;
   close(): void;
 }
 
@@ -27,8 +37,26 @@ export function createDeliveryClient(opts: DeliveryClientOptions): DeliveryClien
   const makeTransporter = opts.transporterFactory ?? defaultTransporterFactory;
   const transporter = makeTransporter(opts);
 
-  async function deliver(message: WireMessage): Promise<void> {
+  async function deliver(message: WireMessage, targetId?: string): Promise<void> {
+    const outcomeFields =
+      opts.outcomes && targetId !== undefined
+        ? {
+            messageId: encodeOutcomeMessageId({
+              targetId,
+              id: message.id,
+              drainCount: message.drainCount,
+            }),
+            envelope: { from: opts.outcomes.returnPath, to: message.to },
+            dsn: {
+              id: message.id,
+              return: 'headers' as const,
+              notify: ['success', 'failure', 'delay'] as Array<'success' | 'failure' | 'delay'>,
+              recipient: message.to,
+            },
+          }
+        : {};
     await transporter.sendMail({
+      ...outcomeFields,
       from: message.from,
       to: message.toName ? { name: message.toName, address: message.to } : message.to,
       replyTo: message.replyTo,
