@@ -128,3 +128,36 @@ describe('assertInvariants', () => {
     ).toContain('is the owner organisation');
   });
 });
+
+describe('local development origins', () => {
+  const config = () => validateConfig({ hostnames: HOSTNAMES, tenants: TWO_TENANTS });
+
+  it('registers http loopback return addresses in development mode, on the shared path', () => {
+    const [a, b] = desiredState(config(), {
+      console: 'http://localhost:18081',
+      portal: 'http://localhost:18082',
+    }).applications;
+    expect(a?.redirectUris).toEqual(['http://localhost:18081/auth/callback']);
+    expect(b?.redirectUris).toEqual(['http://localhost:18082/auth/callback']);
+    expect([a?.devMode, b?.devMode]).toEqual([true, true]);
+  });
+
+  it('keeps development mode off for every production application', () => {
+    for (const app of state().applications) expect(app.devMode).toBe(false);
+  });
+
+  it('refuses a non-loopback or https development origin', () => {
+    for (const bad of ['https://localhost:1', 'http://example.test:1', 'http://localhost']) {
+      expect(() => desiredState(config(), { console: bad, portal: 'http://localhost:2' })).toThrow(
+        ConfigError
+      );
+    }
+  });
+
+  it('refuses a plain-http URI on an application that is not in development mode', () => {
+    const s = state();
+    const [a, b] = s.applications;
+    const http = { ...a!, redirectUris: ['http://console.example.test/auth/callback'] };
+    expect(refusal({ ...s, applications: [http, b!] }).join('\n')).toContain('non-https');
+  });
+});

@@ -45,6 +45,16 @@ ZITADEL_URL=https://<identity hostname> ZITADEL_TOKEN_FILE=/path/to/token \
   node dist/cli.js config.json outputs.json
 ```
 
+The return address is `CALLBACK_PATH` (`/auth/callback`), exported from
+`src/index.ts`: the reconciler registers it and both portal applications send
+and serve it from that one constant, and `portal/apps/test/redirect.test.ts`
+fails if the two differ. For a local run against a throwaway instance only,
+`--local-dev-console-origin=http://localhost:PORT --local-dev-portal-origin=http://localhost:PORT`
+registers plain-HTTP loopback addresses with Zitadel's development mode on. Only
+the command line can ask for this (never the configuration file), both origins
+must be loopback `http`, and every production application keeps development
+mode off.
+
 The credential is read from a file, never argv or the environment. Output per
 action is `created`, `unchanged` or `drift`; a second run against an unchanged
 list writes nothing. **Drift is reported, never overwritten** (exit status 1): a

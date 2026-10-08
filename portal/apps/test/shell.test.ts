@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTokenVerifier } from 'ghost-platform-identity/dist/index.js';
+import { CALLBACK_PATH, createTokenVerifier } from 'ghost-platform-identity/dist/index.js';
 import { createShell } from '../src/shell/app.js';
 import { Browser, serve, type Running } from './browser.js';
 import { CLIENT_PORTAL, FakeIssuer, ISSUER, jwks, mint, NOW, PROJECT_ID } from './idp.js';
@@ -15,7 +15,7 @@ beforeAll(async () => {
       issuer: ISSUER,
       clientId: CLIENT_PORTAL,
       projectId: PROJECT_ID,
-      redirectUri: `${origin}/callback`,
+      redirectUri: `${origin}${CALLBACK_PATH}`,
       publicOrigin: origin,
       verifier: createTokenVerifier({
         issuer: ISSUER,

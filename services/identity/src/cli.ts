@@ -11,7 +11,22 @@ import { reconcile } from './reconcile.js';
  * the file `ZITADEL_TOKEN_FILE` names, never from argv or the environment, so
  * it appears in neither `ps` nor a process dump. */
 async function main(argv: readonly string[]): Promise<number> {
-  const [configPath, outputsPath] = argv;
+  const flags = argv.filter((a) => a.startsWith('--'));
+  const [configPath, outputsPath] = argv.filter((a) => !a.startsWith('--'));
+  const flag = (name: string): string | undefined =>
+    flags.find((f) => f.startsWith(`--${name}=`))?.slice(name.length + 3);
+  const devConsole = flag('local-dev-console-origin');
+  const devPortal = flag('local-dev-portal-origin');
+  const unknown = flags.filter(
+    (f) =>
+      !f.startsWith('--local-dev-console-origin=') && !f.startsWith('--local-dev-portal-origin=')
+  );
+  if (unknown.length > 0 || (devConsole === undefined) !== (devPortal === undefined)) {
+    process.stderr.write(
+      'both --local-dev-console-origin= and --local-dev-portal-origin= or neither\n'
+    );
+    return 2;
+  }
   const url = process.env['ZITADEL_URL'];
   const tokenFile = process.env['ZITADEL_TOKEN_FILE'];
   if (!configPath || !url || !tokenFile) {
@@ -26,7 +41,15 @@ async function main(argv: readonly string[]): Promise<number> {
     token: () => readFileSync(tokenFile, 'utf8').trim(),
     fetch: (target, init) => fetch(target, init),
   });
-  const result = await reconcile(client, desiredState(config));
+  const result = await reconcile(
+    client,
+    desiredState(
+      config,
+      devConsole !== undefined && devPortal !== undefined
+        ? { console: devConsole, portal: devPortal }
+        : undefined
+    )
+  );
   for (const action of result.actions) {
     const detail = action.detail ? ` (${action.detail})` : '';
     process.stdout.write(`${action.status.padEnd(9)} ${action.kind} ${action.name}${detail}\n`);

@@ -180,7 +180,7 @@ export function managementClient(options: ManagementOptions): ZitadelClient {
           // A public client with PKCE: no client secret exists to custody.
           authMethodType: 'OIDC_AUTH_METHOD_TYPE_NONE',
           version: 'OIDC_VERSION_1_0',
-          devMode: false,
+          devMode: application.devMode,
           accessTokenType: 'OIDC_TOKEN_TYPE_JWT',
           accessTokenRoleAssertion: true,
           idTokenRoleAssertion: true,

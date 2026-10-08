@@ -25,6 +25,10 @@ export interface DesiredApplication {
   /** The role this application's verifier requires; also what tells the two
    * applications apart in a token check. */
   readonly requiredRole: string;
+  /** Zitadel's development mode, which alone accepts a plain-HTTP redirect.
+   * False for every production application; true only for a loopback origin
+   * given through `LocalDevOrigins`. */
+  readonly devMode: boolean;
 }
 
 export interface DesiredRole {
@@ -52,7 +56,35 @@ export interface DesiredState {
   readonly grants: readonly DesiredGrant[];
 }
 
+/** The one sign-in return path. The reconciler registers it and both
+ * applications send and serve it, all from this constant, so what is
+ * registered and what is sent cannot differ. */
 export const CALLBACK_PATH = '/auth/callback';
+
+/** Plain-HTTP loopback origins for a local run against a throwaway instance.
+ * Never part of the configuration file: only the command line can supply them,
+ * so a production configuration cannot switch development mode on. */
+export interface LocalDevOrigins {
+  readonly console: string;
+  readonly portal: string;
+}
+
+export function loopbackOriginProblem(field: string, value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return `${field} is not a URL`;
+  }
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'http:' || !loopback || url.port === '') {
+    return `${field} must be http://localhost:PORT or http://127.0.0.1:PORT`;
+  }
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '' || url.username !== '') {
+    return `${field} must be an origin alone`;
+  }
+  return null;
+}
 
 export function tenantOrgName(slug: string): string {
   return `${TENANT_ORG_PREFIX}${slug}`;
@@ -64,6 +96,25 @@ export function tenantOrgName(slug: string): string {
  * same rules. */
 export function assertInvariants(state: DesiredState): void {
   const problems: string[] = [];
+  for (const application of state.applications) {
+    for (const uri of [...application.redirectUris, ...application.postLogoutRedirectUris]) {
+      if (new URL(uri).protocol === 'https:') continue;
+      if (
+        !application.devMode ||
+        loopbackOriginProblem(`${application.name} URI`, new URL(uri).origin)
+      ) {
+        problems.push(
+          `application ${application.name} has a non-https URI outside local development: ${uri}`
+        );
+      }
+    }
+    if (
+      application.devMode &&
+      application.redirectUris.some((u) => new URL(u).protocol === 'https:')
+    ) {
+      problems.push(`application ${application.name} is in development mode with an https URI`);
+    }
+  }
   const [first, second, ...rest] = state.applications;
   if (!first || !second || rest.length > 0) {
     problems.push('exactly two applications are required: the console and the portal');
@@ -116,8 +167,17 @@ export function assertInvariants(state: DesiredState): void {
 }
 
 /** Everything Zitadel should hold for a validated tenant list. */
-export function desiredState(config: IdentityConfig): DesiredState {
+export function desiredState(config: IdentityConfig, localDev?: LocalDevOrigins): DesiredState {
   const { hostnames } = config;
+  if (localDev) {
+    const problems = [
+      loopbackOriginProblem('local console origin', localDev.console),
+      loopbackOriginProblem('local portal origin', localDev.portal),
+    ].filter((p): p is string => p !== null);
+    if (problems.length > 0) throw new ConfigError(problems);
+  }
+  const origin = (key: 'console' | 'portal'): string =>
+    localDev ? new URL(localDev[key]).origin : `https://${hostnames[key]}`;
   const state: DesiredState = {
     ownerOrgName: OWNER_ORG_NAME,
     tenantOrgs: config.tenants.map((tenant) => ({
@@ -133,16 +193,18 @@ export function desiredState(config: IdentityConfig): DesiredState {
       {
         key: 'console',
         name: 'owner-console',
-        redirectUris: [`https://${hostnames.console}${CALLBACK_PATH}`],
-        postLogoutRedirectUris: [`https://${hostnames.console}/`],
+        redirectUris: [`${origin('console')}${CALLBACK_PATH}`],
+        postLogoutRedirectUris: [`${origin('console')}/`],
         requiredRole: ROLE_OWNER,
+        devMode: localDev !== undefined,
       },
       {
         key: 'portal',
         name: 'tenant-portal',
-        redirectUris: [`https://${hostnames.portal}${CALLBACK_PATH}`],
-        postLogoutRedirectUris: [`https://${hostnames.portal}/`],
+        redirectUris: [`${origin('portal')}${CALLBACK_PATH}`],
+        postLogoutRedirectUris: [`${origin('portal')}/`],
         requiredRole: ROLE_TENANT_ADMIN,
+        devMode: localDev !== undefined,
       },
     ],
     grants: config.tenants.map((tenant) => ({

@@ -5,4 +5,4 @@ export { createTokenVerifier } from './verifier.js';
 export type { Jwk, TokenVerifier, TokenVerifierOptions } from './verifier.js';
 export type { Verdict } from './tokens.js';
 export { CLAIM_PROJECT_ROLES, CLAIM_RESOURCE_OWNER } from './tokens.js';
-export { ROLE_OWNER, ROLE_TENANT_ADMIN } from './desired.js';
+export { CALLBACK_PATH, ROLE_OWNER, ROLE_TENANT_ADMIN } from './desired.js';
