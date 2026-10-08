@@ -157,7 +157,7 @@ ZITADEL_SMTP_PASSWORD_FILE=/path/to/password \
   old one, which the local proof showed. So any change (the password included)
   creates a new provider, activates it, and then removes this reconciler's
   old ones. Zitadel never returns a stored password, so the change is
-  noticed from a digest of every setting plus the password, written into the
+  noticed from a scrypt digest of the password, salted with every setting,, written into the
   provider's description next to a `branchleft-managed` marker. A provider
   without the marker is never replaced or deleted: if one is active the run
   reports drift and changes nothing.

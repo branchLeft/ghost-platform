@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { scryptSync } from 'node:crypto';
 import { fstatSync, openSync, readSync, closeSync, constants } from 'node:fs';
 import type { SmtpConfig } from './config.js';
 import { ConfigError } from './errors.js';
@@ -57,24 +57,20 @@ export function readSmtpPassword(path: string): string {
 /** A short digest of every setting that makes a provider what it is, the
  * password included. Zitadel never returns a stored password, so this is how a
  * changed password is noticed: it is written into the provider's description,
- * and a mismatch with the wanted value means "replace". The password is
- * high-entropy and generated, so a truncated SHA-256 reveals nothing usable;
- * the digest is salted with a fixed label so it is not a bare hash of the
- * password. */
+ * and a mismatch with the wanted value means "replace". The password goes
+ * through scrypt (a deliberately slow key derivation) with the settings as its
+ * salt, so the digest is neither a bare hash of the password nor reusable
+ * across two providers, and guessing the password from it costs real work. */
 export function smtpFingerprint(smtp: SmtpConfig, password: string): string {
-  const hash = createHash('sha256');
-  hash.update(
-    JSON.stringify([
-      'branchleft-zitadel-smtp-v1',
-      smtp.host,
-      smtp.port,
-      smtp.senderAddress,
-      smtp.senderName,
-      smtp.tls,
-      password,
-    ])
-  );
-  return hash.digest('hex').slice(0, 32);
+  const salt = JSON.stringify([
+    'branchleft-zitadel-smtp-v1',
+    smtp.host,
+    smtp.port,
+    smtp.senderAddress,
+    smtp.senderName,
+    smtp.tls,
+  ]);
+  return scryptSync(password, salt, 16).toString('hex');
 }
 
 export function smtpDescription(smtp: SmtpConfig, password: string): string {
