@@ -1,0 +1,13 @@
+# Runs the expire check every minute. Persistent, so a minute missed while
+# the host was down runs at boot; break-glass-grant.mjs refuses to open a
+# grant unless this timer is active.
+[Unit]
+Description=Close break-glass support grants past their deadline, every minute
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

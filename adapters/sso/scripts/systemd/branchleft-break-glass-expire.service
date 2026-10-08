@@ -1,0 +1,10 @@
+# Closes every break-glass support grant past its four-hour deadline.
+# adapters/sso/scripts/break-glass-grant.md, "The clock".
+[Unit]
+Description=Close break-glass support grants past their deadline
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env node /usr/local/lib/branchleft/break-glass/break-glass-grant.mjs expire
