@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
+import re
 import unittest
 
 import render_demo_edge as rde
@@ -55,17 +56,64 @@ class GateTests(unittest.TestCase):
 
 
 class MembersUploadTests(unittest.TestCase):
-    def test_post_to_members_upload_is_refused(self):
+    # Every spelling Ghost 6.55.0 routes to the members import handler:
+    # `legacy-api-path-match.js` accepts v2|v3|v4|canary before admin, and
+    # express does not require the trailing slash.
+    GHOST_SPELLINGS = (
+        "/ghost/api/admin/members/upload/",
+        "/ghost/api/admin/members/upload",
+        "/ghost/api/v4/admin/members/upload/",
+        "/ghost/api/v4/admin/members/upload",
+        "/ghost/api/canary/admin/members/upload/",
+        "/ghost/api/canary/admin/members/upload",
+        "/ghost/api/v2/admin/members/upload/",
+        "/ghost/api/v3/admin/members/upload",
+        "/ghost/api/Admin/Members/Upload",
+    )
+    NOT_THE_IMPORT = (
+        "/ghost/api/admin/members/",
+        "/ghost/api/admin/members/upload/x",
+        "/ghost/api/admin/members/uploads/",
+        "/ghost/api/admin/posts/",
+        "/members/upload/",
+    )
+
+    def test_post_is_refused_by_both_matchers(self):
         text = block()
-        self.assertIn("method POST", text)
-        self.assertIn("path /ghost/api/admin/members/upload/", text)
-        self.assertIn("respond @membersImport 403", text)
+        self.assertEqual(text.count("method POST"), 2)
+        self.assertIn("respond @membersImportByPath 403", text)
+        self.assertIn("respond @membersImportByPattern 403", text)
+
+    def test_the_pattern_matches_every_ghost_spelling(self):
+        pattern = re.compile(rds.MEMBERS_UPLOAD_PATH_REGEXP)
+        for path in self.GHOST_SPELLINGS:
+            with self.subTest(path=path):
+                self.assertIsNotNone(pattern.match(path))
+
+    def test_the_pattern_leaves_other_paths_alone(self):
+        pattern = re.compile(rds.MEMBERS_UPLOAD_PATH_REGEXP)
+        for path in self.NOT_THE_IMPORT:
+            with self.subTest(path=path):
+                self.assertIsNone(pattern.match(path))
+
+    def test_the_globs_cover_with_and_without_slash_and_any_version(self):
+        globs = rds.MEMBERS_UPLOAD_PATH_GLOBS
+        self.assertIn("/ghost/api/admin/members/upload", globs)
+        self.assertIn("/ghost/api/admin/members/upload/", globs)
+        self.assertIn("/ghost/api/*/admin/members/upload", globs)
+        self.assertIn("/ghost/api/*/admin/members/upload/", globs)
+        text = block()
+        for glob in globs:
+            self.assertIn(glob, text)
+
+    def test_the_narrow_literal_alone_is_not_enough(self):
+        # The original matcher; the review showed four spellings pass it.
+        self.assertGreater(len(rds.MEMBERS_UPLOAD_PATH_GLOBS), 1)
 
     def test_get_is_not_matched(self):
         text = block()
         self.assertNotIn("method GET", text)
-        matcher = text.split("@membersImport {", 1)[1].split("}", 1)[0]
-        self.assertEqual(matcher.split(), ["method", "POST", "path", "/ghost/api/admin/members/upload/"])
+        self.assertNotIn("method HEAD", text)
 
 
 class HeaderTests(unittest.TestCase):

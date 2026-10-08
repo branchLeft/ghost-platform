@@ -1,9 +1,19 @@
 // One request through the edge: node probe.mjs <host> <method> <path> [cookie|-] [form-body]
 // Prints the status line, then the response headers as JSON, then the body.
+import { readFileSync } from 'node:fs';
 import { request } from 'node:https';
 
 const [host, method, path, cookieArg, formBody] = process.argv.slice(2);
 const cookie = cookieArg === '-' ? undefined : cookieArg;
+
+// The edge's own local root, copied out of Caddy by the caller. Verification
+// is never switched off: with no CA given there is nothing to trust, so stop.
+const caFile = process.env.PROBE_CA_FILE;
+if (!caFile) {
+  console.error('PROBE_CA_FILE is required: the proof trusts the local CA explicitly');
+  process.exit(2);
+}
+const ca = readFileSync(caFile);
 const req = request(
   {
     host: '127.0.0.1',
@@ -11,7 +21,7 @@ const req = request(
     servername: host,
     method,
     path,
-    rejectUnauthorized: false, // the edge's own local CA; the proof is of routing, not of trust
+    ca,
     headers: {
       host,
       ...(cookie ? { cookie } : {}),

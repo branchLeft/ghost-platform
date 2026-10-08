@@ -84,3 +84,13 @@ jobs:
             echo "::error::the every-path-gated probe stayed green with /ghost/* exempted"
             exit 1
           fi
+
+      # And the narrow members-import matcher the first review broke: one
+      # literal path. Ghost also routes the no-slash and versioned spellings
+      # to the import handler, so the proof must go red.
+      - name: Sabotage - narrow the members-import matcher, proof must go red
+        run: |
+          if DEMO_EDGE_PROOF_SABOTAGE=narrow-import ./scripts/test-demo-edge.sh demo-gate:ci; then
+            echo "::error::the members-import probes stayed green with only the literal path refused"
+            exit 1
+          fi

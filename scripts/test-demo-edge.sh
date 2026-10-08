@@ -40,8 +40,8 @@ expect() {
 }
 # probe <method> <path> [cookie|-] [form-body] -> status, headers JSON, body (3 lines)
 probe() {
-    docker run --rm --network "container:$SIM" -v "$PROOF:/proof:ro" "$NODE_IMAGE" \
-        node /proof/probe.mjs "$HOST" "$@"
+    docker run --rm --network "container:$SIM" -v "$PROOF:/proof:ro" -v "$WORK/root.crt:/ca/root.crt:ro" \
+        -e PROBE_CA_FILE=/ca/root.crt "$NODE_IMAGE" node /proof/probe.mjs "$HOST" "$@"
 }
 status() { probe "$@" | sed -n 1p; }
 body() { probe "$@" | sed -n '3,$p'; }
@@ -75,6 +75,13 @@ sed "s/demo-host.example.test/$HOST/; s/k7m-vale-bright.demo-domain.example.test
 python3 "$HERE/demo-host/provision/render_demo_site.py" --slot 0 --edge-json "$WORK/edge.json" \
     | sed 's/^\tadmin off$/\tadmin off\n\tlocal_certs\n\tskip_install_trust\n\tauto_https disable_redirects/' \
     > "$WORK/Caddyfile"
+if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "narrow-import" ]; then
+    # Sabotage: restore the narrow matcher the review broke (one literal path).
+    sed 's|^\t\t\t\tpath .*$|\t\t\t\tpath /ghost/api/admin/members/upload/|; s|^\t\t\t\tpath_regexp .*$|\t\t\t\tpath /ghost/api/admin/members/upload/|' \
+        "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
+    echo "  SABOTAGE: members-import matcher narrowed to one literal path"
+fi
 if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "exempt-ghost" ]; then
     # Sabotage: exempt /ghost/* from forward_auth. The "every path is gated"
     # probes must go red (see test-demo-edge.md).
@@ -98,6 +105,12 @@ docker run -d --name "$GATE" --network "container:$SIM" \
 docker run -d --name "$CADDY" --network "container:$SIM" \
     -v "$WORK/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null
 
+# Trust Caddy's local root explicitly; certificate checks are never disabled.
+for _ in $(seq 1 30); do
+    if docker cp "$CADDY:/data/caddy/pki/authorities/local/root.crt" "$WORK/root.crt" 2>/dev/null; then break; fi
+    sleep 1
+done
+[ -s "$WORK/root.crt" ] || { echo "no local CA root from Caddy"; exit 1; }
 for _ in $(seq 1 30); do
     if [ "$(status GET /)" = "401" ]; then break; fi
     sleep 1
@@ -132,6 +145,19 @@ case "$CSP" in "default-src 'self'"*) pass "content policy header present (repor
 echo "--- 4. the members import is refused; the export is not ---"
 expect "POST /ghost/api/admin/members/upload/ with the cookie" 403 \
     "$(status POST /ghost/api/admin/members/upload/ "$COOKIE")"
+# Every spelling Ghost 6.55.0 routes to the import handler (legacy version
+# prefixes v2|v3|v4|canary are stripped; express ignores the trailing slash),
+# plus spellings Caddy must normalise.
+for path in /ghost/api/admin/members/upload /ghost/api/v4/admin/members/upload/ \
+    /ghost/api/canary/admin/members/upload/ /ghost/api/v4/admin/members/upload \
+    /ghost/api/v2/admin/members/upload/ /ghost/api/v3/admin/members/upload \
+    /ghost/api/canary/admin/members/upload "/ghost/api/admin/members/upload/?a=1" \
+    /ghost/api/ADMIN/MEMBERS/Upload/ /ghost/api/admin/members/%75pload/ \
+    /ghost/api/admin/members/./upload/ /ghost/api/admin/members/upload//; do
+    expect "POST $path with the cookie" 403 "$(status POST "$path" "$COOKIE")"
+done
+expect "GET /ghost/api/v4/admin/members/upload/ with the cookie (the export, left open)" 200 \
+    "$(status GET /ghost/api/v4/admin/members/upload/ "$COOKIE")"
 expect "GET /ghost/api/admin/members/upload/ with the cookie" 200 \
     "$(status GET /ghost/api/admin/members/upload/ "$COOKIE")"
 expect "POST to another admin path with the cookie is not refused by the edge" 200 \

@@ -27,7 +27,26 @@ GATE_LOGIN_PATH = "/__gate/login"
 
 # HLD F1: the members import is refused at the edge; the GET (the export)
 # is the prospect's and stays open behind the gate.
+#
+# The refusal follows what Ghost resolves, not one literal path. Ghost 6.55.0
+# (services/api-version-compatibility) accepts `/ghost/api/<version>/admin/...`
+# for version v2|v3|v4|canary and strips it; express does not require the
+# trailing slash. So every one of these reaches the import handler:
+#   /ghost/api/admin/members/upload[/]
+#   /ghost/api/{v2,v3,v4,canary}/admin/members/upload[/]
+# The version list is Ghost's and can grow, so any `v<digits>` or `canary`
+# prefix is refused, and the two matchers below overlap on purpose.
 MEMBERS_UPLOAD_PATH = "/ghost/api/admin/members/upload/"
+# Caddy's `path` matcher cleans and unescapes, and is case-insensitive; a `*`
+# spans any segment(s), so an unknown version prefix is still caught (it only
+# ever over-refuses a POST, which is the safe direction).
+MEMBERS_UPLOAD_PATH_GLOBS = (
+    "/ghost/api/admin/members/upload",
+    "/ghost/api/admin/members/upload/",
+    "/ghost/api/*/admin/members/upload",
+    "/ghost/api/*/admin/members/upload/",
+)
+MEMBERS_UPLOAD_PATH_REGEXP = r"(?i)^/ghost/api/(?:(?:v[0-9]+|canary)/)?admin/members/upload/?$"
 
 NOINDEX = "noindex, nofollow"
 
@@ -97,20 +116,22 @@ def render_site_block(slot: str, edge: Mapping[str, Any], tls: str = "tls intern
         f"\t\t\tforward_auth {GATE_UPSTREAM} {{",
         f"\t\t\t\turi {GATE_VERIFY_URI}",
         "\t\t\t}",
-        f"\t\t\t@membersImport method POST",
-        f"\t\t\trespond @membersImport 403",
+        "\t\t\t@membersImportByPath {",
+        "\t\t\t\tmethod POST",
+        f"\t\t\t\tpath {' '.join(MEMBERS_UPLOAD_PATH_GLOBS)}",
+        "\t\t\t}",
+        "\t\t\t@membersImportByPattern {",
+        "\t\t\t\tmethod POST",
+        f"\t\t\t\tpath_regexp {MEMBERS_UPLOAD_PATH_REGEXP}",
+        "\t\t\t}",
+        "\t\t\trespond @membersImportByPath 403",
+        "\t\t\trespond @membersImportByPattern 403",
         f"\t\t\timport {rde.snippet_name(slot)}",
         "\t\t}",
         "\t}",
         "}",
     ]
-    # The path matcher belongs on the same named matcher; build it explicitly.
-    text = "\n".join(lines)
-    text = text.replace(
-        "\t\t\t@membersImport method POST\n",
-        f"\t\t\t@membersImport {{\n\t\t\t\tmethod POST\n\t\t\t\tpath {MEMBERS_UPLOAD_PATH}\n\t\t\t}}\n",
-    )
-    return text + "\n"
+    return "\n".join(lines) + "\n"
 
 
 def render_caddyfile(sites: Sequence[tuple[str, Mapping[str, Any]]], tls: str = "tls internal") -> str:
