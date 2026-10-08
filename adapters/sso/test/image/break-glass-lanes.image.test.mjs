@@ -12,7 +12,6 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { keygen } from '../../scripts/break-glass-mint.mjs';
 import {
   defaultDeps,
   expire,
@@ -60,10 +59,25 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-lanes-'));
 const keyDirs = { a: path.join(work, 'key-a'), b: path.join(work, 'key-b') };
 const auditDir = path.join(work, 'audit');
 for (const d of [...Object.values(keyDirs), auditDir]) fs.mkdirSync(d, { mode: 0o700 });
-const publicKeys = {
-  a: keygen({ keyFile: path.join(keyDirs.a, 'signing-key.pem') }).publicKey,
-  b: keygen({ keyFile: path.join(keyDirs.b, 'signing-key.pem') }).publicKey,
-};
+/** Creates the key as ops1 does (runbook A step 4): the minter's own keygen, as root, in the pinned image. */
+function containerKeygen(keyDir) {
+  const out = docker(
+    'run',
+    '--rm',
+    '--network',
+    'none',
+    '-v',
+    `${keyDir}:/etc/branchleft/break-glass`,
+    '-v',
+    `${SCRIPTS}:/usr/local/lib/branchleft/break-glass:ro`,
+    NODE_IMAGE,
+    'node',
+    '/usr/local/lib/branchleft/break-glass/break-glass-mint.mjs',
+    'keygen'
+  );
+  return /^public key (\S+)$/m.exec(out)[1];
+}
+const publicKeys = { a: containerKeygen(keyDirs.a), b: containerKeygen(keyDirs.b) };
 const volume = `${TENANT}-content`;
 
 /** Runs the real minter CLI exactly as ops1 does: pinned Node, no network, key read-only. */
