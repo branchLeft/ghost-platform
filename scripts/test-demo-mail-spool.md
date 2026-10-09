@@ -19,21 +19,28 @@ Asserted, each from inside a container rather than from the Compose file:
 - a slot's Ghost network, being `internal`, gives the Ghost no route off the host
 - Ghost's SMTP path and its Mailgun-shaped path are each accepted, and the
   queue's `mailgun_shim_undrained_recipients` reads 2
-- the two queued messages are the two that were sent: each subject carries a
-  marker unique to the run, and the spool's own database (read from inside its
-  container) holds exactly those two subjects, so a dropped message replaced by
-  another cannot keep the count at 2
+- the two messages drained are the two that were sent: each subject carries a
+  marker unique to the run, `drainack.js` prints every subject it is handed
+  before acking it, and that set must equal the two sent subjects, so a dropped
+  message replaced by another cannot keep the count at 2
 - with the spool stopped, both paths raise an error in under 3 seconds; with it
   frozen (`docker pause`, sockets still held) both paths raise only when the
   client's own timeout fires. In neither case does a message appear or vanish
   from the queue
-- the probe mail is then drained and acked from inside the spool's container
-  (`drainack.js`, the same block the delivery runbook runs), and the queue reads 0
+- the drain and ack run inside the spool's container (`drainack.js`, the same
+  block the delivery runbook runs), and the queue then reads 0
 - the drain port is published on `127.0.0.1` only, and refuses a caller with no
   token
 - after `docker restart` of the whole stand-in (dockerd included, the policy
   re-run as the boot unit does), the spool is healthy, still holds both
   messages, and still cannot reach the outside
+
+## Running it
+
+`./scripts/test-demo-mail-spool.sh` must exit 0. It needs `npm ci && npm run
+build` in `render-core` first, and creates only containers and a network under
+one prefix. `SABOTAGE=open-route`, `SABOTAGE=no-spool` and
+`SABOTAGE=wrong-message` each must exit 1.
 
 ## Sabotage
 

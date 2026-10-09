@@ -1,8 +1,10 @@
 // Run inside the spool's container: `node - COUNT < drainack.js`. Drains the
 // spool with its own token (read from its environment, never printed) and
 // acks what it is handed, so the messages leave the queue without being
-// delivered anywhere. Exits 0 only once COUNT messages have been acked. The
-// spool's throttle hands over one message at a time at first, so this loops.
+// delivered anywhere. Prints each subject as `drained:` before acking it, so
+// a caller can check what was handed over. Exits 0 only once COUNT messages
+// have been acked. The spool's throttle hands over one message at a time at
+// first, so this loops.
 const want = Number(process.argv[2]);
 const base = 'http://127.0.0.1:8080';
 const auth = { Authorization: `Bearer ${process.env.SHIM_DRAIN_TOKEN}` };
@@ -12,6 +14,7 @@ async function main() {
   for (let poll = 0; poll < 8 && acked < want; poll += 1) {
     const { messages } = await (await fetch(`${base}/drain`, { headers: auth })).json();
     if (messages.length === 0) continue;
+    for (const m of messages) console.log(`drained: ${m.subject}`);
     const res = await fetch(`${base}/drain/ack`, {
       method: 'POST',
       headers: { ...auth, 'Content-Type': 'application/json' },

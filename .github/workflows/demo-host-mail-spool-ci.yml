@@ -91,4 +91,4 @@ jobs:
             "FAIL: the queue holds"
           sabotage wrong-message \
             "PASS: the queue holds both messages" \
-            "FAIL: the queue holds ["
+            "FAIL: the drained messages are ["

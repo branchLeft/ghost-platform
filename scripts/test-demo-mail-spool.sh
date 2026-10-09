@@ -1,15 +1,7 @@
 #!/bin/sh
-# Proves the demo host's one mail spool against a real dockerd inside a
-# privileged Docker-in-Docker stand-in for demo1; see scripts/test-demo-mail-spool.md.
-# The spool is rendered by render-core, installed the way the delivery runbook
-# installs it, and sits behind the real demo egress policy.
-#
-# Usage:  ./scripts/test-demo-mail-spool.sh            (must exit 0)
-#         SABOTAGE=open-route ./scripts/test-demo-mail-spool.sh     (must exit 1)
-#         SABOTAGE=no-spool ./scripts/test-demo-mail-spool.sh       (must exit 1)
-#         SABOTAGE=wrong-message ./scripts/test-demo-mail-spool.sh  (must exit 1)
-# Needs `npm ci && npm run build` in render-core first. Creates only
-# containers and a network under one prefix.
+# Proves the demo host's one mail spool in a Docker-in-Docker stand-in for demo1.
+# What it asserts, the SABOTAGE modes and the limits: scripts/test-demo-mail-spool.md.
+# Usage: ./scripts/test-demo-mail-spool.sh   (must exit 0)
 set -eu
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -95,10 +87,6 @@ undrained() {
         sed -n 's/^mailgun_shim_undrained_recipients //p'
 }
 queued() { n="$(undrained)"; echo "${n:-unreadable}"; }
-
-# The subject of every message the spool is holding, sorted, read from the
-# spool's own database from inside its container.
-queued_subjects() { on_host "docker exec -i $SPOOL_C node - < /work/queuesubjects.js"; }
 
 # A one-shot Ghost stand-in on a slot's own mail network.
 on_slot_network() {
@@ -246,20 +234,18 @@ on_host "docker unpause $SPOOL_C" >/dev/null
 wait_spool_healthy
 if [ "$(queued)" = 2 ]; then pass "after down and hung, the queue still holds exactly the two messages"; else fail "after down and hung the queue holds $(queued) messages, not 2"; fi
 
-echo "== the queue holds the two messages that were sent, and no others"
-WANT="$(printf 'magic link %s\nnewsletter %s\n' "$SMTP_MARK" "$HTTP_MARK")"
-GOT="$(queued_subjects || true)"
+echo "== the probe mail is drained and acked the way the delivery runbook does it; what is drained is what was sent"
+DRAIN_RC=0
+DRAIN_OUT="$(on_host "docker exec -i $SPOOL_C node - 2 < /work/drainack.js" 2>&1)" || DRAIN_RC=$?
+# drainack.js prints each subject as it is drained, before it acks that message.
+GOT="$(echo "$DRAIN_OUT" | sed -n 's/^drained: //p' | sort)"
+WANT="$(printf 'magic link %s\nnewsletter %s\n' "$SMTP_MARK" "$HTTP_MARK" | sort)"
 if [ "$GOT" = "$WANT" ]; then
-    pass "the queue's two messages are the SMTP and bulk messages that were sent"
+    pass "the two drained messages are the SMTP and bulk messages that were sent"
 else
-    fail "the queue holds [$(echo "$GOT" | tr '\n' ',')] but the sends were [$(echo "$WANT" | tr '\n' ',')]"
+    fail "the drained messages are [$(echo "$GOT" | tr '\n' ',')] but the sends were [$(echo "$WANT" | tr '\n' ',')]"
 fi
-echo "== the probe mail is cleared the way the delivery runbook clears it (drain and ack inside the spool's container)"
-if on_host "docker exec -i $SPOOL_C node - 2 < /work/drainack.js" >/dev/null 2>&1; then
-    pass "draining and acking hands over both probe messages"
-else
-    fail "draining and acking did not clear both probe messages"
-fi
+if [ "$DRAIN_RC" -eq 0 ]; then pass "draining and acking handed over both probe messages"; else fail "draining and acking did not clear both probe messages"; fi
 if [ "$(queued)" = 0 ]; then pass "the queue then reads 0"; else fail "after the ack the queue holds $(queued) messages, not 0"; fi
 
 finish
