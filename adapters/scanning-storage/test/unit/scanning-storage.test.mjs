@@ -277,7 +277,10 @@ describe('replacing a same-name thumbnail (Ghost deletes, then saves)', () => {
 
     await adapter.save(await writeTempFile(Buffer.from('another'), 'thumb.png'), 'dir');
 
-    expect([...adapter.wrapped.files.keys()].sort()).toEqual(['dir/thumb-1.png', 'dir/thumb.png']);
+    const keys = [...adapter.wrapped.files.keys()].sort();
+    expect(keys).toHaveLength(2);
+    expect(keys).toContain('dir/thumb.png');
+    expect(keys.find((k) => k !== 'dir/thumb.png')).toMatch(/^dir\/thumb-[a-z2-7]{22}\.png$/);
   });
 
   it('only overwrites the name that was deleted', async () => {
@@ -350,7 +353,7 @@ describe('a clean upload', () => {
     const { instance: adapter } = buildAdapter();
     const file = await writeTempFile(CLEAN_BYTES, 'good.png');
     const url = await adapter.save(file);
-    expect(url).toContain('good.png');
+    expect(url).toMatch(/good-[a-z2-7]{22}\.png$/);
     expect(adapter.wrapped.saved).toHaveLength(1);
   });
 
@@ -367,10 +370,81 @@ describe('a clean upload', () => {
     const original = await writeTempFile(CLEAN_BYTES, 'good_o.png');
     await adapter.save(processed);
     await adapter.save(original);
-    expect(adapter.wrapped.saved.map((entry) => entry.file.name)).toEqual([
-      'good.png',
-      'good_o.png',
-    ]);
+    const [first, second] = adapter.wrapped.saved.map((entry) => entry.file.name);
+    const random = /^good-([a-z2-7]{22})\.png$/.exec(first)?.[1];
+    expect(random).toBeDefined();
+    // Ghost finds the original by the `_o` suffix on the processed name.
+    expect(second).toBe(`good-${random}_o.png`);
+  });
+});
+
+describe('random upload names', () => {
+  const nameOf = (adapter, i) => adapter.wrapped.saved[i].file.name;
+
+  it('gives every new upload a 22-character base32 component and keeps the extension', async () => {
+    const { instance: adapter } = buildAdapter();
+    await adapter.save(await writeTempFile(CLEAN_BYTES, 'members-report.pdf'), '2026/10');
+    expect(nameOf(adapter, 0)).toMatch(/^members-report-[a-z2-7]{22}\.pdf$/);
+  });
+
+  it('never repeats a component across uploads of the same filename', async () => {
+    const { instance: adapter } = buildAdapter();
+    await adapter.save(await writeTempFile(CLEAN_BYTES, 'same.png'), '2026/10');
+    await adapter.save(await writeTempFile(CLEAN_BYTES, 'same.png'), '2026/11');
+    expect(nameOf(adapter, 0)).not.toBe(nameOf(adapter, 1));
+  });
+
+  it('names a file with no extension', async () => {
+    const { instance: adapter } = buildAdapter();
+    await adapter.save(await writeTempFile(CLEAN_BYTES, 'noext'), '2026/10');
+    expect(nameOf(adapter, 0)).toMatch(/^noext-[a-z2-7]{22}$/);
+  });
+
+  it('does not mutate the file object Ghost passed in', async () => {
+    const { instance: adapter } = buildAdapter();
+    const file = await writeTempFile(CLEAN_BYTES, 'keep.png');
+    await adapter.save(file, '2026/10');
+    expect(file.name).toBe('keep.png');
+  });
+
+  it('does not pair an _o file with an unrelated image in another directory', async () => {
+    const { instance: adapter } = buildAdapter();
+    await adapter.save(await writeTempFile(CLEAN_BYTES, 'a.png'), '2026/10');
+    await adapter.save(await writeTempFile(CLEAN_BYTES, 'a_o.png'), '2026/11');
+    const random = (i) => /-([a-z2-7]{22})/.exec(nameOf(adapter, i))[1];
+    expect(random(0)).not.toBe(random(1));
+  });
+
+  it('leaves a file with no usable name to the wrapped adapter unchanged', async () => {
+    const { instance: adapter } = buildAdapter();
+    const file = await writeTempFile(CLEAN_BYTES, 'x.png');
+    file.name = '';
+    await adapter.save(file, '2026/10');
+    expect(nameOf(adapter, 0)).toBe('');
+  });
+
+  it('keeps saveRaw paths exactly as given', async () => {
+    const { instance: adapter } = buildAdapter();
+    await adapter.saveRaw(CLEAN_BYTES, '2026/10/resized-w600.png');
+    expect(adapter.wrapped.savedRaw[0].targetPath).toBe('2026/10/resized-w600.png');
+  });
+
+  it('forgets a pairing after the window, and prunes beyond the bound', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance: adapter } = buildAdapter();
+      await adapter.save(await writeTempFile(CLEAN_BYTES, 'p.png'), 'd');
+      vi.advanceTimersByTime(61000);
+      await adapter.save(await writeTempFile(CLEAN_BYTES, 'p_o.png'), 'd');
+      const random = (i) => /-([a-z2-7]{22})/.exec(nameOf(adapter, i))[1];
+      expect(random(0)).not.toBe(random(1));
+      for (let i = 0; i < 1005; i += 1) {
+        await adapter.save(await writeTempFile(CLEAN_BYTES, `bulk${i}.png`), 'd');
+      }
+      expect(adapter.namePairs.size).toBeLessThanOrEqual(1000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

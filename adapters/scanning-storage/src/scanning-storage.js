@@ -1,12 +1,63 @@
 'use strict';
 
 const path = require('node:path');
+const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 
 const { readRefusal, sealRefusal } = require('./quarantine');
 const { buildRefusalError } = require('./refusal-error');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const { HoldRegistry, evaluate } = require('./hold');
+
+// Lower-case base32 (a-z, 2-7): 22 symbols carry 110 bits, so a new upload's
+// URL cannot be guessed from a neighbouring public one.
+const NAME_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+const NAME_RANDOM_CHARS = 22;
+
+function randomNameComponent() {
+  const bytes = crypto.randomBytes(NAME_RANDOM_CHARS);
+  let out = '';
+  for (const byte of bytes) {
+    out += NAME_ALPHABET[byte & 31];
+  }
+  return out;
+}
+
+// Ghost saves an image and its untouched original (`name_o.ext`) as two
+// separate calls and later finds the original by that suffix, so the pair
+// must share one random component: it is remembered per directory and base
+// name for a short, bounded while.
+const PAIR_WINDOW_MS = 60000;
+const PAIR_MAX_ENTRIES = 1000;
+const ORIGINAL_SUFFIX = '_o';
+
+// `<stem>-<random>.<ext>`; a file with no usable name is left alone for the
+// wrapped adapter to reject or default as it always did.
+function withRandomName(file, targetDir, pairs, now = Date.now()) {
+  if (!file || typeof file.name !== 'string' || file.name.length === 0) {
+    return file;
+  }
+  const ext = path.extname(file.name);
+  const stem = ext ? file.name.slice(0, -ext.length) : file.name;
+  const isOriginal = stem.endsWith(ORIGINAL_SUFFIX) && stem.length > ORIGINAL_SUFFIX.length;
+  const base = isOriginal ? stem.slice(0, -ORIGINAL_SUFFIX.length) : stem;
+  const pairKey = `${targetDir || ''}\n${base}${ext}`;
+  for (const [key, entry] of pairs) {
+    if (entry.expiresAt <= now) {
+      pairs.delete(key);
+    }
+  }
+  let random = pairs.get(pairKey)?.random;
+  if (random === undefined) {
+    random = randomNameComponent();
+    if (pairs.size >= PAIR_MAX_ENTRIES) {
+      pairs.delete(pairs.keys().next().value);
+    }
+    pairs.set(pairKey, { random, expiresAt: now + PAIR_WINDOW_MS });
+  }
+  const suffix = isOriginal ? ORIGINAL_SUFFIX : '';
+  return { ...file, name: `${base}-${random}${suffix}${ext}` };
+}
 
 // Builds the decorator over an injected StorageBase, composing with the
 // wrapped adapter rather than subclassing one: README traps 3 and 4 say why.
@@ -69,6 +120,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.overwriteWindowMs =
         Number(config.overwriteWindowMs) > 0 ? Number(config.overwriteWindowMs) : 60000;
       this.pendingOverwrites = new Map();
+      this.namePairs = new Map();
 
       this.hold = new HoldRegistry({
         checks: this.checks,
@@ -119,10 +171,13 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           onHold: (digest) => this.#registerHold(digest, buffer, targetPath),
         });
       }
+      // Ghost names an upload after its own filename, so members-only and
+      // draft media would otherwise sit at a guessable URL.
+      const named = withRandomName(file, targetDir, this.namePairs);
       return this.#scanAndProceed(buffer, {
-        proceed: () => this.wrapped.save(file, targetDir),
+        proceed: () => this.wrapped.save(named, targetDir),
         onHold: (digest) =>
-          this.#registerHold(digest, buffer, this.#computeHeldTargetPath(digest, file, targetDir)),
+          this.#registerHold(digest, buffer, this.#computeHeldTargetPath(digest, named, targetDir)),
       });
     }
 
