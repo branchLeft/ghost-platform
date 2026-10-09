@@ -89,7 +89,7 @@ jobs:
       HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN_ESTATE }}
       AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
-      AWS_REGION: hel1
+      AWS_REGION: fsn1
 
     steps:
       - name: Checkout
@@ -183,7 +183,7 @@ jobs:
       HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN_ESTATE }}
       AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_ACCESS_KEY }}
-      AWS_REGION: hel1
+      AWS_REGION: fsn1
 
     steps:
       - name: Refuse to apply through an ungated environment
