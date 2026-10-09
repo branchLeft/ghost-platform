@@ -132,9 +132,19 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
     one bucket-wide rule and never two rules whose prefixes could both match
     the same key."""
 
-    def test_four_rules_are_present(self):
+    def test_five_rules_are_present(self):
         doc = cbb.lifecycle_document(35, 1).decode()
-        self.assertEqual(doc.count("<Rule>"), 4)
+        self.assertEqual(doc.count("<Rule>"), 5)
+
+    def test_state_rule_is_scoped_and_both_figures_are_parameters(self):
+        doc = cbb.lifecycle_document(35, 1, 10, 28, 46, 3).decode()
+        rule = doc.split("<Filter><Prefix>state/</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
+        self.assertIn("<NoncurrentDays>3</NoncurrentDays>", rule)
+        self.assertIn("<Expiration><Days>46</Days></Expiration>", rule)
+        zero = cbb.lifecycle_document(35, 1, 10, 28, 0).decode()
+        self.assertNotIn("<Days>", zero.split("<Filter><Prefix>state/</Prefix></Filter>", 1)[1])
+        with self.assertRaises(ValueError):
+            cbb.lifecycle_document(35, 1, 10, 28, -1)
 
     def test_each_rule_is_scoped_to_its_own_prefix(self):
         doc = cbb.lifecycle_document(35, 1).decode()
@@ -150,7 +160,7 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
         # fence-probe/ each carry an independent <NoncurrentDays>1</...>,
         # sharing the same value -- two occurrences.
         self.assertEqual(doc.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
-        self.assertEqual(doc.count("<NoncurrentDays>1</NoncurrentDays>"), 2)
+        self.assertEqual(doc.count("<NoncurrentDays>1</NoncurrentDays>"), 3)
 
     def test_no_rule_carries_expired_object_delete_marker(self):
         # A Days expiry cannot share a lifecycle element with
@@ -219,7 +229,7 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
         )
         self.assertEqual(
             doc.count(f"<NoncurrentDays>{cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"),
-            2,  # media/ and fence-probe/ share this value -- two rules
+            3,  # media/, fence-probe/ and state/ share this value
         )
 
     def test_configure_backup_bucket_threads_media_noncurrent_days_through(self):
@@ -292,13 +302,13 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
 
     def test_media_and_fence_probe_carry_no_day_based_expiry_unless_media_is_given_one(self):
         doc = cbb.lifecycle_document(35, 1, 10, 0).decode()
-        self.assertEqual(doc.count("<Days>"), 2)
+        self.assertEqual(doc.count("<Days>"), 3)
         for prefix in ("media/", "fence-probe/"):
             self.assertNotIn("<Days>", self._rule(doc, prefix))
 
     def test_media_expiry_lands_on_the_media_rule_only(self):
         doc = cbb.lifecycle_document(35, 1, 10, 14).decode()
-        self.assertEqual(doc.count("<Days>"), 3)
+        self.assertEqual(doc.count("<Days>"), 4)
         self.assertIn("<Expiration><Days>14</Days></Expiration>", self._rule(doc, "media/"))
         self.assertNotIn("<Days>", self._rule(doc, "fence-probe/"))
         for prefix in ("dumps/", "binlogs/"):
@@ -347,7 +357,7 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
         )
 
     def test_zero_omits_the_expiry_and_negative_is_refused(self):
-        self.assertNotIn(b"<Days>", cbb.lifecycle_document(35, 1, 0, 0))
+        self.assertNotIn(b"<Days>", cbb.lifecycle_document(35, 1, 0, 0, 0))
         with self.assertRaises(ValueError):
             cbb.lifecycle_document(35, 1, -1)
 

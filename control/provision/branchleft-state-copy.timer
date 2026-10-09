@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly trigger for branchleft-state-copy.service
+
+[Timer]
+# After the dump worker's 01:40 run has had time to finish.
+OnCalendar=*-*-* 03:40:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
