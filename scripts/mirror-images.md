@@ -2,7 +2,7 @@
 
 ## What it does
 
-Docker Hub rate-limits anonymous pulls per runner address, so CI and the hosts
+Docker Hub rate-limits anonymous pulls per runner address, so this repo's CI
 must not pull third-party images from it. This script copies each image in
 `.github/image-mirror/images.json` to `ghcr.io/branchleft/mirror/<name>` by
 digest and proves the copy.
@@ -41,3 +41,21 @@ developer machine is not part of the design.
 `crane`: the copy-then-verify order, the idempotent skip, a tag pointing at
 another digest, a read-back mismatch, a missing mirror, retry and give-up, and
 the list's validation.
+
+## Visibility
+
+The mirror packages stay **private**, GitHub's default. The reason is Docker's
+Terms of Use (https://www.docker.com/legal/docker-terms-service/, effective
+2026-08-26), which say users "may redistribute Docker Images made available in
+Docker Hub at no cost, to third parties but solely when bundled with or
+incorporated into its own software products, and not on a standalone basis",
+and that other parties' images are "Third-Party Content subject to their
+corresponding terms and conditions". A public package of unmodified Docker Hub
+images is standalone redistribution, so the copy is kept private and used only
+by this repository's own workflows.
+
+The consumers are this repository's workflows, pulling with `GITHUB_TOKEN`
+(`packages: read`) after a `docker login ghcr.io`. Hosts are not consumers:
+host stacks keep their Docker Hub references until the owner decides how a host
+would hold a pull credential. The upstream licences recorded in `images.json`
+are checked for this private CI copy only.

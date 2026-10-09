@@ -61,7 +61,7 @@
       "digest": "sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
       "upstreamTags": ["26.5.0-bookworm-slim"],
       "hostPins": [
-        "ops1 break-glass minter (host pin, re-pinned by the owner after the mirror exists)"
+        "ops1 break-glass minter pin (same digest; host pulls stay on Docker Hub, not mirrored for hosts, see follow-up)"
       ],
       "licence": "MIT (plus bundled third-party notices)",
       "redistribution": "permitted",

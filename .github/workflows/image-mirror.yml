@@ -3,8 +3,9 @@ name: Image mirror
 # Copies every third-party image in .github/image-mirror/images.json to
 # ghcr.io/branchleft/mirror/<name> by digest, then reads each back and checks
 # the manifest bytes hash to the listed digest. Docker Hub rate-limits
-# anonymous pulls per runner address, so CI and the hosts pull the mirror
-# instead and this is the only job that touches the upstream registries.
+# anonymous pulls per runner address, so this repo's own workflows pull the
+# mirror instead; this is the only job that touches the upstream registries.
+# The packages stay private (see scripts/mirror-images.md#visibility).
 #
 # Authority: the run's own GITHUB_TOKEN with `packages: write`. No Docker Hub
 # login and no stored secret. Idempotent: an entry whose mirror tag already
