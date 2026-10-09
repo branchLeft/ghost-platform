@@ -5,6 +5,7 @@
 // the double purge and the records this writes.
 
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ActiveExistingRowError, provisionSupportAccount } from './provision-support-account.mjs';
@@ -260,7 +261,7 @@ function readGrant(deps, tenant) {
   try {
     text = fs.readFileSync(statePath(deps, tenant), 'utf8');
   } catch (error) {
-    if (error.code === 'ENOENT') return null;
+    if (error.code === 'ENOENT' && !entryExists(statePath(deps, tenant))) return null;
     throw new StateUnreadableError(tenant, error.code ?? error.message);
   }
   let state;
@@ -280,11 +281,78 @@ function readGrant(deps, tenant) {
   return state;
 }
 
+/** True for any directory entry, including a symlink whose target is missing. */
+function entryExists(file) {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Names one grant: inode plus raw content (which carries the grant id), or
+ * null when there is no entry. An unreadable entry is named by its inode.
+ */
+export function stateFingerprint(deps, tenant) {
+  return fingerprintFile(statePath(deps, tenant));
+}
+
+function fingerprintFile(file) {
+  let inode;
+  try {
+    inode = fs.lstatSync(file).ino;
+  } catch {
+    return null;
+  }
+  let text = 'unreadable';
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    // named by the inode alone
+  }
+  return `${inode}:${text}`;
+}
+
+/**
+ * Removes the state only if it is still the grant that was read. The entry is
+ * first renamed to a private name, which is atomic, so what is compared is
+ * exactly what is removed; a different grant is linked back and left alone.
+ * No lock is taken, so a stuck process can never stop a later close.
+ */
+export function removeStateIfSame(deps, tenant, fingerprint, log = deps.log) {
+  if (fingerprint === null) return false;
+  const file = statePath(deps, tenant);
+  const claim = path.join(
+    deps.stateDir,
+    `.${tenant}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.claim`
+  );
+  try {
+    fs.renameSync(file, claim);
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+  const same = fingerprintFile(claim) === fingerprint;
+  if (!same) {
+    try {
+      fs.linkSync(claim, file);
+    } catch (error) {
+      log(`could not restore the newer grant state for ${tenant}: ${error.code ?? error.message}`);
+    }
+  }
+  fs.rmSync(claim, { force: true, recursive: true });
+  return same;
+}
+
 /** Written to a temporary name, then linked into place: never half-written, never overwritten. */
 function writeGrant(deps, tenant, state) {
   fs.mkdirSync(deps.stateDir, { recursive: true, mode: 0o700 });
-  const temporary = path.join(deps.stateDir, `.${tenant}.${process.pid}.tmp`);
-  fs.writeFileSync(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+  const unique = crypto.randomBytes(6).toString('hex');
+  const temporary = path.join(deps.stateDir, `.${tenant}.${process.pid}.${unique}.tmp`);
+  // 'wx' refuses to follow or reuse anything already at that name.
+  fs.writeFileSync(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600, flag: 'wx' });
   try {
     fs.linkSync(temporary, statePath(deps, tenant));
   } finally {
@@ -332,6 +400,7 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
   const configured = deps.run({ container, action: 'identity', expect: identity }).identity;
   const grantedAtMs = deps.now();
   const state = {
+    grantId: crypto.randomUUID(),
     tenant,
     identity: configured,
     lane,
@@ -341,6 +410,7 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
     deadline: iso(grantedAtMs + GRANT_WINDOW_SECONDS * 1000),
   };
   writeGrant(deps, tenant, state);
+  const written = stateFingerprint(deps, tenant);
   let result;
   let recreated = false;
   try {
@@ -359,7 +429,7 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
   } catch (error) {
     if (lane === 'consented') {
       // Nothing was written to the tenant's database: there is nothing to close.
-      fs.rmSync(statePath(deps, tenant), { force: true });
+      removeStateIfSame(deps, tenant, written);
     }
     throw error;
   }
@@ -376,6 +446,7 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
 export async function revoke({ tenant, reason, cause = 'explicit' }, deps = defaultDeps()) {
   let open = null;
   let stateUnreadable = null;
+  const seen = stateFingerprint(deps, tenant);
   try {
     open = readGrant(deps, tenant);
   } catch (error) {
@@ -402,7 +473,7 @@ export async function revoke({ tenant, reason, cause = 'explicit' }, deps = defa
     sessionsPurged: [first.sessionsPurged, second.sessionsPurged],
   };
   record(deps, closing);
-  fs.rmSync(statePath(deps, tenant), { force: true });
+  removeStateIfSame(deps, tenant, seen);
   return closing;
 }
 

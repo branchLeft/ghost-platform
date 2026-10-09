@@ -92,7 +92,8 @@ says so:
 2. Waits five seconds.
 3. Does both again (adapter review, requirement 1). A session the adapter
    admitted just before the revoke can be written after the first purge.
-4. Appends the closing record and removes the state file.
+4. Appends the closing record and removes the state file
+   only if it is still the grant it read (a newer grant keeps its clock).
 
 It runs whatever the account's status is (requirement 2). A tenant who
 re-suspended from the Staff screen during the window still leaves the session

@@ -13,9 +13,11 @@ import {
   main,
   parseGrantArgs,
   recreateIfDeleted,
+  removeStateIfSame,
   revoke,
   runInContainer,
   SECOND_PURGE_DELAY_MS,
+  stateFingerprint,
   status,
 } from '../../scripts/break-glass-grant.mjs';
 import { ActiveExistingRowError } from '../../scripts/provision-support-account.mjs';
@@ -589,5 +591,96 @@ describe('runInContainer', () => {
     expect(() => runInContainer({ container: 'c', action: 'check' }, () => 'nothing')).toThrow(
       /printed no result/
     );
+  });
+});
+
+describe('closing a grant never deletes a newer grant', () => {
+  /** While a close sits between its purges, the old state goes and a new grant opens. */
+  function newGrantDuringClose(deps) {
+    deps.betweenPurges = vi.fn(async () => {
+      fs.rmSync(stateFile(deps));
+      deps.advance(1000);
+      await grant(request(), deps);
+    });
+  }
+
+  it('revoke leaves a grant opened while it ran, and its clock', async () => {
+    const deps = fakeDeps();
+    await grant(request(), deps);
+    const first = JSON.parse(fs.readFileSync(stateFile(deps), 'utf8'));
+    newGrantDuringClose(deps);
+    await revoke({ tenant: 'tenant-zero', reason: 'done' }, deps);
+    const [open] = status(deps);
+    expect(open).toBeDefined();
+    expect(open.grantId).not.toBe(first.grantId);
+    expect(open.deadline).toBeDefined();
+  });
+
+  it('expire leaves a grant opened while it closed the expired one', async () => {
+    const deps = fakeDeps();
+    await grant(request(), deps);
+    deps.advance(GRANT_WINDOW_SECONDS * 1000);
+    newGrantDuringClose(deps);
+    await expire(deps);
+    expect(status(deps)).toHaveLength(1);
+    expect(fs.existsSync(stateFile(deps))).toBe(true);
+  });
+
+  it('still removes the grant it read when nothing replaced it', async () => {
+    const deps = fakeDeps();
+    await grant(request(), deps);
+    await revoke({ tenant: 'tenant-zero', reason: 'done' }, deps);
+    expect(fs.existsSync(stateFile(deps))).toBe(false);
+    expect(fs.readdirSync(deps.stateDir)).toEqual([]);
+  });
+
+  it('does not delete state that appeared after a revoke that saw none', async () => {
+    const deps = fakeDeps();
+    deps.betweenPurges = vi.fn(async () => {
+      await grant(request(), deps);
+    });
+    await revoke({ tenant: 'tenant-zero', reason: 'done' }, deps);
+    expect(status(deps)).toHaveLength(1);
+  });
+
+  it('removeStateIfSame removes only the named grant and restores another', async () => {
+    const deps = fakeDeps();
+    await grant(request(), deps);
+    const seen = stateFingerprint(deps, 'tenant-zero');
+    expect(removeStateIfSame(deps, 'tenant-zero', 'x:other')).toBe(false);
+    expect(stateFingerprint(deps, 'tenant-zero')).toBe(seen);
+    expect(removeStateIfSame(deps, 'tenant-zero', seen)).toBe(true);
+    expect(fs.existsSync(stateFile(deps))).toBe(false);
+    expect(removeStateIfSame(deps, 'tenant-zero', null)).toBe(false);
+  });
+});
+
+describe('state file hardening', () => {
+  it('writes the temporary file exclusively, never through a planted symlink', async () => {
+    const deps = fakeDeps();
+    fs.mkdirSync(deps.stateDir, { recursive: true });
+    const victim = path.join(dir, 'victim');
+    fs.writeFileSync(victim, 'keep');
+    const real = fs.writeFileSync;
+    vi.spyOn(fs, 'writeFileSync').mockImplementation((file, data, options) => {
+      if (String(file).endsWith('.tmp')) fs.symlinkSync(victim, file);
+      return real(file, data, options);
+    });
+    try {
+      await expect(grant(request(), deps)).rejects.toThrow(/EEXIST/);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(fs.readFileSync(victim, 'utf8')).toBe('keep');
+  });
+
+  it('expire closes a state file that is a dangling symlink instead of skipping it', async () => {
+    const deps = fakeDeps();
+    fs.mkdirSync(deps.stateDir, { recursive: true });
+    fs.symlinkSync(path.join(dir, 'nowhere'), stateFile(deps));
+    const { closed } = await expire(deps);
+    expect(closed).toMatchObject([{ tenant: 'tenant-zero', stateFound: false }]);
+    expect(closed[0].stateUnreadable).toMatch(/ENOENT/);
+    expect(() => fs.lstatSync(stateFile(deps))).toThrow();
   });
 });

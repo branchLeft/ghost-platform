@@ -1,3 +1,4 @@
+import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -198,6 +199,37 @@ describe('loadSigningKey', () => {
     keygen({ keyFile: real });
     fs.symlinkSync(real, keyFile);
     expect(() => loadSigningKey(keyFile)).toThrow(/is a symlink/);
+  });
+
+  it('opens the key without blocking, so a FIFO is refused rather than waited on', () => {
+    keygen({ keyFile });
+    const flags = [];
+    const fsImpl = {
+      ...fs,
+      openSync: (file, flag) => {
+        flags.push(flag);
+        return fs.openSync(file, flag);
+      },
+    };
+    loadSigningKey(keyFile, fsImpl);
+    expect(flags[0] & fs.constants.O_NONBLOCK).toBe(fs.constants.O_NONBLOCK);
+  });
+
+  it('refuses a FIFO at the key path instead of hanging', () => {
+    execFileSync('mkfifo', [keyFile]);
+    const module = new URL('../../scripts/break-glass-mint.mjs', import.meta.url).href;
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import { loadSigningKey } from ${JSON.stringify(module)};
+         try { loadSigningKey(${JSON.stringify(keyFile)}); } catch (e) { console.log(e.message); }`,
+      ],
+      { timeout: 5000, encoding: 'utf8' }
+    );
+    expect(child.signal).toBeNull();
+    expect(child.stdout).toMatch(/regular file/);
   });
 
   it('refuses a key owned by another user, checked on the opened file', () => {
