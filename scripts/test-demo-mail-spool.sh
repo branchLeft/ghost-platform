@@ -36,6 +36,7 @@ WORK="$(mktemp -d)"
 PASSES=0
 FAILURES=0
 
+# shellcheck disable=SC2317,SC2329 # run only through the trap below
 cleanup() {
     docker rm -f -v "$HOST" "$OUTSIDE" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
@@ -85,6 +86,7 @@ wait_spool_healthy() {
 apply_policy() { on_host "sh /policy/branchleft_demo_egress.sh" >/dev/null; }
 
 # Runs inside the spool container, which has node and nothing else.
+# shellcheck disable=SC2317,SC2329 # run only through eval, in expect_ok and expect_refused
 spool_connects() { on_host "docker exec -i $SPOOL_C node - $1 $2 < /work/tcpprobe.js" >/dev/null 2>&1; }
 spool_resolves() { on_host "docker exec -i $SPOOL_C node - $1 < /work/dnsprobe.js" >/dev/null 2>&1; }
 
