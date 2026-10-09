@@ -88,7 +88,7 @@ portal. A role alone never admits, so an owner-organisation user holding
 is admitted only once the portal is given the refreshed list; an empty list
 admits no one.
 
-Read from a live instance: Zitadel lists *every* application of the project in
+Read from a live instance: Zitadel lists _every_ application of the project in
 `aud`, so the audience alone cannot tell the portal's token from the console's;
 `client_id` is what does. Each application must request the scopes
 `openid`, `urn:zitadel:iam:org:projects:roles` and
@@ -119,6 +119,55 @@ from anywhere that can reach the sign-in service.
 The owner's procedure, and how the credential is stored and rotated, is in
 `ghost-platform-docs`, `owner-console-recovery-runbook.md`.
 
+## Outbound mail
+
+The sign-in service sends every verification code, initialisation code,
+password reset and invitation by email, and Zitadel sends none until it has a
+mail provider. An optional `smtp` block in the configuration names one:
+
+```json
+{
+  "smtp": {
+    "host": "<mail host>",
+    "port": 587,
+    "senderAddress": "<sender>@<product domain>",
+    "senderName": "<NAME>"
+  }
+}
+```
+
+```bash
+ZITADEL_SMTP_PASSWORD_FILE=/path/to/password \
+  ZITADEL_URL=... ZITADEL_TOKEN_FILE=... node dist/cli.js config.json outputs.json
+```
+
+- **The password is a file, never configuration.** It must be a plain file
+  closed to other users, opened without following a link, printable ASCII on
+  one line. The variable must be set when there is an `smtp` block and unset
+  when there is not, so a password is never silently ignored.
+- **The account name is the sender address.** The mail host accepts a sender
+  only if it is the authenticated account's own address, so there is no separate
+  user setting to get wrong.
+- **TLS is required.** `tls` defaults on and the port must then be 587
+  (STARTTLS). `tls: false` is accepted only for a single-label host such as
+  `localhost`, which can never be a real mail host, so a plaintext submission to
+  the internet cannot be written. The local proof is the only user of it.
+- **A changed password replaces the provider.** Zitadel v4.19.4 accepts a
+  password change on an existing provider and then keeps authenticating with the
+  old one, which the local proof showed. So any change (the password included)
+  creates a new provider, activates it, and then removes this reconciler's
+  old ones. Zitadel never returns a stored password, so the change is
+  noticed from a scrypt digest of the password, salted with every setting,, written into the
+  provider's description next to a `branchleft-managed` marker. A provider
+  without the marker is never replaced or deleted: if one is active the run
+  reports drift and changes nothing.
+- **Sending is off the request path, but one hung mail host holds the queue.**
+  The local proof shows Zitadel answers a request that sends mail in tens of
+  milliseconds while the mail host hangs or refuses, and connects afterwards
+  from its own background handler. It also showed that while one connection
+  hangs, the codes behind it are not sent, and the ones in flight are lost when
+  the connection ends; Zitadel does not retry. A person asks for a new code.
+
 ## Proof against real containers
 
 `local/prove.sh` starts a throwaway Zitadel and PostgreSQL in Docker, then:
@@ -144,3 +193,12 @@ in any cloud.
 
 `npm run test:unit`; `npm run coverage` enforces the thresholds in
 `vitest.config.ts`.
+
+It also starts a small SMTP sink standing in for the mail host (`local/sink.mjs`)
+and proves: the provider is configured and a second run writes nothing; a
+verification code is delivered authenticated as, and sent as, the sender; a
+rotated password is applied; and a request that sends mail is answered within a
+few seconds while the mail host hangs or refuses, with a control showing the
+hung host does hold a client that waits on it.
+
+The sink reads its behaviour from `/state/mode` on every connection (`ok` accepts and records, `stall` accepts and never speaks, `refuse` answers 421) and logs each connection and message to `/state/sink.ndjson`; it checks the password but never records it.

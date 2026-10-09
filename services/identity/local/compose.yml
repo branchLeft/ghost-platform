@@ -24,6 +24,9 @@ services:
         condition: service_healthy
     ports:
       - '127.0.0.1:${PROOF_ZITADEL_PORT:-18080}:${PROOF_ZITADEL_PORT:-18080}'
+      # The sink shares this container's network (see below); this is the one
+      # way a test on the host can talk to it directly.
+      - '127.0.0.1:${PROOF_SINK_PORT:-12525}:2525'
     volumes:
       - ${PROOF_STATE_DIR:?set by prove.sh}:/state
     environment:
@@ -49,3 +52,21 @@ services:
       # directly; no login UI is served, so the base URI is only a label.
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: 'true'
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://localhost:3000/ui/v2/login
+
+  # Stands in for the mail host. It shares Zitadel's network namespace so that
+  # Zitadel reaches it as `localhost`: Go's mail client sends a password only
+  # over TLS or to localhost, and a throwaway sink has no certificate a real
+  # client would trust. See sink.mjs for what it records and how a test steers it.
+  sink:
+    image: node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb
+    network_mode: 'service:zitadel'
+    depends_on:
+      - zitadel
+    volumes:
+      - ${PROOF_STATE_DIR:?set by prove.sh}:/state
+      - ./sink.mjs:/sink.mjs:ro
+    environment:
+      SINK_SMTP_USER: ${PROOF_SMTP_USER:?set by prove.sh}
+      SINK_SMTP_PASS: ${PROOF_SMTP_PASSWORD:?set by prove.sh}
+      SINK_PORT: '2525'
+    command: ['node', '/sink.mjs']

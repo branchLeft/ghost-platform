@@ -1,4 +1,4 @@
-import type { ExistingApplication, ExistingGrant, ZitadelClient } from './client.js';
+import type { ExistingApplication, ExistingGrant, ExistingSmtp, ZitadelClient } from './client.js';
 import type { DesiredApplication } from './desired.js';
 
 export type FetchLike = (
@@ -80,7 +80,7 @@ const NAME_EQUALS = (name: string) => ({
 export function managementClient(options: ManagementOptions): ZitadelClient {
   const base = options.baseUrl.endsWith('/') ? options.baseUrl.slice(0, -1) : options.baseUrl;
 
-  async function call(path: string, body: unknown, orgId?: string): Promise<Json> {
+  async function call(path: string, body: unknown, orgId?: string, method = 'POST'): Promise<Json> {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'application/json',
@@ -88,7 +88,7 @@ export function managementClient(options: ManagementOptions): ZitadelClient {
     };
     if (orgId !== undefined) headers['x-zitadel-orgid'] = orgId;
     const response = await options.fetch(`${base}${path}`, {
-      method: 'POST',
+      method,
       headers,
       body: JSON.stringify(body),
     });
@@ -212,6 +212,38 @@ export function managementClient(options: ManagementOptions): ZitadelClient {
         { grantedOrgId, roleKeys },
         ownerOrgId
       );
+    },
+    async listSmtp() {
+      const path = '/admin/v1/smtp/_search';
+      return results(await call(path, {}), path).map((entry): ExistingSmtp => ({
+        id: requireString(entry, 'id', path),
+        host: requireString(entry, 'host', path),
+        senderAddress: requireString(entry, 'senderAddress', path),
+        senderName: typeof entry['senderName'] === 'string' ? entry['senderName'] : '',
+        user: typeof entry['user'] === 'string' ? entry['user'] : '',
+        tls: entry['tls'] === true,
+        description: typeof entry['description'] === 'string' ? entry['description'] : '',
+        active: entry['state'] === 'SMTP_CONFIG_ACTIVE',
+      }));
+    },
+    async createSmtp(smtp, password, description) {
+      const path = '/admin/v1/smtp';
+      const body = await call(path, {
+        senderAddress: smtp.senderAddress,
+        senderName: smtp.senderName,
+        tls: smtp.tls,
+        host: `${smtp.host}:${smtp.port}`,
+        user: smtp.senderAddress,
+        password,
+        description,
+      });
+      return { id: requireString(body, 'id', path) };
+    },
+    async activateSmtp(id) {
+      await call(`/admin/v1/smtp/${encodeURIComponent(id)}/_activate`, {});
+    },
+    async deleteSmtp(id) {
+      await call(`/admin/v1/smtp/${encodeURIComponent(id)}`, {}, undefined, 'DELETE');
     },
   };
 }

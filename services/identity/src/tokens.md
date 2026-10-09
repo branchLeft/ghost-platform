@@ -7,7 +7,7 @@ the signature, key and algorithm must already have been checked: use
 
 What a signature cannot say, and this adds:
 
-- The token was issued to *this* application rather than its sibling. Zitadel
+- The token was issued to _this_ application rather than its sibling. Zitadel
   lists every application of the project in `aud`, so the audience cannot tell
   them apart; the `client_id` claim does.
 - The issuer is the sign-in service.
