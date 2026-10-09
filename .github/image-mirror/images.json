@@ -1,0 +1,276 @@
+{
+  "registry": "ghcr.io/branchleft/mirror",
+  "images": [
+    {
+      "name": "ghost",
+      "source": "docker.io/library/ghost",
+      "digest": "sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918",
+      "upstreamTags": ["6.55.0-alpine"],
+      "licence": "MIT",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/TryGhost/Ghost/blob/main/LICENSE"
+    },
+    {
+      "name": "ghost",
+      "source": "docker.io/library/ghost",
+      "digest": "sha256:db4c56c196d6d5ed8ef9c0e80012792c16c51d4c23adb1683279506f525212b5",
+      "upstreamTags": ["6-alpine"],
+      "licence": "MIT",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/TryGhost/Ghost/blob/main/LICENSE"
+    },
+    {
+      "name": "caddy",
+      "source": "docker.io/library/caddy",
+      "digest": "sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b",
+      "upstreamTags": ["2.11.4-alpine"],
+      "licence": "Apache-2.0",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/caddyserver/caddy/blob/master/LICENSE"
+    },
+    {
+      "name": "debian",
+      "source": "docker.io/library/debian",
+      "digest": "sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a",
+      "upstreamTags": ["trixie-slim"],
+      "licence": "Per-package DFSG licences (GPL, BSD, MIT and others)",
+      "redistribution": "conditioned",
+      "licenceSource": "https://www.debian.org/legal/licenses/"
+    },
+    {
+      "name": "debian",
+      "source": "docker.io/library/debian",
+      "digest": "sha256:34cd9e9fd437c0a095ec39cb2e73422c9f30821b0d0848ed74fd0d43bae4d958",
+      "upstreamTags": ["trixie"],
+      "licence": "Per-package DFSG licences (GPL, BSD, MIT and others)",
+      "redistribution": "conditioned",
+      "licenceSource": "https://www.debian.org/legal/licenses/"
+    },
+    {
+      "name": "debian",
+      "source": "docker.io/library/debian",
+      "digest": "sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+      "upstreamTags": ["bookworm-slim"],
+      "licence": "Per-package DFSG licences (GPL, BSD, MIT and others)",
+      "redistribution": "conditioned",
+      "licenceSource": "https://www.debian.org/legal/licenses/"
+    },
+    {
+      "name": "node",
+      "source": "docker.io/library/node",
+      "digest": "sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
+      "upstreamTags": ["26.5.0-bookworm-slim"],
+      "licence": "MIT (plus bundled third-party notices)",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/nodejs/node/blob/main/LICENSE"
+    },
+    {
+      "name": "node",
+      "source": "docker.io/library/node",
+      "digest": "sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402",
+      "upstreamTags": ["22-alpine"],
+      "licence": "MIT (plus bundled third-party notices)",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/nodejs/node/blob/main/LICENSE"
+    },
+    {
+      "name": "postgres",
+      "source": "docker.io/library/postgres",
+      "digest": "sha256:ceef4a62198b562d6fe3e51be67362f72a0abf0aaa255f54f0c0e55be9768ed2",
+      "upstreamTags": ["14"],
+      "licence": "PostgreSQL Licence",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/postgres/postgres/blob/master/COPYRIGHT"
+    },
+    {
+      "name": "postgres",
+      "source": "docker.io/library/postgres",
+      "digest": "sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
+      "upstreamTags": ["17"],
+      "licence": "PostgreSQL Licence",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/postgres/postgres/blob/master/COPYRIGHT"
+    },
+    {
+      "name": "postgres",
+      "source": "docker.io/library/postgres",
+      "digest": "sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+      "upstreamTags": ["17-alpine"],
+      "licence": "PostgreSQL Licence",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/postgres/postgres/blob/master/COPYRIGHT"
+    },
+    {
+      "name": "mysql",
+      "source": "docker.io/library/mysql",
+      "digest": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "upstreamTags": ["8.0", "8.0.46"],
+      "licence": "GPL-2.0-only",
+      "redistribution": "conditioned",
+      "licenceSource": "https://github.com/mysql/mysql-server/blob/trunk/LICENSE"
+    },
+    {
+      "name": "percona-server",
+      "source": "docker.io/percona/percona-server",
+      "digest": "sha256:a4ba7d1afd325f40bc6d65b6455fb4f15388638dfa39e3b85f9755755fd9ec2d",
+      "upstreamTags": ["8.0"],
+      "licence": "GPL-2.0-only",
+      "redistribution": "conditioned",
+      "licenceSource": "https://github.com/percona/percona-server/blob/8.4/LICENSE"
+    },
+    {
+      "name": "percona-server",
+      "source": "docker.io/percona/percona-server",
+      "digest": "sha256:2fb8f1c992bc86f0bf4fa0aa174bbb1946f8867a7518278beec801a0bd2bf9e3",
+      "upstreamTags": ["8.0"],
+      "licence": "GPL-2.0-only",
+      "redistribution": "conditioned",
+      "licenceSource": "https://github.com/percona/percona-server/blob/8.4/LICENSE"
+    },
+    {
+      "name": "mysqld-exporter",
+      "source": "docker.io/prom/mysqld-exporter",
+      "digest": "sha256:abed8dac117b4ae5b70757f988e44795935b9a72c3b58d720c67ba688f8cb79e",
+      "upstreamTags": ["v0.20.0"],
+      "licence": "Apache-2.0",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/prometheus/mysqld_exporter/blob/main/LICENSE"
+    },
+    {
+      "name": "versitygw",
+      "source": "docker.io/versity/versitygw",
+      "digest": "sha256:a13b9adbda0ea9d4b1d929e4bed327e4eccc18d13c23f7e5d192d987dde5651d",
+      "upstreamTags": ["pinned-digest-only"],
+      "licence": "Apache-2.0",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/versity/versitygw/blob/main/LICENSE"
+    },
+    {
+      "name": "curl",
+      "source": "docker.io/curlimages/curl",
+      "digest": "sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6",
+      "upstreamTags": ["8.16.0"],
+      "licence": "curl licence (MIT-style)",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/curl/curl/blob/master/COPYING"
+    },
+    {
+      "name": "alpine",
+      "source": "docker.io/library/alpine",
+      "digest": "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+      "upstreamTags": ["latest"],
+      "licence": "MIT (image scripts); per-package licences (GPL, MIT and others) inside",
+      "redistribution": "conditioned",
+      "licenceSource": "https://github.com/alpinelinux/docker-alpine/blob/master/LICENSE"
+    },
+    {
+      "name": "docker",
+      "source": "docker.io/library/docker",
+      "digest": "sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce",
+      "upstreamTags": ["27-dind"],
+      "licence": "Apache-2.0",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/moby/moby/blob/master/LICENSE"
+    },
+    {
+      "name": "python",
+      "source": "docker.io/library/python",
+      "digest": "sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4",
+      "upstreamTags": ["3.12-alpine"],
+      "licence": "PSF-2.0",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/python/cpython/blob/main/LICENSE"
+    },
+    {
+      "name": "healthchecks",
+      "source": "docker.io/healthchecks/healthchecks",
+      "digest": "sha256:aa08a61b0dcfd83f1332eab195d5cec1b595ae076eb8388cadf8a3d597114f9b",
+      "upstreamTags": ["latest"],
+      "licence": "BSD-3-Clause",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/healthchecks/healthchecks/blob/master/LICENSE"
+    },
+    {
+      "name": "s3mock",
+      "source": "docker.io/adobe/s3mock",
+      "digest": "sha256:ab01a6946750f451ca215a47e91030695b260e4003b8a5a6201d25029b8fca92",
+      "upstreamTags": ["latest"],
+      "licence": "Apache-2.0",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/adobe/S3Mock/blob/main/LICENSE"
+    },
+    {
+      "name": "pebble",
+      "source": "ghcr.io/letsencrypt/pebble",
+      "digest": "sha256:c156cabea562e43ed0060bddc03539c07de40e311b52c6b0e5ea710a496e56b8",
+      "upstreamTags": ["2.7.0"],
+      "licence": "MPL-2.0",
+      "redistribution": "conditioned",
+      "licenceSource": "https://github.com/letsencrypt/pebble/blob/main/LICENSE"
+    },
+    {
+      "name": "pebble-challtestsrv",
+      "source": "ghcr.io/letsencrypt/pebble-challtestsrv",
+      "digest": "sha256:26789c714fc40ab2de771fb34c06d13232b8ca4f96f77995483d5dfe8744f276",
+      "upstreamTags": ["2.7.0"],
+      "licence": "MPL-2.0",
+      "redistribution": "conditioned",
+      "licenceSource": "https://github.com/letsencrypt/pebble/blob/main/LICENSE"
+    },
+    {
+      "name": "zitadel",
+      "source": "ghcr.io/zitadel/zitadel",
+      "digest": "sha256:90a3045b80a2b5b395e1e770302076906af3a5911225af7c464b4f3bd00d0a1b",
+      "upstreamTags": ["pinned-digest-only"],
+      "licence": "AGPL-3.0",
+      "redistribution": "conditioned",
+      "licenceSource": "https://github.com/zitadel/zitadel/blob/main/LICENSE"
+    }
+  ],
+  "allow": [
+    {
+      "path": "scripts/test_image_mirror.py",
+      "reason": "The guard's own test inputs: refs written to throwaway trees, never pulled."
+    },
+    {
+      "path": "widgets/pins.json",
+      "reason": "Provenance record of the Ghost image the CDN bundles were taken from; nothing pulls it."
+    },
+    {
+      "path": "widgets/scripts/fetch-pins.mjs",
+      "reason": "Writes the provenance record above; never pulls the image."
+    },
+    {
+      "path": "control/provision/test_install_restore_drill.py",
+      "reason": "Fixture strings for the drill installer's refusal of a tagged image; no docker call."
+    },
+    {
+      "path": "control/provision/test_nextcloud_backup.py",
+      "reason": "Fixture string fed to a faked docker inspect; no pull."
+    },
+    {
+      "path": "db/recovery/test_check_toolchain_version.py",
+      "reason": "Every docker run is faked; the refs are test inputs."
+    },
+    {
+      "path": "demo-host/provision/test_demo_sidecar.py",
+      "reason": "Negative fixtures for the sidecar image-pattern check; no pull."
+    },
+    {
+      "path": "infra/provisioning/scripts/assert-image-ref.py",
+      "reason": "Self-test cases for the tenant image-ref validator; refs are rejected inputs."
+    },
+    {
+      "path": "infra/provisioning/scripts/test_restore_drill.py",
+      "reason": "Fixture environment for a faked drill; no pull."
+    },
+    {
+      "path": "render-core/test/spool.test.ts",
+      "reason": "Negative fixtures for the spool renderer's digest-pin check; rendered, never pulled."
+    },
+    {
+      "path": "render-core/test/validate.test.ts",
+      "reason": "Negative fixture for the digest-pin validator; rendered, never pulled."
+    }
+  ]
+}

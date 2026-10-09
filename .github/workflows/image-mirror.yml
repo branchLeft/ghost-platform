@@ -1,0 +1,76 @@
+name: Image mirror
+
+# Copies every third-party image in .github/image-mirror/images.json to
+# ghcr.io/branchleft/mirror/<name> by digest, then reads each back and checks
+# the manifest bytes hash to the listed digest. Docker Hub rate-limits
+# anonymous pulls per runner address, so CI and the hosts pull the mirror
+# instead and this is the only job that touches the upstream registries.
+#
+# Authority: the run's own GITHUB_TOKEN with `packages: write`. No Docker Hub
+# login and no stored secret. Idempotent: an entry whose mirror tag already
+# resolves to the listed digest is verified, not copied again.
+#
+# Runs on merge to main when the list, the script or this file changes, and by
+# hand. Nothing here runs on a pull request: it writes packages, and a pull
+# request's code must not.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/image-mirror/images.json
+      - scripts/mirror-images.py
+      - .github/workflows/image-mirror.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror to GHCR
+    runs-on: ubuntu-latest
+    # A first run copies every entry (a few GB across the list) and retries a
+    # rate-limited source; later runs only verify. Set well above both.
+    timeout-minutes: 45
+    env:
+      CRANE_VERSION: v0.22.1
+      CRANE_SHA256: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      # crane is pinned by release and by the tarball's sha256, checked before
+      # anything in it runs. The sum was taken from the release's
+      # checksums.txt and from a download of the tarball, and they agree.
+      - name: Install crane
+        run: |
+          set -euo pipefail
+          url="https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/crane.tar.gz" "$url"
+          echo "${CRANE_SHA256}  $RUNNER_TEMP/crane.tar.gz" | sha256sum --check --strict -
+          mkdir "$RUNNER_TEMP/crane"
+          tar -xzf "$RUNNER_TEMP/crane.tar.gz" -C "$RUNNER_TEMP/crane" crane
+          echo "$RUNNER_TEMP/crane" >> "$GITHUB_PATH"
+
+      - name: Log in to GHCR
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | crane auth login ghcr.io --username "$REGISTRY_USER" --password-stdin
+
+      - name: Mirror and verify
+        run: python3 scripts/mirror-images.py
