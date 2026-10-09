@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import pg from 'pg';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { readMigrations } from '../provision/migrations.js';
-import { connectionOptions, loadConfig, runProvision } from '../provision/provisionPortal.js';
+import {
+  connectionOptions,
+  loadConfig,
+  migratePortal,
+  runProvision,
+} from '../provision/provisionPortal.js';
 import { testUrl } from './helpers.js';
 import {
   OWNER,
@@ -13,6 +18,7 @@ import {
   TENANT,
   TENANT_PW,
   admin,
+  provConfig,
   resetServer,
   run,
   stateSnapshot,
@@ -70,6 +76,23 @@ async function connectAs(login: string, password: string): Promise<void> {
 async function documentTable(): Promise<unknown> {
   const [result] = await admin(PROV_DB, "SELECT to_regclass('portal.document_version') AS t");
   return result!.rows[0].t;
+}
+
+/** Undoes the rename whatever state a failing run left: a created owner must not mask the assertion. */
+async function restoreRenamedOwner(): Promise<void> {
+  await admin('postgres', `DROP ROLE IF EXISTS ${OWNER}`).catch(() => undefined);
+  await admin('postgres', 'ALTER ROLE portal_prov_renamed RENAME TO ' + OWNER).catch(
+    () => undefined
+  );
+  await admin('postgres', 'DROP ROLE IF EXISTS portal_prov_renamed');
+}
+
+async function history(): Promise<string[]> {
+  const [result] = await admin(
+    PROV_DB,
+    'SELECT hash FROM drizzle.__drizzle_migrations ORDER BY id'
+  );
+  return result!.rows.map((row: { hash: string }) => row.hash);
 }
 
 describe('--migrate-only without a server', () => {
@@ -169,7 +192,7 @@ describe('--migrate-only on a real server', () => {
       ]);
       expect(await documentTable()).toBeNull();
     } finally {
-      await admin('postgres', `ALTER ROLE portal_prov_renamed RENAME TO ${OWNER}`);
+      await restoreRenamedOwner();
     }
   });
 
@@ -213,6 +236,40 @@ describe('--migrate-only on a real server', () => {
     expect(result.err.join('\n')).toMatch(/extra M25: migration history row 4 \(f00d\)/);
     expect(await documentTable()).toBeNull();
     expect(await logins()).toEqual(verifiers);
+  });
+
+  it('applies two pending migrations in journal order, and a second run is clean', async () => {
+    const all = readMigrations();
+    expect((await run({ migrations: all.slice(0, 2) })).code).toBe(0);
+    const first = await migrate();
+    expect(first.err).toEqual([]);
+    expect(first.out.filter((line) => line.startsWith('applied'))).toEqual([
+      `applied migration ${all[2]!.tag}`,
+      `applied migration ${all[3]!.tag}`,
+    ]);
+    expect(await history()).toEqual(all.map((m) => m.hash));
+    expect((await migrate()).code).toBe(0);
+  });
+
+  it('refuses before commit a migration whose object the manifest does not grant, writing nothing', async () => {
+    const all = readMigrations();
+    expect((await run({ migrations: all.slice(0, 3) })).code).toBe(0);
+    const before = await history();
+    const rogue = {
+      ...all[3]!,
+      statements: [...all[3]!.statements, 'CREATE TABLE portal.rogue (id integer)'],
+    };
+    await expect(
+      migratePortal({ ...provConfig(), tenantPassword: '', ownerPassword: '' }, () => undefined, {
+        migrations: [...all.slice(0, 3), rogue],
+      })
+    ).rejects.toThrow(/refused/);
+    expect(await history()).toEqual(before);
+    const [tables] = await admin(
+      PROV_DB,
+      "SELECT to_regclass('portal.rogue') AS r, to_regclass('portal.document_version') AS d"
+    );
+    expect(tables!.rows[0]).toEqual({ r: null, d: null });
   });
 
   it('runs as the compiled command and sets no password', async () => {
