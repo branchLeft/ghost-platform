@@ -5,7 +5,9 @@
 # installs it, and sits behind the real demo egress policy.
 #
 # Usage:  ./scripts/test-demo-mail-spool.sh            (must exit 0)
-#         SABOTAGE=open-route ./scripts/test-demo-mail-spool.sh   (must exit 1)
+#         SABOTAGE=open-route ./scripts/test-demo-mail-spool.sh     (must exit 1)
+#         SABOTAGE=no-spool ./scripts/test-demo-mail-spool.sh       (must exit 1)
+#         SABOTAGE=wrong-message ./scripts/test-demo-mail-spool.sh  (must exit 1)
 # Needs `npm ci && npm run build` in render-core first. Creates only
 # containers and a network under one prefix.
 set -eu
@@ -23,6 +25,11 @@ DRAIN_PORT=8095
 # Compose names the container <project>-<service>-1.
 SPOOL_C="mail-spool-mail-spool-1"
 DOMAIN="tenant1.example.com"
+# Each message's subject carries a marker unique to this run, so the queue can
+# be asked for these two messages and no others.
+MARK="m$$"
+SMTP_MARK="$MARK-smtp"
+HTTP_MARK="$MARK-http"
 SABOTAGE="${SABOTAGE:-}"
 WORK="$(mktemp -d)"
 
@@ -35,6 +42,13 @@ cleanup() {
     rm -rf "$WORK"
 }
 [ -n "${KEEP_PROOF_CONTAINERS:-}" ] || trap cleanup EXIT INT TERM
+
+finish() {
+    echo
+    echo "$PASSES passed, $FAILURES failed"
+    [ "$FAILURES" -eq 0 ] || exit 1
+    exit 0
+}
 
 pass() { PASSES=$((PASSES + 1)); echo "PASS: $*"; }
 fail() { FAILURES=$((FAILURES + 1)); echo "FAIL: $*"; }
@@ -78,6 +92,11 @@ undrained() {
     on_host "wget -q -T 5 -O - http://127.0.0.1:$DRAIN_PORT/metrics" |
         sed -n 's/^mailgun_shim_undrained_recipients //p'
 }
+queued() { n="$(undrained)"; echo "${n:-unreadable}"; }
+
+# The subject of every message the spool is holding, sorted, read from the
+# spool's own database from inside its container.
+queued_subjects() { on_host "docker exec -i $SPOOL_C node - < /work/queuesubjects.js"; }
 
 # A one-shot Ghost stand-in on a slot's own mail network.
 on_slot_network() {
@@ -155,11 +174,20 @@ expect_refused "a slot's Ghost network gives the Ghost no route off the host" \
 echo "== a slot's Ghost submits on both paths; both messages are in the queue"
 REGISTER="$(on_host "docker exec $SPOOL_C node dist/cli.js register $DOMAIN --sender-domain $DOMAIN")"
 API_KEY="$(echo "$REGISTER" | tail -n 1)"
+if [ "$SABOTAGE" = no-spool ]; then
+    echo "== SABOTAGE: the spool is gone when Ghost submits"
+    on_host "docker stop $SPOOL_C" >/dev/null
+fi
+# The sabotage sends the bulk message under a different subject: the count
+# stays 2, only the identity check can see it.
+SENT_HTTP_MARK="$HTTP_MARK"
+[ "$SABOTAGE" != wrong-message ] || SENT_HTTP_MARK="$MARK-other"
 expect_ok "Ghost's SMTP path (transactional) is accepted" \
-    "on_slot_network branchleft-mail-30001 python /work/ghostmail.py $DOMAIN $API_KEY smtp >/dev/null 2>&1"
+    "on_slot_network branchleft-mail-30001 python /work/ghostmail.py $DOMAIN $API_KEY smtp $SMTP_MARK >/dev/null 2>&1"
 expect_ok "Ghost's Mailgun-shaped path (bulk) is accepted" \
-    "on_slot_network branchleft-mail-30001 python /work/ghostmail.py $DOMAIN $API_KEY http >/dev/null 2>&1"
-if [ "$(undrained)" = 2 ]; then pass "the queue holds both messages"; else fail "the queue holds $(undrained) messages, not 2"; fi
+    "on_slot_network branchleft-mail-30001 python /work/ghostmail.py $DOMAIN $API_KEY http $SENT_HTTP_MARK >/dev/null 2>&1"
+if [ "$(queued)" = 2 ]; then pass "the queue holds both messages"; else fail "the queue holds $(queued) messages, not 2"; fi
+[ "$SABOTAGE" != no-spool ] || finish
 
 echo "== the drain port"
 if [ "$(on_host "docker port $SPOOL_C 8080/tcp")" = "127.0.0.1:$DRAIN_PORT" ]; then
@@ -175,11 +203,61 @@ docker restart "$HOST" >/dev/null
 wait_dockerd
 apply_policy
 wait_spool_healthy
-if [ "$(undrained)" = 2 ]; then pass "both messages are still queued after the reboot"; else fail "after the reboot the queue holds $(undrained) messages, not 2"; fi
+if [ "$(queued)" = 2 ]; then pass "both messages are still queued after the reboot"; else fail "after the reboot the queue holds $(queued) messages, not 2"; fi
 if [ "$SABOTAGE" != open-route ]; then
     expect_refused "after the reboot the spool still cannot open a connection off the host" "spool_connects $OUTSIDE_IP 8080"
 fi
 
-echo
-echo "$PASSES passed, $FAILURES failed"
-[ "$FAILURES" -eq 0 ]
+# What a client sees when the spool is not there to answer. Ghost awaits a
+# transactional send inside the reader's request, so an error must come back
+# in bounded time; this measures the client side only (see the .md Limits).
+CLIENT_LIMIT=6
+probe_unavailable() {
+    on_slot_network branchleft-mail-30001 python /work/ghostprobe.py "$DOMAIN" "$API_KEY" "$CLIENT_LIMIT" 2>&1
+}
+seconds_of() { echo "$1" | sed -n "s/^$2 .* after \([0-9]*\)\..*/\1/p"; }
+
+echo "== the spool is down: a send fails fast with an error, and no message is dropped or made up"
+on_host "docker stop $SPOOL_C" >/dev/null
+if OUT="$(probe_unavailable)"; then pass "with the spool down, both paths raise an error"; else fail "with the spool down: $OUT"; fi
+echo "$OUT" | sed 's/^/    /'
+for path in smtp http; do
+    t="$(seconds_of "$OUT" $path)"
+    if [ -n "$t" ] && [ "$t" -lt 3 ]; then pass "the $path path failed in under 3s with the spool down"; else fail "the $path path took '${t:-no result}'s with the spool down"; fi
+done
+on_host "docker start $SPOOL_C" >/dev/null
+wait_spool_healthy
+
+echo "== the spool is hung (frozen, still holding its sockets): the client's own timeout is the only bound"
+on_host "docker pause $SPOOL_C" >/dev/null
+if OUT="$(probe_unavailable)"; then pass "with the spool hung, both paths raise an error"; else fail "with the spool hung: $OUT"; fi
+echo "$OUT" | sed 's/^/    /'
+for path in smtp http; do
+    t="$(seconds_of "$OUT" $path)"
+    if [ -n "$t" ] && [ "$t" -ge $((CLIENT_LIMIT - 1)) ] && [ "$t" -le $((CLIENT_LIMIT + 3)) ]; then
+        pass "the $path path was cut off by the client's ${CLIENT_LIMIT}s timeout, not by anything in the spool"
+    else
+        fail "the $path path ended after '${t:-no result}'s, not near the ${CLIENT_LIMIT}s the client allowed"
+    fi
+done
+on_host "docker unpause $SPOOL_C" >/dev/null
+wait_spool_healthy
+if [ "$(queued)" = 2 ]; then pass "after down and hung, the queue still holds exactly the two messages"; else fail "after down and hung the queue holds $(queued) messages, not 2"; fi
+
+echo "== the queue holds the two messages that were sent, and no others"
+WANT="$(printf 'magic link %s\nnewsletter %s\n' "$SMTP_MARK" "$HTTP_MARK")"
+GOT="$(queued_subjects || true)"
+if [ "$GOT" = "$WANT" ]; then
+    pass "the queue's two messages are the SMTP and bulk messages that were sent"
+else
+    fail "the queue holds [$(echo "$GOT" | tr '\n' ',')] but the sends were [$(echo "$WANT" | tr '\n' ',')]"
+fi
+echo "== the probe mail is cleared the way the delivery runbook clears it (drain and ack inside the spool's container)"
+if on_host "docker exec -i $SPOOL_C node - 2 < /work/drainack.js" >/dev/null 2>&1; then
+    pass "draining and acking hands over both probe messages"
+else
+    fail "draining and acking did not clear both probe messages"
+fi
+if [ "$(queued)" = 0 ]; then pass "the queue then reads 0"; else fail "after the ack the queue holds $(queued) messages, not 0"; fi
+
+finish

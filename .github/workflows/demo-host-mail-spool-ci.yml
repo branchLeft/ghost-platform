@@ -65,9 +65,30 @@ jobs:
       - name: Run the spool proof
         run: ./scripts/test-demo-mail-spool.sh
 
-      - name: Sabotage -- a route opened off the host must turn the proof red
+      - name: Sabotage -- each break must turn the named assertion red
         run: |
-          if SABOTAGE=open-route ./scripts/test-demo-mail-spool.sh; then
-            echo "::error::the proof stayed green with a route open off the host"
-            exit 1
-          fi
+          sabotage() {
+            mode="$1"
+            shift
+            log="$(mktemp)"
+            if SABOTAGE="$mode" ./scripts/test-demo-mail-spool.sh >"$log" 2>&1; then
+              echo "::error::SABOTAGE=$mode stayed green"
+              exit 1
+            fi
+            for line in "$@"; do
+              grep -qF "$line" "$log" || {
+                echo "::error::SABOTAGE=$mode: expected the line: $line"
+                cat "$log"
+                exit 1
+              }
+            done
+          }
+          sabotage open-route \
+            "FAIL: the spool cannot open a connection to a host outside"
+          sabotage no-spool \
+            "FAIL: Ghost's SMTP path (transactional) is accepted" \
+            "FAIL: Ghost's Mailgun-shaped path (bulk) is accepted" \
+            "FAIL: the queue holds"
+          sabotage wrong-message \
+            "PASS: the queue holds both messages" \
+            "FAIL: the queue holds ["

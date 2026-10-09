@@ -1,5 +1,6 @@
 """Stands in for a slot's Ghost: sends one message on each of Ghost's two mail
-paths to the spool by name. Usage: ghostmail.py DOMAIN API_KEY smtp|http"""
+paths to the spool by name. The subject carries MARKER, so a message can be
+recognised in the queue. Usage: ghostmail.py DOMAIN API_KEY smtp|http MARKER"""
 import base64
 import smtplib
 import sys
@@ -7,12 +8,12 @@ import urllib.request
 import uuid
 from email.message import EmailMessage
 
-domain, key, path = sys.argv[1:4]
+domain, key, path, marker = sys.argv[1:5]
 sender = f"noreply@{domain}"
 
 if path == "smtp":
     msg = EmailMessage()
-    msg["From"], msg["To"], msg["Subject"] = sender, "member@example.com", "magic link"
+    msg["From"], msg["To"], msg["Subject"] = sender, "member@example.com", f"magic link {marker}"
     msg.set_content("PLACEHOLDER_BODY")
     with smtplib.SMTP("mail-spool", 2525, timeout=10) as smtp:
         smtp.login(domain, key)
@@ -22,7 +23,7 @@ else:
     fields = {
         "to": "member@example.com",
         "from": sender,
-        "subject": "newsletter",
+        "subject": f"newsletter {marker}",
         "html": "<p>PLACEHOLDER_BODY</p>",
         "text": "PLACEHOLDER_BODY",
         "recipient-variables": "{}",
