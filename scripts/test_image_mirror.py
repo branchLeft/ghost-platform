@@ -160,6 +160,17 @@ class ListTests(unittest.TestCase):
         with self.assertRaises(mirror.ListError):
             mirror.load_list(self.write({"registry": REGISTRY, "images": [ENTRY, dict(ENTRY)]}))
 
+    def test_rejects_a_malformed_host_pin_list(self):
+        bad = dict(ENTRY, hostPins="ops1")
+        with self.assertRaises(mirror.ListError):
+            mirror.load_list(self.write({"registry": REGISTRY, "images": [bad]}))
+
+    def test_the_ops1_break_glass_pin_is_on_the_list(self):
+        _, images = mirror.load_list(LIST)
+        pinned = [e for e in images if any("break-glass minter" in p for p in e.get("hostPins", []))]
+        self.assertEqual([e["name"] for e in pinned], ["node"])
+        self.assertTrue(pinned[0]["digest"].startswith("sha256:2d49d876"))
+
     def test_same_name_with_two_digests_is_fine(self):
         mirror.load_list(self.write({"registry": REGISTRY, "images": [ENTRY, dict(ENTRY, digest=OTHER)]}))
 

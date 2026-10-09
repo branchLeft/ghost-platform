@@ -55,6 +55,9 @@ def load_list(path: Path) -> tuple[str, list[dict]]:
         tags = entry.get("upstreamTags")
         if not isinstance(tags, list) or not tags or not all(isinstance(t, str) and t for t in tags):
             raise ListError(f"images[{i}] upstreamTags must be a non-empty list of strings")
+        pins = entry.get("hostPins", [])
+        if not isinstance(pins, list) or not all(isinstance(p, str) and p for p in pins):
+            raise ListError(f"images[{i}] hostPins must be a list of strings")
         if not NAME.match(entry["name"]):
             raise ListError(f"images[{i}] name {entry['name']!r} is not a lowercase package name")
         if not SOURCE.match(entry["source"]):
