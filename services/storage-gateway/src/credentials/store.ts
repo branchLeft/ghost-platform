@@ -1,3 +1,4 @@
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { and, asc, eq } from 'drizzle-orm';
@@ -30,34 +31,99 @@ export type InsertResult =
 
 export type DisableResult = 'disabled' | 'not-active' | 'unknown';
 
+/** Thrown at open when the database file is older than the last write this host recorded. */
+export class StoreRollbackError extends Error {
+  constructor(
+    readonly found: number,
+    readonly expected: number
+  ) {
+    super(
+      `the credential store is at generation ${found} but this host last wrote ${expected}: ` +
+        'it was restored from an older copy; refusing to start'
+    );
+    this.name = 'StoreRollbackError';
+  }
+}
+
+/** Reads a generation anchor; a missing file is generation 0, a damaged one is an error. */
+function readAnchor(path: string): number {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    if ((err as { code?: string }).code === 'ENOENT') return 0;
+    throw err;
+  }
+  if (!/^[0-9]{1,15}\n?$/.test(text)) throw new Error('the generation anchor is damaged');
+  return Number(text.trim());
+}
+
+/** Replaces the anchor atomically and flushes it, so it never reads back short or older. */
+function writeAnchor(path: string, generation: number): void {
+  const temp = `${path}.tmp`;
+  const fd = openSync(temp, 'w', 0o600);
+  try {
+    writeSync(fd, `${generation}\n`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temp, path);
+}
+
 /**
  * The credential store, in one SQLite file through Drizzle. Holds no secret:
- * a tenant's secret is derived from the master secret and the key id on
- * demand. Writes are synchronous and committed with `synchronous = FULL`,
- * so a credential whose secret was handed out survives a power cut.
- * There is no delete: a key id, once minted, is taken for good.
+ * a secret is derived from the master secret and key id on demand. Writes
+ * commit with `synchronous = FULL`. There is no delete: a key id, once
+ * minted, is taken for good.
+ *
+ * Rollback guard: each change bumps `user_version`, then an anchor file
+ * beside the database. Opening a database below the anchor refuses to start.
+ * Keep the anchor off the restored volume and out of the backup job.
  */
 export class SqliteCredentialStore implements CredentialStore {
   readonly #client: Database.Database;
   readonly #db: BetterSQLite3Database;
 
-  private constructor(client: Database.Database) {
+  readonly #anchorPath: string | undefined;
+
+  private constructor(client: Database.Database, anchorPath: string | undefined) {
     this.#client = client;
     this.#db = drizzle(client);
+    this.#anchorPath = anchorPath;
   }
 
   /** Opens (creating if absent) the store at `path` and brings its schema up to date. */
-  static open(path: string, migrationsFolder: string = MIGRATIONS_FOLDER): SqliteCredentialStore {
+  static open(
+    path: string,
+    migrationsFolder: string = MIGRATIONS_FOLDER,
+    anchorPath: string | undefined = path === ':memory:' ? undefined : `${path}.generation`
+  ): SqliteCredentialStore {
     const client = new Database(path);
     try {
       client.pragma('journal_mode = WAL');
       client.pragma('synchronous = FULL');
       migrate(drizzle(client), { migrationsFolder });
+      if (anchorPath !== undefined) {
+        const found = client.pragma('user_version', { simple: true }) as number;
+        const expected = readAnchor(anchorPath);
+        if (found < expected) throw new StoreRollbackError(found, expected);
+        // A database ahead of its anchor (a crash between the two writes,
+        // or a first run) catches the anchor up; it never moves it back.
+        if (found > expected) writeAnchor(anchorPath, found);
+      }
     } catch (err) {
       client.close();
       throw err;
     }
-    return new SqliteCredentialStore(client);
+    return new SqliteCredentialStore(client, anchorPath);
+  }
+
+  /** Moves the generation forward after a change, in the database and then the anchor. */
+  #advance(): void {
+    const next = (this.#client.pragma('user_version', { simple: true }) as number) + 1;
+    this.#client.pragma(`user_version = ${next}`);
+    if (this.#anchorPath !== undefined) writeAnchor(this.#anchorPath, next);
   }
 
   lookup(keyId: string): Promise<CredentialRecord | undefined> {
@@ -82,7 +148,10 @@ export class SqliteCredentialStore implements CredentialStore {
       .returning()
       .all();
     const row = inserted[0];
-    if (row !== undefined) return { ok: true, credential: { ...row } };
+    if (row !== undefined) {
+      this.#advance();
+      return { ok: true, credential: { ...row } };
+    }
     if (this.get(credential.keyId) !== undefined) return { ok: false, reason: 'key-id-taken' };
     return { ok: false, reason: 'folder-has-active-credential' };
   }
@@ -100,12 +169,14 @@ export class SqliteCredentialStore implements CredentialStore {
 
   /** Disables every active credential for a folder; returns how many it changed. */
   disableFolder(folder: string): number {
-    return this.#db
+    const changed = this.#db
       .update(credentials)
       .set({ state: 'disabled' })
       .where(and(eq(credentials.folder, folder), eq(credentials.state, 'active')))
       .returning({ keyId: credentials.keyId })
       .all().length;
+    if (changed > 0) this.#advance();
+    return changed;
   }
 
   /** Moves an active credential to disabled. A credential not active is left as it is. */
@@ -116,7 +187,10 @@ export class SqliteCredentialStore implements CredentialStore {
       .where(and(eq(credentials.keyId, keyId), eq(credentials.state, 'active')))
       .returning({ keyId: credentials.keyId })
       .all();
-    if (updated.length === 1) return 'disabled';
+    if (updated.length === 1) {
+      this.#advance();
+      return 'disabled';
+    }
     return this.get(keyId) === undefined ? 'unknown' : 'not-active';
   }
 

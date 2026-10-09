@@ -58,7 +58,9 @@ export type RefusalCode =
   /** The request names a bucket other than the tenant's assigned bucket. */
   | 'bucket-not-allowed'
   /** The object key is outside the tenant's folder. */
-  | 'key-outside-folder';
+  | 'key-outside-folder'
+  /** The upload id was not issued to this tenant for this object, or is unknown to the gateway. */
+  | 'upload-not-bound';
 
 /** A refusal: always carries a code, a client-safe message and an HTTP status. */
 export interface Refusal {

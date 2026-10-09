@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SqliteCredentialStore } from '../../src/credentials/store.js';
+import { SqliteCredentialStore, StoreRollbackError } from '../../src/credentials/store.js';
 
 const KEY = 'GWAAAAAAAAAAAAAAAAAAAAAAAA';
 const NEW = {
@@ -102,5 +102,82 @@ describe('SqliteCredentialStore', () => {
     expect(() =>
       SqliteCredentialStore.open(join(dir, 'other.sqlite'), join(dir, 'missing'))
     ).toThrow();
+  });
+
+  describe('rollback guard', () => {
+    const OTHER = { ...NEW, keyId: 'GWBBBBBBBBBBBBBBBBBBBBBBBB', folder: 'f1f1f1f1f1f1f1f1f1f1' };
+
+    function restoreOlderCopy(backup: string): void {
+      store.close();
+      copyFileSync(backup, path);
+      rmSync(`${path}-wal`, { force: true });
+      rmSync(`${path}-shm`, { force: true });
+    }
+
+    function backUp(): string {
+      store.close();
+      const backup = join(dir, 'backup.sqlite');
+      copyFileSync(path, backup);
+      store = SqliteCredentialStore.open(path);
+      return backup;
+    }
+
+    it('refuses to open a database restored from before a credential was disabled', () => {
+      store.insert(NEW);
+      const backup = backUp();
+      expect(store.disable(KEY)).toBe('disabled');
+      restoreOlderCopy(backup);
+      expect(() => SqliteCredentialStore.open(path)).toThrow(StoreRollbackError);
+    });
+
+    it('refuses a restore that predates a new mint, folder disable or insert', () => {
+      const backup = backUp();
+      store.insert(NEW);
+      store.insert(OTHER);
+      expect(store.disableFolder(NEW.folder)).toBe(1);
+      restoreOlderCopy(backup);
+      expect(() => SqliteCredentialStore.open(path)).toThrow(/restored from an older copy/);
+    });
+
+    it('opens normally after ordinary restarts, and counts only real changes', () => {
+      store.insert(NEW);
+      store.disable(KEY);
+      store.disable(KEY);
+      store.disableFolder('nothing-here-at-all');
+      store.insert(NEW);
+      store.close();
+      store = SqliteCredentialStore.open(path);
+      expect(store.get(KEY)?.state).toBe('disabled');
+      expect(readGeneration()).toBe(2);
+    });
+
+    it('catches a stale anchor up to the database and never moves it back', () => {
+      store.insert(NEW);
+      store.close();
+      writeFileSync(`${path}.generation`, '0\n');
+      store = SqliteCredentialStore.open(path);
+      expect(readGeneration()).toBe(1);
+    });
+
+    it('treats a damaged anchor as an error rather than as no anchor', () => {
+      store.close();
+      writeFileSync(`${path}.generation`, 'garbage');
+      expect(() => SqliteCredentialStore.open(path)).toThrow(/damaged/);
+    });
+
+    it('can keep the anchor elsewhere, and has none for an in-memory store', () => {
+      const memory = SqliteCredentialStore.open(':memory:');
+      expect(memory.insert(NEW).ok).toBe(true);
+      memory.close();
+      const anchor = join(dir, 'elsewhere.anchor');
+      const second = SqliteCredentialStore.open(join(dir, 'second.sqlite'), undefined, anchor);
+      second.insert(NEW);
+      second.close();
+      expect(readFileSync(anchor, 'utf8')).toBe('1\n');
+    });
+
+    function readGeneration(): number {
+      return Number(readFileSync(`${path}.generation`, 'utf8'));
+    }
   });
 });

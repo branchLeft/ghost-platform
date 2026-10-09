@@ -36,6 +36,11 @@ const REFUSALS: Readonly<Record<RefusalCode, Refusal>> = {
     message: 'Access to this bucket is not allowed.',
     status: 403,
   },
+  'upload-not-bound': {
+    code: 'upload-not-bound',
+    message: 'This upload is not open for this object name.',
+    status: 403,
+  },
   'key-outside-folder': {
     code: 'key-outside-folder',
     message: 'Access to this object name is not allowed.',
