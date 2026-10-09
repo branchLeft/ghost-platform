@@ -4,8 +4,12 @@
 
 Every image this repo asks Docker to pull must be one of:
 
-- `ghcr.io/branchleft/mirror/<name>@sha256:<digest>` where the name and digest
-  pair is in `.github/image-mirror/images.json`;
+- `${IMAGE_REGISTRY:-<public namespace>}/<name>[:tag]@sha256:<digest>`, where
+  `<public namespace>/<name>` is the image's public source for that digest in
+  `.github/image-mirror/images.json`. With the variable unset (every local
+  build) it is the public image, pulled with no credential; CI alone sets
+  `IMAGE_REGISTRY=ghcr.io/branchleft/mirror`, which resolves to the private
+  mirror copy of the same digest;
 - another `ghcr.io/branchleft/<name>@sha256:<digest>` (our own published image,
   pinned by digest);
 - a local build tagged `:ci` or `:proof`, or any name built in the tree by
@@ -13,8 +17,12 @@ Every image this repo asks Docker to pull must be one of:
 
 Everything else is a finding, and the kind says why: `unqualified` (no
 registry, so it resolves to Docker Hub), `docker.io`, `other-registry`,
-`tag-only` (a tag can move) or `not-on-list` (a mirror reference whose digest
-is not mirrored, so it would 404).
+`tag-only` (a tag can move), `hard-coded-mirror` (a literal
+`ghcr.io/branchleft/mirror/...` with no public default, which would break a
+local build), `bad-default` (the variable form is malformed, has no default, or
+its default is not the public source of that digest), `bad-override` (a workflow
+sets `IMAGE_REGISTRY` to anything but the mirror) and `override-no-permission`
+(a workflow sets it without `packages: read`).
 
 ## What it reads
 
@@ -43,6 +51,7 @@ rewritten to the mirror.
 ## Proof
 
 `--self-test` builds throwaway trees and requires, in order, that a `FROM ghost:`
-line, a tag-only mirror reference and an unqualified workflow service image each
+line, a tag-only reference, a hard-coded mirror reference, a wrong public default,
+an unqualified workflow service image, and two bad workflow overrides each
 produce exactly one finding, and that a clean tree produces none. The same
 cases run through `--mode enforce` in `scripts/test_image_mirror.py`.

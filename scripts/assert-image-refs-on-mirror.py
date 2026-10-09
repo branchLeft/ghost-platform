@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_LIST = Path(__file__).resolve().parent.parent / ".github" / "image-mirror" / "images.json"
+MIRROR_REGISTRY = "ghcr.io/branchleft/mirror"
 MIRROR_PREFIX = "branchleft/mirror/"
 OWN_PREFIX = "branchleft/"
 LOCAL_BUILD_TAGS = {"ci", "proof"}
@@ -39,7 +40,15 @@ IMAGE_RE = re.compile(
 CODE_TAG_RE = re.compile(r"\A(latest|v?[0-9][A-Za-z0-9._-]*)\Z")
 FROM_RE = re.compile(r"\A\s*FROM\s+(?:--[a-z-]+=\S+\s+)*(?P<ref>\S+)(?:\s+AS\s+(?P<stage>\S+))?", re.I)
 YAML_IMAGE_RE = re.compile(r"\A\s*(?:-\s+)?(?:image|container):\s*(?P<ref>[^\s#]+)\s*(?:#.*)?\Z")
-IMAGE_VAR_RE = re.compile(r"""[A-Z][A-Z0-9_]*_IMAGE(?::-|=)["']?(?P<ref>[^\s"'}$]+)""")
+REGISTRY_VAR_START = re.compile(r"\A\$\{?IMAGE_REGISTRY")
+VAR_REF = re.compile(
+    r"\A\$\{IMAGE_REGISTRY:-(?P<ns>[A-Za-z0-9][A-Za-z0-9._/-]*)\}/(?P<name>[a-z0-9][a-z0-9-]*)"
+    r"(?::(?P<tag>[A-Za-z0-9_][A-Za-z0-9._-]*))?(?:@(?P<digest>sha256:[0-9a-f]{64}))?\Z"
+)
+OVERRIDE_RE = re.compile(r"\bIMAGE_REGISTRY:\s*[\"']?(?P<value>[^\s\"'#]+)")
+IMAGE_VAR_RE = re.compile(
+    r"""[A-Z][A-Z0-9_]*_IMAGE(?::-|=)["']?(?P<ref>\$\{?IMAGE_REGISTRY[^\s"']*|[^\s"'}$]+)"""
+)
 STRING_RE = re.compile(r"""(?P<q>['"`])(?P<ref>[^'"`\s]+)(?P=q)""")
 DOCKER_RE = re.compile(r"\bdocker\s+(?P<verb>run|create|pull)\b(?P<rest>.*)")
 VALUE_FLAGS = {
@@ -68,7 +77,19 @@ class Finding:
 
 
 def classify(ref: str, mirror: set[tuple[str, str]], local: frozenset[str] = frozenset()) -> tuple[str, str] | None:
-    """Return (kind, why) when the ref is not allowed, None when it is."""
+    """Return (kind, why) when the ref is not allowed, None when it is.
+
+    `mirror` holds (public source path, digest) pairs from the list.
+    """
+    if REGISTRY_VAR_START.match(ref):
+        v = VAR_REF.match(ref)
+        if not v:
+            return ("bad-default", "IMAGE_REGISTRY reference is not ${IMAGE_REGISTRY:-<public namespace>}/<name>@sha256:<digest>")
+        if not v["digest"]:
+            return ("tag-only", "no @sha256 digest: a tag can move; pin by digest")
+        if (f"{v['ns']}/{v['name']}", v["digest"]) not in mirror:
+            return ("bad-default", f"default {v['ns']}/{v['name']} is not the public source of this digest on the list")
+        return None
     m = IMAGE_RE.match(ref)
     if not m or IP_RE.match(ref) or not re.search("[A-Za-z]", m["repo"]):
         return None  # not an image reference at all (a uid:gid, a port mapping)
@@ -90,13 +111,19 @@ def classify(ref: str, mirror: set[tuple[str, str]], local: frozenset[str] = fro
         return ("other-registry", f"{registry} reference; mirror it and use the mirror by digest")
     if not path.startswith(OWN_PREFIX):
         return ("other-registry", "ghcr.io reference outside branchleft; mirror it and use the mirror by digest")
+    if path.startswith(MIRROR_PREFIX):
+        return (
+            "hard-coded-mirror",
+            "mirror path with no public default breaks local builds: use ${IMAGE_REGISTRY:-<public namespace>}/<name>@sha256:<digest>",
+        )
     if not digest:
         return ("tag-only", "no @sha256 digest: a tag can move; pin by digest")
-    if path.startswith(MIRROR_PREFIX):
-        name = path[len(MIRROR_PREFIX):]
-        if (name, digest) not in mirror:
-            return ("not-on-list", f"{name} {digest[:19]}... is not in the mirror list")
     return None
+
+
+def plain_or_registry_var(ref: str) -> bool:
+    """True for a literal reference or the one variable form the guard understands."""
+    return "$" not in ref or bool(REGISTRY_VAR_START.match(ref))
 
 
 def tokens_after_docker(rest: str) -> str | None:
@@ -133,7 +160,7 @@ def candidates(path: str, lines: list[str]) -> list[tuple[int, str]]:
             m = FROM_RE.match(line)
             if m:
                 ref = m["ref"]
-                if ref != "scratch" and ref not in stages and "$" not in ref:
+                if ref != "scratch" and ref not in stages and plain_or_registry_var(ref):
                     found.append((i, ref))
                 if m["stage"]:
                     stages.add(m["stage"])
@@ -143,7 +170,7 @@ def candidates(path: str, lines: list[str]) -> list[tuple[int, str]]:
             continue
         if is_yaml:
             m = YAML_IMAGE_RE.match(line)
-            if m and "$" not in m["ref"] and m["ref"] not in ("true", "false"):
+            if m and plain_or_registry_var(m["ref"]) and m["ref"] not in ("true", "false"):
                 found.append((i, m["ref"].strip("'\"")))
         if suffix in (".sh", ".yml", ".yaml"):
             for m in IMAGE_VAR_RE.finditer(line):
@@ -157,7 +184,7 @@ def candidates(path: str, lines: list[str]) -> list[tuple[int, str]]:
                     joined += " " + lines[j]
                     j += 1
                 ref = tokens_after_docker(joined)
-                if ref and "$" not in ref and not ref.startswith(("/", ".", "~")):
+                if ref and plain_or_registry_var(ref) and not ref.startswith(("/", ".", "~")):
                     found.append((i, ref.strip("'\"")))
         elif is_code:
             window = " ".join(lines[max(0, i - 13):i]).lower()
@@ -202,8 +229,29 @@ def local_builds(root: Path, files: list[str]) -> frozenset[str]:
     return frozenset(names)
 
 
+def override_findings(root: Path, files: list[str]) -> list[Finding]:
+    """A workflow that sets IMAGE_REGISTRY must point it at the mirror and be able to pull from it."""
+    found: list[Finding] = []
+    for rel in sorted(files):
+        if not (rel.startswith(".github/workflows/") and rel.endswith((".yml", ".yaml"))):
+            continue
+        lines = read_text(root, rel) or []
+        text = "\n".join(lines)
+        for i, line in enumerate(lines, 1):
+            m = None if line.strip().startswith("#") else OVERRIDE_RE.search(line)
+            if not m:
+                continue
+            if m["value"] != MIRROR_REGISTRY:
+                found.append(Finding(rel, i, m["value"], "bad-override", f"CI override must be {MIRROR_REGISTRY}"))
+            elif not re.search(r"packages:\s*(read|write)", text):
+                found.append(
+                    Finding(rel, i, m["value"], "override-no-permission", "workflow sets the mirror but lacks packages: read")
+                )
+    return found
+
+
 def scan(root: Path, mirror: set[tuple[str, str]], allow: list[str]) -> list[Finding]:
-    findings: list[Finding] = []
+    findings: list[Finding] = override_findings(root, tracked_files(root))
     files = tracked_files(root)
     local = local_builds(root, files)
     for rel in sorted(files):
@@ -230,7 +278,7 @@ def scan(root: Path, mirror: set[tuple[str, str]], allow: list[str]) -> list[Fin
 
 def load_policy(path: Path) -> tuple[set[tuple[str, str]], list[str]]:
     data = json.loads(path.read_text())
-    mirror = {(e["name"], e["digest"]) for e in data["images"]}
+    mirror = {(e["source"], e["digest"]) for e in data["images"]}
     allow = []
     for entry in data.get("allow", []):
         if not entry.get("reason"):
@@ -249,37 +297,63 @@ def run(root: Path, policy: Path, mode: str) -> int:
 
 
 DIGEST_A = "sha256:" + "a" * 64
-SELF_LIST = {"registry": "ghcr.io/branchleft/mirror", "images": [{"name": "ghost", "digest": DIGEST_A}]}
+SELF_LIST = {
+    "registry": MIRROR_REGISTRY,
+    "images": [{"name": "ghost", "source": "docker.io/library/ghost", "digest": DIGEST_A}],
+}
+GOOD_REF = f"${{IMAGE_REGISTRY:-docker.io/library}}/ghost:6@{DIGEST_A}"
+WORKFLOW_HEAD = "permissions:\n  packages: read\njobs:\n  t:\n    env:\n"
 
 
 def self_test() -> int:
-    """Three sabotages must go red in enforce mode, then a clean tree green."""
+    """Each sabotage must go red in enforce mode, then a clean tree green."""
     cases = {
         "FROM ghost": ("Dockerfile", "FROM ghost:6.55.0-alpine\n", "unqualified"),
-        "tag-only mirror ref": (
+        "tag-only reference": (
             "Dockerfile",
-            "FROM ghcr.io/branchleft/mirror/ghost:6.55.0-alpine\n",
+            "FROM ${IMAGE_REGISTRY:-docker.io/library}/ghost:6.55.0-alpine\n",
             "tag-only",
+        ),
+        "hard-coded mirror reference": (
+            "Dockerfile",
+            f"FROM ghcr.io/branchleft/mirror/ghost@{DIGEST_A}\n",
+            "hard-coded-mirror",
+        ),
+        "wrong public default": (
+            "Dockerfile",
+            f"FROM ${{IMAGE_REGISTRY:-docker.io/elsewhere}}/ghost@{DIGEST_A}\n",
+            "bad-default",
         ),
         "unqualified workflow service image": (
             ".github/workflows/ci.yml",
             "jobs:\n  t:\n    services:\n      db:\n        image: postgres:17-alpine\n",
             "unqualified",
         ),
+        "override to somewhere else": (
+            ".github/workflows/ci.yml",
+            WORKFLOW_HEAD + "      IMAGE_REGISTRY: docker.io/library\n",
+            "bad-override",
+        ),
+        "override without packages: read": (
+            ".github/workflows/ci.yml",
+            f"jobs:\n  t:\n    env:\n      IMAGE_REGISTRY: {MIRROR_REGISTRY}\n",
+            "override-no-permission",
+        ),
     }
     clean = {
-        "Dockerfile": f"FROM ghcr.io/branchleft/mirror/ghost@{DIGEST_A}\nFROM scratch\n",
-        ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: docker build -t app:ci .\n",
+        "Dockerfile": f"ARG IMAGE_REGISTRY\nFROM {GOOD_REF}\nFROM scratch\n",
+        ".github/workflows/ci.yml": WORKFLOW_HEAD
+        + f"      IMAGE_REGISTRY: {MIRROR_REGISTRY}\n    steps:\n      - run: docker build -t app:ci .\n",
     }
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
         policy = Path(tmp) / "list.json"
         policy.write_text(json.dumps(SELF_LIST))
+        mirror, allow = load_policy(policy)
         for label, (rel, text, kind) in cases.items():
             root = Path(tmp) / label.replace(" ", "-")
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(text)
-            mirror, allow = load_policy(policy)
             kinds = [f.kind for f in scan(root, mirror, allow)]
             red = kinds == [kind]
             print(f"{'ok  ' if red else 'FAIL'} sabotage red: {label} -> {kinds}")
@@ -288,7 +362,6 @@ def self_test() -> int:
         for rel, text in clean.items():
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(text)
-        mirror, allow = load_policy(policy)
         left = scan(root, mirror, allow)
         print(f"{'ok  ' if not left else 'FAIL'} clean tree green -> {[f.render() for f in left]}")
         failures += 1 if left else 0

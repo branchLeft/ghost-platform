@@ -62,6 +62,8 @@ def load_list(path: Path) -> tuple[str, list[dict]]:
             raise ListError(f"images[{i}] name {entry['name']!r} is not a lowercase package name")
         if not SOURCE.match(entry["source"]):
             raise ListError(f"images[{i}] source {entry['source']!r} is not a registry path without tag or digest")
+        if entry["name"] != entry["source"].rsplit("/", 1)[-1]:
+            raise ListError(f"images[{i}] name must be the source's last path component, so ${{IMAGE_REGISTRY:-<namespace>}}/<name> works")
         if not DIGEST.match(entry["digest"]):
             raise ListError(f"images[{i}] digest {entry['digest']!r} is not sha256:<64 hex>")
         if entry["redistribution"] not in ("permitted", "conditioned"):

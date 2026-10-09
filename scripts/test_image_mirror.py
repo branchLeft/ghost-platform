@@ -171,6 +171,11 @@ class ListTests(unittest.TestCase):
         self.assertEqual([e["name"] for e in pinned], ["node"])
         self.assertTrue(pinned[0]["digest"].startswith("sha256:2d49d876"))
 
+    def test_rejects_a_name_that_is_not_the_sources_last_component(self):
+        bad = dict(ENTRY, name="ghosty")
+        with self.assertRaises(mirror.ListError):
+            mirror.load_list(self.write({"registry": REGISTRY, "images": [bad]}))
+
     def test_same_name_with_two_digests_is_fine(self):
         mirror.load_list(self.write({"registry": REGISTRY, "images": [ENTRY, dict(ENTRY, digest=OTHER)]}))
 
@@ -223,8 +228,9 @@ class MainTests(unittest.TestCase):
         self.assertIn("bad list", err)
 
 
-PAIRS = {("ghost", "sha256:" + "a" * 64)}
-MIRROR_OK = "ghcr.io/branchleft/mirror/ghost@sha256:" + "a" * 64
+PAIRS = {("docker.io/library/ghost", "sha256:" + "a" * 64)}
+MIRROR_OK = "${IMAGE_REGISTRY:-docker.io/library}/ghost:6@sha256:" + "a" * 64
+HARD_CODED = "ghcr.io/branchleft/mirror/ghost@sha256:" + "a" * 64
 
 
 class ClassifyTests(unittest.TestCase):
@@ -253,9 +259,13 @@ class ClassifyTests(unittest.TestCase):
             "registry-1.docker.io/library/ghost:6": "docker.io",
             "quay.io/minio/minio:latest": "other-registry",
             "ghcr.io/zitadel/zitadel" + digest: "other-registry",
-            "ghcr.io/branchleft/mirror/ghost:6.55.0-alpine": "tag-only",
+            "ghcr.io/branchleft/mirror/ghost:6.55.0-alpine": "hard-coded-mirror",
+            HARD_CODED: "hard-coded-mirror",
+            "${IMAGE_REGISTRY:-docker.io/library}/ghost:6.55.0-alpine": "tag-only",
+            "${IMAGE_REGISTRY:-docker.io/library}/ghost@sha256:" + "d" * 64: "bad-default",
+            "${IMAGE_REGISTRY:-docker.io/other}/ghost@sha256:" + "a" * 64: "bad-default",
+            "${IMAGE_REGISTRY}/ghost@sha256:" + "a" * 64: "bad-default",
             "ghcr.io/branchleft/ghost-tenant:latest": "tag-only",
-            "ghcr.io/branchleft/mirror/ghost@sha256:" + "d" * 64: "not-on-list",
             "ghost-platform:latest": "unqualified",
         }
         for ref, kind in cases.items():
@@ -335,13 +345,46 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(self.kinds(files), [])
 
 
+class LocalDevelopmentTests(unittest.TestCase):
+    """The variable form keeps a local build credential-free and on the same bytes."""
+
+    def test_shell_and_compose_forms_with_a_public_default_are_clean(self):
+        digest = "sha256:" + "a" * 64
+        files = {
+            "s.sh": f'GHOST_IMAGE="${{IMAGE_REGISTRY:-docker.io/library}}/ghost:6@{digest}"\n'
+            f'docker run --rm "${{IMAGE_REGISTRY:-docker.io/library}}/ghost:6@{digest}" true\n',
+            "compose.yml": f"services:\n  a:\n    image: ${{IMAGE_REGISTRY:-docker.io/library}}/ghost:6@{digest}\n",
+        }
+        self.assertEqual(ScanTests().kinds(files), [])
+
+    def test_a_variable_without_a_public_default_is_refused(self):
+        digest = "sha256:" + "a" * 64
+        files = {"compose.yml": f"services:\n  a:\n    image: ${{IMAGE_REGISTRY}}/ghost@{digest}\n"}
+        self.assertEqual(ScanTests().kinds(files), [("compose.yml", 3, "bad-default")])
+
+    def test_the_pilot_dockerfile_uses_the_variable_form_and_is_clean(self):
+        text = (REPO / "widgets" / "origin" / "Dockerfile").read_text()
+        self.assertIn("FROM ${IMAGE_REGISTRY:-docker.io/library}/caddy:2-alpine@sha256:", text)
+        mirror_pairs, allow = guard.load_policy(LIST)
+        paths = [f.path for f in guard.scan(REPO, mirror_pairs, allow)]
+        self.assertNotIn("widgets/origin/Dockerfile", paths)
+
+    def test_the_pilot_default_is_the_public_source_of_a_listed_digest(self):
+        text = (REPO / "widgets" / "origin" / "Dockerfile").read_text()
+        ref = text.split("FROM ", 1)[1].split()[0]
+        mirror_pairs, _ = guard.load_policy(LIST)
+        self.assertIsNone(guard.classify(ref, mirror_pairs))
+
+
 class ModeTests(unittest.TestCase):
     """The sabotage cases, in the mode PR B turns on, then the clean tree."""
 
     def run_guard(self, files, mode):
         _, root = scan_tree(files)
         policy = root / "policy.json"
-        policy.write_text(json.dumps({"images": [{"name": "ghost", "digest": "sha256:" + "a" * 64}]}))
+        policy.write_text(
+            json.dumps({"images": [{"name": "ghost", "source": "docker.io/library/ghost", "digest": "sha256:" + "a" * 64}]})
+        )
         out = io.StringIO()
         with redirect_stdout(out):
             code = guard.main(["--root", str(root), "--list", str(policy), "--mode", mode])
@@ -349,7 +392,14 @@ class ModeTests(unittest.TestCase):
 
     SABOTAGE = {
         "re-added FROM ghost": {"Dockerfile": "FROM ghost:6.55.0-alpine\n"},
-        "tag-only mirror ref": {"Dockerfile": "FROM ghcr.io/branchleft/mirror/ghost:6.55.0-alpine\n"},
+        "tag-only mirror ref": {"Dockerfile": "FROM ${IMAGE_REGISTRY:-docker.io/library}/ghost:6.55.0-alpine\n"},
+        "hard-coded mirror ref": {"Dockerfile": f"FROM {HARD_CODED}\n"},
+        "mirror override without packages: read": {
+            ".github/workflows/ci.yml": "jobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror\n"
+        },
+        "override to the public registry": {
+            ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: docker.io/library\n"
+        },
         "unqualified workflow service image": {
             ".github/workflows/ci.yml": "jobs:\n  t:\n    services:\n      db:\n        image: postgres:17-alpine\n"
         },
@@ -369,8 +419,8 @@ class ModeTests(unittest.TestCase):
 
     def test_enforce_is_green_on_a_clean_tree(self):
         files = {
-            "Dockerfile": f"FROM {MIRROR_OK}\n",
-            ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: docker build -t app:ci .\n",
+            "Dockerfile": f"ARG IMAGE_REGISTRY\nFROM {MIRROR_OK}\n",
+            ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror\n    steps:\n      - run: docker build -t app:ci .\n",
         }
         code, out = self.run_guard(files, "enforce")
         self.assertEqual(code, 0)
