@@ -55,6 +55,15 @@ Every decision is logged without the token itself: `break-glass: token accepted 
 
 **Never render `adapters__sso__active=BreakGlassSSO` for a tenant whose image predates this adapter.** Ghost cannot find the adapter and refuses to boot: `Unable to find sso adapter BreakGlassSSO in …`. The image pin bump has to land and deploy before the config that selects the adapter. The partial-triple rule works the other way round: a missing setting disables the adapter, and the site still boots.
 
+## Minting, the grant lanes and the four-hour clock
+
+The rest of LLD-5 section 05 is in `scripts/`. The owner runs it, and no agent does:
+
+- `scripts/break-glass-mint.mjs` runs on `ops1`. It holds the only private key, at `/etc/branchleft/break-glass/`, mints for at most 600 seconds, and builds `/ghost/` URLs only. See `scripts/break-glass-mint.md`.
+- `scripts/break-glass-grant.mjs` runs on the tenant's host. It opens the consented or incident lane, closes it, and runs every minute from `scripts/systemd/branchleft-break-glass-expire.timer` to close any grant past its four hours. See `scripts/break-glass-grant.md`.
+
+The host steps are in `ghost-platform-docs`, `break-glass-runbook.md`. `test/image/break-glass-lanes.image.test.mjs` proves both scripts against the built image.
+
 ## What Ghost's extension point does, and the traps in it
 
 Ghost 6.55.0 constructs the adapter while building the admin app (`core/server/services/auth/session/index.js:76`) and validates configured adapters at boot (`adapter-manager` `init()`).
