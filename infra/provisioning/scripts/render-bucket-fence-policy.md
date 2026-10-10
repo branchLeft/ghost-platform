@@ -91,15 +91,28 @@ everybody locks it. Both directions are settled only by
 `verify-bucket-fence.py` against the live bucket, run before the operator
 walks away -- see RUNBOOK-bucket-fencing.md.
 
-Nor can it establish that `--project-id` is the right project. Every principal
-here is built from that one value, so `assert_recoverable()` below compares a
-fabricated ARN against itself and passes for any project id at all -- while
-live, an ARN carrying the right access key under the wrong account names a
-principal that does not exist, and the operator's `NotPrincipal` exemption
-exempts nobody. That is the one lockout no offline check can see. It is caught
-by resolving the account from the credential itself, which
-`verify-bucket-fence.py --preflight` and `configure_backup_bucket.py` both do
-before anything is written.
+Nor can it establish that a project id is the right project. Each principal
+is built from the project id it is given, so `assert_recoverable()` below
+compares a fabricated ARN against itself and passes for any project id at
+all -- while live, an ARN carrying the right access key under the wrong
+account names a principal that does not exist, and the operator's
+`NotPrincipal` exemption exempts nobody. That is the one lockout no offline
+check can see. It is caught by resolving the account from the credential
+itself, which `verify-bucket-fence.py --preflight` and
+`configure_backup_bucket.py` both do before anything is written.
+
+ONE PROJECT PER STORAGE KEY. The estate keeps the operator key, each state
+key and the read-only key in projects of their own, so no two keys can read
+each other's objects by project default. A principal built from the wrong
+project is not inert under a `NotPrincipal` deny: it denies the real key.
+`--project-id` is therefore the single-project form only, every key in one
+project, and is refused together with any per-key id. The split form gives
+`--admin-project-id`, and for each role that has keys, `--workload-project-id`,
+`--writer-project-id` or `--reader-project-id`. A role with keys and no
+project id is refused rather than defaulted to the operator's, and a project
+id naming no key is refused as a typo. In the split form the explicit
+`Allow` statements are what admit a key from another project, no longer
+redundant with the project default.
 
 ## Operator-only object actions
 
