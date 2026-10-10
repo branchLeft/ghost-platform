@@ -90,9 +90,9 @@ describe('loadConfig', () => {
   });
 
   describe('a loopback listener with no trusted proxy', () => {
-    // Only a local proxy can reach a loopback listener, so every socket
-    // peer is that proxy: with nobody trusted, every visitor shares one
-    // ceiling bucket and ten bad passphrases lock everyone out.
+    // The peers on a loopback listener are host-local processes, the edge
+    // being the one this repo places: with nobody trusted, every visitor
+    // shares one ceiling bucket.
     it.each([
       ['the default listen address', undefined],
       ['127.0.0.1', '127.0.0.1'],

@@ -64,8 +64,10 @@ export function loadConfig(
   const host = env.LISTEN_HOST || '127.0.0.1';
   const trustedProxies = parseTrustedProxies(env.GATE_TRUSTED_PROXIES ?? '');
   // An empty list stays "trust nobody". On a loopback listener that is a
-  // misconfiguration, not a posture: the only possible peer is the local
-  // edge, so every visitor would share one ceiling bucket.
+  // misconfiguration, not a posture: the peers there are host-local
+  // processes (the edge is the only one this repo places), so with nobody
+  // trusted every visitor shares one ceiling bucket. Trusting the edge also
+  // lets a host-local process set its own source.
   if (isLoopbackHost(host) && trustedProxies.rules.length === 0) {
     throw new Error(
       `GATE_TRUSTED_PROXIES must name the edge when the gate listens on loopback (${host}): ` +

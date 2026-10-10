@@ -100,9 +100,13 @@ export function parseTrustedProxies(spec: string): BlockList {
 }
 
 /**
- * Whether a listen address is the host's own loopback: `localhost`, any
- * 127/8 address, `::1` in any spelling, or an IPv4-mapped loopback. Only a
- * local proxy can reach a listener bound there.
+ * Whether a listen address is a loopback spelling this guard recognises: a
+ * dotted-quad address in 127/8, `localhost`, `::1` and its expanded forms
+ * (bracketed or not), and `::ffff:` plus a dotted-quad loopback. NOT
+ * recognised, though the OS binds each to loopback: integer, hex and short
+ * IPv4 (`2130706433`, `0x7f.1`, `127.1`), hex-mapped IPv6 (`::ffff:7f00:1`),
+ * `localhost.` and zone ids (`::1%lo0`). A miss fails to the pooled bucket,
+ * never to a spoof: this is a catch for a misconfiguration, not a control.
  */
 export function isLoopbackHost(host: string): boolean {
   const bare = host

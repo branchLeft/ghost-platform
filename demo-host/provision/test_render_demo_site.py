@@ -177,10 +177,11 @@ class GateEnvironmentTests(unittest.TestCase):
         return {key: value for key, value in pairs}
 
     def test_trusted_proxies_is_exactly_the_edge_address(self):
-        self.assertEqual(self.environment()["GATE_TRUSTED_PROXIES"], rde.DEMO_EDGE_ADDR)
+        self.assertEqual(self.environment().get("GATE_TRUSTED_PROXIES", ""), rde.DEMO_EDGE_ADDR)
 
     def test_trusted_proxies_is_one_host_never_a_range_or_a_list(self):
-        value = self.environment()["GATE_TRUSTED_PROXIES"]
+        value = self.environment().get("GATE_TRUSTED_PROXIES", "")
+        self.assertNotEqual(value, "", "the trusted list is unset")
         self.assertNotIn(",", value)
         network = ipaddress.ip_network(value, strict=True)
         self.assertEqual(network.prefixlen, network.max_prefixlen)
@@ -188,11 +189,12 @@ class GateEnvironmentTests(unittest.TestCase):
     def test_the_gate_listens_where_the_site_block_dials_it(self):
         host, port = rds.GATE_UPSTREAM.rsplit(":", 1)
         environment = self.environment()
-        self.assertEqual((environment["LISTEN_HOST"], environment["PORT"]), (host, port))
+        self.assertEqual((environment.get("LISTEN_HOST", ""), environment.get("PORT", "")), (host, port))
         self.assertIn(f"reverse_proxy {rds.GATE_UPSTREAM}", block())
 
     def test_the_trusted_address_is_the_one_the_edge_dials_upstreams_from(self):
-        self.assertEqual(self.environment()["GATE_TRUSTED_PROXIES"], rds.GATE_UPSTREAM.rsplit(":", 1)[0])
+        trusted = self.environment().get("GATE_TRUSTED_PROXIES", "")
+        self.assertEqual(trusted, rds.GATE_UPSTREAM.rsplit(":", 1)[0])
         self.assertIn(f"reverse_proxy {rde.DEMO_EDGE_ADDR}:", rds.render_caddyfile([("0", EDGE)]))
 
     def test_main_writes_the_gate_environment_beside_the_caddyfile(self):

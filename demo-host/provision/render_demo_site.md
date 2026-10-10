@@ -48,8 +48,11 @@ dials the gate, and `GATE_TRUSTED_PROXIES` set to the edge's own address,
 all from `render_demo_edge.DEMO_EDGE_ADDR` so none is a second literal.
 
 - **Why it must be set.** The edge shares the host network namespace, so
-  the gate's socket peer is always the edge. Unset, every visitor shares
-  one attempt-ceiling bucket and ten wrong guesses lock everyone out.
+  for every visitor request the gate's socket peer is the edge. Unset,
+  every visitor shares one attempt-ceiling bucket.
+- **A host-local process can set its own source.** Trust is by address, so
+  any process on the host that can open the gate's port is a trusted peer
+  and may choose its source with `X-Forwarded-For`. A visitor cannot.
 - **Exactly one address.** Never the 127/8 range, never a wildcard: the
   gate honours `X-Forwarded-For` only from a listed peer, so a wider list
   lets a visitor choose their own source. The default stays empty.
