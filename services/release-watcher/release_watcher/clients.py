@@ -137,6 +137,10 @@ class GitHubApi:
             return False
         raise RuntimeError(f"GitHub create branch failed: HTTP {status}")
 
+    def compare(self, base, head):
+        """behind_by counts base commits missing from head; files lists what head changes."""
+        return self._call("GET", f"compare/{base}...{head}")
+
     def read_file(self, path, ref):
         """Raw text at a ref, via the raw media type, so no decoding happens here."""
         status, _headers, raw = self._request(

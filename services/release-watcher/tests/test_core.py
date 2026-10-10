@@ -174,9 +174,11 @@ class DecideTests(unittest.TestCase):
 
 class AgeMetricTests(unittest.TestCase):
     def test_renders_the_last_success_timestamp_as_a_gauge(self):
-        text = core.render_age_metric(1760000000.9)
+        text = core.render_age_metric(1760000000.9, pr_writes_enabled=False)
         self.assertIn("ghost_release_watcher_last_success_timestamp_seconds 1760000000\n", text)
         self.assertIn("# TYPE ghost_release_watcher_last_success_timestamp_seconds gauge", text)
+        self.assertIn("ghost_release_watcher_pr_writes_enabled 0\n", text)
+        self.assertIn("ghost_release_watcher_pr_writes_enabled 1\n", core.render_age_metric(1.0, True))
 
 
 if __name__ == "__main__":

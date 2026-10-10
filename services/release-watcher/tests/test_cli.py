@@ -21,12 +21,19 @@ class FakeRepo:
         self.branches = {}      # branch -> Dockerfile text
         self.pulls = []         # dicts with number, head, state, title
         self.fail = {}          # operation -> message, raised once then cleared
+        self.extra_changes = set()  # files other than Dockerfile that the branch changes
+        self.behind = 0         # commits on main that the branch does not have
         self.updates = []
         self.next_number = 1
 
     def _maybe_fail(self, op):
         if op in self.fail:
             raise RuntimeError(self.fail.pop(op))
+
+    def compare(self, base, head):
+        files = [{"filename": "Dockerfile"}] if self.branches.get(head) != self.main_text else []
+        files += [{"filename": name} for name in sorted(self.extra_changes)]
+        return {"behind_by": self.behind, "files": files}
 
     def list_pulls(self, branch, state):
         return [p for p in self.pulls if p["head"] == branch and p["state"] == state]
@@ -195,6 +202,33 @@ class RunTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_cli()
         self.assertFalse(self.metrics_written())
+
+    def test_a_kept_branch_that_changes_another_file_is_refused(self):
+        self.run_cli()
+        self.repo.extra_changes = {"README.md"}
+        with self.assertRaises(RuntimeError) as raised:
+            self.run_cli()
+        self.assertIn("README.md", str(raised.exception))
+        self.assertEqual(len(self.repo.pulls), 1)
+
+    def test_a_kept_branch_behind_main_is_refused_and_opens_nothing_new(self):
+        self.run_cli()
+        self.repo.behind = 2
+        with self.assertRaises(RuntimeError) as raised:
+            self.run_cli()
+        self.assertIn("behind main", str(raised.exception))
+        self.assertEqual(len(self.repo.pulls), 1)
+        self.assertEqual(self.repo.updates, [])
+
+    def test_a_run_without_a_token_says_it_cannot_open_prs_in_the_gauge(self):
+        self.run_cli(token=None)
+        with open(self.metrics, encoding="utf-8") as handle:
+            self.assertIn("ghost_release_watcher_pr_writes_enabled 0\n", handle.read())
+
+    def test_a_run_with_a_token_says_pr_writes_are_enabled_in_the_gauge(self):
+        self.run_cli()
+        with open(self.metrics, encoding="utf-8") as handle:
+            self.assertIn("ghost_release_watcher_pr_writes_enabled 1\n", handle.read())
 
     def test_a_new_major_is_noticed_on_every_run_and_nothing_is_recorded(self):
         FakeRegistry.tags = TAGS + ["7.0.0-alpine"]

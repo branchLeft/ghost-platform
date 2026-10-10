@@ -18,15 +18,32 @@ def line_branch(pin):
     return f"{BRANCH_PREFIX}{pin.version[0]}"
 
 
+def check_existing_branch(github, branch, main_sha):
+    """A kept branch must sit on main's current tip and change only the Dockerfile."""
+    comparison = github.compare(main_sha, branch)
+    if comparison["behind_by"] > 0:
+        raise RuntimeError(
+            f"{branch} is {comparison['behind_by']} commit(s) behind main; the owner deletes "
+            "the branch and the next run recreates it from main"
+        )
+    other = [f["filename"] for f in comparison.get("files", []) if f["filename"] != DOCKERFILE_PATH]
+    if other:
+        raise RuntimeError(
+            f"{branch} changes files other than {DOCKERFILE_PATH}: {', '.join(other)}; refusing"
+        )
+
+
 def reconcile_pr(github, main_text, main_sha, pin, decision):
     """Create or resume the line's PR. Every step is safe to rerun after a failure."""
     branch = line_branch(pin)
     created = github.create_branch(branch, main_sha)
+    if not created:
+        check_existing_branch(github, branch, main_sha)
     branch_text = main_text if created else github.read_file(DOCKERFILE_PATH, branch)
     if core.without_from_line(branch_text) != core.without_from_line(main_text):
         raise RuntimeError(
-            f"{branch} differs from main outside the FROM line; the owner must merge main "
-            "into it or delete it before the watcher can continue"
+            f"{branch} differs from main outside the FROM line; the owner must delete it "
+            "before the watcher can continue"
         )
     target_text = core.apply_pin(branch_text, decision.pr_tag, decision.pr_digest)
     open_pulls = github.list_pulls(branch, "open")
@@ -75,10 +92,12 @@ def main(argv=None):
         notes.append(f"new major {decision.notify_major} seen; notice only, nothing started")
         print(f"::notice::Ghost major {decision.notify_major} is available; no PR opened")
 
+    token = os.environ.get("RELEASE_WATCHER_TOKEN")
+    pr_writes_enabled = bool(token)
+    if not token:
+        notes.append("cannot open PRs: RELEASE_WATCHER_TOKEN is not set")
     if decision.pr_tag is not None:
-        token = os.environ.get("RELEASE_WATCHER_TOKEN")
         if not token:
-            notes.append("no PR: RELEASE_WATCHER_TOKEN is not set")
             print("::warning::pin is behind, but RELEASE_WATCHER_TOKEN is unset; no PR opened")
         else:
             github = GitHubApi(os.environ["GITHUB_REPOSITORY"], token)
@@ -89,7 +108,7 @@ def main(argv=None):
     # Written only after every step above has succeeded: a failure raises
     # before this line, so the gauge's age keeps growing.
     with open(args.metrics, "w", encoding="utf-8") as handle:
-        handle.write(core.render_age_metric(time.time()))
+        handle.write(core.render_age_metric(time.time(), pr_writes_enabled))
 
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:

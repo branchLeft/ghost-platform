@@ -69,7 +69,7 @@ jobs:
             (
               cd "$STATE_WORKTREE"
               git checkout --orphan state/release-watcher
-              git rm -rf . > /dev/null 2>&1 || true
+              git rm -r -f --quiet --ignore-unmatch .
             )
           fi
           echo "metrics=$STATE_WORKTREE/release-watcher.prom" >> "$GITHUB_OUTPUT"
@@ -88,6 +88,10 @@ jobs:
         run: |
           set -euo pipefail
           git add release-watcher.prom
+          if [ "$(git ls-files)" != "release-watcher.prom" ]; then
+            echo "::error::the state branch must track only release-watcher.prom"
+            exit 1
+          fi
           if git diff --cached --quiet; then
             echo "no change to the gauge"
             exit 0

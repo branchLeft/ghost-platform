@@ -115,10 +115,16 @@ def decide(
     return Decision(notify, newest_tag, digest, "pin is behind the registry line")
 
 
-def render_age_metric(last_success_epoch: float) -> str:
+def render_age_metric(last_success_epoch: float, pr_writes_enabled: bool) -> str:
+    # The second series lets a healthy-looking age hide nothing: 0 means runs
+    # succeed but cannot open PRs (no RELEASE_WATCHER_TOKEN).
     return (
         "# HELP ghost_release_watcher_last_success_timestamp_seconds "
         "Unix time of the last successful poll of the Ghost registry.\n"
         "# TYPE ghost_release_watcher_last_success_timestamp_seconds gauge\n"
         f"ghost_release_watcher_last_success_timestamp_seconds {int(last_success_epoch)}\n"
+        "# HELP ghost_release_watcher_pr_writes_enabled "
+        "1 when a token is configured to open PRs, 0 when runs cannot open PRs.\n"
+        "# TYPE ghost_release_watcher_pr_writes_enabled gauge\n"
+        f"ghost_release_watcher_pr_writes_enabled {1 if pr_writes_enabled else 0}\n"
     )

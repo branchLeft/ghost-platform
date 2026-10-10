@@ -17,15 +17,24 @@ Run by `.github/workflows/release-watcher-run.yml`. Tests:
 - One branch per major line, `release-watcher/ghost-<major>`. A newer tag or a
   changed digest on the same line updates the open PR in place. A PR is never
   duplicated.
-- A branch that differs from `main` anywhere other than the `FROM` line stops
-  the run. The owner merges `main` into it, or deletes it, before the watcher
-  continues.
+- A kept branch stops the run with an error and opens nothing when it is behind
+  `main`, when it changes any file other than `Dockerfile`, or when its
+  `Dockerfile` differs from `main` anywhere other than the `FROM` line. The owner
+  deletes the branch; the next run recreates it from `main`. The watcher never
+  updates or opens a PR on a stale base, but an already-open PR is not closed by
+  the refusal; the owner closes it.
 - A PR closed without merging is not reopened for the same digest. A newer tag
   or digest reopens it.
 - A failed step fails the run and does not update the poll-age gauge, so the
   gauge's age keeps growing until the cause is fixed.
 - The poll-age gauge is `ghost_release_watcher_last_success_timestamp_seconds`,
-  written to `release-watcher.prom` on the `state/release-watcher` branch.
+  written to `release-watcher.prom` on the `state/release-watcher` branch, beside
+  `ghost_release_watcher_pr_writes_enabled`. A value of 0 means the runs succeed
+  but cannot open PRs (no `RELEASE_WATCHER_TOKEN`), so a healthy age alone does
+  not mean PRs are opening.
+- When `main` moves to a newer major, a PR left open on the older line is not
+  touched again. It stays open until the owner closes it; the watcher now
+  follows the new line.
 
 ## The secret this needs
 
@@ -52,9 +61,9 @@ chosen by this change:
   it do not trigger the `pull_request` CI workflows, so their required checks
   never run and the PR cannot merge without a manual push.
 
-## Not wired yet
+## Not wired yet (named follow-ups)
 
-- The poll-age gauge is not scraped by any monitor. The stale-age alert cannot
-  fire until a scrape path exists.
+- The poll-age gauge is not scraped by any monitor, so the stale-age alert
+  cannot fire: [ISSUE branchLeft/workspace#2002](https://github.com/branchLeft/workspace/issues/2002).
 - The new-major notice is a run annotation only. The owner digest has no input
-  from this job, so the notice is not delivered to the owner.
+  from this job, so the owner is not notified: [ISSUE branchLeft/workspace#2001](https://github.com/branchLeft/workspace/issues/2001).
