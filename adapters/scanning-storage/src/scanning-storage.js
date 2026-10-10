@@ -24,9 +24,11 @@ function randomNameComponent() {
 }
 
 // Ghost saves an image and its untouched original (`name_o.ext`) as two
-// separate calls and later finds the original by that suffix, so the pair
-// must share one random component: it is remembered per directory and base
-// name for a short, bounded while.
+// separate calls and later finds the original by that suffix, so the two
+// halves must share one random component. A first half is remembered, keyed
+// by its own component, for a short, bounded while; the opposite half takes
+// it and consumes it. Only opposite halves ever link: a second upload of the
+// same name is the same half, and finds nothing to take.
 const PAIR_WINDOW_MS = 60000;
 const PAIR_MAX_ENTRIES = 1000;
 const ORIGINAL_SUFFIX = '_o';
@@ -42,18 +44,25 @@ function withRandomName(file, targetDir, pairs, now = Date.now()) {
   const isOriginal = stem.endsWith(ORIGINAL_SUFFIX) && stem.length > ORIGINAL_SUFFIX.length;
   const base = isOriginal ? stem.slice(0, -ORIGINAL_SUFFIX.length) : stem;
   const pairKey = `${targetDir || ''}\n${base}${ext}`;
-  for (const [key, entry] of pairs) {
+  let random;
+  for (const [component, entry] of pairs) {
     if (entry.expiresAt <= now) {
-      pairs.delete(key);
+      pairs.delete(component);
+    } else if (
+      random === undefined &&
+      entry.pairKey === pairKey &&
+      entry.isOriginal !== isOriginal
+    ) {
+      random = component;
+      pairs.delete(component);
     }
   }
-  let random = pairs.get(pairKey)?.random;
   if (random === undefined) {
     random = randomNameComponent();
     if (pairs.size >= PAIR_MAX_ENTRIES) {
       pairs.delete(pairs.keys().next().value);
     }
-    pairs.set(pairKey, { random, expiresAt: now + PAIR_WINDOW_MS });
+    pairs.set(random, { pairKey, isOriginal, expiresAt: now + PAIR_WINDOW_MS });
   }
   const suffix = isOriginal ? ORIGINAL_SUFFIX : '';
   return { ...file, name: `${base}-${random}${suffix}${ext}` };
@@ -172,12 +181,13 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         });
       }
       // Ghost names an upload after its own filename, so members-only and
-      // draft media would otherwise sit at a guessable URL.
-      const named = withRandomName(file, targetDir, this.namePairs);
+      // draft media would otherwise sit at a guessable URL. Named only once
+      // the scan has allowed it, so a refusal leaves no name behind.
       return this.#scanAndProceed(buffer, {
-        proceed: () => this.wrapped.save(named, targetDir),
+        proceed: () =>
+          this.wrapped.save(withRandomName(file, targetDir, this.namePairs), targetDir),
         onHold: (digest) =>
-          this.#registerHold(digest, buffer, this.#computeHeldTargetPath(digest, named, targetDir)),
+          this.#registerHold(digest, buffer, this.#computeHeldTargetPath(digest, file, targetDir)),
       });
     }
 
@@ -320,11 +330,13 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // avoids a real hazard that would otherwise exist here: two different
     // held uploads sharing an original filename would both compute as free
     // (nothing has been written to wrapped storage for either yet) and
-    // collide on promotion.
+    // collide on promotion. The digest is known to anyone holding the same
+    // bytes, so the random component is what keeps the key unguessable.
     #computeHeldTargetPath(digest, file, targetDir) {
       const dir = targetDir || this.#defaultTargetDir();
       const ext = path.extname((file && file.name) || '');
-      return path.join(dir, `${digest}${ext}`).split(path.sep).join('/');
+      const name = `${digest}-${randomNameComponent()}${ext}`;
+      return path.join(dir, name).split(path.sep).join('/');
     }
 
     // Ghost's own StorageBase provides getTargetDir on every real adapter;

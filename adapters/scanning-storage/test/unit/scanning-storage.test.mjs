@@ -387,11 +387,87 @@ describe('random upload names', () => {
     expect(nameOf(adapter, 0)).toMatch(/^members-report-[a-z2-7]{22}\.pdf$/);
   });
 
-  it('never repeats a component across uploads of the same filename', async () => {
+  const randomOf = (adapter, i) => /-([a-z2-7]{22})/.exec(nameOf(adapter, i))[1];
+  const saveAs = async (adapter, name, dir = '2026/10') =>
+    adapter.save(await writeTempFile(CLEAN_BYTES, name), dir);
+
+  it('does not repeat a component across uploads of the same filename in different directories', async () => {
     const { instance: adapter } = buildAdapter();
-    await adapter.save(await writeTempFile(CLEAN_BYTES, 'same.png'), '2026/10');
-    await adapter.save(await writeTempFile(CLEAN_BYTES, 'same.png'), '2026/11');
+    await saveAs(adapter, 'same.png', '2026/10');
+    await saveAs(adapter, 'same.png', '2026/11');
     expect(nameOf(adapter, 0)).not.toBe(nameOf(adapter, 1));
+  });
+
+  it('gives a second upload of the same filename in the same directory its own component', async () => {
+    const { instance: adapter } = buildAdapter({
+      wrappedConfig: { storagePath: 'wrapped', uniqueNames: true },
+    });
+    await saveAs(adapter, 'report.pdf');
+    await saveAs(adapter, 'report.pdf');
+    expect(randomOf(adapter, 0)).not.toBe(randomOf(adapter, 1));
+    // What the first public URL gives away must not locate the second object,
+    // even through the wrapped adapter's own `-1` step for a taken name.
+    const [first, second] = [...adapter.wrapped.files.keys()];
+    expect(second).not.toBe(first.replace(/\.pdf$/, '-1.pdf'));
+  });
+
+  it('does not give a finished pair component to a later upload of the same name', async () => {
+    const { instance: adapter } = buildAdapter();
+    await saveAs(adapter, 'a.png');
+    await saveAs(adapter, 'a_o.png');
+    await saveAs(adapter, 'a.png');
+    await saveAs(adapter, 'a_o.png');
+    expect(randomOf(adapter, 1)).toBe(randomOf(adapter, 0));
+    expect(randomOf(adapter, 2)).not.toBe(randomOf(adapter, 0));
+    expect(randomOf(adapter, 3)).toBe(randomOf(adapter, 2));
+  });
+
+  it('pairs the original with the processed copy whichever of the two arrives first', async () => {
+    const { instance: adapter } = buildAdapter();
+    await saveAs(adapter, 'b_o.png');
+    await saveAs(adapter, 'b.png');
+    expect(randomOf(adapter, 1)).toBe(randomOf(adapter, 0));
+    expect(nameOf(adapter, 0)).toBe(`b-${randomOf(adapter, 0)}_o.png`);
+    expect(nameOf(adapter, 1)).toBe(`b-${randomOf(adapter, 0)}.png`);
+  });
+
+  it('never links two uploads that are the same half of a pair', async () => {
+    const { instance: adapter } = buildAdapter();
+    await saveAs(adapter, 'c_o.png');
+    await saveAs(adapter, 'c_o.png');
+    await saveAs(adapter, 'd.png');
+    await saveAs(adapter, 'd.png');
+    expect(randomOf(adapter, 0)).not.toBe(randomOf(adapter, 1));
+    expect(randomOf(adapter, 2)).not.toBe(randomOf(adapter, 3));
+  });
+
+  it('draws the component from crypto.randomBytes, one base32 symbol per byte', async () => {
+    const { instance: adapter } = buildAdapter();
+    const file = await writeTempFile(CLEAN_BYTES, 'src.png');
+    const nodeCrypto = require('node:crypto');
+    const spy = vi
+      .spyOn(nodeCrypto, 'randomBytes')
+      .mockReturnValueOnce(Buffer.from(Array.from({ length: 22 }, (_, i) => i)));
+    try {
+      await adapter.save(file, '2026/10');
+      expect(spy).toHaveBeenCalledWith(22);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(nameOf(adapter, 0)).toBe('src-abcdefghijklmnopqrstuv.png');
+  });
+
+  it('names nothing before the safety gate has allowed the upload', async () => {
+    const { instance: adapter } = buildAdapter({
+      refuse: new Map([
+        [BAD_DIGEST, { classification: 'harmful-abusive-material', matchType: 'exact' }],
+      ]),
+    });
+    const file = await writeTempFile(BAD_BYTES, 'bad.png');
+    await expect(adapter.save(file, '2026/10')).rejects.toBeInstanceOf(
+      GhostErrors.UnsupportedMediaTypeError
+    );
+    expect(adapter.namePairs.size).toBe(0);
   });
 
   it('names a file with no extension', async () => {
@@ -689,6 +765,39 @@ describe('the hold branch', () => {
 
       expect(firstUrl).not.toEqual(secondUrl);
     });
+
+    it('stores a held upload under its digest plus a random component, never the bare digest', async () => {
+      const { instance: adapter, verdictClient } = buildBackendAdapter({
+        unavailable: [BAD_DIGEST],
+      });
+      adapter.wrapped.getTargetDir = () => '2026/10';
+      const url = await adapter.save(await writeTempFile(BAD_BYTES, 'members-report.png'));
+
+      verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+      await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+
+      const [{ targetPath }] = adapter.wrapped.savedRaw;
+      expect(targetPath).toMatch(new RegExp(`^2026/10/${BAD_DIGEST}-[a-z2-7]{22}\\.png$`));
+      expect(targetPath).not.toBe(`2026/10/${BAD_DIGEST}.png`);
+      // The URL the author was given is the key the bytes land at.
+      expect(url.endsWith(targetPath)).toBe(true);
+    });
+
+    it('gives the same held bytes uploaded twice two different keys', async () => {
+      const { instance: adapter, verdictClient } = buildBackendAdapter({
+        unavailable: [BAD_DIGEST],
+      });
+      adapter.wrapped.getTargetDir = () => '2026/10';
+      await adapter.save(await writeTempFile(BAD_BYTES, 'twice.png'));
+      await adapter.save(await writeTempFile(BAD_BYTES, 'twice.png'));
+
+      verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+      await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+
+      const paths = adapter.wrapped.savedRaw.map((s) => s.targetPath);
+      expect(paths).toHaveLength(2);
+      expect(paths[0]).not.toBe(paths[1]);
+    });
   });
 
   describe('restart-safety (review cycle 1)', () => {
@@ -723,6 +832,27 @@ describe('the hold branch', () => {
 
       expect(secondAdapter.wrapped.savedRaw).toHaveLength(1);
       expect(secondAdapter.wrapped.savedRaw[0].buffer.equals(BAD_BYTES)).toBe(true);
+    });
+
+    it('a resumed hold promotes to the random-component key its upload was told about', async () => {
+      const { instance: firstAdapter, quarantinePath } = buildAdapter({
+        unavailable: [BAD_DIGEST],
+        wrappedConfig: { storagePath: 'wrapped' },
+      });
+      firstAdapter.wrapped.getTargetDir = () => '2026/10';
+      const url = await firstAdapter.save(await writeTempFile(BAD_BYTES, 'held.png'));
+
+      const { instance: secondAdapter, verdictClient } = buildAdapter({
+        quarantinePath,
+        unavailable: [BAD_DIGEST],
+        wrappedConfig: { storagePath: 'wrapped' },
+      });
+      verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+      await vi.waitFor(() => expect(secondAdapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+
+      const { targetPath } = secondAdapter.wrapped.savedRaw[0];
+      expect(targetPath).toMatch(new RegExp(`-[a-z2-7]{22}\\.png$`));
+      expect(url.endsWith(targetPath)).toBe(true);
     });
 
     it('a resumed hold that never clears is still never promoted', async () => {
@@ -844,7 +974,11 @@ describe('the hold branch', () => {
 
       const url = await adapter.save(file);
 
-      expect(url).toBe(`https://cdn.example.test/test-bucket/2026/09/${BAD_DIGEST}.png`);
+      expect(url).toMatch(
+        new RegExp(
+          `^https://cdn\\.example\\.test/test-bucket/2026/09/${BAD_DIGEST}-[a-z2-7]{22}\\.png$`
+        )
+      );
     });
 
     it('builds the URL from endpoint+bucket when no cdnUrl is configured', async () => {
@@ -858,7 +992,9 @@ describe('the hold branch', () => {
       });
       const file = await writeTempFile(BAD_BYTES, 'held.png');
       const url = await adapter.save(file);
-      expect(url).toBe(`https://s3.example.test/test-bucket/${BAD_DIGEST}.png`);
+      expect(url).toMatch(
+        new RegExp(`^https://s3\\.example\\.test/test-bucket/${BAD_DIGEST}-[a-z2-7]{22}\\.png$`)
+      );
     });
 
     it('fails loudly rather than guessing a URL with a bucket set but no cdnUrl and no endpoint', async () => {
@@ -874,7 +1010,7 @@ describe('the hold branch', () => {
       const { instance: adapter } = localAdapter({ unavailable: [BAD_DIGEST] });
       const file = await writeTempFile(BAD_BYTES, 'held.png');
       const url = await adapter.save(file);
-      expect(url).toBe(`/content/wrapped/${BAD_DIGEST}.png`);
+      expect(url).toMatch(new RegExp(`^/content/wrapped/${BAD_DIGEST}-[a-z2-7]{22}\\.png$`));
     });
   });
 });
