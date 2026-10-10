@@ -1,0 +1,8 @@
+{
+  "source": "registry-1.docker.io library/ghost manifests, HEAD with OCI index and Docker list Accept headers; recorded 2026-10-10",
+  "digests": {
+    "6.55.0-alpine": "sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918",
+    "6.65.0-alpine": "sha256:fea3264f902e656833a84656ac6e81a6ef644f87aa0940aa636d4300de62196e",
+    "6.69.0-alpine": "sha256:db4c56c196d6d5ed8ef9c0e80012792c16c51d4c23adb1683279506f525212b5"
+  }
+}

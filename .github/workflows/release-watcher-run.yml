@@ -1,0 +1,91 @@
+name: Release watcher run
+
+# The scheduled poll of Ghost's registry tags. It tracks the major line the
+# repo's Dockerfile pins and, when that line has a newer digest, opens one
+# PR that moves the FROM line. A newer major is noticed once in the run
+# summary and never followed. Fixed code only: nothing here runs a model.
+# See services/release-watcher/README.md for the decision rules.
+#
+# Dedupe state and the poll-age metric live on the state branch,
+# `state/release-watcher`, never on `main`. That branch carries no ruleset,
+# so the state commit needs no PR and no signature.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ghost-platform-release-watcher-run
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Poll the Ghost registry and open the digest PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Configure git identity for the state branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch the state branch, or note that it must be bootstrapped
+        id: state
+        env:
+          STATE_WORKTREE: ${{ runner.temp }}/release-watcher-state
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin state/release-watcher > /dev/null; then
+            git fetch origin state/release-watcher
+            git worktree add "$STATE_WORKTREE" origin/state/release-watcher --detach
+            echo "bootstrap=" >> "$GITHUB_OUTPUT"
+          else
+            # An orphan branch: the state branch must not carry the repo's tree.
+            git worktree add --detach "$STATE_WORKTREE"
+            (
+              cd "$STATE_WORKTREE"
+              git checkout --orphan state/release-watcher
+              git rm -rf . > /dev/null 2>&1 || true
+            )
+            echo "bootstrap=--bootstrap" >> "$GITHUB_OUTPUT"
+          fi
+          echo "state=$STATE_WORKTREE/state.json" >> "$GITHUB_OUTPUT"
+          echo "metrics=$STATE_WORKTREE/release-watcher.prom" >> "$GITHUB_OUTPUT"
+
+      - name: Run the watcher
+        env:
+          PYTHONPATH: services/release-watcher
+          RELEASE_WATCHER_TOKEN: ${{ secrets.RELEASE_WATCHER_TOKEN }}
+          STATE_PATH: ${{ steps.state.outputs.state }}
+          METRICS_PATH: ${{ steps.state.outputs.metrics }}
+          BOOTSTRAP: ${{ steps.state.outputs.bootstrap }}
+        run: python3 -m release_watcher.cli --dockerfile Dockerfile --state "$STATE_PATH" --metrics "$METRICS_PATH" $BOOTSTRAP
+
+      # The poll age is published only when the run above succeeds: a failed
+      # poll leaves the old timestamp in place, so the age keeps growing.
+      - name: Commit the state and poll-age metric
+        working-directory: ${{ runner.temp }}/release-watcher-state
+        run: |
+          set -euo pipefail
+          git add state.json release-watcher.prom
+          if git diff --cached --quiet; then
+            echo "no change to state"
+            exit 0
+          fi
+          git commit -m "release-watcher: record poll"
+          git push origin HEAD:refs/heads/state/release-watcher
