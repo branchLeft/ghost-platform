@@ -23,6 +23,11 @@ Run by `.github/workflows/release-watcher-run.yml`. Tests:
   deletes the branch; the next run recreates it from `main`. The watcher never
   updates or opens a PR on a stale base, but an already-open PR is not closed by
   the refusal; the owner closes it.
+- Any merge to `main` while a watcher PR is open makes that branch behind main.
+  The next run then refuses, every six hours, until the owner merges `main` into
+  the branch or deletes the branch. In an active repo this means the open PR is
+  not updated in place for long; it needs the owner's step each time `main`
+  moves.
 - A PR closed without merging is not reopened for the same digest. A newer tag
   or digest reopens it.
 - A failed step fails the run and does not update the poll-age gauge, so the
@@ -64,6 +69,8 @@ chosen by this change:
 ## Not wired yet (named follow-ups)
 
 - The poll-age gauge is not scraped by any monitor, so the stale-age alert
-  cannot fire: [ISSUE branchLeft/workspace#2002](https://github.com/branchLeft/workspace/issues/2002).
+  cannot fire. The follow-up is named in the pull request that adds this
+  service.
 - The new-major notice is a run annotation only. The owner digest has no input
-  from this job, so the owner is not notified: [ISSUE branchLeft/workspace#2001](https://github.com/branchLeft/workspace/issues/2001).
+  from this job, so the owner is not notified. The follow-up is named in the
+  pull request that adds this service.
