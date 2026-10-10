@@ -10,6 +10,7 @@ visible here.
 import importlib.util
 import json
 import pathlib
+import re
 import unittest
 from unittest import mock
 
@@ -25,6 +26,18 @@ PROJECT = "1231234"
 TENANT_KEY = "MJ9VO12DNIH0DHLYOT75"
 ADMIN_KEY = "AB9VO12DNIH0DHLYOT99"
 BUCKET_ARN = "arn:aws:s3:::branchleft-media-blog"
+READ_RE = re.compile(r"(^|[;\s])read\s+-r")
+
+
+def pasted_blocks(text: str) -> list[list[str]]:
+    """Split emitted text into the blocks an operator pastes: blank-line separated."""
+    blocks: list[list[str]] = [[]]
+    for line in text.splitlines():
+        if line.strip():
+            blocks[-1].append(line)
+        elif blocks[-1]:
+            blocks.append([])
+    return [block for block in blocks if block]
 
 
 def policy_for(slug: str = "blog") -> dict:
@@ -57,6 +70,61 @@ class TestTheSequenceRunsInTheOperatorsShell(unittest.TestCase):
             's3() { aws --endpoint-url https://hel1.your-objectstorage.com s3api "$@"; }',
             runnable,
         )
+
+
+class TestOperatorCredentialsAreReadNotPlaceholders(unittest.TestCase):
+    """A pasted block must never carry an unfilled placeholder.
+
+    A `export AWS_SECRET_ACCESS_KEY='<...>'` line either exports the literal
+    placeholder text or does nothing useful, and the failure then looks like
+    the swap control's AccessDenied. The secret must also not reach the
+    command line, so it is read into the shell instead.
+    """
+
+    def commands(self) -> str:
+        return policy_module.render_commands(
+            "blog", PROJECT, TENANT_KEY, ADMIN_KEY, "https://hel1.your-objectstorage.com", "hel1"
+        )
+
+    def test_no_runnable_line_carries_an_unfilled_placeholder(self):
+        runnable = [
+            line for line in self.commands().splitlines() if line and not line.startswith("#")
+        ]
+        self.assertEqual([line for line in runnable if "<the " in line], [])
+
+    def test_the_operator_credentials_are_read_into_the_shell(self):
+        commands = self.commands()
+        self.assertIn(
+            "printf 'Access key id: '; read -r AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID",
+            commands,
+        )
+        self.assertIn(
+            "printf 'Secret access key (hidden): '; read -rs AWS_SECRET_ACCESS_KEY; echo; "
+            "export AWS_SECRET_ACCESS_KEY",
+            commands,
+        )
+        self.assertNotIn("export AWS_SECRET_ACCESS_KEY='", commands)
+
+    def test_no_pasted_block_has_a_comment_or_an_unbalanced_quote(self):
+        # Interactive zsh does not treat '#' as a comment, and an apostrophe in
+        # a comment opens a quote that swallows the lines after it. The notes
+        # travel on stderr, so the block itself carries neither.
+        for block in pasted_blocks(self.commands()):
+            with self.subTest(block=block):
+                self.assertEqual([line for line in block if line.lstrip().startswith("#")], [])
+                text = "\n".join(block)
+                self.assertEqual(text.count("'") % 2, 0)
+                self.assertEqual(text.count('"') % 2, 0)
+
+    def test_no_pasted_block_holds_two_reads(self):
+        # The runbook pastes one block at a time. Two reads in one block make
+        # the first take the next pasted line as its value, and the secret
+        # line then runs as a shell command.
+        blocks = pasted_blocks(self.commands())
+        for block in blocks:
+            with self.subTest(block=block):
+                self.assertLessEqual(sum(1 for line in block if READ_RE.search(line)), 1)
+        self.assertEqual(sum(1 for block in blocks for line in block if READ_RE.search(line)), 2)
 
 
 class TestPublicReadNotListable(unittest.TestCase):

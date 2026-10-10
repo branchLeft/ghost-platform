@@ -66,6 +66,18 @@ COPY --chown=node:node adapters/scanning-storage/src/ /var/lib/ghost/current/cor
 # can write to content.
 COPY --chown=node:node services/export-bundler/ghost-adapter/SchedulingDisabled.js services/export-bundler/ghost-adapter/scheduling-disabled.js /var/lib/ghost/current/core/server/adapters/scheduling/
 
+# The image editor for the admin post editor (vendor/kalotyp/README.md): Kalotyp
+# 0.2.6, MIT, vendored byte-for-byte. Guard first, copy second, as above: the
+# build fails if either pinned hash no longer matches the vendored bytes. No
+# network at build. Served from the admin app's own /assets path; the config
+# keys that point Ghost at it are set elsewhere.
+COPY vendor/kalotyp/kalotyp.sha256 vendor/kalotyp/kalotyp.js vendor/kalotyp/kalotyp.css /tmp/kalotyp/
+RUN cd /tmp/kalotyp \
+    && sha256sum -c kalotyp.sha256 \
+    || (echo "ERROR: vendored Kalotyp no longer matches its pinned sha256 (vendor/kalotyp/kalotyp.sha256) -- re-vendor and re-pin it before rebuilding" >&2 && exit 1)
+COPY --chown=node:node vendor/kalotyp/kalotyp.js vendor/kalotyp/kalotyp.css vendor/kalotyp/LICENSE /var/lib/ghost/current/core/built/admin/assets/kalotyp/
+RUN rm -rf /tmp/kalotyp
+
 COPY docker-entrypoint.branchleft.sh /usr/local/bin/docker-entrypoint.branchleft.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.branchleft.sh
 
