@@ -20,6 +20,7 @@ MANIFEST_ACCEPT = ", ".join(
 )
 NEXT_LINK = re.compile(r'<([^>]+)>;\s*rel="next"')
 TIMEOUT_SECONDS = 30
+BRANCH_EXISTS_MESSAGE = "Reference already exists"
 
 
 def _request(url, method="GET", headers=None, body=None):
@@ -90,7 +91,7 @@ def _next_page_url(headers):
 
 
 class GitHubApi:
-    """The few REST calls the watcher needs, authenticated with one token."""
+    """The REST calls the watcher needs, authenticated with one token."""
 
     API = "https://api.github.com"
 
@@ -103,39 +104,54 @@ class GitHubApi:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
+    def _url(self, path):
+        return f"{self.API}/repos/{self._repo}/{path}"
+
     def _call(self, method, path, body=None, ok=(200, 201)):
         status, _headers, raw = self._request(
-            f"{self.API}/repos/{self._repo}/{path}",
-            method=method,
-            headers=self._headers,
-            body=body,
+            self._url(path), method=method, headers=self._headers, body=body
         )
         if status not in ok:
-            raise RuntimeError(f"GitHub {method} {path} failed: HTTP {status}")
+            raise RuntimeError(f"GitHub {method} {path.split('?')[0]} failed: HTTP {status}")
         return json.loads(raw) if raw else {}
 
-    def open_pulls_for_branch(self, owner, branch):
-        return self._call("GET", f"pulls?state=open&head={owner}:{branch}")
+    @property
+    def owner(self):
+        return self._repo.split("/")[0]
+
+    def list_pulls(self, branch, state):
+        """Pull requests whose head is this branch; state is open, closed or all."""
+        return self._call("GET", f"pulls?state={state}&head={self.owner}:{branch}")
 
     def create_branch(self, branch, sha):
-        """Returns False when the branch already exists, so the caller can stop."""
-        status, _headers, _raw = self._request(
-            f"{self.API}/repos/{self._repo}/git/refs",
+        """True when created, False only for a genuine 'already exists'. Anything else raises."""
+        status, _headers, raw = self._request(
+            self._url("git/refs"),
             method="POST",
             headers=self._headers,
             body={"ref": f"refs/heads/{branch}", "sha": sha},
         )
-        if status == 422:
+        if status == 201:
+            return True
+        if status == 422 and BRANCH_EXISTS_MESSAGE.encode() in raw:
             return False
-        if status != 201:
-            raise RuntimeError(f"GitHub create branch failed: HTTP {status}")
-        return True
+        raise RuntimeError(f"GitHub create branch failed: HTTP {status}")
+
+    def read_file(self, path, ref):
+        """Raw text at a ref, via the raw media type, so no decoding happens here."""
+        status, _headers, raw = self._request(
+            self._url(f"contents/{path}?ref={ref}"),
+            headers=dict(self._headers, Accept="application/vnd.github.raw+json"),
+        )
+        if status != 200:
+            raise RuntimeError(f"GitHub read {path} at {ref} failed: HTTP {status}")
+        return raw.decode("utf-8")
 
     def file_blob_sha(self, path, ref):
         return self._call("GET", f"contents/{path}?ref={ref}")["sha"]
 
     def commit_file(self, path, branch, blob_sha, text, message):
-        """A contents-API commit. GitHub signs commits made this way."""
+        """A contents-API commit, made on the branch the caller names."""
         return self._call(
             "PUT",
             f"contents/{path}",
@@ -153,3 +169,6 @@ class GitHubApi:
             "pulls",
             body={"title": title, "head": branch, "base": base, "body": body},
         )
+
+    def update_pull(self, number, title, body):
+        return self._call("PATCH", f"pulls/{number}", body={"title": title, "body": body})
