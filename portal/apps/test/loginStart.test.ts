@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CALLBACK_PATH, createTokenVerifier } from 'ghost-platform-identity/dist/index.js';
 import { createShell } from '../src/shell/app.js';
@@ -78,23 +79,60 @@ async function flood(origin: string, count: number): Promise<Map<number, number>
   return statuses;
 }
 
+/**
+ * Starts that go on to a callback with a code the issuer never gave, so no
+ * sign-in verifies. Driven in process: the point is what the shell keeps.
+ */
+async function failedCallbacks(
+  handler: ReturnType<typeof build>,
+  count: number
+): Promise<Map<number, number>> {
+  const statuses = new Map<number, number>();
+  const call = async (url: string, cookie?: string) => {
+    const seen = { status: 0, headers: {} as Record<string, string | string[] | number> };
+    const response = {
+      headersSent: false,
+      writeHead(status: number, headers: Record<string, string | string[] | number> = {}) {
+        seen.status = status;
+        seen.headers = headers;
+      },
+      end() {},
+    };
+    const request = { method: 'GET', url, headers: cookie === undefined ? {} : { cookie } };
+    await handler(request as IncomingMessage, response as unknown as ServerResponse);
+    return seen;
+  };
+  for (let sent = 0; sent < count; sent += 1) {
+    const start = await call('/login');
+    const state = new URL(String(start.headers['location'])).searchParams.get('state');
+    const sealed = String(start.headers['set-cookie']).split(';')[0] ?? '';
+    const reply = await call(`${CALLBACK_PATH}?code=NEVER-ISSUED&state=${state}`, sealed);
+    statuses.set(reply.status, (statuses.get(reply.status) ?? 0) + 1);
+  }
+  return statuses;
+}
+
 const callback = (browser: Browser, code: string, state: string, cookie?: string) =>
   browser.request(`${CALLBACK_PATH}?code=${code}&state=${state}`, {
     ...(cookie === undefined ? {} : { headers: { cookie: `${LOGIN_COOKIE}=${cookie}` } }),
   });
 
-describe('a flood of unauthenticated sign-in starts', () => {
+describe('a flood of unauthenticated sign-in starts and failed callbacks', () => {
   let flooded: Running;
   let early: Browser;
   let earlyState = '';
   let statuses: Map<number, number>;
+  let failed: Map<number, number>;
 
   beforeAll(async () => {
-    flooded = await serve(build);
+    let handler: ReturnType<typeof build> | undefined;
+    flooded = await serve((origin) => (handler = build(origin)));
+    if (handler === undefined) throw new Error('the shell was not built');
     early = new Browser(flooded.origin);
     earlyState = await early.begin();
     statuses = await flood(flooded.origin, FLOOD);
-  }, 60_000);
+    failed = await failedCallbacks(handler, FLOOD);
+  }, 120_000);
 
   afterAll(async () => {
     await flooded.close();
@@ -121,6 +159,11 @@ describe('a flood of unauthenticated sign-in starts', () => {
   it('answers every one of its own requests, refusing none', () => {
     expect(statuses.get(503) ?? 0).toBe(0);
     expect(statuses.get(302)).toBe(FLOOD);
+  });
+
+  it('answers every callback that fails to verify with a refusal, never as unavailable', () => {
+    expect(failed.get(503) ?? 0).toBe(0);
+    expect(failed.get(403)).toBe(FLOOD);
   });
 });
 
@@ -187,7 +230,9 @@ describe('a normal sign-in', () => {
     const browser = new Browser(app.origin);
     const state = await browser.begin();
     const sealed = browser.cookie(LOGIN_COOKIE) ?? '';
-    const flipped = `${sealed.slice(0, -1)}${sealed.endsWith('0') ? '1' : '0'}`;
+    // One digit inside the sealed body: past the 12-byte nonce and 16-byte tag.
+    const at = (12 + 16) * 2 + 4;
+    const flipped = `${sealed.slice(0, at)}${sealed[at] === '0' ? '1' : '0'}${sealed.slice(at + 1)}`;
     const altered = await callback(new Browser(app.origin), issuer.issue(token()), state, flipped);
     expect(altered.status).toBe(400);
 
