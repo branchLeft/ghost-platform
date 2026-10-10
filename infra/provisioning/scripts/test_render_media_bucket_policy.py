@@ -105,6 +105,17 @@ class TestOperatorCredentialsAreReadNotPlaceholders(unittest.TestCase):
         )
         self.assertNotIn("export AWS_SECRET_ACCESS_KEY='", commands)
 
+    def test_no_pasted_block_has_a_comment_or_an_unbalanced_quote(self):
+        # Interactive zsh does not treat '#' as a comment, and an apostrophe in
+        # a comment opens a quote that swallows the lines after it. The notes
+        # travel on stderr, so the block itself carries neither.
+        for block in pasted_blocks(self.commands()):
+            with self.subTest(block=block):
+                self.assertEqual([line for line in block if line.lstrip().startswith("#")], [])
+                text = "\n".join(block)
+                self.assertEqual(text.count("'") % 2, 0)
+                self.assertEqual(text.count('"') % 2, 0)
+
     def test_no_pasted_block_holds_two_reads(self):
         # The runbook pastes one block at a time. Two reads in one block make
         # the first take the next pasted line as its value, and the secret

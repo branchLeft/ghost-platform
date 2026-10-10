@@ -191,6 +191,47 @@ def render_policy(
     })
 
 
+COMMAND_NOTES = """\
+Run as the operator, with the OPERATOR key in the environment -- never the
+tenant's. Every command below is idempotent except the credential, which is
+created in the Hetzner Console and shown once.
+
+`s3` is a shell function, not a variable: zsh does not word-split an
+unquoted parameter expansion, so `S3='aws ... s3api'` then `$S3 ...`
+fails there with "no such file or directory".
+
+0. CONTROL, and it runs before anything is created. If this returns
+   AccessDenied the key in the environment is not the operator's, which means
+   the two --*-access-key values went in the wrong way round and every
+   statement below names the wrong principal. STOP: nothing has been created,
+   so there is nothing to undo. Running this AFTER the policy is applied
+   would leave the wrong fence on a real bucket, recoverable only while the
+   freshly minted tenant secret is still in someone's hands.
+
+1. The bucket. `--acl private` is stated rather than left to the default:
+   `public-read` is a BUCKET acl and grants LIST, which would publish this
+   tenant's object names and, through the bucket name, the tenant roster.
+
+2. Versioning, so an overwrite is recoverable and step 3 has something to
+   expire.
+
+3. The lifecycle rule doc 14 section 8 specifies. BEFORE the policy, because
+   step 4 denies `PutLifecycleConfiguration` to every key but the operator's
+   and there is no reason to depend on that exemption holding. Hetzner
+   supports only `NoncurrentDays` for NoncurrentVersionExpiration --
+   `NewerNoncurrentVersions` is unavailable -- and days is what section 8
+   wants. `AbortIncompleteMultipartUpload` stops a failed Ghost upload
+   accruing storage nothing will ever complete or bill down.
+
+4. The policy. Until this lands the bucket is reachable by EVERY key in the
+   project, because Hetzner's default is project-wide key access -- so do not
+   leave step 4 for later, and do not hand the tenant its key before it.
+
+5. Read both back. A put that was accepted and stored something different is
+   the failure worth catching here -- Hetzner is known to accept a
+   configuration and silently drop an element of it.
+"""
+
 def render_commands(
     slug: str,
     project_id: str,
@@ -206,47 +247,22 @@ def render_commands(
         render_policy(slug, project_id, tenant_access_key, admin_access_key), indent=2
     )
     return f"""\
-# Run as the operator, with the OPERATOR key in the environment -- never the
-# tenant's. Every command below is idempotent except the credential, which is
-# created in the Hetzner Console and shown once.
 
 printf 'Access key id: '; read -r AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID
 
 printf 'Secret access key (hidden): '; read -rs AWS_SECRET_ACCESS_KEY; echo; export AWS_SECRET_ACCESS_KEY
 
 export AWS_DEFAULT_REGION='{region}'
-# `s3` is a shell function, not a variable: zsh does not word-split an
-# unquoted parameter expansion, so `S3='aws ... s3api'` then `$S3 ...`
-# fails there with "no such file or directory".
 s3() {{ aws --endpoint-url {endpoint} s3api "$@"; }}
 
-# 0. CONTROL, and it runs before anything is created. If this returns
-#    AccessDenied the key in the environment is not the operator's, which means
-#    the two --*-access-key values went in the wrong way round and every
-#    statement below names the wrong principal. STOP: nothing has been created,
-#    so there is nothing to undo. Running this AFTER the policy is applied
-#    would leave the wrong fence on a real bucket, recoverable only while the
-#    freshly minted tenant secret is still in someone's hands.
 s3 list-objects-v2 --bucket {control_bucket} --max-keys 1
 
-# 1. The bucket. `--acl private` is stated rather than left to the default:
-#    `public-read` is a BUCKET acl and grants LIST, which would publish this
-#    tenant's object names and, through the bucket name, the tenant roster.
 s3 create-bucket --bucket {bucket} --acl private \\
   --create-bucket-configuration LocationConstraint={region}
 
-# 2. Versioning, so an overwrite is recoverable and step 3 has something to
-#    expire.
 s3 put-bucket-versioning --bucket {bucket} \\
   --versioning-configuration Status=Enabled
 
-# 3. The lifecycle rule doc 14 section 8 specifies. BEFORE the policy, because
-#    step 4 denies `PutLifecycleConfiguration` to every key but the operator's
-#    and there is no reason to depend on that exemption holding. Hetzner
-#    supports only `NoncurrentDays` for NoncurrentVersionExpiration --
-#    `NewerNoncurrentVersions` is unavailable -- and days is what section 8
-#    wants. `AbortIncompleteMultipartUpload` stops a failed Ghost upload
-#    accruing storage nothing will ever complete or bill down.
 cat > /tmp/{bucket}-lifecycle.json <<'LIFECYCLE'
 {{
   "Rules": [
@@ -264,18 +280,12 @@ s3 put-bucket-lifecycle-configuration --bucket {bucket} \\
   --lifecycle-configuration file:///tmp/{bucket}-lifecycle.json
 rm /tmp/{bucket}-lifecycle.json
 
-# 4. The policy. Until this lands the bucket is reachable by EVERY key in the
-#    project, because Hetzner's default is project-wide key access -- so do not
-#    leave step 4 for later, and do not hand the tenant its key before it.
 cat > /tmp/{bucket}-policy.json <<'POLICY'
 {policy}
 POLICY
 s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 rm /tmp/{bucket}-policy.json
 
-# 5. Read both back. A put that was accepted and stored something different is
-#    the failure worth catching here -- Hetzner is known to accept a
-#    configuration and silently drop an element of it.
 s3 get-bucket-policy --bucket {bucket} --output text
 s3 get-bucket-lifecycle-configuration --bucket {bucket}
 """
@@ -430,6 +440,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.commands:
+            print(COMMAND_NOTES, file=sys.stderr)
             print(
                 render_commands(
                     args.slug,
