@@ -505,22 +505,34 @@ describe('random upload names', () => {
     expect(adapter.wrapped.savedRaw[0].targetPath).toBe('2026/10/resized-w600.png');
   });
 
-  it('forgets a pairing after the window, and prunes beyond the bound', async () => {
+  it('forgets a pairing after the window', async () => {
     vi.useFakeTimers();
     try {
       const { instance: adapter } = buildAdapter();
       await adapter.save(await writeTempFile(CLEAN_BYTES, 'p.png'), 'd');
       vi.advanceTimersByTime(61000);
       await adapter.save(await writeTempFile(CLEAN_BYTES, 'p_o.png'), 'd');
-      const random = (i) => /-([a-z2-7]{22})/.exec(nameOf(adapter, i))[1];
-      expect(random(0)).not.toBe(random(1));
-      for (let i = 0; i < 1005; i += 1) {
-        await adapter.save(await writeTempFile(CLEAN_BYTES, `bulk${i}.png`), 'd');
-      }
-      expect(adapter.namePairs.size).toBeLessThanOrEqual(1000);
+      expect(randomOf(adapter, 0)).not.toBe(randomOf(adapter, 1));
+      // Only the second upload is remembered: the first expired and was dropped.
+      expect(adapter.namePairs.size).toBe(1);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('drops the oldest entry once the table is full', async () => {
+    const { instance: adapter } = buildAdapter();
+    for (let i = 0; i < 1000; i += 1) {
+      adapter.namePairs.set(`seed${i}`, {
+        pairKey: `d\nseed${i}.png`,
+        isOriginal: false,
+        expiresAt: Date.now() + 60000,
+      });
+    }
+    await saveAs(adapter, 'fresh.png', 'd');
+    expect(adapter.namePairs.size).toBe(1000);
+    expect(adapter.namePairs.has('seed0')).toBe(false);
+    expect(adapter.namePairs.has('seed1')).toBe(true);
   });
 });
 
