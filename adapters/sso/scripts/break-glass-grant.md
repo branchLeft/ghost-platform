@@ -156,10 +156,19 @@ says so:
 The state is renamed to a private `.<slug>.<pid>.<id>.claim` name first, which
 is atomic, so what is compared is exactly what is removed; no lock is taken, so
 a stuck process can never stop a later close. A state that turns out to be a
-different grant is linked back. If that link fails, the claim file is kept,
-`revoke` exits 1 and `status` lists it as `held`. `expire` links a claim older
-than a minute back into place, so a held grant's clock runs again. A different
-grant already in place is kept and the displaced one is logged.
+different grant is linked back. If that link fails, or a different grant is
+already in place, the claim file is kept, `revoke` exits 1 and `status` lists
+it as `held`. A held claim is never dropped for another grant's sake, because
+that grant's deadline need not be its own.
+
+- `expire` links a claim older than a minute back into place. If it cannot,
+  and the claim's deadline has passed (or it cannot be read), `expire` closes
+  the account like any due grant, writes the closing record, then drops the
+  claim. The account is never left open for want of a working link.
+- `grant` refuses while a claim is held for the tenant, so a held grant is
+  never overwritten by a new one.
+- An explicit `revoke` closes every claim held for the tenant when it starts,
+  after its closing record, so a closed grant's state does not come back.
 
 It runs whatever the account's status is (requirement 2). A tenant who
 re-suspended from the Staff screen during the window still leaves the session
@@ -174,5 +183,5 @@ grant opens and one when it closes. The closing record carries the lane, the
 reference, the reasons, the grant and close times, the cause (`timer` or
 `explicit`), whether the account was found, its status before the revoke, and
 the sessions purged on each pass. It also records whether the state file was
-found, whether it was unreadable, and whether the configured identity changed
-during the window.
+found, how many held claims it closed (`heldClaims`), whether the state was
+unreadable, and whether the configured identity changed during the window.

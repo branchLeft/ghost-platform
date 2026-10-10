@@ -317,7 +317,7 @@ export class StateHeldError extends Error {
   constructor(tenant, claimName, detail) {
     super(
       `the newer grant state for ${tenant} could not be restored (${detail}); ` +
-        `it is held in ${claimName} and the next expire run puts it back`
+        `it is held in ${claimName} until expire puts it back or closes it at its deadline`
     );
     this.name = 'StateHeldError';
   }
@@ -346,20 +346,29 @@ export function removeStateIfSame(deps, tenant, fingerprint, log = deps.log) {
   return same;
 }
 
+/** True when both names are the same file, so linking one to the other changes nothing. */
+function sameFile(a, b) {
+  try {
+    const first = fs.lstatSync(a);
+    const second = fs.lstatSync(b);
+    return first.ino === second.ino && first.dev === second.dev;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Links a claimed state back and returns what happened: restored, superseded
- * (another grant already holds the state, so its deadline is what is tracked)
- * or gone (another process reclaimed it). Anything else throws, claim kept.
+ * Links a claimed state back and returns what happened: restored, present
+ * (the state already is this file) or gone (another process reclaimed it).
+ * Anything else throws with the claim kept, including a different grant in
+ * place: its deadline need not be the claimed grant's, so the claim stays held.
  */
 function restoreClaim(claim, file, tenant, claimName, log) {
   try {
     fs.linkSync(claim, file);
     return 'restored';
   } catch (error) {
-    if (error.code === 'EEXIST') {
-      log(`the grant state for ${tenant} was superseded by a newer grant; ${claimName} dropped`);
-      return 'superseded';
-    }
+    if (error.code === 'EEXIST' && sameFile(claim, file)) return 'present';
     if (error.code === 'ENOENT' && !entryExists(claim)) return 'gone';
     const held = new StateHeldError(tenant, claimName, error.code ?? error.message);
     log(held.message);
@@ -376,6 +385,9 @@ function claimNames(deps) {
   }
 }
 
+const claimsFor = (deps, tenant) =>
+  claimNames(deps).filter((name) => CLAIM_NAME.exec(name)[1] === tenant);
+
 /** Reads a claim file's grant state, or null when it is not valid JSON. */
 function readClaim(deps, name) {
   try {
@@ -385,29 +397,54 @@ function readClaim(deps, name) {
   }
 }
 
+/** No readable deadline, or one that has passed: the grant is closed at once. */
+function claimIsDue(deps, name) {
+  const state = readClaim(deps, name);
+  const deadline = typeof state?.deadline === 'string' ? Date.parse(state.deadline) : NaN;
+  return Number.isNaN(deadline) || deadline <= deps.now();
+}
+
 /**
  * Puts leftover claims back so their grants are tracked again: one held after
  * a failed link back, or left by a process killed mid-claim. A claim younger
  * than the grace period may belong to a close still running, so it is skipped.
+ * One that cannot be put back is closed at its deadline, like any other grant.
  */
-function reclaimClaims(deps) {
+async function reclaimClaims(deps) {
+  const closed = [];
   const failed = [];
   for (const name of claimNames(deps)) {
     const claim = path.join(deps.stateDir, name);
     const tenant = CLAIM_NAME.exec(name)[1];
+    let failure = null;
     try {
       if (deps.now() - fs.statSync(claim).ctimeMs < CLAIM_GRACE_MS) continue;
       const outcome = restoreClaim(claim, statePath(deps, tenant), tenant, name, deps.log);
       fs.rmSync(claim, { force: true });
       if (outcome === 'restored') deps.log(`put back the held grant state for ${tenant}`);
     } catch (error) {
-      if (error.code === 'ENOENT') continue; // reclaimed since the listing
-      if (!(error instanceof StateHeldError))
-        deps.log(`could not reclaim ${name}: ${error.message}`);
-      failed.push({ tenant, error: error.message });
+      failure = error;
+    }
+    if (failure?.code === 'ENOENT') continue; // reclaimed since the listing
+    if (failure instanceof StateHeldError && claimIsDue(deps, name)) {
+      try {
+        // The closing record comes first; revoke then drops this claim.
+        closed.push(
+          await revoke({ tenant, reason: 'four-hour window ended', cause: 'timer' }, deps)
+        );
+        failure = null;
+      } catch (error) {
+        failure = error;
+      }
+    }
+    if (failure) {
+      if (!(failure instanceof StateHeldError)) {
+        deps.log(`could not reclaim ${name}: ${failure.message}`);
+      }
+      failed.push({ tenant, error: failure.message });
     }
   }
-  return failed;
+  return { closed, failed };
 }
 
 /** Written to a temporary name, then linked into place: never half-written, never overwritten. */
@@ -458,6 +495,13 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
   }
   if (existing) {
     throw new GrantRefusedError(`a grant for ${tenant} is already open until ${existing.deadline}`);
+  }
+  // After the state check, so a close that claimed the state in between is seen here.
+  const [held] = claimsFor(deps, tenant);
+  if (held) {
+    throw new GrantRefusedError(
+      `a grant for ${tenant} is held in ${held}; close it with revoke first`
+    );
   }
   const container = await deps.findContainer(tenant);
   // Read-only: the identity comes from the tenant's config; a typed one must match it.
@@ -518,11 +562,14 @@ export async function revoke({ tenant, reason, cause = 'explicit' }, deps = defa
   let open = null;
   let stateUnreadable = null;
   const seen = stateFingerprint(deps, tenant);
+  // Claims held now are covered by this close; one made later may be a newer grant.
+  const held = claimsFor(deps, tenant);
   try {
     open = readGrant(deps, tenant);
   } catch (error) {
     stateUnreadable = error.message;
   }
+  const heldGrant = open === null ? held.map((name) => readClaim(deps, name)).find(Boolean) : null;
   const container = await deps.findContainer(tenant);
   const first = await deps.run({ container, action: 'revoke' });
   await deps.betweenPurges();
@@ -530,20 +577,22 @@ export async function revoke({ tenant, reason, cause = 'explicit' }, deps = defa
   const second = await deps.run({ container, action: 'revoke' });
   const closing = {
     event: 'closed',
-    ...(open ?? {}),
+    ...(open ?? heldGrant ?? {}),
     tenant,
     identity: first.identity,
     cause,
     closeReason: reason,
     closedAt: iso(deps.now()),
     stateFound: open !== null,
+    heldClaims: held.length,
     stateUnreadable,
-    identityChanged: open !== null && open.identity !== first.identity,
+    identityChanged: (open ?? heldGrant) != null && (open ?? heldGrant).identity !== first.identity,
     accountFound: first.found || second.found,
     previousStatus: first.previousStatus ?? null,
     sessionsPurged: [first.sessionsPurged, second.sessionsPurged],
   };
   record(deps, closing);
+  for (const name of held) fs.rmSync(path.join(deps.stateDir, name), { force: true });
   removeStateIfSame(deps, tenant, seen);
   return closing;
 }
@@ -553,8 +602,7 @@ export async function revoke({ tenant, reason, cause = 'explicit' }, deps = defa
  * read is closed rather than skipped, and one failure never stops the rest.
  */
 export async function expire(deps = defaultDeps()) {
-  const closed = [];
-  const failed = reclaimClaims(deps);
+  const { closed, failed } = await reclaimClaims(deps);
   for (const name of stateNames(deps)) {
     const tenant = name.slice(0, -'.json'.length);
     try {

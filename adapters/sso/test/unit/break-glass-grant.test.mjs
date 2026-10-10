@@ -811,6 +811,7 @@ describe('a newer grant that cannot be linked back is never dropped', () => {
     const { closed, failed } = await expire(later);
     expect(failed).toEqual([]);
     expect(closed).toEqual([]);
+    expect(fs.existsSync(stateFile(deps))).toBe(true);
     expect(fs.readFileSync(stateFile(deps), 'utf8')).toBe(newer);
     expect(claims(deps)).toEqual([]);
   });
@@ -837,7 +838,7 @@ describe('a newer grant that cannot be linked back is never dropped', () => {
     expect(held.deadline).toBeDefined();
   });
 
-  it('a third grant already in place is kept, and the displaced one is logged', async () => {
+  it('a different grant already in place is left alone and the claim is held', async () => {
     const deps = wallClockDeps();
     await grant(request(), deps);
     const real = fs.linkSync;
@@ -845,11 +846,134 @@ describe('a newer grant that cannot be linked back is never dropped', () => {
       fs.writeFileSync(to, `${JSON.stringify({ grantId: 'third', deadline: iso4h() })}\n`);
       return real(from, to);
     });
-    expect(removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toBe(false);
+    expect(() => removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toThrow(/held in/);
     vi.restoreAllMocks();
     expect(JSON.parse(fs.readFileSync(stateFile(deps), 'utf8')).grantId).toBe('third');
+    expect(claims(deps)).toHaveLength(1);
+  });
+
+  /** A grant whose link back failed: its state is in a claim file and the state name is empty. */
+  async function holdNewerGrant(deps) {
+    await grant(request(), deps);
+    const newer = fs.readFileSync(stateFile(deps), 'utf8');
+    const spy = linkFails('EPERM');
+    try {
+      expect(() => removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(claims(deps)).toHaveLength(1);
+    return newer;
+  }
+  const afterGrace = () => fakeDeps({ now: () => Date.now() + CLAIM_GRACE_MS + 1000 });
+  const afterDeadline = () =>
+    fakeDeps({ now: () => Date.now() + GRANT_WINDOW_SECONDS * 1000 + CLAIM_GRACE_MS });
+  const closedRecords = () => records().filter((r) => r.event === 'closed');
+
+  it('expire closes a held grant at its deadline while the link back keeps failing', async () => {
+    const deps = wallClockDeps();
+    const newer = await holdNewerGrant(deps);
+    const due = afterDeadline();
+    linkFails('EIO');
+    const { closed } = await expire(due);
+    vi.restoreAllMocks();
+    expect(closed).toHaveLength(1);
+    expect(due.calls).toContain('revoke');
     expect(claims(deps)).toEqual([]);
-    expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/superseded/));
+    expect(closedRecords()).toMatchObject([
+      { grantId: JSON.parse(newer).grantId, cause: 'timer', heldClaims: 1 },
+    ]);
+  });
+
+  it('expire does not close a held grant before its deadline', async () => {
+    const deps = wallClockDeps();
+    await holdNewerGrant(deps);
+    const later = afterGrace();
+    linkFails('EIO');
+    const { closed, failed } = await expire(later);
+    vi.restoreAllMocks();
+    expect(closed).toEqual([]);
+    expect(failed).toHaveLength(1);
+    expect(later.calls).not.toContain('revoke');
+    expect(claims(deps)).toHaveLength(1);
+  });
+
+  it('expire closes a held claim it cannot read once the grace period has passed', async () => {
+    const deps = wallClockDeps();
+    fs.mkdirSync(deps.stateDir, { recursive: true });
+    const claim = path.join(deps.stateDir, '.tenant-zero.1.0123456789ab.claim');
+    fs.writeFileSync(claim, 'not json');
+    const later = afterGrace();
+    linkFails('EIO');
+    const { closed } = await expire(later);
+    vi.restoreAllMocks();
+    expect(closed).toHaveLength(1);
+    expect(fs.existsSync(claim)).toBe(false);
+  });
+
+  it('grant refuses while a claim is held for the tenant, and writes nothing', async () => {
+    const deps = wallClockDeps();
+    await holdNewerGrant(deps);
+    const before = deps.calls.length;
+    await expect(grant(request('consented'), deps)).rejects.toThrow(/held in/);
+    expect(deps.calls.slice(before)).toEqual([]);
+    expect(fs.existsSync(stateFile(deps))).toBe(false);
+  });
+
+  it('a claim left by a killed close survives a consented grant whose check fails', async () => {
+    const deps = wallClockDeps();
+    fs.mkdirSync(deps.stateDir, { recursive: true });
+    const killed = `${JSON.stringify({ grantId: 'killed', tenant: 'tenant-zero', deadline: iso4h() })}\n`;
+    fs.writeFileSync(path.join(deps.stateDir, '.tenant-zero.1.0123456789ab.claim'), killed);
+    const later = afterGrace();
+    deps.run = vi.fn(async ({ action }) => {
+      if (action === 'identity') return { identity: SUPPORT };
+      await expire(later);
+      throw new Error('exec check failed');
+    });
+    await expect(grant(request('consented'), deps)).rejects.toThrow();
+    await expire(later);
+    expect(fs.existsSync(stateFile(deps))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(stateFile(deps), 'utf8')).grantId).toBe('killed');
+  });
+
+  it('reclaim keeps a held grant when a different grant holds the state, then closes it', async () => {
+    const deps = wallClockDeps();
+    const held = await holdNewerGrant(deps);
+    const third = `${JSON.stringify({ grantId: 'third', deadline: iso4h() })}\n`;
+    fs.writeFileSync(stateFile(deps), third);
+    const { closed, failed } = await expire(afterGrace());
+    expect(closed).toEqual([]);
+    expect(failed).toHaveLength(1);
+    expect(claims(deps)).toHaveLength(1);
+    expect(fs.readFileSync(stateFile(deps), 'utf8')).toBe(third);
+    expect(fs.readFileSync(path.join(deps.stateDir, claims(deps)[0]), 'utf8')).toBe(held);
+    await expire(afterDeadline());
+    expect(claims(deps)).toEqual([]);
+    expect(fs.existsSync(stateFile(deps))).toBe(false);
+  });
+
+  it('reclaim drops a claim that is the same file as the state, without calling it superseded', async () => {
+    const deps = wallClockDeps();
+    await grant(request(), deps);
+    fs.linkSync(stateFile(deps), path.join(deps.stateDir, '.tenant-zero.1.0123456789ab.claim'));
+    const later = afterGrace();
+    const { closed, failed } = await expire(later);
+    expect(closed).toEqual([]);
+    expect(failed).toEqual([]);
+    expect(claims(deps)).toEqual([]);
+    expect(fs.existsSync(stateFile(deps))).toBe(true);
+    expect(later.log).not.toHaveBeenCalledWith(expect.stringMatching(/superseded/));
+  });
+
+  it('an explicit revoke closes a held grant, so its state does not come back', async () => {
+    const deps = wallClockDeps();
+    await holdNewerGrant(deps);
+    await revoke({ tenant: 'tenant-zero', reason: 'done' }, deps);
+    expect(claims(deps)).toEqual([]);
+    expect(closedRecords()).toMatchObject([{ heldClaims: 1, stateFound: false }]);
+    await expire(afterGrace());
+    expect(fs.existsSync(stateFile(deps))).toBe(false);
   });
 
   it('a failed consented grant reports its own failure, and the newer grant stays held', async () => {
