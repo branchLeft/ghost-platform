@@ -9,12 +9,7 @@ import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
-import {
-  defaultSettings,
-  renderModeration,
-  type ModerationSettings,
-  type TenantKind,
-} from './moderationSettings.js';
+import { moderationBody, type TenantKind } from './moderationSettings.js';
 
 export interface TenantPortalOptions {
   readonly issuer: string;
@@ -30,12 +25,8 @@ export interface TenantPortalOptions {
   readonly fetch?: typeof fetch;
   readonly fetchKeys?: TokenVerifierOptions['fetchKeys'];
   readonly sessionSeconds?: number;
-  /** Whether the tenant is a publisher or a demo slot; unknown is treated as demo. */
-  readonly tenantKind?: (scope: TenantScope) => Promise<TenantKind>;
-  /** The stored moderation settings; until persistence exists, the defaults. */
-  readonly moderationSettings?: (scope: TenantScope) => Promise<ModerationSettings>;
-  /** The article-level check ids; the set is not yet ruled, so empty by default. */
-  readonly articleChecks?: readonly string[];
+  /** The tenant's kind; absent, failed or unrecognised is treated as a demo. */
+  readonly tenantKind?: (scope: TenantScope) => Promise<TenantKind | string>;
 }
 
 /**
@@ -86,15 +77,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${renderHealth(health)}`;
     },
     pages: {
-      '/moderation': async (scope) => {
-        const articleChecks = options.articleChecks ?? [];
-        const kind = (await options.tenantKind?.(scope)) ?? 'DEMO';
-        const settings =
-          kind === 'DEMO'
-            ? defaultSettings(articleChecks)
-            : await (options.moderationSettings?.(scope) ?? defaultSettings(articleChecks));
-        return renderModeration({ kind, settings, articleChecks });
-      },
+      '/moderation': (scope) => moderationBody(scope, options.tenantKind),
       '/documents': async (scope) => {
         const at = now();
         const [documents, pending, accepted, upcoming] = await Promise.all([

@@ -2,9 +2,10 @@ import { escapeHtml } from '../shell/html.js';
 
 /**
  * The tenant moderation settings page, in three tiers. The absolute layer is
- * never shown; the mandatory floor is shown read-only with an appeal link; the
- * comment and article layers are configurable. A demo slot sees none of the
- * configurable layers. The tiers are fixed by the design, not by the page.
+ * never shown; the mandatory floor is shown read-only; the comment and article
+ * layers are configurable in the design. A demo slot sees none of the
+ * configurable layers. Nothing is saved yet, so every control is disabled and
+ * the page says so.
  */
 
 /** Media hash matching: never a setting, never appealable, never shown. */
@@ -23,9 +24,14 @@ export const COMMENT_CHECKS = [
 
 export const SENSITIVITIES = ['low', 'medium', 'high'] as const;
 
+/** The article check set is an owner decision that has not been made: empty. */
+export const ARTICLE_CHECKS: readonly string[] = [];
+
+export const TENANT_KINDS = ['REAL', 'DEMO'] as const;
+
 export type CommentCheck = (typeof COMMENT_CHECKS)[number];
 export type Sensitivity = (typeof SENSITIVITIES)[number];
-export type TenantKind = 'REAL' | 'DEMO';
+export type TenantKind = (typeof TENANT_KINDS)[number];
 
 export interface CommentSetting {
   readonly enabled: boolean;
@@ -38,14 +44,7 @@ export interface ArticleSetting {
 
 export interface ModerationSettings {
   readonly comment: Readonly<Record<CommentCheck, CommentSetting>>;
-  /** Keyed by article check id; the article check set is not yet ruled. */
   readonly article: Readonly<Record<string, ArticleSetting>>;
-}
-
-export interface ModerationView {
-  readonly kind: TenantKind;
-  readonly settings: ModerationSettings;
-  readonly articleChecks: readonly string[];
 }
 
 export class NotConfigurableError extends Error {
@@ -68,6 +67,17 @@ export function assertConfigurable(check: string): void {
   if (NOT_CONFIGURABLE.has(check)) throw new NotConfigurableError(check);
 }
 
+/**
+ * Only an exact member of TENANT_KINDS is a tenant kind. Anything else, including
+ * a wrong-case or empty string, a missing value or a non-string, is a demo.
+ */
+export function parseTenantKind(value: unknown): TenantKind {
+  return typeof value === 'string' && (TENANT_KINDS as readonly string[]).includes(value)
+    ? (value as TenantKind)
+    : 'DEMO';
+}
+
+/** The defaults are placeholders, not a decision: the page never presents them as saved. */
 export function defaultSettings(articleChecks: readonly string[]): ModerationSettings {
   const comment = Object.fromEntries(
     COMMENT_CHECKS.map((id) => [id, { enabled: true, sensitivity: 'medium' as Sensitivity }])
@@ -78,43 +88,53 @@ export function defaultSettings(articleChecks: readonly string[]): ModerationSet
 
 const checkedAttr = (on: boolean): string => (on ? ' checked' : '');
 
-/** A configurable toggle. It is never built for a check in the absolute or floor tier. */
+/** A disabled toggle. It is never built for a check in the absolute or floor tier. */
 export function renderToggle(group: 'comment' | 'article', id: string, on: boolean): string {
   assertConfigurable(id);
   const name = escapeHtml(`${group}.${id}.enabled`);
-  return `<label><input type="checkbox" name="${name}" value="1"${checkedAttr(on)}> ${escapeHtml(
+  return `<label><input type="checkbox" name="${name}" value="1" disabled${checkedAttr(on)}> ${escapeHtml(
     `${group.toUpperCase()}_LABEL_${id.toUpperCase()}`
   )}</label>`;
 }
 
-/** A mandatory floor check: read-only, with no input element, and an appeal link. */
+/** A mandatory floor check: read-only, with no input element and no link. */
 export function renderFloorRow(id: string): string {
   if (!(FLOOR_CHECKS as readonly string[]).includes(id)) throw new NotConfigurableError(id);
-  return `<li>${escapeHtml(`FLOOR_LABEL_${id.toUpperCase()}`)} <a href="/moderation/appeal">APPEAL_LINK</a></li>`;
+  return `<li>${escapeHtml(`FLOOR_LABEL_${id.toUpperCase()}`)} APPEAL_LINK_NOT_YET_AVAILABLE</li>`;
 }
 
-function renderSensitivity(group: 'comment', id: CommentCheck, current: Sensitivity): string {
+/** A disabled sensitivity select. */
+export function renderSensitivity(id: CommentCheck, current: Sensitivity): string {
   assertConfigurable(id);
-  const name = escapeHtml(`${group}.${id}.sensitivity`);
+  const name = escapeHtml(`comment.${id}.sensitivity`);
   const options = SENSITIVITIES.map(
     (level) =>
       `<option value="${level}"${level === current ? ' selected' : ''}>${escapeHtml(
         `SENSITIVITY_${level.toUpperCase()}`
       )}</option>`
   ).join('');
-  return `<select name="${name}">${options}</select>`;
+  return `<select name="${name}" disabled>${options}</select>`;
 }
 
-/** The moderation settings page body. Escaped markup, built from the view only. */
+export interface ModerationView {
+  readonly kind: unknown;
+  readonly settings: ModerationSettings;
+  readonly articleChecks: readonly string[];
+}
+
+/**
+ * The moderation page body. Only an exact REAL tenant gets the controls; any
+ * other kind gets the demo notice. The controls are disabled and there is no
+ * form, submit control or link: nothing here can be saved or followed yet.
+ */
 export function renderModeration(view: ModerationView): string {
-  if (view.kind === 'DEMO') {
+  if (parseTenantKind(view.kind) !== 'REAL') {
     return '<h1>MODERATION_TITLE</h1><p>DEMO_NO_MODERATION_SETTINGS</p>';
   }
   const floor = FLOOR_CHECKS.map(renderFloorRow).join('');
   const comments = COMMENT_CHECKS.map((id) => {
     const setting = view.settings.comment[id];
     return `<li>${renderToggle('comment', id, setting.enabled)} ${renderSensitivity(
-      'comment',
       id,
       setting.sensitivity
     )}</li>`;
@@ -127,10 +147,25 @@ export function renderModeration(view: ModerationView): string {
     .join('');
   return (
     '<h1>MODERATION_TITLE</h1>' +
+    '<p>SETTINGS_NOT_YET_SAVED: THE_CONTROLS_BELOW_SHOW_PLACEHOLDER_DEFAULTS_NOT_A_DECISION_AND_CANNOT_BE_CHANGED</p>' +
     `<h2>FLOOR_HEADING</h2><ul>${floor}</ul>` +
-    '<form method="post" action="/moderation/save">' +
     `<h2>COMMENT_HEADING</h2><ul>${comments}</ul>` +
-    `<h2>ARTICLE_HEADING</h2><ul>${articles}</ul>` +
-    '<button type="submit">SAVE_SETTINGS</button></form>'
+    `<h2>ARTICLE_HEADING</h2><ul>${articles}</ul>`
   );
+}
+
+/**
+ * The page's body for one signed-in tenant. The kind comes from the seam, and an
+ * absent or failed seam is a demo: the settings are the placeholders either way.
+ */
+export async function moderationBody<S>(
+  scope: S,
+  kindOf: ((scope: S) => Promise<unknown>) | undefined
+): Promise<string> {
+  const kind = parseTenantKind(kindOf === undefined ? undefined : await kindOf(scope));
+  return renderModeration({
+    kind,
+    settings: defaultSettings(ARTICLE_CHECKS),
+    articleChecks: ARTICLE_CHECKS,
+  });
 }

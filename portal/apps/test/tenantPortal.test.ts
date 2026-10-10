@@ -346,3 +346,80 @@ describe('the tenant portal surface', () => {
     expect(page.body).toContain('TENANT_PORTAL');
   });
 });
+
+describe('the tenant moderation page, through the route', () => {
+  const withKind = (kind?: () => Promise<string>) =>
+    serve((origin) =>
+      createTenantPortal({
+        issuer: ISSUER,
+        clientId: CLIENT_PORTAL,
+        projectId: PROJECT_ID,
+        publicOrigin: origin,
+        allowedOrgIds: new Set([ORG_A, ORG_B, ORG_UNREGISTERED]),
+        db: new TenantDb(fixture.tenant),
+        secureCookies: false,
+        clock: () => now,
+        fetch: issuer.fetch,
+        fetchKeys: async () => jwks,
+        sessionSeconds: 600,
+        ...(kind === undefined ? {} : { tenantKind: async () => kind() }),
+      })
+    );
+
+  it('is linked from the navigation', async () => {
+    const browser = new Browser(app.origin);
+    await signIn(browser, tenantToken(ORG_A));
+    const landing = await browser.request('/');
+    expect(landing.body).toContain('NAV_MODERATION');
+    expect(landing.body).toContain('href="/moderation"');
+  });
+
+  it('gives an absent kind the demo notice and no controls', async () => {
+    const server = await withKind();
+    try {
+      const browser = new Browser(server.origin);
+      await signIn(browser, tenantToken(ORG_A));
+      const page = await browser.request('/moderation');
+      expect(page.status).toBe(200);
+      expect(page.body).toContain('DEMO_NO_MODERATION_SETTINGS');
+      expect(page.body).not.toContain('<input');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it.each([['demo'], ['PUBLISHER'], ['']])(
+    'gives the kind %j the demo notice and no controls',
+    async (value) => {
+      const server = await withKind(async () => value);
+      try {
+        const browser = new Browser(server.origin);
+        await signIn(browser, tenantToken(ORG_A));
+        const page = await browser.request('/moderation');
+        expect(page.body).toContain('DEMO_NO_MODERATION_SETTINGS');
+        expect(page.body).not.toContain('<input');
+        expect(page.body).not.toContain('<select');
+      } finally {
+        await server.close();
+      }
+    }
+  );
+
+  it('gives a REAL tenant the page: disabled controls, the floor, no form and no dead link', async () => {
+    const server = await withKind(async () => 'REAL');
+    try {
+      const browser = new Browser(server.origin);
+      await signIn(browser, tenantToken(ORG_A));
+      const page = await browser.request('/moderation');
+      expect(page.body).toContain('FLOOR_HEADING');
+      expect(page.body).toContain('SETTINGS_NOT_YET_SAVED');
+      expect(page.body).not.toContain('<form');
+      expect(page.body).not.toContain('action=');
+      expect(page.body).not.toContain('/moderation/save');
+      expect(page.body).not.toContain('/moderation/appeal');
+      expect(page.body).not.toMatch(/<input(?![^>]*\bdisabled\b)/);
+    } finally {
+      await server.close();
+    }
+  });
+});
