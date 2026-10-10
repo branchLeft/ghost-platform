@@ -122,7 +122,8 @@ def mirror_one(
     if got != want:
         log(f"DIGEST MISMATCH: {pinned} serves {got}, list says {want}")
         return False
-    log(f"verified {pinned} (from {entry['source']}, upstream tags {", ".join(entry["upstreamTags"])})")
+    tags = ", ".join(entry["upstreamTags"])
+    log(f"verified {pinned} (from {entry['source']}, upstream tags {tags})")
     return True
 
 

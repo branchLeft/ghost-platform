@@ -3,8 +3,9 @@ name: Image mirror
 # Copies every third-party image in .github/image-mirror/images.json to
 # ghcr.io/branchleft/mirror/<name> by digest, then reads each back and checks
 # the manifest bytes hash to the listed digest. Docker Hub rate-limits
-# anonymous pulls per runner address, so this repo's own workflows pull the
-# mirror instead; this is the only job that touches the upstream registries.
+# anonymous pulls per runner address, so the mirror gives CI a copy it can read
+# with the run's own token; this is the only job that touches the upstream
+# registries.
 # The packages stay private (see scripts/mirror-images.md#visibility).
 #
 # Authority: the run's own GITHUB_TOKEN with `packages: write`. No Docker Hub
@@ -55,8 +56,8 @@ jobs:
           python-version-file: .python-version
 
       # crane is pinned by release and by the tarball's sha256, checked before
-      # anything in it runs. The sum was taken from the release's
-      # checksums.txt and from a download of the tarball, and they agree.
+      # anything in it runs, so a replaced release asset is refused instead of
+      # being executed with a package-write token in scope.
       - name: Install crane
         run: |
           set -euo pipefail

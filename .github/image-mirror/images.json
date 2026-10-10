@@ -61,7 +61,7 @@
       "digest": "sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
       "upstreamTags": ["26.5.0-bookworm-slim"],
       "hostPins": [
-        "ops1 break-glass minter pin (same digest; host pulls stay on Docker Hub, not mirrored for hosts, see follow-up)"
+        "ops1 break-glass minter pin (same digest; host pulls stay on Docker Hub and are not mirrored for hosts)"
       ],
       "licence": "MIT (plus bundled third-party notices)",
       "redistribution": "permitted",
@@ -274,6 +274,30 @@
     {
       "path": "render-core/test/validate.test.ts",
       "reason": "Negative fixture for the digest-pin validator; rendered, never pulled."
+    },
+    {
+      "path": "render-core/test/brand.test.ts",
+      "reason": "Negative fixture for the digest-pin validator; the reference is rejected, never pulled."
+    },
+    {
+      "path": "render-core/test/golden/*",
+      "reason": "Golden output of the tenant renderer with a placeholder digest; compared by tests, never pulled."
+    },
+    {
+      "path": "infra/tenant/test/golden/*",
+      "reason": "Golden output of the tenant component; compared by tests, never pulled."
+    },
+    {
+      "path": "render-core/src/compose.ts",
+      "reason": "Renders image: ${IMAGE} for a tenant host; the value is the tenant descriptor's digest-pinned reference, validated before render. Not a CI pull."
+    },
+    {
+      "path": "infra/provisioning/scripts/test_assert_image_ref.py",
+      "reason": "Negative fixtures for the tenant image-ref validator; the references are rejected inputs."
+    },
+    {
+      "path": "scripts/assert-image-refs-on-mirror.py",
+      "reason": "The guard's own constants and self-test inputs: refs written to throwaway trees, never pulled."
     }
   ]
 }

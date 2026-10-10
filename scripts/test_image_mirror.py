@@ -6,12 +6,14 @@ No network and no crane: the copy tool is a recording fake.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import io
 import json
 import sys
 import tempfile
+import tokenize
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -234,18 +236,22 @@ HARD_CODED = "ghcr.io/branchleft/mirror/ghost@sha256:" + "a" * 64
 
 
 class ClassifyTests(unittest.TestCase):
-    def kind(self, ref):
-        verdict = guard.classify(ref, PAIRS)
+    LOCAL = frozenset({"ghost-platform:ci", "drain-sidecar:proof"})
+
+    def kind(self, ref, local=frozenset()):
+        verdict = guard.classify(ref, PAIRS, local)
         return verdict[0] if verdict else None
 
     def test_allowed(self):
-        for ref in (
-            MIRROR_OK,
-            "ghcr.io/branchleft/db-recovery@sha256:" + "c" * 64,
-            "ghost-platform:ci",
-            "drain-sidecar:proof",
-        ):
+        for ref in (MIRROR_OK, "ghcr.io/branchleft/db-recovery:v1@sha256:" + "c" * 64):
             self.assertIsNone(self.kind(ref), ref)
+        for ref in self.LOCAL:
+            self.assertIsNone(self.kind(ref, self.LOCAL), ref)
+
+    def test_a_ci_or_proof_tag_is_not_allowed_unless_the_tree_builds_it(self):
+        for ref in ("ghost-platform:ci", "drain-sidecar:proof", "postgres:ci"):
+            self.assertEqual(self.kind(ref), "unqualified", ref)
+        self.assertEqual(self.kind("postgres:ci", self.LOCAL), "unqualified")
 
     def test_refused(self):
         digest = "@sha256:" + "a" * 64
@@ -267,14 +273,17 @@ class ClassifyTests(unittest.TestCase):
             "${IMAGE_REGISTRY}/ghost@sha256:" + "a" * 64: "bad-default",
             "ghcr.io/branchleft/ghost-tenant:latest": "tag-only",
             "ghost-platform:latest": "unqualified",
+            "203.0.113.9:5000/evil/img:1": "other-registry",
+            "203.0.113.9/evil/img:latest": "other-registry",
+            "localhost:5000/evil/img:1": "other-registry",
+            "ghcr.io/branchleft/db-recovery@sha256:" + "c" * 64: "no-tag",
+            "${IMAGE_REGISTRY:-docker.io/library}/ghost@sha256:" + "a" * 64: "no-tag",
         }
         for ref, kind in cases.items():
             self.assertEqual(self.kind(ref), kind, ref)
 
     def test_not_images_are_ignored(self):
-        for ref in ("127.0.0.1:3001:2368", "!!", "node:fs"):
-            if ref == "node:fs":
-                continue  # shaped like an image; only code files filter it by tag shape
+        for ref in ("127.0.0.1:3001:2368", "127.0.0.1:3001", "!!", "1.2.3"):
             self.assertIsNone(self.kind(ref), ref)
 
 
@@ -307,9 +316,15 @@ class ScanTests(unittest.TestCase):
             [(".github/workflows/a.yml", 4, "unqualified"), (".github/workflows/a.yml", 7, "unqualified")],
         )
 
-    def test_expression_images_and_comments_are_skipped(self):
-        text = "    image: ${{ steps.digest.outputs.image }}\n    # image: postgres:17\n    image: ${IMAGE}\n"
-        self.assertEqual(self.kinds({"w.yml": text}), [])
+    def test_expression_images_are_unresolved_and_comments_are_skipped(self):
+        text = "    image: ${{ matrix.image }}\n    # image: postgres:17\n    image: ${IMAGE}\n"
+        self.assertEqual(
+            self.kinds({"w.yml": text}), [("w.yml", 1, "unresolved"), ("w.yml", 3, "unresolved")]
+        )
+
+    def test_an_outputs_mapping_hands_a_value_on_and_pulls_nothing(self):
+        text = "jobs:\n  t:\n    outputs:\n      image: ${{ steps.digest.outputs.image }}\n"
+        self.assertEqual(self.kinds({".github/workflows/w.yml": text}), [])
 
     def test_docker_run_image_position(self):
         text = (
@@ -320,7 +335,7 @@ class ScanTests(unittest.TestCase):
         )
         self.assertEqual(
             self.kinds({"s.sh": text}),
-            [("s.sh", 1, "unqualified"), ("s.sh", 2, "unqualified"), ("s.sh", 6, "unqualified")],
+            [("s.sh", 1, "unqualified"), ("s.sh", 2, "unqualified"), ("s.sh", 5, "unresolved"), ("s.sh", 6, "unqualified")],
         )
 
     def test_image_variable_assignments(self):
@@ -331,10 +346,10 @@ class ScanTests(unittest.TestCase):
         text = 'docker build -t my-proof:local .\ndocker run --rm my-proof:local\ndocker run --rm other:local\n'
         self.assertEqual(self.kinds({"s.sh": text}), [("s.sh", 3, "unqualified")])
 
-    def test_code_strings_need_a_docker_context_and_a_version_shaped_tag(self):
-        text = "const a = 'node:fs';\n// docker\nconst IMAGE = 'mysql:8.0';\nconst b = 'urn:x:y';\n"
+    def test_code_strings_need_a_version_shaped_tag(self):
+        text = "const a = 'node:fs';\n// docker\nconst IMAGE = 'mysql:8.0';\nconst b = 'urn:x:y';\nconst c = 'db:3306';\n"
         self.assertEqual(self.kinds({"t.mjs": text}), [("t.mjs", 3, "unqualified")])
-        self.assertEqual(self.kinds({"u.mjs": "const x = 'mysql:8.0';\n"}), [])
+        self.assertEqual(self.kinds({"u.mjs": "const x = 'foo:1.2';\n"}), [])
 
     def test_allow_list_skips_only_the_named_path(self):
         files = {"a/fixture.py": '# image\nX = "mysql:8.0"\n', "b/real.py": '# image\nX = "mysql:8.0"\n'}
@@ -377,11 +392,11 @@ class LocalDevelopmentTests(unittest.TestCase):
 
 
 class ModeTests(unittest.TestCase):
-    """The sabotage cases, in the mode PR B turns on, then the clean tree."""
+    """Each sabotage is red in enforce mode and reported in warn mode; the clean tree is green."""
 
     def run_guard(self, files, mode):
         _, root = scan_tree(files)
-        policy = root / "policy.json"
+        policy = Path(tempfile.mkdtemp()) / "policy.json"
         policy.write_text(
             json.dumps({"images": [{"name": "ghost", "source": "docker.io/library/ghost", "digest": "sha256:" + "a" * 64}]})
         )
@@ -409,13 +424,13 @@ class ModeTests(unittest.TestCase):
         for label, files in self.SABOTAGE.items():
             code, out = self.run_guard(files, "enforce")
             self.assertEqual(code, 1, label)
-            self.assertIn("1 reference(s) not on the mirror (mode enforce)", out, label)
+            self.assertIn("1 reference(s) not on the mirror, 0 UNRESOLVED (mode enforce)", out, label)
 
     def test_warn_reports_the_same_findings_and_exits_zero(self):
         for label, files in self.SABOTAGE.items():
             code, out = self.run_guard(files, "warn")
             self.assertEqual(code, 0, label)
-            self.assertIn("1 reference(s) not on the mirror (mode warn)", out, label)
+            self.assertIn("1 reference(s) not on the mirror, 0 UNRESOLVED (mode warn)", out, label)
 
     def test_enforce_is_green_on_a_clean_tree(self):
         files = {
@@ -424,7 +439,7 @@ class ModeTests(unittest.TestCase):
         }
         code, out = self.run_guard(files, "enforce")
         self.assertEqual(code, 0)
-        self.assertIn("0 reference(s)", out)
+        self.assertIn("0 reference(s) not on the mirror, 0 UNRESOLVED", out)
 
     def test_missing_policy_is_exit_two(self):
         err = io.StringIO()
@@ -453,8 +468,12 @@ class CoverageTests(unittest.TestCase):
         findings = guard.scan(REPO, mirror_pairs, allow)
         gaps = []
         for f in findings:
+            if f.kind not in ("unqualified", "docker.io", "other-registry"):
+                continue  # only a third-party image needs a row on the list
             m = guard.IMAGE_RE.match(f.ref)
             repo = m["repo"]
+            if repo == "ghost-platform":
+                continue  # this repo's own image, built locally, not a third-party one
             parts = repo.split("/")
             if len(parts) > 1 and ("." in parts[0] or ":" in parts[0]):
                 source = repo
@@ -469,11 +488,463 @@ class CoverageTests(unittest.TestCase):
                 ok = (source, m["digest"]) in by_digest
             else:
                 ok = (source, tag) in by_tag
-            if not ok and f.kind != "tag-only":
+            if not ok:
                 gaps.append(f.render())
         # quay.io/minio is gone upstream (401 for anonymous pulls), so it is deliberately not listed.
         gaps = [g for g in gaps if "quay.io/minio/" not in g]
         self.assertEqual(gaps, [])
+
+
+def found(files, allow=()):
+    """(path, line, kind) for each finding in a throwaway tree."""
+    findings, _ = scan_tree(files, allow)
+    return [(f.path, f.line, f.kind) for f in findings]
+
+
+GOOD_FROM = "${IMAGE_REGISTRY:-docker.io/library}/ghost:6@sha256:" + "a" * 64
+WORKFLOW = ".github/workflows/w.yml"
+
+
+class DockerfileConstructTests(unittest.TestCase):
+    """Each construct below was accepted by the first guard; each is a finding now."""
+
+    def test_an_image_held_in_an_arg_default_is_followed_into_from(self):
+        self.assertEqual(found({"Dockerfile": "ARG BASE=node:20\nFROM ${BASE}\n"}), [("Dockerfile", 2, "unqualified")])
+        self.assertEqual(found({"Dockerfile": "ARG BASE=node:20\nFROM $BASE\n"}), [("Dockerfile", 2, "unqualified")])
+
+    def test_an_arg_that_names_an_image_is_reported_where_it_is_defined(self):
+        self.assertEqual(
+            found({"Dockerfile": "ARG BASE_IMAGE=node:20\nFROM ${BASE_IMAGE}\n"}), [("Dockerfile", 1, "unqualified")]
+        )
+
+    def test_a_tag_held_in_an_arg_is_followed_into_from(self):
+        self.assertEqual(found({"Dockerfile": "ARG V=20\nFROM node:${V}-alpine\n"}), [("Dockerfile", 2, "unqualified")])
+
+    def test_a_registry_held_in_an_arg_is_followed_into_from(self):
+        text = "ARG REG=evil.example\nFROM ${REG}/x@sha256:" + "a" * 64 + "\n"
+        self.assertEqual(found({"Dockerfile": text}), [("Dockerfile", 2, "other-registry")])
+
+    def test_an_arg_with_no_value_in_the_repo_is_unresolved_not_accepted(self):
+        self.assertEqual(found({"Dockerfile": "ARG BASE\nFROM ${BASE}\n"}), [("Dockerfile", 2, "unresolved")])
+
+    def test_from_across_a_line_continuation(self):
+        self.assertEqual(found({"Dockerfile": "FROM \\\n  node:20\n"}), [("Dockerfile", 1, "unqualified")])
+        self.assertEqual(
+            found({"Dockerfile": "FROM --platform=linux/amd64 \\\n  node:20 AS x\n"}), [("Dockerfile", 1, "unqualified")]
+        )
+
+    def test_copy_from_an_image(self):
+        text = "FROM scratch\nCOPY --from=node:20 /usr/local/bin/node /node\n"
+        self.assertEqual(found({"Dockerfile": text}), [("Dockerfile", 2, "unqualified")])
+
+    def test_run_mount_from_an_image(self):
+        text = "FROM scratch\nRUN --mount=type=bind,from=postgres:17,target=/x true\n"
+        self.assertEqual(found({"Dockerfile": text}), [("Dockerfile", 2, "unqualified")])
+
+    def test_onbuild_copy_from_an_image_is_read(self):
+        text = "FROM scratch\nONBUILD COPY --from=node:20 /a /b\n"
+        self.assertEqual(found({"Dockerfile": text}), [("Dockerfile", 2, "unqualified")])
+
+    def test_copy_from_a_stage_or_an_index_is_not_an_image(self):
+        text = f"FROM {GOOD_FROM} AS build\nFROM scratch\nCOPY --from=build /a /b\nCOPY --from=0 /c /d\n"
+        self.assertEqual(found({"Dockerfile": text}), [])
+
+    def test_a_stage_name_shadows_an_image_name(self):
+        self.assertEqual(found({"Dockerfile": "FROM scratch AS node\nFROM node\n"}), [])
+
+    def test_a_stage_called_by_an_arg_is_not_an_image(self):
+        self.assertEqual(found({"Dockerfile": "ARG T=app\nFROM scratch AS app\nFROM ${T}\n"}), [])
+
+    def test_dockerfile_names(self):
+        for name in ("dockerfile", "Containerfile", "ci/app.Dockerfile", "Dockerfile.dev"):
+            self.assertEqual(found({name: "FROM node:20\n"}), [(name, 1, "unqualified")], name)
+
+
+class RegistryHostTests(unittest.TestCase):
+    def test_a_dotted_quad_registry_in_from(self):
+        self.assertEqual(
+            found({"Dockerfile": "FROM 203.0.113.9:5000/evil/img:1\n"}), [("Dockerfile", 1, "other-registry")]
+        )
+
+    def test_a_dotted_quad_registry_in_compose(self):
+        text = "services:\n  a:\n    image: 203.0.113.9/evil/img:latest\n"
+        self.assertEqual(found({"compose.yml": text}), [("compose.yml", 3, "other-registry")])
+
+    def test_a_dotted_quad_registry_in_docker_run(self):
+        self.assertEqual(
+            found({"t.sh": "docker run --rm 203.0.113.9:5000/evil/img:1\n"}), [("t.sh", 1, "other-registry")]
+        )
+
+    def test_a_port_mapping_is_not_an_image(self):
+        text = "docker run -d -p 127.0.0.1:3001:2368 --rm " + GOOD_FROM + "\n"
+        self.assertEqual(found({"t.sh": text}), [])
+
+
+class LocalBuildTests(unittest.TestCase):
+    def test_a_build_name_with_a_registry_host_is_not_exempt(self):
+        text = "docker build -t quay.io/evil/x .\ndocker run --rm quay.io/evil/x\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 2, "other-registry")])
+
+    def test_an_unbuilt_ci_or_proof_tag_is_not_exempt(self):
+        self.assertEqual(found({"Dockerfile": "FROM postgres:ci\n"}), [("Dockerfile", 1, "unqualified")])
+        self.assertEqual(found({"Dockerfile": "FROM postgres:proof\n"}), [("Dockerfile", 1, "unqualified")])
+
+    def test_a_build_exempts_only_the_name_and_tag_it_built(self):
+        text = "docker build -t postgres .\ndocker run postgres:17\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 2, "unqualified")])
+        text = "docker build -t app:ci .\ndocker run --rm app:ci\n"
+        self.assertEqual(found({"t.sh": text}), [])
+
+    def test_a_build_named_by_a_variable_exempts_that_name(self):
+        text = 'IMG="app:local"\ndocker build -t "$IMG" .\ndocker run --rm "$IMG"\n'
+        self.assertEqual(found({"t.sh": text}), [])
+
+
+class KeyTests(unittest.TestCase):
+    def test_a_yaml_image_env_key(self):
+        text = "jobs:\n  t:\n    env:\n      IMAGE: postgres:17\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "unqualified")])
+
+    def test_a_yaml_star_image_env_key(self):
+        text = "jobs:\n  t:\n    env:\n      DB_IMAGE: postgres:17\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "unqualified")])
+
+    def test_a_star_tag_key_in_shell_and_yaml(self):
+        self.assertEqual(found({"t.sh": 'BLUE_TAG="ghost:6.55.0-alpine"\n'}), [("t.sh", 1, "unqualified")])
+        self.assertEqual(found({"v.yml": "GREEN_TAG: ghost:6-alpine\n"}), [("v.yml", 1, "unqualified")])
+
+    def test_a_bare_tag_in_a_star_tag_key_is_not_a_reference(self):
+        self.assertEqual(found({"t.sh": 'IMAGE_TAG="v1.2.3"\nBLUE_TAG=6\nBASE_TAG=alpine\n'}), [])
+
+    def test_an_env_key_then_docker_run_is_reported_once_at_the_definition(self):
+        text = "jobs:\n  t:\n    steps:\n      - env:\n          IMAGE: postgres:17\n        run: docker run \"$IMAGE\"\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 5, "unqualified")])
+
+    def test_a_yaml_anchor_on_a_scalar_and_its_alias(self):
+        text = "x-img: &img postgres:17\nservices:\n  a:\n    image: *img\n"
+        self.assertEqual(found({"compose.yml": text}), [("compose.yml", 1, "unqualified")])
+
+    def test_a_yaml_anchor_on_an_image_key(self):
+        text = "services:\n  a:\n    image: &i postgres:17\n"
+        self.assertEqual(found({"compose.yml": text}), [("compose.yml", 3, "unqualified")])
+
+    def test_an_alias_whose_anchor_is_elsewhere_is_unresolved(self):
+        text = "services:\n  a:\n    image: *img\n"
+        self.assertEqual(found({"compose.yml": text}), [("compose.yml", 3, "unresolved")])
+
+    def test_yaml_flow_style(self):
+        self.assertEqual(
+            found({"compose.yml": "services: {a: {image: postgres:17}}\n"}), [("compose.yml", 1, "unqualified")]
+        )
+
+    def test_a_yaml_scalar_on_the_next_line(self):
+        text = "services:\n  a:\n    image:\n      postgres:17\n"
+        self.assertEqual(found({"compose.yml": text}), [("compose.yml", 4, "unqualified")])
+
+    def test_quoted_and_spaced_yaml_keys_and_tags(self):
+        for line in ('"image": postgres:17', "image : postgres:17", "image: !!str postgres:17"):
+            self.assertEqual(found({"c.yml": f"services:\n  a:\n    {line}\n"}), [("c.yml", 3, "unqualified")], line)
+
+    def test_interpolation_defaults_are_followed(self):
+        for ref, kind in (
+            ("${DB:-postgres:17}", "unqualified"),
+            ("${IMAGE:-evil.example/x:1}", "other-registry"),
+            ("${REGISTRY:-evil.example}/x@sha256:" + "a" * 64, "other-registry"),
+        ):
+            text = f"services:\n  a:\n    image: {ref}\n"
+            self.assertEqual(found({"compose.yml": text}), [("compose.yml", 3, kind)], ref)
+
+    def test_a_registry_variable_with_no_value_is_unresolved(self):
+        text = "services:\n  a:\n    image: ${REGISTRY}/x:1\n"
+        self.assertEqual(found({"compose.yml": text}), [("compose.yml", 3, "unresolved")])
+
+    def test_a_docker_uri_in_uses(self):
+        text = "jobs:\n  t:\n    steps:\n      - uses: docker://alpine:3.19\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "unqualified")])
+
+    def test_build_arg_values_that_are_images(self):
+        text = "docker build --build-arg BASE=node:20 --build-arg VERSION=1.2.3 .\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+
+    def test_image_keys_in_toml_and_env_files(self):
+        self.assertEqual(found({"ci.toml": 'image = "mysql:8.0"\n'}), [("ci.toml", 1, "unqualified")])
+        self.assertEqual(found({".env": "DB_IMAGE=mysql:8.0\n"}), [(".env", 1, "unqualified")])
+
+    def test_a_repository_name_the_file_completes_is_not_a_tag_less_pull(self):
+        text = "env:\n  IMAGE: ghcr.io/branchleft/x\nrun: docker pull \"$IMAGE@$digest\"\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 3, "unresolved")])
+
+    def test_a_value_written_to_github_output_is_not_a_reference(self):
+        text = 'jobs:\n  t:\n    steps:\n      - run: echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"\n'
+        self.assertEqual(found({WORKFLOW: text}), [])
+
+    def test_a_default_on_its_own_variable_is_reported_once_at_the_definition(self):
+        text = 'SRC_IMAGE="${SRC_IMAGE:-mysql:8.0@sha256:' + "a" * 64 + '}"\ndocker run --rm "$SRC_IMAGE"\n'
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+
+    def test_an_unresolved_definition_is_reported_once_not_again_at_each_use(self):
+        text = 'IMAGE="${1:?usage}"\ndocker run --rm "$IMAGE"\n'
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unresolved")])
+
+    def test_a_hetzner_image_name_is_not_a_container_image(self):
+        self.assertEqual(found({"Pulumi.production.yaml": "config:\n  p:image: debian-13\n"}), [])
+
+
+class CommandTests(unittest.TestCase):
+    def test_podman_run(self):
+        self.assertEqual(found({"t.sh": "podman run --rm alpine:3.19 true\n"}), [("t.sh", 1, "unqualified")])
+
+    def test_container_run_and_global_flags_before_the_verb(self):
+        self.assertEqual(found({"t.sh": "docker container run --rm alpine:3.19 true\n"}), [("t.sh", 1, "unqualified")])
+        self.assertEqual(found({"t.sh": "docker --host unix:///x run --rm alpine:3.19\n"}), [("t.sh", 1, "unqualified")])
+
+    def test_a_runtime_held_in_a_variable(self):
+        self.assertEqual(found({"t.sh": "$DOCKER run --rm alpine:3.19 true\n"}), [("t.sh", 1, "unqualified")])
+        self.assertEqual(found({"t.sh": "sudo ${DOCKER} run --rm alpine:3.19\n"}), [("t.sh", 1, "unqualified")])
+
+    def test_an_image_held_in_a_variable_is_followed_into_docker_run(self):
+        text = 'IMG=alpine:3.19\ndocker run --rm "$IMG" true\n'
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 2, "unqualified")])
+        text = 'image=alpine:3.19\ndocker run --rm "$image" true\n'
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+
+    def test_a_variable_with_no_value_in_the_repo_is_unresolved(self):
+        self.assertEqual(found({"t.sh": 'docker run --rm "$VAR" cmd\n'}), [("t.sh", 1, "unresolved")])
+
+    def test_a_value_flag_with_a_number_does_not_hide_the_image(self):
+        text = "docker run --rm --future-limit 512 mysql:8.0 true\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+        text = "docker run --rm --cpu-shares 512 mysql:8.0 true\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+
+    def test_a_stop_signal_is_not_the_image(self):
+        text = f"docker run --rm --stop-signal SIGKILL {GOOD_FROM} true\n"
+        self.assertEqual(found({"t.sh": text}), [])
+
+    def test_a_workflow_step_name_mentioning_docker_run_is_not_a_command(self):
+        text = "jobs:\n  t:\n    steps:\n      - name: Check docker run works offline\n        run: true\n"
+        self.assertEqual(found({WORKFLOW: text}), [])
+
+    def test_a_trailing_comment_mentioning_docker_run_is_not_a_command(self):
+        self.assertEqual(found({"t.sh": "true # then docker run something\n"}), [])
+
+    def test_a_message_mentioning_docker_pull_is_not_a_command(self):
+        self.assertEqual(found({"t.sh": 'echo "docker pull failed; is the daemon up" >&2\n'}), [])
+
+    def test_a_quoted_command_in_a_shell_string_is_read(self):
+        self.assertEqual(found({"t.sh": "ssh host 'docker run --rm alpine:3.19 true'\n"}), [("t.sh", 1, "unqualified")])
+
+    def test_an_unclosed_quote_after_the_image_keeps_the_image(self):
+        text = "docker run --rm -v \"$PWD\":/repo:ro -w /repo debian:bookworm-slim bash -c '\n  true\n'\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+
+    def test_a_variable_of_options_is_not_the_image(self):
+        text = "eval docker run $args widgets-proof:local\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+
+
+class CodeConstructTests(unittest.TestCase):
+    def test_a_command_string(self):
+        text = "execSync('docker run --rm postgres:17 psql');\n"
+        self.assertEqual(found({"x.ts": text}), [("x.ts", 1, "unqualified")])
+
+    def test_a_quoted_docker_run_phrase_with_no_image_is_not_a_finding(self):
+        self.assertEqual(found({"t.py": 'self.assertNotIn("docker run", text)\n'}), [])
+        self.assertEqual(found({"u.py": 'names = ["docker run", "alpine"]\n'}), [])
+
+    def test_a_quoted_command_ends_at_its_closing_quote(self):
+        findings, _ = scan_tree({"x.py": 'cmd = ["docker run alpine:3.19", "--flag"]\n'})
+        self.assertEqual([f.ref for f in findings], ["alpine:3.19"])
+
+    def test_lts_and_alpine_tags(self):
+        self.assertEqual(found({"x.ts": "const image = 'node:lts-alpine';\n"}), [("x.ts", 1, "unqualified")])
+        self.assertEqual(found({"x.ts": "const a = 'postgres:alpine'; // docker\n"}), [("x.ts", 1, "unqualified")])
+
+    def test_a_bare_name_assigned_to_an_image_key(self):
+        self.assertEqual(found({"x.ts": "const image = 'alpine';\n"}), [("x.ts", 1, "unqualified")])
+
+    def test_a_template_literal_with_a_variable_tag_is_unresolved(self):
+        text = "const image = `node:${V}`;\n"
+        self.assertEqual(found({"x.ts": text}), [("x.ts", 1, "unresolved")])
+
+    def test_a_registry_qualified_name_with_no_tag(self):
+        text = "const image = 'quay.io/evil/x';\n"
+        self.assertEqual(found({"x.ts": text}), [("x.ts", 1, "other-registry")])
+        self.assertEqual(found({"y.ts": "pull('quay.io/evil/x'); // docker\n"}), [("y.ts", 1, "other-registry")])
+
+    def test_a_well_known_image_far_from_any_docker_word(self):
+        self.assertEqual(found({"x.ts": "\n" * 20 + "const X = 'mysql:8.0';\n"}), [("x.ts", 21, "unqualified")])
+        self.assertEqual(found({"x.py": "\n" * 20 + "X = 'mysql:8.0'\n"}), [("x.py", 21, "unqualified")])
+
+    def test_a_two_part_registry_path_in_prose_is_not_an_image(self):
+        text = '"""`ghcr.io/branchleft` without the slash also matches an image name."""\n'
+        self.assertEqual(found({"x.py": text}), [])
+
+    def test_a_build_given_as_an_argument_array_exempts_its_tag(self):
+        text = "const TEST_IMAGE = 'app-test:local';\nexecFileSync('docker', ['build', '-t', TEST_IMAGE, '.']);\n"
+        self.assertEqual(found({"x.ts": text}), [])
+        self.assertEqual(found({"x.ts": "const TEST_IMAGE = 'app-test:local';\n"}), [("x.ts", 1, "unqualified")])
+
+    def test_a_placeholder_in_angle_brackets_is_not_an_image(self):
+        text = '"""`docker run --rm <image> <binary> --version`."""\n'
+        self.assertEqual(found({"x.py": text}), [])
+
+    def test_a_port_is_not_a_tag(self):
+        self.assertEqual(found({"x.ts": "const host = 'mysql:3306'; // docker\n"}), [])
+
+    def test_a_port_mapping_template_is_not_an_image(self):
+        self.assertEqual(found({"x.ts": "const p = `127.0.0.1:${port}:2368`; // docker\n"}), [])
+
+    def test_a_container_name_is_not_an_image(self):
+        self.assertEqual(found({"x.mjs": "const spec = { container: 'c1' };\n"}), [])
+        self.assertEqual(found({"x.mjs": "const spec = { container: 'mysql' };\n"}), [])
+
+    def test_a_container_variable_in_a_script_is_a_name_not_an_image(self):
+        self.assertEqual(found({"t.sh": 'container="mysql"\ndocker rm -f "$container"\n'}), [])
+
+    def test_python_subprocess_list_arguments(self):
+        text = "import subprocess\nsubprocess.run(['docker', 'run', '--rm', 'mysql:8.0'])\n"
+        self.assertEqual(found({"x.py": text}), [("x.py", 2, "unqualified")])
+
+
+class FileTypeTests(unittest.TestCase):
+    def test_these_files_are_scanned(self):
+        cases = {
+            "x.cjs": "run('mysql:8.0'); // docker\n",
+            "x.tsx": "run('mysql:8.0'); // docker\n",
+            "x.mts": "run('mysql:8.0'); // docker\n",
+            "ci.toml": 'image = "mysql:8.0"\n',
+            ".env": "DB_IMAGE=mysql:8.0\n",
+            "Makefile": "t:\n\tdocker run --rm mysql:8.0\n",
+            "t.bash": "docker run --rm mysql:8.0\n",
+            "bin2/run": "#!/bin/sh\ndocker run --rm mysql:8.0\n",
+            "bin/t.sh": "docker run --rm mysql:8.0\n",
+            "scripts/bin/t.sh": "docker run --rm mysql:8.0\n",
+        }
+        for name, text in cases.items():
+            self.assertEqual([k for _, _, k in found({name: text})], ["unqualified"], name)
+
+    def test_vendored_output_and_forks_are_skipped_by_design(self):
+        for name in ("widgets/dist/x.min.js", "forks/x/compose.yml", "node_modules/x/Dockerfile"):
+            self.assertEqual(found({name: "FROM mysql:8.0\nimage: mysql:8.0\n"}), [], name)
+
+
+class OverrideTests(unittest.TestCase):
+    MIRROR = "ghcr.io/branchleft/mirror"
+
+    def test_a_comment_does_not_grant_packages_read(self):
+        text = f"# packages: read\nenv:\n  IMAGE_REGISTRY: {self.MIRROR}\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 3, "override-no-permission")])
+
+    def test_packages_none_does_not_grant_it(self):
+        text = f"permissions:\n  packages: none\nenv:\n  IMAGE_REGISTRY: {self.MIRROR}\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "override-no-permission")])
+
+    def test_packages_write_in_another_job_does_not_grant_it(self):
+        text = (
+            "jobs:\n  a:\n    permissions:\n      packages: write\n  b:\n    permissions:\n      contents: read\n"
+            f"    env:\n      IMAGE_REGISTRY: {self.MIRROR}\n"
+        )
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 9, "override-no-permission")])
+
+    def test_a_job_that_grants_it_is_clean_and_a_workflow_level_grant_covers_its_jobs(self):
+        job = f"jobs:\n  a:\n    permissions:\n      packages: read\n    env:\n      IMAGE_REGISTRY: {self.MIRROR}\n"
+        self.assertEqual(found({WORKFLOW: job}), [])
+        top = f"permissions:\n  packages: read\njobs:\n  a:\n    env:\n      IMAGE_REGISTRY: {self.MIRROR}\n"
+        self.assertEqual(found({WORKFLOW: top}), [])
+
+    def test_an_override_through_build_arg_export_and_github_env(self):
+        head = "permissions:\n  packages: read\njobs:\n  t:\n    steps:\n"
+        for line in (
+            "      - run: docker build --build-arg IMAGE_REGISTRY=evil.example .",
+            "      - run: export IMAGE_REGISTRY=evil.example",
+            '      - run: echo "IMAGE_REGISTRY=evil.example" >> $GITHUB_ENV',
+        ):
+            self.assertEqual(found({WORKFLOW: head + line + "\n"}), [(WORKFLOW, 6, "bad-override")], line)
+
+    def test_an_override_through_build_arg_to_the_mirror_needs_the_permission(self):
+        text = f"jobs:\n  t:\n    steps:\n      - run: docker build --build-arg IMAGE_REGISTRY={self.MIRROR} .\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "override-no-permission")])
+
+    def test_an_expression_override_is_unresolved(self):
+        text = "permissions:\n  packages: read\nenv:\n  IMAGE_REGISTRY: ${{ vars.REG }}\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "unresolved")])
+
+    def test_a_default_expression_is_not_an_override(self):
+        text = 'jobs:\n  t:\n    steps:\n      - run: echo "${IMAGE_REGISTRY:-docker.io/library}"\n'
+        self.assertEqual(found({WORKFLOW: text}), [])
+
+
+class DigestOnlyTests(unittest.TestCase):
+    def test_a_digest_with_no_tag_is_flagged_on_the_mirror_form_and_on_our_own_images(self):
+        mirror_form = "services:\n  a:\n    image: ${IMAGE_REGISTRY:-docker.io/library}/ghost@sha256:" + "a" * 64 + "\n"
+        self.assertEqual(found({"c.yml": mirror_form}), [("c.yml", 3, "no-tag")])
+        own = "services:\n  a:\n    image: ghcr.io/branchleft/anything@sha256:" + "a" * 64 + "\n"
+        self.assertEqual(found({"c.yml": own}), [("c.yml", 3, "no-tag")])
+
+    def test_a_tag_and_a_digest_is_clean(self):
+        text = "services:\n  a:\n    image: " + GOOD_FROM + "\n"
+        self.assertEqual(found({"c.yml": text}), [])
+
+
+class SourceTests(unittest.TestCase):
+    def test_the_mirror_script_parses_on_python_3_11(self):
+        """A f-string that reuses its own quote is valid from 3.12 only; CI is 3.12, a laptop may not be."""
+        source = (HERE / "mirror-images.py").read_text()
+        try:
+            ast.parse(source)
+        except SyntaxError as err:
+            self.fail(f"mirror-images.py does not parse on {sys.version.split()[0]}: {err}")
+        if sys.version_info < (3, 12):
+            return  # the parse above is the check: 3.11 rejects the construct outright
+        stack = []
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.FSTRING_START:
+                if stack and tok.string.lstrip("fFrR")[:1] == stack[-1]:
+                    self.fail(f"line {tok.start[0]}: f-string nested in an f-string with the same quote")
+                stack.append(tok.string.lstrip("fFrR")[:1])
+            elif tok.type == tokenize.FSTRING_END:
+                stack.pop()
+            elif tok.type == tokenize.STRING and stack and tok.string.lstrip("bBrRuU")[:1] == stack[-1]:
+                self.fail(f"line {tok.start[0]}: string inside an f-string uses the f-string's own quote")
+
+
+class RealTreeTests(unittest.TestCase):
+    """The pulls the first inventory missed, found in the real tree."""
+
+    @classmethod
+    def setUpClass(cls):
+        mirror_pairs, allow = guard.load_policy(LIST)
+        cls.findings = guard.scan(REPO, mirror_pairs, allow)
+
+    def at(self, path, line):
+        return [f.kind for f in self.findings if (f.path, f.line) == (path, line)]
+
+    def test_the_postgres_run_by_variable_in_the_portal_workflow(self):
+        self.assertEqual(self.at(".github/workflows/portal-apps-ci.yml", 48), ["unqualified"])
+
+    def test_the_two_ghost_tags_in_the_colour_drift_script(self):
+        self.assertEqual(self.at("scripts/measure-old-colour-schema-drift.sh", 10), ["unqualified"])
+        self.assertEqual(self.at("scripts/measure-old-colour-schema-drift.sh", 11), ["unqualified"])
+
+    def test_the_missed_pulls_have_a_row_on_the_list(self):
+        _, images = mirror.load_list(LIST)
+        rows = {(e["source"], e["digest"]) for e in images}
+        self.assertIn(("docker.io/library/postgres", "sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f"), rows)
+        tags = {(e["source"], t) for e in images for t in e["upstreamTags"]}
+        self.assertIn(("docker.io/library/ghost", "6.55.0-alpine"), tags)
+        self.assertIn(("docker.io/library/ghost", "6-alpine"), tags)
+
+    def test_unresolved_references_are_reported_and_fail_enforce(self):
+        unresolved = [f for f in self.findings if f.kind == guard.UNRESOLVED]
+        self.assertTrue(unresolved)
+        self.assertTrue(all("UNRESOLVED reference" in f.render() for f in unresolved))
+        _, root = scan_tree({"t.sh": 'docker run "$X"\n'})
+        policy = Path(tempfile.mkdtemp()) / "p.json"
+        policy.write_text(json.dumps({"images": []}))
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(guard.main(["--root", str(root), "--list", str(policy), "--mode", "enforce"]), 1)
+            self.assertEqual(guard.main(["--root", str(root), "--list", str(policy), "--mode", "warn"]), 0)
 
 
 if __name__ == "__main__":
