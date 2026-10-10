@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import unittest
 import urllib.parse
+from unittest import mock
 
 import configure_state_bucket as csb
 
@@ -46,12 +49,21 @@ class ConfigureStateBucketTest(unittest.TestCase):
     def test_creates_and_reads_back_both_settings(self):
         got = run(FakeProvider())
         self.assertEqual(got["versioning"], "Enabled")
-        self.assertEqual(got["noncurrent_days"], 90)
+        self.assertEqual(got["noncurrent_days"], 46)
+
+    def test_the_default_expiry_is_the_46_day_erasure_window(self):
+        self.assertEqual(csb.NONCURRENT_EXPIRY_DAYS, 46)
+        self.assertIn(b"<NoncurrentDays>46</NoncurrentDays>", csb.lifecycle_document())
+        env = {"BUCKET_ADMIN_ACCESS_KEY_ID": "A", "BUCKET_ADMIN_SECRET_ACCESS_KEY": "S"}
+        with mock.patch.object(csb, "configure", return_value={}) as configure:
+            with mock.patch.dict("os.environ", env), contextlib.redirect_stdout(io.StringIO()):
+                csb.main(["--bucket", "b-state", "--endpoint", "e", "--region", "r"])
+        self.assertEqual(configure.call_args.kwargs["noncurrent_days"], 46)
 
     def test_rerun_on_an_existing_bucket_is_idempotent(self):
         provider = FakeProvider()
         run(provider)
-        self.assertEqual(run(provider)["noncurrent_days"], 90)
+        self.assertEqual(run(provider)["noncurrent_days"], 46)
 
     def test_accepted_but_ignored_versioning_is_caught_by_the_read_back(self):
         with self.assertRaises(csb.StateBucketError):

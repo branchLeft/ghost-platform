@@ -34,15 +34,22 @@ as the systemd credential `state-copy.env`:
 
 - `STATE_COPY_RECIPIENT`: the estate `age1` public key.
 - `STATE_COPY_{ESTATE,TENANT}_*`: bucket, endpoint, region and key of each
-  source. The code needs only get and list, so a read-only key drops in by
-  changing these two key values, with no code change.
+  source. The key is a read-only key (get and list) from a key-only project
+  of its own, never the state key the stacks write with. The code needs only
+  get and list and checks nothing about the key's rights.
 - `STATE_COPY_DEST_*`: copy 1 and its put-only key.
 
-Retention is not set here. Copy 1's `state/` lifecycle is set by
-`db/provision/configure_backup_bucket.py` (`--state-expiration-days`,
-default 35; `--state-noncurrent-days`, default 1). The state buckets' own
-noncurrent expiry is set by `configure_state_bucket.py --noncurrent-days`
-(default 90).
+## Retention
+
+The estate's erasure window is about 46 days: 10 days current, one day for
+the daily pass, 35 days noncurrent. Retention is not set here; both
+keep-periods are set to that window:
+
+- Copy 1's `state/` lifecycle is set by
+  `db/provision/configure_backup_bucket.py`: `--state-expiration-days`
+  (default 10) then `--state-noncurrent-days` (default 35).
+- The state buckets' own noncurrent expiry is set by
+  `configure_state_bucket.py --noncurrent-days` (default 46).
 
 ## Metrics
 

@@ -128,9 +128,13 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
     """Every backup run's own deletion step depends on media/ carrying a
     SHORT noncurrent-version expiry of its own, split out from the 35-day
     rule dumps/ and binlogs/ keep; fence-probe/ shares that same short
-    window (see the module docstring). Four prefix-scoped rules, never
+    window (see the module docstring). Five prefix-scoped rules, never
     one bucket-wide rule and never two rules whose prefixes could both match
     the same key."""
+
+    @staticmethod
+    def _rule(doc: str, prefix: str) -> str:
+        return doc.split(f"<Filter><Prefix>{prefix}</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
 
     def test_five_rules_are_present(self):
         doc = cbb.lifecycle_document(35, 1).decode()
@@ -154,13 +158,56 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
         self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", doc)
 
     def test_db_prefixes_get_the_db_noncurrent_days_media_and_probe_get_their_own(self):
-        doc = cbb.lifecycle_document(35, 1).decode()
         # dumps/ and binlogs/ each carry their own <NoncurrentDays>35</...>
-        # element -- two occurrences, one per rule -- and media/ and
-        # fence-probe/ each carry an independent <NoncurrentDays>1</...>,
-        # sharing the same value -- two occurrences.
+        # element, and media/ and fence-probe/ each carry an independent
+        # <NoncurrentDays>1</...>, sharing the same value. state/ takes its
+        # own figure, so it is given a value no other rule has.
+        doc = cbb.lifecycle_document(35, 1, 10, 28, 46, 7).decode()
+        for prefix, days in (("dumps/", 35), ("binlogs/", 35), ("media/", 1), ("fence-probe/", 1), ("state/", 7)):
+            self.assertIn(f"<NoncurrentDays>{days}</NoncurrentDays>", self._rule(doc, prefix), prefix)
         self.assertEqual(doc.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
-        self.assertEqual(doc.count("<NoncurrentDays>1</NoncurrentDays>"), 3)
+        self.assertEqual(doc.count("<NoncurrentDays>1</NoncurrentDays>"), 2)
+
+    def test_state_defaults_are_the_46_day_erasure_window(self):
+        # 10 current + 1 for the daily pass + 35 noncurrent, as dumps/.
+        self.assertEqual(cbb.STATE_CURRENT_EXPIRATION_DAYS, 10)
+        self.assertEqual(cbb.STATE_NONCURRENT_VERSION_EXPIRATION_DAYS, 35)
+        rule = self._rule(cbb.lifecycle_document().decode(), "state/")
+        self.assertIn("<Expiration><Days>10</Days></Expiration>", rule)
+        self.assertIn("<NoncurrentDays>35</NoncurrentDays>", rule)
+
+    def test_cli_state_flags_default_to_the_erasure_window_and_are_threaded_through(self):
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "policy.json"
+            policy_file.write_text(json.dumps(fence_policy()))
+            environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
+            captured = []
+            base = [
+                "--bucket", BUCKET, "--endpoint", "hel1.your-objectstorage.com",
+                "--region", "hel1", "--policy-file", str(policy_file), "--engine-diagnostic-passed",
+            ]
+
+            def fake_configure(**kwargs):
+                captured.append(kwargs)
+
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                cbb, "owner_id", return_value="p1231234"
+            ), mock.patch.object(cbb, "configure_backup_bucket", fake_configure):
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    codes = [
+                        cbb.main(base),
+                        cbb.main([*base, "--state-expiration-days", "12", "--state-noncurrent-days", "20"]),
+                    ]
+        self.assertEqual(codes, [0, 0])
+        self.assertEqual(
+            [(c["state_expiration_days"], c["state_noncurrent_days"]) for c in captured],
+            [(10, 35), (12, 20)],
+        )
 
     def test_no_rule_carries_expired_object_delete_marker(self):
         # A Days expiry cannot share a lifecycle element with
@@ -224,13 +271,14 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
 
     def test_defaults_match_the_configured_constants(self):
         doc = cbb.lifecycle_document().decode()
-        self.assertEqual(
-            doc.count(f"<NoncurrentDays>{cbb.NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"), 2
-        )
-        self.assertEqual(
-            doc.count(f"<NoncurrentDays>{cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"),
-            3,  # media/, fence-probe/ and state/ share this value
-        )
+        for prefix, days in (
+            ("dumps/", cbb.NONCURRENT_VERSION_EXPIRATION_DAYS),
+            ("binlogs/", cbb.NONCURRENT_VERSION_EXPIRATION_DAYS),
+            ("media/", cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS),
+            ("fence-probe/", cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS),
+            ("state/", cbb.STATE_NONCURRENT_VERSION_EXPIRATION_DAYS),
+        ):
+            self.assertIn(f"<NoncurrentDays>{days}</NoncurrentDays>", self._rule(doc, prefix), prefix)
 
     def test_configure_backup_bucket_threads_media_noncurrent_days_through(self):
         calls = []
@@ -253,8 +301,8 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
         body = lifecycle_call["body"].decode()
         self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", body)
         self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", body)
-        self.assertEqual(body.count("<NoncurrentDays>2</NoncurrentDays>"), 2)  # media/ and fence-probe/
-        self.assertEqual(body.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
+        for prefix, days in (("media/", 2), ("fence-probe/", 2), ("dumps/", 35), ("binlogs/", 35)):
+            self.assertIn(f"<NoncurrentDays>{days}</NoncurrentDays>", self._rule(body, prefix), prefix)
 
     def test_cli_media_noncurrent_days_flag_is_threaded_through(self):
         import contextlib

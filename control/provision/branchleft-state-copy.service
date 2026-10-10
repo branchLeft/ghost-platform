@@ -1,7 +1,8 @@
 # Nightly copy of the two Pulumi state buckets into backup copy 1. Triggered by
-# branchleft-state-copy.timer; installed by install_state_copy.py. The state
-# keys and the copy-1 put key arrive as one systemd credential, never in the
-# process environment, so the dump worker (same account) cannot read them.
+# branchleft-state-copy.timer; installed by install_state_copy.py. The two
+# read-only source keys and the copy-1 put key arrive as one systemd
+# credential, never in the process environment, so the dump worker (same
+# account) cannot read them.
 [Unit]
 Description=branchLeft state-bucket copy into backup copy 1
 Wants=network-online.target

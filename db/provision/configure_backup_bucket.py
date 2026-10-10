@@ -61,15 +61,16 @@ FENCE_PROBE_PREFIX = "fence-probe/"
 
 # The nightly state copy (infra/provisioning/scripts/state_copy.py) writes each
 # run as a new dated generation with a put-only key, so only this lifecycle
-# ever removes one. Both figures are parameters (--state-expiration-days,
-# --state-noncurrent-days) so the owner's retention ruling changes values only.
+# ever removes one. The figures are the estate's ~46-day erasure window, the
+# same as dumps/: current 10 days, then 35 noncurrent, plus one day for the
+# daily pass. Parameters (--state-expiration-days, --state-noncurrent-days);
 # 0 omits the current-version expiry and leaves state/ unbounded.
 STATE_OBJECT_PREFIX = "state/"
-STATE_CURRENT_EXPIRATION_DAYS = 35
-STATE_NONCURRENT_VERSION_EXPIRATION_DAYS = 1
+STATE_CURRENT_EXPIRATION_DAYS = 10
+STATE_NONCURRENT_VERSION_EXPIRATION_DAYS = 35
 
-# The four prefixes this bucket's objects are written under -- see "FOUR
-# NON-OVERLAPPING PREFIX RULES" above. Trailing slash on each: a prefix
+# The prefixes this bucket's objects are written under -- see "FIVE
+# NON-OVERLAPPING PREFIX RULES" in the .md. Trailing slash on each: a prefix
 # without one would also match an unrelated key merely starting with the
 # same letters (`dumps-archive/...`), which nothing in this pipeline writes
 # today but which a Filter/Prefix rule should not silently also cover.
@@ -116,7 +117,6 @@ def lifecycle_document(
         raise ValueError("db_expiration_days must be 0 (no current-version expiry) or positive")
     if media_expiration_days < 0:
         raise ValueError("media_expiration_days must be 0 (no current-version expiry) or positive")
-
     if state_expiration_days < 0:
         raise ValueError("state_expiration_days must be 0 (no current-version expiry) or positive")
 
@@ -534,7 +534,7 @@ def main(argv: list[str]) -> int:
         type=int,
         default=MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
         help="the media/ prefix's own, shorter noncurrent-version expiry -- see the module "
-        "docstring's FOUR NON-OVERLAPPING PREFIX RULES section (shared with fence-probe/)",
+        "docstring's FIVE NON-OVERLAPPING PREFIX RULES section (shared with fence-probe/)",
     )
     parser.add_argument(
         "--db-expiration-days",

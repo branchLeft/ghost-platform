@@ -15,7 +15,11 @@ import xml.etree.ElementTree as ET
 import shared_objectstorage as so
 
 S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
-NONCURRENT_EXPIRY_DAYS = 90
+# The estate's erasure window: a state object removed here is gone from every
+# copy within about 46 days (10 current + 1 for the daily pass + 35 noncurrent
+# on the dump prefixes; see state_copy.md, "Retention"). A parameter, so a
+# later ruling changes this value only.
+NONCURRENT_EXPIRY_DAYS = 46
 
 
 class StateBucketError(Exception):
