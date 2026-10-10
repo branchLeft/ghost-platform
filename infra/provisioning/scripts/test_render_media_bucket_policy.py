@@ -10,6 +10,7 @@ visible here.
 import importlib.util
 import json
 import pathlib
+import re
 import unittest
 from unittest import mock
 
@@ -25,6 +26,18 @@ PROJECT = "1231234"
 TENANT_KEY = "MJ9VO12DNIH0DHLYOT75"
 ADMIN_KEY = "AB9VO12DNIH0DHLYOT99"
 BUCKET_ARN = "arn:aws:s3:::branchleft-media-blog"
+READ_RE = re.compile(r"(^|[;\s])read\s+-r")
+
+
+def pasted_blocks(text: str) -> list[list[str]]:
+    """Split emitted text into the blocks an operator pastes: blank-line separated."""
+    blocks: list[list[str]] = [[]]
+    for line in text.splitlines():
+        if line.strip():
+            blocks[-1].append(line)
+        elif blocks[-1]:
+            blocks.append([])
+    return [block for block in blocks if block]
 
 
 def policy_for(slug: str = "blog") -> dict:
@@ -81,9 +94,26 @@ class TestOperatorCredentialsAreReadNotPlaceholders(unittest.TestCase):
 
     def test_the_operator_credentials_are_read_into_the_shell(self):
         commands = self.commands()
-        self.assertIn("read -rs AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID", commands)
-        self.assertIn("read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY", commands)
+        self.assertIn(
+            "printf 'Access key id: '; read -r AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID",
+            commands,
+        )
+        self.assertIn(
+            "printf 'Secret access key (hidden): '; read -rs AWS_SECRET_ACCESS_KEY; echo; "
+            "export AWS_SECRET_ACCESS_KEY",
+            commands,
+        )
         self.assertNotIn("export AWS_SECRET_ACCESS_KEY='", commands)
+
+    def test_no_pasted_block_holds_two_reads(self):
+        # The runbook pastes one block at a time. Two reads in one block make
+        # the first take the next pasted line as its value, and the secret
+        # line then runs as a shell command.
+        blocks = pasted_blocks(self.commands())
+        for block in blocks:
+            with self.subTest(block=block):
+                self.assertLessEqual(sum(1 for line in block if READ_RE.search(line)), 1)
+        self.assertEqual(sum(1 for block in blocks for line in block if READ_RE.search(line)), 2)
 
 
 class TestPublicReadNotListable(unittest.TestCase):
