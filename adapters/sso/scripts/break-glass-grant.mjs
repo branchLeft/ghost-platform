@@ -324,12 +324,10 @@ export class StateHeldError extends Error {
 }
 
 /**
- * Removes the state only if it is still the grant that was read. The entry is
- * first renamed to a private name, which is atomic, so what is compared is
- * exactly what is removed; a different grant is linked back and left alone.
- * No lock is taken, so a stuck process can never stop a later close. If the
- * link back fails, the claim file is kept and StateHeldError is thrown: a
- * newer grant's state is never dropped without a copy that expire finds.
+ * Removes the state only if it is still the grant that was read: renamed to a
+ * private claim name (atomic), compared, and a different grant linked back.
+ * No lock is taken. A failed link back keeps the claim and throws, so a newer
+ * grant's state is never dropped without a copy that expire finds.
  */
 export function removeStateIfSame(deps, tenant, fingerprint, log = deps.log) {
   if (fingerprint === null) return false;
