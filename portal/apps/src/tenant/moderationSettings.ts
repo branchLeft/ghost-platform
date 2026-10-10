@@ -155,8 +155,9 @@ export function renderModeration(view: ModerationView): string {
 }
 
 /**
- * The page's body for one signed-in tenant. The kind comes from the seam, and an
- * absent or failed seam is a demo: the settings are the placeholders either way.
+ * The page's body for one signed-in tenant. The kind comes from the seam. An
+ * absent seam, or a value that is not an exact tenant kind, is a demo. A seam that
+ * throws is not caught here: the shell answers 500 FAILED and renders no page.
  */
 export async function moderationBody<S>(
   scope: S,

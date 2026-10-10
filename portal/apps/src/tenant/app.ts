@@ -25,7 +25,7 @@ export interface TenantPortalOptions {
   readonly fetch?: typeof fetch;
   readonly fetchKeys?: TokenVerifierOptions['fetchKeys'];
   readonly sessionSeconds?: number;
-  /** The tenant's kind; absent, failed or unrecognised is treated as a demo. */
+  /** The tenant's kind. Absent or unrecognised is a demo; a throw makes the page answer 500 FAILED. */
   readonly tenantKind?: (scope: TenantScope) => Promise<TenantKind | string>;
 }
 
