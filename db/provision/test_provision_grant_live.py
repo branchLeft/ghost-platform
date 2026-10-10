@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""Behavioural proof of the tenant GRANT target, against the pinned MySQL 8.0.
+"""Live proof of the tenant GRANT escape against the pinned MySQL 8.0.
 
-Two valid tenant names, `a-b` and `a1b`, map to databases `ghost_a_b` and
-`ghost_a1b`. The statements provision_tenant_database generates are applied
-to a real server, then tenant `a-b`'s account is used from a client on the
-tenant host subnet. It must reach its own database and must be refused on
-the other tenant's database.
-
-Skips, never fails, when Docker does not answer within 20s. All containers
-and the network carry a label and are removed afterwards.
+Tenant `a-b` must reach its own database and be refused on `ghost_a1b`.
+Skips when Docker does not answer in 20s; resources are labelled and removed.
 """
 
 import shutil

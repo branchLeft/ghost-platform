@@ -147,6 +147,27 @@ class GrantTargetEscapingTests(unittest.TestCase):
         self.assertIn("CREATE DATABASE IF NOT EXISTS `ghost_a_b`", sql)
 
 
+class GrantPatternEscapeUnitTests(unittest.TestCase):
+    # Tenant names cannot carry % or a backslash, so these call the helper
+    # directly: each escape must be load-bearing on its own.
+
+    def test_percent_is_escaped(self):
+        self.assertEqual(ptd.grant_database_pattern("a%b"), "a\\%b")
+
+    def test_backslash_is_escaped(self):
+        self.assertEqual(ptd.grant_database_pattern("a\\b"), "a\\\\b")
+
+    def test_an_escaped_percent_matches_only_the_literal_name(self):
+        target = ptd.grant_database_pattern("a%b")
+        self.assertTrue(_grant_target_matches(target, "a%b"))
+        self.assertFalse(_grant_target_matches(target, "axxb"))
+
+    def test_an_escaped_backslash_matches_only_the_literal_name(self):
+        target = ptd.grant_database_pattern("a\\b")
+        self.assertTrue(_grant_target_matches(target, "a\\b"))
+        self.assertFalse(_grant_target_matches(target, "ab"))
+
+
 class ProvisionExistingTenantTests(unittest.TestCase):
     def test_does_not_rotate_the_password_or_reissue_create_user(self):
         run = FakeRun(responses=["1\n"])  # user_exists -> True

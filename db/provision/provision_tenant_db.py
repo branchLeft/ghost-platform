@@ -197,7 +197,9 @@ def main(argv: list[str]) -> int:
     else:
         print(
             f"{result.db_user}@{result.host_pattern} already existed; "
-            f"grants and MAX_USER_CONNECTIONS={args.max_user_connections} reapplied, "
+            "escaped grant added beside any existing grant (an old unescaped row is "
+            "left in place); "
+            f"MAX_USER_CONNECTIONS={args.max_user_connections} reapplied, "
             "password unchanged."
         )
     return 0
