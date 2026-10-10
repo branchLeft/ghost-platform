@@ -2,8 +2,8 @@
 
 Vendored third-party image editor for the tenant Ghost image's admin slot.
 
-- Upstream: https://github.com/magicpages/kalotyp
-- Package: `@magicpages/kalotyp@0.2.6` (npm, published 2026-10-08)
+- Upstream: [magicpages/kalotyp](https://github.com/magicpages/kalotyp)
+- Package: `@magicpages/kalotyp@0.2.6` (npm)
 - Licence: MIT (`LICENSE` here is the upstream copy, Copyright (c) 2026 Magic Pages and contributors)
 - Files: `kalotyp.js`, `kalotyp.css`, `LICENSE`, and `kalotyp.sha256` (the pinned hashes)
 

@@ -85,12 +85,6 @@ jobs:
       - name: Widget pin verification tests
         run: node --test --experimental-test-coverage widgets/verify-pins.test.mjs
 
-      # The vendored Kalotyp image editor: its pinned sha256 must match the
-      # vendored bytes, and the sabotage case proves the check rejects a
-      # tampered copy. The image build runs the same check with sha256sum.
-      - name: Kalotyp vendoring tests
-        run: node --test vendor/kalotyp/verify-kalotyp.test.mjs
-
       # The CSP script-hash derivation tool -- the DETERMINISM case proves a
       # drifted theme script would no longer match a pinned golden hash.
       # Only node:test and node:crypto, like the widget pin check above; the

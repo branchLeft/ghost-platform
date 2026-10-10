@@ -1,8 +1,5 @@
-// Proves the pin in kalotyp.sha256 is the one the vendored files match, and
-// that the check rejects a tampered copy. The Dockerfile runs the same check
-// with sha256sum at build time; this test is the CI-side proof of the same
-// property, with its sabotage case alongside so a check that always passes
-// cannot go unnoticed.
+// Proves the vendored bytes match kalotyp.sha256, and that a tampered copy
+// fails. The Dockerfile runs the same check at build time.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -64,10 +61,13 @@ describe('vendored Kalotyp pins', () => {
     }
   });
 
-  it('the Dockerfile copies the vendored files into the admin assets path under the same guard', () => {
+  it('the Dockerfile runs the guard before the copy into the admin assets path', () => {
     const dockerfile = readFileSync(path.join(HERE, '..', '..', 'Dockerfile'), 'utf8');
-    assert.match(dockerfile, /sha256sum -c kalotyp\.sha256/);
-    assert.match(dockerfile, /vendor\/kalotyp\/kalotyp\.sha256/);
+    const guard = dockerfile.indexOf('sha256sum -c kalotyp.sha256');
+    const copy = dockerfile.indexOf('COPY --chown=node:node vendor/kalotyp/');
+    assert.ok(guard > 0, 'guard RUN missing');
+    assert.ok(copy > 0, 'asset COPY missing');
+    assert.ok(guard < copy, 'guard must precede the asset COPY');
     assert.match(dockerfile, /core\/built\/admin\/assets\/kalotyp\//);
   });
 });
