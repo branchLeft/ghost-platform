@@ -6,6 +6,6 @@
   "description": "Static reversibility classifier for a Ghost upgrade range, read from migration source without running Ghost. Zero dependencies.",
   "type": "module",
   "scripts": {
-    "test": "node --test test/classify.test.mjs"
+    "test": "node --test \"test/*.test.mjs\""
   }
 }

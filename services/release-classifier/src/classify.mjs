@@ -1,102 +1,63 @@
 // Static reversibility classifier for a Ghost upgrade range. Reads migration
 // source text only; nothing is executed. Rules and their rationale: ../README.md.
+//
+// Each file is lexed once; every rule reads its tokens, never the raw text.
+
+import { compileFunction } from 'node:vm';
+import { checkGrammar } from './grammar.mjs';
+import { lex, Unlexable } from './lex.mjs';
+
+export { KNOWN_CALLS } from './allowlist.mjs';
 
 // Open owner rulings. Each class is routed by one constant, and consent is the
 // safe default until the owner rules.
 export const CONTRACTING_ROUTE = 'consent';
 export const CONSTRAINT_ROUTE = 'consent';
 
-// Hard consent: Ghost's flag, a helper that sets it, or the dropTables wrapper.
+// A name decides its class wherever it occurs as an identifier token: called,
+// passed by reference, aliased, destructured, optionally chained or used as a
+// property name. A string that spells one is data, not a hit.
+
+// Hard consent: Ghost's flag (see FLAG_KEY), a helper that sets it, or the dropTables wrapper.
 export const IRREVERSIBLE_RULES = Object.freeze([
-  { name: 'flag', pattern: /\birreversible['"`]?\s*:\s*true\b/ },
-  { name: 'helper', pattern: /\bcreateIrreversibleMigration\s*\(/ },
-  { name: 'wrapper', pattern: /\bdropTables\s*\(/ },
+  { name: 'helper', names: ['createIrreversibleMigration'] },
+  { name: 'wrapper', names: ['dropTables'] },
 ]);
 
 // Hard consent: data or structure removed with no way back from the migration.
+// Also by token elsewhere: `del` not called with no argument, and `truncate`.
 export const DESTRUCTIVE_RULES = Object.freeze([
-  { name: 'delete-table', pattern: /\bdeleteTable\s*\(/ },
-  { name: 'recreate-table', pattern: /\brecreateTable\s*\(/ },
-  { name: 'drop-development-copy', pattern: /\bdropDevelopmentCopy\s*\(/ },
-  { name: 'remove-setting', pattern: /\bremoveSetting\s*\(/ },
-  { name: 'raw-drop-table', pattern: /\bDROP\s+TABLE\b/i },
-  { name: 'raw-delete-from', pattern: /\bDELETE\s+FROM\b/i },
-  { name: 'raw-truncate', pattern: /\btruncate\b/i },
-  { name: 'delete-call', pattern: /\.delete\s*\(/ },
-  { name: 'del-with-argument', pattern: /\.del\s*\(\s*[^)\s]/ },
+  { name: 'delete-table', names: ['deleteTable'] },
+  { name: 'recreate-table', names: ['recreateTable'] },
+  { name: 'drop-development-copy', names: ['dropDevelopmentCopy'] },
+  { name: 'remove-setting', names: ['removeSetting'] },
+  { name: 'delete-call', names: ['delete'] },
 ]);
 
 // Lossy, routed by CONTRACTING_ROUTE: drops a column, deletes rows, or removes
 // permission rows. A rollback re-adds a column empty, and a delete loses rows.
+// `data-delete`, a `.del()` with no argument, is read from the tokens directly.
 export const CONTRACTING_RULES = Object.freeze([
-  { name: 'drop-column', pattern: /\bdrop(Column|Columns)\b|\bcreateDropColumnMigration\b/ },
-  { name: 'data-delete', pattern: /\.del\(\s*\)/ },
+  { name: 'drop-column', names: ['dropColumn', 'dropColumns', 'createDropColumnMigration'] },
   {
     name: 'remove-permission',
-    pattern: /\bremovePermission(FromRole)?\s*\(|\bcreateRemovePermissionMigration\s*\(/,
+    names: ['removePermission', 'removePermissionFromRole', 'createRemovePermissionMigration'],
   },
 ]);
 
 // Schema-only constraint drops, routed by CONSTRAINT_ROUTE, kept apart from data loss.
 export const CONSTRAINT_RULES = Object.freeze([
-  { name: 'drop-constraint', pattern: /\bdrop(Index|Unique|Foreign)\b/ },
+  { name: 'drop-constraint', names: ['dropIndex', 'dropUnique', 'dropForeign'] },
 ]);
 
-// Fail-closed allowlist. A call name not listed here, and not declared in the same
-// file, routes consent as unclassified:<name>. Each entry gives its reason.
-export const KNOWN_CALLS = Object.freeze({
-  createTransactionalMigration: 'migration wrapper; its inner calls are checked',
-  createNonTransactionalMigration: 'migration wrapper; its inner calls are checked',
-  combineTransactionalMigrations: 'migration wrapper; its inner calls are checked',
-  combineNonTransactionalMigrations: 'migration wrapper; its inner calls are checked',
-  up: 'migration entry point, a definition in the file',
-  down: 'migration rollback, a definition in the file',
-  require: 'loads a module; the helpers it brings in are checked by name',
-  knex: 'query-builder entry point; chained methods are checked by name',
-  connection: 'the knex handle a migration receives; chained methods are checked by name',
-  info: 'logging only',
-  warn: 'logging only, as info',
-  createAddColumnMigration:
-    'adds the column if absent; the rollback drops the column whenever it exists, so if up was skipped the pre-existing column and its data are dropped',
-  createAddIndexMigration: 'adds an index; the rollback drops it',
-  createRenameColumnMigration: 'renames a column; data is kept',
-  createSetNullableMigration: 'changes nullability; no row is removed',
-  addTable:
-    'creates the table if absent; the rollback drops it whether or not up created it, so if up was skipped the pre-existing table and its rows are dropped. The replaceDevelopmentCopy option is dev and test only and is invisible here',
-  addSetting:
-    'inserts the setting if absent; the rollback deletes it by key whether or not up inserted it, so if up was skipped the pre-existing setting is deleted',
-  addPermissionToRole:
-    'links a permission to a role if not linked; the rollback deletes the link whether or not up created it, so if up was skipped the pre-existing link is deleted',
-  addPermissionWithRoles:
-    'adds a permission and its role links; the rollback deletes every permission row with the same action and object, not only this one, and runs even if up was skipped',
-  where: 'query filter; reads or narrows, writes nothing',
-  whereNull: 'query filter; reads or narrows, writes nothing',
-  map: 'array method; no database effect',
-  isSQLite: 'dialect check; no database effect',
-  randomBytes: 'generates an id; no database effect',
-  toString: 'string conversion; no database effect',
-  ObjectID: 'id constructor imported from a module; generates an id, no database effect',
-  toHexString: 'formats a generated id; no database effect',
-  hex: 'encodes an id; no database effect',
-  UUID: 'generates an id; no database effect',
-});
-
-// Not on the allowlist, on purpose: update (writes arbitrary values, and a rollback
-// cannot restore the old ones) and raw (free-form SQL the rules cannot read).
-
-const KEYWORDS = new Set([
-  'if',
-  'for',
-  'while',
-  'switch',
-  'catch',
-  'return',
-  'typeof',
-  'function',
-  'async',
-  'await',
-  'new',
+// Raw SQL spelled in a string or template. Destructive wherever it appears.
+export const SQL_RULES = Object.freeze([
+  { name: 'raw-drop-table', pattern: /\bDROP\s+TABLE\b/i },
+  { name: 'raw-delete-from', pattern: /\bDELETE\s+FROM\b/i },
+  { name: 'raw-truncate', pattern: /\btruncate\b/i },
 ]);
+
+const FLAG_KEY = 'irreversible';
 const RELEASE_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)$/;
 const FOLDER_PATTERN = /^(\d+)\.(\d+)$/;
 
@@ -126,116 +87,164 @@ function inRange(line, from, to) {
   );
 }
 
-// Removes full-line and block comments, so a commented-out call does not match.
-function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-}
-
-// Blanks out string contents, so text inside a string is not read as a call.
-function stripStrings(code) {
-  return code.replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, '""');
-}
-
-// Bindings that give a local name another name: `const x = a.b;`, `const { x } = a;`.
-// Also records names bound to plain literals (never callable) and destructuring
-// patterns this parser cannot read, which fail closed.
-function bindings(view) {
-  const aliases = new Map();
-  const literals = new Set();
-  const unreadable = [];
-  for (const m of view.matchAll(
-    /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*;/g
-  )) {
-    const parts = m[2].split('.').map((x) => x.trim());
-    aliases.set(m[1], parts[parts.length - 1]);
-  }
-  for (const m of view.matchAll(
-    /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*[A-Za-z_$][\w$.]*(?:\s*\([^)]*\))?\s*;/g
-  )) {
-    for (const entry of m[1].split(',')) {
-      const e = entry.trim();
-      if (!e) continue;
-      const pair = /^([A-Za-z_$][\w$]*)(?:\s*:\s*([A-Za-z_$][\w$]*))?$/.exec(e);
-      if (pair) aliases.set(pair[2] ?? pair[1], pair[1]);
-      else unreadable.push(e);
+const NAME_TABLE = new Map();
+for (const [cls, rules] of [
+  ['irreversible', IRREVERSIBLE_RULES],
+  ['destructive', DESTRUCTIVE_RULES],
+  ['contracting', CONTRACTING_RULES],
+  ['constraint', CONSTRAINT_RULES],
+]) {
+  for (const rule of rules) {
+    for (const name of rule.names) {
+      NAME_TABLE.set(name, [...(NAME_TABLE.get(name) ?? []), { cls, rule: rule.name }]);
     }
   }
-  for (const m of view.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;]*);/g)) {
-    if (/^\s*(?:""|-?\d[\d_.]*|true|false|null)\s*$/.test(m[2])) literals.add(m[1]);
-  }
-  return { aliases, literals, unreadable };
 }
 
-// How many times a name is assigned (its declaration counts as one).
-function writesOf(view, name) {
-  const escaped = name.replace(/\$/g, '\\$');
-  return [...view.matchAll(new RegExp(`(?<![\\w$.])${escaped}\\s*=(?!=)`, 'g'))].length;
-}
+const isPunct = (tok, v) => tok !== undefined && tok.t === 'punct' && tok.v === v;
+const TEMPLATE_PARTS = new Set(['tmpl', 'tmplHead', 'tmplMid', 'tmplTail']);
 
-// Rewrites each call through a local alias to the helper it names. An alias that is
-// reassigned, or that cannot be followed to a name, is left as it is, so its call
-// stays unknown and routes consent.
-function resolveAliases(code) {
-  const view = stripStrings(code);
-  const { aliases, literals, unreadable } = bindings(view);
-  const target = new Map();
-  for (const [name, t] of aliases) {
-    target.set(name, writesOf(view, name) > 1 ? null : t);
-  }
-  let out = code;
-  for (const name of target.keys()) {
-    let t = target.get(name);
-    for (let hop = 0; hop < 10 && t !== null && t !== name && target.has(t); hop += 1) {
-      t = target.get(t);
+// Class hits, read from tokens. Comments are never tokens, and a string is read
+// only as raw SQL or as the path of a `require`.
+function scanHits(tokens) {
+  const found = {
+    irreversible: new Set(),
+    destructive: new Set(),
+    contracting: new Set(),
+    constraint: new Set(),
+  };
+  const record = (name) => {
+    for (const { cls, rule } of NAME_TABLE.get(name) ?? []) found[cls].add(rule);
+  };
+  tokens.forEach((tok, i) => {
+    const prev = tokens[i - 1];
+    if (tok.t === 'id') {
+      record(tok.v);
+      if (tok.v.toLowerCase() === 'truncate') found.destructive.add('raw-truncate');
+      if (tok.v === 'del') {
+        const bare =
+          isPunct(prev, '.') && isPunct(tokens[i + 1], '(') && isPunct(tokens[i + 2], ')');
+        if (bare) found.contracting.add('data-delete');
+        else found.destructive.add('del-with-argument');
+      }
     }
-    // Unresolvable, self-referential, or a chain that did not end: leave the call unknown.
-    if (t === null || t === name || target.has(t)) continue;
-    const escaped = name.replace(/\$/g, '\\$');
-    out = out.replace(new RegExp(`(?<![\\w$.])${escaped}(\\s*)\\(`, 'g'), `${t}$1(`);
-  }
-  return { code: out, literals, unreadable };
-}
-
-// Names a file calls in callee position, after aliases are resolved. A name is
-// exempt only if the file declares it as a function (its body is scanned like the
-// rest) or binds it to a plain literal. Computed calls and calls on call results
-// are reported too.
-function calledNames(resolved) {
-  const view = stripStrings(resolved.code);
-  const names = new Set(resolved.unreadable.map((e) => `<pattern:${e}>`));
-  for (const m of view.matchAll(/(?<!function )(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g))
-    names.add(m[1]);
-  for (const m of view.matchAll(/\.([A-Za-z_$][\w$]*)\s*\(/g)) names.add(m[1]);
-  if (/\]\s*\(/.test(view)) names.add('<computed>');
-  if (/\)\s*\(/.test(view)) names.add('<call-result>');
-  // A helper is local when the file declares it as a function, or binds it once to an
-  // arrow or function expression. Its body is scanned with the rest of the file.
-  const declared = new Set([
-    ...[...view.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map((m) => m[1]),
-    ...[
-      ...view.matchAll(
-        /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/g
-      ),
-    ]
-      .map((m) => m[1])
-      .filter((n) => writesOf(view, n) <= 1),
-  ]);
-  return [...names]
-    .filter((n) => !KEYWORDS.has(n) && !declared.has(n) && !resolved.literals.has(n))
-    .sort();
-}
-
-function matchRules(rules, source) {
-  return rules.filter((r) => r.pattern.test(source)).map((r) => r.name);
+    if ((tok.t === 'id' || tok.t === 'str') && tok.v === FLAG_KEY) {
+      const colon = isPunct(tokens[i + 1], ']') ? tokens[i + 2] : tokens[i + 1];
+      const after = isPunct(tokens[i + 1], ']') ? tokens[i + 3] : tokens[i + 2];
+      if (isPunct(colon, ':') && after?.t === 'id' && after.v === 'true') {
+        found.irreversible.add('flag');
+      }
+    }
+    if (tok.t === 'str' || TEMPLATE_PARTS.has(tok.t)) {
+      for (const r of SQL_RULES) if (r.pattern.test(tok.v)) found.destructive.add(r.name);
+    }
+    // A helper name spelled as the argument of `require` is a module, not data.
+    if (
+      tok.t === 'str' &&
+      isPunct(prev, '(') &&
+      tokens[i - 2]?.t === 'id' &&
+      tokens[i - 2].v === 'require' &&
+      isPunct(tokens[i + 1], ')')
+    ) {
+      record(tok.v);
+    }
+  });
+  return found;
 }
 
 // A no-op rollback in a file that also calls something destructive-looking. The
 // rollback then restores nothing, so the removal cannot be undone.
-const NOOP_DOWN = /\bdown\s*\([^)]*\)\s*\{\s*(?:logging\.\w+\([^;]*\);\s*)*\}/;
-const GENERIC_DESTRUCTIVE_WORD =
-  /\b(?:drop|delete|del|remove|truncate|discard|wipe|purge|recreate)\w*\s*\(/i;
-function noopRollbackRule(code) {
-  return NOOP_DOWN.test(code) && GENERIC_DESTRUCTIVE_WORD.test(code) ? ['noop-rollback'] : [];
+const DESTRUCTIVE_WORD = /^(?:drop|delete|del|remove|truncate|discard|wipe|purge|recreate)\w*$/i;
+
+function skipBalanced(tokens, i) {
+  let depth = 0;
+  for (let k = i; k < tokens.length; k += 1) {
+    if (isPunct(tokens[k], '(')) depth += 1;
+    else if (isPunct(tokens[k], ')')) {
+      depth -= 1;
+      if (depth === 0) return k + 1;
+    }
+  }
+  return tokens.length;
+}
+
+// After a `down` token: is what follows a function whose body is empty, or only
+// logging calls?
+function emptyRollbackAt(tokens, from) {
+  let j = from + 1;
+  if (isPunct(tokens[j], ':') || isPunct(tokens[j], '=')) j += 1;
+  if (tokens[j]?.t === 'id' && tokens[j].v === 'async') j += 1;
+  if (tokens[j]?.t === 'id' && tokens[j].v === 'function') j += 1;
+  if (!isPunct(tokens[j], '(')) return false;
+  j = skipBalanced(tokens, j);
+  if (isPunct(tokens[j], '=>')) j += 1;
+  if (!isPunct(tokens[j], '{')) return false;
+  j += 1;
+  for (;;) {
+    if (isPunct(tokens[j], '}')) return true;
+    const isLogCall =
+      tokens[j]?.t === 'id' &&
+      tokens[j].v === 'logging' &&
+      isPunct(tokens[j + 1], '.') &&
+      tokens[j + 2]?.t === 'id' &&
+      isPunct(tokens[j + 3], '(');
+    if (!isLogCall) return false;
+    j = skipBalanced(tokens, j + 3);
+    if (isPunct(tokens[j], ';')) j += 1;
+  }
+}
+
+function noopRollback(tokens) {
+  const looksDestructive = tokens.some(
+    (t, i) => t.t === 'id' && DESTRUCTIVE_WORD.test(t.v) && isPunct(tokens[i + 1], '(')
+  );
+  if (!looksDestructive) return false;
+  return tokens.some((t, i) => t.t === 'id' && t.v === 'down' && emptyRollbackAt(tokens, i));
+}
+
+// Wrapper parameters of a CommonJS module, so the source compiles as Node would
+// load it. Compiling runs nothing.
+const MODULE_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname'];
+
+// Classifies one migration source and never executes it. Returns the rule names
+// hit per class, and the reasons the fast-path grammar refused it.
+export function classifySource(source) {
+  const out = {
+    irreversible: [],
+    destructive: [],
+    contracting: [],
+    constraint: [],
+    unclassified: [],
+  };
+  let tokens;
+  try {
+    tokens = lex(source);
+  } catch (err) {
+    if (!(err instanceof Unlexable)) throw err;
+    out.unclassified.push(err.reason);
+    return out;
+  }
+  // An empty or comment-only file proves nothing, so it is not fast-path.
+  if (tokens.length === 0) {
+    out.unclassified.push('unlexable');
+    return out;
+  }
+
+  const hits = scanHits(tokens);
+  for (const cls of ['irreversible', 'destructive', 'contracting', 'constraint']) {
+    out[cls].push(...hits[cls]);
+  }
+  if (noopRollback(tokens)) out.destructive.push('noop-rollback');
+
+  try {
+    compileFunction(String(source), MODULE_PARAMS);
+  } catch {
+    out.unclassified.push('syntax');
+    return out;
+  }
+  const refused = checkGrammar(tokens);
+  if (refused !== null) out.unclassified.push(refused);
+  return out;
 }
 
 function collect(out, cls, path, names) {
@@ -265,23 +274,16 @@ export function classifyRange({ from, to, migrations }) {
     const line = parseFolder(m.folder);
     if (!inRange(line, f, t)) continue;
     filesInRange += 1;
-    // Aliases are resolved first, so every rule sees the helper a call really names.
-    const resolvedSource = resolveAliases(m.source);
-    const resolved = resolveAliases(stripComments(m.source));
-    const code = resolved.code;
-    collect(out, 'irreversible', m.path, matchRules(IRREVERSIBLE_RULES, resolvedSource.code));
-    collect(out, 'destructive', m.path, [
-      ...matchRules(DESTRUCTIVE_RULES, code),
-      ...noopRollbackRule(code),
-    ]);
-    collect(out, 'contracting', m.path, matchRules(CONTRACTING_RULES, code));
-    collect(out, 'constraint', m.path, matchRules(CONSTRAINT_RULES, code));
-    const unknown = calledNames(resolved).filter((n) => !Object.hasOwn(KNOWN_CALLS, n));
+    const file = classifySource(m.source);
+    collect(out, 'irreversible', m.path, file.irreversible);
+    collect(out, 'destructive', m.path, file.destructive);
+    collect(out, 'contracting', m.path, file.contracting);
+    collect(out, 'constraint', m.path, file.constraint);
     collect(
       out,
       'unclassified',
       m.path,
-      unknown.map((n) => `unclassified:${n}`)
+      file.unclassified.map((n) => `unclassified:${n}`)
     );
   }
 
