@@ -30,11 +30,12 @@ COMPONENT_TYPE_TOKEN = "ghostPlatform:tenant:GhostTenant"
 CREATE_OPS = {"create", "import", "refresh"}
 
 # The fields of `GhostTenantIdentity` whose change destroys or orphans live
-# data (see infra/tenant/index.ts). `maxUserConnections` is in the interface
-# but deliberately absent: changing it only re-applies a database cap, and the
-# self-test below pins that. Named here rather than read from the plan so a
-# field the component stops registering is a coverage failure, not a
-# comparison that silently stops happening.
+# data. `maxUserConnections` is in the interface but deliberately absent: a
+# raised cap is a safe reapply, as the Overview section of
+# db/provision/provision_tenant_db.md records, and the self-test below pins it.
+# Named here rather than read from the plan so a field the component stops
+# registering is a coverage failure, not a comparison that silently stops
+# happening.
 IDENTITY_FIELDS = (
     "slug",
     "uid",

@@ -78,7 +78,9 @@ themes and settings are orphaned; change the UID and the tenant loses its own
 `0700` volume; change the database name and Ghost boots against an empty
 schema. Seven of the eight fields come from the render core's
 `identity.json`; `maxUserConnections` is the one this component adds, because
-the descriptor does not carry it.
+the descriptor does not carry it. `maxUserConnections` is not in the guarded
+set: a raised cap is a safe reapply, as the Overview section of
+`db/provision/provision_tenant_db.md` records.
 
 ## Constructor order
 
