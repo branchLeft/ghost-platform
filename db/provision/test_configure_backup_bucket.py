@@ -338,12 +338,13 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
         body = next(c for c in calls if c["subresource"] == "lifecycle")["body"].decode()
         self.assertIn("<Expiration><Days>21</Days></Expiration>", self._rule(body, "media/"))
 
-    def test_the_default_matches_the_prune_script_retention(self):
+    def test_the_decided_figure_matches_the_prune_script_retention(self):
         import prune_backups
 
         self.assertEqual(cbb.DB_CURRENT_EXPIRATION_DAYS, prune_backups.RETENTION_DAYS)
         self.assertIn(
-            f"<Days>{prune_backups.RETENTION_DAYS}</Days>".encode(), cbb.lifecycle_document()
+            f"<Days>{prune_backups.RETENTION_DAYS}</Days>".encode(),
+            cbb.lifecycle_document(db_expiration_days=cbb.DB_CURRENT_EXPIRATION_DAYS),
         )
 
     def test_zero_omits_the_expiry_and_negative_is_refused(self):
@@ -405,6 +406,215 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
                         )
                 self.assertEqual(code, 0)
                 self.assertEqual(captured["media_expiration_days"], expected)
+
+
+class DbCurrentVersionExpiryIsOptInTests(unittest.TestCase):
+    """A bucket whose writer key can delete is pruned by prune_backups.py, and a
+    lifecycle rule cannot keep the newest object, so the current-version expiry
+    on dumps/ and binlogs/ is written only when the operator asks for it."""
+
+    @staticmethod
+    def _rule(doc: str, prefix: str) -> str:
+        return doc.split(f"<Filter><Prefix>{prefix}</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
+
+    @staticmethod
+    def _cli(extra):
+        import contextlib
+        import io
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "policy.json"
+            policy_file.write_text(json.dumps(fence_policy()))
+            captured = {}
+            environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                cbb, "owner_id", return_value="p1231234"
+            ), mock.patch.object(cbb, "configure_backup_bucket", lambda **kw: captured.update(kw)):
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(out):
+                    code = cbb.main(
+                        ["--bucket", BUCKET, "--endpoint", "hel1.your-objectstorage.com",
+                         "--region", "hel1", "--policy-file", str(policy_file),
+                         "--engine-diagnostic-passed", *extra]
+                    )
+        return code, captured, out.getvalue()
+
+    def test_the_default_document_has_no_current_expiry_on_dumps_or_binlogs(self):
+        doc = cbb.lifecycle_document().decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertNotIn("<Expiration>", self._rule(doc, prefix))
+
+    def test_the_default_document_still_carries_the_noncurrent_rule_on_both(self):
+        doc = cbb.lifecycle_document().decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertIn("<NoncurrentDays>35</NoncurrentDays>", self._rule(doc, prefix))
+
+    def test_the_default_configure_call_sends_no_current_expiry_on_dumps_or_binlogs(self):
+        calls = []
+        cbb.configure_backup_bucket(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="S", policy_body=b"{}",
+            put=lambda **kwargs: calls.append(kwargs),
+        )
+        body = next(c for c in calls if c["subresource"] == "lifecycle")["body"].decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertNotIn("<Expiration>", self._rule(body, prefix))
+
+    def test_an_explicit_figure_writes_it_on_both_prefixes_and_nowhere_else_in_the_db_rules(self):
+        calls = []
+        cbb.configure_backup_bucket(
+            bucket="b", endpoint="fsn1.your-objectstorage.com", region="fsn1",
+            access_key="AK", secret_key="S", policy_body=b"{}", db_expiration_days=10,
+            put=lambda **kwargs: calls.append(kwargs),
+        )
+        body = next(c for c in calls if c["subresource"] == "lifecycle")["body"].decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertIn("<Expiration><Days>10</Days></Expiration>", self._rule(body, prefix))
+        self.assertNotIn("<Days>", self._rule(body, "fence-probe/"))
+
+    def test_the_media_expiry_is_unchanged_by_the_db_default(self):
+        doc = cbb.lifecycle_document().decode()
+        self.assertIn("<Expiration><Days>28</Days></Expiration>", self._rule(doc, "media/"))
+
+    def test_the_cli_without_the_flag_asks_for_no_current_expiry(self):
+        code, captured, _ = self._cli([])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["db_expiration_days"], 0)
+
+    def test_the_cli_with_the_flag_passes_the_figure_through(self):
+        code, captured, _ = self._cli(["--db-expiration-days", "10"])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["db_expiration_days"], 10)
+
+    def test_the_cli_says_so_when_no_current_expiry_was_written(self):
+        _, _, out = self._cli([])
+        self.assertIn("NO current-version expiry on dumps/ and binlogs/", out)
+        self.assertNotIn("current-version expiry set on dumps/ and binlogs/", out)
+
+    def test_the_cli_names_the_figure_when_it_was_written(self):
+        _, _, out = self._cli(["--db-expiration-days", "10"])
+        self.assertIn("10-day current-version expiry set on dumps/ and binlogs/", out)
+        self.assertNotIn("NO current-version expiry on dumps/ and binlogs/", out)
+
+
+class RunbookInvocationTests(unittest.TestCase):
+    """Every documented invocation of the script, in every markdown file of this
+    repo, agrees with the bucket it names: the bucket whose writer key can
+    delete takes no current-version expiry flag, and the bucket whose writer is
+    put-only passes the decided figure explicitly. A default that is correct
+    for one is wrong for the other, so the page has to say which it is."""
+
+    REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+    EXCLUDED_DIR_PARTS = {".git", "node_modules", "worktrees", ".worktrees"}
+    SCRIPT = "configure_backup_bucket.py"
+    DELETING_WRITER_BUCKET = "branchleft-db-backups"
+    PUT_ONLY_WRITER_BUCKET = "branchleft-tenant-backups"
+    FLAG = "--db-expiration-days"
+
+    @classmethod
+    def command_lines(cls, text: str) -> list[list[str]]:
+        """The argument tokens of every command naming the script with a --bucket.
+
+        Backslash continuations are joined first, in the single and the doubled
+        spelling a quoted example uses. Prose that only names the script has no
+        --bucket and is not a command.
+        """
+        joined = re.sub(r"\\{1,2}\n\s*", " ", text)
+        commands = []
+        for line in joined.splitlines():
+            if cls.SCRIPT not in line or "--bucket" not in line:
+                continue
+            rest = line.split(cls.SCRIPT, 1)[1]
+            rest = re.split(r"[|;`]|&&", rest, maxsplit=1)[0]
+            commands.append(rest.split())
+        return commands
+
+    @classmethod
+    def markdown_files(cls) -> list[Path]:
+        return sorted(
+            p
+            for p in cls.REPO_ROOT.rglob("*.md")
+            if not cls.EXCLUDED_DIR_PARTS & set(p.relative_to(cls.REPO_ROOT).parts)
+        )
+
+    @classmethod
+    def found(cls) -> list[tuple[str, list[str]]]:
+        return [
+            (str(path.relative_to(cls.REPO_ROOT)), tokens)
+            for path in cls.markdown_files()
+            for tokens in cls.command_lines(path.read_text(encoding="utf-8"))
+        ]
+
+    @classmethod
+    def flag_value(cls, tokens: list[str]):
+        for index, token in enumerate(tokens):
+            if token == cls.FLAG:
+                return tokens[index + 1] if index + 1 < len(tokens) else ""
+            if token.startswith(cls.FLAG + "="):
+                return token.split("=", 1)[1]
+        return None
+
+    @staticmethod
+    def bucket(tokens: list[str]):
+        return tokens[tokens.index("--bucket") + 1] if "--bucket" in tokens[:-1] else None
+
+    def test_the_invocations_were_actually_found(self):
+        """A parser that matched nothing would pass every assertion below."""
+        buckets = [self.bucket(tokens) for _, tokens in self.found()]
+        self.assertGreaterEqual(buckets.count(self.DELETING_WRITER_BUCKET), 2, buckets)
+        self.assertGreaterEqual(buckets.count(self.PUT_ONLY_WRITER_BUCKET), 1, buckets)
+
+    def test_the_database_runbook_names_the_deleting_writer_bucket_without_the_flag(self):
+        runbook = self.REPO_ROOT / "db" / "RUNBOOK-db.md"
+        commands = self.command_lines(runbook.read_text(encoding="utf-8"))
+        self.assertEqual(len(commands), 1, commands)
+        self.assertEqual(self.bucket(commands[0]), self.DELETING_WRITER_BUCKET)
+        self.assertIsNone(self.flag_value(commands[0]))
+
+    def test_every_invocation_is_classified_and_carries_the_right_flag(self):
+        for page, tokens in self.found():
+            with self.subTest(page=page, bucket=self.bucket(tokens)):
+                bucket = self.bucket(tokens)
+                value = self.flag_value(tokens)
+                if bucket == self.DELETING_WRITER_BUCKET:
+                    self.assertIsNone(
+                        value,
+                        f"{page}: the bucket whose writer can delete is pruned by "
+                        f"prune_backups.py; it must not be given {self.FLAG}",
+                    )
+                elif bucket == self.PUT_ONLY_WRITER_BUCKET:
+                    self.assertEqual(
+                        value,
+                        str(cbb.DB_CURRENT_EXPIRATION_DAYS),
+                        f"{page}: the put-only bucket ages dumps out through its "
+                        f"lifecycle only, so it must pass {self.FLAG} explicitly",
+                    )
+                else:
+                    self.fail(f"{page}: an invocation names a bucket this test cannot classify: {bucket!r}")
+
+    def test_the_matcher_catches_a_flag_on_the_deleting_bucket_and_a_missing_one(self):
+        """A parser that cannot see the defect would pass the page it checks."""
+        with_flag = self.command_lines(
+            "python3 db/provision/configure_backup_bucket.py --bucket branchleft-db-backups \\\n"
+            "  --region hel1 --db-expiration-days 10 --policy-file p.json\n"
+        )
+        self.assertEqual(self.flag_value(with_flag[0]), "10")
+        self.assertEqual(self.bucket(with_flag[0]), self.DELETING_WRITER_BUCKET)
+        without = self.command_lines(
+            "python3 db/provision/configure_backup_bucket.py --bucket branchleft-tenant-backups --region fsn1\n"
+        )
+        self.assertIsNone(self.flag_value(without[0]))
+        equals_form = self.command_lines(
+            "configure_backup_bucket.py --bucket branchleft-db-backups --db-expiration-days=10\n"
+        )
+        self.assertEqual(self.flag_value(equals_form[0]), "10")
+        self.assertEqual(
+            self.command_lines("`configure_backup_bucket.py` always re-applies the fence\n"), []
+        )
+        self.assertEqual(
+            self.command_lines("python3 db/provision/configure_backup_bucket.py --help | grep -c x\n"), []
+        )
 
 
 class ConfigureBackupBucketTests(unittest.TestCase):

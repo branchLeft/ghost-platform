@@ -139,8 +139,10 @@ Run as the operator. This pauses about two minutes between its two policy PUTs;
 that pause is the lockout check, so do not interrupt it.
 
 ```bash
-AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" python3 db/provision/configure_backup_bucket.py --bucket branchleft-tenant-backups --endpoint fsn1.your-objectstorage.com --region fsn1 --policy-file "$POLICY_FILE" --media-expiration-days "$MEDIA_RETENTION_DAYS" --engine-diagnostic-passed
+AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" python3 db/provision/configure_backup_bucket.py --bucket branchleft-tenant-backups --endpoint fsn1.your-objectstorage.com --region fsn1 --policy-file "$POLICY_FILE" --db-expiration-days 10 --media-expiration-days "$MEDIA_RETENTION_DAYS" --engine-diagnostic-passed
 ```
+
+`--db-expiration-days 10` is explicit on purpose: without it the script writes no current-version expiry on `dumps/` and `binlogs/`.
 
 Expected last line: `configure_backup_bucket: versioning enabled, 35-day noncurrent expiry and 10-day current-version expiry set on dumps/ and binlogs/, <MEDIA_RETENTION_DAYS>-day current-version expiry and 1-day noncurrent expiry set on media/, ...` with your number in place of `<MEDIA_RETENTION_DAYS>`.
 If it says `NO current-version expiry` for `media/`, step 2b was skipped: stop.

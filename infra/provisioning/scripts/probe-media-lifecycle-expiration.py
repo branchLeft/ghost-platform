@@ -204,7 +204,9 @@ def prefix_split_lifecycle_document(
     so the document under test is the one that will actually be applied.
     See probe-media-lifecycle-expiration.md#prefix_split_lifecycle_document."""
     return _configure_backup_bucket.lifecycle_document(
-        noncurrent_days=db_noncurrent_days, media_noncurrent_days=media_noncurrent_days
+        noncurrent_days=db_noncurrent_days,
+        media_noncurrent_days=media_noncurrent_days,
+        db_expiration_days=_configure_backup_bucket.DB_CURRENT_EXPIRATION_DAYS,
     )
 
 
