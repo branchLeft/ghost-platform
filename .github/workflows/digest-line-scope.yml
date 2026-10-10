@@ -1,13 +1,17 @@
 name: Digest-only line scope
 
-# Required check for the digest-only merge route. On every pull request it runs
-# scripts/digest-line-scope.js. For a pull request by the machine identity named
-# in the repository variable DIGEST_MACHINE_LOGIN, it refuses any change except
-# the tag and digest on the Dockerfile FROM line. Every other author, and every
-# run while the variable is unset, passes untouched.
+# pull_request_target runs this job from the base branch, so the script and this
+# file are the ones on main, never the pull request's. The pull request head is
+# fetched as git objects and read only through git diff: it is never checked
+# out, executed, interpreted or cached, and no secret is in scope.
+#
+# Required check for the digest-only merge route. For a pull request by the
+# machine identity named in the repository variable DIGEST_MACHINE_LOGIN, it
+# refuses any change except the tag and digest on the Dockerfile FROM line.
+# Every other author, and every run while the variable is unset, passes.
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
 
 permissions:
@@ -20,11 +24,20 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Checkout
+      - name: Checkout the base branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Fetch the pull request head as data
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags --no-recurse-submodules origin "refs/pull/${PR_NUMBER}/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
 
       - name: Check the line scope
         env:
