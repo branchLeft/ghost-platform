@@ -32,3 +32,28 @@ logs must never resolve to the same object.
 over the replication protocol, which is what makes this possible with no
 filesystem access to the `mysql-data` volume at all -- this script never
 runs inside the MySQL container and never needs to.
+
+## Run status
+
+Every run ends by writing `ship_binlogs_status.prom` to `DB_BINLOG_METRICS_DIR`
+(default `/var/lib/branchleft/backup-worker-exporter`, the directory db1's
+node_exporter reads and `dump_nightly.py` also publishes to), through
+`record_run_status`:
+
+- `db_binlog_ship_last_run_success`: `1` if the run shipped every closed log
+  (a run with nothing pending counts), `0` if it failed for any reason.
+- `db_binlog_ship_last_success_timestamp_seconds`: Unix time of the last run
+  that succeeded. A failed run carries the previous value forward; it is absent
+  until a first success.
+
+The marker file records what was shipped but not when, so nothing could tell
+"the timer stopped" from "nothing to ship" before this. Because every run
+flushes first, a healthy run always has at least one log to ship, and the
+timestamp advances every 15 minutes.
+
+The write is atomic (temporary file in the same directory, then rename) and
+best-effort: an error is printed and swallowed and never changes the exit
+status or delays the next run. An empty `DB_BINLOG_METRICS_DIR` turns it off.
+The alert rules that read these series (`DbBinlogShipStale` and
+`DbBinlogShipMetricAbsent`) are in shared-infra's
+`hetzner/monitoring/render.ts`.
