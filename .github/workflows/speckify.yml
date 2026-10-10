@@ -11,6 +11,7 @@ name: Speckify
 # `uses: branchLeft/speckify@<sha>` it hands an absolute `github.action_path` to
 # setup-node's `node-version-file`, which setup-node joins onto the workspace, and
 # the job fails before it runs Speckify. Its reusable workflow is check-only.
+# The final publish step is npm's, not `speckify publish`: see the comment on it.
 
 on:
   pull_request:
@@ -93,9 +94,9 @@ jobs:
     concurrency:
       group: speckify-publish
       cancel-in-progress: false
-    # `packages: write` is the whole of what publishing needs. `contents` stays
-    # read-only, so Speckify's best-effort GitHub Release (a tag and release
-    # notes) is refused and logged as a warning; the registry is the record.
+    # `packages: write` is the whole of what publishing needs, and `contents`
+    # stays read-only: no tag or release is created, the registry is the record.
+    # Nothing from a pull request runs here: the job is main-only.
     permissions:
       contents: read
       packages: write
@@ -141,8 +142,51 @@ jobs:
       - name: The committed generated sources are what Speckify generates
         run: python3 scripts/assert-broker-contract-generated.py .speckify/out/broker-api/typescript/src
 
-      - name: Speckify publish
-        run: node .speckify-tool/dist/cli.js publish --config speckify.yaml
+      - name: Speckify plan
+        run: node .speckify-tool/dist/cli.js plan --json --config speckify.yaml
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      # This last step is a workaround, not the design. Speckify 0.1.0 writes a
+      # package.json with no `repository` and no `publishConfig`, and a package
+      # GitHub Packages cannot link to this repository can be refused a publish
+      # by this run's token (403, nothing published). `speckify publish`
+      # regenerates the package, so it would drop any field set beforehand; the
+      # fields are set here on Speckify's own build output and the package is
+      # published with npm. The tool's check, plan and build, and the drift
+      # guard above, still run. When Speckify writes those fields itself
+      # (workspace#2014), go back to `speckify publish`.
+      - name: Link the generated package to this repository
+        run: |
+          set -euo pipefail
+          pkg=.speckify/out/broker-api/typescript/package.json
+          jq '.repository = {type: "git", url: "git+https://github.com/branchLeft/ghost-platform.git", directory: "services/broker"}
+              | .publishConfig = {registry: "https://npm.pkg.github.com", access: "public"}' \
+            "$pkg" > "$pkg.tmp"
+          mv "$pkg.tmp" "$pkg"
+          jq '{name, version, repository, publishConfig}' "$pkg"
+
+      # A version the registry already holds is skipped, as `speckify publish`
+      # does; any other failure to read the registry stops the job.
+      - name: Publish to GitHub Packages
+        working-directory: .speckify/out/broker-api/typescript
+        run: |
+          set -euo pipefail
+          name=$(jq -r .name package.json)
+          version=$(jq -r .version package.json)
+          case "$name" in
+            @branchleft/*) ;;
+            *) echo "::error::refusing to publish $name outside the @branchleft scope"; exit 1 ;;
+          esac
+          if found=$(npm view "$name@$version" version --registry https://npm.pkg.github.com 2>&1); then
+            echo "$name@$version is already published; nothing to do"
+            exit 0
+          fi
+          case "$found" in
+            *E404*) ;;
+            *) echo "::error::could not read the registry: $found"; exit 1 ;;
+          esac
+          npm publish --registry https://npm.pkg.github.com
+          echo "broker-api-typescript: published $name@$version"
+        env:
           NODE_AUTH_TOKEN: ${{ github.token }}

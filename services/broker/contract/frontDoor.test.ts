@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import { request, type IncomingHttpHeaders } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startTestBroker, type TestBroker } from '../test/helpers/testBroker.js';
-import { demoDescriptor } from '../test/helpers/fixtures.js';
+import { demoDescriptor, descriptorForSlot } from '../test/helpers/fixtures.js';
 import { signHeaders } from '../test/helpers/signer.js';
 
 /**
@@ -168,6 +169,58 @@ describe('the broker front door and gate, in front of the generated adapter', ()
     ]);
     expect(res.status).toBe(413);
     expect(broker.renderer.calls).toHaveLength(0);
+  });
+
+  it('refuses an unknown descriptor field the way validate() did, instead of dropping it', async () => {
+    broker = await startTestBroker();
+    const descriptor = { ...descriptorForSlot('0' as never), zzExtra: 1 };
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'descriptor has unknown key(s): zzExtra.' });
+    expect(broker.renderer.calls).toHaveLength(0);
+  });
+
+  it('refuses a __proto__ key in the descriptor, as an own property of the parsed body', async () => {
+    broker = await startTestBroker();
+    const json = JSON.stringify({ slot: '0', descriptor: descriptorForSlot('0' as never) });
+    const body = Buffer.from(json.replace('"descriptor":{', '"descriptor":{"__proto__":{"x":1},'));
+    const res = await raw(
+      broker,
+      'POST',
+      '/reconcile',
+      signed(broker, 'POST', '/reconcile', body),
+      body
+    );
+    expect(res.status).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'descriptor has unknown key(s): __proto__.' });
+    expect(broker.renderer.calls).toHaveLength(0);
+  });
+
+  it('answers 200, not a response-check 500, when the clock steps back during an image load', async () => {
+    let ticks = 0;
+    broker = await startTestBroker({
+      wrapDeps: (deps) => ({
+        ...deps,
+        // Each reading is earlier than the one before it.
+        imagePush: { ...deps.imagePush, nowMs: () => 10_000 - (ticks += 1) * 100 },
+      }),
+    });
+    const bytes = Buffer.from('a tar stand-in loaded while the clock goes backwards');
+    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const size = String(bytes.length);
+    const res = await fetch(`${broker.baseUrl}/image`, {
+      method: 'POST',
+      headers: {
+        ...broker.signImagePushHeaders(digest, size),
+        'X-Image-Digest': digest,
+        'X-Image-Size': size,
+        'Content-Type': 'application/octet-stream',
+      },
+      body: bytes,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ digest, bytes: bytes.length, durationMs: 0 });
+    expect(broker.imageLoader.calls).toHaveLength(1);
   });
 
   it('never answers with the adapter problem media type, whatever is malformed', async () => {

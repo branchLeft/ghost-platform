@@ -270,7 +270,10 @@ export async function receiveImage(
       // that race is not one this test (or a caller polling the temp dir
       // right after) should ever have to account for.
       await rm(tarPath, { force: true });
-      const durationMs = deps.nowMs() - startedMs;
+      // Never negative: the adapter checks this body against the spec's
+      // integer-at-least-zero, and a clock stepped back during the load must
+      // not turn a loaded image into a 500.
+      const durationMs = Math.max(0, deps.nowMs() - startedMs);
       return { status: 200, body: { digest, imageId, bytes: received, durationMs } };
     } catch (err) {
       await rm(tarPath, { force: true }).catch(() => undefined);

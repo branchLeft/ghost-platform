@@ -977,7 +977,10 @@ components:
               description: Must equal this descriptor's own `slug` -- render-core's own identity check refuses a mismatch.
             supportIdentity:
               type: string
-              format: email
+              description: >-
+                An email address. Its form is judged by render-core's own
+                `validateEmailAddress` (one `@`, no whitespace, a dotted
+                domain, at most 254 characters), not by this schema.
           additionalProperties: false
     TenantDescriptor:
       type: object
@@ -1033,9 +1036,14 @@ components:
           description: 'A digest-pinned container reference: `<name>[:<tag>]@sha256:<64 hex>`. A floating tag with no digest is refused.'
         ownerEmail:
           type: string
-          format: email
           maxLength: 254
-          description: The one piece of prospect data this schema carries -- the address Ghost creates the owner account with.
+          description: >-
+            The one piece of prospect data this schema carries -- the address
+            Ghost creates the owner account with. Its form is judged by
+            render-core's own `validateEmailAddress` (one `@`, no whitespace, a
+            dotted domain), not by this schema, because that is deliberately
+            laxer than a standards-grade address check: it accepts internationalised
+            forms and local parts such as `a/b` and `a_b@sub_domain.example.com`.
         uid:
           type: integer
           minimum: 30000

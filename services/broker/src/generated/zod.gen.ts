@@ -27,7 +27,7 @@ export const zBreakGlassSpec = z.union([
     z.object({
         kind: z.enum(['enabled']),
         publicKey: z.string(),
-        supportIdentity: z.email(),
+        supportIdentity: z.string(),
         tenant: z.string()
     })
 ]);
@@ -307,7 +307,7 @@ export const zTenantDescriptor = z.object({
     limits: zLimitsSpec,
     mail: zMailSpec,
     media: zMediaSpec,
-    ownerEmail: z.email().max(254),
+    ownerEmail: z.string().max(254),
     ports: zPortTriple,
     safety: zSafetySpec,
     siteUrl: z.url(),

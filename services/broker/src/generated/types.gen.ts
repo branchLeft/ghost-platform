@@ -27,6 +27,9 @@ export type BreakGlassSpec = {
      * Ed25519 public key, base64 SPKI DER. Only the public half is ever on a tenant.
      */
     publicKey: string;
+    /**
+     * An email address. Its form is judged by render-core's own `validateEmailAddress` (one `@`, no whitespace, a dotted domain, at most 254 characters), not by this schema.
+     */
     supportIdentity: string;
     /**
      * Must equal this descriptor's own `slug` -- render-core's own identity check refuses a mismatch.
@@ -289,7 +292,7 @@ export type TenantDescriptor = {
     mail: MailSpec;
     media: MediaSpec;
     /**
-     * The one piece of prospect data this schema carries -- the address Ghost creates the owner account with.
+     * The one piece of prospect data this schema carries -- the address Ghost creates the owner account with. Its form is judged by render-core's own `validateEmailAddress` (one `@`, no whitespace, a dotted domain), not by this schema, because that is deliberately laxer than a standards-grade address check: it accepts internationalised forms and local parts such as `a/b` and `a_b@sub_domain.example.com`.
      */
     ownerEmail: string;
     ports: PortTriple;

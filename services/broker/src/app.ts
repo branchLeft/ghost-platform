@@ -37,6 +37,7 @@ import type { RealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { type SlotLock } from './slotLock.js';
 import { slotAllocation, slotPort } from './slotPorts.js';
+import { unknownFieldPaths } from './unknownFields.js';
 import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slotsFile.js';
 import {
   assertHashRotated,
@@ -837,6 +838,16 @@ function createGate(deps: BrokerDeps): NonNullable<ListenerOptions['beforeHandle
     const verdict = route.bodySchema?.safeParse(payload);
     if (verdict !== undefined && !verdict.success) {
       return refuse(400, { error: describeIssues(verdict.error.issues) });
+    }
+    if (verdict?.success === true && route.id === 'reconcileSlot') {
+      // The schema drops a field it does not declare; render-core refused one.
+      const unknown = unknownFieldPaths(
+        (payload as { descriptor?: unknown }).descriptor,
+        (verdict.data as { descriptor?: unknown }).descriptor
+      );
+      if (unknown.length > 0) {
+        return refuse(400, { error: `descriptor has unknown key(s): ${unknown.join(', ')}.` });
+      }
     }
   };
 }
