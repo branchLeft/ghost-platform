@@ -166,11 +166,8 @@ def render_policy(
     or reader keys the document is exactly the read-write fence it always was,
     so re-rendering an existing bucket's policy changes nothing on it.
 
-    `project_id` is the operator key's project. Each role's keys are built from
-    that role's own project id when one is given: one project per storage key
-    puts the state keys and the read-only key in projects of their own. A
-    role project id left as None means that role's keys are in `project_id`,
-    the single-project layout; the command line never does this silently.
+    `project_id` is the operator key's project; a role project id left as None
+    puts that role's keys in it. See "One project per storage key" in the .md.
     """
     validate_bucket_name(bucket)
     given = {
