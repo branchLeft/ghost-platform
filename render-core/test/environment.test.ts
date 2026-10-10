@@ -53,28 +53,23 @@ describe('tenantEnvironment() — breakGlass', () => {
 });
 
 // The scanning decorator refuses every upload unless a verdict source is
-// named. The demo names the in-process fake, on purpose and visibly; a paying
-// tenant must never carry it, so that its default stays the closed one.
+// named, and the only one it knows is an in-process fake that scans nothing.
+// No render may name it: a demo is where the scan matters most, and a paying
+// tenant has no real source wired yet either, so both refuse uploads.
 describe('tenantEnvironment() — verdictSource', () => {
   const FEATURES = ['images', 'media', 'files'] as const;
 
-  it('a demo (local media) names the in-process fake for every storage feature', () => {
-    const rendered = env(demoDescriptor());
-    for (const feature of FEATURES) {
-      expect(rendered[`storage__${feature}__adapter`]).toBe('ScanningStorageAdapter');
-      expect(rendered[`storage__${feature}__verdictSource`]).toBe('in-process-fake');
-    }
-  });
-
   it.each([
-    ['entry tenant', entryTenantDescriptor],
-    ['professional tenant', professionalTenantDescriptor],
-  ] as const)('a %s (object storage) never names a verdict source', (_label, fixture) => {
+    ['demo (local media)', demoDescriptor],
+    ['entry tenant (object storage)', entryTenantDescriptor],
+    ['professional tenant (object storage)', professionalTenantDescriptor],
+  ] as const)('a %s renders the decorator and no verdict source', (_label, fixture) => {
     const rendered = env(fixture());
     for (const feature of FEATURES) {
       expect(rendered[`storage__${feature}__adapter`]).toBe('ScanningStorageAdapter');
       expect(rendered).not.toHaveProperty(`storage__${feature}__verdictSource`);
     }
-    expect(Object.keys(rendered).filter((key) => key.includes('verdictSource'))).toEqual([]);
+    expect(Object.keys(rendered).filter((key) => /verdictsource/i.test(key))).toEqual([]);
+    expect(Object.values(rendered)).not.toContain('in-process-fake');
   });
 });

@@ -152,3 +152,62 @@ describe('the entry file picks its verdict source', () => {
     expect(earlier.wrapped.savedRaw).toEqual([]);
   });
 });
+
+// The compose files render-core pins as goldens are what a demo and a tenant
+// are started from. The images feature's storage__images__* keys are read
+// out of them and handed to the real entry file exactly as Ghost's config
+// loader would, so what is proved is "as rendered, this refuses", not "a
+// config shaped like it does". The test's own explicit flag, set on a copy
+// of the config and never in a rendered file, is the only way an upload is
+// let through here.
+const GOLDEN_DIR = path.resolve(SRC_DIR, '../../../render-core/test/golden');
+
+async function renderedImagesConfig(goldenName) {
+  const text = await fs.readFile(path.join(GOLDEN_DIR, goldenName), 'utf8');
+  const config = {};
+  for (const line of text.split('\n')) {
+    const match = /^\s+storage__images__([A-Za-z]+): '?([^'\n]*)'?\s*$/.exec(line);
+    if (match && !(match[1] in config)) {
+      config[match[1]] = match[2];
+    }
+  }
+  return config;
+}
+
+describe.each([
+  ['a demo', 'demo.compose.yml', 'LocalImagesStorage'],
+  ['an entry tenant', 'entry-tenant.compose.yml', 'S3Storage'],
+  ['a professional tenant', 'professional-tenant.compose.yml', 'S3Storage'],
+])('%s, as render-core renders it', (_label, golden, renderedWraps) => {
+  async function adapterFromRendered(extra = {}) {
+    const rendered = await renderedImagesConfig(golden);
+    expect(rendered.adapter).toBe('ScanningStorageAdapter');
+    expect(rendered.wraps).toBe(renderedWraps);
+    expect(rendered).not.toHaveProperty('verdictSource');
+    return new EntryAdapter({
+      ...rendered,
+      // The wrapped class is the suite's double; its real name is checked above.
+      wraps: 'FakeAdapter',
+      wrappedConfig: { storagePath: 'wrapped' },
+      quarantinePath: path.join(tmpDir, 'quarantine'),
+      holdRetryMs: 20,
+      holdLogger: { error: (...args) => logged.push(args.join(' ')) },
+      ...extra,
+    });
+  }
+
+  it('renders no verdict source and refuses an upload, loudly', async () => {
+    const adapter = await adapterFromRendered();
+    await expect(adapter.saveRaw(CLEAN_BYTES, '2026/10/clean.png')).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(adapter.wrapped.savedRaw).toEqual([]);
+    expect(logged.join('\n')).toContain('SCANNER_UNCONFIGURED');
+    expect(logged.join('\n')).toContain('UPLOAD_REFUSED_SCANNER_UNCONFIGURED');
+  });
+
+  it('control: the same config with the test harness own explicit flag lets a clean upload through', async () => {
+    const adapter = await adapterFromRendered({ verdictSource: 'in-process-fake' });
+    await expect(adapter.saveRaw(CLEAN_BYTES, '2026/10/clean.png')).resolves.toMatch(/clean\.png$/);
+  });
+});

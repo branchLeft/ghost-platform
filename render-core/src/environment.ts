@@ -68,17 +68,6 @@ const STATIC_FILE_URL_PREFIX: Record<StorageFeature, string> = {
  */
 export const SCANNING_STORAGE_ADAPTER = 'ScanningStorageAdapter';
 
-/**
- * The decorator's `verdictSource` value that selects its in-process fake,
- * which answers "no known match" for every upload and so scans nothing. The
- * decorator's default, with this unset, is no verdict source at all: it
- * refuses every upload. Only the demo (local media) sets it, deliberately
- * and visibly, so the demo keeps working while a real channel does not
- * exist; a paying tenant never does. See
- * `adapters/scanning-storage/src/verdict-source.md`.
- */
-export const IN_PROCESS_FAKE_VERDICT_SOURCE = 'in-process-fake';
-
 /** Ghost's own compiled-in local adapters, one per storage feature — what the
  * decorator's `wraps` names for a demo (local media). A paying tenant's
  * `wraps` is `S3Storage` for every feature instead — see `mediaEnvironment`. */
@@ -186,10 +175,10 @@ function mediaEnvironment(
         // same guard refuses a decorator wrapping a `Local*Storage` value
         // too — see that constant's own comment.
         env[`storage__${feature}__adapter`] = SCANNING_STORAGE_ADAPTER;
-        // Explicit and demo-only: without it the decorator refuses every
-        // upload, which is the right default for everything that is not a
-        // demo. See `IN_PROCESS_FAKE_VERDICT_SOURCE`.
-        env[`storage__${feature}__verdictSource`] = IN_PROCESS_FAKE_VERDICT_SOURCE;
+        // No `verdictSource` is rendered, for a demo or a tenant, on
+        // purpose: the decorator then has no verdict source and refuses
+        // every upload until a real one is wired. A demo must not name the
+        // in-process fake here. See environment.md#verdict-source.
         env[`storage__${feature}__wraps`] = LOCAL_WRAPPED_ADAPTER[feature];
         env[`storage__${feature}__quarantinePath`] = QUARANTINE_PATH;
       } else {

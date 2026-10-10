@@ -17,6 +17,12 @@ verdict question. Until the real channel exists there are two outcomes:
 The seed keys alone (`refuse`, `unavailable`, `resolvePath`) do not select
 the fake. A deployment that sets them without the flag is unconfigured.
 
+Every write Ghost makes goes through `save()` or `saveRaw()`, so the refusal
+is not limited to an editor's upload: it also stops an on-demand resized
+image that does not exist yet, a bookmark thumbnail and an inlined external
+image. Existing files, and resized variants that already exist, keep being
+served.
+
 Timeout and outage are a different case and are not touched here: a
 channel that is configured but slow or unreachable answers `unavailable`,
 and the upload is accepted and held unserved until a verdict arrives.

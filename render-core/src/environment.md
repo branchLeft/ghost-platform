@@ -44,14 +44,13 @@ test only". A demo is exactly that case.
 
 ## Verdict source
 
-The scanning decorator refuses every upload unless `storage__<feature>__verdictSource`
-names a source (`adapters/scanning-storage/src/verdict-source.md`). The only
-source that exists today is its in-process fake, which scans nothing. A demo
-(local media) renders `verdictSource: 'in-process-fake'` for all three
-features, explicitly, so the demo keeps accepting uploads while a real
-channel does not exist and the choice is visible in the rendered file. A
-paying tenant (object storage) renders no `verdictSource` at all, so its
-uploads are refused until a real channel is wired.
+No `storage__<feature>__verdictSource` is rendered, for a demo or for a
+tenant. The scanning decorator treats an absent value as no verdict source
+and refuses every upload with a 503 until a real one is wired
+(`adapters/scanning-storage/src/verdict-source.md`). The only value it
+recognises today is its in-process fake, which scans nothing; it is for a
+test harness's own environment and is never rendered into a compose file.
+A demo is not an exception: it is where the scan matters most.
 
 ## Media environment
 

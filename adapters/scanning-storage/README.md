@@ -121,8 +121,12 @@ declines them all: `save()` and `saveRaw()` throw a typed 503 before the
 file is read, hashed, sealed or written, and nothing is quarantined (a
 refusal here is not a verdict on the bytes, so no digest is remembered as
 refused). Reads, `exists()` and `serve()` are untouched, so what is already
-stored keeps being served, and a hold left by an earlier process stays
-held. Two log lines on the error stream carry `SCANNER_UNCONFIGURED`: one at
+stored, resized variants that already exist included, keeps being served,
+and a hold left by an earlier process stays held. Every write goes through
+the same two methods, so Ghost's own internal writes are refused too: an
+on-demand resized image that does not exist yet (Ghost's resize middleware
+passes the error on rather than falling back to the original), a bookmark
+thumbnail, and an inlined external image. Two log lines on the error stream carry `SCANNER_UNCONFIGURED`: one at
 construction, and `UPLOAD_REFUSED_SCANNER_UNCONFIGURED` on every refused
 upload. This is distinct from an outage of a configured channel, which is
 held, not refused (below). Details: `src/verdict-source.md`.
