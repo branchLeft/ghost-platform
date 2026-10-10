@@ -1,8 +1,21 @@
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SqliteCredentialStore, StoreRollbackError } from '../../src/credentials/store.js';
+import Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  SqliteCredentialStore,
+  StoreAnchorMissingError,
+  StoreRollbackError,
+} from '../../src/credentials/store.js';
 
 const KEY = 'GWAAAAAAAAAAAAAAAAAAAAAAAA';
 const NEW = {
@@ -148,15 +161,18 @@ describe('SqliteCredentialStore', () => {
       store.close();
       store = SqliteCredentialStore.open(path);
       expect(store.get(KEY)?.state).toBe('disabled');
-      expect(readGeneration()).toBe(2);
+      // The first open stamps generation 1; the insert and the disable are 2 and 3.
+      expect(readGeneration()).toBe(3);
     });
 
     it('catches a stale anchor up to the database and never moves it back', () => {
       store.insert(NEW);
       store.close();
-      writeFileSync(`${path}.generation`, '0\n');
+      // The state a crash between the commit and the anchor write leaves.
+      writeFileSync(`${path}.generation`, '1\n');
       store = SqliteCredentialStore.open(path);
-      expect(readGeneration()).toBe(1);
+      expect(readGeneration()).toBe(2);
+      expect(store.get(KEY)?.state).toBe('active');
     });
 
     it('treats a damaged anchor as an error rather than as no anchor', () => {
@@ -173,11 +189,160 @@ describe('SqliteCredentialStore', () => {
       const second = SqliteCredentialStore.open(join(dir, 'second.sqlite'), undefined, anchor);
       second.insert(NEW);
       second.close();
-      expect(readFileSync(anchor, 'utf8')).toBe('1\n');
+      expect(readFileSync(anchor, 'utf8')).toBe('2\n');
     });
 
     function readGeneration(): number {
       return Number(readFileSync(`${path}.generation`, 'utf8'));
     }
+
+    describe('a missing anchor', () => {
+      const anchor = (): string => `${path}.generation`;
+
+      function failOpen(): StoreAnchorMissingError {
+        try {
+          SqliteCredentialStore.open(path).close();
+        } catch (err) {
+          expect(err).toBeInstanceOf(StoreAnchorMissingError);
+          return err as StoreAnchorMissingError;
+        }
+        return expect.unreachable('open did not refuse');
+      }
+
+      it('refuses an older copy restored with the anchor deleted, and does not recreate the anchor', () => {
+        store.insert(NEW);
+        const backup = backUp();
+        expect(store.disable(KEY)).toBe('disabled');
+        restoreOlderCopy(backup);
+        rmSync(anchor());
+        const refused = failOpen();
+        expect(refused).toBeInstanceOf(StoreRollbackError);
+        expect(refused.found).toBe(2);
+        expect(existsSync(anchor())).toBe(false);
+      });
+
+      it('refuses a copy taken before any change once the anchor is gone', () => {
+        const backup = backUp();
+        store.insert(NEW);
+        store.disable(KEY);
+        restoreOlderCopy(backup);
+        rmSync(anchor());
+        expect(failOpen().found).toBe(1);
+        expect(existsSync(anchor())).toBe(false);
+      });
+
+      it('refuses a database that is ahead of a deleted anchor, even with no restore', () => {
+        store.insert(NEW);
+        store.close();
+        rmSync(anchor());
+        expect(failOpen().found).toBe(2);
+      });
+
+      it('names the anchor, the generation and the loss in its message', () => {
+        store.insert(NEW);
+        store.close();
+        rmSync(anchor());
+        const { message } = failOpen();
+        expect(message).toContain(`anchor file ${anchor()} is missing`);
+        expect(message).toContain('generation 2');
+        expect(message).toContain('write 2 and a newline');
+        expect(message).toContain('undone');
+      });
+
+      it('opens once the operator writes the database generation to the anchor', () => {
+        store.insert(NEW);
+        const backup = backUp();
+        store.disable(KEY);
+        restoreOlderCopy(backup);
+        rmSync(anchor());
+        const refused = failOpen();
+        writeFileSync(anchor(), `${refused.found}\n`);
+        store = SqliteCredentialStore.open(path);
+        // The restored copy is now the record: the disable made after it is undone.
+        expect(store.get(KEY)?.state).toBe('active');
+        expect(readGeneration()).toBe(refused.found);
+      });
+
+      it('opens a first run, and makes the anchor before any change can be made', () => {
+        expect(readFileSync(anchor(), 'utf8')).toBe('1\n');
+        const second = SqliteCredentialStore.open(join(dir, 'fresh.sqlite'));
+        second.close();
+        expect(readFileSync(join(dir, 'fresh.sqlite.generation'), 'utf8')).toBe('1\n');
+      });
+
+      it('survives a crash right after the first generation is stamped', () => {
+        const crashed = join(dir, 'crashed.sqlite');
+        const original = Database.prototype.pragma;
+        const spy = vi.spyOn(Database.prototype, 'pragma').mockImplementation(function (
+          this: Database.Database,
+          source: string,
+          options?: Database.PragmaOptions
+        ) {
+          const result = original.call(this, source, options);
+          if (source === 'user_version = 1') throw new Error('simulated crash');
+          return result;
+        });
+        try {
+          expect(() => SqliteCredentialStore.open(crashed)).toThrow('simulated crash');
+        } finally {
+          spy.mockRestore();
+        }
+        const reopened = SqliteCredentialStore.open(crashed);
+        expect(reopened.insert(NEW).ok).toBe(true);
+        reopened.close();
+        expect(readFileSync(`${crashed}.generation`, 'utf8')).toBe('2\n');
+      });
+
+      it('opens an upgrade: rows present, no generation set, no anchor', () => {
+        store.insert(NEW);
+        store.close();
+        const raw = new Database(path);
+        raw.pragma('user_version = 0');
+        raw.close();
+        rmSync(anchor());
+        store = SqliteCredentialStore.open(path);
+        expect(store.get(KEY)).toEqual({ ...NEW, state: 'active' });
+        expect(readGeneration()).toBe(1);
+      });
+
+      it('treats an anchor it cannot read as an error, never as a missing one', () => {
+        store.close();
+        rmSync(anchor());
+        mkdirSync(anchor());
+        expect(() => SqliteCredentialStore.open(path)).toThrow(/EISDIR/);
+      });
+
+      it('leaves the database file untouched when it refuses', () => {
+        store.insert(NEW);
+        store.close();
+        rmSync(anchor());
+        const before = readFileSync(path);
+        failOpen();
+        expect(readFileSync(path).equals(before)).toBe(true);
+      });
+    });
+
+    it('commits a change and its generation together', () => {
+      store.insert(NEW);
+      const original = Database.prototype.pragma;
+      const spy = vi.spyOn(Database.prototype, 'pragma').mockImplementation(function (
+        this: Database.Database,
+        source: string,
+        options?: Database.PragmaOptions
+      ) {
+        if (source.startsWith('user_version =')) throw new Error('simulated write failure');
+        return original.call(this, source, options);
+      });
+      try {
+        expect(() => store.disable(KEY)).toThrow('simulated write failure');
+        expect(() => store.disableFolder(NEW.folder)).toThrow('simulated write failure');
+        expect(() => store.insert(OTHER)).toThrow('simulated write failure');
+      } finally {
+        spy.mockRestore();
+      }
+      expect(store.get(KEY)?.state).toBe('active');
+      expect(store.get(OTHER.keyId)).toBeUndefined();
+      expect(readGeneration()).toBe(2);
+    });
   });
 });

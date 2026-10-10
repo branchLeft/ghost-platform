@@ -190,9 +190,10 @@ export const CALLER_KEY_ENV: Readonly<Record<AdminCaller, string>> = {
 /**
  * Reads both callers' public keys. This reads the process environment, which
  * pins nothing: anything able to set the gateway's environment chooses who
- * may mint. Production starts through {@link loadPinnedCallerKeys}. Fails closed when either is missing or
- * malformed, or when both are the same key, which would let one caller act
- * as the other.
+ * may mint. Nothing outside this module calls either loader yet; the start-up
+ * code must call only {@link loadPinnedCallerKeys}, with no fallback to this
+ * one. Fails closed when either is missing or malformed, or when both are
+ * the same key, which would let one caller act as the other.
  */
 export function loadCallerKeys(
   env: Readonly<Record<string, string | undefined>>
