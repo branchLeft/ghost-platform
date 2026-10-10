@@ -42,6 +42,17 @@ assumption does not hold for a demo, and this is the guard's own
 documented, deliberate escape hatch: "local development / the SQLite smoke
 test only". A demo is exactly that case.
 
+## Verdict source
+
+The scanning decorator refuses every upload unless `storage__<feature>__verdictSource`
+names a source (`adapters/scanning-storage/src/verdict-source.md`). The only
+source that exists today is its in-process fake, which scans nothing. A demo
+(local media) renders `verdictSource: 'in-process-fake'` for all three
+features, explicitly, so the demo keeps accepting uploads while a real
+channel does not exist and the choice is visible in the rendered file. A
+paying tenant (object storage) renders no `verdictSource` at all, so its
+uploads are refused until a real channel is wired.
+
 ## Media environment
 
 `mediaBucketName`/`mediaPublicBaseUrl` re-derive the bucket and its public

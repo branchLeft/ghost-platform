@@ -28,8 +28,11 @@ serves nothing until one arrives. It does **not** build:
   against a known-material database lives in a separate repo, built by a
   separate story, per the platform owner's own ruling that it should be
   extensible to other organisations later. `ScanningStorageAdapter.js`
-  constructs a `FakeVerdictClient` from its own config until that story
-  lands; nothing here guesses that channel's wire format or transport.
+  constructs a `FakeVerdictClient` from its own config only when
+  `storage__<feature>__verdictSource=in-process-fake` is set outright, for
+  demo, dev and test paths. With that unset the adapter has no verdict
+  source and refuses every new upload with a 503 (see "No verdict source"
+  below); nothing here guesses the real channel's wire format or transport.
   Because there is no real channel, "a later verdict arrives" can only
   mean one thing this decorator can observe: the same in-process
   `VerdictClient` answering differently on a later call (`src/hold.js`
@@ -82,14 +85,15 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__wraps=LocalImagesStorage` | The adapter class this decorator wraps, resolved from the same directory Ghost's own adapter manager resolves any adapter from -- `LocalImagesStorage`, `LocalMediaStorage`, `LocalFilesStorage` or `S3Storage`. |
 | `storage__images__wrappedConfig__*` | Passed straight through to the wrapped adapter's own constructor (e.g. `storage__images__wrappedConfig__bucket` for `S3Storage`). `LocalImagesStorage`/`LocalMediaStorage`/`LocalFilesStorage` ignore it; they always self-configure from Ghost's own `getContentPath`. |
 | `storage__images__quarantinePath` | Where a refused upload's bytes are written, named by digest. Always local disk, regardless of which adapter is wrapped -- quarantine is never the served location. |
-| `storage__images__refuse` | A JSON object of `digest -> {classification, matchType}`, seeding the in-process fake verdict client. Empty or unset refuses nothing. |
-| `storage__images__unavailable` | A JSON array of digests the fake verdict client answers `'unavailable'` for, until told otherwise -- proves the hold branch, with no real channel to simulate an outage or a timeout through. Empty or unset holds nothing. |
-| `storage__images__resolvePath` | A directory the fake verdict client polls for `<digest>.json` files, letting an image-test driver in a separate process "deliver" a verdict for a held digest by writing one. Never used outside the image-test harness. |
+| `storage__images__verdictSource` | `in-process-fake` selects the in-process fake verdict client, which answers no-known-match for everything it was not seeded to refuse, so it scans nothing. For demo, dev and test paths only. Unset, empty or any other value means no verdict source: every upload is refused. Matched exactly. |
+| `storage__images__refuse` | A JSON object of `digest -> {classification, matchType}`, seeding the in-process fake verdict client. Empty or unset refuses nothing. Has no effect without `verdictSource=in-process-fake`. |
+| `storage__images__unavailable` | A JSON array of digests the fake verdict client answers `'unavailable'` for, until told otherwise -- proves the hold branch, with no real channel to simulate an outage or a timeout through. Empty or unset holds nothing. Has no effect without `verdictSource=in-process-fake`. |
+| `storage__images__resolvePath` | A directory the fake verdict client polls for `<digest>.json` files, letting an image-test driver in a separate process "deliver" a verdict for a held digest by writing one. Never used outside the image-test harness, and needs `verdictSource=in-process-fake`. |
 | `storage__images__holdRetryMs` | How often a held digest is first re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 | `storage__images__holdMaxRetryMs` | The ceiling that interval backs off to on repeated non-answers -- a bound on the polling *rate* during a prolonged outage, never on how long a hold lives. Defaults to 60 seconds. |
 | `storage__images__holdMaxFailures` | How many consecutive retries may *fail* (a throw from the filesystem or the wrapped adapter, not a verdict that is still pending) before the hold is stuck. Defaults to 8. |
 
-The same nine keys apply under `storage__media__*` and `storage__files__*`.
+The same keys apply under `storage__media__*` and `storage__files__*`.
 Wrapping `media`/`files` today only makes sense once a `Check` exists for
 that content type; until then it is configuration with no effect.
 
@@ -109,6 +113,19 @@ ships `blocking: true`; its hash primitive is injected (`src/pdq.js`'s
 `digestBytes`, a SHA-256 stand-in -- PDQ itself is incidental to this design
 and proving near-duplicate matching is the verdict channel's job, not this
 decorator's).
+
+### No verdict source
+
+An adapter with no verdict source cannot vouch for any upload, so it
+declines them all: `save()` and `saveRaw()` throw a typed 503 before the
+file is read, hashed, sealed or written, and nothing is quarantined (a
+refusal here is not a verdict on the bytes, so no digest is remembered as
+refused). Reads, `exists()` and `serve()` are untouched, so what is already
+stored keeps being served, and a hold left by an earlier process stays
+held. Two log lines on the error stream carry `SCANNER_UNCONFIGURED`: one at
+construction, and `UPLOAD_REFUSED_SCANNER_UNCONFIGURED` on every refused
+upload. This is distinct from an outage of a configured channel, which is
+held, not refused (below). Details: `src/verdict-source.md`.
 
 ### The hold branch
 

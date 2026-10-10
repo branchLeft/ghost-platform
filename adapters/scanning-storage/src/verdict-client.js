@@ -87,4 +87,20 @@ class FakeVerdictClient extends VerdictClient {
   }
 }
 
-module.exports = { VerdictClient, FakeVerdictClient };
+// What stands in for the channel when none is configured. It never answers
+// 'no-known-match': a verdict source that cannot scan has no business
+// vouching for anything. 'unavailable' keeps an already-held digest held,
+// and the decorator itself refuses new uploads while this is its only
+// source (see verdict-source.md).
+class UnconfiguredVerdictClient extends VerdictClient {
+  constructor({ source = 'unconfigured-verdict-source' } = {}) {
+    super();
+    this.source = source;
+  }
+
+  async getVerdict(digest) {
+    return { classification: 'unavailable', source: this.source, evidence: digest };
+  }
+}
+
+module.exports = { VerdictClient, FakeVerdictClient, UnconfiguredVerdictClient };
