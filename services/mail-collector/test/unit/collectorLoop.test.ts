@@ -154,6 +154,77 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     deliveryClient.close();
   });
 
+  it('STALE THEN FRESH: a host whose descriptor goes stale and recovers is drained again', async () => {
+    const { runtime, store, deliveryClient } = buildRuntime([
+      { id: 'tenant-a', baseUrl: baseUrlA },
+    ]);
+    runtime.start();
+    await new Promise((r) => setTimeout(r, 100));
+    store.setTargets([]); // descriptor goes stale: tenant-a's loop winds down
+    await new Promise((r) => setTimeout(r, 150));
+    store.setTargets([{ id: 'tenant-a', baseUrl: baseUrlA }]); // descriptor is fresh again
+    shimA.enqueue(message('after-recovery'));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(sink.messages.map((m) => m.envelopeTo[0])).toEqual([
+      'reader-after-recovery@example.com',
+    ]);
+    await runtime.stop();
+    deliveryClient.close();
+  });
+
+  it('a drain loop that throws is removed from the running set, so the next refresh restarts it', async () => {
+    const real = createThrottle({ messagesPerHour: 360_000 });
+    let reloads = 0;
+    const crashOnFirstReload: Throttle = {
+      tryTake: () => real.tryTake(),
+      waitForToken: (signal) => real.waitForToken(signal),
+      currentRate: () => real.currentRate(),
+      reload() {
+        reloads += 1;
+        if (reloads === 1) {
+          throw new Error('simulated loop crash');
+        }
+        real.reload();
+      },
+    };
+    shimA.enqueue(message('after-crash'));
+    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+      throttle: crashOnFirstReload,
+    });
+    runtime.start();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(reloads).toBeGreaterThanOrEqual(2); // the first loop crashed; a second one ran
+    expect(sink.messages.map((m) => m.envelopeTo[0])).toEqual(['reader-after-crash@example.com']);
+    await runtime.stop();
+    deliveryClient.close();
+  });
+
+  it('CONTROL CASE: repeated reconciles never run two drain loops for one host at once', async () => {
+    const real = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const countingDrainClient: DrainClient = {
+      async drain(target, signal) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        try {
+          return await real.drain(target, signal);
+        } finally {
+          inFlight -= 1;
+        }
+      },
+      ack: (target, acks, signal) => real.ack(target, acks, signal),
+    };
+    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
+      drainClient: countingDrainClient,
+    });
+    runtime.start();
+    await new Promise((r) => setTimeout(r, 500)); // about ten refresh-driven reconciles
+    await runtime.stop();
+    deliveryClient.close();
+    expect(maxInFlight).toBe(1);
+  });
+
   it('a message the sink accepts is acknowledged exactly once', async () => {
     shimA.enqueue(message('m1'));
     const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }]);
