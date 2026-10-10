@@ -8,9 +8,11 @@ exactly that test red (see render_demo_site.md, "Sabotage").
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import pathlib
 import re
+import tempfile
 import unittest
 
 import render_demo_edge as rde
@@ -156,6 +158,54 @@ class HealthTests(unittest.TestCase):
 
     def test_admin_api_is_off(self):
         self.assertIn("\tadmin off\n", rds.render_caddyfile([("0", EDGE)]))
+
+
+class GateEnvironmentTests(unittest.TestCase):
+    """The gate keys its attempt ceilings on the socket peer unless that peer
+    is listed in GATE_TRUSTED_PROXIES, and behind the edge the peer is always
+    the edge. An unset list pools every visitor into one bucket."""
+
+    @staticmethod
+    def environment() -> dict[str, str]:
+        render = getattr(rds, "render_gate_environment", None)
+        assert render is not None, "render_demo_site renders no gate environment"
+        pairs = [
+            line.split("=", 1)
+            for line in render().splitlines()
+            if line and not line.startswith("#")
+        ]
+        return {key: value for key, value in pairs}
+
+    def test_trusted_proxies_is_exactly_the_edge_address(self):
+        self.assertEqual(self.environment()["GATE_TRUSTED_PROXIES"], rde.DEMO_EDGE_ADDR)
+
+    def test_trusted_proxies_is_one_host_never_a_range_or_a_list(self):
+        value = self.environment()["GATE_TRUSTED_PROXIES"]
+        self.assertNotIn(",", value)
+        network = ipaddress.ip_network(value, strict=True)
+        self.assertEqual(network.prefixlen, network.max_prefixlen)
+
+    def test_the_gate_listens_where_the_site_block_dials_it(self):
+        host, port = rds.GATE_UPSTREAM.rsplit(":", 1)
+        environment = self.environment()
+        self.assertEqual((environment["LISTEN_HOST"], environment["PORT"]), (host, port))
+        self.assertIn(f"reverse_proxy {rds.GATE_UPSTREAM}", block())
+
+    def test_the_trusted_address_is_the_one_the_edge_dials_upstreams_from(self):
+        self.assertEqual(self.environment()["GATE_TRUSTED_PROXIES"], rds.GATE_UPSTREAM.rsplit(":", 1)[0])
+        self.assertIn(f"reverse_proxy {rde.DEMO_EDGE_ADDR}:", rds.render_caddyfile([("0", EDGE)]))
+
+    def test_main_writes_the_gate_environment_beside_the_caddyfile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            edge_json = root / "edge.json"
+            edge_json.write_text(json.dumps(EDGE), encoding="utf-8")
+            code = rds.main([
+                "--slot", "0", "--edge-json", str(edge_json),
+                "--out", str(root / "Caddyfile"), "--gate-env-out", str(root / "gate.env"),
+            ])
+            self.assertEqual(code, 0)
+            self.assertEqual((root / "gate.env").read_text(encoding="utf-8"), rds.render_gate_environment())
 
 
 class InputTests(unittest.TestCase):

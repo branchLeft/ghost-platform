@@ -40,6 +40,23 @@ snippet, so the two colours and their per-colour health check
   hostname, size or policy that could escape the quoted Caddyfile text, a
   `tls` argument that is not one directive, a duplicate host or slot.
 
+## The gate's environment
+
+`--gate-env-out FILE` also writes the gate's environment file
+(`render_gate_environment`): `LISTEN_HOST` and `PORT` where the Caddyfile
+dials the gate, and `GATE_TRUSTED_PROXIES` set to the edge's own address,
+all from `render_demo_edge.DEMO_EDGE_ADDR` so none is a second literal.
+
+- **Why it must be set.** The edge shares the host network namespace, so
+  the gate's socket peer is always the edge. Unset, every visitor shares
+  one attempt-ceiling bucket and ten wrong guesses lock everyone out.
+- **Exactly one address.** Never the 127/8 range, never a wildcard: the
+  gate honours `X-Forwarded-For` only from a listed peer, so a wider list
+  lets a visitor choose their own source. The default stays empty.
+- **Not placed by `demo_go_live.py`.** Whatever starts the gate must load
+  this file (`docker run --env-file`, or systemd `EnvironmentFile=`);
+  `scripts/test-demo-edge.sh` runs the gate from exactly this file.
+
 ## What it does not do
 
 The wildcard certificate (`--tls`) for the real demo domain waits on the DNS

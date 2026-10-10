@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { BlockList } from 'node:net';
 import { MIN_KEY_BYTES } from './cookie.js';
-import { parseTrustedProxies } from './source.js';
+import { isLoopbackHost, parseTrustedProxies } from './source.js';
 
 export interface GateConfig {
   readonly port: number;
@@ -61,13 +61,24 @@ export function loadConfig(
   if (signingKey.length < MIN_KEY_BYTES) {
     throw new Error(`GATE_SIGNING_KEY_FILE must hold at least ${MIN_KEY_BYTES} bytes`);
   }
+  const host = env.LISTEN_HOST || '127.0.0.1';
+  const trustedProxies = parseTrustedProxies(env.GATE_TRUSTED_PROXIES ?? '');
+  // An empty list stays "trust nobody". On a loopback listener that is a
+  // misconfiguration, not a posture: the only possible peer is the local
+  // edge, so every visitor would share one ceiling bucket.
+  if (isLoopbackHost(host) && trustedProxies.rules.length === 0) {
+    throw new Error(
+      `GATE_TRUSTED_PROXIES must name the edge when the gate listens on loopback (${host}): ` +
+        'with no trusted proxy every visitor shares the edge as one source.'
+    );
+  }
   return {
     port: positiveInteger(env, 'PORT', 8080, 65535),
-    host: env.LISTEN_HOST || '127.0.0.1',
+    host,
     slotsPath: requireEnv(env, 'GATE_SLOTS_FILE'),
     leaseDir: requireEnv(env, 'GATE_LEASE_DIR'),
     signingKey,
-    trustedProxies: parseTrustedProxies(env.GATE_TRUSTED_PROXIES ?? ''),
+    trustedProxies,
     cookieTtlSeconds: positiveInteger(env, 'GATE_COOKIE_TTL_SECONDS', 12 * 3600, 7 * 24 * 3600),
     ceilingLimit: positiveInteger(env, 'GATE_CEILING_ATTEMPTS', 10, 1000),
     ceilingWindowMs: positiveInteger(env, 'GATE_CEILING_WINDOW_SECONDS', 900, 86400) * 1000,

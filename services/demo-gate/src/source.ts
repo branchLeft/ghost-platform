@@ -99,6 +99,25 @@ export function parseTrustedProxies(spec: string): BlockList {
   return list;
 }
 
+/**
+ * Whether a listen address is the host's own loopback: `localhost`, any
+ * 127/8 address, `::1` in any spelling, or an IPv4-mapped loopback. Only a
+ * local proxy can reach a listener bound there.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const bare = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, '$1');
+  if (bare === 'localhost') return true;
+  const address = unmapIpv4(bare);
+  const family = isIP(address);
+  if (family === 4) return address.startsWith('127.');
+  if (family !== 6 || address.includes('.') || address.includes('%')) return false;
+  const groups = expandIpv6(address);
+  return groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1;
+}
+
 function isTrusted(list: BlockList, address: string): boolean {
   const family = isIP(address);
   if (family === 0) return false;

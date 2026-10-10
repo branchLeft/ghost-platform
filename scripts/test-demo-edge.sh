@@ -73,6 +73,7 @@ sed "s/demo-host.example.test/$HOST/; s/k7m-vale-bright.demo-domain.example.test
     "$HERE/render-core/test/golden/demo.edge.json" > "$WORK/edge.json"
 # Proof-only global options: a local CA and no trust-store install.
 python3 "$HERE/demo-host/provision/render_demo_site.py" --slot 0 --edge-json "$WORK/edge.json" \
+    --gate-env-out "$WORK/gate.env" \
     | sed 's/^\tadmin off$/\tadmin off\n\tlocal_certs\n\tskip_install_trust\n\tauto_https disable_redirects/' \
     > "$WORK/Caddyfile"
 if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "narrow-import" ]; then
@@ -99,8 +100,7 @@ docker run -d --name "$GATE" --network "container:$SIM" \
     -e GATE_SIGNING_KEY_FILE=/etc/demo-gate/key \
     -e GATE_SLOTS_FILE=/etc/demo-gate/slots.json \
     -e GATE_LEASE_DIR=/run/demo-leases \
-    -e GATE_TRUSTED_PROXIES=127.0.0.1 \
-    -e PORT=8080 -e LISTEN_HOST=127.0.0.1 \
+    --env-file "$WORK/gate.env" \
     "$GATE_IMAGE" >/dev/null
 docker run -d --name "$CADDY" --network "container:$SIM" \
     -v "$WORK/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null

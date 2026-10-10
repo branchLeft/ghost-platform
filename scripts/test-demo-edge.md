@@ -9,6 +9,9 @@ disabled) and a resolved name (no public name exists before the demo goes public
 two colour upstreams and a health router that answers per colour from the
 `X-Colour-Upstream` header, all in one network namespace as on the host.
 
+- the gate runs from the environment file `render_demo_site.py` renders
+  (`--gate-env-out`), not a hand-typed copy of it, so the trusted-proxy
+  address the proof uses is the one the host would get
 - without the gate cookie every path answers 401, `/ghost/` and
   `/ghost/api/admin/` included, for GET, POST, PUT and DELETE
 - with the cookie the site serves and every response carries `noindex` and
