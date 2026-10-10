@@ -2,15 +2,17 @@
 """Refuse a tenant stack's plan that destroys or re-identifies live tenant data.
 
 `<preview-json-file>` must come from `pulumi preview --json --show-sames`,
-or a plan that has simply not changed is indistinguishable from one whose
-component silently stopped registering its identity as an input. Guards
-two failures: a destroyed or replaced resource, and the tenant's identity
-changing under an existing stack, which always arrives as a clean `update`.
+or an unchanged plan is indistinguishable from one whose component stopped
+registering its identity. Guards three failures: a destroyed or replaced
+resource, the tenant's identity changing under an existing stack (always a
+clean `update`), and any resource type but the stack and the component.
 See assert-no-tenant-deletes.md#module-overview.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import pathlib
 import re
@@ -25,6 +27,14 @@ import tempfile
 DESTRUCTIVE_SUBSTRINGS = ("delete", "replace")
 
 COMPONENT_TYPE_TOKEN = "ghostPlatform:tenant:GhostTenant"
+
+STACK_TYPE_TOKEN = "pulumi:pulumi:Stack"
+
+# The only resource types a tenant plan may carry. A tenant stack renders
+# configuration and holds no real resources; declaring one is a decision to
+# take first, so the first provider resource added to a tenant stack must
+# arrive as a refused plan rather than as a green one.
+ALLOWED_TYPE_TOKENS = frozenset({STACK_TYPE_TOKEN, COMPONENT_TYPE_TOKEN})
 
 # The only ops for which "no old state" is the truth rather than a gap.
 CREATE_OPS = {"create", "import", "refresh"}
@@ -48,16 +58,17 @@ class GuardError(Exception):
 
 
 def _type_token(urn: str) -> str:
-    """Return the type token from a Pulumi URN.
+    """Return the whole type field of a Pulumi URN.
 
     A URN is `urn:pulumi:<stack>::<project>::<type>::<name>`; a parent chain
-    appears in `<type>` as `<parent>$<type>`, so the last `$`-separated part is
-    the resource's own type.
+    appears in `<type>` as `<parent>$<type>` and is kept whole, so `X$<allowed>`
+    is not an allowed type. Split from the left, at most three times: the name
+    is the one field a program chooses freely, so a `::` in it must stay in it.
     """
-    parts = urn.rsplit("::", 2)
-    if len(parts) != 3:
+    parts = urn.split("::", 3)
+    if len(parts) != 4:
         raise GuardError(f"not a resource URN: {urn!r}")
-    return parts[1].rsplit("$", 1)[-1]
+    return parts[2]
 
 
 def _steps(plan: dict) -> list[dict]:
@@ -80,6 +91,26 @@ def destructive_steps(plan: dict) -> list[tuple[str, str]]:
             raise GuardError(f"step is missing a string 'op' or 'urn': {step!r}")
         if any(word in op for word in DESTRUCTIVE_SUBSTRINGS):
             found.append((urn, op))
+    return found
+
+
+def unexpected_resource_steps(plan: dict) -> list[tuple[str, str]]:
+    """Return (urn, type token) for every step whose resource is neither the
+    stack nor the component.
+
+    Every op is refused, including `same`: a resource already in the
+    checkpoint is as much a change in what this stack holds as one being
+    created, and a provider resource brings its own `pulumi:providers:*` step
+    that this refuses by the same rule.
+    """
+    found: list[tuple[str, str]] = []
+    for step in _steps(plan):
+        urn = step.get("urn")
+        if not isinstance(urn, str):
+            raise GuardError(f"step is missing a string 'urn': {step!r}")
+        token = _type_token(urn)
+        if token not in ALLOWED_TYPE_TOKENS:
+            found.append((urn, token))
     return found
 
 
@@ -175,6 +206,12 @@ def component_is_present(plan: dict) -> bool:
 
 def check_plan(plan: dict) -> list[str]:
     findings = [f"{urn} would be destroyed by a '{op}' step" for urn, op in destructive_steps(plan)]
+    findings.extend(
+        f"{urn} is a '{token}' resource. A tenant stack may carry only "
+        f"{STACK_TYPE_TOKEN!r} and {COMPONENT_TYPE_TOKEN!r}: it holds configuration and no real "
+        "resources. Declaring one is a decision to take first, not a change to ship."
+        for urn, token in unexpected_resource_steps(plan)
+    )
     findings.extend(identity_changes(plan))
     if not component_is_present(plan):
         findings.append(
@@ -417,6 +454,24 @@ def _upgrade_from_2_0_0_changed(**overrides) -> dict:
     return {"steps": [_captured_same_stack_step(), _upgrade_from_2_0_0_step(new_identity=_identity(**overrides))]}
 
 
+def _resource_step(type_segment: str, name: str, *, op: str = "create") -> dict:
+    """A step for one more resource in the stack, under the URN a real
+    preview gives it. `type_segment` is the URN's own type field, so a parent
+    chain is written `<parent>$<type>` exactly as Pulumi prints it."""
+    urn = f"urn:pulumi:blog::ghost-tenant-blog::{type_segment}::{name}"
+    return {"op": op, "urn": urn, "newState": {"urn": urn, "type": type_segment.rsplit("$", 1)[-1]}}
+
+
+def _exit_status(plan: dict) -> int:
+    """What the command line returns for `plan`: written to a file and read
+    back through `main()`, so the exit code under test is the one CI sees."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "preview.json"
+        path.write_text(json.dumps(plan), encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()):
+            return main([str(path)])
+
+
 def _self_test() -> int:
     failures: list[str] = []
 
@@ -445,6 +500,58 @@ def _self_test() -> int:
         "remove-pending-replace",
     ):
         expect(check_plan(_plan(op, old=_identity())) != [], f"a '{op}' step must be refused")
+
+    # A tenant stack carries the stack and the component and nothing else. The
+    # control case comes first: a plan of exactly those two passes, through the
+    # command line as well as through `check_plan`, so every refusal below is a
+    # refusal of the extra resource and not of a plan that was never clean.
+    expect(check_plan(_CAPTURED_SAME) == [], "a plan of the stack and the component must pass")
+    expect(
+        _exit_status(_CAPTURED_SAME) == 0,
+        "the command line must exit 0 for a plan of the stack and the component",
+    )
+    for label, step in (
+        (
+            "a random:RandomString resource",
+            _resource_step("random:index/randomString:RandomString", "suffix"),
+        ),
+        ("a provider resource", _resource_step("pulumi:providers:random", "default_4_20_0")),
+        (
+            "a child resource of the component",
+            _resource_step(
+                f"{COMPONENT_TYPE_TOKEN}$random:index/randomString:RandomString", "suffix"
+            ),
+        ),
+        # An allowed token as the LAST segment of a parent chain. Read by that
+        # segment alone this passed as the stack.
+        (
+            "a resource whose type chain ends in the stack's type token",
+            _resource_step(f"random:index/randomString:RandomString${STACK_TYPE_TOKEN}", "suffix"),
+        ),
+        (
+            "a resource already in the checkpoint",
+            _resource_step("random:index/randomString:RandomString", "suffix", op="same"),
+        ),
+        # The stack's own token, written inside a resource's NAME. Parsed from
+        # the right this presented as the stack and passed.
+        (
+            "a resource whose name carries the stack's type token",
+            _resource_step(
+                "random:index/randomString:RandomString", f"x::{STACK_TYPE_TOKEN}::y"
+            ),
+        ),
+    ):
+        plan = {"steps": [*_CAPTURED_SAME["steps"], step]}
+        expect(check_plan(plan) != [], f"a plan carrying {label} must be refused")
+        expect(
+            _exit_status(plan) == 1,
+            f"the command line must exit 1 for a plan carrying {label}",
+        )
+    expect(
+        _type_token(f"urn:pulumi:s::p::random:index/randomString:RandomString::a::{STACK_TYPE_TOKEN}::b")
+        == "random:index/randomString:RandomString",
+        "a resource name containing '::' must stay inside the name field",
+    )
 
     # Every identity field is compared.
     for field, changed in (
@@ -670,8 +777,9 @@ def main(argv: list[str]) -> int:
         print(f"REFUSED: {finding}", file=sys.stderr)
     if findings:
         print(
-            "This plan would destroy or re-identify live tenant data. Nothing in a tenant "
-            "stack is destroyed by a routine apply.",
+            "This plan would destroy or re-identify live tenant data, or add a resource a "
+            "tenant stack does not hold. Nothing in a tenant stack is destroyed or declared "
+            "by a routine apply.",
             file=sys.stderr,
         )
         return 1

@@ -19,7 +19,7 @@ version bump of the component could rename what the guard was watching without
 touching the guard. Shipping it beside the component it guards makes the two
 one artifact: a rename is a diff in this directory.
 
-Two halves, guarding two different failures.
+Three checks, guarding three different failures.
 
 **1. Nothing in a tenant plan may be destroyed or replaced.** Default-deny,
 with no protected-name list at all, because under the Hetzner shape a tenant
@@ -49,6 +49,31 @@ arrives as a clean `update`:
 
 None of those is destructive to Pulumi and every one of them is destructive to
 the tenant. They are compared here from `GhostTenant`'s own `identity` output.
+
+**3. A tenant plan may carry the stack and the component, and nothing else.**
+Every step's resource type must be `pulumi:pulumi:Stack` or
+`ghostPlatform:tenant:GhostTenant`; any other type is refused, whatever its op,
+including a provider (`pulumi:providers:*`) and a child of the component. A
+tenant stack holds configuration and no real resources, so declaring one is a
+decision to take first: the first real resource must fail the plan instead of
+shipping green.
+
+The whole type field of the URN is compared, not only its last `$`-separated
+segment, so `X$pulumi:pulumi:Stack` is refused. The URN is split from the left,
+so a resource *name* containing `::` stays inside the name and cannot present
+another type's token as its own type.
+
+What a real preview carries: the `_CAPTURED_*` fixtures below are trimmed from
+real previews of this component and show the stack and the component only, and a
+first-apply preview of the tenant-zero program carried the same two steps. The
+`same` fixture is a local capture too; none has been taken from a deployed
+tenant. If a real preview ever carries another type
+for a stack that holds no resources, this refusal fails the deploy loudly, and
+that capture is what should decide the allowlist.
+
+Two things this check does not do: a second `GhostTenant` step under another
+name passes a check on type alone, and a `pulumi up` run by hand does not go
+through this guard, which runs in the deploy job.
 
 **What this cannot prove**, both limits real and inherited from every plan
 guard in this estate:
@@ -85,7 +110,12 @@ assumed, so this is the part that has to stop being hand-built. The
 destructive-op fixtures below them stay synthetic: a `ComponentResource` has
 no provider to produce a genuine `replace`, so there is no real preview to
 capture for those, and they exist to exercise the op-name substring match
-rather than a captured shape.
+rather than a captured shape. The extra-resource fixtures are synthetic for
+the same reason: this component declares no provider resource, so there is no
+real preview that carries one. They are exercised through `main()` as well as
+`check_plan()`, and beside a control case of exactly the stack and the
+component, so a refusal is known to be about the extra resource and not about
+a plan that was never clean.
 
 ## Upgrade-from-2.0.0 fixture
 
