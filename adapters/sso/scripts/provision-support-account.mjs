@@ -228,16 +228,9 @@ main().catch((error) => {
  * provision-support-account.md#provisionsupportaccount.
  */
 export function provisionSupportAccount({ container, email }, execFile = execFileSync) {
-  const env = [
-    `PROVISION_SUPPORT_EMAIL=${email}`,
-    `PROVISION_SUPPORT_ID=${ghostObjectId()}`,
-    `PROVISION_SUPPORT_PASSWORD_HASH=${unusablePasswordHash()}`,
-    `PROVISION_SUPPORT_ROLE_LINK_ID=${ghostObjectId()}`,
-    `PROVISION_SUPPORT_NOW=${new Date().toISOString().replace('T', ' ').slice(0, 19)}`,
-  ];
   const args = [
     'exec',
-    ...env.flatMap((pair) => ['-e', pair]),
+    ...provisionEnv(email).flatMap((pair) => ['-e', pair]),
     container,
     'node',
     '-e',
@@ -248,27 +241,58 @@ export function provisionSupportAccount({ container, email }, execFile = execFil
     output = execFile('docker', args, { encoding: 'utf8' });
   } catch (error) {
     const stderr = typeof error.stderr === 'string' ? error.stderr : '';
-    const partialIndex = stderr.indexOf(PARTIAL_ROW_MISMATCH_MARKER);
-    if (partialIndex !== -1) {
-      throw new PartialRowMismatchError(
-        stderr
-          .slice(partialIndex + PARTIAL_ROW_MISMATCH_MARKER.length)
-          .split('\n')[0]
-          .trim()
-      );
-    }
-    const activeIndex = stderr.indexOf(ACTIVE_EXISTING_ROW_MARKER);
-    if (activeIndex !== -1) {
-      throw new ActiveExistingRowError(
-        stderr
-          .slice(activeIndex + ACTIVE_EXISTING_ROW_MARKER.length)
-          .split('\n')[0]
-          .trim()
-      );
-    }
-    throw error;
+    throw typedFailure(stderr) ?? error;
   }
   return JSON.parse(output.trim().split('\n').pop());
+}
+
+/**
+ * The same provisioning through a Docker Engine client (`exec({container,
+ * cmd, env})` resolving `{code, stdout, stderr}`), for a caller with no
+ * docker CLI. The inner script, the markers and the results are the ones
+ * `provisionSupportAccount` uses.
+ */
+export async function provisionSupportAccountViaEngine({ container, email }, engine) {
+  const { code, stdout, stderr } = await engine.exec({
+    container,
+    env: provisionEnv(email),
+    cmd: ['node', '-e', INNER_SCRIPT],
+  });
+  if (code !== 0) {
+    throw (
+      typedFailure(stderr) ??
+      new Error(`provisioning exited ${code}: ${stderr.trim().slice(0, 600)}`)
+    );
+  }
+  return JSON.parse(stdout.trim().split('\n').pop());
+}
+
+function provisionEnv(email) {
+  return [
+    `PROVISION_SUPPORT_EMAIL=${email}`,
+    `PROVISION_SUPPORT_ID=${ghostObjectId()}`,
+    `PROVISION_SUPPORT_PASSWORD_HASH=${unusablePasswordHash()}`,
+    `PROVISION_SUPPORT_ROLE_LINK_ID=${ghostObjectId()}`,
+    `PROVISION_SUPPORT_NOW=${new Date().toISOString().replace('T', ' ').slice(0, 19)}`,
+  ];
+}
+
+/** The named refusal in the inner script's stderr, or null when it is neither. */
+function typedFailure(stderr) {
+  const firstLine = (marker, at) =>
+    stderr
+      .slice(at + marker.length)
+      .split('\n')[0]
+      .trim();
+  const partialIndex = stderr.indexOf(PARTIAL_ROW_MISMATCH_MARKER);
+  if (partialIndex !== -1) {
+    return new PartialRowMismatchError(firstLine(PARTIAL_ROW_MISMATCH_MARKER, partialIndex));
+  }
+  const activeIndex = stderr.indexOf(ACTIVE_EXISTING_ROW_MARKER);
+  if (activeIndex !== -1) {
+    return new ActiveExistingRowError(firstLine(ACTIVE_EXISTING_ROW_MARKER, activeIndex));
+  }
+  return null;
 }
 
 function main() {
