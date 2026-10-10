@@ -411,13 +411,17 @@ describe('the tenant moderation page, through the route', () => {
       const browser = new Browser(server.origin);
       await signIn(browser, tenantToken(ORG_A));
       const page = await browser.request('/moderation');
-      expect(page.body).toContain('FLOOR_HEADING');
-      expect(page.body).toContain('SETTINGS_NOT_YET_SAVED');
-      expect(page.body).not.toContain('<form');
-      expect(page.body).not.toContain('action=');
-      expect(page.body).not.toContain('/moderation/save');
-      expect(page.body).not.toContain('/moderation/appeal');
-      expect(page.body).not.toMatch(/<input(?![^>]*\bdisabled\b)/);
+      // The shell's own sign-out form sits in the header, outside <main>; the
+      // settings body is what must carry no form, action or dead link.
+      const main = page.body.slice(page.body.indexOf('<main>'));
+      expect(main).toContain('FLOOR_HEADING');
+      expect(main).toContain('SETTINGS_NOT_YET_SAVED');
+      expect(main).not.toContain('<form');
+      expect(main).not.toContain('action=');
+      expect(main).not.toContain('href=');
+      expect(main).not.toContain('/moderation/save');
+      expect(main).not.toContain('/moderation/appeal');
+      expect(main).not.toMatch(/<input(?![^>]*\bdisabled\b)/);
     } finally {
       await server.close();
     }
