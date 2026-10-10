@@ -308,19 +308,34 @@ function fingerprintFile(file) {
   return `${inode}:${text}`;
 }
 
+/** A claim younger than this may belong to a close still running, so expire leaves it. */
+export const CLAIM_GRACE_MS = 60 * 1000;
+const CLAIM_NAME = /^\.([a-z0-9][a-z0-9-]{0,62})\.\d+\.[0-9a-f]{12}\.claim$/;
+
+/** A different grant's state could not be put back; it is kept in a claim file. */
+export class StateHeldError extends Error {
+  constructor(tenant, claimName, detail) {
+    super(
+      `the newer grant state for ${tenant} could not be restored (${detail}); ` +
+        `it is held in ${claimName} and the next expire run puts it back`
+    );
+    this.name = 'StateHeldError';
+  }
+}
+
 /**
  * Removes the state only if it is still the grant that was read. The entry is
  * first renamed to a private name, which is atomic, so what is compared is
  * exactly what is removed; a different grant is linked back and left alone.
- * No lock is taken, so a stuck process can never stop a later close.
+ * No lock is taken, so a stuck process can never stop a later close. If the
+ * link back fails, the claim file is kept and StateHeldError is thrown: a
+ * newer grant's state is never dropped without a copy that expire finds.
  */
 export function removeStateIfSame(deps, tenant, fingerprint, log = deps.log) {
   if (fingerprint === null) return false;
   const file = statePath(deps, tenant);
-  const claim = path.join(
-    deps.stateDir,
-    `.${tenant}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.claim`
-  );
+  const claimName = `.${tenant}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.claim`;
+  const claim = path.join(deps.stateDir, claimName);
   try {
     fs.renameSync(file, claim);
   } catch (error) {
@@ -328,15 +343,73 @@ export function removeStateIfSame(deps, tenant, fingerprint, log = deps.log) {
     throw error;
   }
   const same = fingerprintFile(claim) === fingerprint;
-  if (!same) {
-    try {
-      fs.linkSync(claim, file);
-    } catch (error) {
-      log(`could not restore the newer grant state for ${tenant}: ${error.code ?? error.message}`);
-    }
-  }
+  if (!same) restoreClaim(claim, file, tenant, claimName, log);
   fs.rmSync(claim, { force: true, recursive: true });
   return same;
+}
+
+/**
+ * Links a claimed state back and returns what happened: restored, superseded
+ * (another grant already holds the state, so its deadline is what is tracked)
+ * or gone (another process reclaimed it). Anything else throws, claim kept.
+ */
+function restoreClaim(claim, file, tenant, claimName, log) {
+  try {
+    fs.linkSync(claim, file);
+    return 'restored';
+  } catch (error) {
+    if (error.code === 'EEXIST') {
+      log(`the grant state for ${tenant} was superseded by a newer grant; ${claimName} dropped`);
+      return 'superseded';
+    }
+    if (error.code === 'ENOENT' && !entryExists(claim)) return 'gone';
+    const held = new StateHeldError(tenant, claimName, error.code ?? error.message);
+    log(held.message);
+    throw held;
+  }
+}
+
+function claimNames(deps) {
+  try {
+    return fs.readdirSync(deps.stateDir).filter((n) => CLAIM_NAME.test(n));
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/** Reads a claim file's grant state, or null when it is not valid JSON. */
+function readClaim(deps, name) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(deps.stateDir, name), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Puts leftover claims back so their grants are tracked again: one held after
+ * a failed link back, or left by a process killed mid-claim. A claim younger
+ * than the grace period may belong to a close still running, so it is skipped.
+ */
+function reclaimClaims(deps) {
+  const failed = [];
+  for (const name of claimNames(deps)) {
+    const claim = path.join(deps.stateDir, name);
+    const tenant = CLAIM_NAME.exec(name)[1];
+    try {
+      if (deps.now() - fs.statSync(claim).ctimeMs < CLAIM_GRACE_MS) continue;
+      const outcome = restoreClaim(claim, statePath(deps, tenant), tenant, name, deps.log);
+      fs.rmSync(claim, { force: true });
+      if (outcome === 'restored') deps.log(`put back the held grant state for ${tenant}`);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue; // reclaimed since the listing
+      if (!(error instanceof StateHeldError))
+        deps.log(`could not reclaim ${name}: ${error.message}`);
+      failed.push({ tenant, error: error.message });
+    }
+  }
+  return failed;
 }
 
 /** Written to a temporary name, then linked into place: never half-written, never overwritten. */
@@ -422,7 +495,14 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
   } catch (error) {
     if (lane === 'consented') {
       // Nothing was written to the tenant's database: there is nothing to close.
-      removeStateIfSame(deps, tenant, written);
+      try {
+        removeStateIfSame(deps, tenant, written);
+      } catch (cleanup) {
+        // The failure being reported is the check's. A held state was already logged.
+        if (!(cleanup instanceof StateHeldError)) {
+          deps.log(`could not clear the grant state for ${tenant}: ${cleanup.message}`);
+        }
+      }
     }
     throw error;
   }
@@ -476,7 +556,7 @@ export async function revoke({ tenant, reason, cause = 'explicit' }, deps = defa
  */
 export async function expire(deps = defaultDeps()) {
   const closed = [];
-  const failed = [];
+  const failed = reclaimClaims(deps);
   for (const name of stateNames(deps)) {
     const tenant = name.slice(0, -'.json'.length);
     try {
@@ -500,7 +580,7 @@ export async function expire(deps = defaultDeps()) {
 }
 
 export function status(deps = defaultDeps()) {
-  return stateNames(deps).map((name) => {
+  const open = stateNames(deps).map((name) => {
     const tenant = name.slice(0, -'.json'.length);
     try {
       return readGrant(deps, tenant);
@@ -508,6 +588,13 @@ export function status(deps = defaultDeps()) {
       return { tenant, unreadable: error.message };
     }
   });
+  // A held claim is a grant whose state could not be put back; expire restores it.
+  const held = claimNames(deps).map((name) => ({
+    ...(readClaim(deps, name) ?? {}),
+    tenant: CLAIM_NAME.exec(name)[1],
+    held: name,
+  }));
+  return [...open, ...held];
 }
 
 export async function main(argv, deps = defaultDeps(), stdout = process.stdout) {

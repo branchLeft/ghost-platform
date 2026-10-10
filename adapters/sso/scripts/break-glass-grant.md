@@ -153,6 +153,14 @@ says so:
 4. Appends the closing record and removes the state file
    only if it is still the grant it read (a newer grant keeps its clock).
 
+The state is renamed to a private `.<slug>.<pid>.<id>.claim` name first, which
+is atomic, so what is compared is exactly what is removed; no lock is taken, so
+a stuck process can never stop a later close. A state that turns out to be a
+different grant is linked back. If that link fails, the claim file is kept,
+`revoke` exits 1 and `status` lists it as `held`. `expire` links a claim older
+than a minute back into place, so a held grant's clock runs again. A different
+grant already in place is kept and the displaced one is logged.
+
 It runs whatever the account's status is (requirement 2). A tenant who
 re-suspended from the Staff screen during the window still leaves the session
 row behind. That row would wake on their next un-suspend, up to 180 days

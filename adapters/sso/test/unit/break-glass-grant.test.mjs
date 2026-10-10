@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CLAIM_GRACE_MS,
   defaultDeps,
   DOCKER_TIMEOUT_MS,
   EXPIRE_TIMER_UNIT,
@@ -735,6 +736,140 @@ describe('closing a grant never deletes a newer grant', () => {
     expect(removeStateIfSame(deps, 'tenant-zero', seen)).toBe(true);
     expect(fs.existsSync(stateFile(deps))).toBe(false);
     expect(removeStateIfSame(deps, 'tenant-zero', null)).toBe(false);
+  });
+
+  it('keeps a grant opened after the second purge, the timing the issue describes', async () => {
+    const deps = fakeDeps();
+    await grant(request(), deps);
+    const first = JSON.parse(fs.readFileSync(stateFile(deps), 'utf8'));
+    const base = deps.run;
+    let purges = 0;
+    deps.run = vi.fn(async (call) => {
+      const out = await base(call);
+      if (call.action === 'revoke' && ++purges === 2) {
+        fs.rmSync(stateFile(deps));
+        deps.run = base;
+        deps.advance(1000);
+        await grant(request(), deps);
+      }
+      return out;
+    });
+    await revoke({ tenant: 'tenant-zero', reason: 'done' }, deps);
+    const [open] = status(deps);
+    expect(open.grantId).toBeDefined();
+    expect(open.grantId).not.toBe(first.grantId);
+  });
+});
+
+describe('a newer grant that cannot be linked back is never dropped', () => {
+  const linkFails = (code) =>
+    vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+      throw Object.assign(new Error(`link failed ${code}`), { code });
+    });
+  const claims = (deps) => fs.readdirSync(deps.stateDir).filter((n) => n.endsWith('.claim'));
+  const wallClockDeps = () => fakeDeps({ now: () => Date.now() });
+  const iso4h = () => new Date(Date.now() + GRANT_WINDOW_SECONDS * 1000).toISOString();
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('refuses and keeps the newer grant in a claim file', async () => {
+    const deps = wallClockDeps();
+    await grant(request(), deps);
+    const newer = fs.readFileSync(stateFile(deps), 'utf8');
+    linkFails('EPERM');
+    expect(() => removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toThrow(/held in/);
+    vi.restoreAllMocks();
+    expect(claims(deps)).toHaveLength(1);
+    expect(fs.readFileSync(path.join(deps.stateDir, claims(deps)[0]), 'utf8')).toBe(newer);
+  });
+
+  it('revoke surfaces it, after the closing record, and keeps the newer grant', async () => {
+    const deps = wallClockDeps();
+    await grant(request(), deps);
+    deps.betweenPurges = vi.fn(async () => {
+      fs.rmSync(stateFile(deps));
+      await grant(request(), deps);
+      linkFails('EPERM');
+    });
+    await expect(revoke({ tenant: 'tenant-zero', reason: 'done' }, deps)).rejects.toThrow(
+      /held in/
+    );
+    vi.restoreAllMocks();
+    expect(records().filter((r) => r.event === 'closed')).toHaveLength(1);
+    expect(claims(deps)).toHaveLength(1);
+    expect(status(deps)).toEqual([expect.objectContaining({ tenant: 'tenant-zero' })]);
+  });
+
+  it('expire puts a held grant back, so its clock runs again', async () => {
+    const deps = wallClockDeps();
+    await grant(request(), deps);
+    const newer = fs.readFileSync(stateFile(deps), 'utf8');
+    linkFails('EPERM');
+    expect(() => removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toThrow();
+    vi.restoreAllMocks();
+    const later = fakeDeps({ now: () => Date.now() + CLAIM_GRACE_MS + 1000 });
+    const { closed, failed } = await expire(later);
+    expect(failed).toEqual([]);
+    expect(closed).toEqual([]);
+    expect(fs.readFileSync(stateFile(deps), 'utf8')).toBe(newer);
+    expect(claims(deps)).toEqual([]);
+  });
+
+  it('expire leaves a claim younger than the grace period alone', async () => {
+    const deps = wallClockDeps();
+    await grant(request(), deps);
+    linkFails('EPERM');
+    expect(() => removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toThrow();
+    vi.restoreAllMocks();
+    await expire(deps);
+    expect(claims(deps)).toHaveLength(1);
+    expect(fs.existsSync(stateFile(deps))).toBe(false);
+  });
+
+  it('status lists a held grant instead of hiding it', async () => {
+    const deps = wallClockDeps();
+    await grant(request(), deps);
+    linkFails('EPERM');
+    expect(() => removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toThrow();
+    vi.restoreAllMocks();
+    const [held] = status(deps);
+    expect(held).toMatchObject({ tenant: 'tenant-zero', held: claims(deps)[0] });
+    expect(held.deadline).toBeDefined();
+  });
+
+  it('a third grant already in place is kept, and the displaced one is logged', async () => {
+    const deps = wallClockDeps();
+    await grant(request(), deps);
+    const real = fs.linkSync;
+    vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+      fs.writeFileSync(to, `${JSON.stringify({ grantId: 'third', deadline: iso4h() })}\n`);
+      return real(from, to);
+    });
+    expect(removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toBe(false);
+    vi.restoreAllMocks();
+    expect(JSON.parse(fs.readFileSync(stateFile(deps), 'utf8')).grantId).toBe('third');
+    expect(claims(deps)).toEqual([]);
+    expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/superseded/));
+  });
+
+  it('a failed consented grant reports its own failure, and the newer grant stays held', async () => {
+    const deps = wallClockDeps();
+    deps.run = vi.fn(({ action }) => {
+      if (action === 'identity') return { identity: SUPPORT };
+      fs.rmSync(stateFile(deps));
+      fs.writeFileSync(stateFile(deps), `${JSON.stringify({ grantId: 'n', deadline: iso4h() })}\n`);
+      throw new Error('the check failed');
+    });
+    const real = fs.linkSync;
+    let calls = 0;
+    vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+      if (++calls > 1) throw Object.assign(new Error('link failed'), { code: 'EPERM' });
+      return real(from, to);
+    });
+    await expect(grant(request('consented'), deps)).rejects.toThrow(/the check failed/);
+    vi.restoreAllMocks();
+    expect(claims(deps)).toHaveLength(1);
+    expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/held in/));
   });
 });
 
