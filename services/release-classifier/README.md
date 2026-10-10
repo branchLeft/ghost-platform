@@ -90,7 +90,8 @@ upstream `LICENSE` at v6.69.0.
   the source alone cannot show whether a tenant has applied it. An exclusive bound
   could then route a patch upgrade fast when it should not. The current choice is
   inclusive. Its cost: v6.57.0 to v6.58.0 routes consent because of two 6.57 files
-  already applied at 6.57.0 (the leaf-rows and reset-automation migrations), and
+  in the pinned 6.57 folder, which a tenant on 6.57.0 has most likely applied (the
+  leaf-rows and reset-automation migrations), and
   v6.0.0 to v6.1.0 routes consent on the 6.0 wrapper migration.
 - **Contracting and constraint classes**, the owner's rulings. See the constants.
 
