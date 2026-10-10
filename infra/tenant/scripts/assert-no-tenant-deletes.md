@@ -53,11 +53,11 @@ the tenant. They are compared here from `GhostTenant`'s own `identity` output.
 **3. A tenant plan may carry the stack and the component, and nothing else.**
 Every step's resource type must be `pulumi:pulumi:Stack` or
 `ghostPlatform:tenant:GhostTenant`; any other type is refused, whatever its op,
-including a provider (`pulumi:providers:*`) and a child of the component. The
-accepted reach of the shared tenant-state credential rests on a tenant stack
-holding configuration and no real resources, so the first real resource must
-fail the plan and force that acceptance to be revisited, instead of shipping
-green. The type is read from the URN's own type field, split from the left: a
+including a provider (`pulumi:providers:*`) and a child of the component. While
+a tenant stack holds configuration and no real resources, the worst a holder of
+the state credential can do to its checkpoint is corrupt a rendering, so the
+first real resource must fail the plan and force that to be reconsidered,
+instead of shipping green. The type is read from the URN's own type field, split from the left: a
 resource *name* containing `::` stays inside the name and cannot present the
 stack's token as its own type.
 

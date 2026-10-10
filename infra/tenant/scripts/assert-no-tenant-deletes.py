@@ -2,12 +2,10 @@
 """Refuse a tenant stack's plan that destroys or re-identifies live tenant data.
 
 `<preview-json-file>` must come from `pulumi preview --json --show-sames`,
-or a plan that has simply not changed is indistinguishable from one whose
-component silently stopped registering its identity as an input. Guards
-three failures: a destroyed or replaced resource, the tenant's identity
-changing under an existing stack, which always arrives as a clean `update`,
-and a resource of any type other than the stack and the component, which
-means this tenant stack no longer holds only configuration.
+or an unchanged plan is indistinguishable from one whose component stopped
+registering its identity. Guards three failures: a destroyed or replaced
+resource, the tenant's identity changing under an existing stack (always a
+clean `update`), and any resource type but the stack and the component.
 See assert-no-tenant-deletes.md#module-overview.
 """
 
@@ -33,10 +31,10 @@ COMPONENT_TYPE_TOKEN = "ghostPlatform:tenant:GhostTenant"
 STACK_TYPE_TOKEN = "pulumi:pulumi:Stack"
 
 # The only resource types a tenant plan may carry. A tenant stack renders
-# configuration and creates nothing, which is what makes the shared state
-# credential's reach acceptable: the worst a holder can do to a checkpoint is
-# corrupt a rendering. The first provider resource added to a tenant stack ends
-# that, and it must arrive as a refused plan rather than as a green one.
+# configuration and creates nothing, so the worst a holder of the state
+# credential can do to its checkpoint is corrupt a rendering. The first
+# provider resource added to a tenant stack ends that, and it must arrive as a
+# refused plan rather than as a green one.
 ALLOWED_TYPE_TOKENS = frozenset({STACK_TYPE_TOKEN, COMPONENT_TYPE_TOKEN})
 
 # The only ops for which "no old state" is the truth rather than a gap.
@@ -65,12 +63,9 @@ def _type_token(urn: str) -> str:
 
     A URN is `urn:pulumi:<stack>::<project>::<type>::<name>`; a parent chain
     appears in `<type>` as `<parent>$<type>`, so the last `$`-separated part is
-    the resource's own type.
-
-    Split from the left, at most three times: the name is the last field and
-    the only one a program chooses freely, so a name containing `::` must stay
-    inside it. Splitting from the right let a name of the form
-    `x::pulumi:pulumi:Stack::y` present the stack's type token as its own.
+    the resource's own type. Split from the left, at most three times: the name
+    is the one field a program chooses freely, so a `::` in it must stay in it.
+    From the right, `x::pulumi:pulumi:Stack::y` read as the stack's own type.
     """
     parts = urn.split("::", 3)
     if len(parts) != 4:
@@ -216,8 +211,8 @@ def check_plan(plan: dict) -> list[str]:
     findings.extend(
         f"{urn} is a '{token}' resource. A tenant stack may carry only "
         f"{STACK_TYPE_TOKEN!r} and {COMPONENT_TYPE_TOKEN!r}: it holds configuration and no real "
-        "resources, and the shared state credential's accepted reach rests on that. Declaring "
-        "one is a decision to take first, not a change to ship."
+        "resources, so a holder of the state credential can only corrupt a rendering. "
+        "Declaring one is a decision to take first, not a change to ship."
         for urn, token in unexpected_resource_steps(plan)
     )
     findings.extend(identity_changes(plan))
