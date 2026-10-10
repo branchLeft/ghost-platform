@@ -1,0 +1,105 @@
+name: Speckify
+
+# The broker's signed host API is described once, in services/broker/openapi.yaml.
+# On a pull request this works out the version that spec would publish as and
+# posts it as a comment. On a merge to main it publishes the TypeScript client and
+# server package generated from the spec to GitHub Packages, from this job and
+# this workflow file, with the run's own GITHUB_TOKEN and nothing else.
+#
+# Speckify's action is called directly rather than through its reusable
+# workflow, which is check-only by design. It is pinned to the commit the
+# v0.1.0 tag points at.
+
+on:
+  pull_request:
+    paths:
+      - speckify.yaml
+      - services/broker/openapi.yaml
+      - services/broker/src/generated/**
+      - scripts/assert-broker-contract-generated.py
+      - .github/workflows/speckify.yml
+  push:
+    branches: [main]
+    paths:
+      - speckify.yaml
+      - services/broker/openapi.yaml
+      - services/broker/src/generated/**
+      - scripts/assert-broker-contract-generated.py
+      - .github/workflows/speckify.yml
+  # Re-runs the publish for the current main, e.g. after a registry outage.
+  # Publishing is idempotent: a version the registry already holds is skipped.
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Contract check and generated-code drift
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # `packages: read` because the last published spec is read back from GitHub
+    # Packages, which answers 401 to an anonymous request even for a public package.
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Speckify check
+        uses: branchLeft/speckify@50fe4d8d95bc74331be8c481ee35d202b1d4ec0f # v0.1.0
+        with:
+          command: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # The same action, asked to generate the packages into .speckify/out.
+      - name: Generate the packages
+        uses: branchLeft/speckify@50fe4d8d95bc74331be8c481ee35d202b1d4ec0f # v0.1.0
+        with:
+          command: build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: The committed generated sources are what Speckify generates
+        run: python3 scripts/assert-broker-contract-generated.py .speckify/out/broker-api/typescript/src
+
+  publish:
+    name: Publish the generated packages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Two runs can never publish the same version at once: a second queues
+    # behind the first rather than cancelling it part-way through a publish.
+    concurrency:
+      group: speckify-publish
+      cancel-in-progress: false
+    # `packages: write` is the whole of what publishing needs. `contents` stays
+    # read-only, so Speckify's best-effort GitHub Release (a tag and release
+    # notes) is refused and logged as a warning; the registry is the record.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # What the broker runs and what gets published must be the same
+      # generated code: refuse to publish if the committed copy has drifted.
+      - name: Generate the packages
+        uses: branchLeft/speckify@50fe4d8d95bc74331be8c481ee35d202b1d4ec0f # v0.1.0
+        with:
+          command: build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: The committed generated sources are what Speckify generates
+        run: python3 scripts/assert-broker-contract-generated.py .speckify/out/broker-api/typescript/src
+
+      - name: Speckify publish
+        uses: branchLeft/speckify@50fe4d8d95bc74331be8c481ee35d202b1d4ec0f # v0.1.0
+        with:
+          command: publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ github.token }}

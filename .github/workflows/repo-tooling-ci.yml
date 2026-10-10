@@ -185,3 +185,10 @@ jobs:
       # push, rather than only when someone remembers to run it by hand.
       - name: Lockfile package_dir allow-list self-test
         run: python3 scripts/assert-lockfile-package-dir.py --self-test
+
+      # The comparison that keeps the broker's committed generated code equal to
+      # what Speckify generates runs in speckify.yml, where Speckify has run.
+      # Only its matcher is exercised here, on every push, so a guard that has
+      # quietly stopped comparing is found before a spec change relies on it.
+      - name: Broker contract drift guard self-test
+        run: python3 scripts/assert-broker-contract-generated.py --self-test
