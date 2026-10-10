@@ -298,7 +298,7 @@ export type TenantDescriptor = {
     ports: PortTriple;
     safety: SafetySpec;
     /**
-     * Must be an absolute http or https URL.
+     * Must be an absolute http or https URL, exactly as render-core's `validateAbsoluteUrl` and its own host check judge it. It is deliberately not `format: uri`: the check that format generates trims whitespace and deletes tabs and newlines before the value is used, so the bytes signed would not be the bytes deployed.
      */
     siteUrl: string;
     slug: string;

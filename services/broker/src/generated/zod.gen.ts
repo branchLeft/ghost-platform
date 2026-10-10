@@ -310,7 +310,7 @@ export const zTenantDescriptor = z.object({
     ownerEmail: z.string().max(254),
     ports: zPortTriple,
     safety: zSafetySpec,
-    siteUrl: z.url(),
+    siteUrl: z.string(),
     slug: z.string().max(63).regex(/^[a-z]([a-z0-9-]*[a-z0-9])?$/),
     transport: zTransportSpec,
     uid: z.int().gte(30000).lte(30999),

@@ -37,7 +37,7 @@ import type { RealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { type SlotLock } from './slotLock.js';
 import { slotAllocation, slotPort } from './slotPorts.js';
-import { unknownFieldPaths } from './unknownFields.js';
+import { compareParsed } from './parsedDifference.js';
 import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slotsFile.js';
 import {
   assertHashRotated,
@@ -840,13 +840,20 @@ function createGate(deps: BrokerDeps): NonNullable<ListenerOptions['beforeHandle
       return refuse(400, { error: describeIssues(verdict.error.issues) });
     }
     if (verdict?.success === true && route.id === 'reconcileSlot') {
-      // The schema drops a field it does not declare; render-core refused one.
-      const unknown = unknownFieldPaths(
+      // The handler gets the parsed copy, so it must be the copy that was
+      // signed: the schema drops fields it does not declare and a string
+      // format can rewrite a value, where render-core refused both.
+      const { unknown, altered } = compareParsed(
         (payload as { descriptor?: unknown }).descriptor,
         (verdict.data as { descriptor?: unknown }).descriptor
       );
       if (unknown.length > 0) {
         return refuse(400, { error: `descriptor has unknown key(s): ${unknown.join(', ')}.` });
+      }
+      if (altered.length > 0) {
+        return refuse(400, {
+          error: `descriptor value(s) would be rewritten by validation: ${altered.join(', ')}.`,
+        });
       }
     }
   };

@@ -1028,8 +1028,12 @@ components:
           maxLength: 63
         siteUrl:
           type: string
-          format: uri
-          description: Must be an absolute http or https URL.
+          description: >-
+            Must be an absolute http or https URL, exactly as render-core's
+            `validateAbsoluteUrl` and its own host check judge it. It is
+            deliberately not `format: uri`: the check that format generates
+            trims whitespace and deletes tabs and newlines before the value is
+            used, so the bytes signed would not be the bytes deployed.
         image:
           type: string
           pattern: '^[a-z0-9][a-z0-9._/-]*(:[\w.-]+)?@sha256:[0-9a-f]{64}$'
