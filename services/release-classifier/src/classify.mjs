@@ -53,22 +53,30 @@ export const KNOWN_CALLS = Object.freeze({
   down: 'migration rollback, a definition in the file',
   require: 'loads a module; the helpers it brings in are checked by name',
   knex: 'query-builder entry point; chained methods are checked by name',
+  connection: 'the knex handle a migration receives; chained methods are checked by name',
   info: 'logging only',
   warn: 'logging only, as info',
-  createAddColumnMigration: 'adds a column; the rollback drops it, and no existing row is lost',
+  createAddColumnMigration:
+    'adds the column if absent; the rollback drops the column whenever it exists, so if up was skipped the pre-existing column and its data are dropped',
   createAddIndexMigration: 'adds an index; the rollback drops it',
   createRenameColumnMigration: 'renames a column; data is kept',
   createSetNullableMigration: 'changes nullability; no row is removed',
-  addTable: 'adds a table; the rollback drops it, and no existing row is lost',
-  addSetting: 'adds a setting row; the rollback removes it',
-  addPermissionToRole: 'adds a permission row; the rollback removes it',
-  addPermissionWithRoles: 'adds a permission row; the rollback removes it',
+  addTable:
+    'creates the table if absent; the rollback drops it whether or not up created it, so if up was skipped the pre-existing table and its rows are dropped. The replaceDevelopmentCopy option is dev and test only and is invisible here',
+  addSetting:
+    'inserts the setting if absent; the rollback deletes it by key whether or not up inserted it, so if up was skipped the pre-existing setting is deleted',
+  addPermissionToRole:
+    'links a permission to a role if not linked; the rollback deletes the link whether or not up created it, so if up was skipped the pre-existing link is deleted',
+  addPermissionWithRoles:
+    'adds a permission and its role links; the rollback deletes every permission row with the same action and object, not only this one, and runs even if up was skipped',
   where: 'query filter; reads or narrows, writes nothing',
   whereNull: 'query filter; reads or narrows, writes nothing',
   map: 'array method; no database effect',
   isSQLite: 'dialect check; no database effect',
   randomBytes: 'generates an id; no database effect',
   toString: 'string conversion; no database effect',
+  ObjectID: 'id constructor imported from a module; generates an id, no database effect',
+  toHexString: 'formats a generated id; no database effect',
   hex: 'encodes an id; no database effect',
   UUID: 'generates an id; no database effect',
 });
@@ -128,19 +136,93 @@ function stripStrings(code) {
   return code.replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, '""');
 }
 
-// Names a file calls, in the callee position (name( or .name().
-function calledNames(code) {
+// Bindings that give a local name another name: `const x = a.b;`, `const { x } = a;`.
+// Also records names bound to plain literals (never callable) and destructuring
+// patterns this parser cannot read, which fail closed.
+function bindings(view) {
+  const aliases = new Map();
+  const literals = new Set();
+  const unreadable = [];
+  for (const m of view.matchAll(
+    /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*;/g
+  )) {
+    const parts = m[2].split('.').map((x) => x.trim());
+    aliases.set(m[1], parts[parts.length - 1]);
+  }
+  for (const m of view.matchAll(
+    /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*[A-Za-z_$][\w$.]*(?:\s*\([^)]*\))?\s*;/g
+  )) {
+    for (const entry of m[1].split(',')) {
+      const e = entry.trim();
+      if (!e) continue;
+      const pair = /^([A-Za-z_$][\w$]*)(?:\s*:\s*([A-Za-z_$][\w$]*))?$/.exec(e);
+      if (pair) aliases.set(pair[2] ?? pair[1], pair[1]);
+      else unreadable.push(e);
+    }
+  }
+  for (const m of view.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;]*);/g)) {
+    if (/^\s*(?:""|-?\d[\d_.]*|true|false|null)\s*$/.test(m[2])) literals.add(m[1]);
+  }
+  return { aliases, literals, unreadable };
+}
+
+// How many times a name is assigned (its declaration counts as one).
+function writesOf(view, name) {
+  const escaped = name.replace(/\$/g, '\\$');
+  return [...view.matchAll(new RegExp(`(?<![\\w$.])${escaped}\\s*=(?!=)`, 'g'))].length;
+}
+
+// Rewrites each call through a local alias to the helper it names. An alias that is
+// reassigned, or that cannot be followed to a name, is left as it is, so its call
+// stays unknown and routes consent.
+function resolveAliases(code) {
   const view = stripStrings(code);
-  const names = new Set();
+  const { aliases, literals, unreadable } = bindings(view);
+  const target = new Map();
+  for (const [name, t] of aliases) {
+    target.set(name, writesOf(view, name) > 1 ? null : t);
+  }
+  let out = code;
+  for (const name of target.keys()) {
+    let t = target.get(name);
+    for (let hop = 0; hop < 10 && t !== null && t !== name && target.has(t); hop += 1) {
+      t = target.get(t);
+    }
+    // Unresolvable, self-referential, or a chain that did not end: leave the call unknown.
+    if (t === null || t === name || target.has(t)) continue;
+    const escaped = name.replace(/\$/g, '\\$');
+    out = out.replace(new RegExp(`(?<![\\w$.])${escaped}(\\s*)\\(`, 'g'), `${t}$1(`);
+  }
+  return { code: out, literals, unreadable };
+}
+
+// Names a file calls in callee position, after aliases are resolved. A name is
+// exempt only if the file declares it as a function (its body is scanned like the
+// rest) or binds it to a plain literal. Computed calls and calls on call results
+// are reported too.
+function calledNames(resolved) {
+  const view = stripStrings(resolved.code);
+  const names = new Set(resolved.unreadable.map((e) => `<pattern:${e}>`));
   for (const m of view.matchAll(/(?<!function )(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g))
     names.add(m[1]);
   for (const m of view.matchAll(/\.([A-Za-z_$][\w$]*)\s*\(/g)) names.add(m[1]);
-  // Names the file declares itself; their bodies are scanned like the rest of the file.
+  if (/\]\s*\(/.test(view)) names.add('<computed>');
+  if (/\)\s*\(/.test(view)) names.add('<call-result>');
+  // A helper is local when the file declares it as a function, or binds it once to an
+  // arrow or function expression. Its body is scanned with the rest of the file.
   const declared = new Set([
     ...[...view.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map((m) => m[1]),
-    ...[...view.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/g)].map((m) => m[1]),
+    ...[
+      ...view.matchAll(
+        /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/g
+      ),
+    ]
+      .map((m) => m[1])
+      .filter((n) => writesOf(view, n) <= 1),
   ]);
-  return [...names].filter((n) => !KEYWORDS.has(n) && !declared.has(n)).sort();
+  return [...names]
+    .filter((n) => !KEYWORDS.has(n) && !declared.has(n) && !resolved.literals.has(n))
+    .sort();
 }
 
 function matchRules(rules, source) {
@@ -183,15 +265,18 @@ export function classifyRange({ from, to, migrations }) {
     const line = parseFolder(m.folder);
     if (!inRange(line, f, t)) continue;
     filesInRange += 1;
-    const code = stripComments(m.source);
-    collect(out, 'irreversible', m.path, matchRules(IRREVERSIBLE_RULES, m.source));
+    // Aliases are resolved first, so every rule sees the helper a call really names.
+    const resolvedSource = resolveAliases(m.source);
+    const resolved = resolveAliases(stripComments(m.source));
+    const code = resolved.code;
+    collect(out, 'irreversible', m.path, matchRules(IRREVERSIBLE_RULES, resolvedSource.code));
     collect(out, 'destructive', m.path, [
       ...matchRules(DESTRUCTIVE_RULES, code),
       ...noopRollbackRule(code),
     ]);
     collect(out, 'contracting', m.path, matchRules(CONTRACTING_RULES, code));
     collect(out, 'constraint', m.path, matchRules(CONSTRAINT_RULES, code));
-    const unknown = calledNames(code).filter((n) => !Object.hasOwn(KNOWN_CALLS, n));
+    const unknown = calledNames(resolved).filter((n) => !Object.hasOwn(KNOWN_CALLS, n));
     collect(
       out,
       'unclassified',

@@ -283,3 +283,55 @@ test('the allowlist is fail-closed: update and raw are not on it', () => {
     assert.equal(r.route, 'consent', call);
   }
 });
+
+const one = (src) =>
+  classifyRange({ from: 'v6.56.0', to: 'v6.56.0', migrations: [sample('6.56', 'a.js', src)] });
+
+test('alias: a const alias of a wrapper is resolved, so the dropTables alias routes consent', () => {
+  const r = one("const dropper = utils.dropTables;\nmodule.exports = dropper(['members']);");
+  assert.deepEqual(r.irreversible, [{ path: 'a.js', rule: 'wrapper' }]);
+  assert.equal(r.route, 'consent');
+});
+
+test('alias: a const alias of removeSetting routes consent as a destructive removal', () => {
+  const r = one(
+    "const removeIt = utils.removeSetting;\nmodule.exports = combineTransactionalMigrations(removeIt('x'));"
+  );
+  assert.deepEqual(r.destructive, [{ path: 'a.js', rule: 'remove-setting' }]);
+  assert.equal(r.route, 'consent');
+});
+
+test('destructured: const { removeSetting } = utils routes consent', () => {
+  const r = one(
+    "const { removeSetting } = utils;\nmodule.exports = combineTransactionalMigrations(removeSetting('x'));"
+  );
+  assert.equal(r.route, 'consent');
+  assert.ok(r.destructive.some((x) => x.rule === 'remove-setting'));
+});
+
+test('an alias bound to a computed member is unresolvable and routes consent', () => {
+  const r = one("const f = utils[name];\nmodule.exports = combineTransactionalMigrations(f('x'));");
+  assert.deepEqual(r.unclassified, [{ path: 'a.js', rule: 'unclassified:f' }]);
+  assert.equal(r.route, 'consent');
+});
+
+test('a parameter called as a function is unclassified', () => {
+  const r = one(
+    "function run(helper) { return helper('x'); }\nmodule.exports = combineTransactionalMigrations(run);"
+  );
+  assert.ok(r.unclassified.some((x) => x.rule === 'unclassified:helper'));
+  assert.equal(r.route, 'consent');
+});
+
+test('an alias written twice is ambiguous and routes consent', () => {
+  const r = one("let f = utils.addTable;\nf = utils.dropTables;\nmodule.exports = f('x');");
+  assert.equal(r.route, 'consent');
+});
+
+test('control: a local arrow helper that calls only allowlisted helpers stays fast-path', () => {
+  const r = one(
+    "const addCol = (n) => createAddColumnMigration('t', n);\nmodule.exports = combineNonTransactionalMigrations(addCol('x'));"
+  );
+  assert.deepEqual(r.unclassified, []);
+  assert.equal(r.route, 'fast-path');
+});

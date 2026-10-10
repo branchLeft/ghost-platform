@@ -33,14 +33,46 @@ any class matches anywhere in the range, and `fast-path` otherwise.
    `dropColumn`, `dropColumns`, `createDropColumnMigration`, `.del()` with no argument,
    and permission removal (`removePermission`, `removePermissionFromRole`,
    `createRemovePermissionMigration`). A rollback re-adds a dropped column empty,
-   and a delete loses rows.
+   and a delete loses rows. `removePermission`'s rollback re-adds only the configured
+   permission. Its `up` deleted every permission row with the same action and object
+   type, and those sibling rows are not restored.
 5. **Constraint** (routed by `CONSTRAINT_ROUTE`, pinned to `consent`). Schema-only
    constraint drops: `dropIndex`, `dropUnique`, `dropForeign`. Kept apart from data loss.
-6. **Unclassified** (always consent). Fail-closed. Every call in a file is checked
-   against the `KNOWN_CALLS` allowlist. A call that is neither on it nor declared in
-   the same file routes consent with reason `unclassified:<name>`. Each allowlist entry
-   has its reason beside it. The allowlist was derived from the real fast-path files in
-   the v6.55.0 to v6.69.0 range. `update` and `raw` are deliberately not on it.
+6. **Unclassified** (always consent). Fail-closed. Local aliases are resolved first:
+   `const x = a.b;` and `const { x } = a;` make calls through `x` count as calls to
+   `b` or `x`. A name bound to a computed member, reassigned, or taken from a parameter
+   cannot be resolved and routes consent. Every remaining call is checked against the
+   `KNOWN_CALLS` allowlist. A call neither on it nor declared in the same file routes
+   consent with reason `unclassified:<name>`. A file declares a helper with `function`,
+   or with a `const`, `let` or `var` bound once to an arrow or function expression; its
+   body is then checked like the rest of the file. Each allowlist entry states what its
+   rollback does. The allowlist was derived from the real files that matched no rule
+   at the previous head. `update` and `raw` are deliberately not on it.
+
+## Rollback residuals (owner decision)
+
+The allowlist is a judgement. Four entries, and one more, give a rollback that runs
+even when the `up` step was skipped, so it can delete an object that existed before
+the migration. The entries say so. The residual is:
+
+> A fast-path migration's rollback is safe only if its up step created the object
+> (it ran once). A re-run after a skipped up deletes what existed.
+
+- `addTable`: the rollback drops the table whether or not `up` created it. The
+  `replaceDevelopmentCopy` option is for development and test only, and the classifier
+  cannot see it.
+- `addSetting`: the rollback deletes the setting by key, whether or not `up` inserted it.
+- `addPermissionToRole`: the rollback deletes the permission-role link, whether or not
+  `up` created it.
+- `addPermissionWithRoles`: the rollback deletes every permission row with the same
+  action and object, not only this one. It runs even if `up` was skipped.
+- `createAddColumnMigration`: the rollback drops the column whenever it exists. Rows
+  written to it since the upgrade are lost, and so is any pre-existing column data when
+  `up` was skipped.
+
+The migration runner executes each migration once per database. That is the basis for
+keeping these entries fast-path. The owner rules on it. See the decision card in the
+pull request.
 
 Pinned routes are the owner's open rulings. Changing a constant is a ruling, not a
 refactor. The test suite pins the current values.
@@ -99,6 +131,8 @@ at v6.69.0.
   input and is not built here.
 - **Contracting, constraint and unclassified.** The owner's rulings are open for the
   first two. The unclassified allowlist needs a ruling on each addition.
+- **Rollback residuals.** See the section above. The owner rules on whether
+  these entries stay fast-path.
 
 ## Not claimed
 
