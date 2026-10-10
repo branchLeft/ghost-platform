@@ -1,5 +1,5 @@
 /**
- * `tenantEnvironment()`'s break-glass keys, in isolation from the rest of
+ * `tenantEnvironment()`'s break-glass and verdict-source keys, in isolation from the rest of
  * `render()`'s seven artefacts (those are pinned by `render.test.ts`'s
  * golden files, none of which carry `breakGlass.kind = "enabled"` — see
  * `fixtures.ts`).
@@ -8,7 +8,14 @@ import { describe, expect, it } from 'vitest';
 import { tenantEnvironment } from '../src/environment.js';
 import { uploadLimits } from '../src/runtime.js';
 import { secretsEnvPath } from '../src/naming.js';
-import { breakGlassEnabled, tenantDescriptor, TEST_ZONES } from './fixtures.js';
+import {
+  breakGlassEnabled,
+  demoDescriptor,
+  entryTenantDescriptor,
+  professionalTenantDescriptor,
+  tenantDescriptor,
+  TEST_ZONES,
+} from './fixtures.js';
 
 const LIMITS = uploadLimits();
 
@@ -42,5 +49,27 @@ describe('tenantEnvironment() — breakGlass', () => {
     };
     const rendered = env(descriptor);
     expect(rendered.adapters__sso__BreakGlassSSO__publicKey).toBe('abc$$def');
+  });
+});
+
+// The scanning decorator refuses every upload unless a verdict source is
+// named, and the only one it knows is an in-process fake that scans nothing.
+// No render may name it: a demo is where the scan matters most, and a paying
+// tenant has no real source wired yet either, so both refuse uploads.
+describe('tenantEnvironment() — verdictSource', () => {
+  const FEATURES = ['images', 'media', 'files'] as const;
+
+  it.each([
+    ['demo (local media)', demoDescriptor],
+    ['entry tenant (object storage)', entryTenantDescriptor],
+    ['professional tenant (object storage)', professionalTenantDescriptor],
+  ] as const)('a %s renders the decorator and no verdict source', (_label, fixture) => {
+    const rendered = env(fixture());
+    for (const feature of FEATURES) {
+      expect(rendered[`storage__${feature}__adapter`]).toBe('ScanningStorageAdapter');
+      expect(rendered).not.toHaveProperty(`storage__${feature}__verdictSource`);
+    }
+    expect(Object.keys(rendered).filter((key) => /verdictsource/i.test(key))).toEqual([]);
+    expect(Object.values(rendered)).not.toContain('in-process-fake');
   });
 });
