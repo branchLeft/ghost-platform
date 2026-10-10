@@ -202,6 +202,20 @@ class TestRefusedInput(unittest.TestCase):
 
 
 class TestRenderedCommands(unittest.TestCase):
+    def test_no_pasted_line_carries_an_unfilled_placeholder_or_secret_literal(self):
+        for bucket_exists in (True, False):
+            with self.subTest(bucket_exists=bucket_exists):
+                commands = fence.render_commands(
+                    BUCKET, PROJECT, [WORKLOAD], ADMIN,
+                    "https://hel1.your-objectstorage.com", "hel1", bucket_exists,
+                )
+                runnable = [
+                    line for line in commands.splitlines() if line and not line.startswith("#")
+                ]
+                self.assertEqual([line for line in runnable if "<the " in line], [])
+                self.assertIn("read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY", commands)
+                self.assertNotIn("export AWS_SECRET_ACCESS_KEY='", commands)
+
     def test_the_existing_bucket_sequence_never_creates_a_bucket(self):
         # Creating a bucket is a spend decision and is not this script's to
         # make; the two buckets being fenced already exist.

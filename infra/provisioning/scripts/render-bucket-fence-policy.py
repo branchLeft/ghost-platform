@@ -376,8 +376,8 @@ s3 put-bucket-versioning --bucket {bucket} \\
 # `s3` is a shell function, not a variable: zsh does not word-split an
 # unquoted parameter expansion, so `S3='aws ... s3api'` followed by `$S3 ...`
 # fails there with "no such file or directory: aws --endpoint-url ...".
-export AWS_ACCESS_KEY_ID='<the operator access key id>'
-export AWS_SECRET_ACCESS_KEY='<the operator secret access key>'
+read -rs AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID
+read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY
 export AWS_DEFAULT_REGION='{region}'
 s3() {{ aws --endpoint-url {endpoint} s3api "$@"; }}
 

@@ -59,6 +59,33 @@ class TestTheSequenceRunsInTheOperatorsShell(unittest.TestCase):
         )
 
 
+class TestOperatorCredentialsAreReadNotPlaceholders(unittest.TestCase):
+    """A pasted block must never carry an unfilled placeholder.
+
+    A `export AWS_SECRET_ACCESS_KEY='<...>'` line either exports the literal
+    placeholder text or does nothing useful, and the failure then looks like
+    the swap control's AccessDenied. The secret must also not reach the
+    command line, so it is read into the shell instead.
+    """
+
+    def commands(self) -> str:
+        return policy_module.render_commands(
+            "blog", PROJECT, TENANT_KEY, ADMIN_KEY, "https://hel1.your-objectstorage.com", "hel1"
+        )
+
+    def test_no_runnable_line_carries_an_unfilled_placeholder(self):
+        runnable = [
+            line for line in self.commands().splitlines() if line and not line.startswith("#")
+        ]
+        self.assertEqual([line for line in runnable if "<the " in line], [])
+
+    def test_the_operator_credentials_are_read_into_the_shell(self):
+        commands = self.commands()
+        self.assertIn("read -rs AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID", commands)
+        self.assertIn("read -rs AWS_SECRET_ACCESS_KEY; export AWS_SECRET_ACCESS_KEY", commands)
+        self.assertNotIn("export AWS_SECRET_ACCESS_KEY='", commands)
+
+
 class TestPublicReadNotListable(unittest.TestCase):
     """Doc 14 section 6 requirement 2, which is the one that fails silently."""
 
