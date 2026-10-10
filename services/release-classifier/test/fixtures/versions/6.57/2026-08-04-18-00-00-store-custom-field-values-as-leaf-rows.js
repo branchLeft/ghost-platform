@@ -26,7 +26,7 @@ async function discardStoredValues(knex) {
   }
 }
 
-// Narrative comments removed from this test fixture; code is unchanged. See ../../../README.md.
+// Comments removed from this test fixture (copied from upstream); code is otherwise unchanged.
 module.exports = createNonTransactionalMigration(
   async function up(knex) {
     // First, so nothing can collide with the new constraint.
