@@ -45,7 +45,7 @@ the list's validation.
 ## Visibility
 
 The mirror packages stay **private**, GitHub's default. The reason is Docker's
-Terms of Use (https://www.docker.com/legal/docker-terms-service/, effective
+Terms of Use (<https://www.docker.com/legal/docker-terms-service/>, effective
 2026-08-26), which say users "may redistribute Docker Images made available in
 Docker Hub at no cost, to third parties but solely when bundled with or
 incorporated into its own software products, and not on a standalone basis",

@@ -1,57 +1,122 @@
 # assert-image-refs-on-mirror.py
 
-## What this gate checks
+## What the guard reports
 
-Every image this repo asks Docker to pull must be one of:
+The guard reads the tracked files and reports every image reference that is
+not in one of these forms:
 
-- `${IMAGE_REGISTRY:-<public namespace>}/<name>[:tag]@sha256:<digest>`, where
-  `<public namespace>/<name>` is the image's public source for that digest in
-  `.github/image-mirror/images.json`. With the variable unset (every local
-  build) it is the public image, pulled with no credential; CI alone sets
-  `IMAGE_REGISTRY=ghcr.io/branchleft/mirror`, which resolves to the private
-  mirror copy of the same digest;
-- another `ghcr.io/branchleft/<name>@sha256:<digest>` (our own published image,
-  pinned by digest);
-- a local build tagged `:ci` or `:proof`, or any name built in the tree by
-  `docker build -t`.
+- `${IMAGE_REGISTRY:-<public namespace>}/<name>:<tag>@sha256:<digest>`, where
+  `<public namespace>/<name>` is the public source of that digest in
+  `.github/image-mirror/images.json`. With `IMAGE_REGISTRY` unset (every local
+  build) Docker pulls the public image by digest with no credential. CI sets
+  `IMAGE_REGISTRY=ghcr.io/branchleft/mirror`, which selects the mirror copy of
+  the same digest. The default is inline, not one shared variable, because each
+  image has its own public namespace.
+- `ghcr.io/branchleft/<name>:<tag>@sha256:<digest>`, an image this repo publishes,
+  pinned by digest.
+- a name and tag that this tree builds itself with `docker build -t`, used
+  without a digest (see Exemptions).
 
-Everything else is a finding, and the kind says why: `unqualified` (no
-registry, so it resolves to Docker Hub), `docker.io`, `other-registry`,
-`tag-only` (a tag can move), `hard-coded-mirror` (a literal
-`ghcr.io/branchleft/mirror/...` with no public default, which would break a
-local build), `bad-default` (the variable form is malformed, has no default, or
-its default is not the public source of that digest), `bad-override` (a workflow
-sets `IMAGE_REGISTRY` to anything but the mirror) and `override-no-permission`
-(a workflow sets it without `packages: read`).
+A reference that passes needs a tag as well as a digest. The guard does not check
+that a digest exists upstream: a digest is checked for its shape and, in the
+variable form, against the list.
+
+## Finding kinds
+
+- `unqualified`: no registry host (`ghost:6`); Docker resolves it to Docker Hub's
+  library namespace.
+- `docker.io`: a Docker Hub reference with a namespace (`percona/percona-server`),
+  or an explicit `docker.io`, `registry-1.docker.io` or `index.docker.io` host.
+- `other-registry`: any other registry host, including a host given as an IP
+  address or with a port, and a `ghcr.io` path outside `branchleft/`.
+- `tag-only`: a reference with no digest, with or without a tag.
+- `no-tag`: a digest with no tag. The form requires `<name>:<tag>@sha256:<digest>`.
+- `hard-coded-mirror`: a literal `ghcr.io/branchleft/mirror/...` reference, which
+  would break a local build because it has no public default.
+- `bad-default`: a variable form that is malformed, or whose default is not the
+  public source of the digest on the list.
+- `bad-override`: a workflow sets `IMAGE_REGISTRY` to anything other than
+  `ghcr.io/branchleft/mirror`.
+- `override-no-permission`: a workflow sets `IMAGE_REGISTRY` to the mirror without
+  `packages: read` (or `write`, or `read-all`/`write-all`) at workflow level or in
+  the job that sets it. A comment does not grant it.
+- `UNRESOLVED`: a reference whose value is not in the repo, so the guard cannot
+  say what it pulls. See the next section.
+
+## Exemptions
+
+- A local build exempts only the exact `name:tag`, with no digest, that a file in
+  the tree builds with `docker build -t` (or `--tag`), and only when that name has
+  no registry host. `quay.io/x:1` built in the tree is still `other-registry`.
+  An unbuilt `:ci` or `:proof` tag is not exempt.
+- `allow` in `images.json` skips whole files, each with a written reason. It is
+  for test fixtures that fake Docker or hold a rejected input and never pull.
+  A file that pulls an image is not allowed; its reference is rewritten.
+- Skipped by design: directories named `dist`, `forks`, `node_modules`,
+  `graphify-out`, `.standards` and `.git`, at any depth; the list's own directory
+  (`.github/image-mirror/`); Markdown, SQL, lock files, images, fonts and archives,
+  by suffix; any file over 1 MB or not UTF-8 text. `bin/` is scanned.
 
 ## What it reads
 
-Tracked files, except Markdown, vendored output and the list's own directory:
+Tracked files only (`git ls-files`).
 
-- `FROM` lines in `Dockerfile*` and `*.Dockerfile`;
-- `image:` and `container:` values in YAML, which covers workflow `services:`;
-- `*_IMAGE=` and `${*_IMAGE:-...}` assignments, and the first positional argument
-  of `docker run`, `create` and `pull`, in shell and workflow `run:` bodies;
-- in `.ts`, `.js`, `.mjs`, `.py` and `.json`, a quoted image-shaped string with a
-  version-shaped tag or a digest, within a few lines of the words docker or image.
+- `FROM`, `COPY --from` and `RUN --mount ... from=` in Dockerfiles and
+  `Containerfile`s. `ARG` and `ENV` values are followed into those lines, and
+  backslash continuation lines are joined.
+- YAML: `image:` and `container:` (including workflow `services:`), `*_IMAGE:`,
+  `*_TAG:`, anchors and aliases, flow style, and `uses: docker://`.
+- Shell, Makefiles, `.env`, TOML and other text files: `IMAGE=`, `*_IMAGE=`,
+  `*_TAG=` assignments, and the first image operand of `docker`, `podman` or
+  `nerdctl` `run`, `create` and `pull`, including through a variable such as
+  `$DOCKER`. `docker compose pull` names no image and is not a finding.
+- Code (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`,
+  `.json`): a quoted image-shaped string with a version-shaped tag or a digest,
+  when a docker or image word is near it; a command string passed to docker; and
+  an image given to `--build-arg`.
 
-A reference built from a variable or expression (`$X`, `${{ ... }}`) is not
-followed; the line that defines the variable is the one that is checked.
+A bare name on an image key (`image: foo`) is reported only when it looks like an
+image: it has a `:`, `@` or `/`, or it is a well-known image name, or it is the
+last component of a listed source.
 
-## Modes and the allowance
+## UNRESOLVED
 
-`--mode warn` prints every finding and exits 0. `--mode enforce` exits 1 on any.
-CI runs the mode set in `GUARD_MODE` in `image-mirror-ci.yml`.
+A reference built from a value that is not in the repo cannot be followed. The
+guard reports it at its line and does not accept it. Examples the tree produces:
+script arguments (`$1`, `${1:?usage ...}`), workflow expressions such as
+`${{ steps.<id>.outputs.<name> }}` and `${{ matrix.<name> }}`, and a variable with
+no definition anywhere in the tree. A variable with a default (`${X:-y}`) is
+followed to its default. Enforce mode fails on any UNRESOLVED reference.
 
-The only allowance is the `allow` section of the list: whole files, each with a
-written reason, for test fixtures that fake docker or hold a rejected input and
-never pull. A file that really pulls an image is never allowed; its reference is
-rewritten to the mirror.
+## Modes
+
+- `--mode warn` prints every finding and exits 0. It exits 2 when the list cannot
+  be read. The self-test exits 1 when a case fails.
+- `--mode enforce` exits 1 on any finding, UNRESOLVED included.
+- CI runs the mode named by `GUARD_MODE` in `image-mirror-ci.yml`.
+
+## Limits
+
+- The guard is static. An image chosen at run time (a computed name, a value from
+  a file that is not tracked, an input) is seen only where its text is in the
+  repo, and then as UNRESOLVED or not at all.
+- The image operand of `docker run` is the first word after the verb that is not
+  a flag or a value of a listed flag. A flag that is not on the list and takes a
+  bare number is read past. A flag that is not on the list and takes a word may
+  make that word the reported operand, which is a false finding.
+- Quoted strings in code are read only near a docker or image word, and only when
+  they look like an image. Image names built by concatenation are not followed.
+- Other tools (`buildah`, `kaniko`) and client libraries are not read.
+- An image that a build pulls through a base image held in another repository is
+  not visible.
+- A clean run does not show that a pull does not happen. It shows that each
+  reference the guard reads has one of the forms above.
+- The guard does not check mirror contents. `scripts/mirror-images.py` copies
+  each listed digest and reads it back.
 
 ## Proof
 
-`--self-test` builds throwaway trees and requires, in order, that a `FROM ghost:`
-line, a tag-only reference, a hard-coded mirror reference, a wrong public default,
-an unqualified workflow service image, and two bad workflow overrides each
-produce exactly one finding, and that a clean tree produces none. The same
-cases run through `--mode enforce` in `scripts/test_image_mirror.py`.
+`--self-test` builds throwaway trees, one for each construction a finding kind
+covers, and requires each to produce exactly its expected finding; a clean tree
+must produce none. The same constructions run through `--mode enforce` in
+`scripts/test_image_mirror.py`, whose test names are the list of cases.
