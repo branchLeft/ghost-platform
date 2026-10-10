@@ -9,6 +9,7 @@ import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
+import { moderationBody, type TenantKind } from './moderationSettings.js';
 
 export interface TenantPortalOptions {
   readonly issuer: string;
@@ -24,6 +25,8 @@ export interface TenantPortalOptions {
   readonly fetch?: typeof fetch;
   readonly fetchKeys?: TokenVerifierOptions['fetchKeys'];
   readonly sessionSeconds?: number;
+  /** The tenant's kind. Absent or unrecognised is a demo; a throw makes the page answer 500 FAILED. */
+  readonly tenantKind?: (scope: TenantScope) => Promise<TenantKind | string>;
 }
 
 /**
@@ -57,6 +60,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     nav: [
       { label: 'NAV_HOME', href: '/' },
       { label: 'NAV_DOCUMENTS', href: '/documents' },
+      { label: 'NAV_MODERATION', href: '/moderation' },
     ],
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
@@ -73,6 +77,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${renderHealth(health)}`;
     },
     pages: {
+      '/moderation': (scope) => moderationBody(scope, options.tenantKind),
       '/documents': async (scope) => {
         const at = now();
         const [documents, pending, accepted, upcoming] = await Promise.all([

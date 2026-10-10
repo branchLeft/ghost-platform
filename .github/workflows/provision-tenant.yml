@@ -723,6 +723,42 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Protects the generated repository's default branch before the handover
+      # step can write to the repository. Whether the template copy carries
+      # rulesets is not established, so this step creates the ruleset either
+      # way. The payload is a committed file, not inline YAML, so the test suite
+      # reads the same bytes this step posts. A private tenant gets a warning
+      # and no ruleset: on this plan a repository ruleset needs a public repo.
+      - name: Protect the generated repository's default branch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          ruleset_file=infra/provisioning/scripts/tenant-default-branch-ruleset.json
+          if [ "$TENANT_VISIBILITY" = "private" ]; then
+            echo "::warning::${TENANT_REPO} is private: repository rulesets are not available on a private repository on this plan, so its default branch is NOT protected. Skipping the ruleset; the run does not fail."
+            exit 0
+          fi
+          ruleset_name=$(jq -r '.name' "$ruleset_file")
+          existing_id=$(gh api "repos/${TENANT_REPO}/rulesets" \
+            | jq -r --arg name "$ruleset_name" '[.[] | select(.name == $name) | .id] | first // empty')
+          if [ -n "$existing_id" ]; then
+            echo "${TENANT_REPO} already has ruleset '${ruleset_name}' (id ${existing_id}); updating it in place"
+            gh api --method PUT "repos/${TENANT_REPO}/rulesets/${existing_id}" --input "$ruleset_file" --silent
+          else
+            gh api --method POST "repos/${TENANT_REPO}/rulesets" --input "$ruleset_file" --silent
+          fi
+          # Read back rather than trusted: a write that reports success but
+          # leaves a rule out is the state this step exists to prevent.
+          rules=$(gh api "repos/${TENANT_REPO}/rules/branches/main" \
+            --jq '[.[].type] | sort | join(",")')
+          expected="deletion,non_fast_forward,pull_request"
+          if [ "$rules" != "$expected" ]; then
+            echo "::error::${TENANT_REPO} main reads back as rules '${rules}', not '${expected}'. Refusing to continue with an unprotected default branch."
+            exit 1
+          fi
+          echo "${TENANT_REPO} default branch protection rules: ${rules}"
+
       # A second copy of the transport, in a form that can be downloaded rather
       # than reselected out of rendered markdown. Both expire; the password
       # manager is the escrow of record.

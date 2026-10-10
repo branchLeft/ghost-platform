@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 // The two grant lanes and the four-hour clock, run as root on the tenant's
-// own host. A person runs grant and revoke over SSH; a systemd timer runs
+// own host, in the pinned Node container the host wrapper and the expire unit
+// start. A person runs grant and revoke over SSH; a systemd timer runs
 // expire every minute. See break-glass-grant.md for the lanes, the clock,
-// the double purge and the records this writes.
+// the double purge, the container and the records this writes.
 
-import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ActiveExistingRowError, provisionSupportAccount } from './provision-support-account.mjs';
+import { createEngine, DOCKER_TIMEOUT_MS } from './docker-engine.mjs';
+import {
+  ActiveExistingRowError,
+  provisionSupportAccountViaEngine,
+} from './provision-support-account.mjs';
+
+export { DOCKER_TIMEOUT_MS };
 
 export const GRANT_STATE_DIRECTORY = '/var/lib/branchleft/break-glass-grants';
 export const GRANT_RECORD_LOG = '/var/log/branchleft/break-glass-grants.jsonl';
@@ -17,8 +23,14 @@ export const EXPIRE_TIMER_UNIT = 'branchleft-break-glass-expire.timer';
 export const GRANT_WINDOW_SECONDS = 4 * 60 * 60;
 /** Requirement 1 of the adapter review: purge, wait a few seconds, purge again. */
 export const SECOND_PURGE_DELAY_MS = 5000;
-/** A wedged docker call must not hold the timer's run open for ever. */
-export const DOCKER_TIMEOUT_MS = 60_000;
+/**
+ * The wrapper passes the host's own answer to `systemctl is-active` in here,
+ * because the container cannot ask systemd. Anything but `active` refuses a grant.
+ */
+export const TIMER_STATE_ENV = 'BL_EXPIRE_TIMER_STATE';
+/** The one Compose label the tenant's containers carry, and the two services. */
+const PROJECT_LABEL = 'com.docker.compose.project';
+const SERVICE_LABEL = 'com.docker.compose.service';
 const LANES = ['consented', 'incident'];
 const GHOST_SERVICES = ['ghost-a', 'ghost-b'];
 const ONE_LINE = /^[\x21-\x7e][\x20-\x7e]{0,199}$/;
@@ -150,28 +162,15 @@ async function main() {
 main().catch((error) => { console.error(String(error && error.message)); process.exitCode = 1; });
 `;
 
-const dockerOptions = { encoding: 'utf8', timeout: DOCKER_TIMEOUT_MS, killSignal: 'SIGKILL' };
-
 /** The tenant's running Ghost container: either colour, both share one database. */
-export function findTenantContainer(tenant, execFile = execFileSync) {
-  const out = execFile(
-    'docker',
-    [
-      'ps',
-      '--filter',
-      `label=com.docker.compose.project=${tenant}`,
-      '--filter',
-      'status=running',
-      '--format',
-      '{{.Names}}\t{{.Label "com.docker.compose.service"}}',
-    ],
-    dockerOptions
-  );
-  const names = out
-    .split('\n')
-    .map((line) => line.split('\t'))
-    .filter(([, service]) => GHOST_SERVICES.includes(service))
-    .map(([name]) => name)
+export async function findTenantContainer(tenant, engine = createEngine()) {
+  const found = await engine.listContainers({ labels: { [PROJECT_LABEL]: tenant } });
+  const names = found
+    .filter(
+      (c) =>
+        c.labels?.[PROJECT_LABEL] === tenant && GHOST_SERVICES.includes(c.labels?.[SERVICE_LABEL])
+    )
+    .map((c) => c.name)
     .sort();
   if (names.length === 0) {
     throw new GrantRefusedError(`no running Ghost container for tenant ${tenant}`);
@@ -180,18 +179,15 @@ export function findTenantContainer(tenant, execFile = execFileSync) {
 }
 
 /** Runs one ACTION in the container and returns its JSON result. */
-export function runInContainer({ container, action, expect }, execFile = execFileSync) {
-  const env = ['-e', `BL_ACTION=${action}`];
-  if (expect) env.push('-e', `BL_EXPECT_IDENTITY=${expect}`);
-  let output;
-  try {
-    output = execFile(
-      'docker',
-      ['exec', ...env, container, 'node', '-e', INNER_SCRIPT],
-      dockerOptions
-    );
-  } catch (error) {
-    const stderr = typeof error.stderr === 'string' ? error.stderr : '';
+export async function runInContainer({ container, action, expect }, engine = createEngine()) {
+  const env = [`BL_ACTION=${action}`];
+  if (expect) env.push(`BL_EXPECT_IDENTITY=${expect}`);
+  const { code, stdout, stderr } = await engine.exec({
+    container,
+    env,
+    cmd: ['node', '-e', INNER_SCRIPT],
+  });
+  if (code !== 0) {
     const at = stderr.indexOf(REFUSAL_MARKER);
     if (at !== -1) {
       throw new GrantRefusedError(
@@ -201,11 +197,9 @@ export function runInContainer({ container, action, expect }, execFile = execFil
           .trim()
       );
     }
-    throw new Error(
-      `docker exec ${action} failed: ${stderr.trim().slice(0, 600) || error.message}`
-    );
+    throw new Error(`exec ${action} failed (exit ${code}): ${stderr.trim().slice(0, 600)}`);
   }
-  const line = output
+  const line = stdout
     .split('\n')
     .reverse()
     .find((l) => l.startsWith(RESULT_MARKER));
@@ -213,40 +207,39 @@ export function runInContainer({ container, action, expect }, execFile = execFil
   return JSON.parse(line.slice(RESULT_MARKER.length));
 }
 
-function systemctlIsActive(unit, execFile = execFileSync) {
-  try {
-    execFile('systemctl', ['is-active', '--quiet', unit], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+/** True only when the wrapper said the host's expire timer is active. */
+export function timerReportedActive(env = process.env) {
+  return env[TIMER_STATE_ENV] === 'active';
 }
 
 /** Production wiring. Tests replace any of these. */
-export function defaultDeps() {
+export function defaultDeps({ env = process.env, ...engineOptions } = {}) {
+  const engine = createEngine(engineOptions);
   return {
     stateDir: GRANT_STATE_DIRECTORY,
     recordLog: GRANT_RECORD_LOG,
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: (message) => process.stderr.write(`break-glass-grant: ${message}\n`),
-    timerActive: () => systemctlIsActive(EXPIRE_TIMER_UNIT),
-    findContainer: (tenant) => findTenantContainer(tenant),
-    run: (request) => runInContainer(request),
-    recreate: ({ container, identity }) => recreateIfDeleted({ container, identity }),
+    timerActive: () => timerReportedActive(env),
+    findContainer: (tenant) => findTenantContainer(tenant, engine),
+    run: (request) => runInContainer(request, engine),
+    recreate: ({ container, identity }) => recreateIfDeleted({ container, identity }, engine),
     betweenPurges: async () => {},
   };
 }
 
 /**
- * Provisions the account when the tenant deleted it, with a timeout on its
- * docker call. An account already present and active is not an error here.
+ * Provisions the account when the tenant deleted it, bounded by the Engine
+ * client's timeout. An account already present and active is not an error.
  */
-export function recreateIfDeleted({ container, identity }, provision = provisionSupportAccount) {
+export async function recreateIfDeleted(
+  { container, identity },
+  engine = createEngine(),
+  provision = provisionSupportAccountViaEngine
+) {
   try {
-    return provision({ container, email: identity }, (cmd, args, options) =>
-      execFileSync(cmd, args, { ...options, ...dockerOptions })
-    );
+    return await provision({ container, email: identity }, engine);
   } catch (error) {
     if (error instanceof ActiveExistingRowError) return { created: false };
     throw error;
@@ -395,9 +388,9 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
   if (existing) {
     throw new GrantRefusedError(`a grant for ${tenant} is already open until ${existing.deadline}`);
   }
-  const container = deps.findContainer(tenant);
+  const container = await deps.findContainer(tenant);
   // Read-only: the identity comes from the tenant's config; a typed one must match it.
-  const configured = deps.run({ container, action: 'identity', expect: identity }).identity;
+  const configured = (await deps.run({ container, action: 'identity', expect: identity })).identity;
   const grantedAtMs = deps.now();
   const state = {
     grantId: crypto.randomUUID(),
@@ -415,14 +408,14 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
   let recreated = false;
   try {
     if (lane === 'consented') {
-      result = deps.run({ container, action: 'check', expect: configured });
+      result = await deps.run({ container, action: 'check', expect: configured });
     } else {
-      result = deps.run({ container, action: 'activate', expect: configured });
+      result = await deps.run({ container, action: 'activate', expect: configured });
       if (result.absent) {
         // The anti-lockout guarantee: the provisioning script recreates the
         // deleted account suspended, then it is activated like any other.
-        recreated = deps.recreate({ container, identity: configured }).created === true;
-        result = deps.run({ container, action: 'activate', expect: configured });
+        recreated = (await deps.recreate({ container, identity: configured })).created === true;
+        result = await deps.run({ container, action: 'activate', expect: configured });
         if (result.absent) throw new Error('the support account could not be recreated');
       }
     }
@@ -452,11 +445,11 @@ export async function revoke({ tenant, reason, cause = 'explicit' }, deps = defa
   } catch (error) {
     stateUnreadable = error.message;
   }
-  const container = deps.findContainer(tenant);
-  const first = deps.run({ container, action: 'revoke' });
+  const container = await deps.findContainer(tenant);
+  const first = await deps.run({ container, action: 'revoke' });
   await deps.betweenPurges();
   await deps.sleep(SECOND_PURGE_DELAY_MS);
-  const second = deps.run({ container, action: 'revoke' });
+  const second = await deps.run({ container, action: 'revoke' });
   const closing = {
     event: 'closed',
     ...(open ?? {}),
@@ -528,7 +521,17 @@ export async function main(argv, deps = defaultDeps(), stdout = process.stdout) 
   return args.command === 'expire' && result.failed.length > 0 ? 1 : 0;
 }
 
+/**
+ * The process is PID 1 in its container, and PID 1 ignores a signal it has no
+ * handler for. Without this, systemd's stop and a Ctrl-C would be ignored.
+ */
+export function exitOnTermination(proc = process) {
+  proc.on('SIGTERM', () => proc.exit(143));
+  proc.on('SIGINT', () => proc.exit(130));
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
+  exitOnTermination();
   main(process.argv.slice(2)).then(
     (code) => {
       process.exitCode = code;
