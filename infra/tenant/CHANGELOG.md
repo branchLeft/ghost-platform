@@ -2,6 +2,19 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## Unreleased
+
+- **`scripts/assert-no-tenant-deletes.py` refuses a plan that carries any
+  resource type other than `pulumi:pulumi:Stack` or the `GhostTenant`
+  component.** A tenant stack holds configuration and no real resources, and
+  the accepted reach of the shared tenant-state credential rests on that; the
+  first provider resource added to a tenant stack now fails the plan instead of
+  shipping green. The type is read from the URN's type field split from the
+  left, so a resource name containing `::` can no longer present another type's
+  token as its own. A tenant picks this up when it bumps to the release that
+  carries it; the template's deploy job runs the guard from the pinned
+  package.
+
 ## 7.0.0
 
 **The owner's email address is no longer a descriptor field. It arrives as a

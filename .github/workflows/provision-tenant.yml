@@ -892,9 +892,15 @@ jobs:
       # each tenant its own is a separate, still-open piece of work.
       #
       # **What that scoping does NOT bound, stated rather than implied.** This
-      # credential is not scoped per stack. Once read, it lists and deletes
-      # `.pulumi/stacks/*` for every tenant in the bucket -- and destroying a
-      # checkpoint needs no ability to decrypt it. The environment gate bounds
+      # credential is not scoped per stack. Once read, it reads, writes and
+      # deletes `.pulumi/stacks/*` for every tenant in the bucket: each tenant's
+      # own deploy job uses it to read and then rewrite that tenant's
+      # checkpoint, so it has to carry all three. None of the three needs
+      # the ability to decrypt. Reading gives the plaintext outputs and config
+      # and the salt beside the ciphertexts. Writing means a plaintext output
+      # such as `composeFile` is a value any holder could have changed, so no
+      # stack output is the source of a file an operator installs as root.
+      # Deleting destroys a checkpoint outright. The environment gate bounds
       # which job may read it, not what it reaches. Bounding the reach itself
       # needs Hetzner's per-bucket key allowlisting, whose behaviour on
       # `ListBucket` is undemonstrated and whose account caps may not fit 100
