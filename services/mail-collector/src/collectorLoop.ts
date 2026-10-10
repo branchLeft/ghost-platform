@@ -65,7 +65,24 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       if (!running.has(target.id)) {
         const state = { stopped: false, done: Promise.resolve() };
         running.set(target.id, state);
-        state.done = runTargetLoop(target, state);
+        // However the loop ends -- stopped, descriptor gone, or a thrown
+        // error -- its id leaves `running`, so the next reconcile starts a
+        // fresh loop once the descriptor is fresh again. Without this a
+        // stale descriptor halted that host's drain until process restart.
+        // The identity check keeps a finishing loop from removing a newer
+        // loop registered under the same id.
+        state.done = runTargetLoop(target, state)
+          .catch((error: unknown) => {
+            deps.log.warn('drain_loop_crashed', {
+              target: target.id,
+              error: (error as Error).message,
+            });
+          })
+          .finally(() => {
+            if (running.get(target.id) === state) {
+              running.delete(target.id);
+            }
+          });
       }
     }
 

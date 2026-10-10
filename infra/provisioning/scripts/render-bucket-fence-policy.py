@@ -326,6 +326,60 @@ def assert_recoverable(policy: dict, admin: str, bucket_arn: str) -> None:
             )
 
 
+def command_notes(bucket_exists: bool) -> str:
+    """The prose that goes with the block: printed to stderr, never pasted."""
+    step = 2 if bucket_exists else 4
+    create = "" if bucket_exists else """\
+2. The bucket. Creating one is a spend decision and is the platform owner's
+   alone. `--acl private` is stated rather than left to the default:
+   `public-read` is a BUCKET acl and grants LIST, which would publish the
+   object names of an estate bucket to anyone who guesses its name.
+
+3. Versioning, so an overwrite or a mistaken delete is recoverable. Applied
+   BEFORE the policy, because the policy denies `PutBucketVersioning` to
+   every key but the operator's and there is no reason to depend on that
+   exemption holding.
+
+"""
+    return f"""\
+Run as the OPERATOR, with the operator key in the environment. Every command
+below is idempotent.
+
+`s3` is a shell function, not a variable: zsh does not word-split an
+unquoted parameter expansion, so `S3='aws ... s3api'` followed by `$S3 ...`
+fails there with "no such file or directory: aws --endpoint-url ...".
+
+1. CONFIRM THE POLICY NAMES THE ACCOUNT THIS CREDENTIAL IS IN. Every
+   principal in the document below was built from the --project-id passed to
+   the generator, and nothing offline can check that value. An ARN carrying
+   the right access key under the wrong account names a principal that does
+   not exist, so the operator's exemption exempts nobody and the fence locks
+   the bucket. This must print the same id the policy's ARNs carry.
+
+{create}{step}. Keep whatever policy is there now. On a bucket that has never carried
+   one this prints NoSuchBucketPolicy, which is the expected result and is
+   itself the finding that this fence exists to close.
+
+{step + 1}. The fence.
+
+{step + 2}. PROVE THE BUCKET IS STILL ADMINISTRABLE, before anything else and
+   before leaving the terminal. Re-PUTting the identical document is a no-op
+   if it succeeds and the only warning you will get if it does not: a policy
+   that denies the operator `PutBucketPolicy` cannot be edited or removed by
+   any key in the project, and recovery is a Hetzner support request against
+   the storage cluster.
+
+{step + 3}. Prove both directions against the live bucket, now, in this
+   terminal. A successful put is not evidence that the fence works, and a
+   single AccessDenied is not evidence either: it is returned both by a
+   working fence and by a key that reaches nothing at all. The verifier pairs
+   every denial with a control probe on the same credential, compares the
+   STORED policy against this document, and reports INCONCLUSIVE rather than
+   PASS when a control does not succeed. Credentials come from its own
+   environment variables, not from the exported operator key above -- run it
+   exactly as RUNBOOK-bucket-fencing.md states.
+"""
+
 def render_commands(
     bucket: str,
     project_id: str,
@@ -354,73 +408,37 @@ def render_commands(
         ""
         if bucket_exists
         else f"""\
-# 2. The bucket. Creating one is a spend decision and is the platform owner's
-#    alone. `--acl private` is stated rather than left to the default:
-#    `public-read` is a BUCKET acl and grants LIST, which would publish the
-#    object names of an estate bucket to anyone who guesses its name.
 s3 create-bucket --bucket {bucket} --acl private \\
   --create-bucket-configuration LocationConstraint={region}
 
-# 3. Versioning, so an overwrite or a mistaken delete is recoverable. Applied
-#    BEFORE the policy, because the policy denies `PutBucketVersioning` to
-#    every key but the operator's and there is no reason to depend on that
-#    exemption holding.
 s3 put-bucket-versioning --bucket {bucket} \\
   --versioning-configuration Status=Enabled\n\n"""
     )
     step = 2 if bucket_exists else 4
     return f"""\
-# Run as the OPERATOR, with the operator key in the environment. Every command
-# below is idempotent.
-#
-# `s3` is a shell function, not a variable: zsh does not word-split an
-# unquoted parameter expansion, so `S3='aws ... s3api'` followed by `$S3 ...`
-# fails there with "no such file or directory: aws --endpoint-url ...".
-export AWS_ACCESS_KEY_ID='<the operator access key id>'
-export AWS_SECRET_ACCESS_KEY='<the operator secret access key>'
+
+printf 'Access key id: '; read -r AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID
+
+printf 'Secret access key (hidden): '; read -rs AWS_SECRET_ACCESS_KEY; echo; export AWS_SECRET_ACCESS_KEY
+
 export AWS_DEFAULT_REGION='{region}'
 s3() {{ aws --endpoint-url {endpoint} s3api "$@"; }}
 
-# 1. CONFIRM THE POLICY NAMES THE ACCOUNT THIS CREDENTIAL IS IN. Every
-#    principal in the document below was built from the --project-id passed to
-#    the generator, and nothing offline can check that value. An ARN carrying
-#    the right access key under the wrong account names a principal that does
-#    not exist, so the operator's exemption exempts nobody and the fence locks
-#    the bucket. This must print the same id the policy's ARNs carry.
 s3 list-buckets --query Owner.ID --output text
 
 {create}\
-# {step}. Keep whatever policy is there now. On a bucket that has never carried
-#    one this prints NoSuchBucketPolicy, which is the expected result and is
-#    itself the finding that this fence exists to close.
 s3 get-bucket-policy --bucket {bucket} --query Policy --output text \\
   > /tmp/{bucket}-policy.previous.json || true
 
-# {step + 1}. The fence.
 cat > /tmp/{bucket}-policy.json <<'POLICY'
 {policy}
 POLICY
 s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 
-# {step + 2}. PROVE THE BUCKET IS STILL ADMINISTRABLE, before anything else and
-#    before leaving the terminal. Re-PUTting the identical document is a no-op
-#    if it succeeds and the only warning you will get if it does not: a policy
-#    that denies the operator `PutBucketPolicy` cannot be edited or removed by
-#    any key in the project, and recovery is a Hetzner support request against
-#    the storage cluster.
 s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 
-# {step + 3}. Prove both directions against the live bucket, now, in this
-#    terminal. A successful put is not evidence that the fence works, and a
-#    single AccessDenied is not evidence either: it is returned both by a
-#    working fence and by a key that reaches nothing at all. The verifier pairs
-#    every denial with a control probe on the same credential, compares the
-#    STORED policy against this document, and reports INCONCLUSIVE rather than
-#    PASS when a control does not succeed. Credentials come from its own
-#    environment variables, not from the exported operator key above -- run it
-#    exactly as RUNBOOK-bucket-fencing.md states.
-
-rm /tmp/{bucket}-policy.json /tmp/{bucket}-policy.previous.json\n"""
+rm /tmp/{bucket}-policy.json /tmp/{bucket}-policy.previous.json
+"""
 
 
 def _self_test() -> None:
@@ -588,6 +606,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     try:
         if args.commands:
+            print(command_notes(bucket_exists=args.commands == "existing-bucket"), file=sys.stderr)
             print(
                 render_commands(
                     args.bucket,

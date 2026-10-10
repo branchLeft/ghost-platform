@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import re
 import unittest
 from unittest import mock
 
@@ -28,6 +29,18 @@ ADMIN = "O" * 20
 STRANGER = "X" * 20
 BUCKET = "branchleft-db-backups"
 BUCKET_ARN = f"arn:aws:s3:::{BUCKET}"
+READ_RE = re.compile(r"(^|[;\s])read\s+-r")
+
+
+def pasted_blocks(text: str) -> list[list[str]]:
+    """Split emitted text into the blocks an operator pastes: blank-line separated."""
+    blocks: list[list[str]] = [[]]
+    for line in text.splitlines():
+        if line.strip():
+            blocks[-1].append(line)
+        elif blocks[-1]:
+            blocks.append([])
+    return [block for block in blocks if block]
 OBJECT_ARN = f"{BUCKET_ARN}/dumps/2026-08-25.sql.age"
 
 
@@ -202,6 +215,64 @@ class TestRefusedInput(unittest.TestCase):
 
 
 class TestRenderedCommands(unittest.TestCase):
+    def test_no_pasted_line_carries_an_unfilled_placeholder_or_secret_literal(self):
+        for bucket_exists in (True, False):
+            with self.subTest(bucket_exists=bucket_exists):
+                commands = fence.render_commands(
+                    BUCKET, PROJECT, [WORKLOAD], ADMIN,
+                    "https://hel1.your-objectstorage.com", "hel1", bucket_exists,
+                )
+                runnable = [
+                    line for line in commands.splitlines() if line and not line.startswith("#")
+                ]
+                self.assertEqual([line for line in runnable if "<the " in line], [])
+                self.assertIn(
+                    "printf 'Access key id: '; read -r AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID",
+                    commands,
+                )
+                self.assertIn(
+                    "printf 'Secret access key (hidden): '; read -rs AWS_SECRET_ACCESS_KEY; echo; "
+                    "export AWS_SECRET_ACCESS_KEY",
+                    commands,
+                )
+                self.assertNotIn("export AWS_SECRET_ACCESS_KEY='", commands)
+
+    def test_no_pasted_block_has_a_comment_or_an_unbalanced_quote(self):
+        # Interactive zsh does not treat '#' as a comment, and an apostrophe in
+        # a comment opens a quote that swallows the lines after it. The notes
+        # travel on stderr, so the block itself carries neither.
+        for bucket_exists in (True, False):
+            with self.subTest(bucket_exists=bucket_exists):
+                commands = fence.render_commands(
+                    BUCKET, PROJECT, [WORKLOAD], ADMIN,
+                    "https://hel1.your-objectstorage.com", "hel1", bucket_exists,
+                )
+                for block in pasted_blocks(commands):
+                    with self.subTest(block=block):
+                        self.assertEqual(
+                            [line for line in block if line.lstrip().startswith("#")], []
+                        )
+                        text = "\n".join(block)
+                        self.assertEqual(text.count("'") % 2, 0)
+                        self.assertEqual(text.count('"') % 2, 0)
+
+    def test_no_pasted_block_holds_two_reads(self):
+        for bucket_exists in (True, False):
+            with self.subTest(bucket_exists=bucket_exists):
+                commands = fence.render_commands(
+                    BUCKET, PROJECT, [WORKLOAD], ADMIN,
+                    "https://hel1.your-objectstorage.com", "hel1", bucket_exists,
+                )
+                blocks = pasted_blocks(commands)
+                for block in blocks:
+                    with self.subTest(block=block):
+                        self.assertLessEqual(
+                            sum(1 for line in block if READ_RE.search(line)), 1
+                        )
+                self.assertEqual(
+                    sum(1 for block in blocks for line in block if READ_RE.search(line)), 2
+                )
+
     def test_the_existing_bucket_sequence_never_creates_a_bucket(self):
         # Creating a bucket is a spend decision and is not this script's to
         # make; the two buckets being fenced already exist.
