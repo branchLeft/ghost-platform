@@ -6,9 +6,11 @@ name: Speckify
 # server package generated from the spec to GitHub Packages, from this job and
 # this workflow file, with the run's own GITHUB_TOKEN and nothing else.
 #
-# Speckify's action is called directly rather than through its reusable
-# workflow, which is check-only by design. It is pinned to the commit the
-# v0.1.0 tag points at.
+# Speckify is checked out at the commit its v0.1.0 tag points at, built from its
+# lockfile, and run directly. Its composite action is not used: called as
+# `uses: branchLeft/speckify@<sha>` it hands an absolute `github.action_path` to
+# setup-node's `node-version-file`, which setup-node joins onto the workspace, and
+# the job fails before it runs Speckify. Its reusable workflow is check-only.
 
 on:
   pull_request:
@@ -45,19 +47,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout Speckify v0.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/speckify
+          ref: 50fe4d8d95bc74331be8c481ee35d202b1d4ec0f
+          path: .speckify-tool
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .speckify-tool/.nvmrc
+
+      - name: Build Speckify from its lockfile
+        working-directory: .speckify-tool
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
 
       - name: Speckify check
-        uses: branchLeft/speckify@50fe4d8d95bc74331be8c481ee35d202b1d4ec0f # v0.1.0
-        with:
-          command: check
+        run: node .speckify-tool/dist/cli.js check --config speckify.yaml
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      # The same action, asked to generate the packages into .speckify/out.
-      - name: Generate the packages
-        uses: branchLeft/speckify@50fe4d8d95bc74331be8c481ee35d202b1d4ec0f # v0.1.0
-        with:
-          command: build
+      - name: Generate the packages into .speckify/out
+        run: node .speckify-tool/dist/cli.js build --config speckify.yaml
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -83,13 +102,39 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout Speckify v0.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/speckify
+          ref: 50fe4d8d95bc74331be8c481ee35d202b1d4ec0f
+          path: .speckify-tool
+          persist-credentials: false
+
+      # `registry-url` and `scope` write the .npmrc line that lets the
+      # NODE_AUTH_TOKEN below authenticate `npm publish` for @branchleft only;
+      # every other package, including Speckify's own dependencies, still
+      # resolves from the default registry.
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .speckify-tool/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+
+      - name: Build Speckify from its lockfile
+        working-directory: .speckify-tool
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
 
       # What the broker runs and what gets published must be the same
       # generated code: refuse to publish if the committed copy has drifted.
-      - name: Generate the packages
-        uses: branchLeft/speckify@50fe4d8d95bc74331be8c481ee35d202b1d4ec0f # v0.1.0
-        with:
-          command: build
+      - name: Generate the packages into .speckify/out
+        run: node .speckify-tool/dist/cli.js build --config speckify.yaml
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -97,9 +142,7 @@ jobs:
         run: python3 scripts/assert-broker-contract-generated.py .speckify/out/broker-api/typescript/src
 
       - name: Speckify publish
-        uses: branchLeft/speckify@50fe4d8d95bc74331be8c481ee35d202b1d4ec0f # v0.1.0
-        with:
-          command: publish
+        run: node .speckify-tool/dist/cli.js publish --config speckify.yaml
         env:
           GITHUB_TOKEN: ${{ github.token }}
           NODE_AUTH_TOKEN: ${{ github.token }}
