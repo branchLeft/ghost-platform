@@ -65,7 +65,8 @@ def grant_database_pattern(db_name: str) -> str:
     as any run of characters in that position, so a grant on ghost_a_b
     would also cover ghost_a1b. A backslash makes the next character
     literal. The backslash itself is escaped first so the other escapes
-    are not doubled.
+    are not doubled. The result is placed inside backticks in the GRANT,
+    so it is an identifier, not a string literal.
     """
     return db_name.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
 
