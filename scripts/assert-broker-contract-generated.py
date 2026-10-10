@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 """Assert services/broker/src/generated is what Speckify generates from the spec.
 
-Usage:
-  assert-broker-contract-generated.py <speckify-src-dir>           check
-  assert-broker-contract-generated.py --write <speckify-src-dir>   regenerate
-  assert-broker-contract-generated.py --self-test
+Usage: assert-broker-contract-generated.py [--write] <speckify-src-dir>
+       assert-broker-contract-generated.py --self-test
 
-<speckify-src-dir> is the `src` directory `speckify build` wrote for the
-broker contract (`.speckify/out/broker-api/typescript/src`). Every file in
-it must exist in services/broker/src/generated, byte for byte, below the
-two header lines this script adds; no other file may exist there.
-
-Exit 0 when they agree, 1 on any difference, 2 on usage error.
+Exit 0 when the committed tree matches, 1 on any difference, 2 on usage error.
 See scripts/assert-broker-contract-generated.md#why-this-check-exists.
 """
 
