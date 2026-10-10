@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import tempfile
 import tokenize
@@ -1042,6 +1043,174 @@ class UnknownFlagTests(unittest.TestCase):
 
     def test_prose_after_docker_run_is_not_an_operand(self):
         self.assertEqual(found({"x.ts": "execSync('docker run failed: see the logs');\n"}), [])
+
+
+class MakefileAndRunKeyTests(unittest.TestCase):
+    """Forms the docs claim, found in review of the third guard: each was silently accepted."""
+
+    def test_an_assignment_between_a_yaml_run_key_and_docker(self):
+        for line in (
+            "- run: FOO=1 docker run --rm alpine:3 true",
+            "- run: FOO=1 BAR=2 docker run --rm alpine:3 true",
+            "- run: DOCKER_BUILDKIT=1 docker pull alpine:3",
+        ):
+            text = "jobs:\n  t:\n    steps:\n      " + line + "\n"
+            self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "unqualified")], line)
+
+    def test_an_assignment_after_a_yaml_command_key(self):
+        text = "services:\n  a:\n    command: FOO=1 docker run --rm alpine:3 true\n"
+        self.assertEqual(found({"c.yml": text}), [("c.yml", 3, "unqualified")])
+
+    def test_a_quoted_assignment_before_docker(self):
+        self.assertEqual(found({"t.sh": 'FOO="a b" docker run --rm alpine:3 true\n'}), [("t.sh", 1, "unqualified")])
+
+    def test_makefile_assignment_operators(self):
+        for line in ("IMAGE ?= node:20", "IMAGE := node:20", "IMAGE ::= node:20", "NODE_IMAGE ?= node:20", "export IMAGE := node:20"):
+            self.assertEqual(found({"Makefile": line + "\n"}), [("Makefile", 1, "unqualified")], line)
+
+    def test_a_makefile_variable_is_followed_into_a_recipe(self):
+        text = "IMAGE := node:20\nt:\n\t@docker run --rm $(IMAGE) true\n"
+        self.assertEqual(found({"Makefile": text}), [("Makefile", 1, "unqualified")])
+
+    def test_a_makefile_variable_with_no_value_is_unresolved(self):
+        self.assertEqual(found({"Makefile": "t:\n\tdocker run --rm $(IMG) true\n"}), [("Makefile", 2, "unresolved")])
+
+    def test_a_makefile_recipe_prefix(self):
+        for recipe in ("@docker run --rm node:20 true", "-docker run --rm node:20 true", "+docker run --rm node:20 true",
+                       "@$(DOCKER) run --rm node:20 true", "@FOO=1 docker run --rm node:20 true"):
+            self.assertEqual(found({"Makefile": "t:\n\t" + recipe + "\n"}), [("Makefile", 2, "unqualified")], recipe)
+
+    def test_a_word_ending_in_docker_is_not_a_command(self):
+        self.assertEqual(found({"t.sh": "my-docker run --rm node:20 true\n"}), [])
+
+    def test_a_login_shell_string(self):
+        for flag in ("-ec", "-lc"):
+            self.assertEqual(
+                found({"t.sh": f"bash {flag} 'docker run --rm node:20 true'\n"}), [("t.sh", 1, "unqualified")], flag
+            )
+
+    def test_a_case_arm(self):
+        text = "case $1 in\n  a) docker run --rm node:20 true ;;\nesac\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 2, "unqualified")])
+
+    def test_a_quoted_multi_word_flag_value_is_unresolved(self):
+        text = "docker run --rm --device-cgroup-rule 'c 42:* rmw' alpine:3 true\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unresolved")])
+
+
+def _lines(prefixes, tail="docker run --rm alpine:3 true"):
+    return [("t.sh", f"{p} {tail}\n") for p in prefixes]
+
+
+CLAIMS = {
+    "dockerfile-from": [("Dockerfile", "FROM node:20\n")],
+    "dockerfile-copy-from": [("Dockerfile", "FROM scratch\nCOPY --from=node:20 /a /b\n")],
+    "dockerfile-run-mount": [("Dockerfile", "FROM scratch\nRUN --mount=type=bind,from=postgres:17,target=/x true\n")],
+    "dockerfile-arg-env": [("Dockerfile", "ARG BASE=node:20\nFROM $BASE\n"), ("Dockerfile", "ENV B=node:20\nFROM $B\n")],
+    "dockerfile-continuation": [("Dockerfile", "FROM \\\n  node:20\n")],
+    "dockerfile-bom": [("Dockerfile", "\ufeffFROM node:20\n")],
+    "dockerfile-syntax": [("Dockerfile", "# syntax=docker/dockerfile:1\nFROM scratch\n")],
+    "yaml-image": [("c.yml", "services:\n  a:\n    image: postgres:17\n")],
+    "yaml-container": [(WORKFLOW, "jobs:\n  t:\n    container: node:20\n")],
+    "yaml-env-keys": [("c.yml", "IMAGE: postgres:17\n"), ("c.yml", "DB_IMAGE: postgres:17\n")],
+    "yaml-tag-keys": [("c.yml", "BLUE_TAG: ghost:6\n")],
+    "yaml-anchors": [("c.yml", "x: &i postgres:17\n")],
+    "yaml-flow": [("c.yml", "s: {a: {image: postgres:17}}\n")],
+    "yaml-docker-uri": [
+        (WORKFLOW, "jobs:\n  t:\n    steps:\n      - uses: docker://alpine:3\n"),
+        ("action.yml", "runs:\n  using: docker\n  image: docker://alpine:3\n"),
+    ],
+    "assign-image": [("t.sh", "IMAGE=node:20\n"), (".env", "IMAGE=node:20\n"), ("ci.toml", 'image = "node:20"\n')],
+    "assign-suffix": [("t.sh", "DB_IMAGE=node:20\n"), (".env", "DB_IMAGE=node:20\n")],
+    "assign-tag": [("t.sh", "BLUE_TAG=ghost:6\n")],
+    "make-assign": [("Makefile", f"IMAGE {op} node:20\n") for op in ("=", "?=", ":=", "::=", "+=")],
+    "bare-name": [("c.yml", "image: foo:1\n"), ("c.yml", "image: nginx\n")],
+    "docker-verbs": [("t.sh", f"docker {v} alpine:3\n") for v in ("run", "create", "pull")],
+    "docker-runtimes": [("t.sh", f"{r} run alpine:3\n") for r in ("docker", "podman", "nerdctl")],
+    "command-line-start": [("t.sh", "docker run alpine:3\n")],
+    "command-separators": _lines((";", "true &&", "false ||", "true |", "(", "`", "$("), "docker run alpine:3 true"),
+    "command-words": _lines(
+        ("then", "do", "else", "elif", "if", "until", "while", "sudo", "exec", "time", "eval", "command", "nohup",
+         "xargs", "env", "timeout 60", "retry 3", "nice", "ionice", "watch")
+    ),
+    "command-wrapper-options": _lines(("timeout 60", "retry 3", "nice -n 5", "FOO=1", 'FOO="a b"', "env FOO=1 BAR=2")),
+    "command-yaml-keys": [
+        ("w.yml", "- run: docker run alpine:3\n"),
+        ("w.yml", "- run: FOO=1 docker run alpine:3\n"),
+        ("w.yml", "- run: DOCKER_BUILDKIT=1 docker pull alpine:3\n"),
+        ("w.yml", "    command: docker run alpine:3\n"),
+        ("w.yml", "    command: FOO=1 docker run alpine:3\n"),
+        ("w.yml", "      - run: |\n          docker run alpine:3\n"),
+    ],
+    "command-quoted": [
+        ("t.sh", "sh -c 'docker run alpine:3'\n"),
+        ("t.sh", 'bash -c "docker run alpine:3"\n'),
+        ("t.sh", "bash -lc 'docker run alpine:3'\n"),
+        ("t.sh", "sh -ec 'docker run alpine:3'\n"),
+        ("t.sh", 'eval "docker run alpine:3"\n'),
+        ("t.sh", "ssh host 'docker run alpine:3'\n"),
+    ],
+    "command-forms": [
+        ("t.sh", "/usr/bin/docker run alpine:3\n"),
+        ("t.sh", "$DOCKER run alpine:3\n"),
+        ("t.sh", "${DOCKER} run alpine:3\n"),
+        ("Makefile", "t:\n\t$(DOCKER) run alpine:3\n"),
+    ],
+    "command-case-arm": [("t.sh", "case $1 in\n  a) docker run alpine:3 ;;\nesac\n")],
+    "makefile-recipe": [("Makefile", f"t:\n\t{r}docker run alpine:3\n") for r in ("", "@", "-", "+")]
+    + [("Makefile", "t:\n\t@$(DOCKER) run alpine:3\n")],
+    "build-context": [("t.sh", "docker buildx build --build-context b=docker-image://alpine:3 .\n")],
+    "cache-from": [
+        ("t.sh", "docker buildx build --cache-from type=registry,ref=quay.io/x/c:1 .\n"),
+        ("t.sh", "docker buildx build --cache-from quay.io/x/c:1 .\n"),
+    ],
+    "build-arg": [("t.sh", "docker build --build-arg BASE=node:20 .\n")],
+    "code-strings": [("x.ts", "run('mysql:8.0'); // docker\n"), ("x.ts", "\n" * 20 + "const X = 'mysql:8.0';\n")],
+    "code-command-string": [("x.ts", "execSync('docker run --rm postgres:17 psql');\n")],
+}
+
+
+class ClaimsTableTests(unittest.TestCase):
+    """Every coverage claim in the guard's doc has a row here, and the guard meets each row.
+
+    The doc's "What it reads" bullets end with `[claim: id, id]`. A bullet with no
+    id, an id with no row, or a row with no id is a failure, so a claim cannot be
+    written down without a construction the guard is shown to flag.
+    """
+
+    DOC = HERE / "assert-image-refs-on-mirror.md"
+
+    def bullets(self):
+        text = self.DOC.read_text()
+        section = text.split("## What it reads", 1)[1].split("\n## ", 1)[0]
+        bullets = [b for b in re.split(r"\n(?=- )", section) if b.startswith("- ")]
+        return [re.sub(r"\s+", " ", b) for b in bullets]
+
+    def doc_ids(self):
+        ids = []
+        for bullet in self.bullets():
+            for tag in re.findall(r"\[claim: ([a-z0-9, -]+)\]", bullet):
+                ids += [i.strip() for i in tag.split(",")]
+        return ids
+
+    def test_every_bullet_carries_a_claim_tag(self):
+        untagged = [b.split("\n")[0][:70] for b in self.bullets() if not re.search(r"\[claim: [a-z0-9, -]+\]", b)]
+        self.assertEqual(untagged, [])
+        self.assertTrue(self.bullets())
+
+    def test_the_doc_ids_and_the_table_rows_are_the_same_set(self):
+        ids = self.doc_ids()
+        self.assertEqual(len(ids), len(set(ids)), "an id is claimed twice")
+        self.assertEqual(sorted(set(ids) - set(CLAIMS)), [], "claimed in the doc, no row here")
+        self.assertEqual(sorted(set(CLAIMS) - set(ids)), [], "a row here that the doc does not claim")
+
+    def test_the_guard_flags_a_minimal_construction_of_each_claim(self):
+        for claim, constructions in CLAIMS.items():
+            self.assertTrue(constructions, claim)
+            for path, text in constructions:
+                kinds = [k for _, _, k in found({path: text})]
+                self.assertTrue(kinds, f"{claim}: not reported: {path!r} {text!r}")
+                self.assertNotIn("unresolved", kinds, f"{claim}: not read: {path!r} {text!r}")
 
 
 if __name__ == "__main__":

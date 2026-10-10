@@ -60,6 +60,7 @@ STAGE_NAME_RE = re.compile(r"\A[A-Za-z0-9_.-]+\Z")
 EXPR_RE = re.compile(r"\$\{\{.*?\}\}")
 VAR_RE = re.compile(
     r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::?(?P<op>[-=+?])(?P<arg>[^{}]*))?\}|\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)"
+    r"|\$\((?P<paren>[A-Za-z_][A-Za-z0-9_]*)\)"  # a Makefile variable
 )
 KEEP_VARS = {"IMAGE_REGISTRY"}
 BLOCK_INDICATORS = {"|", ">", "|-", ">-", "|+", ">+"}
@@ -72,7 +73,7 @@ VAR_REF = re.compile(
 # shells, Dockerfiles and compose files use for one (IMAGE, DB_IMAGE, BLUE_TAG).
 KEY_RE = re.compile(
     r"""(?<![\w.$/-])["']?(?P<key>image|container|IMAGE|[A-Z][A-Z0-9_]*_IMAGE|[A-Z][A-Z0-9_]*_TAG)["']?"""
-    r"""\s*(?P<sep>[:=])(?![=:])(?=(?P<rest>.*)$)"""
+    r"""\s*(?P<sep>::=|:=|\?=|\+=|[:=])(?![=:])(?=(?P<rest>.*)$)"""
 )
 KEY_NAME_RE = re.compile(r"\A(?:image|container|IMAGE|[A-Z][A-Z0-9_]*_IMAGE|[A-Z][A-Z0-9_]*_TAG)\Z")
 DEFAULT_REF_RE = re.compile(r"\$\{(?P<var>IMAGE|[A-Z][A-Z0-9_]*_IMAGE|[A-Z][A-Z0-9_]*_TAG):?-(?P<ref>[^{}]*)\}")
@@ -82,7 +83,8 @@ SEPARATOR_RE = re.compile(r"\A[();<>|&]+\Z")
 VALUE_RE = re.compile(r"(?:\$\{\{.*?\}\}|\$\{[^}]*\}|[^\s,}\]#;])+")
 PROPERTY_RE = re.compile(r"(?:&[\w-]+|!\S*)\s+")
 SHELL_ASSIGN_RE = re.compile(
-    r"\A\s*(?:export\s+|readonly\s+|local\s+|declare\s+(?:-\w+\s+)?)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<rest>.*)\Z"
+    r"\A\s*(?:export\s+|readonly\s+|local\s+|declare\s+(?:-\w+\s+)?)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*(?:::=|:=|\?=|\+=)|=)(?P<rest>.*)\Z"
 )
 YAML_ASSIGN_RE = re.compile(r"\A\s*(?:-\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_-]*)\s*:\s+(?P<rest>.*)\Z")
 ANCHOR_RE = re.compile(r"&(?P<anchor>[\w-]+)\s+(?P<value>[^\s,}\]#]+)")
@@ -96,8 +98,8 @@ OVERRIDE_RE = re.compile(
     r"""(?<![\w$])IMAGE_REGISTRY\s*(?:=|:(?![-=+?]))\s*["']?(?P<value>\$\{\{.*?\}\}|[^\s"'#]+)"""
 )
 RUNTIME_RE = re.compile(
-    r"(?<![\w.$-])(?:/[\w./-]*/)?(?:docker|podman|nerdctl)(?=\s)"
-    r"|(?<![\w./-])(?:\$\{?|\$\()(?:DOCKER|PODMAN|DOCKER_BIN|DOCKER_CMD|CONTAINER_RUNTIME|CONTAINER_CLI)[})]?(?=\s)"
+    r"(?<![\w.$])(?:/[\w./-]*/)?(?:docker|podman|nerdctl)(?=\s)"
+    r"|(?<![\w./])(?:\$\{?|\$\()(?:DOCKER|PODMAN|DOCKER_BIN|DOCKER_CMD|CONTAINER_RUNTIME|CONTAINER_CLI)[})]?(?=\s)"
 )
 DOCKER_IMAGE_URI_RE = re.compile(r"""docker-image://(?P<ref>[^\s"',]+)""")
 CACHE_FROM_RE = re.compile(
@@ -126,9 +128,12 @@ VALUE_FLAGS = {
 COMMAND_WORDS = {
     "then", "do", "else", "elif", "if", "until", "while", "sudo", "exec", "time", "eval", "command", "nohup", "xargs",
     "env", "timeout", "retry", "nice", "ionice", "watch", "!", "-",
+    "run:", "command:", "cmd:", "entrypoint:", "script:",  # a YAML key, then FOO=1 and the command
 }
 YAML_COMMAND_KEY = re.compile(r"\b(?:run|command|cmd|entrypoint|script):\s*(?:[|>][-+]?)?\Z")
-SHELL_STRING_PREFIX = re.compile(r"""(?:\s-c|\beval|\bssh\s+\S+|\bsh|\bbash)\s+["']\Z""")
+SHELL_STRING_PREFIX = re.compile(r"""(?:\s-[A-Za-z]*c|\beval|\bssh\s+\S+|\bsh|\bbash)\s+["']\Z""")
+CASE_ARM_RE = re.compile(r"""(?:\A|[;\s])[\w.*|"'-]+\)\Z""")
+RECIPE_PREFIX_RE = re.compile(r"\A\s*[@+-]+\s*")
 PROSE_CALL = re.compile(r"(?:console\.|\bprint|\blog|\becho|\bwarn|\berror|\bmessage)", re.I)
 
 
@@ -218,13 +223,13 @@ def expand(
     None when a value is not in the repo. `seen` holds the variables being
     expanded, so a self-reference such as ${X:-default} falls to its default;
     `inherited` says whether the definition that default came from is reported."""
-    if EXPR_RE.search(ref) or "$(" in ref or "`" in ref or depth > 6:
+    if EXPR_RE.search(ref) or re.search(r"\$\((?![A-Za-z_]\w*\))", ref) or "`" in ref or depth > 6:
         return None
-    match = next((m for m in VAR_RE.finditer(ref) if (m["name"] or m["bare"]) not in KEEP_VARS), None)
+    match = next((m for m in VAR_RE.finditer(ref) if m["paren"] or (m["name"] or m["bare"]) not in KEEP_VARS), None)
     if match is None:
-        leftover = VAR_RE.sub(lambda m: "" if (m["name"] or m["bare"]) in KEEP_VARS else "$", ref)
+        leftover = VAR_RE.sub(lambda m: "" if not m["paren"] and (m["name"] or m["bare"]) in KEEP_VARS else "$", ref)
         return ([ref], True, 0) if "$" not in leftover else None
-    name = match["name"] or match["bare"]
+    name = match["name"] or match["bare"] or match["paren"]
     op, arg = match["op"], match["arg"]
     options: list[tuple[str, bool]] = []
     if name not in seen:
@@ -468,12 +473,13 @@ def parse_file(rel: str, lines: list[str], known: frozenset[str] = frozenset()) 
 
 def command_position(before: str, code: bool) -> bool:
     """True when a docker word after `before` starts a command rather than sitting in prose."""
-    b = before.rstrip()
+    b = RECIPE_PREFIX_RE.sub("", before).rstrip()  # a Makefile recipe's @, - or + prefix
     if not b:
         return True
-    if b[-1] in "'\"":
+    if b[-1] in "'\"" and b.count(b[-1]) % 2 == 1:  # an opening quote: docker is inside a string
         return not PROSE_CALL.search(b) if code else bool(SHELL_STRING_PREFIX.search(b))
-    if b[-1] in ";&|({`!" or YAML_COMMAND_KEY.search(b):
+    b = re.sub(r"\"[^\"]*\"|'[^']*'", "X", b)  # a closed quoted value, as in FOO="a b" docker run
+    if b[-1] in ";&|({`!" or YAML_COMMAND_KEY.search(b) or CASE_ARM_RE.search(b):
         return True
     words = b.split()
     while words and words[-1] != "-" and ARG_WORD_RE.match(words[-1]):
@@ -483,6 +489,7 @@ def command_position(before: str, code: bool) -> bool:
 
 def tokens_of(rest: str) -> list[str]:
     """Shell words of `rest`; an unclosed quote (a multi-line `bash -c '`) ends the line there."""
+    rest = re.sub(r"\$\(([A-Za-z_]\w*)\)", r"${\1}", rest)  # a Makefile variable is one word
     for _ in range(4):
         try:
             lex = shlex.shlex(rest, posix=True, punctuation_chars=True)
@@ -509,7 +516,9 @@ def image_operand(words: list[str], i: int) -> tuple[str, bool] | None:
         if raw in VALUE_FLAGS:
             i += 1
             continue
-        word = raw.strip("\"'`,;)]}")
+        word = raw.strip("\"'`,;)]")
+        while word.endswith("}") and word.count("}") > word.count("{"):
+            word = word[:-1]  # a closing brace that is not the end of ${VAR}
         if not word or word.startswith("-"):
             continue
         if "$" in word:
@@ -518,8 +527,8 @@ def image_operand(words: list[str], i: int) -> tuple[str, bool] | None:
             return word, True
         if looks_like_image(word) and not word.startswith(("/", ".", "~")):
             return word, True
-        if re.search("[=/]", word):
-            return word, False  # key=value or a path: what a flag this list does not know would take
+        if re.search(r"[=/\s]", word):
+            return word, False  # key=value, a path or a quoted phrase: what a flag this list does not know would take
         if re.search("[A-Za-z]", word):
             return None  # a prose word, not an operand
         # a bare number: the value of a flag this list does not know; keep looking
@@ -899,6 +908,11 @@ def self_test() -> int:
         "unknown flag with a key=value": (
             {"t.sh": "docker run --ulimit nofile=1024:2048 alpine:3.19\n"},
             [UNRESOLVED],
+        ),
+        "makefile assignment": ({"Makefile": "IMAGE ?= node:20\n"}, ["unqualified"]),
+        "run key with an assignment": (
+            {".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: FOO=1 docker run --rm alpine:3.19\n"},
+            ["unqualified"],
         ),
         "build context image": ({"t.sh": "docker buildx build --build-context b=docker-image://alpine:3 .\n"}, ["unqualified"]),
         "build -t to a foreign registry": (

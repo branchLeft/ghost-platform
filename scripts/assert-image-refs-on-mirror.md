@@ -50,8 +50,11 @@ variable form, against the list.
   no registry host. `quay.io/x:1` built in the tree is still `other-registry`.
   An unbuilt `:ci` or `:proof` tag is not exempt.
 - `allow` in `images.json` skips whole files, each with a written reason. It is
-  for test fixtures that fake Docker or hold a rejected input and never pull.
-  A file that pulls an image in CI is not allowed; its reference is rewritten.
+  for files that name an image without pulling it in CI: test fixtures that fake
+  Docker or hold a rejected input, golden output of the renderer, the renderer's
+  own template (`render-core/src/compose.ts`), and the widgets pin record and the
+  script that writes it. A file that pulls an image in CI is not allowed; its
+  reference is rewritten.
   One allowed file, `control/provision/test_nextcloud_backup.py`, also holds an
   opt-in `docker run` of an image that is not on the list; its reason says so,
   and CI does not set the variable that enables it.
@@ -62,38 +65,57 @@ variable form, against the list.
 
 ## What it reads
 
-Tracked files only (`git ls-files`).
+Tracked files only (`git ls-files`). Each bullet ends with the claim ids it makes.
+`ClaimsTableTests` in `scripts/test_image_mirror.py` holds one minimal
+construction per id and requires the guard to report it, and it fails on a bullet
+with no id and on an id with no row. A claim cannot be written here without a
+construction the guard is shown to meet.
 
 - `FROM`, `COPY --from` and `RUN --mount ... from=` in Dockerfiles and
   `Containerfile`s. `ARG` and `ENV` values are followed into those lines, and
   backslash continuation lines are joined. A leading byte order mark is ignored.
+  [claim: dockerfile-from, dockerfile-copy-from, dockerfile-run-mount,
+  dockerfile-arg-env, dockerfile-continuation, dockerfile-bom]
 - The `# syntax=<image>` parser directive of a Dockerfile (see Syntax directive).
+  [claim: dockerfile-syntax]
 - YAML: `image:` and `container:` (including workflow `services:`), `*_IMAGE:`,
   `*_TAG:`, anchors and aliases, flow style, `uses: docker://` and
   `image: docker://`.
-- Shell, Makefiles, `.env`, TOML and other text files: `IMAGE=`, `*_IMAGE=`,
-  `*_TAG=` assignments, and the first image operand of `docker`, `podman` or
-  `nerdctl` `run`, `create` and `pull`. `docker compose pull` names no image and
-  is not a finding. The docker word is read where it is a command: at the start
-  of a line, after `;`, `&&`, `||`, `|`, `(`, a backtick or `$(`, after `then`,
-  `do`, `else`, `elif`, `if`, `until`, `while`, `sudo`, `exec`, `time`, `eval`,
-  `command`, `nohup`, `xargs`, `env`, `timeout`, `retry`, `nice`, `ionice` or
-  `watch` (with their options, a duration or count, and `FOO=1` assignments),
-  after a YAML `run:` or `command:` key, and inside a quoted `sh -c`, `bash -c`,
-  `eval` or `ssh host` string. It may be a path (`/usr/bin/docker`) or a
-  variable (`$DOCKER`, `${DOCKER}`, `$(DOCKER)`).
+  [claim: yaml-image, yaml-container, yaml-env-keys, yaml-tag-keys, yaml-anchors,
+  yaml-flow, yaml-docker-uri]
+- Assignments in shell, `.env`, TOML and other text files: `IMAGE=`, `*_IMAGE=` and
+  `*_TAG=`, and in a Makefile the same names with `=`, `?=`, `:=`, `::=` or `+=`.
+  A Makefile variable (`$(IMAGE)`) is followed like a shell one.
+  [claim: assign-image, assign-suffix, assign-tag, make-assign]
+- A bare name on an image key (`image: foo`) is reported only when it looks like an
+  image: it has a `:`, `@` or `/`, or it is a well-known image name, or it is the
+  last component of a listed source.
+  [claim: bare-name]
+- The first image operand of `docker`, `podman` or `nerdctl` `run`, `create` and
+  `pull`. `docker compose pull` names no image and is not a finding.
+  [claim: docker-verbs, docker-runtimes]
+- The docker word is read where it is a command: at the start of a line, and after
+  `;`, `&&`, `||`, `|`, `(`, a backtick or `$(`; after `then`, `do`, `else`,
+  `elif`, `if`, `until`, `while`, `sudo`, `exec`, `time`, `eval`, `command`,
+  `nohup`, `xargs`, `env`, `timeout`, `retry`, `nice`, `ionice` or `watch`; after
+  those with their options, a duration or count, and `FOO=1` or `FOO="a b"`
+  assignments; after a YAML `run:` or `command:` key, with or without assignments,
+  and in a `run: |` block; inside a quoted `sh -c`, `bash -c`, `bash -lc`,
+  `sh -ec`, `eval` or `ssh host` string; as a case arm (`a) docker run ...`); and
+  after a Makefile recipe's `@`, `-` or `+`. It may be a path (`/usr/bin/docker`)
+  or a variable (`$DOCKER`, `${DOCKER}`, `$(DOCKER)`).
+  [claim: command-line-start, command-separators, command-words,
+  command-wrapper-options, command-yaml-keys, command-quoted, command-forms,
+  command-case-arm, makefile-recipe]
 - Build inputs that are images: `--build-context name=docker-image://<ref>` and
   `build-contexts:` values, `--cache-from type=registry,ref=<ref>` and
   `--cache-from <ref>`, and `--build-arg NAME=<ref>`.
+  [claim: build-context, cache-from, build-arg]
 - Code (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`,
   `.json`): a quoted image-shaped string with a version-shaped tag or a digest,
   when a docker or image word is within twelve lines before it, or when its name
-  is a well-known image or a listed one; a command string passed to docker; and
-  an image given to `--build-arg`.
-
-A bare name on an image key (`image: foo`) is reported only when it looks like an
-image: it has a `:`, `@` or `/`, or it is a well-known image name, or it is the
-last component of a listed source.
+  is a well-known image or a listed one; and a command string passed to docker.
+  [claim: code-strings, code-command-string]
 
 ## Syntax directive
 
@@ -105,8 +127,11 @@ be mirrored. A directive cannot hold a variable, so it cannot be written in the
 `${IMAGE_REGISTRY:-...}` form. Converting it is a choice between pinning it by
 digest on Docker Hub (still reported as `docker.io`), pointing it at the mirror
 path (which breaks a build with no credential), and removing the directive, after
-which the builder uses the frontend built into it and pulls nothing. That choice
-is not made here.
+which the builder uses the frontend built into it. Removal is not free: six of the
+seven Dockerfiles use `RUN --mount=type=secret`, and three carry a comment saying
+the directive is there to guarantee that frontend feature rather than leave it to
+whichever frontend the local daemon bundles. That choice is PR B's, and is not
+made here.
 
 ## UNRESOLVED
 
@@ -116,9 +141,9 @@ script arguments (`$1`, `${1:?usage ...}`), workflow expressions such as
 `${{ steps.<id>.outputs.<name> }}` and `${{ matrix.<name> }}`, and a variable with
 no definition anywhere in the tree. A variable with a default (`${X:-y}`) is
 followed to its default. A first operand of `docker run` that is not shaped like
-an image and holds `=` or `/` (the value of a flag the guard does not know, such
-as `--ulimit nofile=1024:2048`) is reported the same way, because the image may
-be behind it. Enforce mode fails on any UNRESOLVED reference.
+an image and holds `=`, `/` or a space (the value of a flag the guard does not
+know, such as `--ulimit nofile=1024:2048`) is reported the same way, because the
+image may be behind it. Enforce mode fails on any UNRESOLVED reference.
 
 ## Modes
 
@@ -135,11 +160,12 @@ be behind it. Enforce mode fails on any UNRESOLVED reference.
 - The image operand of `docker run` is the first word after the verb that is not
   a flag or a value of a listed flag. A flag that is not on the list and takes a
   bare number is read past. One that takes a `key=value` or a path makes that
-  word the operand, and it is reported UNRESOLVED. One that takes a plain word
+  word the operand, and it is reported UNRESOLVED, as is a quoted value with
+  spaces (`--device-cgroup-rule 'c 42:* rmw'`). One that takes a plain word
   may make that word the reported operand, which is a false finding.
 - The docker word is not read after a wrapper that is not listed under What it
-  reads, after `parallel`, when the command is held in a variable, or after a
-  prose word.
+  reads (`flock`, `stdbuf`, `parallel`), when the command is held in a variable,
+  or after a prose word.
 - Quoted strings in code are read only near a docker or image word (twelve lines
   before), or when the name is well known or listed, and only when they look like
   an image. Image names built by concatenation are not followed.
@@ -149,12 +175,13 @@ be behind it. Enforce mode fails on any UNRESOLVED reference.
   (`images.pull('mysql', tag='8.0')`) is not read.
 - Not read, and so not reported: compose `build.args` and a
   `docker/build-push-action` `build-args:` block that override a pinned `ARG`
-  default; a `cache-from:` key that holds a bare reference; Helm-style
-  `repository:` and `tag:` keys written as two values; Podman quadlet `Image=`;
-  a Dockerfile written out by a heredoc, `printf` or `echo`; a `run: >` folded
-  scalar that splits `docker run` from its image across lines; and a Dockerfile
-  whose name is not `Dockerfile*`, `Containerfile*`, `*.Dockerfile` or
-  `*.Containerfile`.
+  default; a `cache-from:` or `cache_from:` key that holds a bare reference; a
+  Bake file's `args` and `dockerfile-inline`; a compose `dockerfile_inline`;
+  Kustomize `images:` with `newName:`; Helm-style `repository:` and `tag:` keys
+  written as two values; Podman quadlet `Image=`; a Dockerfile written out by a
+  heredoc, `printf` or `echo`; a `run: >` folded scalar that splits `docker run`
+  from its image across lines; and a Dockerfile whose name is not `Dockerfile*`,
+  `Containerfile*`, `*.Dockerfile` or `*.Containerfile`.
 - An image that a build pulls through a base image held in another repository is
   not visible.
 - A clean run does not show that a pull does not happen. It shows that each
