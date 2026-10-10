@@ -4,7 +4,7 @@
 // Each file is lexed once; every rule reads its tokens, never the raw text.
 
 import { compileFunction } from 'node:vm';
-import { checkGrammar } from './grammar.mjs';
+import { checkGrammar, FLAG_KEY } from './grammar.mjs';
 import { lex, Unlexable } from './lex.mjs';
 
 export { KNOWN_CALLS } from './allowlist.mjs';
@@ -57,7 +57,6 @@ export const SQL_RULES = Object.freeze([
   { name: 'raw-truncate', pattern: /\btruncate\b/i },
 ]);
 
-const FLAG_KEY = 'irreversible';
 const RELEASE_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)$/;
 const FOLDER_PATTERN = /^(\d+)\.(\d+)$/;
 
@@ -252,13 +251,20 @@ function collect(out, cls, path, names) {
 }
 
 /**
- * @param {{ from: string, to: string, migrations: Array<{ folder: string, path: string, source: string }> }} input
+ * @param {{ from: string, to: string, migrations: Array<{ folder: string, path: string, source: string }>,
+ *   folders?: string[] }} input `folders` lists every version folder of the tree. When given, a range
+ *   with no folder in it is refused, since an empty answer would read as fast-path.
  */
-export function classifyRange({ from, to, migrations }) {
+export function classifyRange({ from, to, migrations, folders }) {
   const f = parseRelease(from);
   const t = parseRelease(to);
   if (compareLines([t.major, t.minor], [f.major, f.minor]) < 0) {
     throw new Error(`target ${to} precedes ${from}`);
+  }
+  if (folders !== undefined) {
+    if (!folders.some((name) => inRange(parseFolder(name), f, t))) {
+      throw new Error(`no migration folder lies in the range ${from} to ${to}`);
+    }
   }
   const majorBump = t.major > f.major;
   const out = {

@@ -48,7 +48,11 @@ data, not a hit, except as the argument of `require`.
 
 1. **Major bump.** The target major is above the pinned major. Always consent.
 2. **Irreversible** (always consent). Ghost's own flag, or a helper that sets it:
-   - `flag`: the key `irreversible`, bare or quoted, set to `true`.
+   - `flag`: the key `irreversible`, bare or quoted, set to `true`. Ghost's runner
+     refuses a rollback on any truthy value, so the grammar accepts this key only
+     with the literal `false` as its whole value. Any other value (`1`, `!0`,
+     `(true)`, a constant, a shorthand `{ irreversible }`) is refused as
+     `unclassified:irreversible`.
    - `helper`: `createIrreversibleMigration`.
    - `wrapper`: `dropTables`. It sets the flag, so dropping a table is irreversible.
 3. **Destructive** (always consent). Data or structure removed with no way back from
@@ -92,7 +96,8 @@ A file is fast-path only if it is made entirely of these forms, checked by
     `createNonTransactionalMigration`, named `up` or `down`, or held under such a key;
   - a method whose name is in `METHODS` (`where`, `whereNull`, `map`, `toString`) on
     a value that is not a module.
-- Refused, whatever the name: any assignment other than the declaration and
+- Refused, whatever the name: the key `irreversible` with any value but the
+  literal `false`; any assignment other than the declaration and
   `module.exports` forms (`=`, `+=`, `&&=`, `||=`, `??=`, destructuring assignment,
   `++`), every control-flow word, `?.`, computed access, tagged templates, `new`,
   `class`, getters and methods in object literals, generators, regex literals, a
@@ -152,6 +157,14 @@ or later do not include it.
 Exit 0 is fast-path, 2 is consent, 1 is a usage or read error. The JSON output lists
 every matched file with its rule, per class.
 
+The reader takes the tree as Ghost's runner loads it: every entry whose name does not
+start with a dot is a migration, whatever its extension, and a directory is loaded
+through its index file. So an entry in a version folder that is not a regular `.js`
+file (`.cjs`, `.ts`, `.JS`, no extension, a directory, a symbolic link) is an error,
+exit 1, as is a stray entry beside the version folders. A versions directory with no
+version folder, and a range with no version folder in it, are errors too. An empty
+answer would otherwise read as fast-path.
+
 ## Tests
 
     npm test
@@ -190,6 +203,11 @@ at v6.69.0.
   first two. The unclassified allowlist needs a ruling on each addition.
 - **Rollback residuals.** See the section above. The owner rules on whether
   these entries stay fast-path.
+- **A range with no version folder in it.** Ghost has no folder for a minor line with
+  no migrations (the v6.69.0 tree has no `6.62`), so `v6.62.0` to `v6.62.1` reads no
+  folder and exits 1, which sends it to the consent path. Telling that apart from a
+  partial or wrong tree needs the list of minor lines Ghost shipped, a second input
+  that is not built here.
 - **Local helpers called by name.** A file that declares `const add = (n) => ...` and
   calls `add('x')` routes consent, although the helper's body is checked. Allowing it
   needs a rule that a local bound once to a function is callable. It is not built:

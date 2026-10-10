@@ -49,6 +49,10 @@ const BINARY = new Set([
 const UNARY = new Set(['-', '+', '!']);
 const MAX_DEPTH = 64;
 
+// Ghost's runner refuses a rollback when this key is truthy, so the grammar
+// accepts it only with the literal `false` as its whole value.
+export const FLAG_KEY = 'irreversible';
+
 class Reject extends Error {
   constructor(reason) {
     super(reason);
@@ -419,6 +423,13 @@ class Parser {
       } else {
         const key = this.next();
         if (key.t !== 'id' && key.t !== 'str' && key.t !== 'num') this.fail(key);
+        if (key.t !== 'num' && key.v === FLAG_KEY) {
+          const literalFalse =
+            this.isPunct(':') &&
+            this.isId('false', 1) &&
+            (this.isPunct(',', 2) || this.isPunct('}', 2));
+          if (!literalFalse) throw new Reject(FLAG_KEY);
+        }
         if (this.isPunct(':')) {
           this.next();
           const entry = key.t !== 'num' && ENTRY_SET.has(key.v);

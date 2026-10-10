@@ -748,3 +748,38 @@ test('classifySource reports one entry per class and never throws on odd input',
   }
   assert.ok(classifySource('('.repeat(50_000)).unclassified.length > 0);
 });
+
+// Ghost's runner refuses a rollback when `config.irreversible` is truthy, not
+// only when it is the literal `true`. The grammar accepts the key only with the
+// literal `false` as its whole value.
+test('irreversible flag: every spelling but the literal false is refused', () => {
+  const entry = 'up: async function up(config) {}, down: async function down() {}';
+  const configOf = (value) => `module.exports = { config: { irreversible: ${value} }, ${entry} };`;
+  const spread =
+    "const { addSetting } = require('../../utils');\n" +
+    "module.exports = { ...addSetting({ key: 'announcement', value: null, type: 'string', group: 'core' }), " +
+    'config: { transaction: true, irreversible: !0 } };';
+  const forms = {
+    'number one': configOf('1'),
+    'negated zero': configOf('!0'),
+    'parenthesised true': configOf('(true)'),
+    'shorthand over a constant': `const irreversible = 1;\nmodule.exports = { config: { irreversible }, ${entry} };`,
+    'inside a spread config': spread,
+    'quoted key, negated false': `module.exports = { config: { 'irreversible': !false }, ${entry} };`,
+    'logical expression': configOf('1 && 1'),
+    'a constant holding true': `const yes = true;\nmodule.exports = { config: { irreversible: yes }, ${entry} };`,
+    'false followed by an operator': configOf('false || true'),
+    'spread of a literal that carries the key': `const base = { irreversible: !0 };\nmodule.exports = { config: { ...base }, ${entry} };`,
+  };
+  for (const [label, src] of Object.entries(forms)) {
+    const r = assertConsent(src, label);
+    assert.ok(
+      reasons(r).includes('unclassified:irreversible'),
+      `${label}: ${JSON.stringify(reasons(r))}`
+    );
+  }
+  const literalTrue = assertConsent(configOf('true'), 'literal true');
+  assert.deepEqual(hitRules(literalTrue), ['flag']);
+  assertFast(configOf('false'), 'control: the literal false');
+  assertFast(`module.exports = { config: { 'irreversible': false }, ${entry} };`, 'quoted false');
+});

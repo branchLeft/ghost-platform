@@ -3,27 +3,49 @@
 // <dir> is Ghost's migrations/versions directory from the TARGET tag's source.
 // Exit 0 = fast-path, 2 = consent path, 1 = usage or read error.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyRange } from './classify.mjs';
 
-export function readMigrations(versionsDir) {
+const FOLDER_NAME = /^\d+\.\d+$/;
+
+// The runner loads every entry not starting with a dot, whatever its extension.
+// Accept only regular .js files; throw on any other entry, since one the
+// classifier did not read could still be loaded and run.
+export function readTree(versionsDir) {
+  const folders = [];
   const migrations = [];
-  for (const folder of readdirSync(versionsDir)) {
-    const dir = join(versionsDir, folder);
-    if (!statSync(dir).isDirectory()) continue;
-    for (const file of readdirSync(dir)) {
-      if (!file.endsWith('.js')) continue;
-      const full = join(dir, file);
+  for (const entry of readdirSync(versionsDir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue;
+    if (!entry.isDirectory() || !FOLDER_NAME.test(entry.name)) {
+      throw new Error(`unexpected entry in the versions directory: ${entry.name}`);
+    }
+    folders.push(entry.name);
+    const dir = join(versionsDir, entry.name);
+    for (const file of readdirSync(dir, { withFileTypes: true })) {
+      if (file.name.startsWith('.')) continue;
+      if (!file.isFile() || !file.name.endsWith('.js')) {
+        throw new Error(
+          `entry the runner would load is not a regular .js file: ${relative(versionsDir, join(dir, file.name))}`
+        );
+      }
+      const full = join(dir, file.name);
       migrations.push({
-        folder,
+        folder: entry.name,
         path: relative(versionsDir, full),
         source: readFileSync(full, 'utf8'),
       });
     }
   }
-  return migrations;
+  if (folders.length === 0) {
+    throw new Error(`no version folder in ${versionsDir}: not a migrations versions directory`);
+  }
+  return { folders, migrations };
+}
+
+export function readMigrations(versionsDir) {
+  return readTree(versionsDir).migrations;
 }
 
 function parseArgs(argv) {
@@ -44,11 +66,8 @@ function parseArgs(argv) {
 export function main(argv) {
   try {
     const args = parseArgs(argv);
-    const result = classifyRange({
-      from: args.from,
-      to: args.to,
-      migrations: readMigrations(args.versions),
-    });
+    const { folders, migrations } = readTree(args.versions);
+    const result = classifyRange({ from: args.from, to: args.to, migrations, folders });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return result.route === 'fast-path' ? 0 : 2;
   } catch (err) {
