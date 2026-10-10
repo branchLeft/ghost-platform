@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
-"""Tests for the step in provision-tenant.yml that puts a default-branch
-ruleset on each newly generated tenant repository.
+"""Tests for the default-branch ruleset step in provision-tenant.yml.
 
-Three things are proven:
-
-(a) the step exists, runs after the repository is created and before any
-    push, and carries no key that lets it be skipped or survived;
-(b) the committed payload it posts has exactly the three rule types and
-    code-owner review off;
-(c) the step's own shell refuses when the read-back lacks any one rule,
-    run against a stub `gh` that serves canned answers and nothing else.
-
-Structure is read with the helpers in test_provision_tenant_flow_gate.py,
-the same way test_provision_tenant_app_token_wiring.py reads it.
+(a) the step's position and shape; (b) the committed payload's rule types
+and code-owner setting; (c) the step's shell refuses a short read-back,
+run against a stub gh. Structure is read with the flow-gate helpers.
 """
 
 from __future__ import annotations
