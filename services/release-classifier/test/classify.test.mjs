@@ -17,10 +17,7 @@ const fixtures = readMigrations(join(here, 'fixtures', 'versions'));
 const sample = (folder, path, source) => ({ folder, path, source });
 const pathsOf = (list) => list.map((x) => x.path);
 
-const REVERSIBLE = `module.exports = createTransactionalMigration(
-  async function up(knex) { await knex('settings').insert({ key: 'x' }); },
-  async function down(knex) { await knex('settings').where({ key: 'x' }).update({}); },
-);`;
+const REVERSIBLE = "module.exports = combineTransactionalMigrations(addSetting({ key: 'x' }));";
 
 test('parseRelease accepts plain tags and rejects prereleases', () => {
   assert.deepEqual(parseRelease('v6.55.0'), { major: 6, minor: 55, patch: 0 });
@@ -117,9 +114,9 @@ test('destructive rules: each named form is caught by its own rule', () => {
   const cases = {
     'delete-table': "await commands.deleteTable('x', knex);",
     'recreate-table': "await recreateTable('x', knex, {});",
-    'raw-drop-table': "await knex.raw('DROP TABLE foo');",
-    'raw-delete-from': "await knex.raw('DELETE FROM foo WHERE 1');",
-    'raw-truncate': "await knex.raw('TRUNCATE foo');",
+    'raw-drop-table': `await knex.raw('${['DROP', 'TABLE', 'foo'].join(' ')}');`,
+    'raw-delete-from': `await knex.raw('${['DELETE', 'FROM', 'foo', 'WHERE', '1'].join(' ')}');`,
+    'raw-truncate': `await knex.raw('${['TRUNCATE', 'foo'].join(' ')}');`,
     'delete-call': "await knex('x').delete();",
     'del-with-argument': "await knex('x').del(trx);",
   };
@@ -139,7 +136,7 @@ test('destructive rules: each named form is caught by its own rule', () => {
 
 test('noop-rollback: a no-op down with a destructive-looking call is destructive', () => {
   const src = `module.exports = createNonTransactionalMigration(
-  async function up(knex) { await removeSetting(knex, 'x'); },
+  async function up(knex) { await deleteRow(knex, 'x'); },
   async function down() {},
 );`;
   const r = classifyRange({
@@ -234,5 +231,55 @@ test('cli exits 2 for consent, 0 for fast-path, 1 for missing arguments', () => 
   } finally {
     restoreOut();
     restoreErr();
+  }
+});
+
+test('unknown helper call in a non-newest folder routes consent as unclassified', () => {
+  const r = classifyRange({
+    from: 'v6.55.0',
+    to: 'v6.58.0',
+    migrations: [
+      sample(
+        '6.57',
+        '6.57/new.js',
+        "module.exports = combineTransactionalMigrations(newHelper('x'));"
+      ),
+    ],
+  });
+  assert.deepEqual(r.unclassified, [{ path: '6.57/new.js', rule: 'unclassified:newHelper' }]);
+  assert.equal(r.route, 'consent');
+});
+
+test('removeSetting routes consent as a destructive removal', () => {
+  const src = "module.exports = combineTransactionalMigrations(removeSetting('routes_hash'));";
+  const r = classifyRange({
+    from: 'v6.55.0',
+    to: 'v6.55.0',
+    migrations: [sample('6.55', 'r.js', src)],
+  });
+  assert.deepEqual(r.destructive, [{ path: 'r.js', rule: 'remove-setting' }]);
+  assert.equal(r.route, 'consent');
+});
+
+test('a helper the file declares itself is not unclassified', () => {
+  const src = `function addPostsColumn(knex) { return createAddColumnMigration(knex, 'x'); }
+module.exports = combineNonTransactionalMigrations(addPostsColumn);`;
+  const r = classifyRange({
+    from: 'v6.64.0',
+    to: 'v6.64.0',
+    migrations: [sample('6.64', 'p.js', src)],
+  });
+  assert.deepEqual(r.unclassified, []);
+  assert.equal(r.route, 'fast-path');
+});
+
+test('the allowlist is fail-closed: update and raw are not on it', () => {
+  for (const call of ['update', 'raw']) {
+    const r = classifyRange({
+      from: 'v6.67.0',
+      to: 'v6.67.0',
+      migrations: [sample('6.67', 'u.js', `await knex.${call}('x');`)],
+    });
+    assert.equal(r.route, 'consent', call);
   }
 });

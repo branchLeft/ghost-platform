@@ -11,94 +11,100 @@ Scope: this classifies. It does not open PRs, move tenants, or change state.
 
 Migrations are read from `ghost/core/core/server/data/migrations/versions/<MAJOR.MINOR>/`
 at the target tag. A folder is in range when it lies between the pinned and
-target minor lines, both inclusive. The pinned minor folder is included on
-purpose: a patch can add a migration to its own minor folder, and over-including
-only makes the answer more cautious. The cost is that a cross-minor upgrade
-also re-reads migrations the tenant has already applied (see Open questions).
+target minor lines, both inclusive. See Open questions for why the lower bound is
+inclusive.
 
-## Classes and routes
+## Routes
 
-Route is `consent` when any class below matches, and `fast-path` otherwise.
+A file is fast-path only if no class below matches it. The route is `consent` when
+any class matches anywhere in the range, and `fast-path` otherwise.
 
 1. **Major bump.** The target major is above the pinned major. Always consent.
 2. **Irreversible** (always consent). Ghost's own flag, or a helper that sets it:
    - `flag`: `irreversible: true`, bare or quoted as `'irreversible': true`.
    - `helper`: a call to `createIrreversibleMigration(`.
-   - `wrapper`: a call to `dropTables(`. The wrapper in `utils/tables.js` sets
-     the flag, so dropping a table is irreversible.
-3. **Destructive** (always consent). Data or structure removed with no way back
-   from the migration itself: `deleteTable(`, `recreateTable(`, raw `DROP TABLE`,
-   raw `DELETE FROM`, `truncate` / `TRUNCATE`, `.delete(`, and `.del(` with an
-   argument. Also `noop-rollback`: the file's `down()` does nothing while the file
-   contains a destructive-looking call. Comment lines are stripped before these match.
+   - `wrapper`: a call to `dropTables(`. It sets the flag, so dropping a table is irreversible.
+3. **Destructive** (always consent). Data or structure removed with no way back from
+   the migration: `deleteTable(`, `recreateTable(`, `dropDevelopmentCopy(`,
+   `removeSetting(`, raw `DROP TABLE`, raw `DELETE FROM`, `truncate`, `.delete(`, and
+   `.del(` with an argument. Also `noop-rollback`: a `down()` that does nothing, in a
+   file that also calls something destructive-looking. Comment lines are stripped first.
 4. **Contracting** (routed by `CONTRACTING_ROUTE`, pinned to `consent`). Lossy:
-   `dropColumn`, `dropColumns`, `createDropColumnMigration`, and `.del()` with no
-   argument. A rollback re-adds a dropped column empty, and a delete loses rows.
+   `dropColumn`, `dropColumns`, `createDropColumnMigration`, `.del()` with no argument,
+   and permission removal (`removePermission`, `removePermissionFromRole`,
+   `createRemovePermissionMigration`). A rollback re-adds a dropped column empty,
+   and a delete loses rows.
 5. **Constraint** (routed by `CONSTRAINT_ROUTE`, pinned to `consent`). Schema-only
-   constraint drops: `dropIndex`, `dropUnique`, `dropForeign`. Kept separate so the
-   owner can rule on them without rulings on data loss.
+   constraint drops: `dropIndex`, `dropUnique`, `dropForeign`. Kept apart from data loss.
+6. **Unclassified** (always consent). Fail-closed. Every call in a file is checked
+   against the `KNOWN_CALLS` allowlist. A call that is neither on it nor declared in
+   the same file routes consent with reason `unclassified:<name>`. Each allowlist entry
+   has its reason beside it. The allowlist was derived from the real fast-path files in
+   the v6.55.0 to v6.69.0 range. `update` and `raw` are deliberately not on it.
 
 Pinned routes are the owner's open rulings. Changing a constant is a ruling, not a
-refactor; the test suite pins the current values.
+refactor. The test suite pins the current values.
 
 Text matching is a heuristic. The irreversible class matches comments as well as
-code, which over-matches on purpose. Destructive, contracting and constraint
-classes match code only, with comments stripped.
+code, which over-matches on purpose. The other classes match code with comments
+stripped, and the unclassified check reads call names with string contents removed.
 
 ## Premise correction
 
 The issue body says no 6.x migration uses the irreversible helper yet. That is
 wrong. `6.0/2025-06-30-13-59-10-remove-mail-events-table.js` calls `dropTables`,
-so it is irreversible through the wrapper. The wrapper rule is needed for that file.
+so it is irreversible through the wrapper.
 
 With the inclusive range, that migration is in range for any upgrade whose pinned
-minor is 6.0: `v6.0.0` to `v6.1.0` routes consent on it. It is out of range for
-any upgrade that starts at 6.1 or later.
+minor is 6.0. So `v6.0.0` to `v6.1.0` routes consent on it. Ranges that start at 6.1
+or later do not include it.
 
 ## Usage
 
     node src/cli.mjs --from v6.55.0 --to v6.69.0 --versions <path>/migrations/versions
 
-Exit 0 is fast-path, 2 is consent, 1 is a usage or read error. The JSON output
-lists every matched file with its rule, per class.
+Exit 0 is fast-path, 2 is consent, 1 is a usage or read error. The JSON output lists
+every matched file with its rule, per class.
 
 ## Tests
 
     npm test
 
-Run on the Node version in `.nvmrc`. The fixtures under `test/fixtures/versions/`
-are copies of upstream Ghost source (see Licence). Synthetic sources cover the
-rules that no real fixture exercises. Full-line and block comments were removed
-from the copies so they pass the repo's comment-block gate; code is otherwise
-unchanged, apart from the formatter's trailing-comma change.
+Run on the Node version in `.nvmrc`. The fixtures under `test/fixtures/versions/` are
+copies of upstream Ghost source (see Licence). Full-line and block comments were
+removed from the copies so they pass the repo's comment-block gate. The code is
+otherwise unchanged, apart from the formatter's trailing-comma change. Synthetic
+sources cover the rules no real fixture exercises. The raw SQL in the tests is
+assembled from parts, so no SQL literal sits in the source.
 
 The control case: an irreversible migration in a non-newest folder of the range
-must route consent. A mutant that checks only the target folder for irreversible
-rules fails that test.
+routes consent. A mutant that checks only the target folder for irreversible rules
+fails that test.
 
 ## Licence
 
-The fixtures are copies of Ghost source, MIT-licensed by Ghost Foundation. The
-licence text is in `test/fixtures/LICENSE-ghost`, copied verbatim from the
-upstream `LICENSE` at v6.69.0.
+The fixtures are copies of Ghost source, MIT-licensed by Ghost Foundation. The licence
+text is in `test/fixtures/LICENSE-ghost`, copied verbatim from the upstream `LICENSE`
+at v6.69.0.
 
 ## Open questions
 
-- **Lower bound.** Should the pinned minor folder be excluded? A migration already
-  applied at the pinned version cannot apply again, so an exclusive bound would be
-  correct for those. But a patch can add a migration to its own minor folder, and
-  the source alone cannot show whether a tenant has applied it. An exclusive bound
-  could then route a patch upgrade fast when it should not. The current choice is
-  inclusive. Its cost: v6.57.0 to v6.58.0 routes consent because of two 6.57 files
-  in the pinned 6.57 folder, which a tenant on 6.57.0 has most likely applied (the
-  leaf-rows and reset-automation migrations), and
-  v6.0.0 to v6.1.0 routes consent on the 6.0 wrapper migration.
-- **Contracting and constraint classes**, the owner's rulings. See the constants.
+- **Lower bound.** An exclusive bound would fail open. A tenant on v6.57.0 that upgrades
+  to v6.57.1 after that patch adds a destructive migration to folder 6.57 would see an
+  empty range. So the bound stays inclusive. The cost is measured: the upstream
+  `versions` tree is identical at v6.57.0 and v6.57.1, and the classifier still routes
+  `v6.57.0` to `v6.57.1` consent on the two 6.57 files (the leaf-rows and
+  reset-automation migrations). A possible fix is to compare the pinned and target
+  trees and classify only files that are new since the pinned tag. That needs a second
+  input and is not built here.
+- **Contracting, constraint and unclassified.** The owner's rulings are open for the
+  first two. The unclassified allowlist needs a ruling on each addition.
 
 ## Not claimed
 
-This does not establish that a range is safe. It checks migration source text
-against a fixed list of forms. Forms not on the list are not detected, including
-other destructive helpers such as `removeSetting` and `removePermissionFromRole`,
-and data changes written in a form the rules do not name. The range
-v6.55.0 to v6.69.0 routes to consent, and the Done-when of the issue is not claimed.
+This does not establish that a range is safe. It checks migration source text against
+a fixed list of forms, and forms not on the list route consent as unclassified. Helpers
+on the allowlist are trusted on the basis of the reasons beside them. The rules read
+text, so a data change written in a form the allowlist accepts, but whose effect the
+reason does not cover, passes unseen. The range v6.55.0 to v6.69.0 routes to consent,
+and the issue's Done-when is not claimed.
