@@ -893,21 +893,14 @@ jobs:
       #
       # **What that scoping does NOT bound, stated rather than implied.** This
       # credential is not scoped per stack. Once read, it reads, writes and
-      # deletes `.pulumi/stacks/*` for every tenant in the bucket: each tenant's
-      # own deploy job uses it to read and then rewrite that tenant's
-      # checkpoint, so it has to carry all three. None of the three needs
-      # the ability to decrypt. Reading gives the plaintext outputs and config
-      # and the salt beside the ciphertexts. Writing means a plaintext output
-      # such as `composeFile` is a value any holder could have changed, so no
-      # stack output is the source of a file an operator installs as root.
-      # Deleting destroys a checkpoint outright. The environment gate bounds
-      # which job may read it, not what it reaches. Bounding the reach itself
-      # needs Hetzner's per-bucket key allowlisting, whose behaviour on
-      # `ListBucket` is undemonstrated and whose account caps may not fit 100
-      # tenants. What IS bounded, by name in the
-      # validation step above, is the direction that matters most -- this is
-      # never the estate's own bucket, so the reach stops before the checkpoint
-      # the production hcloud token lives in.
+      # deletes `.pulumi/stacks/*` for every tenant, as each tenant's own deploy
+      # job does for its own. None of that needs decryption: plaintext outputs,
+      # config and the salt are readable, and a checkpoint can be rewritten or
+      # destroyed. The environment gate bounds which job may read it, not what it
+      # reaches; bounding that needs Hetzner's per-bucket key allowlisting, whose
+      # `ListBucket` behaviour is undemonstrated and whose account caps may not
+      # fit 100 tenants. What IS bounded, by name in the validation step above,
+      # is that this is never the estate's own bucket.
       - name: Write the tenant repo's state credentials and variables
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

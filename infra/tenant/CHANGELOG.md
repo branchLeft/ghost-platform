@@ -4,16 +4,16 @@ All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
 ## Unreleased
 
-- **`scripts/assert-no-tenant-deletes.py` refuses a plan that carries any
-  resource type other than `pulumi:pulumi:Stack` or the `GhostTenant`
-  component.** A tenant stack holds configuration and no real resources, so a
-  holder of the state credential can only corrupt a rendering; the first
-  provider resource added to a tenant stack now fails the plan instead of
-  shipping green. The type is read from the URN's type field split from the
-  left, so a resource name containing `::` can no longer present another type's
-  token as its own. A tenant picks this up when it bumps to the release that
-  carries it; the template's deploy job runs the guard from the pinned
-  package.
+- **Breaking: `scripts/assert-no-tenant-deletes.py` refuses a plan that carries
+  any resource type other than `pulumi:pulumi:Stack` or the `GhostTenant`
+  component.** A plan that used to pass with another resource type now fails.
+  A tenant stack holds configuration and no real resources, so declaring one is
+  a decision to take first; the first provider resource added to a tenant stack
+  fails the plan instead of shipping green. The whole type field of the URN is
+  compared, split from the left, so neither a resource name containing `::` nor
+  a `<parent>$<type>` chain can present an allowed token as its own. A tenant
+  picks this up when it bumps to the release that carries it; the template's
+  deploy job runs the guard from the pinned package.
 
 ## 7.0.0
 

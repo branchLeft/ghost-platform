@@ -31,10 +31,9 @@ COMPONENT_TYPE_TOKEN = "ghostPlatform:tenant:GhostTenant"
 STACK_TYPE_TOKEN = "pulumi:pulumi:Stack"
 
 # The only resource types a tenant plan may carry. A tenant stack renders
-# configuration and creates nothing, so the worst a holder of the state
-# credential can do to its checkpoint is corrupt a rendering. The first
-# provider resource added to a tenant stack ends that, and it must arrive as a
-# refused plan rather than as a green one.
+# configuration and holds no real resources; declaring one is a decision to
+# take first, so the first provider resource added to a tenant stack must
+# arrive as a refused plan rather than as a green one.
 ALLOWED_TYPE_TOKENS = frozenset({STACK_TYPE_TOKEN, COMPONENT_TYPE_TOKEN})
 
 # The only ops for which "no old state" is the truth rather than a gap.
@@ -59,18 +58,17 @@ class GuardError(Exception):
 
 
 def _type_token(urn: str) -> str:
-    """Return the type token from a Pulumi URN.
+    """Return the whole type field of a Pulumi URN.
 
     A URN is `urn:pulumi:<stack>::<project>::<type>::<name>`; a parent chain
-    appears in `<type>` as `<parent>$<type>`, so the last `$`-separated part is
-    the resource's own type. Split from the left, at most three times: the name
+    appears in `<type>` as `<parent>$<type>` and is kept whole, so `X$<allowed>`
+    is not an allowed type. Split from the left, at most three times: the name
     is the one field a program chooses freely, so a `::` in it must stay in it.
-    From the right, `x::pulumi:pulumi:Stack::y` read as the stack's own type.
     """
     parts = urn.split("::", 3)
     if len(parts) != 4:
         raise GuardError(f"not a resource URN: {urn!r}")
-    return parts[2].rsplit("$", 1)[-1]
+    return parts[2]
 
 
 def _steps(plan: dict) -> list[dict]:
@@ -211,8 +209,7 @@ def check_plan(plan: dict) -> list[str]:
     findings.extend(
         f"{urn} is a '{token}' resource. A tenant stack may carry only "
         f"{STACK_TYPE_TOKEN!r} and {COMPONENT_TYPE_TOKEN!r}: it holds configuration and no real "
-        "resources, so a holder of the state credential can only corrupt a rendering. "
-        "Declaring one is a decision to take first, not a change to ship."
+        "resources. Declaring one is a decision to take first, not a change to ship."
         for urn, token in unexpected_resource_steps(plan)
     )
     findings.extend(identity_changes(plan))
@@ -524,6 +521,12 @@ def _self_test() -> int:
             _resource_step(
                 f"{COMPONENT_TYPE_TOKEN}$random:index/randomString:RandomString", "suffix"
             ),
+        ),
+        # An allowed token as the LAST segment of a parent chain. Read by that
+        # segment alone this passed as the stack.
+        (
+            "a resource whose type chain ends in the stack's type token",
+            _resource_step(f"random:index/randomString:RandomString${STACK_TYPE_TOKEN}", "suffix"),
         ),
         (
             "a resource already in the checkpoint",
