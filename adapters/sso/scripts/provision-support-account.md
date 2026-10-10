@@ -83,3 +83,11 @@ suspended throws `ActiveExistingRowError` rather than being reported as
 success — see that class's own doc comment. Returns
 `{created, repaired, id, status}`: `created` and `repaired` are never both
 true.
+
+## provisionSupportAccountViaEngine
+
+The same provisioning for a caller that has no `docker` CLI: the grant tool,
+which runs in a container with only the Engine socket. It takes a client with
+`exec({ container, cmd, env })` (`docker-engine.mjs`) and runs the same inner
+script with the same env and the same two named refusals. Nothing about the
+account changes: the row is always created suspended.

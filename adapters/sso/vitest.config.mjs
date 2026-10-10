@@ -10,7 +10,13 @@ export default defineConfig({
       // session on the auth path like everything else in src/**, so it holds
       // to the same floor. The pristine upstream copy is excluded: it is
       // reference data for the re-derivation diff, not code this repo runs.
-      include: ['src/**/*.js', 'ghost-core-overlay/session-from-token.js'],
+      // The Engine client is what the grant tool uses to reach a tenant's
+      // database as root on the app host, so it holds the same floor.
+      include: [
+        'src/**/*.js',
+        'ghost-core-overlay/session-from-token.js',
+        'scripts/docker-engine.mjs',
+      ],
       thresholds: {
         // Non-negotiable for this component: it mints an Administrator
         // session, and an untested branch in it is an untested way in.
